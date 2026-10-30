@@ -79,8 +79,6 @@ KNOWN_AFFECTED_FILES: tuple[str, ...] = (
     "scripts/fit_phi_encoder.py",
     "scripts/run_agent_flow_live_matrix.py",
     "scripts/seed_substrate_atlas_demo.py",
-    "scripts/self_study_enrichment_hook.py",
-    "scripts/self_study_harness.py",
     "scripts/smoke_substrate_motivation_golden_path.py",
     "scripts/trace_hub_skill_runner_e2e.py",
 )

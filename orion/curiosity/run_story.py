@@ -77,7 +77,7 @@ LINE_LABELS: dict[str, str] = {
 }
 LINES = tuple(LINE_LABELS)
 
-# Workflows that ARE curiosity. `self_study.reflect`, `reading.turn`,
+# Workflows that ARE curiosity. `reading.turn`,
 # `reverie.visual` and the rest land in the same tables and are not; `_group`
 # drops any run whose admission row names another workflow.
 CURIOSITY_WORKFLOWS = ("curiosity.investigate", "self_sense_eval")

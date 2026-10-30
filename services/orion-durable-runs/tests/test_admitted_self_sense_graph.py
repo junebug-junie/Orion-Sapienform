@@ -149,7 +149,7 @@ def test_admission_runtime_routes_self_sense_workflow():
     """Unit: AdmissionRuntime picks the self-sense compiled graph by workflow."""
     from types import SimpleNamespace
 
-    from app.admission_runtime import AdmissionRuntime, SELF_SENSE_WORKFLOW, DEFAULT_WORKFLOW, REFLECT_WORKFLOW
+    from app.admission_runtime import AdmissionRuntime, SELF_SENSE_WORKFLOW, DEFAULT_WORKFLOW
     from app.graph import Deps as CuriosityDeps
 
     class FakeRunner:
@@ -184,14 +184,6 @@ def test_admission_runtime_routes_self_sense_workflow():
 
             return Deps(run_turn=turn, publish_rows=publish_rows)
 
-        def _reflect_deps(self):
-            from app.reflect_graph import Deps as ReflectDeps
-
-            async def call(reflect_input, llm_route, gpu_lease=None):
-                return []
-
-            return ReflectDeps(call_reflect_llm=call)
-
     settings = SimpleNamespace(
         service_name="orion-durable-runs",
         lease_heartbeat_sec=15,
@@ -206,9 +198,6 @@ def test_admission_runtime_routes_self_sense_workflow():
     assert rt._graph_for(DEFAULT_WORKFLOW) is rt.graphs[DEFAULT_WORKFLOW]
     assert rt._graph_for(SELF_SENSE_WORKFLOW) is rt.graphs[SELF_SENSE_WORKFLOW]
     assert rt._graph_for(SELF_SENSE_WORKFLOW) is not rt._graph_for(DEFAULT_WORKFLOW)
-    # Before 4.5 an admitted reflect run fell back to the curiosity graph.
-    assert rt._graph_for(REFLECT_WORKFLOW) is rt.graphs[REFLECT_WORKFLOW]
-    assert rt._graph_for(REFLECT_WORKFLOW) is not rt._graph_for(DEFAULT_WORKFLOW)
 
 
 def test_heartbeat_must_fit_twice_inside_the_pool_hold_ttl():

@@ -141,7 +141,11 @@ _WORKFLOWS: tuple[WorkflowDefinition, ...] = (
     WorkflowDefinition(
         workflow_id="self_review",
         display_name="Self Review",
-        description="Bounded metacognitive workflow that reuses self-study reflection pathways to produce a structured self-review.",
+        description=(
+            "Asks Hub to take one curiosity self-inquiry turn now: Orion reads their own records "
+            "and repo and revises their self-definition. Replaced the retired self-study "
+            "reflection loop on 2026-10-30."
+        ),
         aliases=[
             "run a self review",
             "do a self review",
@@ -154,11 +158,17 @@ _WORKFLOWS: tuple[WorkflowDefinition, ...] = (
         autonomous_invocable=True,
         execution_mode="sync",
         may_call_actions=False,
-        persistence_policy="Reuse existing self-study reflective graph/journal writebacks when the underlying adapter performs them.",
-        result_surface="Return a structured self-review summary with findings counts and persistence notes.",
+        persistence_policy=(
+            "Writes nothing itself. The self-inquiry run persists through curiosity's own path "
+            "(its journal, the worldview graph, and self_concept_history self:definition)."
+        ),
+        result_surface="Return whether the self-inquiry request was published; the run itself takes ~20 minutes.",
         steps=[
-            WorkflowStepDefinition(step_id="gather_self_context", description="Gather authoritative self-study context.", adapter="verb:self_concept_reflect"),
-            WorkflowStepDefinition(step_id="reflect", description="Run bounded reflective self-study synthesis.", adapter="verb:self_concept_reflect"),
+            WorkflowStepDefinition(
+                step_id="request_self_inquiry",
+                description="Publish one CuriositySelfInquiryRequestV1; Hub runs tick_self_inquiry(force=True).",
+                adapter="bus:orion:curiosity:self_inquiry:request",
+            ),
         ],
         planner_hints=["Use when the user explicitly asks Orion for a self review or metacognitive review."],
     ),

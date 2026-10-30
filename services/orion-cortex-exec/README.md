@@ -162,20 +162,14 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
 | `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 | `ORION_ACTION_OUTCOME_DB_URL` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Shared SQL store for autonomous action outcomes. When set, chat-stance `load_action_outcomes` reads the `action_outcomes` table (written by sql-writer from `action.outcome.emit.v1`); when blank it falls back to the per-container JSON file `ORION_ACTION_OUTCOME_STORE_PATH`. |
-| `SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR` | `/mnt/self_study_enrichment_data/cache/self_study_enrichment` | Read-only path to `orion-self-study-enrichment`'s cache volume, mounted here so `self_study.py`'s `_semantic_enrichment_concepts()` can turn cached LLM enrichment summaries into `semantic_enrichment` Layer-2 concepts. |
-| `SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH` | `/mnt/self_study_structural_mass_data/structural_mass_history.jsonl` | Writable path (dedicated volume, owned solely by this service) to a JSONL history log of graphify structural snapshots, so `self_study.py`'s `_structural_delta_concepts()` recovers its "last observed" snapshot after a container restart instead of resetting to cold start every time. Unset falls back to in-process-only tracking (no crash). |
-| `CORTEX_REQUEST_CHANNEL` | `orion:cortex:request` | cortex-orch's public request intake channel. `self_study.py`'s `reflect_self_concepts()` (Layer 3) publishes a `CortexClientRequest` here, same public contract `orion-actions` and `orion-hub` already use -- this is the first time cortex-exec itself is a producer on this channel. |
-| `SELF_STUDY_REFLECT_LLM_ROUTE` | `agent` | LLM route override for the `self_study.reflect` verb's real reflection call, validated through `orion/llm/routes.py`'s `normalize_llm_route()`. An unrecognised value falls back to the verb's own default lane rather than guessing. |
-| `SELF_STUDY_REFLECT_TIMEOUT_SEC` | `1400` | RPC budget (seconds) for the `self_study.reflect` call. Raised from an initial 115s the same day (2026-09-04) once live: the agent-route reasoning model needs real wall-clock time to write its reasoning before the answer, not just tokens -- a real call completed normally in ~121s once given enough token budget to finish (see PR #2085). Raised again 240 -> 480 (2026-09-05) after two real end-to-end reflect calls against a hundreds-of-concepts snapshot both timed out at 240s. Raised again 480 -> 1400 (2026-09-21) after PR #2261's daily scheduler made the FIRST genuine autonomous attempt at reflect and timed out at exactly 480007.5ms -- a real data point, not a guess. `SELF_STUDY_REFLECT_LLM_ROUTE` defaults to the `agent` lane, already measured elsewhere in this repo as ~2x slower than the chat lane; if 1400s still isn't enough, moving this route off `agent` is the more durable fix, but this buys one more live attempt's worth of signal first. Kept under `self_study.reflect.yaml`'s own 1500000ms verb/step timeout on purpose, so this file's own RPC wait times out first -- a clean, catchable "no reflection" result instead of the orchestrator killing the step out from under an in-flight wait. |
-| `SELF_STUDY_INSPECT_INTERVAL_SEC` | `86400` | How often the chat-lane container re-runs `self_repo_inspect` on a timer and appends a fresh Layer-1 snapshot to `self_knowledge_items` (`app/self_study_refresh.py`). `0` disables. Added 2026-09-19 after a live check found the table frozen at one manual run from 2026-09-05: the three self-study verbs are in no autonomous chooser's priority table, so "Orion will pick it" never happened, and Hub's Self Atlas tick spent two weeks re-clustering the same 1,248 rows. Measured from the newest stored row, not process start, so a redeploy inside the interval does not append another snapshot. |
-| `SELF_STUDY_REFLECT_REFRESH_INTERVAL_SEC` | `86400` | How often the chat-lane container re-runs `run_self_concept_reflect` (Layer 3, the real LLM self-reflection pass) on a timer and appends a fresh `self_concept_history` row with `produced_by='layer3_reflect'` (`app/self_study_refresh.py`'s `self_study_reflect_refresh_loop`). `0` disables. Added 2026-09-20 after a live check found ZERO rows ever written under `produced_by='layer3_reflect'` and no log line mentioning `self_study_reflect` in 240h -- Layer 3 had the same "verb exists, nothing autonomous calls it" disease as Layer 1 above; the failures that drove `SELF_STUDY_REFLECT_TIMEOUT_SEC`'s 240->480 bump were manual test calls, not the system trying on its own. Independent of the Layer 1 timer's interval -- `build_self_snapshot()` is a fresh scan each call, not a read of the stored `self_knowledge_items` table. Measured from the newest reflection row this loop has actually written; a run whose LLM call fails writes no row by design (see `run_self_concept_reflect`), so repeated failures retry once per interval rather than tight-looping. |
-| `SELF_STUDY_REFLECT_DURABLE_ENABLED` | `false` | GPU2 elastic-burst arc (2026-09-21), step 3 of 3: when true, `_call_self_study_reflect_llm` dispatches the LLM call as a durable run (`workflow="self_study.reflect"`, `orion-durable-runs`' own graph) instead of a direct verb-dispatch RPC, so it can request GPU2 elastic-burst capacity the same way investigation/self-inquiry/self-sense-eval already do -- the traced root cause of reflect timing out: queuing behind investigation's long multi-tool turns on the agent lane's single (`--parallel 1`) llama-server slot. Waits SYNCHRONOUSLY for that run's completion (same `SELF_STUDY_REFLECT_TIMEOUT_SEC` deadline, same `list[dict] \| None` return contract as always -- finding validation and journal/`self_concept_history` writes stay right here, unmoved, using the real `snapshot`/`concepts` this call already has in scope). A failed/unconfirmed dispatch falls back to the direct RPC unchanged. Off by default: turn on deliberately once `orion-durable-runs`' reflect workflow is confirmed live. |
+| `CORTEX_REQUEST_CHANNEL` | `orion:cortex:request` | cortex-orch's public request intake channel. `verb_adapters.py` round-trips its own orch calls through it (read via `app/self_study.py`'s `CORTEX_ORCH_REQUEST_CHANNEL`). |
+| `SELF_STUDY_INSPECT_INTERVAL_SEC` | `86400` | How often the chat-lane container runs the Layer 1 scan (`run_self_repo_inspect`, `app/self_study_refresh.py`) and appends a fresh snapshot to `self_knowledge_items`, the table Self Atlas clusters. 0 disables. Since 2026-10-30 this is the only self-study part left; it exists only to feed Self Atlas, and both are the next retirement candidates. |
 | `CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED` | `true` | `skills.imagination.render_scene.v1` with a `dispatch_id` submits a `reverie.visual` durable run (`run_id = reverie_visual_run_id(dispatch_id)`, admission `service.route.diffusion`) through cortex-orch's durable ingress (`app/durable_kickoff.py`, shared with self-study reflect) and returns once the runner's receipt names that run: `outcome="unknown"`, `settlement={state: "pending", durable_run_id, submitted_at, deadline_at}`. execution-dispatch settles the real outcome from the run's terminal state. An unconfirmed submit returns `settlement.state="not_submitted"` (ok=false) with no fallback to the direct call, because the deterministic run may already exist. Manual runs (no `dispatch_id`) and `false` use the direct `/visual-chain/run-once` call. Design: `docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md`. |
 | `CORTEX_EXEC_RENDER_SCENE_RETRY_WINDOW_SEC` | `0` | The durable render's retry window (`admission.deadline_at = submit + this`). `0` = the visual baseline interval (`orion/reverie/baseline.py`, 5400 s): a run that cannot make its image before the next scheduled need ends `failed`/`retry_window_expired` and gives way to it. Capped at `REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC` (6600 s, `orion/schemas/reverie_visual_run.py`): orion-thought releases attempts older than its `ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC`, so no run may outlive that. |
 
 ### Self-study knowledge item log (2026-09-05, self-model rebuild arc, Patch 2)
 
-Every `self_repo_inspect` run now also publishes one `orion:self_study:items
+Every Layer 1 inspect run (`run_self_repo_inspect`) now also publishes one `orion:self_study:items
 :write` bus message per Layer-1 item (`publish_self_knowledge_items()`,
 published concurrently, bounded), additive to the existing one-off journal
 summary (which stays exactly that, a summary, not storage of record). This
@@ -194,25 +188,19 @@ design doc) has a real `source_table` to point a `DatasetSpec` at -- before
 this patch, Layer-1 items were only ever in-process, never durably
 queryable across runs. No new env keys.
 
-### Self-concept history (2026-09-05, self-model rebuild arc, Patch 3)
+### Self-study folded into curiosity (2026-10-30)
 
-The identity.yaml-replacement store named in the design doc:
-`self_concept_history`, an append-only, versioned log of Orion's own
-self-concept claims, additive to `identity.yaml` (not a replacement -- that
-decision is explicitly out of scope for this patch). Fed by
-`publish_self_concept_history_from_reflection()`, called from
-`run_self_concept_reflect()` right after Layer 3's real LLM reflection
-succeeds: one row per distinct `concept_kind` a finding's `concept_refs`
-touch (falls back to the finding's own `reflection_kind` if it has no
-concept refs), never on the `llm_call_failed` path -- same no-empty-shell
-discipline as the journal/graph writebacks next to it. "Current" is defined
-as the latest row per `concept_id` by `created_at`, not an upsert; `version`
-is a real, queried-not-guessed increment (`_next_self_concept_version()`,
-reuses `self_study_analysis.py`'s engine) but is informational, not
-load-bearing for that definition. The second producer this table was
-designed for -- Self Atlas's own per-cluster descriptions -- is now wired
-too (2026-09-05 follow-up, `orion-hub`'s `self_atlas_cluster_history.py`);
-see `services/orion-hub/README.md`'s Self Atlas section for that half.
+Self-study used to have three layers here: Layer 1 (inspect, repo/hardware/behavior
+facts), Layer 2 (concept induction), and Layer 3 (a daily LLM reflection written to
+`self_concept_history` as `produced_by='layer3_reflect'`). Layers 2 and 3, the
+`self_retrieve` path, the dead RDF writeback code, the `orion-self-study-enrichment`
+service and the four self-study verbs were retired on 2026-10-30 (proposal
+`docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md`). Nothing read
+their output; curiosity's self-inquiry, the dig kit and the body atlas do that work now.
+
+Kept: the Layer 1 timer (it feeds Self Atlas), and `skills.self_study.analyze.v1`
+(hourly telemetry analysis, now tier 0 `autonomic`; the reverie painter reads its
+journals). Self Atlas and the Layer 1 feed are the next retirement candidates.
 
 ### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
 
@@ -238,13 +226,6 @@ sections, both additive:
   computed every turn and thrown away entirely (only a 4-key compact
   summary survived 30 minutes in `executor.py`'s in-process
   `_PRIOR_STANCE_CACHE`).
-
-Both new sections feed Layer 2's induced concepts (`_hardware_concepts()`/
-`_behavioral_concepts()`, concept kinds `physical_topology`/
-`behavioral_pattern`) and are therefore visible to Layer 3's real LLM
-reflection call automatically -- no change needed there, since
-`_self_study_reflect_input()` already receives the whole set of induced
-concepts.
 
 No new env keys. The behavioral read reuses `self_study_analysis.py`'s
 existing `_get_engine()`/DSN fallback chain (`SUBSTRATE_FELT_STATE_DATABASE_URL`
@@ -517,9 +498,6 @@ docker-compose up -d orion-cortex-exec
 ### Self-study repo root override
 If self-study runs in a flattened container layout, set `ORION_REPO_ROOT` to the mounted repo root to override auto-detection; otherwise the service searches upward for repo markers and falls back to the container app root.
 
-### Self-study GraphDB readback
-`self_retrieve` can read persisted self-study RDF back from GraphDB when either `RECALL_RDF_ENDPOINT_URL` or `GRAPHDB_URL` / `GRAPHDB_REPO` are present in the environment. If that persisted backend is unavailable, Cortex Exec falls back explicitly to the in-process self-study snapshot path instead of silently widening trust semantics.
-
 ### Backfill Journal PageIndex indices
 ```docker exec -i orion-athena-sql-writer python - <<'PY'
 from app.db import get_session, remove_session
@@ -587,8 +565,6 @@ Exec is tested via the Orchestrator flow.
 ```bash
 python scripts/bus_harness.py brain "plan a party"
 ```
-
-Self-study reads the published Graphify bundle via `SELF_STUDY_GRAPH_PATH`, mounted from warm storage using `SELF_STUDY_GRAPH_HOST_PATH`. See [local graph operations](../../docs/graphify-local-storage.md).
 
 ## Orion's Day verbs (2026-09-30)
 

@@ -22,9 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROOT_CALLERS_TO_DOCKERFILE = {
     "orion/harness/fcc_motor.py": "services/orion-harness-governor/Dockerfile",
     "services/orion-hub/scripts/fcc_claude_bridge.py": "services/orion-hub/Dockerfile",
-    "services/orion-self-study-enrichment/app/claude_runner.py": (
-        "services/orion-self-study-enrichment/Dockerfile"
-    ),
 }
 _KNOWN_NON_CONTAINER_CALLERS = {"scripts/context_mode_hooks_smoke.py"}
 

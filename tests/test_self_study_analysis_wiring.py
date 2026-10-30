@@ -1,9 +1,9 @@
 """Proof that the analysis verb is actually REACHABLE by Orion's own dispatch
 loop, not merely implemented.
 
-The gap this patch closes was never missing code: `self_review` /
-`self_concept_reflect` have existed and been `autonomous_invocable` for
-months, with 0 invocations in 72h and 0 journal entries ever, because nothing
+The gap this patch closes was never missing code: the `self_review` workflow
+and the self-study reflect verb (both reworked/retired 2026-10-30) had existed
+and been `autonomous_invocable` for months, with 0 invocations in 72h and 0 journal entries ever, because nothing
 in `proposal_policy.v1.yaml` or `execution_dispatch_policy.v1.yaml` referenced
 them. So these tests assert the wire, at every joint.
 """

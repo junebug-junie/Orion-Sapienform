@@ -453,51 +453,68 @@ def test_journal_pass_primary_metadata_continuity(monkeypatch) -> None:
     assert seen_metadata.get("user_id") == "user-1"
 
 
-def test_self_review_workflow_uses_existing_self_reflection_adapter(monkeypatch) -> None:
-    async def _fake_call_verb_runtime(*args, **kwargs):
-        req = kwargs['client_request']
-        assert req.verb == 'self_concept_reflect'
-        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"Reflective summary","findings":[{"kind":"seam_risk"}],"graph_write":{"graph":"orion:self:reflective"},"journal_write":{"channel":"orion:journal:write"}}', 'steps': [], 'metadata': {'skill_result': {'summary': 'Reflective summary', 'findings': [{'kind': 'seam_risk'}], 'graph_write': {'graph': 'orion:self:reflective'}, 'journal_write': {'channel': 'orion:journal:write'}}}}})
+def test_self_review_routes_to_a_curiosity_self_inquiry_request(monkeypatch) -> None:
+    """2026-10-30 fold of self-study into curiosity: "reflect on yourself" no longer runs the
+    retired self-study reflection verb. It publishes one CuriositySelfInquiryRequestV1 for Hub
+    and calls no verb at all."""
+    from orion.schemas.curiosity_self_inquiry_request import (
+        SELF_INQUIRY_REQUEST_CHANNEL,
+        SELF_INQUIRY_REQUEST_KIND,
+        CuriositySelfInquiryRequestV1,
+    )
 
+    async def _no_verb(*args, **kwargs):
+        raise AssertionError("self_review must not call a verb any more")
+
+    bus = DummyBus()
+    corr = '00000000-0000-0000-0000-000000000004'
     result = asyncio.run(
         execute_chat_workflow(
-            bus=DummyBus(),
+            bus=bus,
             source=ServiceRef(name='cortex-orch'),
             req=_req('self_review'),
-            correlation_id='00000000-0000-0000-0000-000000000004',
+            correlation_id=corr,
             causality_chain=[],
             trace={},
-            call_verb_runtime=_fake_call_verb_runtime,
+            call_verb_runtime=_no_verb,
         )
     )
 
     assert result.ok is True
     assert result.metadata['workflow']['workflow_id'] == 'self_review'
-    assert result.metadata['workflow']['finding_count'] == 1
+    assert result.metadata['workflow']['routed_to'] == SELF_INQUIRY_REQUEST_CHANNEL
+    assert result.metadata['workflow']['persisted'] == []
+    assert "Self-inquiry turn requested" in (result.final_text or "")
+    published = [(ch, env) for ch, env in bus.published if ch == SELF_INQUIRY_REQUEST_CHANNEL]
+    assert len(published) == 1
+    channel, env = published[0]
+    assert env.kind == SELF_INQUIRY_REQUEST_KIND
+    request = CuriositySelfInquiryRequestV1.model_validate(env.payload)
+    assert request.requested_by == "workflow:self_review"
+    assert request.correlation_id == corr
 
 
-def test_self_review_primary_metadata_continuity(monkeypatch) -> None:
-    seen_metadata: dict = {}
+def test_self_review_reports_failure_when_the_request_cannot_be_published(monkeypatch) -> None:
+    class _FailingBus(DummyBus):
+        async def publish(self, channel, envelope):
+            raise RuntimeError("bus down")
 
-    async def _fake_call_verb_runtime(*args, **kwargs):
-        req = kwargs['client_request']
-        seen_metadata.update(req.context.metadata or {})
-        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"Reflective summary","findings":[]}', 'steps': [], 'metadata': {'skill_result': {'summary': 'Reflective summary', 'findings': []}}}})
+    async def _no_verb(*args, **kwargs):
+        raise AssertionError("self_review must not call a verb any more")
 
-    asyncio.run(
+    result = asyncio.run(
         execute_chat_workflow(
-            bus=DummyBus(),
+            bus=_FailingBus(),
             source=ServiceRef(name='cortex-orch'),
             req=_req('self_review'),
             correlation_id='00000000-0000-0000-0000-000000010002',
             causality_chain=[],
             trace={},
-            call_verb_runtime=_fake_call_verb_runtime,
+            call_verb_runtime=_no_verb,
         )
     )
-    assert seen_metadata.get("workflow_id") == "self_review"
-    assert seen_metadata.get("workflow_execution", {}).get("workflow_subverb") == "self_concept_reflect"
-    assert seen_metadata.get("trace_id") == "trace-1"
+    assert result.ok is False
+    assert "Could not request a self-inquiry turn" in (result.final_text or "")
 
 
 def test_introspection_parity_for_primary_workflow_metadata() -> None:
@@ -505,7 +522,7 @@ def test_introspection_parity_for_primary_workflow_metadata() -> None:
         "session_id": "sid-1",
         "user_id": "user-1",
         "workflow_id": "self_review",
-        "trace_verb": "self_concept_reflect",
+        "trace_verb": "chat_general",
         "personality_file": "orion/cognition/personality/orion_identity.yaml",
     }
     continuity = build_introspection_context(
@@ -517,40 +534,6 @@ def test_introspection_parity_for_primary_workflow_metadata() -> None:
     assert continuity["user_id"] == "user-1"
     assert continuity["workflow_id"] == "self_review"
     assert continuity["personality_file"] == "orion/cognition/personality/orion_identity.yaml"
-
-
-def test_self_review_usefulness_for_zero_and_nonzero_findings(monkeypatch) -> None:
-    async def _zero_findings(*args, **kwargs):
-        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"","findings":[]}', 'steps': [], 'metadata': {'skill_result': {'summary': '', 'findings': []}}}})
-
-    zero_result = asyncio.run(
-        execute_chat_workflow(
-            bus=DummyBus(),
-            source=ServiceRef(name='cortex-orch'),
-            req=_req('self_review'),
-            correlation_id='00000000-0000-0000-0000-000000010003',
-            causality_chain=[],
-            trace={},
-            call_verb_runtime=_zero_findings,
-        )
-    )
-    assert "No notable self-review findings were identified" in (zero_result.final_text or "")
-
-    async def _with_findings(*args, **kwargs):
-        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"ignored","findings":[{"kind":"seam_risk"},{"kind":"alignment_gap"}]}', 'steps': [], 'metadata': {'skill_result': {'summary': 'ignored', 'findings': [{'kind': 'seam_risk'}, {'kind': 'alignment_gap'}]}}}})
-
-    findings_result = asyncio.run(
-        execute_chat_workflow(
-            bus=DummyBus(),
-            source=ServiceRef(name='cortex-orch'),
-            req=_req('self_review'),
-            correlation_id='00000000-0000-0000-0000-000000010004',
-            causality_chain=[],
-            trace={},
-            call_verb_runtime=_with_findings,
-        )
-    )
-    assert "Self review completed with 2 findings" in (findings_result.final_text or "")
 
 
 def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path) -> None:

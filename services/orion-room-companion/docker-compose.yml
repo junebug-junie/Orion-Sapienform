@@ -28,8 +28,8 @@ services:
 
       # Authenticate `claude -p` as the operator's own Claude subscription --
       # never a separate ANTHROPIC_API_KEY billing path. Same pattern, for the
-      # same reasons, as orion-self-study-enrichment; see that service's
-      # README "Credential isolation (safety requirement)" and this one's
+      # same reasons, as the self-study enrichment service (deleted 2026-10-30; its
+      # README is in git history) "Credential isolation (safety requirement)" and this one's
       # README for why the credential lives here and NOT in orion-hub.
       #
       # These two lines and the volumes: entry below all interpolate the same

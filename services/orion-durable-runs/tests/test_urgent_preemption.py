@@ -212,27 +212,6 @@ def _stop_at_wait(graph, value, thread):
     return run()
 
 
-@pytest.mark.parametrize("how", ["raised", "returned"])
-def test_a_preempted_reflect_call_waits_for_its_hold_instead_of_finishing_empty(how):
-    from app.admitted_reflect_graph import build_admitted_reflect_graph
-    from app.reflect_graph import Deps as ReflectDeps
-
-    async def scenario():
-        admission = HeldAdmission(HoldPreempted("gpu_hold_preempted:hold-1") if how == "raised" else None,
-                                  preempted=how == "returned")
-
-        async def call(reflect_input, llm_route, gpu_lease=None):
-            return None                                        # the non-ok result a lost attach gives
-
-        graph = build_admitted_reflect_graph(ReflectDeps(call_reflect_llm=call), admission.deps(), InMemorySaver())
-        snap = await _stop_at_wait(graph, {"run_id": "r-1", "correlation_id": "c", "workflow": "self_study.reflect",
-                                           "attempt": 0, "admission": {}, "brief": {"timeout_sec": 5}}, "r-1")
-        assert snap.next == ("resource_wait",) and snap.values["status"] == "waiting_resource"
-        assert snap.values["attempt"] == 0 and snap.values["hold"]["lease_id"] == "hold-1"
-        assert admission.release_calls == [(URGENT_PREEMPT, True)]
-    asyncio.run(scenario())
-
-
 def test_a_preempted_self_sense_node_waits_for_its_hold_instead_of_failing_the_run():
     from app.admitted_self_sense_graph import build_admitted_self_sense_graph
     from app.self_sense_graph import Deps as SelfSenseDeps
@@ -368,7 +347,7 @@ def bare_runtime(holds, store=None):
 LEASE = {"lease_id": "hold-1", "generation": 1, "role": "agent", "holder": HOLDER}
 
 
-def _held_state(workflow="self_study.reflect"):
+def _held_state(workflow="self_sense_eval"):
     return {"run_id": "study-001", "correlation_id": "trace-001", "workflow": workflow, "attempt": 0,
             "lease": dict(LEASE), "hold": {"request_id": "study-001:1", "lease_id": "hold-1"},
             "brief": {"timeout_sec": 5}, "admission": {}}

@@ -6,7 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.journaler.schemas import JournalEntryWriteV1
 
-TrustTier = Literal["authoritative", "induced", "reflective"]
+# Layer 1 facts are the only self-study output left (2026-10-30 fold into curiosity,
+# docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md). The induced and
+# reflective tiers belonged to the retired concept induction and Layer 3 reflection.
+TrustTier = Literal["authoritative"]
 SelfKnowledgeCategory = Literal[
     "service",
     "module",
@@ -25,43 +28,6 @@ SelfKnowledgeCategory = Literal[
     "behavioral",
 ]
 SelfWritebackState = Literal["written", "skipped", "failed"]
-SelfConceptKind = Literal[
-    "runtime_boundary",
-    "service_cluster",
-    "bus_topology_pattern",
-    "recall_surface",
-    "journaling_surface",
-    "graph_surface",
-    # Added 2026-08: Layer 2 graphify + structural_mass + enrichment-cache
-    # concept kinds (services/orion-cortex-exec/app/self_study.py
-    # _graphify_derived_concepts / _structural_delta_concepts /
-    # _semantic_enrichment_concepts).
-    "graphify_community",
-    "structural_mass",
-    "semantic_enrichment",
-    # Added 2026-09-05 (Layer 1 broadening, self-model rebuild arc): additive
-    # concept sources over the new hardware/behavioral Layer-1 sections.
-    "physical_topology",
-    "behavioral_pattern",
-]
-SelfReflectionKind = Literal[
-    "tension",
-    "blind_spot",
-    "growth_area",
-    "capability_gap",
-    "seam_risk",
-    "followup_question",
-    "candidate_skill_idea",
-    "architecture_observation",
-    "unmet_need",
-    "recurring_constraint",
-]
-SelfStudyRetrievalMode = Literal["factual", "conceptual", "reflective"]
-SelfStudyRecordType = Literal["fact", "concept", "reflection"]
-SelfStudyStorageSurface = Literal["in_process", "rdf_graph", "journal"]
-SelfStudyConsumerKind = Literal["delivery_debug", "planning_architecture", "metacog_self"]
-
-
 class SelfKnowledgeItemV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -115,19 +81,13 @@ class SelfSnapshotV1(BaseModel):
 class SelfWritebackStatusV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Added 2026-09-05 (self-model rebuild arc, Patch 2): "self_knowledge_items"
-    # for publish_self_knowledge_items()'s writeback status -- previously
-    # forced into "journal" (a real review finding: that write goes to a
-    # different channel/table entirely, not the journal).
-    # Added 2026-09-05 (self-model rebuild arc, Patch 3): "self_concept_history"
-    # for publish_self_concept_history_from_reflection()'s writeback status --
-    # same lesson as "self_knowledge_items" above, applied correctly this time
-    # instead of hardcoding "journal" for a write that goes elsewhere.
-    target: Literal["graph", "journal", "self_knowledge_items", "self_concept_history"]
+    # "self_knowledge_items" is the per-item write that feeds Self Atlas; "journal" is the one
+    # daily summary entry. The RDF "graph" target and Layer 3's "self_concept_history" target
+    # were retired 2026-10-30 with the code that produced them.
+    target: Literal["journal", "self_knowledge_items"]
     status: SelfWritebackState
     authoritative: bool
     channel: str | None = None
-    graph: str | None = None
     idempotency_key: str | None = None
     append_only: bool = False
     detail: str | None = None
@@ -138,255 +98,9 @@ class SelfRepoInspectResultV1(BaseModel):
 
     snapshot: SelfSnapshotV1
     summary: str
-    graph_write: SelfWritebackStatusV1
     journal_write: SelfWritebackStatusV1
     journal_entry: JournalEntryWriteV1
     # Added 2026-09-05 (self-model rebuild arc, Patch 2): review finding --
     # this was previously computed and discarded, so a run where every item
     # publish failed was indistinguishable from a fully successful one.
     self_knowledge_items_write: SelfWritebackStatusV1
-
-
-class SelfConceptEvidenceRefV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    snapshot_id: str
-    item_id: str
-    source_path: str
-    origin_kind: str | None = None
-    origin_name: str | None = None
-    symbol_name: str | None = None
-    trust_tier: Literal["authoritative"] = "authoritative"
-
-
-class SelfInducedConceptV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    concept_id: str
-    concept_kind: SelfConceptKind
-    label: str
-    description: str
-    trust_tier: Literal["induced"] = "induced"
-    confidence: float
-    source_snapshot_id: str
-    evidence: list[SelfConceptEvidenceRefV1] = Field(default_factory=list)
-    # Free-form list[str], not a Literal -- kept intentionally open (existing
-    # values are "service"/"channel"/"touchpoint"/"env_surface" etc). Added
-    # 2026-08: "graphify_community" and "structural_mass_delta" as the
-    # inferred_from tags used by _graphify_derived_concepts() and
-    # _structural_delta_concepts() respectively (services/orion-cortex-exec/
-    # app/self_study.py).
-    inferred_from: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class SelfConceptInduceResultV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    source_snapshot_id: str
-    concepts: list[SelfInducedConceptV1] = Field(default_factory=list)
-    summary: str
-    graph_write: SelfWritebackStatusV1
-
-
-class SelfConceptRefV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    concept_id: str
-    concept_kind: SelfConceptKind
-    label: str
-    source_snapshot_id: str
-    trust_tier: Literal["induced"] = "induced"
-
-
-class SelfReflectiveFindingV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    reflection_id: str
-    reflection_kind: SelfReflectionKind
-    title: str
-    description: str
-    trust_tier: Literal["reflective"] = "reflective"
-    confidence: float
-    salience: float
-    source_snapshot_id: str
-    evidence: list[SelfConceptEvidenceRefV1] = Field(default_factory=list)
-    concept_refs: list[SelfConceptRefV1] = Field(default_factory=list)
-    recommendation: str | None = None
-    follow_up_question: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class SelfConceptReflectResultV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    source_snapshot_id: str
-    source_concept_ids: list[str] = Field(default_factory=list)
-    validated_phase2a: bool = True
-    validation_summary: str
-    findings: list[SelfReflectiveFindingV1] = Field(default_factory=list)
-    summary: str
-    graph_write: SelfWritebackStatusV1
-    journal_write: SelfWritebackStatusV1
-    journal_entry: JournalEntryWriteV1
-    # Added 2026-09-05 (self-model rebuild arc, Patch 3) -- surfaced from the
-    # start this time, not discarded (see the same fix on
-    # SelfRepoInspectResultV1.self_knowledge_items_write in Patch 2).
-    self_concept_history_write: SelfWritebackStatusV1
-
-
-class SelfStudyRetrieveFiltersV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    trust_tiers: list[TrustTier] = Field(default_factory=list)
-    record_types: list[SelfStudyRecordType] = Field(default_factory=list)
-    stable_ids: list[str] = Field(default_factory=list)
-    concept_kinds: list[SelfConceptKind] = Field(default_factory=list)
-    reflection_kinds: list[SelfReflectionKind] = Field(default_factory=list)
-    source_kinds: list[str] = Field(default_factory=list)
-    storage_surfaces: list[SelfStudyStorageSurface] = Field(default_factory=list)
-    text_query: str | None = None
-    limit: int = 12
-
-
-class SelfStudyRetrieveRequestV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    retrieval_mode: SelfStudyRetrievalMode
-    filters: SelfStudyRetrieveFiltersV1 = Field(default_factory=SelfStudyRetrieveFiltersV1)
-
-
-class SelfStudyRetrievedRecordV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    stable_id: str
-    trust_tier: TrustTier
-    record_type: SelfStudyRecordType
-    title: str
-    content_preview: str
-    source_kind: str
-    storage_surface: SelfStudyStorageSurface = "in_process"
-    source_snapshot_id: str
-    source_path: str | None = None
-    origin_kind: str | None = None
-    origin_name: str | None = None
-    symbol_name: str | None = None
-    concept_kind: SelfConceptKind | None = None
-    reflection_kind: SelfReflectionKind | None = None
-    evidence: list[SelfConceptEvidenceRefV1] = Field(default_factory=list)
-    concept_refs: list[SelfConceptRefV1] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class SelfStudyRetrievalGroupV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    trust_tier: TrustTier
-    items: list[SelfStudyRetrievedRecordV1] = Field(default_factory=list)
-
-
-class SelfStudyRetrievalCountsV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    total: int = 0
-    authoritative: int = 0
-    induced: int = 0
-    reflective: int = 0
-    facts: int = 0
-    concepts: int = 0
-    reflections: int = 0
-
-
-class SelfStudyRetrievalBackendStatusV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    storage_surface: SelfStudyStorageSurface
-    status: Literal["used", "not_queried", "unavailable"]
-    detail: str | None = None
-
-
-class SelfStudyRetrieveResultV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    retrieval_mode: SelfStudyRetrievalMode
-    backend_used: SelfStudyStorageSurface | None = None
-    applied_filters: SelfStudyRetrieveFiltersV1
-    groups: list[SelfStudyRetrievalGroupV1] = Field(default_factory=list)
-    counts: SelfStudyRetrievalCountsV1
-    backend_status: list[SelfStudyRetrievalBackendStatusV1] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-
-
-class SelfStudyConsumerPolicyDecisionV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    consumer_name: str
-    consumer_kind: SelfStudyConsumerKind
-    explicit: bool = False
-    enabled: bool = False
-    retrieval_mode: SelfStudyRetrievalMode | None = None
-    max_mode: SelfStudyRetrievalMode | None = None
-    allowed_trust_tiers: list[TrustTier] = Field(default_factory=list)
-    policy_reason: str
-    downgraded: bool = False
-
-
-class SelfStudyConsumerContextV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    consulted: bool = True
-    consumer_name: str
-    consumer_kind: SelfStudyConsumerKind
-    retrieval_mode: SelfStudyRetrievalMode
-    policy_reason: str
-    policy_decision: SelfStudyConsumerPolicyDecisionV1
-    used: bool = False
-    result: SelfStudyRetrieveResultV1 | None = None
-    notes: list[str] = Field(default_factory=list)
-
-
-class SelfStudyHarnessScenarioResultV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    success: bool
-    retrieval_mode: SelfStudyRetrievalMode | None = None
-    consumer_name: str | None = None
-    consumer_kind: SelfStudyConsumerKind | None = None
-    summary_counts: dict[str, int] = Field(default_factory=dict)
-    boundary_violations: list[str] = Field(default_factory=list)
-    degradation_notes: list[str] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-
-
-class SelfStudyHarnessSoakResultV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    iterations: int = 1
-    warnings: list[str] = Field(default_factory=list)
-    duplicate_notes: list[str] = Field(default_factory=list)
-    drift_notes: list[str] = Field(default_factory=list)
-
-
-class SelfStudyHarnessSummaryV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    passed: int = 0
-    failed: int = 0
-    warnings: int = 0
-    duplicate_notes: list[str] = Field(default_factory=list)
-    drift_notes: list[str] = Field(default_factory=list)
-
-
-class SelfStudyHarnessResultV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    timestamp: str
-    scenarios_run: list[SelfStudyHarnessScenarioResultV1] = Field(default_factory=list)
-    soak: SelfStudyHarnessSoakResultV1 | None = None
-    summary: SelfStudyHarnessSummaryV1

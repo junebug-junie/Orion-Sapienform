@@ -110,7 +110,7 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
       (cabinet AC, GPU heat), a reflex rather than a want;
     * every other workflow: reading.turn and reverie.visual already have acts in Hub and thought,
       dream.carry belongs to the dream producer, and memory.episode_distill, curiosity.compaction,
-      compactor.digest, orion_day.letter and self_study.reflect are upkeep, not wants (design Organ 3b
+      compactor.digest and orion_day.letter are upkeep, not wants (design Organ 3b
       Tier 1). temporal_self / physiology / personality / situation are timer threads, not durable runs.
     """
     workflow = state.get("workflow") or CURIOSITY_WORKFLOW

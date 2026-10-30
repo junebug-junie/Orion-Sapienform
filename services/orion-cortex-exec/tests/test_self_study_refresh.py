@@ -1,5 +1,5 @@
 """Tests for app/self_study_refresh.py -- the periodic Layer-1 self-fact
-refresh that replaces "Orion's action-selection will pick self_repo_inspect"
+refresh that replaces "Orion's action-selection will pick the self-study inspect verb"
 (it never did; see the module docstring)."""
 import asyncio
 import importlib.util

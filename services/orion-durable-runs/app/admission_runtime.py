@@ -34,7 +34,6 @@ from app.admitted_graph import (
     GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldPreempted, HoldRecalled, RunControlPending,
     WorkflowDeadline, build_admitted_graph,
 )
-from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
 from app.harness_smoke_graph import build_harness_smoke_graph, finish_detail as harness_smoke_finish_detail
@@ -61,7 +60,6 @@ from app.pool_hold import (
     HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
     hold_placement, ref_dict, refusal_is_terminal,
 )
-from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.run_acts import RunActEmitter
 from app.run_bids import RunBidder
 from app.orion_day_graph import (
@@ -95,11 +93,10 @@ logger = logging.getLogger(__name__)
 TERMINAL = {"completed", "failed", "cancelled"}
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_WORKFLOW = "self_sense_eval"
-REFLECT_WORKFLOW = "self_study.reflect"
 # The node of each admitted workflow that does GPU work under the hold. A restarted driver that
 # finds one of these still pending fences the previous attempt and replays it under the same hold.
 WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
-              REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"},
+              READING_WORKFLOW: {"reading_turn"},
               # Only generate holds the diffusion hold; it releases it before its result is
               # checkpointed, so a restart after generate resumes at caption with no lease.
               REVERIE_VISUAL_WORKFLOW: {"generate"},
@@ -191,12 +188,11 @@ class AdmissionRuntime:
             max_takebacks=settings.hold_max_takebacks)
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
-        # curiosity graph; before 4.5 an admitted reflect run still did.
+        # curiosity graph.
         self.graphs = {
             DEFAULT_WORKFLOW: build_admitted_graph(runner._curiosity_deps(), admission_deps, runner._checkpointer),
             SELF_SENSE_WORKFLOW: build_admitted_self_sense_graph(
                 runner._self_sense_deps(), admission_deps, runner._checkpointer),
-            REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
             # Late-bound (like reading above): the runner's method is read per call.
@@ -294,8 +290,6 @@ class AdmissionRuntime:
         workflow = workflow or DEFAULT_WORKFLOW
         if workflow == SELF_SENSE_WORKFLOW:
             return self_sense_finish_detail(state)
-        if workflow == REFLECT_WORKFLOW:
-            return reflect_finish_detail(state)
         if workflow == READING_WORKFLOW:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
@@ -1409,7 +1403,7 @@ class AdmissionRuntime:
             terminal = event.event.removeprefix("run.")
             if terminal in TERMINAL_STATE_NODE and event.entry_id == f"{event.run_id}:terminal:{terminal}":
                 # Every admitted terminal (completed, failed, cancelled) is also a DurableRunStateV1:
-                # waiters (cortex-exec reflect, dispatch settlement) must see failures end the run.
+                # waiters (dispatch settlement) must see failures end the run.
                 # At-least-once: acked only after both publishes; sql-writer dedupes on entry_id.
                 row = await self.store.get_run(event.run_id)
                 workflow = ((row or {}).get("request") or {}).get("workflow") or DEFAULT_WORKFLOW

@@ -59,7 +59,7 @@ def test_want_families_map_to_their_fixed_verb(workflow, line, actor, verb):
     _state("reading.turn", None), _state("reverie.visual", None), _state("dream.carry", None),
     _state("memory.episode_distill", None), _state("curiosity.compaction", None),
     _state("compactor.digest", None), _state("orion_day.letter", None),
-    _state("self_study.reflect", "reflect"), _state("curiosity.investigate", "some_new_line"),
+    _state("curiosity.investigate", "some_new_line"),
 ])
 def test_non_want_runs_have_no_family(state):
     assert run_act_family(state) is None
@@ -338,7 +338,9 @@ def test_lost_hold_regrant_does_not_reopen():
 
 
 @pg
-def test_flag_off_and_non_want_runs_emit_nothing():
+def test_flag_off_emits_nothing():
+    # Non-want workflows are covered by test_non_want_runs_have_no_family. The driven reflect
+    # run that used to sit here was removed with the self-study reflect workflow (2026-10-30).
     async def scenario(pool, saver, store):
         gpu = await InProcessPool().boot()
         off = runtime(pool, saver, store, gpu=gpu, ORION_DURABLE_ACT_EMIT_ENABLED=False)
@@ -348,10 +350,4 @@ def test_flag_off_and_non_want_runs_emit_nothing():
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
         assert acts(off) == []
         await off.close()
-        on = runtime(pool, saver, store, gpu=gpu)
-        reflect = request("act-reflect", workflow="self_study.reflect")
-        await on.submit(reflect)
-        await on._drive(await store.get_run(reflect.run_id))
-        assert acts(on) == []
-        await on.close()
     asyncio.run(with_database(scenario))

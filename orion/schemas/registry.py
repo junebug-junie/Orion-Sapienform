@@ -486,27 +486,8 @@ from orion.schemas.self_study_analysis import (
     SelfStudyAnalysisResultV1,
 )
 from orion.schemas.self_study import (
-    SelfConceptEvidenceRefV1,
-    SelfConceptInduceResultV1,
-    SelfConceptRefV1,
-    SelfConceptReflectResultV1,
-    SelfStudyHarnessResultV1,
-    SelfStudyHarnessScenarioResultV1,
-    SelfStudyHarnessSoakResultV1,
-    SelfStudyHarnessSummaryV1,
-    SelfInducedConceptV1,
     SelfKnowledgeItemV1,
     SelfKnowledgeSectionCountsV1,
-    SelfStudyRetrievalBackendStatusV1,
-    SelfStudyRetrievalCountsV1,
-    SelfStudyRetrievalGroupV1,
-    SelfStudyRetrievedRecordV1,
-    SelfStudyConsumerContextV1,
-    SelfStudyConsumerPolicyDecisionV1,
-    SelfStudyRetrieveFiltersV1,
-    SelfStudyRetrieveRequestV1,
-    SelfStudyRetrieveResultV1,
-    SelfReflectiveFindingV1,
     SelfRepoInspectResultV1,
     SelfSnapshotV1,
     SelfWritebackStatusV1,
@@ -671,6 +652,7 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
+from orion.schemas.curiosity_self_inquiry_request import SELF_INQUIRY_REQUEST_KIND, CuriositySelfInquiryRequestV1
 from orion.schemas.hardware_watch import (
     HARDWARE_WATCH_INCIDENT_KIND,
     HARDWARE_WATCH_REFLEX_SHED_KIND,
@@ -877,7 +859,6 @@ from orion.schemas.embodiment import (
     OrionTownPersonaV1,
     WorldPerceptionV1,
 )
-from orion.schemas.self_study_enrichment import SelfStudyEnrichmentRequestV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -996,28 +977,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfSnapshotV1": SelfSnapshotV1,
     "SelfWritebackStatusV1": SelfWritebackStatusV1,
     "SelfRepoInspectResultV1": SelfRepoInspectResultV1,
-    "SelfConceptEvidenceRefV1": SelfConceptEvidenceRefV1,
-    "SelfInducedConceptV1": SelfInducedConceptV1,
-    "SelfConceptInduceResultV1": SelfConceptInduceResultV1,
-    "SelfConceptRefV1": SelfConceptRefV1,
-    "SelfReflectiveFindingV1": SelfReflectiveFindingV1,
-    "SelfConceptReflectResultV1": SelfConceptReflectResultV1,
     "AnalysisMetricV1": AnalysisMetricV1,
     "AnalysisFindingV1": AnalysisFindingV1,
     "SelfStudyAnalysisResultV1": SelfStudyAnalysisResultV1,
-    "SelfStudyRetrieveFiltersV1": SelfStudyRetrieveFiltersV1,
-    "SelfStudyRetrieveRequestV1": SelfStudyRetrieveRequestV1,
-    "SelfStudyRetrievedRecordV1": SelfStudyRetrievedRecordV1,
-    "SelfStudyRetrievalGroupV1": SelfStudyRetrievalGroupV1,
-    "SelfStudyRetrievalCountsV1": SelfStudyRetrievalCountsV1,
-    "SelfStudyRetrievalBackendStatusV1": SelfStudyRetrievalBackendStatusV1,
-    "SelfStudyRetrieveResultV1": SelfStudyRetrieveResultV1,
-    "SelfStudyConsumerPolicyDecisionV1": SelfStudyConsumerPolicyDecisionV1,
-    "SelfStudyConsumerContextV1": SelfStudyConsumerContextV1,
-    "SelfStudyHarnessScenarioResultV1": SelfStudyHarnessScenarioResultV1,
-    "SelfStudyHarnessSoakResultV1": SelfStudyHarnessSoakResultV1,
-    "SelfStudyHarnessSummaryV1": SelfStudyHarnessSummaryV1,
-    "SelfStudyHarnessResultV1": SelfStudyHarnessResultV1,
     "VisionFramePointerPayload": VisionFramePointerPayload,
     "AffectGptAssessRequestPayload": AffectGptAssessRequestPayload,
     "AffectGptAssessResultPayload": AffectGptAssessResultPayload,
@@ -1041,12 +1003,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PersonLinkageDecisionV1": PersonLinkageDecisionV1,
     "EntityMergeLogEntryV1": EntityMergeLogEntryV1,
     "OrionAskAnsweredV1": OrionAskAnsweredV1,
-    # Pre-existing gap surfaced by test_registry_and_schema_registry_agree:
-    # registered in SCHEMA_REGISTRY, carried on a real channel
-    # (orion/bus/channels.yaml:2790) and published by
-    # scripts/self_study_enrichment_hook.py, but absent here -- so any
-    # consumer calling resolve() on it raised "Unknown schema_id".
-    "SelfStudyEnrichmentRequestV1": SelfStudyEnrichmentRequestV1,
     "VisionEdgeHealth": VisionEdgeHealth,
     "VisionEdgeError": VisionEdgeError,
     "VisionEventPayload": VisionEventPayload,
@@ -1123,6 +1079,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "OrionDayLetterV1": OrionDayLetterV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
+    "CuriositySelfInquiryRequestV1": CuriositySelfInquiryRequestV1,
     "HardwareWatchIncidentV1": HardwareWatchIncidentV1,
     "HardwareWatchReflexShedV1": HardwareWatchReflexShedV1,
     "PredictionForecastV1": PredictionForecastV1,
@@ -2097,6 +2054,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),
+    "CuriositySelfInquiryRequestV1": SchemaRegistration(model=CuriositySelfInquiryRequestV1, kind=SELF_INQUIRY_REQUEST_KIND),
     "HardwareWatchIncidentV1": SchemaRegistration(model=HardwareWatchIncidentV1, kind=HARDWARE_WATCH_INCIDENT_KIND),
     "HardwareWatchReflexShedV1": SchemaRegistration(model=HardwareWatchReflexShedV1, kind=HARDWARE_WATCH_REFLEX_SHED_KIND),
     "PredictionForecastV1": SchemaRegistration(model=PredictionForecastV1, kind=PREDICTION_FORECAST_KIND),
@@ -2113,10 +2071,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         kind="curiosity.peer.brief.consumed.v1",
     ),
     "HopReadingV1": SchemaRegistration(model=HopReadingV1, kind=READING_KIND),
-    "SelfStudyEnrichmentRequestV1": SchemaRegistration(
-        model=SelfStudyEnrichmentRequestV1,
-        kind="self_study.enrichment.request.v1",
-    ),
     # orion-world-model (2026-08-20, scaffold patch -- see module docstring in
     # orion/schemas/world_model.py). Only the request/prediction pair carries
     # a message kind; WorldModelFeatureGroupV1/WorldModelTrajectoryStepV1 are

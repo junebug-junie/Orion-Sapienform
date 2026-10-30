@@ -44,6 +44,11 @@ from orion.schemas.compactor_digest_run import (
     CompactorDigestResultV1,
     CompactorDigestRunBriefV1,
 )
+from orion.schemas.curiosity_self_inquiry_request import (
+    SELF_INQUIRY_REQUEST_CHANNEL,
+    SELF_INQUIRY_REQUEST_KIND,
+    CuriositySelfInquiryRequestV1,
+)
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 from orion.cognition.github_compactor.window import resolve_github_compactor_window
@@ -329,12 +334,6 @@ def _shape_workflow_result_summary(*, workflow_meta: Dict[str, Any], result: Cor
     result_shape = "structured" if isinstance(workflow_meta.get("skill_result"), dict) else "summary"
     low_value = False
     reason = None
-    if workflow_meta.get("workflow_id") == "self_review":
-        finding_count = int(workflow_meta.get("finding_count") or 0)
-        summary = str(workflow_meta.get("main_result") or "").strip().lower()
-        if finding_count == 0:
-            low_value = "no notable self-review findings" not in summary
-            reason = "empty_finding_summary" if low_value else "no_findings"
     return {
         "executed": bool(workflow_meta.get("executed", result.ok)),
         "persisted": bool(persisted),
@@ -1040,76 +1039,71 @@ async def _execute_self_review(
     bus: OrionBusAsync,
     source: ServiceRef,
     correlation_id: str,
-    causality_chain: list | None,
-    trace: dict | None,
     req: CortexClientRequest,
-    call_verb_runtime,
 ) -> CortexClientResult:
-    workflow_id = "self_review"
-    verb_result, payload = await _run_workflow_subverb(
-        call_verb_runtime,
-        bus=bus,
-        source=source,
-        correlation_id=correlation_id,
-        causality_chain=causality_chain,
-        trace=trace,
-        base_request=req,
-        workflow_id=workflow_id,
-        verb="self_concept_reflect",
-        options_patch={"workflow_execution": True},
-    )
-    skill_result = ((payload.get("metadata") or {}).get("skill_result") or _parse_json_text(payload.get("final_text"))) or {}
-    findings = list(skill_result.get("findings") or []) if isinstance(skill_result, dict) else []
-    summary = str((skill_result.get("summary") if isinstance(skill_result, dict) else None) or payload.get("final_text") or "Self review completed.").strip()
-    persisted: List[str] = []
-    if isinstance(skill_result, dict):
-        graph_write = skill_result.get("graph_write") or {}
-        journal_write = skill_result.get("journal_write") or {}
-        if graph_write.get("graph"):
-            persisted.append(f"graph:{graph_write['graph']}")
-        if journal_write.get("channel"):
-            persisted.append(f"journal:{journal_write['channel']}")
-    if not summary:
-        summary = "Self review completed."
-    if not findings:
-        summary = "No notable self-review findings were identified from the available window/context."
-    else:
-        concise_findings = []
-        for item in findings[:3]:
-            if isinstance(item, dict):
-                concise_findings.append(str(item.get("kind") or item.get("summary") or "finding").strip())
-            else:
-                concise_findings.append(str(item).strip())
-        summary = f"Self review completed with {len(findings)} findings: {', '.join([f for f in concise_findings if f])}."
+    """"Reflect on yourself" -> one curiosity self-inquiry turn (2026-10-30).
 
-    metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
+    The self-study reflection loop this workflow used to run was retired (fold into
+    curiosity, docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md).
+    The phrase now asks Hub for a self-inquiry turn over the bus. Hub owns the curiosity
+    loop and its gates; this side only reports whether the request was published, never
+    a finding it did not see."""
+    workflow_id = "self_review"
+    request = CuriositySelfInquiryRequestV1(
+        requested_by=f"workflow:{workflow_id}",
+        correlation_id=str(correlation_id or "")[:128],
+    )
+    published = True
+    error_text = ""
+    try:
+        await bus.publish(
+            SELF_INQUIRY_REQUEST_CHANNEL,
+            BaseEnvelope(
+                kind=SELF_INQUIRY_REQUEST_KIND,
+                source=source,
+                correlation_id=correlation_id,
+                payload=request.model_dump(mode="json"),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        published = False
+        error_text = str(exc)[:300]
+        logger.warning("self_review_self_inquiry_publish_failed corr=%s error=%s", correlation_id, error_text)
+    if published:
+        summary = (
+            "Self-inquiry turn requested. Orion will read their own records and repo and may "
+            "revise their self-definition; it takes about 20 minutes and lands in "
+            "self_concept_history (self:definition) if it completes."
+        )
+    else:
+        summary = f"Could not request a self-inquiry turn: {error_text or 'bus publish failed'}."
+    status = "completed" if published else "failed"
+    metadata = _workflow_metadata_base(request=_workflow_request(req), status=status)
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Self Review",
-        "status": "completed" if verb_result.ok else "failed",
-        "executed": True,
-        "subverb": "self_concept_reflect",
-        "persisted": persisted,
+        "status": status,
+        "executed": published,
+        "routed_to": SELF_INQUIRY_REQUEST_CHANNEL,
+        "persisted": [],
         "scheduled": [],
         "main_result": summary,
-        "finding_count": len(findings),
-        "skill_result": skill_result,
     }
     return CortexClientResult(
-        ok=verb_result.ok,
+        ok=published,
         mode="brain",
         verb=workflow_id,
-        status="success" if verb_result.ok else "fail",
+        status="success" if published else "fail",
         final_text=_workflow_summary_text(
             title="Self Review",
-            status="completed" if verb_result.ok else "failed",
+            status=status,
             main_result=summary,
-            persisted=persisted,
+            persisted=[],
         ),
-        memory_used=bool(payload.get("memory_used")),
-        recall_debug=payload.get("recall_debug") or {},
-        steps=payload.get("steps") or [],
-        error=None if verb_result.ok else {"message": verb_result.error or "workflow_failed"},
+        memory_used=False,
+        recall_debug={},
+        steps=[],
+        error=None if published else {"message": error_text or "self_inquiry_request_publish_failed"},
         correlation_id=correlation_id,
         metadata=metadata,
     )
@@ -2985,10 +2979,7 @@ async def execute_chat_workflow(
                 bus=bus,
                 source=source,
                 correlation_id=correlation_id,
-                causality_chain=causality_chain,
-                trace=trace,
                 req=req,
-                call_verb_runtime=call_verb_runtime,
             )
         elif workflow_id == "concept_induction_pass":
             result = await _execute_concept_induction_pass(

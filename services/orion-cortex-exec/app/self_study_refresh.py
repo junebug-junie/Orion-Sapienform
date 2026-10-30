@@ -1,7 +1,7 @@
 """Periodic Layer-1 self-fact refresh (self-model rebuild arc follow-up,
 2026-09-19).
 
-Why this exists: ``self_repo_inspect`` is the only writer of
+Why this exists: ``run_self_repo_inspect`` is the only writer of
 ``self_knowledge_items``, the table Self Atlas clusters over. It is a
 ``@verb()`` action, and the design assumed Orion's own action-selection would
 choose it. Live check on 2026-09-19: the table held exactly 1,248 rows, all
@@ -25,21 +25,9 @@ startup" would append another 1,248 rows per deploy. The loop reads the newest
 ``self_knowledge_items.created_at`` first and only runs once a full interval
 has passed since it, so a restart inside the interval sleeps out the remainder.
 
-``self_study_reflect_refresh_loop`` (2026-09-20) is the same fix applied to
-Layer 3 (``run_self_concept_reflect``), which had the identical disease and a
-worse outcome: not "stale input read as new" but zero rows, ever, in
-``self_concept_history`` under ``produced_by='layer3_reflect'``. Live check
-that day found no autonomous or scheduled caller of it at all -- the two prior
-failures that drove the ``SELF_STUDY_REFLECT_TIMEOUT_SEC`` 240->480 bump were
-manual test invocations, and nothing has called it since. Reflect's own
-snapshot/concept induction is independent of the ``self_knowledge_items``
-table (``build_self_snapshot()`` is a fresh filesystem/YAML scan each call,
-same as inspect), so this loop does not need to wait on the inspect loop --
-it runs on its own interval, measured the same restart-safe way against the
-newest ``self_concept_history`` row it has actually written. A run whose LLM
-call fails deliberately writes no ``self_concept_history`` row (see
-``run_self_concept_reflect``'s no-empty-shell-cognition guard), so a run of
-failures is retried once per interval rather than spun in a tight loop.
+The Layer 3 reflect loop that used to live beside this one was retired on
+2026-10-30 (fold into curiosity, docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md).
+This loop stays only because Self Atlas still reads ``self_knowledge_items``.
 """
 
 from __future__ import annotations
@@ -70,28 +58,6 @@ def newest_self_knowledge_item_at() -> Optional[datetime]:
             row = conn.execute(text(NEWEST_SELF_KNOWLEDGE_ITEM_SQL)).mappings().first()
     except Exception as exc:
         logger.debug("self_study_refresh_newest_unavailable error=%s", exc)
-        return None
-    return normalize_newest(row["newest"] if row else None)
-
-
-def newest_self_concept_reflection_at() -> Optional[datetime]:
-    """Newest ``self_concept_history.created_at`` where
-    ``produced_by='layer3_reflect'`` (tz-aware UTC), or ``None`` if no
-    reflection has ever been written or the DB is unreachable. Never raises --
-    same "unreadable means run" contract as ``newest_self_knowledge_item_at``."""
-    from app.self_study_analysis import _get_engine
-    from sqlalchemy import text
-
-    from orion.self_knowledge_freshness import NEWEST_SELF_CONCEPT_REFLECTION_SQL, normalize_newest
-
-    engine = _get_engine()
-    if engine is None:
-        return None
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(text(NEWEST_SELF_CONCEPT_REFLECTION_SQL)).mappings().first()
-    except Exception as exc:
-        logger.debug("self_study_reflect_refresh_newest_unavailable error=%s", exc)
         return None
     return normalize_newest(row["newest"] if row else None)
 
@@ -144,48 +110,4 @@ async def self_study_refresh_loop(
             )
         except Exception:  # noqa: BLE001
             logger.warning("self_study_refresh_failed corr=%s", correlation_id, exc_info=True)
-        await sleep(interval)
-
-
-async def self_study_reflect_refresh_loop(
-    *,
-    bus_getter: Callable[[], Any],
-    source: Any,
-    interval_sec: float,
-    run_reflect: Callable[..., Awaitable[Any]],
-    newest_at: Callable[[], Optional[datetime]] = newest_self_concept_reflection_at,
-    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-) -> None:
-    """Run ``run_reflect`` (``run_self_concept_reflect``) once per
-    ``interval_sec``, measured from the newest stored reflection rather than
-    from process start. Fail-open: a failed run is logged and retried after a
-    full interval, never re-raised. See module docstring for why this exists."""
-    interval = max(float(interval_sec), 60.0)
-    while True:
-        newest = await asyncio.to_thread(newest_at)
-        wait = seconds_until_due(newest, interval_sec=interval, now=clock())
-        if wait > 0:
-            logger.info(
-                "self_study_reflect_refresh_wait newest_reflection_at=%s wait_sec=%d interval_sec=%d",
-                newest.isoformat() if newest else None,
-                int(wait),
-                int(interval),
-            )
-            await sleep(wait)
-            continue
-        correlation_id = str(uuid.uuid4())
-        try:
-            result = await run_reflect(bus=bus_getter(), source=source, correlation_id=correlation_id)
-            history_write = getattr(result, "self_concept_history_write", None)
-            logger.info(
-                "self_study_reflect_refresh_ran corr=%s run_id=%s findings=%d history_status=%s history_detail=%s",
-                correlation_id,
-                getattr(result, "run_id", None),
-                len(getattr(result, "findings", None) or []),
-                getattr(history_write, "status", None),
-                getattr(history_write, "detail", None),
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("self_study_reflect_refresh_failed corr=%s", correlation_id, exc_info=True)
         await sleep(interval)

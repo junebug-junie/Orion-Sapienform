@@ -20,7 +20,6 @@ services:
       - "${HEALTH_HTTP_PORT:-8070}:${HEALTH_HTTP_PORT:-8070}"
 
     volumes:
-      - ${SELF_STUDY_GRAPH_HOST_PATH:-/mnt/storage-warm/orion-graphify}:/graphify:ro
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
       - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
       # Host Docker engine + CLI for skills.runtime.docker_prune_stopped_containers.v1 (and other docker skills).
@@ -61,37 +60,6 @@ services:
       # `_resolve_repo_root()` and any script-relative paths resolve identically inside and outside the
       # container. Override ORION_HOST_REPO_ROOT if this node's checkout lives elsewhere.
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:ro
-      # Read-only mount of orion-self-study-enrichment's cache volume (2026-08,
-      # self_study.py's _semantic_enrichment_concepts()). That service names
-      # its volume `${PROJECT}-self-study-enrichment-data` (see
-      # services/orion-self-study-enrichment/docker-compose.yml) and mounts it
-      # at /data; cortex-exec never writes into it, only reads cached
-      # enrichment JSON already written by that service. Mount target here
-      # MUST match SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR's default in
-      # self_study.py (currently /mnt/self_study_enrichment_data) -- if they
-      # diverge, the cache silently reads as "unreachable" with no error.
-      - self_study_enrichment_data:/mnt/self_study_enrichment_data:ro
-      # Small, writable volume (2026-08) so
-      # _structural_delta_concepts()'s "last observed graphify snapshot" can
-      # survive a container restart instead of resetting to cold start every
-      # time. Deliberately NOT the read-only host repo mount above -- that
-      # one stays read-only on purpose (see its own comment). This is a
-      # dedicated volume for exactly this purpose, same pattern as
-      # self_study_enrichment_data, and owned solely by this SERVICE (not
-      # external/cross-service, unlike the enrichment volume above).
-      # "Solely by this service" does NOT mean solely by one container,
-      # though (review finding, 2026-08-12): cortex-exec-chat/-spark/
-      # -background below all `extends: cortex-exec` with no volumes
-      # override, so all 4 containers share this same volume and can call
-      # the self_concept_induce/reflect verbs concurrently. self_study.py's
-      # append-only JSONL history log has no cross-process file lock, so a
-      # race there can produce a handful of duplicate entries around a
-      # restart or commit transition -- harmless (the log is read as
-      # "take the last entry", and a duplicate entry is byte-identical to
-      # the one before it), not corruption. Scoping this to a single lane
-      # was considered and rejected as more invasive than the problem
-      # warrants; documenting the real multi-writer shape here instead.
-      - self_study_structural_mass_data:/mnt/self_study_structural_mass_data
 
     # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
     privileged: true
@@ -215,10 +183,7 @@ services:
       ENDOGENOUS_RUNTIME_SQL_DATABASE_URL: ${ENDOGENOUS_RUNTIME_SQL_DATABASE_URL:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
       # Same value as the bind-mount source/target above (not the separate legacy ORION_REPO_ROOT key --
       # see .env_example for the 2026-08-12 rename note).
-      SELF_STUDY_GRAPH_PATH: ${SELF_STUDY_GRAPH_PATH:-/graphify/published/graphify-out}
       ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
-      SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR: ${SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR:-/mnt/self_study_enrichment_data/cache/self_study_enrichment}
-      SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH: ${SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH:-/mnt/self_study_structural_mass_data/structural_mass_history.jsonl}
       CONCEPT_PROFILE_REPOSITORY_BACKEND: ${CONCEPT_PROFILE_REPOSITORY_BACKEND:-local}
       CONCEPT_PROFILE_GRAPHDB_ENDPOINT: ${CONCEPT_PROFILE_GRAPHDB_ENDPOINT:-}
       CONCEPT_PROFILE_GRAPHDB_URL: ${CONCEPT_PROFILE_GRAPHDB_URL:-}
@@ -342,15 +307,3 @@ services:
 networks:
   app-net:
     external: true
-
-volumes:
-  # External: owned/created by orion-self-study-enrichment's compose file,
-  # not this one. cortex-exec only reads from it (see the :ro mount above).
-  self_study_enrichment_data:
-    name: ${PROJECT}-self-study-enrichment-data
-    external: true
-  # Owned by THIS service (not external) -- nothing else reads or writes it.
-  # `docker compose up` creates it automatically on first bring-up; no
-  # separate provisioning step needed.
-  self_study_structural_mass_data:
-    name: ${PROJECT}-self-study-structural-mass-data

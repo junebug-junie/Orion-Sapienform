@@ -2827,7 +2827,7 @@ shape:
   never re-ran inspect), fourteen runs re-labelled identical input and wrote
   391 "new" `self_concept_history` versions Orion then read back as fresh
   self-knowledge. The rows themselves now arrive from `orion-cortex-exec`'s
-  daily `self_repo_inspect` timer (`SELF_STUDY_INSPECT_INTERVAL_SEC`), not
+  daily Layer 1 inspect timer (`SELF_STUDY_INSPECT_INTERVAL_SEC`; since 2026-10-30 the only self-study part left, kept just for Self Atlas), not
   from anything in this service. The guard only skips on positive evidence:
   unreachable topic-foundry, no completed run yet, or an unreadable table all
   fall through to the normal trigger.

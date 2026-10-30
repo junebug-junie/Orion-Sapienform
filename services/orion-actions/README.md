@@ -167,7 +167,7 @@ so the ledger's cost fill can charge the attempt. Cost `seconds` = wall time.
 
 Examples:
 
-- `self_review` workflow executes through Orch and internally uses `self_concept_reflect`.
+- `self_review` workflow executes through Orch, which asks Hub for one curiosity self-inquiry turn (`orion:curiosity:self_inquiry:request`).
 - `journal_pass` workflow executes through Orch and journal compose/write boundaries.
 - Actions can schedule those workflows, but does not define them.
 
@@ -256,12 +256,12 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Persisted meaning**: append-only journal write (`journal.entry.write.v1`).
 
 ### `self_review`
-- **Purpose**: bounded metacognitive reflection synthesis.
-- **Example phrases**: “Run a self review”, “do a metacognitive review”.
+- **Purpose**: ask for one curiosity self-inquiry turn now (since 2026-10-30; it used to run the retired self-study reflection loop).
+- **Example phrases**: “Run a self review”, “reflect on yourself”, “do a metacognitive review”.
 - **Schedulable**: yes.
 - **Notify**: yes.
-- **Typical result**: findings-oriented self-review summary.
-- **Persisted meaning**: may include graph/journal writebacks if underlying adapter emits them.
+- **Typical result**: “Self-inquiry turn requested” (the run itself takes ~20 minutes in Hub).
+- **Persisted meaning**: nothing from the workflow itself; the self-inquiry run writes its own journal, graph nodes and `self_concept_history` `self:definition`.
 
 ### `concept_induction_pass`
 - **Purpose**: bounded review of concept induction profiles.

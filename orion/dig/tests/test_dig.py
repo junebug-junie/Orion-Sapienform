@@ -293,3 +293,9 @@ def test_body_economy_refuses_bad_input_and_says_when_unreachable(world, capsys,
     monkeypatch.setenv("ORION_PHYSIOLOGY_REPORT_URL", "http://127.0.0.1:9")
     code, _, err = run(capsys, "body-economy")
     assert code == 1 and "unreachable" in err
+
+
+def test_brief_maps_juniper_rung_phrases_to_commands():
+    # 2026-10-30: "Claim your capacities." got prose and no tool call; the line must name the command.
+    assert "name your organs" in DIG_BRIEF_LINE and "`name-organs`" in DIG_BRIEF_LINE
+    assert "claim or write your capacities" in DIG_BRIEF_LINE and "`capacities`" in DIG_BRIEF_LINE

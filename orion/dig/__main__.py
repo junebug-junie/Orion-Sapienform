@@ -524,7 +524,10 @@ Flags:
 Measured vs estimated: every figure is labelled in the text. Whole-machine, card and CPU watts are
 meters; rest is my body at rest, a pinned dated number (5th percentile of 2026-10-01..10-13
 until config/physiology/rest_body.yaml says otherwise); per-container watts and $/month are
-estimates. Sponsored work (Juniper's, e.g. the Zelda dojo) is shown apart from my activity.
+estimates. Every cost means the whole machine at the wall above rest, fans and power-supply loss
+included (what my acts are charged): a card's or container's "(≈N W at the wall above rest)" is its
+watts above idle x that machine's overhead factor, fitted on its own last 14 days; an ESTIMATE.
+Sponsored work (Juniper's, e.g. the Zelda dojo) is shown apart from my activity.
 A section with no data prints why, never a zero."""
 
 

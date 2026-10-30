@@ -14,6 +14,9 @@ text Orion would read:
                 is circe's own watts now vs rest from the report, its $/month is the report's,
                 no other machine appears, and it says what is measured and what is estimated;
                 the overview carries one "what is spinning" line per machine;
+* overhead   -- (live 2026-10-30T04:37Z fixture with the overhead fields) every card with an at-the-wall
+                estimate shows it as "(≈N W at the wall above rest)", the host's factor and how it was found
+                are said, and the text calls the wall figures ESTIMATES (they are derived, not measured);
 * brief      -- the dig line in every chat/curiosity prompt points at ``body-economy hosts`` for
                 "what is using my power" and stays under its cap.
 
@@ -35,6 +38,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "physiology_report_live_2026-10-30_24h.json"
+OVERHEAD_FIXTURE = FIXTURE.with_name("physiology_report_live_2026-10-30_overhead_24h.json")
+LIVE = ("live", "live_overhead")
 SECTIONS = ("limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
             "claude", "vram", "value_per_cost", "services", "processes", "hosts")
 OVERVIEW = ("limits", "hosts", "money", "wants", "waste", "services")
@@ -49,7 +54,8 @@ def scenarios() -> dict[str, dict]:
     for s in ("waste", "queue_wait", "rhythm"):
         failed[s] = {"failed_lease_s_by_lane": {}, "top": []} if s == "waste" else []
         failed["missing"].append({"section": s, "reason": "read failed: OperationalError: canceling statement"})
-    return {"live": live, "empty": empty, "failed_reads": failed}
+    return {"live": live, "live_overhead": json.loads(OVERHEAD_FIXTURE.read_text()), "empty": empty,
+            "failed_reads": failed}
 
 
 class _Server:
@@ -155,6 +161,23 @@ def check_hosts_circe(report: dict, text: str) -> list[str]:
     return fails
 
 
+def check_overhead_circe(report: dict, text: str) -> list[str]:
+    """Component watts are put on the whole-machine footing, and the text says they are estimates."""
+    body = text.rsplit("\nfull report:", 1)[0]
+    circe = next((h for h in report.get("hosts") or [] if h["host"] == "circe"), {})
+    if circe.get("overhead_factor") is None:
+        return []
+    fails = []
+    for c in circe.get("cards") or []:
+        if c.get("watts_at_wall_est") is not None and f"(≈{c['watts_at_wall_est']:.0f} W at the wall above rest)" not in body:
+            fails.append(f"overhead: card {c['card']} has no at-the-wall estimate in the text")
+    if f"draws about {circe['overhead_factor']:.2f} W at the wall above rest" not in body:
+        fails.append("overhead: circe's factor is not said")
+    if "ESTIMATES" not in body or (circe.get("overhead_basis") or "")[:40] not in body:
+        fails.append("overhead: the text does not say the wall figures are estimates, or how the factor was found")
+    return fails
+
+
 def check_overview_hosts(report: dict, text: str) -> list[str]:
     body = text.rsplit("\nfull report:", 1)[0]
     return [f"overview: no 'what is spinning' line for {h['host']}" for h in report.get("hosts") or []
@@ -192,14 +215,15 @@ def main() -> int:
                 results.append({"scenario": name, "args": list(args), "exit": code, "lines": len(out.splitlines()),
                                 "chars": len(out), "fails": f})
                 fails += f
-                if name == "live" and not args and code == 0:
+                if name in LIVE and not args and code == 0:
                     f2 = check_overview_hosts(reports[name], out)
                     results.append({"scenario": name, "args": ["overview:hosts"], "fails": f2})
                     fails += f2
-            if name == "live":
+            if name in LIVE:
                 code, out, err = run_dig(srv.url, home, "hosts", "--host", "circe")
                 f = [f"hosts --host circe: exit {code}: {err.strip()[:200]}"] if code else \
-                    check(name, reports[name], out, ("hosts",)) + check_hosts_circe(reports[name], out)
+                    check(name, reports[name], out, ("hosts",)) + check_hosts_circe(reports[name], out) + \
+                    check_overhead_circe(reports[name], out)
                 results.append({"scenario": name, "args": ["hosts", "--host", "circe"], "exit": code,
                                 "lines": len(out.splitlines()), "chars": len(out), "fails": f})
                 fails += f

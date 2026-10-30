@@ -44,6 +44,18 @@ LATEST = {"generated_at": NOW, "constraints": [
 H0 = NOW - timedelta(hours=2)
 
 
+def overhead_hours(node: str, k: float, *, rest: float, gpu_idle: float, cpu_idle: float = 100.0, n: int = 72,
+                   wobble: float = 0.0) -> list[dict]:
+    """Hourly means where chassis above rest = k x (GPU + CPU above idle) (+/- wobble W, alternating)."""
+    out = []
+    for i in range(n):
+        g, c = gpu_idle + 20.0 + (i % 9) * 15.0, cpu_idle + (i % 5) * 4.0
+        x = (g - gpu_idle) + (c - cpu_idle)
+        out.append({"node": node, "hr": NOW - timedelta(hours=n - i), "ch": rest + k * x + (wobble if i % 2 else -wobble),
+                    "gpu": g, "cpu": c, "cpu_idle": cpu_idle if i >= n - 24 else None})  # published only lately
+    return out
+
+
 @dataclass
 class Weight:
     @dataclass
@@ -75,7 +87,8 @@ def full_rows() -> dict:
         pr.RHYTHM_SQL: [{"day": "2026-10-29", "hour": 4, "heavy_s": 3000.0, "total_s": 3600.0},
                         {"day": "2026-10-29", "hour": 13, "heavy_s": 0.0, "total_s": 900.0}],
         pr.ENERGY_DAILY_SQL: [{"d": "2026-10-28", "kwh": 46.4}, {"d": "2026-10-29", "kwh": 25.7}],
-        pr.RUN_COST_SQL: [{"workload_kind": "reverie_diffusion", "n": 20, "kwh": 0.000363, "usd": 4.57e-05}],
+        pr.RUN_COST_SQL: [{"workload_kind": "reverie_diffusion", "node": "circe", "n": 20, "kwh": 0.000363, "usd": 4.57e-05}],
+        pr.HOSTS_OVERHEAD_SQL: overhead_hours("circe", 2.35, rest=541.0, gpu_idle=190.0, wobble=6.0),
         pr.ACT_COST_SQL: [{"actor": "hub.outreach", "wh_by_host": {"athena": 1.5, "circe": 0.5}, "usd": 0.0003,
                            "heat_c_by_host": {"athena": 0.001}},
                           {"actor": "hub.outreach", "wh_by_host": None, "usd": None, "heat_c_by_host": None}],
@@ -193,7 +206,11 @@ def test_full_report_fills_every_section_from_rows():
     units = {u.unit: u for u in rep.unit_costs}
     assert units["1 kWh"].status == "derived" and units["1 kWh"].usd == 0.1255
     assert units["100 W for 2 h on athena"].heat_c == pytest.approx(0.6425, abs=1e-3)
-    assert units["one reverie_diffusion run"].status == "measured"
+    paint = units["one reverie_diffusion run (painting) on circe"]
+    # GPU-only meter put on the whole-machine footing: 0.363 W·h x circe's fitted 2.35, an estimate
+    assert paint.status == "derived" and paint.wh_component == 0.363 and paint.overhead_factor == pytest.approx(2.35, abs=0.01)
+    assert paint.wh == pytest.approx(0.363 * 2.35, abs=0.01) and paint.usd == pytest.approx(4.57e-05 * 2.35, abs=1e-6)
+    assert "estimate, whole machine at the wall above rest" in paint.source and "fitted on circe" in paint.overhead_basis
     assert units["one hub.outreach act (estimate: family mean)"].wh == 2.0 and units["one hub.outreach act (estimate: family mean)"].usd == 0.0003
     assert units["per 1k tokens"].status == "not_measured" and "token" in units["per 1k tokens"].source
     circe = units["work not yet metered on circe, 2026-10-30 UTC"]
@@ -212,6 +229,8 @@ def test_full_report_fills_every_section_from_rows():
         ("orion-circe-atlas-agent", 18.5), ("orion-circe-vision-host", 4.2), ("(host, not in a container)", 2.0),
         ("(small containers)", 1.0)]
     assert all(p.host == "circe" and p.cores is None for p in rep.processes)
+    agent = rep.processes[0]
+    assert agent.watts_at_wall_est == pytest.approx(18.5 * 2.35, abs=0.5) and "fitted on circe" in agent.overhead_basis
     assert "family total 2 W·h over 1 acts" in units["one hub.outreach act (estimate: family mean)"].source
     vpc = rep.value_per_cost
     assert [v.family for v in vpc] == ["hub.outreach"] and vpc[0].value == 0.63
@@ -348,7 +367,7 @@ def test_report_sql_on_postgres():
            covered_sec double precision, split_unknown_sec double precision, rest_source varchar,
            updated_at timestamptz, PRIMARY KEY (hour_start, host))""",
         """CREATE TABLE energy_run_cost (id bigserial PRIMARY KEY, intent_id varchar, workload_kind varchar,
-           window_start timestamptz, energy_kwh double precision, estimated_run_cost_usd double precision)""",
+           node varchar NOT NULL, window_start timestamptz, energy_kwh double precision, estimated_run_cost_usd double precision)""",
         "CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, opened_at timestamptz, cost_json jsonb, correlation_id varchar)",
         """CREATE TABLE dev_economics_ledger_log (event_id varchar PRIMARY KEY, observed_at timestamptz,
            total_input_tokens integer, total_output_tokens integer, total_cache_creation_input_tokens integer,
@@ -398,8 +417,8 @@ def test_report_sql_on_postgres():
                         await conn.execute("INSERT INTO orion_energy_attribution_hourly VALUES (%s, 'circe', 541, 541, "
                                            "600, 0, 10, 500, 590, 3600, 0, 'fixture', now())",
                                            (now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h),))
-                    await conn.execute("INSERT INTO energy_run_cost (workload_kind, window_start, energy_kwh, estimated_run_cost_usd) "
-                                       "VALUES ('reverie_diffusion', %s, 0.0004, 0.00005)", (now - timedelta(hours=1),))
+                    await conn.execute("INSERT INTO energy_run_cost (workload_kind, node, window_start, energy_kwh, estimated_run_cost_usd) "
+                                       "VALUES ('reverie_diffusion', 'circe', %s, 0.0004, 0.00005)", (now - timedelta(hours=1),))
                     await conn.execute("INSERT INTO grammar_acts VALUES ('a2', 'hub.chat_reply', %s, %s, 'corr-2')",
                                        (now - timedelta(hours=2), json.dumps({"wh_by_host": {"circe": 7.0},
                                                                               "wh_gpu_by_host": {"circe": 3.0}})))
@@ -420,6 +439,14 @@ def test_report_sql_on_postgres():
                     await conn.execute("INSERT INTO orion_biometrics_summary (\"timestamp\", node, measurements) VALUES "
                                        "('2026-10-05 12:00:00.000001+00', 'circe', %s)",
                                        (json.dumps({"chassis_watts": 541, "gpu_watts_total": 190, "cpu_watts_total": 45}),))
+                    # 60 h of history 8-11 days back (inside the 14-day overhead fit, outside the 7-day floor):
+                    # chassis above 541 W rest = 2.0 x (GPU above its 190 W pinned rest + CPU above 100 W idle)
+                    for i in range(60):
+                        g, c = 200.0 + (i % 7) * 20.0, 100.0 + (i % 3) * 5.0
+                        await conn.execute("INSERT INTO orion_biometrics_summary (\"timestamp\", node, measurements) VALUES (%s, 'circe', %s)",
+                                           ((now - timedelta(days=8, hours=i)).strftime("%Y-%m-%d %H:%M:%S.%f+00"),
+                                            json.dumps({"chassis_watts": 541 + 2.0 * ((g - 190) + (c - 100)), "gpu_watts_total": g,
+                                                        "cpu_watts_total": c, "cpu_idle_watts": 100})))
                     await conn.execute("INSERT INTO durable_run_workflow VALUES ('run9', 'curiosity.investigate', %s, 'completed')",
                                        (now - timedelta(hours=2),))
                     await conn.execute("INSERT INTO gpu_pool_events (event_id, generated_at, event, holder, priority, role, "
@@ -449,6 +476,12 @@ def test_report_sql_on_postgres():
                 assert (circe.chassis_w_now, circe.chassis_w_rest, circe.other_w) == (1150.0, 541.0, 580.0)
                 assert (circe.gpu_w_rest, circe.cpu_w_rest, circe.other_w_rest) == (190.0, 45.0, 306.0)
                 assert circe.recent_floor_w == 1150.0 and circe.daily
+                # 60 fit hours + the "now" hour (1150 W; its CPU idle is the host's own median, 100 W)
+                assert circe.overhead_fitted is True and circe.overhead_factor == pytest.approx(2.0, abs=0.05)
+                assert circe.overhead_hours == 61 and circe.overhead_r2 > 0.99
+                paint = next(u for u in rep.unit_costs if u.unit == "one reverie_diffusion run (painting) on circe")
+                assert paint.wh_component == 0.4 and paint.status == "derived"
+                assert paint.wh == pytest.approx(0.4 * circe.overhead_factor, abs=1e-3)
                 gpu1 = next(c for c in circe.cards if c.card == "gpu1")
                 assert gpu1.watts == 230.0 and gpu1.idle_w == 230.0   # only one recent sample: its own floor
                 assert [(x.holder, x.label, x.lease_s) for x in gpu1.top_holders] == [
@@ -618,14 +651,54 @@ def _hosts_rows() -> dict:
         {"card": "gpu1", "holder": "http:anthropic", "lease_s": 13572.3},
         {"card": "gpu3", "holder": "vision-council", "lease_s": 32944.1},
         {"card": "gpu3", "holder": "http:openai", "lease_s": 11640.2}]
+    rows[pr.HOSTS_OVERHEAD_SQL] = (overhead_hours("circe", 2.35, rest=541.0, gpu_idle=190.0, wobble=6.0)
+                                   + overhead_hours("athena", 1.27, rest=340.0, gpu_idle=76.0, cpu_idle=99.0, wobble=2.0))
     return rows
+
+
+def test_hosts_put_every_part_on_the_whole_machine_footing():
+    """Card, container and sponsored watts each carry the wall watts above rest they drive (an
+    estimate: watts above idle x the host's own fitted overhead), and the host says the method."""
+    rep = _build(_hosts_rows(), q=pr.parse_query("24h", "hosts,processes", None, None, None), container_names=_names())
+    c, a = rep.hosts[0], rep.hosts[1]
+    assert c.overhead_fitted is True and c.overhead_factor == pytest.approx(2.35, abs=0.01) and c.overhead_r2 > 0.9
+    assert c.overhead_hours == 72 and "fitted on circe" in c.overhead_basis and "PR #2992" in c.overhead_basis
+    assert a.overhead_factor == pytest.approx(1.27, abs=0.01)           # per host: athena's overhead is lower
+    gpu1 = next(x for x in c.cards if x.card == "gpu1")
+    assert gpu1.above_idle_w == 188.2 and gpu1.watts_at_wall_est == pytest.approx(188.2 * c.overhead_factor, abs=0.1)
+    gpu0 = next(x for x in c.cards if x.card == "gpu0")
+    assert gpu0.above_idle_w is None and gpu0.watts_at_wall_est is None  # no idle known: no estimate, not 0
+    fast = next(x for x in c.top_containers if x.name == "orion-circe-atlas-llamacpp-fast")
+    assert fast.watts_at_wall_est == pytest.approx(8.4 * c.overhead_factor, abs=0.1)
+    dojo = a.sponsored[0]
+    assert dojo.watts_at_wall_est == pytest.approx(176.0 * a.overhead_factor, abs=0.2)
+    p = next(x for x in rep.processes if x.name == "orion-athena-sql-db")
+    assert p.watts_at_wall_est == pytest.approx(13.8 * a.overhead_factor, abs=0.1) and p.overhead_factor == a.overhead_factor
+
+
+def test_overhead_falls_back_to_the_2992_fit_and_says_so():
+    rows = _hosts_rows()
+    rows[pr.HOSTS_OVERHEAD_SQL] = overhead_hours("circe", 2.35, rest=541.0, gpu_idle=190.0, n=10)  # too few hours
+    rep = _build(rows, q=pr.parse_query("24h", "hosts", None, None, None))
+    for h in rep.hosts:
+        assert h.overhead_fitted is False and h.overhead_factor == 2.69 and "not fitted on " + h.host in h.overhead_basis
+    assert "10 loaded hours" in rep.hosts[0].overhead_basis and "R^2 0.79" in rep.hosts[0].overhead_basis
+    # the history read failing: every host falls back (said), the read failure is a reason, never a 500
+    rep = _build(_hosts_rows(), q=pr.parse_query("24h", "hosts,processes,unit_costs", None, None, None),
+                 fail={"cpu_idle_watts"})
+    assert all(h.overhead_factor == 2.69 and "history read failed" in h.overhead_basis for h in rep.hosts)
+    for sec in ("hosts", "processes", "unit_costs"):
+        assert any(r.startswith("read failed (overhead)") for r in _reasons(rep, sec)), sec
+    assert rep.processes and all(p.overhead_factor == 2.69 for p in rep.processes)
 
 
 @pytest.fixture(autouse=True)
 def _fresh_pinned_parts_cache():
     pr._PINNED_PARTS_CACHE.clear()   # FakePool ids can be reused across tests
+    pr._OVERHEAD_CACHE.clear()
     yield
     pr._PINNED_PARTS_CACHE.clear()
+    pr._OVERHEAD_CACHE.clear()
 
 
 @pytest.mark.parametrize("body", [
@@ -656,8 +729,7 @@ def test_hosts_say_what_spins_each_machine():
     c = rep.hosts[0]
     # pinned rest (no rest_body.yaml in the repo yet): the dated default, never the rolling floor
     assert c.chassis_w_rest == 541.0 and c.recent_floor_w == 578.0 and "2026-10-01..2026-10-13" in c.rest_basis
-    # rest_body.yaml now exists (#2992), so the basis names the file; without it, "pinned default".
-    assert "pinned in config/physiology/rest_body.yaml" in c.rest_basis or "pinned default" in c.rest_basis
+    assert "pinned in config/physiology/rest_body.yaml" in c.rest_basis   # PR #2992 ships the file
     assert c.above_rest_w == 609.0 and c.usd_per_month_at_this_rate == round(609 * 730 / 1000 * 0.1255, 2)
     assert c.rest_usd_per_month == round(541 * 730 / 1000 * 0.1255, 2)
     assert (c.gpu_w, c.cpu_w, c.other_w) == (450.0, 120.0, 580.0)       # other = chassis - gpu - cpu
@@ -683,7 +755,7 @@ def test_hosts_say_what_spins_each_machine():
     assert c.sponsored == []
     reasons = " | ".join(_reasons(rep, "hosts"))
     assert "hecate (asleep or its reporter is down)" in reasons
-    assert "fix/act-energy-whole-machine" in reasons and all(h.unattributed_above_rest_w is None for h in rep.hosts)
+    assert "work not yet metered" in reasons and all(h.unattributed_above_rest_w is None for h in rep.hosts)
     assert "per-card watts began 2026-10-29" in reasons
 
 

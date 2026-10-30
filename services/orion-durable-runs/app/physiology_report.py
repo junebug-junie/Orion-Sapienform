@@ -32,6 +32,13 @@ Sources (all read-only):
                  per card, per container) against its PINNED rest (``config/physiology/rest_body.yaml``,
                  else dated defaults), card -> lease holders from ``gpu_pool_events.cards``, daily
                  chassis average; container ids -> names from circe's container census
+
+Overhead (hosts, processes, unit_costs): every cost number means whole-machine watts at the wall
+ABOVE REST, fans and PSU loss included, the unit the per-act meter charges (PR #2992). A card's,
+container's or GPU-only run's watts are components; each is shown beside ``watts_at_wall_est`` =
+its watts above idle x the host's ``overhead_factor`` (orion/energy/overhead.py: fitted per host on
+the trailing 14 days of the same biometrics readings and pinned rest, else #2992's circe fit, said
+in ``overhead_basis``). Those wall figures are ESTIMATES: derived views of the one chassis reading.
 """
 
 from __future__ import annotations
@@ -48,6 +55,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
+from orion.energy.overhead import FIT_WINDOW as OVERHEAD_FIT_WINDOW
+from orion.energy.overhead import Overhead, fallback as overhead_fallback, fit_overhead
 from orion.schemas.physiology_report import (
     REPORT_SECTIONS,
     REPORT_WINDOWS,
@@ -249,12 +258,16 @@ WHERE hour_start >= %(since)s AND hour_start < %(until)s
 GROUP BY 1 ORDER BY 1
 """
 
+# energy_run_cost.energy_kwh is the power-intent meter's GPU energy ABOVE the card's baseline
+# (orion/energy/run_cost.py incremental_over_baseline): a component, scaled to the wall per node.
 RUN_COST_SQL = """
-SELECT workload_kind, COUNT(*) AS n, AVG(energy_kwh) AS kwh, AVG(estimated_run_cost_usd) AS usd
+SELECT workload_kind, node, COUNT(*) AS n, AVG(energy_kwh) AS kwh, AVG(estimated_run_cost_usd) AS usd
 FROM energy_run_cost
 WHERE window_start >= %(since)s AND window_start < %(until)s AND energy_kwh IS NOT NULL
-GROUP BY 1 ORDER BY 1
+GROUP BY 1, 2 ORDER BY 1, 2
 """
+#: Plain words for a run kind (the reverie diffusion run is one painting).
+RUN_KIND_WORDS = {"reverie_diffusion": "painting"}
 ACT_COST_SQL = """
 SELECT actor, cost_json->'wh_by_host' AS wh_by_host, cost_json->'usd' AS usd,
        cost_json->'heat_c_by_host' AS heat_c_by_host
@@ -426,9 +439,10 @@ HOST_MAX_CARDS = 8
 HOURS_PER_MONTH = 730.0
 HOST_TOP_HOLDERS = 4
 HOST_TOP_CONTAINERS = 5
-#: The per-act meter fix that will publish "above-rest energy no act is charged for".
-UNATTRIBUTED_NOT_YET = ("above-rest watts no act is charged for (unattributed_above_rest_w): unknown until the "
-                        "whole-machine per-act meter (branch fix/act-energy-whole-machine) merges")
+#: Above-rest energy no act is charged for is hourly (orion_energy_attribution_hourly, PR #2992), not per instant.
+UNATTRIBUTED_NOT_YET = ("above-rest watts no act is charged for: not split per instant here (unattributed_above_rest_w "
+                        "stays empty); per host per day it is unit_costs 'work not yet metered' "
+                        "(orion_energy_attribution_hourly)")
 
 
 def _bio_ts(d: datetime) -> str:
@@ -465,6 +479,64 @@ GROUP BY node
 """
 PINNED_PARTS_TTL = timedelta(hours=6)
 _PINNED_PARTS_CACHE: dict[tuple, tuple[datetime, list[dict]]] = {}
+
+
+#: Per host, hourly means over the trailing OVERHEAD_FIT_WINDOW of the readings the per-act meter splits
+#: (orion/energy/overhead.py fits k from them). ~340 rows per host; cached like the pinned parts.
+HOSTS_OVERHEAD_SQL = """
+SELECT node, date_trunc('hour', "timestamp"::timestamptz) AS hr,
+       AVG((measurements->>'chassis_watts')::float) AS ch,
+       AVG((measurements->>'gpu_watts_total')::float) AS gpu,
+       AVG((measurements->>'cpu_watts_total')::float) AS cpu,
+       AVG((measurements->>'cpu_idle_watts')::float) AS cpu_idle
+FROM orion_biometrics_summary
+WHERE node = ANY(%(hosts)s) AND "timestamp" >= %(fit_since)s AND "timestamp" < %(until_ts)s
+  AND measurements ? 'chassis_watts' AND measurements ? 'gpu_watts_total' AND measurements ? 'cpu_watts_total'
+GROUP BY 1, 2
+"""
+_OVERHEAD_CACHE: dict[tuple, tuple[datetime, list[dict]]] = {}
+
+
+async def overhead_rows(pool: Any, params: Mapping[str, Any], now: datetime) -> list[dict]:
+    """HOSTS_OVERHEAD_SQL, cached PINNED_PARTS_TTL per pool (a 14-day fit barely moves in 6 h)."""
+    key = (id(pool), tuple(params["hosts"]))
+    hit = _OVERHEAD_CACHE.get(key)
+    if hit and now - hit[0] < PINNED_PARTS_TTL:
+        return hit[1]
+    rows = await _rows(pool, HOSTS_OVERHEAD_SQL, params)
+    _OVERHEAD_CACHE.clear()
+    _OVERHEAD_CACHE[key] = (now, rows)
+    return rows
+
+
+def overheads_by_host(hourly: Optional[Sequence[Mapping]], rest_rows: Sequence[Mapping], rest_body: Mapping,
+                      now: datetime, hosts: Sequence[str] = VRAM_HOSTS) -> dict[str, Overhead]:
+    """host -> Overhead. ``hourly`` None: the read failed, every host takes the fallback (said)."""
+    pinned = (rest_body or {}).get("hosts") or {}
+    gpu_rest = {str(r.get("node")): _f(r.get("gpu_rest")) for r in rest_rows}
+    by: dict[str, list[Mapping]] = {}
+    for r in hourly or []:
+        by.setdefault(str(r.get("node")), []).append(r)
+    words = f"{(now - OVERHEAD_FIT_WINDOW).date().isoformat()}..{now.date().isoformat()}"
+    out = {}
+    for h in hosts:
+        if hourly is None:
+            out[h] = overhead_fallback(h, "the hourly history read failed")
+            continue
+        rest_w, _ = _pinned_rest(pinned.get(h))
+        out[h] = fit_overhead(h, by.get(h, []), rest_w=rest_w, gpu_idle_w=gpu_rest.get(h), window_words=words)
+    return out
+
+
+def _overhead_fields(o: Optional[Overhead]) -> dict:
+    if o is None:
+        return {}
+    return {"overhead_factor": o.factor, "overhead_basis": o.basis, "overhead_fitted": o.fitted,
+            "overhead_r2": o.r2, "overhead_hours": o.hours}
+
+
+def _wall(o: Optional[Overhead], above_idle_w: Optional[float]) -> Optional[float]:
+    return _r(o.wall(above_idle_w), 1) if o is not None else None
 
 
 async def pinned_parts_rows(pool: Any, params: Mapping[str, Any], now: datetime) -> list[dict]:
@@ -726,8 +798,16 @@ def load_heat_hosts(path: str) -> tuple[list[HeatHost], Optional[str]]:
 def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat_err: Optional[str],
                      run_costs: Sequence[Mapping], act_costs: Optional[Mapping[str, dict]],
                      tokens: Optional[Mapping] = None,
-                     attribution: Optional[Mapping] = None) -> tuple[list[dict], list[dict]]:
-    """``act_costs`` None: the act-cost read failed (its reason is already in ``missing``)."""
+                     attribution: Optional[Mapping] = None,
+                     overheads: Optional[Mapping[str, Overhead]] = None) -> tuple[list[dict], list[dict]]:
+    """``act_costs`` None: the act-cost read failed (its reason is already in ``missing``).
+
+    A run-cost row (energy_run_cost: GPU energy above the card's baseline only) is put on the same
+    footing as the per-act rows, whole machine at the wall above rest: ``wh`` and ``usd`` are the GPU
+    figure x the node's overhead factor (an ESTIMATE, status ``derived``); the measured GPU figure stays
+    in ``wh_component``. Painting acts (thought.painting) carry no whole-machine cost yet: their act
+    does not share a correlation id with its diffusion lease (PR #2977), so this row is the painting
+    cost until they do."""
     rows: list[dict] = []
     missing: list[dict] = []
     if rate is not None:
@@ -746,10 +826,26 @@ def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat
         rows.append({"unit": "100 W for 2 h", "usd": None, "wh": 200.0, "heat_c": None, "status": "not_measured",
                      "source": f"heat sensitivity unavailable ({heat_err or 'no hosts fitted'})"})
     for r in run_costs:
-        kwh = _f(r.get("kwh"))
-        rows.append({"unit": f"one {r.get('workload_kind')} run", "usd": _r(_f(r.get("usd")), 6),
-                     "wh": _r(kwh * 1000.0 if kwh is not None else None, 3), "heat_c": None, "status": "measured",
-                     "source": f"energy_run_cost mean over {int(r.get('n') or 0)} runs in the window"})
+        kwh, usd_gpu = _f(r.get("kwh")), _f(r.get("usd"))
+        wh_gpu = kwh * 1000.0 if kwh is not None else None
+        node = str(r.get("node") or "") or None
+        kind = str(r.get("workload_kind"))
+        unit = f"one {kind} run" + (f" ({RUN_KIND_WORDS[kind]})" if kind in RUN_KIND_WORDS else "") + \
+            (f" on {node}" if node else "")
+        o = (overheads or {}).get(node) if node else None
+        n_runs = int(r.get("n") or 0)
+        if o is None or wh_gpu is None:
+            rows.append({"unit": unit, "usd": _r(usd_gpu, 6), "wh": _r(wh_gpu, 3), "wh_component": _r(wh_gpu, 3),
+                         "heat_c": None, "status": "measured",
+                         "source": f"energy_run_cost mean over {n_runs} runs in the window: GPU above baseline "
+                                   "only (no overhead factor for its node, so NOT whole machine)"})
+            continue
+        wall = o.wall(wh_gpu)
+        usd = (usd_gpu * o.factor) if usd_gpu is not None else (wall / 1000.0 * rate if rate is not None else None)
+        rows.append({"unit": unit, "usd": _r(usd, 6), "wh": _r(wall, 3), "wh_component": _r(wh_gpu, 3),
+                     "heat_c": None, "status": "derived", **_overhead_fields(o),
+                     "source": (f"estimate, whole machine at the wall above rest: energy_run_cost mean GPU above "
+                                f"baseline {wh_gpu:.3g} W·h over {n_runs} runs x overhead {o.factor:g} ({o.basis})")})
     if not run_costs:
         rows.append({"unit": "one measured run", "usd": None, "wh": None, "heat_c": None, "status": "not_measured",
                      "source": "energy_run_cost has no run in the window (only reverie diffusion is measured today)"})
@@ -1056,9 +1152,12 @@ def container_names_from_census(raw_states: Mapping[Any, Any]) -> dict[str, str]
 
 
 def shape_processes(bio_rows: Sequence[Mapping], now: datetime,
-                    names: Optional[Mapping[str, str]] = None) -> tuple[list[dict], list[dict]]:
+                    names: Optional[Mapping[str, str]] = None,
+                    overheads: Optional[Mapping[str, Overhead]] = None) -> tuple[list[dict], list[dict]]:
     """Top containers by CPU watts above idle, per host, from the newest fresh biometrics row
-    (orion-biometrics container_cpu_measurements, PR #2977). Absent keys are a reason, never 0 W."""
+    (orion-biometrics container_cpu_measurements, PR #2977). Absent keys are a reason, never 0 W.
+    Each row also carries ``watts_at_wall_est`` (its watts x the host's overhead factor: the whole
+    machine above rest it drives, an ESTIMATE) and the factor it used."""
     rows: list[dict] = []
     notes: list[str] = []
     for r in bio_rows:
@@ -1073,13 +1172,17 @@ def shape_processes(bio_rows: Sequence[Mapping], now: datetime,
             if m.get("cpu_busy_cores") is not None:
                 notes.append(f"{host}: CPU below the fitted idle floor this sample, so no honest split")
             continue
+        o = (overheads or {}).get(host)
+        ov = {"overhead_factor": o.factor, "overhead_basis": o.basis} if o is not None else {}
         for name, w in named.items():
-            rows.append({"host": host, "name": container_label(name, names), "watts": round(w, 1), "cores": None})
+            rows.append({"host": host, "name": container_label(name, names), "watts": round(w, 1), "cores": None,
+                         "watts_at_wall_est": _wall(o, w), **ov})
         for key, label in (("container_cpu_watts_small", "(small containers)"),
                            ("cpu_watts_host_other", "(host, not in a container)")):
             w = _f(m.get(key))
             if w is not None:
-                rows.append({"host": host, "name": label, "watts": round(w, 1), "cores": None})
+                rows.append({"host": host, "name": label, "watts": round(w, 1), "cores": None,
+                             "watts_at_wall_est": _wall(o, w), **ov})
     rows.sort(key=lambda x: -x["watts"])
     missing: list[dict] = []
     if not rows:
@@ -1145,14 +1248,19 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
                 rate_usd_per_kwh: Optional[float], now: datetime,
                 names: Optional[Mapping[str, str]] = None,
                 rest_body: Optional[Mapping] = None, rest_source: str = "", rest_err: Optional[str] = None,
-                hosts: Sequence[str] = VRAM_HOSTS) -> tuple[list[dict], list[dict]]:
+                hosts: Sequence[str] = VRAM_HOSTS,
+                overheads: Optional[Mapping[str, Overhead]] = None) -> tuple[list[dict], list[dict]]:
     """What is spinning each machine: whole-machine watts now vs its PINNED rest, split into GPU /
     CPU / other (each against its own rest over the same dated window), each card with the lease
     holders that held it in the window, the top containers by CPU watts, sponsored work apart.
 
     The split never sums parts with the whole: gpu_w and cpu_w are INSIDE chassis_w_now, so
     other_w = chassis - gpu - cpu (fans, PSU loss, memory, disks). A part that is not measured is
-    None and other_w is then None too (a remainder of an unmeasured part would be a guess)."""
+    None and other_w is then None too (a remainder of an unmeasured part would be a guess).
+
+    Overhead: each card's and container's ``watts_at_wall_est`` is its watts above idle x the host's
+    ``overhead_factor`` (``overhead_basis`` says fitted or fallback): the whole machine above rest it
+    drives, fans and PSU loss included. An ESTIMATE, a derived view of chassis_w_now."""
     missing: list[dict] = []
     body = rest_body or DEFAULT_REST_BODY
     pinned = body.get("hosts") or {}
@@ -1190,6 +1298,7 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             asleep.append(host)
             continue
         ts, m = meas[host]
+        o = (overheads or {}).get(host)
         chassis = _f(m.get("chassis_watts"))
         gpu = _f(m.get("gpu_watts_total"))
         cpu = _f(m.get("cpu_watts_total"))
@@ -1216,7 +1325,9 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             if idle is None:
                 idle = _f(rr.get(f"gpu{idx}_floor"))
                 recent_idle |= idle is not None
+            above_idle = max(0.0, watts - idle) if (watts is not None and idle is not None) else None
             card_rows.append({"card": name, "watts": _r(watts, 1), "idle_w": _r(idle, 1),
+                              "above_idle_w": _r(above_idle, 1), "watts_at_wall_est": _wall(o, above_idle),
                               "temp_c": _f(m.get(f"gpu{idx}_temp_c")), "mem_used_mb": _f(m.get(f"gpu{idx}_mem_used_mb")),
                               "roles": roles, "top_holders": holders.get(name, [])})
         containers, all_named = [], []
@@ -1225,11 +1336,13 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             if w is None:
                 continue
             if k.startswith(CONTAINER_CPU_PREFIX):
-                c = {"name": container_label(k[len(CONTAINER_CPU_PREFIX):], names), "cpu_w": round(w, 1)}
+                c = {"name": container_label(k[len(CONTAINER_CPU_PREFIX):], names), "cpu_w": round(w, 1),
+                     "watts_at_wall_est": _wall(o, w)}
                 containers.append(c)
                 all_named.append(c)
             elif k == "cpu_watts_host_other":
-                containers.append({"name": "(host, not in a container)", "cpu_w": round(w, 1)})
+                containers.append({"name": "(host, not in a container)", "cpu_w": round(w, 1),
+                                   "watts_at_wall_est": _wall(o, w)})
         sponsored, sponsored_names = [], set()
         for sp in sponsors:
             if str(sp.get("host") or host) != host:
@@ -1237,8 +1350,9 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             pat = str(sp.get("containers") or "")
             hit = [c for c in all_named if pat and fnmatch.fnmatchcase(c["name"], pat)]
             sponsored_names |= {c["name"] for c in hit}
+            sp_w = round(sum(c["cpu_w"] for c in hit), 1) if hit else None
             sponsored.append({"name": str(sp.get("name") or pat), "note": str(sp.get("note") or ""),
-                              "containers": len(hit), "cpu_w": round(sum(c["cpu_w"] for c in hit), 1) if hit else None})
+                              "containers": len(hit), "cpu_w": sp_w, "watts_at_wall_est": _wall(o, sp_w)})
         containers = [c for c in containers if c["name"] not in sponsored_names]
         containers.sort(key=lambda c: -c["cpu_w"])
         floor = _f(rr.get("chassis_floor"))
@@ -1255,7 +1369,7 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             "other_w_rest": _r(_f(rr.get("other_rest")), 1), "parts_rest_window": window_words,
             "fan_pct": _r(_f(m.get("fan_pct_max")), 1), "unattributed_above_rest_w": None,
             "cards": card_rows, "top_containers": containers[:HOST_TOP_CONTAINERS], "sponsored": sponsored,
-            "daily": daily.get(host, []),
+            "daily": daily.get(host, []), **_overhead_fields(o),
         })
         if chassis is None:
             missing.append({"section": "hosts", "reason": f"{host}: no chassis_watts on its newest row (no BMC or "
@@ -1509,13 +1623,18 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
                 logger.warning("physiology_report_container_names_failed", exc_info=True)
                 return {}
         tasks["names"] = names()
-    if "hosts" in wanted:
-        # Three reads, run side by side (30 d: ~0.5 s, ~1 s, ~0.9 s on 2026-10-30).
-        hp = {"hosts": list(VRAM_HOSTS), "until_ts": _bio_ts(now)}
+    overhead_sections = ("hosts", "processes", "unit_costs")
+    hp = {"hosts": list(VRAM_HOSTS), "until_ts": _bio_ts(now)}
+    if wanted & set(overhead_sections):
+        # The pinned rest and the overhead fit's history: both cached (a dated window; a 14-day fit).
         rest_body, rest_source, rest_err = load_rest_body(str(Path(deps.heat_sensitivity_path).with_name(REST_BODY_FILE)))
         rs, ru = rest_window(rest_body)
         tasks["hosts_rest"] = timed("hosts_rest", lambda: pinned_parts_rows(pool, {
             "hosts": list(VRAM_HOSTS), "p": HOST_REST_PERCENTILE, "rest_since": rs, "rest_until": ru}, now), ("hosts",))
+        tasks["overhead"] = timed("overhead", lambda: overhead_rows(pool, {
+            **hp, "fit_since": _bio_ts(now - OVERHEAD_FIT_WINDOW)}, now), overhead_sections)
+    if "hosts" in wanted:
+        # Three more reads, run side by side (30 d: ~0.5 s, ~1 s, ~0.9 s on 2026-10-30).
         tasks["hosts_floor"] = timed("hosts_floor", lambda: _rows(pool, HOSTS_FLOOR_SQL, {
             **hp, "p": HOST_REST_PERCENTILE, "floor_since": _bio_ts(now - HOST_FLOOR_WINDOW)}), ("hosts",))
         tasks["hosts_daily"] = timed("hosts_daily", lambda: _rows(pool, HOSTS_DAILY_SQL, {
@@ -1556,6 +1675,10 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         missing.extend(miss)
 
     ac = results.get("act_costs") if "act_costs" in results else {}
+    overheads: dict[str, Overhead] = {}
+    if "overhead" in results:
+        # A failed history read (its reason is in missing) falls back to #2992's fit, said per host.
+        overheads = overheads_by_host(results.get("overhead"), results.get("hosts_rest") or [], rest_body, now)
     if "limits" in wanted and results.get("limits") is not None:
         add("limits", lambda: shape_limits(results["limits"][0], latest_row, results["limits"][1], since))
     if "wants" in wanted and results.get("wants") is not None:
@@ -1571,7 +1694,7 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             att = results.get("attribution") if "attribution" in results else None
             if "attribution" in results and att is None:
                 att = {"present": True, "rows": None}  # the read failed; its reason is in missing
-            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac, results.get("tokens"), att)
+            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac, results.get("tokens"), att, overheads)
         add("unit_costs", _unit)
     if "waste" in wanted and results.get("waste") is not None:
         add("waste", lambda: shape_waste(*results["waste"]))
@@ -1589,7 +1712,7 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         add("vram", _vram)
     names_map = results.get("names") or {}
     if "processes" in wanted and results.get("vram") is not None:
-        add("processes", lambda: shape_processes(results["vram"], now, names_map))
+        add("processes", lambda: shape_processes(results["vram"], now, names_map, overheads))
     if "hosts" in wanted and results.get("vram") is not None and results.get("hosts_rest") is not None:
         def _hosts():
             doc, perr = _load_yaml(deps.gpu_pool_path)
@@ -1599,7 +1722,7 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             rest_rows = merge_by_node(results["hosts_rest"], results.get("hosts_floor") or [])
             return shape_hosts(results["vram"], rest_rows, results.get("hosts_daily") or [],
                                results.get("hosts_holders") or [], doc, perr, rate, now, names_map,
-                               rest_body=rest_body, rest_source=rest_source, rest_err=rest_err)
+                               rest_body=rest_body, rest_source=rest_source, rest_err=rest_err, overheads=overheads)
         add("hosts", _hosts)
     if "value_per_cost" in wanted:
         if deps.family_weights is None:

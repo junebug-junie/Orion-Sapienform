@@ -1,0 +1,5644 @@
+{
+ "schema_version": "physiology.report.v1",
+ "generated_at": "2026-10-30T04:37:40.083168Z",
+ "window": {
+  "start": "2026-10-29T04:37:40.083168Z",
+  "end": "2026-10-30T04:37:40.083168Z"
+ },
+ "limits": [
+  {
+   "constraint": "attention:juniper",
+   "label": "Messages to Juniper today",
+   "unit": "messages",
+   "line": 4.0,
+   "now": {
+    "level": 4.0,
+    "bind_state": "binding",
+    "why": "4 of 4 cap-counted messages by 22:37 local; day-end pace 4.2"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 4.0,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 4.0,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0.0,
+     "price": 0.8709,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0.0,
+     "price": 0.6206,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0.0,
+     "price": 0.3706,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0.0,
+     "price": 0.1184,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 0.5556,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 1.4483,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 2.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 2.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 2.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 2.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 2.1034,
+     "price": 0.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 3.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 3.5,
+     "price": 0.007,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 4.0,
+     "price": 0.0497,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 4.0,
+     "price": 0.0852,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 4.0,
+     "price": 0.1046,
+     "bind_state": "binding"
+    }
+   ]
+  },
+  {
+   "constraint": "claude",
+   "label": "Claude usage limits",
+   "unit": "limit_events",
+   "line": 0.0,
+   "now": {
+    "level": null,
+    "bind_state": "no_reading",
+    "why": "claude limit state unknown (no_observation); price held at its last value"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": null,
+     "price": 0.0,
+     "bind_state": "no_reading"
+    }
+   ]
+  },
+  {
+   "constraint": "energy",
+   "label": "Energy money this month",
+   "unit": "usd",
+   "line": 100.0,
+   "now": {
+    "level": 184.0566,
+    "bind_state": "exogenous_bind",
+    "why": "the envelope is spent by what stays switched on (not by what I do); month to date $184.06; forecast $196.72 by month end at $0.256/h; the always-on floor alone ($0.202/h) reaches $194.05 vs envelope $100"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 178.6208,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 178.781,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 179.0257,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 179.2937,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 179.5365,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 179.7758,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 179.9968,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 180.2113,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 180.4238,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 180.626,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 180.8258,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 181.0459,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 181.2638,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 181.4825,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 181.721,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 181.9521,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 182.1802,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 182.3756,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 182.5859,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 182.8178,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 183.0611,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 183.3123,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 183.5683,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 183.8036,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 183.9993,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    }
+   ]
+  },
+  {
+   "constraint": "heat",
+   "label": "Cabinet heat (my share against the soft line)",
+   "unit": "c",
+   "line": 31.0,
+   "now": {
+    "level": 27.4,
+    "bind_state": "slack",
+    "why": "cabinet 27.4 C; Orion's share 1.89 C (2 h step response: a short-run lower bound) [athena +134 W x 0.64 = 0.86 C; circe +329 W x 0.31 = 1.02 C; hecate asleep]; room without Orion 25.5 C vs line 31.0 C"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 28.036,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 27.0828,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 26.8237,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 27.2783,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 27.35,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 26.9643,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 26.2566,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 25.6357,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 25.009,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 24.4972,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 24.5518,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 25.8546,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 28.2248,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 30.8596,
+     "price": 0.0029,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 32.0993,
+     "price": 0.1217,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 33.6969,
+     "price": 0.35,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 34.3392,
+     "price": 0.5936,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 33.3423,
+     "price": 0.8471,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 33.5914,
+     "price": 0.9983,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 33.0872,
+     "price": 1.0,
+     "bind_state": "exogenous_bind"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 32.31,
+     "price": 1.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 31.0329,
+     "price": 0.9783,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 29.4313,
+     "price": 0.8323,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 28.176,
+     "price": 0.665,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 27.7593,
+     "price": 0.5303,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:agent",
+   "label": "GPU lane agent (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 3600.0,
+   "now": {
+    "level": 3599.935,
+    "bind_state": "binding",
+    "why": "3704 lease-s asked of 1 slot(s) in 60 min, 104 s of it lent into idle holds; 2 deferrable waiting (hunger, not priced)"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 2201.8539,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 2723.2598,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 2843.1189,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 3329.8215,
+     "price": 0.0006,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 2925.9488,
+     "price": 0.0184,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 3586.8471,
+     "price": 0.4368,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 3593.0112,
+     "price": 0.922,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 3591.6449,
+     "price": 1.0,
+     "bind_state": "stuck_at_ceiling"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 3600.0,
+     "price": 1.0,
+     "bind_state": "stuck_at_ceiling"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 3599.9878,
+     "price": 0.6759,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 3599.9991,
+     "price": 0.2656,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 3599.984,
+     "price": 0.5911,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 3599.9442,
+     "price": 0.9281,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 3599.9596,
+     "price": 1.0,
+     "bind_state": "stuck_at_ceiling"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 3599.9998,
+     "price": 0.9464,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 3599.969,
+     "price": 0.8156,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 2632.9182,
+     "price": 0.1126,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 118.601,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 1636.8353,
+     "price": 0.0,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 3541.4618,
+     "price": 0.0949,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 3351.4552,
+     "price": 0.2017,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 3208.8386,
+     "price": 0.0001,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 3599.972,
+     "price": 0.021,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 3599.8895,
+     "price": 0.2182,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 3599.8082,
+     "price": 0.389,
+     "bind_state": "binding"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:agent-deep",
+   "label": "GPU lane agent-deep (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 0.0,
+   "now": {
+    "level": 0.0,
+    "bind_state": "slack",
+    "why": "seat has no live slot now; 2 deferrable waiting (hunger, not priced)"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:agent-gpu2",
+   "label": "GPU lane agent-gpu2 (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 7200.0,
+   "now": {
+    "level": 4848.57,
+    "bind_state": "slack",
+    "why": "4865 lease-s asked of 2 slot(s) in 60 min, 16 s of it lent into idle holds; 2 deferrable waiting (hunger, not priced)"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 1067.0322,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 2928.0516,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 4137.8983,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 4245.8552,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 2317.2438,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 2936.7795,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 6848.9581,
+     "price": 0.0025,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 5454.8475,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 6136.174,
+     "price": 0.0003,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 6078.8898,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 4206.8806,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 6282.265,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 5862.669,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 6189.282,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 4616.0707,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 101.9031,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 1131.8001,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 6387.8898,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 5236.3621,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:chat",
+   "label": "GPU lane chat (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 3600.0,
+   "now": {
+    "level": 0.0,
+    "bind_state": "slack",
+    "why": "0 lease-s asked of 1 slot(s) in 60 min; 2 deferrable waiting (hunger, not priced)"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 45.0607,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 399.1951,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 556.8634,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 178.5237,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 1613.1664,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 3594.1523,
+     "price": 0.0004,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 3591.0984,
+     "price": 0.001,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 3593.926,
+     "price": 0.0263,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 3599.9989,
+     "price": 0.022,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 3599.9946,
+     "price": 0.204,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 3599.13,
+     "price": 0.3898,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 3597.6658,
+     "price": 0.524,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 3597.532,
+     "price": 0.6292,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 3597.4318,
+     "price": 0.7424,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 3599.224,
+     "price": 0.8572,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 3310.1386,
+     "price": 0.9263,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 703.4613,
+     "price": 0.2638,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.8215,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 1573.6855,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 2700.08,
+     "price": 0.0001,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 3322.2039,
+     "price": 0.0544,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 3246.0414,
+     "price": 0.1582,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 3590.8893,
+     "price": 0.3321,
+     "bind_state": "binding"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 3069.0347,
+     "price": 0.2756,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 618.8176,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:diffusion",
+   "label": "GPU lane diffusion (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 0.0,
+   "now": {
+    "level": 56.003,
+    "bind_state": "slack",
+    "why": "seat has no live slot now; its 56 lease-s this window ran while it was loaded (swap seat, unloaded since)"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 27.703,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 47.7638,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 29.0955,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 25.4585,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 51.622,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 5.1602,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 13.5235,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 41.0857,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 32.916,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 46.4792,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 200.9923,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 60.9232,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 74.7429,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 38.1912,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 16.0638,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 6.7672,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 0.4647,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 2.1688,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 19.2327,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 10.6693,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 4.6688,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 105.8018,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 18.4912,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 52.2695,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:experiment",
+   "label": "GPU lane experiment (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 0.0,
+   "now": {
+    "level": 0.0,
+    "bind_state": "slack",
+    "why": "seat has no live slot now"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:fast",
+   "label": "GPU lane fast (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 14400.0,
+   "now": {
+    "level": 692.016,
+    "bind_state": "slack",
+    "why": "692 lease-s asked of 4 slot(s) in 60 min"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 4072.3484,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 3932.4253,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 746.7615,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 633.1431,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 853.8191,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 823.2732,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 731.9859,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 716.5159,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 874.7193,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 1229.5486,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 742.3869,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 548.5599,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 360.8058,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 1894.2832,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 6543.064,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 2472.3922,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 78.2921,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 176.5333,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 415.9561,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 1669.8729,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 1135.5195,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 2128.4879,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 5454.5104,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 1703.8313,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:kev",
+   "label": "GPU lane kev (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 3600.0,
+   "now": {
+    "level": 0.0,
+    "bind_state": "slack",
+    "why": "0 lease-s asked of 1 slot(s) in 60 min"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:metacog",
+   "label": "GPU lane metacog (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 14400.0,
+   "now": {
+    "level": 2228.257,
+    "bind_state": "slack",
+    "why": "2228 lease-s asked of 4 slot(s) in 60 min"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 2331.6889,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 2430.4752,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 2188.4573,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 2229.3536,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 2121.5959,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 2188.8939,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 2138.4345,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 2135.1397,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 2397.1606,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 2553.3768,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 1790.5463,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 1624.271,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 747.8072,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 1903.6298,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 2516.3876,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 937.8632,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 593.2942,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 562.2468,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 379.575,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 580.3239,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 692.2974,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 1904.0717,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 2561.1069,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 2887.177,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 2430.1913,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  },
+  {
+   "constraint": "lane:world",
+   "label": "GPU lane world (lease-seconds per hour)",
+   "unit": "slot_s",
+   "line": 7200.0,
+   "now": {
+    "level": 0.0,
+    "bind_state": "slack",
+    "why": "0 lease-s asked of 2 slot(s) in 60 min"
+   },
+   "hourly": [
+    {
+     "h": "2026-10-29T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T05:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T06:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T07:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T08:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T09:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T10:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T11:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T12:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T13:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T14:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T15:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T16:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T17:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T18:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T19:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T20:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T21:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T22:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-29T23:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T00:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T01:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T02:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T03:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    },
+    {
+     "h": "2026-10-30T04:00:00Z",
+     "level": 0.0,
+     "price": 0.0,
+     "bind_state": "slack"
+    }
+   ]
+  }
+ ],
+ "wants": {
+  "families": [
+   {
+    "family": "hub.outreach",
+    "tier": 2,
+    "funded": 876,
+    "deferred": 809
+   },
+   {
+    "family": "actions.journal",
+    "tier": 1,
+    "funded": 244,
+    "deferred": 0
+   },
+   {
+    "family": "hub.retro_leisure",
+    "tier": 2,
+    "funded": 171,
+    "deferred": 19
+   },
+   {
+    "family": "thought.painting",
+    "tier": 2,
+    "funded": 11,
+    "deferred": 54
+   },
+   {
+    "family": "dream.cycle",
+    "tier": 1,
+    "funded": 42,
+    "deferred": 0
+   },
+   {
+    "family": "topic_foundry.run",
+    "tier": 2,
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "family": "durable.curiosity_investigate",
+    "tier": 2,
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "family": "durable.self_sense_eval",
+    "tier": 2,
+    "funded": 1,
+    "deferred": 6
+   },
+   {
+    "family": "hub.retro_coplay",
+    "tier": 2,
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "family": "thought.dream_hop",
+    "tier": 2,
+    "funded": 1,
+    "deferred": 2
+   },
+   {
+    "family": "durable.journal_compose",
+    "tier": 1,
+    "funded": 1,
+    "deferred": 0
+   }
+  ],
+  "hourly": [
+   {
+    "h": "2026-10-29T04:00:00Z",
+    "family": "actions.journal",
+    "funded": 13,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T04:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T04:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T05:00:00Z",
+    "family": "actions.journal",
+    "funded": 14,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T05:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "actions.journal",
+    "funded": 6,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T06:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T07:00:00Z",
+    "family": "actions.journal",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T07:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T07:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "actions.journal",
+    "funded": 14,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T08:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "actions.journal",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "dream.cycle",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T09:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T10:00:00Z",
+    "family": "actions.journal",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T10:00:00Z",
+    "family": "dream.cycle",
+    "funded": 6,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T10:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T10:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T10:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "actions.journal",
+    "funded": 11,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "dream.cycle",
+    "funded": 6,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T11:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "actions.journal",
+    "funded": 20,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "dream.cycle",
+    "funded": 6,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "durable.curiosity_investigate",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "durable.journal_compose",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 8,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T12:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "actions.journal",
+    "funded": 16,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "dream.cycle",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "thought.dream_hop",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T13:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "actions.journal",
+    "funded": 11,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T14:00:00Z",
+    "family": "thought.dream_hop",
+    "funded": 1,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T15:00:00Z",
+    "family": "actions.journal",
+    "funded": 5,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T15:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "h": "2026-10-29T15:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T15:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "actions.journal",
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T16:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "actions.journal",
+    "funded": 5,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 3
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T17:00:00Z",
+    "family": "topic_foundry.run",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "actions.journal",
+    "funded": 8,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 149
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 8
+   },
+   {
+    "h": "2026-10-29T18:00:00Z",
+    "family": "topic_foundry.run",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T19:00:00Z",
+    "family": "actions.journal",
+    "funded": 8,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T19:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T19:00:00Z",
+    "family": "hub.outreach",
+    "funded": 0,
+    "deferred": 239
+   },
+   {
+    "h": "2026-10-29T19:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T19:00:00Z",
+    "family": "thought.painting",
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "h": "2026-10-29T20:00:00Z",
+    "family": "hub.outreach",
+    "funded": 224,
+    "deferred": 136
+   },
+   {
+    "h": "2026-10-29T20:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T21:00:00Z",
+    "family": "hub.outreach",
+    "funded": 359,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "actions.journal",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "dream.cycle",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "hub.outreach",
+    "funded": 288,
+    "deferred": 22
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 8
+   },
+   {
+    "h": "2026-10-29T22:00:00Z",
+    "family": "topic_foundry.run",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T23:00:00Z",
+    "family": "actions.journal",
+    "funded": 9,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T23:00:00Z",
+    "family": "dream.cycle",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T23:00:00Z",
+    "family": "hub.outreach",
+    "funded": 4,
+    "deferred": 239
+   },
+   {
+    "h": "2026-10-29T23:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-29T23:00:00Z",
+    "family": "thought.painting",
+    "funded": 0,
+    "deferred": 9
+   },
+   {
+    "h": "2026-10-29T23:00:00Z",
+    "family": "topic_foundry.run",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T00:00:00Z",
+    "family": "actions.journal",
+    "funded": 16,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T00:00:00Z",
+    "family": "hub.retro_coplay",
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T00:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 10,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T00:00:00Z",
+    "family": "thought.painting",
+    "funded": 0,
+    "deferred": 10
+   },
+   {
+    "h": "2026-10-30T01:00:00Z",
+    "family": "actions.journal",
+    "funded": 17,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T01:00:00Z",
+    "family": "dream.cycle",
+    "funded": 5,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T01:00:00Z",
+    "family": "hub.outreach",
+    "funded": 1,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T01:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 5,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T01:00:00Z",
+    "family": "thought.painting",
+    "funded": 0,
+    "deferred": 9
+   },
+   {
+    "h": "2026-10-30T02:00:00Z",
+    "family": "actions.journal",
+    "funded": 14,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T02:00:00Z",
+    "family": "dream.cycle",
+    "funded": 7,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T02:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 1,
+    "deferred": 2
+   },
+   {
+    "h": "2026-10-30T02:00:00Z",
+    "family": "thought.painting",
+    "funded": 0,
+    "deferred": 3
+   },
+   {
+    "h": "2026-10-30T02:00:00Z",
+    "family": "topic_foundry.run",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T03:00:00Z",
+    "family": "actions.journal",
+    "funded": 8,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T03:00:00Z",
+    "family": "dream.cycle",
+    "funded": 3,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T03:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 0,
+    "deferred": 10
+   },
+   {
+    "h": "2026-10-30T04:00:00Z",
+    "family": "actions.journal",
+    "funded": 4,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T04:00:00Z",
+    "family": "dream.cycle",
+    "funded": 2,
+    "deferred": 0
+   },
+   {
+    "h": "2026-10-30T04:00:00Z",
+    "family": "durable.self_sense_eval",
+    "funded": 0,
+    "deferred": 1
+   },
+   {
+    "h": "2026-10-30T04:00:00Z",
+    "family": "hub.retro_leisure",
+    "funded": 0,
+    "deferred": 7
+   },
+   {
+    "h": "2026-10-30T04:00:00Z",
+    "family": "thought.painting",
+    "funded": 1,
+    "deferred": 0
+   }
+  ]
+ },
+ "rhythm": [
+  {
+   "day": "2026-10-28",
+   "hour": 22,
+   "heavy": 709.1,
+   "total": 5261.8
+  },
+  {
+   "day": "2026-10-28",
+   "hour": 23,
+   "heavy": 1390.7,
+   "total": 11745.5
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 0,
+   "heavy": 5956.0,
+   "total": 14988.9
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 1,
+   "heavy": 5847.1,
+   "total": 13657.8
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 2,
+   "heavy": 7635.8,
+   "total": 12706.5
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 3,
+   "heavy": 14327.1,
+   "total": 19253.4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 4,
+   "heavy": 13167.4,
+   "total": 17179.9
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 5,
+   "heavy": 15162.2,
+   "total": 19365.6
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 6,
+   "heavy": 14042.3,
+   "total": 18702.1
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 7,
+   "heavy": 13804.3,
+   "total": 17500.1
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 8,
+   "heavy": 13357.4,
+   "total": 17388.2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 9,
+   "heavy": 13453.5,
+   "total": 17017.9
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 10,
+   "heavy": 13431.7,
+   "total": 17217.7
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 11,
+   "heavy": 15160.9,
+   "total": 26910.4
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 12,
+   "heavy": 9258.6,
+   "total": 18329.9
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 13,
+   "heavy": 5971.8,
+   "total": 11560.5
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 14,
+   "heavy": 758.3,
+   "total": 2487.0
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 15,
+   "heavy": 0.0,
+   "total": 279.8
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 16,
+   "heavy": 6235.2,
+   "total": 12421.9
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 17,
+   "heavy": 6263.5,
+   "total": 10442.3
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 18,
+   "heavy": 7019.9,
+   "total": 12837.2
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 19,
+   "heavy": 8267.2,
+   "total": 18074.0
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 20,
+   "heavy": 12580.9,
+   "total": 22615.7
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 21,
+   "heavy": 12650.8,
+   "total": 23472.0
+  },
+  {
+   "day": "2026-10-29",
+   "hour": 22,
+   "heavy": 2306.2,
+   "total": 7076.6
+  }
+ ],
+ "money": {
+  "mtd_usd": 184.06,
+  "forecast_usd": 196.72,
+  "envelope_usd": 100.0,
+  "floor_usd": 194.05,
+  "rate_usd_per_kwh": 0.1255,
+  "daily_kwh": [
+   {
+    "d": "2026-10-28",
+    "kwh": 1.785,
+    "partial": true
+   },
+   {
+    "d": "2026-10-29",
+    "kwh": 41.0,
+    "partial": false
+   }
+  ]
+ },
+ "unit_costs": [
+  {
+   "unit": "1 kWh",
+   "usd": 0.1255,
+   "wh": 1000.0,
+   "wh_component": null,
+   "heat_c": null,
+   "status": "derived",
+   "source": "newest marginal tariff rate (energy reading, energy_cost_accrued)",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "1 MJ",
+   "usd": 0.0349,
+   "wh": 277.8,
+   "wh_component": null,
+   "heat_c": null,
+   "status": "derived",
+   "source": "1 MJ = 277.8 W\u00b7h at the newest tariff rate",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "100 W for 2 h on athena",
+   "usd": 0.0251,
+   "wh": 200.0,
+   "wh_component": null,
+   "heat_c": 0.642,
+   "status": "derived",
+   "source": "heat_sensitivity.yaml fitted 2026-10-29: cabinet degC per 100 W step within 2h",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "100 W for 2 h on circe",
+   "usd": 0.0251,
+   "wh": 200.0,
+   "wh_component": null,
+   "heat_c": 0.311,
+   "status": "derived",
+   "source": "heat_sensitivity.yaml fitted 2026-10-29: cabinet degC per 100 W step within 2h",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "one reverie_diffusion run (painting) on circe",
+   "usd": 7.9e-05,
+   "wh": 0.632,
+   "wh_component": 0.27,
+   "heat_c": null,
+   "status": "derived",
+   "source": "estimate, whole machine at the wall above rest: energy_run_cost mean GPU above baseline 0.27 W\u00b7h over 14 runs x overhead 2.345 (fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992))",
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "unit": "one actions.journal act (estimate: family mean)",
+   "usd": 1e-05,
+   "wh": 0.08,
+   "wh_component": null,
+   "heat_c": 0.0002,
+   "status": "measured",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 5.09 W\u00b7h over 64 acts in the window. The family total is the honest number; one act is an estimate",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "one hub.chat_reply act (estimate: family mean)",
+   "usd": 4.5e-05,
+   "wh": 0.358,
+   "wh_component": null,
+   "heat_c": 0.0011,
+   "status": "measured",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.358 W\u00b7h over 1 acts in the window. The family total is the honest number; one act is an estimate",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "one hub.outreach act (estimate: family mean)",
+   "usd": 8.7e-05,
+   "wh": 0.695,
+   "wh_component": null,
+   "heat_c": 0.0022,
+   "status": "measured",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.695 W\u00b7h over 1 acts in the window. The family total is the honest number; one act is an estimate",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "one hub.retro_coplay act (estimate: family mean)",
+   "usd": 5e-06,
+   "wh": 0.041,
+   "wh_component": null,
+   "heat_c": 0.0001,
+   "status": "measured",
+   "source": "grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU above idle only before; family total 0.207 W\u00b7h over 5 acts in the window. The family total is the honest number; one act is an estimate",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "per 1k tokens",
+   "usd": 3e-06,
+   "wh": 0.0225,
+   "wh_component": null,
+   "heat_c": null,
+   "status": "measured",
+   "source": "71 of 71 acts with measured energy joined to 282,018 tokens on correlation_id (J/token 0.0811); 6782 gateway calls, 25,113,711 tokens in the window",
+   "overhead_factor": null,
+   "overhead_basis": null
+  },
+  {
+   "unit": "work not yet metered (per host per day)",
+   "usd": null,
+   "wh": null,
+   "wh_component": null,
+   "heat_c": null,
+   "status": "not_measured",
+   "source": "orion_energy_attribution_hourly does not exist yet (the sql-writer that creates it is not deployed)",
+   "overhead_factor": null,
+   "overhead_basis": null
+  }
+ ],
+ "waste": {
+  "failed_lease_s_by_lane": {
+   "agent-gpu2": 70863.3,
+   "agent": 48861.9,
+   "chat": 44087.3,
+   "fast": 305.5,
+   "diffusion": 65.1,
+   "metacog": 51.3
+  },
+  "top": [
+   {
+    "holder": "durable-runs:d7d0c7d60c96",
+    "role": "agent",
+    "held_s": 8858.2,
+    "reason": "attempt_failed",
+    "at": "2026-10-29T18:58:26.948499Z"
+   },
+   {
+    "holder": "durable-runs:003022656682",
+    "role": "agent",
+    "held_s": 8521.2,
+    "reason": "attempt_failed",
+    "at": "2026-10-29T10:32:13.248208Z"
+   },
+   {
+    "holder": "durable-runs:003022656682",
+    "role": "agent",
+    "held_s": 8506.5,
+    "reason": "attempt_failed",
+    "at": "2026-10-29T12:58:57.005435Z"
+   },
+   {
+    "holder": "durable-runs:8ce4e099c883",
+    "role": "agent",
+    "held_s": 8462.7,
+    "reason": "attempt_failed",
+    "at": "2026-10-29T15:28:30.798228Z"
+   },
+   {
+    "holder": "durable-runs:bbbba525041b",
+    "role": "chat",
+    "held_s": 8378.5,
+    "reason": "attempt_failed",
+    "at": "2026-10-29T10:23:19.309224Z"
+   },
+   {
+    "holder": "durable-runs:c8363ab11231",
+    "role": "chat",
+    "held_s": 8373.8,
+    "reason": "attempt_failed",
+    "at": "2026-10-29T12:43:08.334418Z"
+   },
+   {
+    "holder": "durable-runs:20261029T090459Z-8f54d7",
+    "role": "agent-gpu2",
+    "held_s": 5841.3,
+    "reason": "recall_grace_exceeded",
+    "at": "2026-10-29T10:42:21.138624Z"
+   },
+   {
+    "holder": "durable-runs:ca4a5a4829a8",
+    "role": "agent-gpu2",
+    "held_s": 4986.6,
+    "reason": "recall_grace_exceeded",
+    "at": "2026-10-29T12:22:33.937107Z"
+   },
+   {
+    "holder": "durable-runs:ca4a5a4829a8",
+    "role": "agent-gpu2",
+    "held_s": 4886.3,
+    "reason": "recall_grace_exceeded",
+    "at": "2026-10-29T10:42:21.093775Z"
+   },
+   {
+    "holder": "durable-runs:20261029T130506Z-edc610",
+    "role": "agent-gpu2",
+    "held_s": 4394.3,
+    "reason": "recalled_before_start",
+    "at": "2026-10-29T15:37:25.401055Z"
+   }
+  ]
+ },
+ "queue_wait": [
+  {
+   "lane": "agent",
+   "family": "cortex-exec",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.4,
+   "n": 653
+  },
+  {
+   "lane": "agent",
+   "family": "durable.curiosity_investigate",
+   "family_source": "want_ledger",
+   "p50_s": 14.4,
+   "p90_s": 5275.0,
+   "n": 6
+  },
+  {
+   "lane": "agent",
+   "family": "durable-runs",
+   "family_source": "holder",
+   "p50_s": 571.9,
+   "p90_s": 5746.2,
+   "n": 28
+  },
+  {
+   "lane": "agent",
+   "family": "http",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 102
+  },
+  {
+   "lane": "agent",
+   "family": "operator",
+   "family_source": "holder",
+   "p50_s": 23.9,
+   "p90_s": 42.9,
+   "n": 2
+  },
+  {
+   "lane": "agent",
+   "family": "orion-durable-runs",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.1,
+   "n": 2
+  },
+  {
+   "lane": "agent-gpu2",
+   "family": "cortex-exec",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 5.5,
+   "n": 192
+  },
+  {
+   "lane": "agent-gpu2",
+   "family": "durable.curiosity_investigate",
+   "family_source": "want_ledger",
+   "p50_s": 648.4,
+   "p90_s": 4148.9,
+   "n": 17
+  },
+  {
+   "lane": "agent-gpu2",
+   "family": "durable-runs",
+   "family_source": "holder",
+   "p50_s": 1099.7,
+   "p90_s": 5484.0,
+   "n": 20
+  },
+  {
+   "lane": "agent-gpu2",
+   "family": "durable.self_sense_eval",
+   "family_source": "want_ledger",
+   "p50_s": 1016.0,
+   "p90_s": 4626.9,
+   "n": 9
+  },
+  {
+   "lane": "agent-gpu2",
+   "family": "http",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 10.0,
+   "n": 36
+  },
+  {
+   "lane": "agent-gpu2",
+   "family": "operator",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.4,
+   "n": 3
+  },
+  {
+   "lane": "chat",
+   "family": "cortex-exec",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 10.2,
+   "n": 972
+  },
+  {
+   "lane": "chat",
+   "family": "durable.curiosity_investigate",
+   "family_source": "want_ledger",
+   "p50_s": 1.1,
+   "p90_s": 1149.9,
+   "n": 18
+  },
+  {
+   "lane": "chat",
+   "family": "durable-runs",
+   "family_source": "holder",
+   "p50_s": 682.8,
+   "p90_s": 6522.4,
+   "n": 42
+  },
+  {
+   "lane": "chat",
+   "family": "durable.self_sense_eval",
+   "family_source": "want_ledger",
+   "p50_s": 1338.7,
+   "p90_s": 4041.4,
+   "n": 4
+  },
+  {
+   "lane": "chat",
+   "family": "http",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 6.8,
+   "n": 1903
+  },
+  {
+   "lane": "chat",
+   "family": "operator",
+   "family_source": "holder",
+   "p50_s": 0.2,
+   "p90_s": 0.2,
+   "n": 1
+  },
+  {
+   "lane": "chat",
+   "family": "orion-mind",
+   "family_source": "holder",
+   "p50_s": 0.2,
+   "p90_s": 12.2,
+   "n": 9
+  },
+  {
+   "lane": "diffusion",
+   "family": "durable-runs",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 68
+  },
+  {
+   "lane": "diffusion",
+   "family": "orion-thought",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.2,
+   "n": 14
+  },
+  {
+   "lane": "fast",
+   "family": "cortex-exec",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.2,
+   "n": 170
+  },
+  {
+   "lane": "fast",
+   "family": "cortex-orch",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 881
+  },
+  {
+   "lane": "fast",
+   "family": "durable.journal_compose",
+   "family_source": "want_ledger",
+   "p50_s": 0.1,
+   "p90_s": 0.1,
+   "n": 1
+  },
+  {
+   "lane": "fast",
+   "family": "http",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 5145
+  },
+  {
+   "lane": "fast",
+   "family": "hub",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.2,
+   "n": 13
+  },
+  {
+   "lane": "fast",
+   "family": "orion-memory-consolidation",
+   "family_source": "holder",
+   "p50_s": 0.3,
+   "p90_s": 0.3,
+   "n": 1
+  },
+  {
+   "lane": "fast",
+   "family": "orion-topic-foundry",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.2,
+   "n": 2504
+  },
+  {
+   "lane": "metacog",
+   "family": "cortex-exec",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 953
+  },
+  {
+   "lane": "metacog",
+   "family": "dream",
+   "family_source": "holder",
+   "p50_s": 0.2,
+   "p90_s": 0.2,
+   "n": 7
+  },
+  {
+   "lane": "metacog",
+   "family": "durable-runs",
+   "family_source": "holder",
+   "p50_s": 0.2,
+   "p90_s": 0.2,
+   "n": 3
+  },
+  {
+   "lane": "metacog",
+   "family": "http",
+   "family_source": "holder",
+   "p50_s": 0.2,
+   "p90_s": 0.7,
+   "n": 12
+  },
+  {
+   "lane": "metacog",
+   "family": "orion-hub-retro",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 46
+  },
+  {
+   "lane": "metacog",
+   "family": "orion-memory-consolidation",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 903
+  },
+  {
+   "lane": "metacog",
+   "family": "orion-mind",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 474
+  },
+  {
+   "lane": "metacog",
+   "family": "orion-topic-foundry",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.1,
+   "n": 3
+  },
+  {
+   "lane": "metacog",
+   "family": "vision-council",
+   "family_source": "holder",
+   "p50_s": 0.1,
+   "p90_s": 0.3,
+   "n": 4141
+  }
+ ],
+ "decisions": [
+  {
+   "decided_at": "2026-10-30T04:36:54.597751Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6138,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 1.00, hunger 2059 s (lane_seed:agent, tau 162 s rhythm:451)) - charge 0.000 = net +0.614",
+   "prices_seen": {
+    "heat": 0.488379,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.406692,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.109123
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:35:02.558952Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.91, hunger 8683 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.488379,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.406692,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.109123
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:34:09.568086Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6121,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 1.00, hunger 2094 s (since_last_close, tau 162 s rhythm:449)) - charge 0.000 = net +0.612",
+   "prices_seen": {
+    "heat": 0.497082,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.405179,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.108296
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:32:11.450411Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6121,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 1.00, hunger 1976 s (since_last_close, tau 162 s rhythm:449)) - charge 0.000 = net +0.612",
+   "prices_seen": {
+    "heat": 0.497082,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.405179,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.108296
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:30:12.710897Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6121,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 1.00, hunger 1858 s (since_last_close, tau 162 s rhythm:449)) - charge 0.000 = net +0.612",
+   "prices_seen": {
+    "heat": 0.506849,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.403482,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.107331
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:30:00.987070Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.90, hunger 8381 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.506849,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.403482,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.107331
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:28:09.112262Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.81, hunger 55540 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.506849,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.403482,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.107331
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:24:58.191741Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.89, hunger 8078 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.519305,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.400293,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.106033
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:19:57.607425Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.88, hunger 7778 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.530416,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.394776,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.104816
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:18:08.423119Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.80, hunger 54939 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.535656,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.391243,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.104224
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:14:21.335039Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.87, hunger 7441 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.547224,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.381721,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.102875
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:11:17.768798Z",
+   "family": "durable.self_sense_eval",
+   "verb": "sense",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "capacity_reserved",
+   "net": 0.5696,
+   "binding_constraint": "lane:agent",
+   "why": "durable.self_sense_eval: weight 1.05 (prior) x rank 0.88 (graded; intensity 0.85, hunger 20714 s (since_last_close, tau 10983 s rhythm:42)) - charge 0.359 = net +0.570; lane:agent is full: forecast use + 0 reservation(s) + this cost exceed its line by 96%",
+   "prices_seen": {
+    "heat": 0.557018,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.373164,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.101696
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:09:14.398860Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.86, hunger 7135 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.563901,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.36715,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.100837
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:04:06.138120Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.85, hunger 6826 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.578828,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.354107,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.098908
+   }
+  },
+  {
+   "decided_at": "2026-10-30T04:02:45.028510Z",
+   "family": "thought.painting",
+   "verb": "make",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.2725,
+   "binding_constraint": null,
+   "why": "thought.painting: weight 0.76 (evidence) x rank 0.36 (graded; intensity 0.68, hunger 6649 s (since_last_close, tau 5830 s rhythm:86)) - charge 0.000 = net +0.272",
+   "prices_seen": {
+    "heat": 0.578828,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.354107,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.098908
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:59:04.131981Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.84, hunger 6524 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.586117,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.347079,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.097928
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:59:02.205441Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6135,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 1.00, hunger 1264 s (since_last_close, tau 162 s rhythm:448)) - charge 0.000 = net +0.613",
+   "prices_seen": {
+    "heat": 0.586117,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.347079,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.097928
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:53:54.520672Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.82, hunger 6215 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.601957,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.0,
+    "lane:fast": 0.0,
+    "lane:agent": 0.328807,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.095711
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:37:58.763221Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.77, hunger 5259 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.64611,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.254468,
+    "lane:fast": 0.0,
+    "lane:agent": 0.260602,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.088958
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:37:46.065190Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.455,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.45 (graded; intensity 0.73, hunger 212 s (since_last_close, tau 162 s rhythm:447)) - charge 0.000 = net +0.455",
+   "prices_seen": {
+    "heat": 0.64611,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.254468,
+    "lane:fast": 0.0,
+    "lane:agent": 0.260602,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.088958
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:33:59.192047Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4966,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.50 (graded; intensity 0.78, hunger 247 s (since_last_close, tau 162 s rhythm:446)) - charge 0.000 = net +0.497",
+   "prices_seen": {
+    "heat": 0.659329,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.333779,
+    "lane:fast": 0.0,
+    "lane:agent": 0.233951,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.086759
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:32:42.741623Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.75, hunger 4943 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.659329,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.333779,
+    "lane:fast": 0.0,
+    "lane:agent": 0.233951,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.086759
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:29:35.567337Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4864,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.49 (graded; intensity 0.76, hunger 235 s (since_last_close, tau 162 s rhythm:445)) - charge 0.000 = net +0.486",
+   "prices_seen": {
+    "heat": 0.667985,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.385719,
+    "lane:fast": 0.0,
+    "lane:agent": 0.215235,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.000563,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.085279
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:28:06.057222Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.78, hunger 51937 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.674457,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.424548,
+    "lane:fast": 0.0,
+    "lane:agent": 0.201243,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.000411,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.084146
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:27:41.832730Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.72, hunger 4642 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.674457,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.424548,
+    "lane:fast": 0.0,
+    "lane:agent": 0.201243,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.000411,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.084146
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:25:30.087053Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4444,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.44 (graded; intensity 0.69, hunger 190 s (since_last_close, tau 162 s rhythm:444)) - charge 0.000 = net +0.444",
+   "prices_seen": {
+    "heat": 0.679322,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.424367,
+    "lane:fast": 0.0,
+    "lane:agent": 0.190574,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.08328
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:22:21.752028Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.70, hunger 4322 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.68998,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.424231,
+    "lane:fast": 0.0,
+    "lane:agent": 0.168459,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.081344
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:22:07.821815Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6219,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 1122 s (since_last_close, tau 162 s rhythm:442)) - charge 0.000 = net +0.622",
+   "prices_seen": {
+    "heat": 0.68998,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.424231,
+    "lane:fast": 0.0,
+    "lane:agent": 0.168459,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.081344
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:18:33.205196Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6219,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.62 (graded; intensity 1.00, hunger 908 s (since_last_close, tau 162 s rhythm:442)) - charge 0.000 = net +0.622",
+   "prices_seen": {
+    "heat": 0.703444,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.423763,
+    "lane:fast": 0.0,
+    "lane:agent": 0.144066,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.078827
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:18:05.741379Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.78, hunger 51336 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.703444,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.423763,
+    "lane:fast": 0.0,
+    "lane:agent": 0.144066,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.078827
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:17:12.523638Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.67, hunger 4013 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.703444,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.423763,
+    "lane:fast": 0.0,
+    "lane:agent": 0.144066,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.078827
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:11:36.736992Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.64, hunger 3677 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.719457,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.421648,
+    "lane:fast": 0.0,
+    "lane:agent": 0.118721,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.075726
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:08:05.397601Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.78, hunger 50736 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.734583,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.417365,
+    "lane:fast": 0.0,
+    "lane:agent": 0.095482,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.072683
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:06:31.334959Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.61, hunger 3371 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.734583,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.417365,
+    "lane:fast": 0.0,
+    "lane:agent": 0.095482,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.072683
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:03:12.577567Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4475,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.45 (graded; intensity 0.70, hunger 195 s (since_last_close, tau 162 s rhythm:441)) - charge 0.000 = net +0.447",
+   "prices_seen": {
+    "heat": 0.741981,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.414797,
+    "lane:fast": 0.0,
+    "lane:agent": 0.084117,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.071154
+   }
+  },
+  {
+   "decided_at": "2026-10-30T03:00:58.544477Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.57, hunger 3039 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.752791,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.40996,
+    "lane:fast": 0.0,
+    "lane:agent": 0.06826,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.068865
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:58:36.341948Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.5011,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.50 (graded; intensity 0.78, hunger 249 s (since_last_close, tau 162 s rhythm:440)) - charge 0.000 = net +0.501",
+   "prices_seen": {
+    "heat": 0.758346,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.407084,
+    "lane:fast": 0.0,
+    "lane:agent": 0.061189,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.067667
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:58:05.116872Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.77, hunger 50136 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.758346,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.407084,
+    "lane:fast": 0.0,
+    "lane:agent": 0.061189,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.067667
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:55:28.839807Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.53, hunger 2709 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.763617,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.404206,
+    "lane:fast": 0.0,
+    "lane:agent": 0.055148,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.066516
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:54:09.618501Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6147,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 0.97, hunger 559 s (since_last_close, tau 162 s rhythm:439)) - charge 0.000 = net +0.615",
+   "prices_seen": {
+    "heat": 0.770174,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.400393,
+    "lane:fast": 0.0,
+    "lane:agent": 0.048333,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.065067
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:50:23.635450Z",
+   "family": "hub.retro_leisure",
+   "verb": "play",
+   "tier": 2,
+   "outcome": "deferred",
+   "reason": "sated",
+   "net": 0.0,
+   "binding_constraint": null,
+   "why": "hub.retro_leisure: weight 1.05 (prior) x rank 0.00 (ungraded; intensity 0.49, hunger 2404 s (since_last_close, tau 3600 s deferrable_window)) - charge 0.000 = net +0.000; nothing charged, but no hunger to fund (the family's last act just closed)",
+   "prices_seen": {
+    "heat": 0.785074,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.389531,
+    "lane:fast": 0.0,
+    "lane:agent": 0.035944,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.061702
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:48:04.803068Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.77, hunger 49536 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.785074,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.389531,
+    "lane:fast": 0.0,
+    "lane:agent": 0.035944,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.061702
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:44:27.176981Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4667,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.47 (graded; intensity 0.74, hunger 221 s (since_last_close, tau 162 s rhythm:438)) - charge 0.000 = net +0.467",
+   "prices_seen": {
+    "heat": 0.799284,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.377737,
+    "lane:fast": 0.0,
+    "lane:agent": 0.024853,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.058386
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:40:30.739778Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.4516,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.45 (graded; intensity 0.70, hunger 196 s (since_last_close, tau 162 s rhythm:437)) - charge 0.000 = net +0.452",
+   "prices_seen": {
+    "heat": 0.806663,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.370732,
+    "lane:fast": 0.0,
+    "lane:agent": 0.019849,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.056624
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:38:04.488616Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.76, hunger 48935 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.814037,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.363323,
+    "lane:fast": 0.0,
+    "lane:agent": 0.015979,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.054836
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:36:52.979781Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6134,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.61 (graded; intensity 0.95, hunger 482 s (since_last_close, tau 162 s rhythm:435)) - charge 0.000 = net +0.613",
+   "prices_seen": {
+    "heat": 0.819458,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.357611,
+    "lane:fast": 0.0,
+    "lane:agent": 0.014018,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.053501
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:33:09.770020Z",
+   "family": "topic_foundry.run",
+   "verb": "maintain",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6926,
+   "binding_constraint": null,
+   "why": "topic_foundry.run: weight 1.05 (prior) x rank 0.66 (graded; intensity 0.94, hunger 6238 s (since_last_close, tau 2204 s rhythm:43)) - charge 0.000 = net +0.693",
+   "prices_seen": {
+    "heat": 0.828976,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.347131,
+    "lane:fast": 0.0,
+    "lane:agent": 0.011694,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.051131
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:33:08.907993Z",
+   "family": "actions.journal",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.5093,
+   "binding_constraint": null,
+   "why": "actions.journal: weight 1.00 (prior) x rank 0.51 (graded; intensity 0.80, hunger 258 s (since_last_close, tau 162 s rhythm:435)) - charge 0.000 = net +0.509",
+   "prices_seen": {
+    "heat": 0.828976,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.347131,
+    "lane:fast": 0.0,
+    "lane:agent": 0.011694,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.051131
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:32:28.575003Z",
+   "family": "topic_foundry.run",
+   "verb": "maintain",
+   "tier": 2,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6926,
+   "binding_constraint": null,
+   "why": "topic_foundry.run: weight 1.05 (prior) x rank 0.66 (graded; intensity 0.94, hunger 6197 s (since_last_close, tau 2204 s rhythm:43)) - charge 0.000 = net +0.693",
+   "prices_seen": {
+    "heat": 0.828976,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.347131,
+    "lane:fast": 0.0,
+    "lane:agent": 0.011694,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.051131
+   }
+  },
+  {
+   "decided_at": "2026-10-30T02:28:04.207347Z",
+   "family": "dream.cycle",
+   "verb": "make",
+   "tier": 1,
+   "outcome": "funded",
+   "reason": "net_positive",
+   "net": 0.6,
+   "binding_constraint": null,
+   "why": "dream.cycle: weight 1.00 (prior) x rank 0.60 (ungraded; intensity 0.76, hunger 48335 s (since_last_close, tau 33905 s rhythm:10)) - charge 0.000 = net +0.600",
+   "prices_seen": {
+    "heat": 0.839409,
+    "claude": 0.0,
+    "energy": 1.0,
+    "lane:kev": 0.0,
+    "lane:chat": 0.334727,
+    "lane:fast": 0.0,
+    "lane:agent": 0.00997,
+    "lane:world": 0.0,
+    "lane:metacog": 0.0,
+    "lane:diffusion": 0.0,
+    "lane:agent-deep": 0.0,
+    "lane:agent-gpu2": 0.0,
+    "lane:experiment": 0.0,
+    "attention:juniper": 0.048483
+   }
+  }
+ ],
+ "claude": {
+  "window_tokens": {
+   "input": 9408,
+   "output": 3155390,
+   "cache_read": 824401870,
+   "cache_write": 18081262
+  },
+  "usd_est": 604.14,
+  "limit_events": [],
+  "status": "tokens are Claude Code sessions on athena (dev_economics, ~/.claude/projects: Juniper's and her agents' sessions); Orion's own harness sessions are not in this count; usd_est is an API-price estimate, not a bill; limits: unknown (no_observation): no ClaudeLimitObservationV1 has arrived on orion:substrate:claude_limit; its producer in orion-cocreation-signals is off by default (COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false)"
+ },
+ "vram": [
+  {
+   "host": "circe",
+   "card": "gpu0",
+   "used_mb": 27962.0,
+   "total_mb": 32768.0,
+   "headroom_mb": 4806.0,
+   "roles": [
+    "chat",
+    "experiment"
+   ],
+   "watts": 37.1
+  },
+  {
+   "host": "circe",
+   "card": "gpu1",
+   "used_mb": 24888.0,
+   "total_mb": 32768.0,
+   "headroom_mb": 7880.0,
+   "roles": [
+    "agent",
+    "experiment"
+   ],
+   "watts": 198.7
+  },
+  {
+   "host": "circe",
+   "card": "gpu2",
+   "used_mb": 24904.0,
+   "total_mb": 32768.0,
+   "headroom_mb": 7864.0,
+   "roles": [
+    "agent-gpu2",
+    "diffusion",
+    "experiment",
+    "world"
+   ],
+   "watts": 145.7
+  },
+  {
+   "host": "circe",
+   "card": "gpu3",
+   "used_mb": 19483.0,
+   "total_mb": 32768.0,
+   "headroom_mb": 13285.0,
+   "roles": [
+    "experiment",
+    "fast",
+    "kev",
+    "metacog"
+   ],
+   "watts": 79.5
+  },
+  {
+   "host": "hecate",
+   "card": "hecate-gpu0",
+   "used_mb": null,
+   "total_mb": null,
+   "headroom_mb": null,
+   "roles": [
+    "agent-deep"
+   ],
+   "watts": null
+  },
+  {
+   "host": "athena",
+   "card": "athena-gpu0",
+   "used_mb": 4519.0,
+   "total_mb": 7680.0,
+   "headroom_mb": 3161.0,
+   "roles": [],
+   "watts": 25.8
+  },
+  {
+   "host": "athena",
+   "card": "athena-gpu1",
+   "used_mb": 13305.0,
+   "total_mb": 16384.0,
+   "headroom_mb": 3079.0,
+   "roles": [],
+   "watts": 67.2
+  }
+ ],
+ "value_per_cost": [],
+ "services": {
+  "checked_at": "2026-10-30T04:37:40.083168Z",
+  "down": [
+   {
+    "name": "orion-kev/kev",
+    "host": "athena",
+    "state": "exited",
+    "since": "2026-10-15T21:11:21.060498Z"
+   }
+  ],
+  "basis": "mesh-guardian stopped_container cards from the last 30 days (one card per outage). No recovery event exists, so a listed service may be running again."
+ },
+ "processes": [
+  {
+   "host": "athena",
+   "name": "(host, not in a container)",
+   "watts": 13.7,
+   "cores": null,
+   "watts_at_wall_est": 17.4,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "circe",
+   "name": "43baf7e0588d",
+   "watts": 7.9,
+   "cores": null,
+   "watts_at_wall_est": 18.4,
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "circe",
+   "name": "dd62b3275f3b",
+   "watts": 7.8,
+   "cores": null,
+   "watts_at_wall_est": 18.2,
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "circe",
+   "name": "(host, not in a container)",
+   "watts": 6.2,
+   "cores": null,
+   "watts_at_wall_est": 14.6,
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "circe",
+   "name": "e5287fa21cba",
+   "watts": 5.2,
+   "cores": null,
+   "watts_at_wall_est": 12.2,
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-substrate-runtime",
+   "watts": 3.1,
+   "cores": null,
+   "watts_at_wall_est": 4.0,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-vision-host",
+   "watts": 2.9,
+   "cores": null,
+   "watts_at_wall_est": 3.7,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "(small containers)",
+   "watts": 2.7,
+   "cores": null,
+   "watts_at_wall_est": 3.5,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-sql-db",
+   "watts": 2.6,
+   "cores": null,
+   "watts_at_wall_est": 3.3,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-falkordb",
+   "watts": 2.5,
+   "cores": null,
+   "watts_at_wall_est": 3.1,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-vision-edge",
+   "watts": 2.5,
+   "cores": null,
+   "watts_at_wall_est": 3.2,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
+   "host": "athena",
+   "name": "orion-vision-retina-walkway",
+   "watts": 2.4,
+   "cores": null,
+   "watts_at_wall_est": 3.0,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
+  }
+ ],
+ "hosts": [
+  {
+   "host": "circe",
+   "at": "2026-10-30T04:37:17.388425Z",
+   "chassis_w_now": 1275.0,
+   "chassis_w_rest": 541.0,
+   "rest_basis": "pinned in config/physiology/rest_body.yaml: p05 chassis_watts over 2026-10-01..2026-10-13",
+   "recent_floor_w": 578.0,
+   "above_rest_w": 734.0,
+   "usd_per_month_at_this_rate": 67.25,
+   "rest_usd_per_month": 49.56,
+   "gpu_w": 460.9,
+   "cpu_w": 129.3,
+   "other_w": 684.8,
+   "gpu_w_rest": 193.4,
+   "cpu_w_rest": 45.3,
+   "other_w_rest": 279.5,
+   "parts_rest_window": "2026-10-01..2026-10-13",
+   "fan_pct": 55.3,
+   "unattributed_above_rest_w": null,
+   "cards": [
+    {
+     "card": "gpu0",
+     "watts": 37.1,
+     "idle_w": 37.1,
+     "above_idle_w": 0.0,
+     "watts_at_wall_est": 0.0,
+     "temp_c": 40.0,
+     "mem_used_mb": 27962.0,
+     "roles": [
+      "chat",
+      "experiment"
+     ],
+     "top_holders": [
+      {
+       "holder": "durable-runs:curiosity.investigate",
+       "label": "curiosity.investigate runs",
+       "lease_s": 19914.7
+      },
+      {
+       "holder": "durable-runs:reading.turn",
+       "label": "reading.turn runs",
+       "lease_s": 17102.3
+      },
+      {
+       "holder": "http:anthropic",
+       "label": "harness turns",
+       "lease_s": 10165.7
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 9791.9
+      }
+     ]
+    },
+    {
+     "card": "gpu1",
+     "watts": 198.7,
+     "idle_w": 41.8,
+     "above_idle_w": 157.0,
+     "watts_at_wall_est": 368.1,
+     "temp_c": 72.0,
+     "mem_used_mb": 24888.0,
+     "roles": [
+      "agent",
+      "experiment"
+     ],
+     "top_holders": [
+      {
+       "holder": "durable-runs:curiosity.investigate",
+       "label": "curiosity.investigate runs",
+       "lease_s": 38791.4
+      },
+      {
+       "holder": "durable-runs:reading.turn",
+       "label": "reading.turn runs",
+       "lease_s": 28133.2
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 26441.9
+      },
+      {
+       "holder": "http:anthropic",
+       "label": "harness turns",
+       "lease_s": 16115.7
+      }
+     ]
+    },
+    {
+     "card": "gpu2",
+     "watts": 145.7,
+     "idle_w": 41.6,
+     "above_idle_w": 104.0,
+     "watts_at_wall_est": 244.0,
+     "temp_c": 63.0,
+     "mem_used_mb": 24904.0,
+     "roles": [
+      "agent-gpu2",
+      "diffusion",
+      "experiment",
+      "world"
+     ],
+     "top_holders": [
+      {
+       "holder": "durable-runs:reading.turn",
+       "label": "reading.turn runs",
+       "lease_s": 25995.5
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 13815.9
+      },
+      {
+       "holder": "durable-runs:self_sense_eval",
+       "label": "self_sense_eval runs",
+       "lease_s": 13546.7
+      },
+      {
+       "holder": "http:anthropic",
+       "label": "harness turns",
+       "lease_s": 6283.8
+      }
+     ]
+    },
+    {
+     "card": "gpu3",
+     "watts": 79.5,
+     "idle_w": 72.8,
+     "above_idle_w": 6.7,
+     "watts_at_wall_est": 15.6,
+     "temp_c": 59.0,
+     "mem_used_mb": 19483.0,
+     "roles": [
+      "experiment",
+      "fast",
+      "kev",
+      "metacog"
+     ],
+     "top_holders": [
+      {
+       "holder": "vision-council",
+       "label": "vision-council",
+       "lease_s": 33147.4
+      },
+      {
+       "holder": "orion-topic-foundry",
+       "label": "orion-topic-foundry",
+       "lease_s": 18360.3
+      },
+      {
+       "holder": "http:openai",
+       "label": "AI Town",
+       "lease_s": 12104.6
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 5398.9
+      }
+     ]
+    }
+   ],
+   "top_containers": [
+    {
+     "name": "43baf7e0588d",
+     "cpu_w": 7.9,
+     "watts_at_wall_est": 18.4
+    },
+    {
+     "name": "dd62b3275f3b",
+     "cpu_w": 7.8,
+     "watts_at_wall_est": 18.2
+    },
+    {
+     "name": "(host, not in a container)",
+     "cpu_w": 6.2,
+     "watts_at_wall_est": 14.6
+    },
+    {
+     "name": "e5287fa21cba",
+     "cpu_w": 5.2,
+     "watts_at_wall_est": 12.2
+    },
+    {
+     "name": "051e28075f1c",
+     "cpu_w": 1.9,
+     "watts_at_wall_est": 4.4
+    }
+   ],
+   "sponsored": [],
+   "daily": [
+    {
+     "d": "2026-10-28",
+     "chassis_w_avg": 1031.5
+    },
+    {
+     "d": "2026-10-29",
+     "chassis_w_avg": 975.8
+    }
+   ],
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)",
+   "overhead_fitted": true,
+   "overhead_r2": 0.898,
+   "overhead_hours": 337
+  },
+  {
+   "host": "athena",
+   "at": "2026-10-30T04:37:18.090800Z",
+   "chassis_w_now": 417.0,
+   "chassis_w_rest": 340.0,
+   "rest_basis": "pinned in config/physiology/rest_body.yaml: p05 chassis_watts over 2026-10-01..2026-10-13",
+   "recent_floor_w": 387.0,
+   "above_rest_w": 77.0,
+   "usd_per_month_at_this_rate": 7.05,
+   "rest_usd_per_month": 31.15,
+   "gpu_w": 93.0,
+   "cpu_w": 139.1,
+   "other_w": 184.9,
+   "gpu_w_rest": 79.0,
+   "cpu_w_rest": 118.0,
+   "other_w_rest": 92.4,
+   "parts_rest_window": "2026-10-01..2026-10-13",
+   "fan_pct": 55.0,
+   "unattributed_above_rest_w": null,
+   "cards": [
+    {
+     "card": "athena-gpu0",
+     "watts": 25.8,
+     "idle_w": 24.4,
+     "above_idle_w": 1.4,
+     "watts_at_wall_est": 1.8,
+     "temp_c": 53.0,
+     "mem_used_mb": 4519.0,
+     "roles": [],
+     "top_holders": []
+    },
+    {
+     "card": "athena-gpu1",
+     "watts": 67.2,
+     "idle_w": 51.1,
+     "above_idle_w": 16.1,
+     "watts_at_wall_est": 20.4,
+     "temp_c": 77.0,
+     "mem_used_mb": 13305.0,
+     "roles": [],
+     "top_holders": []
+    }
+   ],
+   "top_containers": [
+    {
+     "name": "(host, not in a container)",
+     "cpu_w": 13.7,
+     "watts_at_wall_est": 17.4
+    },
+    {
+     "name": "orion-athena-substrate-runtime",
+     "cpu_w": 3.1,
+     "watts_at_wall_est": 4.0
+    },
+    {
+     "name": "orion-athena-vision-host",
+     "cpu_w": 2.9,
+     "watts_at_wall_est": 3.7
+    },
+    {
+     "name": "orion-athena-sql-db",
+     "cpu_w": 2.6,
+     "watts_at_wall_est": 3.3
+    },
+    {
+     "name": "orion-athena-falkordb",
+     "cpu_w": 2.5,
+     "watts_at_wall_est": 3.1
+    }
+   ],
+   "sponsored": [
+    {
+     "name": "zelda_dojo",
+     "note": "Juniper runs it until she kills it",
+     "containers": 0,
+     "cpu_w": null,
+     "watts_at_wall_est": null
+    }
+   ],
+   "daily": [
+    {
+     "d": "2026-10-28",
+     "chassis_w_avg": 722.7
+    },
+    {
+     "d": "2026-10-29",
+     "chassis_w_avg": 725.3
+    }
+   ],
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)",
+   "overhead_fitted": true,
+   "overhead_r2": 0.982,
+   "overhead_hours": 337
+  }
+ ],
+ "missing": [
+  {
+   "section": "queue_wait",
+   "reason": "partial: only durable-run admissions join to a want family; other rows are named by the holder's service"
+  },
+  {
+   "section": "vram",
+   "reason": "partial: 1 of 7 cards report no memory figures"
+  },
+  {
+   "section": "vram",
+   "reason": "no biometrics row in the last 15 min for hecate (asleep or its reporter is down): its cards read unknown"
+  },
+  {
+   "section": "processes",
+   "reason": "top 12 of 24 shown"
+  },
+  {
+   "section": "hosts",
+   "reason": "circe: some containers show as 12-char ids (orion-biometrics could not read their names, and the container census did not list them)"
+  },
+  {
+   "section": "hosts",
+   "reason": "card rests on circe, athena are the last 7 days' 5th percentile (per-card watts began 2026-10-29, after the pinned window 2026-10-01..2026-10-13)"
+  },
+  {
+   "section": "hosts",
+   "reason": "no biometrics row in the last 15 min for hecate (asleep or its reporter is down): not shown"
+  },
+  {
+   "section": "hosts",
+   "reason": "above-rest watts no act is charged for: not split per instant here (unattributed_above_rest_w stays empty); per host per day it is unit_costs 'work not yet metered' (orion_energy_attribution_hourly)"
+  },
+  {
+   "section": "value_per_cost",
+   "reason": "family weights unavailable (the bid market is off (ORION_PHYSIOLOGY_BID_ENABLED))"
+  }
+ ],
+ "query": {
+  "window": "24h",
+  "sections": [
+   "limits",
+   "wants",
+   "rhythm",
+   "money",
+   "unit_costs",
+   "waste",
+   "queue_wait",
+   "decisions",
+   "claude",
+   "vram",
+   "value_per_cost",
+   "services",
+   "processes",
+   "hosts"
+  ],
+  "family": null,
+  "outcome": null,
+  "limit": 50
+ },
+ "timing_ms": {
+  "latest": 38.5,
+  "wants": 58.5,
+  "money": 1.6,
+  "unit_costs": 1.4,
+  "act_costs": 8.6,
+  "limits": 131.1,
+  "attribution": 0.8,
+  "waste": 145.9,
+  "rhythm": 242.5,
+  "decisions": 3.7,
+  "claude": 3.8,
+  "biometrics": 1.7,
+  "tokens": 221.3,
+  "queue_wait": 43.9,
+  "hosts_floor": 433.0,
+  "hosts_daily": 44.7,
+  "overhead": 553.9,
+  "services": 158.5,
+  "hosts_holders": 267.2,
+  "hosts_rest": 1317.1,
+  "total": 1668.8
+ }
+}

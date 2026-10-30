@@ -184,6 +184,7 @@ def test_harness_prefix_carries_the_line(monkeypatch):
 # --- body-economy (skills.physiology.state.v1 from Bash) ------------------------------------
 
 _HOSTS_FIXTURE = Path(__file__).resolve().parents[2] / "physiology/evals/fixtures/physiology_report_live_2026-10-30_24h.json"
+_OVERHEAD_FIXTURE = _HOSTS_FIXTURE.with_name("physiology_report_live_2026-10-30_overhead_24h.json")
 _REPORT_FIXTURE = Path(__file__).resolve().parents[2] / "physiology" / "evals" / "fixtures" / \
     "physiology_report_live_2026-10-29_24h.json"
 
@@ -229,12 +230,13 @@ def test_body_economy_sections_window_family(world, capsys, report_server):
     assert "window=7d" in report_server[0] and "family=hub.outreach" in report_server[0]
 
 
-def test_body_economy_hosts_host_answers_what_is_spinning_circe(world, capsys, monkeypatch, tmp_path):
+@pytest.mark.parametrize("fixture", [_HOSTS_FIXTURE, _OVERHEAD_FIXTURE], ids=["before-overhead", "overhead"])
+def test_body_economy_hosts_host_answers_what_is_spinning_circe(world, capsys, monkeypatch, tmp_path, fixture):
     """Juniper 2026-10-30: Orion must be able to check what is spinning a machine from Bash."""
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    body = _HOSTS_FIXTURE.read_bytes()
+    body = fixture.read_bytes()
     seen: list[str] = []
 
     class H(BaseHTTPRequestHandler):
@@ -262,6 +264,11 @@ def test_body_economy_hosts_host_answers_what_is_spinning_circe(world, capsys, m
     assert "athena draws" not in out and "vision-council" in out and "- rest: pinned" in out
     assert "measured:" in out and "Estimated:" in out
     assert "body-economy-24h-circe" in lines[-1]
+    if circe.get("overhead_factor") is not None:
+        # every card in the same unit acts are charged in: whole machine at the wall above rest (estimate)
+        gpu1 = next(c for c in circe["cards"] if c["card"] == "gpu1")
+        assert f"(≈{gpu1['watts_at_wall_est']:.0f} W at the wall above rest)" in out
+        assert "- overhead: each watt of GPU/CPU load above idle draws about" in out and "ESTIMATES" in out
 
 
 def test_body_economy_help_lists_sections_and_flags(world, capsys):

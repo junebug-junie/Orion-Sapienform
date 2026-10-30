@@ -57,7 +57,9 @@
        "label": "cortex-exec",
        "lease_s": 9791.9
       }
-     ]
+     ],
+     "above_idle_w": 0.4,
+     "watts_at_wall_est": 0.9
     },
     {
      "card": "gpu1",
@@ -90,7 +92,9 @@
        "label": "harness turns",
        "lease_s": 13572.3
       }
-     ]
+     ],
+     "above_idle_w": 187.0,
+     "watts_at_wall_est": 438.5
     },
     {
      "card": "gpu2",
@@ -125,7 +129,9 @@
        "label": "operator:gpu-power-bench",
        "lease_s": 4541.5
       }
-     ]
+     ],
+     "above_idle_w": 106.4,
+     "watts_at_wall_est": 249.5
     },
     {
      "card": "gpu3",
@@ -160,29 +166,36 @@
        "label": "cortex-exec",
        "lease_s": 5359.0
       }
-     ]
+     ],
+     "above_idle_w": 76.2,
+     "watts_at_wall_est": 178.7
     }
    ],
    "top_containers": [
     {
      "name": "orion-circe-atlas-llamacpp-agent-burst",
-     "cpu_w": 8.0
+     "cpu_w": 8.0,
+     "watts_at_wall_est": 18.8
     },
     {
      "name": "orion-circe-atlas-llamacpp-fast",
-     "cpu_w": 7.8
+     "cpu_w": 7.8,
+     "watts_at_wall_est": 18.3
     },
     {
      "name": "orion-circe-atlas-llamacpp-metacog",
-     "cpu_w": 7.6
+     "cpu_w": 7.6,
+     "watts_at_wall_est": 17.8
     },
     {
      "name": "orion-circe-atlas-llamacpp-agent",
-     "cpu_w": 7.2
+     "cpu_w": 7.2,
+     "watts_at_wall_est": 16.9
     },
     {
      "name": "(host, not in a container)",
-     "cpu_w": 7.0
+     "cpu_w": 7.0,
+     "watts_at_wall_est": 16.4
     }
    ],
    "sponsored": [],
@@ -195,7 +208,12 @@
      "d": "2026-10-29",
      "chassis_w_avg": 963.2
     }
-   ]
+   ],
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)",
+   "overhead_fitted": true,
+   "overhead_r2": 0.898,
+   "overhead_hours": 337
   },
   {
    "host": "athena",
@@ -224,7 +242,9 @@
      "temp_c": 57.0,
      "mem_used_mb": 4519.0,
      "roles": [],
-     "top_holders": []
+     "top_holders": [],
+     "above_idle_w": 17.9,
+     "watts_at_wall_est": 22.8
     },
     {
      "card": "athena-gpu1",
@@ -233,29 +253,36 @@
      "temp_c": 76.0,
      "mem_used_mb": 13305.0,
      "roles": [],
-     "top_holders": []
+     "top_holders": [],
+     "above_idle_w": 14.7,
+     "watts_at_wall_est": 18.7
     }
    ],
    "top_containers": [
     {
      "name": "orion-athena-whisper-tts",
-     "cpu_w": 22.2
+     "cpu_w": 22.2,
+     "watts_at_wall_est": 28.3
     },
     {
      "name": "orion-athena-meta-tags",
-     "cpu_w": 18.1
+     "cpu_w": 18.1,
+     "watts_at_wall_est": 23.0
     },
     {
      "name": "orion-athena-vector-host",
-     "cpu_w": 9.2
+     "cpu_w": 9.2,
+     "watts_at_wall_est": 11.7
     },
     {
      "name": "(host, not in a container)",
-     "cpu_w": 9.1
+     "cpu_w": 9.1,
+     "watts_at_wall_est": 11.6
     },
     {
      "name": "orion-athena-vision-host",
-     "cpu_w": 4.4
+     "cpu_w": 4.4,
+     "watts_at_wall_est": 5.6
     }
    ],
    "sponsored": [
@@ -263,7 +290,8 @@
      "name": "zelda_dojo",
      "note": "Juniper runs it until she kills it (pending her decision)",
      "containers": 32,
-     "cpu_w": 150.4
+     "cpu_w": 150.4,
+     "watts_at_wall_est": 191.5
     }
    ],
    "daily": [
@@ -275,7 +303,12 @@
      "d": "2026-10-29",
      "chassis_w_avg": 733.3
     }
-   ]
+   ],
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)",
+   "overhead_fitted": true,
+   "overhead_r2": 0.982,
+   "overhead_hours": 337
   }
  ],
  "limits": [
@@ -2896,6 +2929,17 @@
    "source": "kWh rate x fitted heat sensitivity (2 h step, a lower bound)"
   },
   {
+   "unit": "one reverie_diffusion run (painting) on circe",
+   "usd": 7.9e-05,
+   "wh": 0.632,
+   "wh_component": 0.27,
+   "heat_c": null,
+   "status": "derived",
+   "source": "estimate, whole machine at the wall above rest: energy_run_cost mean GPU above baseline 0.27 W·h over 14 runs x overhead 2.345 (fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992))",
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
+  },
+  {
    "unit": "1 agent turn / curiosity run",
    "usd": null,
    "wh": null,
@@ -3235,25 +3279,37 @@
    "host": "circe",
    "name": "d590a9d48af2",
    "watts": 8.9,
-   "cores": null
+   "cores": null,
+   "watts_at_wall_est": 20.9,
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
    "name": "orion-athena-vector-host",
    "watts": 50.6,
-   "cores": null
+   "cores": null,
+   "watts_at_wall_est": 64.4,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "athena",
    "name": "(host, not in a container)",
    "watts": 12.6,
-   "cores": null
+   "cores": null,
+   "watts_at_wall_est": 16.0,
+   "overhead_factor": 1.273,
+   "overhead_basis": "fitted on athena 2026-10-16..2026-10-30: chassis above pinned rest 340 W = 1.27 x (GPU above 79 W + CPU above 99 W idle), 337 hourly means, R^2 0.98; same readings and rest as the per-act meter (PR #2992)"
   },
   {
    "host": "circe",
    "name": "orion-llamacpp-chat",
    "watts": 21.4,
-   "cores": 3.5
+   "cores": 3.5,
+   "watts_at_wall_est": 50.2,
+   "overhead_factor": 2.345,
+   "overhead_basis": "fitted on circe 2026-10-16..2026-10-30: chassis above pinned rest 541 W = 2.34 x (GPU above 193 W + CPU above 100 W idle), 337 hourly means, R^2 0.90; same readings and rest as the per-act meter (PR #2992)"
   }
  ],
  "missing": [

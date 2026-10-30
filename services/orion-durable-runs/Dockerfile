@@ -25,6 +25,9 @@ COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml
 # Body economy Patch C1: want families (tier, prior weight, deferrable window, lanes) for /physiology/bid.
 COPY config/physiology/families.yaml /app/config/physiology/families.yaml
+# The pinned rest per host (PR #2992). /physiology/report reads it beside heat_sensitivity.yaml for
+# the hosts rest and the overhead fit; without it the report falls back to its dated defaults.
+COPY config/physiology/rest_body.yaml /app/config/physiology/rest_body.yaml
 COPY services/orion-durable-runs /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8121"]

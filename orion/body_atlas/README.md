@@ -30,7 +30,7 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    | `runs_on` | service or camera → host | `observed_placement` (this host's `docker ps`), `declared_placement` (`mesh-utilities/common/include_services_<host>.txt`, `runs_services`, `cameras`) |
    | `sees_through` | camera → service | `declared_config`: the compose mounts the frame-router policy, or a `*STREAM_ID` setting names the stream |
    | `writes` | producer → table | `declared_route`: orion-sql-writer's `DEFAULT_ROUTE_MAP` (kind → table) joined with that kind's channel producers |
-   | `uses` | service → Chroma/FalkorDB store | `declared_env`: its `.env_example` names the store (read or write: the env does not say) |
+   | `writes` / `reads` / `uses` | service → Chroma/FalkorDB store | `declared_env`: its `.env_example` names the store (`uses`: the env does not say which way). `declared_code`: its code names the store (`store_code.py`, below); `writes` / `reads` only when the call says which |
    | `runs` | runner → process | `declared_runner` (producer of `durable.run.state.v1`), `assumed_runner` (reducers → orion-substrate-runtime) |
    | `does` | service → durable run | `observed_trace` (a `grammar_events` / `cognition_traces` / `cockpit_turn_sighting` row with the run's `correlation_id` names the service), `observed_turn` (same, keyed by the turn the run started, `detail.turn_correlation_id`), `declared_turn_writer` (a `harness_turn_trace` row exists for the run; that table's declared writers) |
    | `spawns` | run → run | `observed_child_run` (`detail.child_run_ids`, e.g. dream.carry → reverie.visual) |
@@ -41,6 +41,24 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    camera, store or process adds at most one unit, split over its edges. With the body, a
    channel orion-sql-writer persists no longer also links its producer to orion-sql-writer:
    that fact now lives on the `writes` flow to the real table (counted once, not twice).
+
+   A Chroma collection's or FalkorDB graph's one unit is split by how specific each source is:
+   `log(1 + N / df)`, `df` = how many of the N stores that source (an env file, a code module, a
+   persisted channel) names. A module naming one store keeps most of it; a registry naming ten
+   keeps a little of each. One edge per service: its strongest relation (writes > reads > uses),
+   every evidence kept. A store no service's code, env or route names is printed as
+   `UNATTRIBUTED`, with its row count, never guessed.
+
+   **Code evidence** (`store_code.py`, by rule, no store → service list). A module names a store
+   when its AST holds a string constant exactly equal to the name (never a substring, a docstring
+   sentence or an f-string), or reads an env key that service's `.env_example` / compose sets to
+   the name. `services/<svc>/` is `<svc>`. A shared `orion/` module is split into its top-level
+   symbols, and a service gets the stores of the symbols it imports or reads off the module (one
+   hop; a shared module no service imports is reported). Direction: a call on a handle bound from
+   the store, or taking it as an argument, writes when its name's verb writes (`upsert`, `add`,
+   `_publish_semantic_upsert`), reads when it reads (`query`, `get`, `search`); Cypher text decides
+   a FalkorDB `query`; `read_only=True` reads; a constructor (`SearchConfig(...)`) is not an act.
+   `tests/`, `evals/` and the atlas itself are skipped.
 
    A process's one unit is split over its runner and its doers by
    `log(1 + runs) × log(1 + N / df)`: how many of its runs the part showed up in, times how rare
@@ -79,10 +97,11 @@ writes to any DB, graph or bus.
 Gates:
 
 - `pytest orion/body_atlas/tests`
-- `python orion/body_atlas/evals/run_organ_structure_eval.py`: three frozen fixtures, the real bus
-  graph from 2026-10-23 and the whole body from 2026-10-29 and 2026-10-30 (with process doers).
-  Each must have Q ≥ 0.3, 5–25 organs, no organ above 35% of parts, every non-host part in
-  exactly one organ, no host in any, and obvious pairs together. `--live` runs it on the live whole body; `--export F`
+- `python orion/body_atlas/evals/run_organ_structure_eval.py`: four frozen fixtures, the real bus
+  graph from 2026-10-23 and the whole body from 2026-10-29 and 2026-10-30 (with process doers,
+  then with stores named in code). Each must have Q ≥ 0.3, 5–25 organs, no organ above 35% of
+  parts, every non-host part in exactly one organ, no host in any, no store with a writer or
+  reader left alone, and obvious pairs together. `--live` runs it on the live whole body; `--export F`
   refreshes a fixture.
 
 Live results:
@@ -96,6 +115,14 @@ Live results:
   The 12 durable workflows stay: their readable doers are the harness and the scheduler. The rest of that organ is real: orion-hub,
   orion-gpu-pool, orion-harness-governor, orion-durable-runs and orion-substrate-runtime signal
   each other on the bus, and most durable runs are harness turns scheduled by orion-durable-runs.
+
+- 2026-10-30, stores named in code: singletons 8 → 5, Q 0.346 → 0.347, largest organ 31% → 32%,
+  15 organs (was 18). `chroma:orion_social_room` joined orion-vector-host (memory organ; it
+  writes it), `chroma:orion_atlas_concepts` and `chroma:orion_day_letter_parts` joined orion-hub
+  (substrate organ). No other part moved; the names carried (overlap 0.97, 0.96). The 5 left
+  alone are FalkorDB graphs with 0 nodes that no code, env or compose file in the repo names
+  (`orion_bus_mirror`, `orion_episodic`, `orion_express`, `orion_kg`, `orion_turns`): leftovers,
+  not hidden organs.
 
 Known gaps (also in every whole-body atlas as `known_gaps`):
 

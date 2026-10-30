@@ -31,6 +31,8 @@ Live (only with ``live=True``):
   the service that wrote them (``TRACE_SOURCES``), the turn record table's declared writers
   (``TURN_RECORD_TABLES``), and ``detail.child_run_ids`` (a run that starts other runs).
 * Chroma collections and counts; FalkorDB graphs (minus test/scratch graphs) and node counts.
+  Who writes or reads each: a service's ``.env_example`` naming it (``declared_env``) and the
+  code naming it (``declared_code``, ``store_code.py``: writer vs reader where the call says).
 """
 from __future__ import annotations
 
@@ -49,6 +51,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from orion.body_atlas.model import SourceReadV1
+from orion.body_atlas.store_code import code_store_refs
 # The one Postgres read path for Orion's own tools: orion_readonly, READ ONLY transaction, no
 # secrets on argv, psql meta-commands refused. Stdlib only, so importing it here is cheap.
 from orion.evals.model_replay.sandbox import ReadOnlyPsql
@@ -130,8 +133,11 @@ class StoreIn(BaseModel):
     name: str
     store: Literal["postgres", "chroma", "falkordb"]
     rows: int | None = None  # rows / items / nodes; None = not read
-    # (raw service, relation, evidence, via)
+    # (raw service, relation, evidence, via). via: the persisted channel (declared_route), the
+    # env file (declared_env) or the module that names the store (declared_code)
     links: list[tuple[str, str, str, str]] = Field(default_factory=list)
+    # shared orion/ modules that name this store but that no service imports directly
+    named_in_unimported: list[str] = Field(default_factory=list)
 
 
 class ProcessIn(BaseModel):
@@ -825,7 +831,20 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
                          lambda: env_store_refs(root, {s.name for s in named}),
                          lambda v: f"{sum(len(x) for x in v.values())} service->store references") or {}
         for s in named:
-            s.links.extend((svc, "uses", "declared_env", "") for svc in refs.get(s.name, []))
+            # via: the env file, so the weighting can tell a file naming one store from one naming ten
+            s.links.extend((svc, "uses", "declared_env", f"services/{svc}/.env_example")
+                           for svc in refs.get(s.name, []))
+        # code that names the store (a literal, an env key, a shared module's constant) and,
+        # where the call says so, whether it writes or reads it (store_code.py)
+        code = reads.run("declared:services/*, orion/* python (store names in code)", "declared",
+                         lambda: code_store_refs(root, {s.name for s in named}),
+                         lambda v: f"{sum(len(x) for x in v.refs.values())} service->store references "
+                                   f"in {v.modules_scanned} modules" +
+                                   (f"; {len(v.skipped)} did not parse" if v.skipped else ""))
+        if code is not None:
+            for s in named:
+                s.links.extend((r.service, r.relation, "declared_code", r.via) for r in code.refs.get(s.name, []))
+                s.named_in_unimported = code.unattributed.get(s.name, [])
 
     # Postgres stores: a table is a part only when something links to it (a known writer).
     kept_channels: set[str] = set()

@@ -219,7 +219,8 @@ def test_gather_reads_everything_and_reports_what_failed(tmp_path):
     stores = {(s.store, s.name): s for s in body.stores}
     assert ("falkordb", "t_assertion_abc") not in stores
     assert stores[("falkordb", "orion_empty")].rows == 0
-    assert stores[("falkordb", "orion_substrate")].links == [("orion-recall", "uses", "declared_env", "")]
+    assert stores[("falkordb", "orion_substrate")].links == [
+        ("orion-recall", "uses", "declared_env", "services/orion-recall/.env_example")]
     assert stores[("chroma", "orion_chat")].rows == 7
     assert stores[("postgres", "chat_history_log")].rows == 813
     assert ("postgres", "unrelated_table") not in stores  # no writer, no link: not a part

@@ -855,3 +855,65 @@ def test_fold_holder_twin_and_census_names():
     assert pr.container_names_from_census(raw) == {"d590a9d48af2": "orion-circe-atlas-llamacpp-fast"}
     assert pr.container_label("d590a9d48af2", {"d590a9d48af2": "n"}) == "n"
     assert pr.container_label("unknown12345", {}) == "unknown12345"
+
+
+# --- wants.town: AI Town sessions (2026-10-30) ------------------------------------------------
+
+
+def _town_reader(rows, config, fail=False):
+    async def fn():
+        if fail:
+            raise ConnectionError("redis down")
+        return rows, config
+    return fn
+
+
+def _town_rows():
+    from orion.schemas.aitown_session import AITownSessionRowV1
+
+    t = NOW.timestamp()
+    return [
+        AITownSessionRowV1(session_id="o1", kind="orion", started_at=t - 7200, last_seen_at=t - 5400,
+                           ended_at=t - 5400, start_reason="want_funded", stop_reason="session_cap",
+                           dispatch_id="d1", utterances=3),
+        AITownSessionRowV1(session_id="m1", kind="manual", started_at=t - 600, last_seen_at=t - 5,
+                           start_reason="juniper_override"),
+    ]
+
+
+def _town_config():
+    from orion.schemas.aitown_session import AITownSessionConfigV1
+
+    return AITownSessionConfigV1(enabled=True, session_max_sec=1800.0, daily_cap_sec=7200.0, min_gap_sec=3600.0,
+                                 tz="America/Denver", written_at=NOW.timestamp())
+
+
+def test_wants_town_shows_todays_use_against_the_controllers_cap():
+    rep = _build(full_rows(), town=_town_reader(_town_rows(), _town_config()))
+    town = rep.wants.town
+    assert town is not None and town.local_date == "2026-10-29"
+    assert (town.orion_seconds_today, town.manual_seconds_today) == (1800.0, 600.0)
+    assert (town.daily_cap_seconds, town.session_max_seconds, town.sessions_enabled) == (7200.0, 1800.0, True)
+    assert town.open_kind == "manual"
+    assert [(s.kind, s.start_reason, s.stop_reason) for s in town.sessions] == [
+        ("manual", "juniper_override", None), ("orion", "want_funded", "session_cap")]
+    assert town.sessions[1].utterances == 3
+
+
+def test_wants_town_unreadable_is_a_reason_and_the_families_survive():
+    rep = _build(full_rows(), town=_town_reader([], None, fail=True))
+    assert rep.wants.town is None and rep.wants.families
+    assert any("ConnectionError" in r for r in _reasons(rep, "wants"))
+
+
+def test_wants_town_with_no_controller_limits_says_so():
+    rep = _build(full_rows(), town=_town_reader([], None))
+    assert rep.wants.town is not None and rep.wants.town.daily_cap_seconds is None
+    assert any("has not written its limits" in r for r in _reasons(rep, "wants"))
+    assert any("no AI Town session in the window" in r for r in _reasons(rep, "wants"))
+
+
+def test_wants_town_is_skipped_when_another_family_is_asked():
+    q = pr.parse_query("24h", "wants", "hub.outreach", None, None)
+    rep = _build(full_rows(), q=q, town=_town_reader(_town_rows(), _town_config()))
+    assert rep.wants.town is None

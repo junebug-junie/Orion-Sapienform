@@ -628,6 +628,23 @@ proposal_templates:
     reversibility: 1.0
     dimensions: {}
 
+  # 2026-10-30 (Juniper: AI Town as a want Orion chooses, capped at 2 hours a day). Open one AI Town
+  # session now. Same shape and reason as retro_leisure_session: offered every tick the action warrant
+  # allows, and the motor allocator decides on the `play:aitown.session` act's own belief and measured
+  # cost (config/execution_dispatch route aitown_session). No dimensions: nothing in the field
+  # measures "worth going to town". Pacing and the hard cap are in orion-embodiment's session
+  # controller (30 min per session, 2 h per local day, 1 h apart).
+  aitown_session:
+    kind: express
+    target_kind: system
+    target_id: world:aitown
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.30
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions: {}
+
   # 2026-10-01: ORION'S FIRST WORLD-FACING, SELF-REVERTING ACTION (attend-to-act loop A1;
   # docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md, "Amendment 2026-09-29").
   #

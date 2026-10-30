@@ -720,3 +720,20 @@ the session starts (key `retro_leisure_dispatch:<dispatch_id>`) and closes it at
   `retry_after_sec` (300 s when none is given or Hub did not answer). On the frame: `allocator:<reason>`.
 - Kill switch: `ORION_DISPATCH_RETRO_LEISURE_ENABLED` (ON). Hub has its own (`RETRO_LEISURE_ENABLED`)
   and runs every gate.
+
+### AI Town session (2026-10-30, Juniper: a want Orion chooses, 2 h a day)
+
+Route `aitown_session` (template of the same name, kind `express`, `express_bounded`). Same shape as
+`retro_leisure_session`. Its executor key `orion.aitown_session.start.v1` is one bus RPC to
+orion-embodiment (`orion:aitown_session:start:request`, `app/aitown_session_dispatch.py`). The dispatch
+is one `aitown.session` `play` act: the embodiment session controller opens it when it unpauses the
+town (key `aitown_session_dispatch:<dispatch_id>`) and closes it when it pauses it (`artifact_produced`
+= Orion spoke at least one line in town).
+
+- Cost: the act's own median open->close time, else the 1800 s session cap (cold ceiling).
+- One session at a time (an open act or a started dispatch holds the route for 2400 s).
+- A controller refusal blocks the candidate `doer_refused:<why>` and holds the route for its
+  `retry_after_sec`: until the next local midnight after `daily_cap`, the rest of the gap after
+  `cooldown`, else 300 s.
+- Kill switch: `ORION_DISPATCH_AITOWN_SESSION_ENABLED` (ON). The controller has its own
+  (`EMBODIMENT_TOWN_SESSIONS_ENABLED`), the hard daily cap and every other gate.

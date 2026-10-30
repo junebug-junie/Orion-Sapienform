@@ -671,6 +671,7 @@ from orion.schemas.durable_run import (
 from orion.schemas.resource_admission import ResourceEventV1
 from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
 from orion.schemas.retro_leisure import RetroLeisureStartRequestV1, RetroLeisureStartResultV1
+from orion.schemas.aitown_session import AITownSessionStartRequestV1, AITownSessionStartResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
@@ -1062,6 +1063,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
     "RetroLeisureStartRequestV1": RetroLeisureStartRequestV1,
     "RetroLeisureStartResultV1": RetroLeisureStartResultV1,
+    "AITownSessionStartRequestV1": AITownSessionStartRequestV1,
+    "AITownSessionStartResultV1": AITownSessionStartResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -2041,6 +2044,9 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # Orion plays Zelda (section E): the allocator's retro leisure start (orion/schemas/retro_leisure.py).
     "RetroLeisureStartRequestV1": SchemaRegistration(model=RetroLeisureStartRequestV1, kind="retro_leisure.start.request.v1"),
     "RetroLeisureStartResultV1": SchemaRegistration(model=RetroLeisureStartResultV1, kind="retro_leisure.start.result.v1"),
+    # AI Town sessions (2026-10-30): the allocator's town session start (orion/schemas/aitown_session.py).
+    "AITownSessionStartRequestV1": SchemaRegistration(model=AITownSessionStartRequestV1, kind="aitown_session.start.request.v1"),
+    "AITownSessionStartResultV1": SchemaRegistration(model=AITownSessionStartResultV1, kind="aitown_session.start.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),

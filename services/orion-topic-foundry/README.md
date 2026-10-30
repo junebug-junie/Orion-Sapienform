@@ -103,6 +103,7 @@ every call, so repeat ticks only process segments with no prior enrichment
 - `TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL`
 - `TOPIC_FOUNDRY_LLM_REPLY_PREFIX`
 - `TOPIC_FOUNDRY_LLM_ENABLE`
+- `TOPIC_FOUNDRY_TRAIN_DEDUP_COMPLETE_WINDOW_SECS` (default 86400 = 24 h; see "Repeat-work guards")
 - `ORION_BUS_ENABLED`, `ORION_BUS_URL`
 - `TOPIC_FOUNDRY_DRIFT_DAEMON`, `TOPIC_FOUNDRY_DRIFT_POLL_SECONDS`, `TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS`
 
@@ -169,6 +170,33 @@ Phase 2 adds optional semantic segmentation and segment enrichment.
 - LLM enrichment requires setting `TOPIC_FOUNDRY_LLM_ENABLE=true` and the LLM URL/model env vars.
 - If LLM JSON parsing fails, the service falls back to the heuristic enricher.
 - LLM requests prefer the Orion bus (`TOPIC_FOUNDRY_LLM_USE_BUS=true`) and fall back to the HTTP gateway.
+
+### Repeat-work guards (2026-10-30)
+
+Hub sends a train request and an enrich request on every restart (7-11 a day).
+Two guards stop that from repeating work:
+
+- **Train dedup.** `POST /runs/train` returns the existing run when a run with
+  the same `spec_hash` is queued, running, or completed within
+  `TOPIC_FOUNDRY_TRAIN_DEDUP_COMPLETE_WINDOW_SECS`. Send `"force": true` to
+  train again anyway (a queued or running twin still dedups). Log line:
+  `train_dedup_hit`.
+- **Enrichment cache.** `topic_foundry_enrichment_cache` stores each LLM
+  enrichment under a hash of the exact LLM request (prompt with segment text
+  and taxonomy, system prompt, bus route, temperature). A segment in a later
+  run with the same request reuses the stored answer and makes no LLM call.
+  The enrich `limit` caps fresh enrichments only. `force=true` skips the cache
+  read. Heuristic fallbacks are never cached. Run stats count reuse as
+  `enrichment_cache_hits`; log line: `enrichment_pass ... cache_hits=N`.
+  Empty LLM answers (title "untitled" and no content) are not cached either.
+  `force=true` overwrites the stored answer. The table is created by
+  `ensure_tables()` at startup. The key names the bus route, not the model
+  behind it: if the route starts serving a different model, bump
+  `ENRICHMENT_CACHE_VERSION` in `app/services/enrichment.py` (or delete the
+  rows) to invalidate it.
+- **Code changes do not reset the train dedup.** The spec hash covers the
+  spec, not the training code. After a training-code fix, send `"force": true`
+  or wait for the next UTC day.
 
 ### LLM boundary judge knobs
 - `llm_boundary_context_blocks` (default 3)

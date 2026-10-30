@@ -244,6 +244,31 @@ template_to_cortex:
       cost_source: act_duration
       cold_cost_ceiling_sec: 1800
 
+  # 2026-10-30 (Juniper: "an ai town runtime as an attention / drives / want economy that orion
+  # chooses, with a cap at 2 hours a day"). Same shape as retro_leisure_session. This dispatch IS the
+  # aitown.session `play` act: orion-embodiment's session controller opens it keyed
+  # aitown_session_dispatch:<dispatch_id> when it unpauses the town and closes it when it pauses it
+  # (artifact_produced = Orion spoke at least one line in town). The controller runs every gate
+  # (EMBODIMENT_TOWN_SESSIONS_ENABLED, daily cap 7200 s per America/Denver day, 3600 s gap, one session
+  # at a time, Juniper's manual session open); the allocator only admits or refuses.
+  # horizon_sec 2400: the controller's 1800 s session cap + 600 s for the close.
+  # cold_cost_ceiling_sec 1800: the session cap, charged until the first session closes.
+  # Dispatch-side kill switch: ORION_DISPATCH_AITOWN_SESSION_ENABLED.
+  aitown_session:
+    dispatch_kind: express
+    cortex_verb: orion.aitown_session.start.v1
+    cortex_mode: brain
+    allowed_scope: express_bounded
+    rpc_timeout_sec: 15
+    act:
+      verb: play
+      actor: aitown.session
+      signal_id: artifact_produced
+      horizon_sec: 2400
+      object_source: dispatch
+      cost_source: act_duration
+      cold_cost_ceiling_sec: 1800
+
   # 2026-08-25: analysis -> self-study journal entry.
   #
   # `summarize_only`, not a new scope. builder.py::scope_allowed permits

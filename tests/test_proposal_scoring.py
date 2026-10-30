@@ -505,7 +505,11 @@ _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
      "read_world_pulse",
      # 2026-10-22 (Orion plays Zelda, leisure): same reason as read_world_pulse. Paced by Hub's runner
      # (1 per 3 h, 90 min/day) and a 2400 s act hold, scored on the play act's own belief and cost.
-     "retro_leisure_session"}
+     "retro_leisure_session",
+     # 2026-10-30 (AI Town sessions): same reason as retro_leisure_session. Paced and capped by
+     # orion-embodiment's controller (30 min per session, 2 h per local day, 1 h apart) and a 2400 s
+     # act hold, scored on the play act's own belief and cost.
+     "aitown_session"}
 )
 
 

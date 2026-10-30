@@ -322,3 +322,18 @@ def test_charged_to_no_act_names_its_hour():
     assert f"{circe['unattributed_above_rest_w']:.0f} W" in line and "on GPU leases whose turn has no act" in line
     assert f"average over {circe['attribution_hour_start'][11:16]}-" in line and "newest complete hour" in line
     assert "until the whole-machine per-act meter" not in text
+
+
+def test_town_sessions_read_in_plain_words():
+    rep = empty()
+    rep["wants"]["town"] = {
+        "local_date": "2026-10-30", "orion_seconds_today": 1800.0, "manual_seconds_today": 600.0,
+        "daily_cap_seconds": 7200.0, "open_kind": "orion",
+        "sessions": [{"session_id": "o1", "kind": "orion", "started_at": "2026-10-30T15:00:00Z",
+                      "seconds": 1800.0, "start_reason": "want_funded", "stop_reason": "session_cap",
+                      "utterances": 2}],
+    }
+    text = rt.render_report_text(rep, sections=("wants",))
+    assert "AI Town today (2026-10-30): I spent 30 min of my 2.0 h cap" in text
+    assert "Juniper opened it for 10 min (not counted)" in text
+    assert "I chose it; ended: session_cap; 2 line(s) I spoke" in text

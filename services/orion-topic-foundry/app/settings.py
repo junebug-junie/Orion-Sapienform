@@ -109,6 +109,14 @@ class Settings(BaseSettings):
         None,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_BUS_ROUTE"),
     )
+    # A complete run with the same spec_hash that finished within this many
+    # seconds makes POST /runs/train return that run instead of training
+    # again. 0 turns the check off (only queued/running runs dedup). Hub
+    # restarts many times a day and each restart sends a train request.
+    topic_foundry_train_dedup_complete_window_secs: int = Field(
+        86400,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_TRAIN_DEDUP_COMPLETE_WINDOW_SECS"),
+    )
     topic_foundry_llm_enable: bool = Field(
         False,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_ENABLE"),

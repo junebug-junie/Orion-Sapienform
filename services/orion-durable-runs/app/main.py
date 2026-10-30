@@ -674,6 +674,16 @@ async def _container_names() -> dict:
     return container_names_from_census(raw or {})
 
 
+async def _read_town_sessions():
+    """AI Town session ledger + the controller's limits (orion/embodiment/town_sessions.py)."""
+    from orion.embodiment.town_sessions import load_config, load_rows
+
+    redis = rpc_bus.redis
+    rows = await asyncio.wait_for(load_rows(redis), timeout=2.0)
+    config = await asyncio.wait_for(load_config(redis), timeout=2.0)
+    return rows, config
+
+
 @app.get("/physiology/report")
 async def physiology_report(window: Optional[str] = "24h", sections: Optional[str] = None,
                             family: Optional[str] = None, outcome: Optional[str] = None,
@@ -700,6 +710,7 @@ async def physiology_report(window: Optional[str] = "24h", sections: Optional[st
         gpu_pool_path=_settings.physiology_report_gpu_pool_path,
         tiers=tiers_from_families(market.families) if market is not None else {},
         family_weights=market.family_weights if market is not None else None,
+        town=_read_town_sessions if rpc_bus is not None else None,
         container_names=_container_names,
         concurrency=_settings.physiology_report_concurrency)
     report = await _report_cache.get_or_build(q.cache_key, lambda: build_report(deps, q))

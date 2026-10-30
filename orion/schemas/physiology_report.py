@@ -76,9 +76,38 @@ class WantHourV1(BaseModel):
     deferred: int = 0
 
 
+class TownSessionV1(BaseModel):
+    """One AI Town session (orion/schemas/aitown_session.py). ``kind`` orion: Orion chose it (counts
+    toward the daily cap); manual: Juniper opened the town (logged, not counted)."""
+
+    session_id: str
+    kind: Literal["orion", "manual"]
+    started_at: AwareDatetime
+    ended_at: Optional[AwareDatetime] = Field(default=None, description="None while the session is open")
+    seconds: float
+    start_reason: str = Field(description="want_funded | juniper_override")
+    stop_reason: Optional[str] = Field(
+        default=None, description="session_cap | daily_cap | disabled | town_paused | embodiment_restart")
+    utterances: int = Field(default=0, description="lines Orion spoke in town during the session")
+
+
+class TownV1(BaseModel):
+    """AI Town runtime today against Orion's cap (local America/Denver day), and the window's sessions."""
+
+    local_date: str
+    orion_seconds_today: float
+    manual_seconds_today: float
+    daily_cap_seconds: Optional[float] = Field(default=None, description="the cap the controller enforces; None if unknown")
+    session_max_seconds: Optional[float] = None
+    sessions_enabled: Optional[bool] = None
+    open_kind: Optional[Literal["orion", "manual"]] = Field(default=None, description="the session open now, if any")
+    sessions: List[TownSessionV1] = Field(default_factory=list)
+
+
 class WantsV1(BaseModel):
     families: List[WantFamilyV1] = Field(default_factory=list)
     hourly: List[WantHourV1] = Field(default_factory=list)
+    town: Optional[TownV1] = Field(default=None, description="AI Town sessions (2026-10-30); None when unreadable")
 
 
 class RhythmCellV1(BaseModel):
@@ -397,6 +426,8 @@ __all__ = [
     "RhythmCellV1",
     "ServiceDownV1",
     "ServicesV1",
+    "TownSessionV1",
+    "TownV1",
     "UnitCostV1",
     "ValuePerCostV1",
     "VramCardV1",

@@ -508,8 +508,9 @@ def trigger_topic_foundry_training_run(
     background task on topic-foundry's side (see
     ``services/orion-topic-foundry/app/routers/runs.py::train_run_endpoint``);
     this function returns as soon as the run is queued (or immediately, if
-    topic-foundry's own ``spec_hash`` dedup finds an identical run already
-    exists). Ingesting the run's results once it completes is a separate
+    topic-foundry's own ``spec_hash`` dedup finds an identical run that is
+    queued, running, or completed within the last 24 h). Ingesting the
+    run's results once it completes is a separate
     step -- see ``concept_atlas_ingest_topic_foundry()`` -- deliberately not
     called from here, since the two are wired as two independent steps of
     the same scheduler tick in ``main.py``, not a blocking call chain.
@@ -543,13 +544,13 @@ def trigger_topic_foundry_training_run(
     # services/orion-topic-foundry/app/routers/runs.py::train_run_endpoint
     # and app/services/spec_hash.py) -- with microsecond-precision "now" on
     # every call, spec_hash would differ on literally every tick, so the
-    # dedup this scheduler's safety argument depends on (re-triggering an
-    # unchanged window is a cheap no-op) would never actually fire, and every
-    # single tick would kick off a brand-new HDBSCAN training run regardless
-    # of interval. Flooring to a day boundary means every tick within the
-    # same UTC day computes the identical (start_at, end_at) pair, so
-    # repeated ticks within a day correctly resolve to topic-foundry's
-    # existing queued/running/complete run instead of enqueueing a duplicate.
+    # dedup would never fire and every tick would start a new HDBSCAN run.
+    # Flooring to a day boundary means every tick within the same UTC day
+    # computes the identical (start_at, end_at) pair. Topic-foundry then
+    # returns the existing run when it is queued or running, or completed
+    # within TOPIC_FOUNDRY_TRAIN_DEDUP_COMPLETE_WINDOW_SECS (default 24 h).
+    # Before 2026-10-30 a completed run did not count, so every Hub restart
+    # retrained the same window (spec_hash 569e0f36f1: six runs on 10-29).
     end_at = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     start_at = end_at - timedelta(days=window_days)
 

@@ -11,6 +11,7 @@ skip). So the SQL is proven on Postgres and the fake cannot drift from it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import uuid
 from datetime import timedelta
@@ -425,3 +426,38 @@ def test_the_kickoff_template_value_is_a_placeholder_that_reads_unknown():
     copied = '<explored | set_aside: why not>'
     assert f'focus_disposition: "{copied}"' in text
     assert cf.parse_disposition(copied) == (None, copied)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_keep_pending_never_replaces_a_pending_focus(backend):
+    """Orion Prime 2A: a question Prime chose alone never displaces one chosen in a conversation."""
+    async def scenario(pool):
+        chat = await q(pool, "the one from chat", origin="self")
+        with pytest.raises(cf.FocusRefused) as exc:
+            await cf.queue_focus(pool, question="prime's own", why="a concern", origin="self",
+                                 chat_correlation_id="prime:t1", keep_pending=True)
+        assert cf.PENDING_KEPT in str(exc.value)
+        rows = await _all(pool)
+        assert list(rows) == [chat.focus.focus_id] and rows[chat.focus.focus_id].status == cf.PENDING
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_keep_pending_queues_into_an_empty_slot(backend):
+    async def scenario(pool):
+        got = await cf.queue_focus(pool, question="prime's own", why="a concern", origin="self",
+                                   chat_correlation_id="prime:t1", keep_pending=True)
+        assert got.focus.status == cf.PENDING and cf.is_prime_focus(got.focus)
+
+    run(backend, scenario)
+
+
+def test_a_prime_focus_is_never_described_as_chosen_in_a_chat():
+    row = cf.FocusRow(focus_id="f", question="q?", why="w", origin="self", chat_correlation_id="prime:abc",
+                      created_at=None, expires_at=None, status=cf.PENDING)
+    text = "\n".join(cf.format_focus_section(row))
+    assert "Between conversations" in text and "In a conversation with Juniper" not in text
+    assert "between conversations" in cf.focus_story(row)
+    chat = dataclasses.replace(row, chat_correlation_id="chat-1")
+    assert "In a conversation with Juniper" in "\n".join(cf.format_focus_section(chat))

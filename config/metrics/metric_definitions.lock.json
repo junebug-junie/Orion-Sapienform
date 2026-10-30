@@ -3,11 +3,11 @@
   "metric_count": 772,
   "_last_change": {
     "change_count": 3,
-    "high_severity_count": 1,
+    "high_severity_count": 3,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:grammar:event (all_producers: \u2026ns', 'orion-gpu-pool', '\u2026 -> \u2026ns', 'orion-embodiment', 'orion-gpu-pool', '\u2026)",
-      "medium added metric://bus_channel/orion-embodiment/orion:aitown_session:start:reply:*",
-      "medium added metric://bus_channel/orion-execution-dispatch-runtime/orion:aitown_session:start:request"
+      "high   routing_changed metric://bus_channel/orion-actions/orion:grammar:event (all_producers: \u2026ay', 'orion-sql-writer',\u2026 -> \u2026ay', 'orion-mind', 'orion-sql-writer',\u2026)",
+      "high   routing_changed metric://bus_channel/orion-dream/orion:introspect:result:* (declared_consumers: ['orion-harness-governor'] -> ['orion-harness-governor', 'orion-mind'])",
+      "high   routing_changed metric://bus_channel/orion-harness-governor/orion:introspect:queue_curiosity_focus:request (all_producers: ['orion-harness-governor'] -> ['orion-harness-governor', 'orion-mind'])"
     ]
   },
   "definitions": {
@@ -351,6 +351,7 @@
         "orion-heartbeat",
         "orion-hub",
         "orion-llm-gateway",
+        "orion-mind",
         "orion-sql-writer",
         "orion-substrate-runtime",
         "orion-thought",
@@ -1211,7 +1212,8 @@
         "orion-hub"
       ],
       "declared_consumers": [
-        "orion-harness-governor"
+        "orion-harness-governor",
+        "orion-mind"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1980,7 +1982,8 @@
     "metric://bus_channel/orion-harness-governor/orion:introspect:queue_curiosity_focus:request": {
       "schema_id": "IntrospectRequestV1",
       "all_producers": [
-        "orion-harness-governor"
+        "orion-harness-governor",
+        "orion-mind"
       ],
       "declared_consumers": [
         "orion-hub"

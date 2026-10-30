@@ -92,12 +92,16 @@ class MindLLMClientProtocol(Protocol):
 
 
 class MindLLMClient:
-    def __init__(self) -> None:
+    def __init__(self, *, rpc_health: bool = True) -> None:
         self._service_ref = ServiceRef(
             name=settings.SERVICE_NAME,
             node=settings.NODE_NAME,
             version=settings.SERVICE_VERSION,
         )
+        # False for Orion Prime (app/prime_loop.py): its calls ride a background route that waits for
+        # slot slack by design, so its waits and timeouts are not transport health and must not land
+        # in the window the transport metrics read.
+        self._rpc_health = rpc_health
 
     def _bus_enabled(self) -> bool:
         return bool(settings.MIND_LLM_USE_BUS and settings.ORION_BUS_ENABLED)
@@ -277,7 +281,8 @@ class MindLLMClient:
             finally:
                 # Before close, even on timeout/error: fold this call's outcome into the
                 # process sink so the published window sees it.
-                RPC_HEALTH_SINK.absorb_bus(bus)
+                if self._rpc_health:
+                    RPC_HEALTH_SINK.absorb_bus(bus)
                 await bus.close()
 
         return _run_blocking(_call())

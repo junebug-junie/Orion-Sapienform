@@ -398,6 +398,9 @@ SYNC_PREFIXES = (
     # reached the live .env.
     "DREAM_INTROSPECT_",
     "DREAM_SEARCH_",
+    # Orion Prime 2A resident loop (orion-mind, 2026-10-30). Same blind spot: without the prefix the
+    # eleven PRIME_* keys never reach the live .env.
+    "PRIME_",
     # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
     # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
     # (feedback runtime) and the cabinet attention bridge (substrate runtime). The pool's own
@@ -597,6 +600,8 @@ DEFAULT_SERVICES = (
     # Act energy cost (2026-10-29): per-container CPU keys (CPU_IDLE_WATTS_BY_NODE,
     # DOCKER_ROOT_PATH in SYNC_EXACT). Same dual-half blind spot: never visited by default.
     "orion-biometrics",
+    # Orion Prime 2A (2026-10-30): the PRIME_ prefix above. Same dual-half blind spot.
+    "orion-mind",
 )
 
 

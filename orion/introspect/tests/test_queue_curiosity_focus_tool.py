@@ -59,11 +59,15 @@ def test_registry_channel_operation_and_skew_writer_know_the_tool():
     assert resolve("QueueCuriosityFocusArguments") is QueueCuriosityFocusArguments
     assert QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL == "orion:introspect:queue_curiosity_focus:request"
     assert IntrospectRequestV1(operation="queue_curiosity_focus", binding=BINDING, args={}).operation
-    assert "orion.schemas.introspect:QueueCuriosityFocusArguments" in DECLARED_WRITERS
+    # Since 2026-10-30 the skew discovery finds a real writer in code (orion-mind's Prime loop builds the
+    # model), so it is no longer hand-declared (tests/scripts/test_schema_skew_discovery.py rejects stale ones).
+    assert "orion.schemas.introspect:QueueCuriosityFocusArguments" not in DECLARED_WRITERS
+    assert "QueueCuriosityFocusArguments(" in (REPO / "services/orion-mind/app/prime_loop.py").read_text()
     channels = {c["name"]: c for c in yaml.safe_load((REPO / "orion/bus/channels.yaml").read_text())["channels"]}
     req = channels[QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL]
     assert req["schema_id"] == "IntrospectRequestV1" and req["consumer_services"] == ["orion-hub"]
-    assert req["producer_services"] == ["orion-harness-governor"]
+    # orion-mind (2026-10-30): Orion Prime's resident loop queues its own between-conversations question.
+    assert req["producer_services"] == ["orion-harness-governor", "orion-mind"]
 
 
 def test_the_tool_uses_its_channel_with_binding_and_clean_args():

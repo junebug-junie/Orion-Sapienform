@@ -195,6 +195,12 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   memory_distill: {class: memory_distill, priority: system}
   # hecate's 27B (2026-10-08): its own card, always this route's; others borrow it only while lent.
   agent-deep: {class: agent-deep, priority: system}
+  # Orion Prime's between-conversations thinking (2026-10-30, docs/superpowers/specs/2026-10-29-orion-
+  # prime-design.md section 7.1, Juniper: circe chat lane 0 by default). Same worker as `chat` (warm, no
+  # cold start) at `background`: the gateway waits for slot slack before dispatching, so a Prime thought
+  # never starts while Juniper's turn holds the slot, and the heat reflex sheds it with other background
+  # work. Caller: services/orion-mind/app/prime_loop.py (PRIME_LLM_ROUTE). System-only (orion/llm/routes.py).
+  prime: {class: chat, priority: background}
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).

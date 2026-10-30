@@ -59,21 +59,81 @@ def is_compaction_request(request_data):
     return any(mark in text for mark in COMPACTION_PROMPT_MARKS)
 
 
-def prepare_request(request_data):
-    """Compaction requests go upstream with no tools, so the model can only answer in text.
+def _field(block, name):
+    return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
 
-    Earlier tool calls in the history stay as they are; only the offer of new ones is removed.
+
+def _blocks(content):
+    return [content] if isinstance(content, str) else list(content or ())
+
+
+def _render_block(block):
+    """One content block as plain transcript text; None for blocks a summary does not need."""
+    if isinstance(block, str):
+        return block
+    kind = _field(block, "type")
+    if kind == "text":
+        return _field(block, "text")
+    if kind in ("tool_use", "server_tool_use"):
+        args = json.dumps(jsonable_encoder(_field(block, "input")), ensure_ascii=False)
+        return f"[called tool {_field(block, 'name')} with {args}]"
+    if kind == "tool_result":
+        body = _field(block, "content")
+        text = body if isinstance(body, str) else _text_of(body if isinstance(body, list) else [body])
+        return f"[tool result{' (error)' if _field(block, 'is_error') else ''}]\n{text}"
+    if kind in ("image", "document"):
+        return f"[{kind} omitted]"
+    return None  # thinking / redacted_thinking: the visible turns already carry the work
+
+
+def flatten_compaction_text(messages):
+    """The whole compaction request as one text: a quoted transcript, then the CLI's prompt.
+
+    Stripping tools was not enough. The history still ends mid agent loop (tool calls,
+    tool results), so the local Qwen keeps working and writes its next tool call as plain
+    text, and the CLI keeps that text as the summary. Live 2026-10-30, transcript
+    7e25128b: tools stripped, model called for 41 s, "summary" = `<tool_call><function=Bash>`.
+    A transcript inside one user turn leaves no agent turn to continue, only a document
+    to summarize."""
+    *history, last = messages
+    lines = []
+    for message in history:
+        rendered = [t for t in map(_render_block, _blocks(_field(message, "content"))) if t]
+        if rendered:
+            lines.append(f"### {str(_field(message, 'role')).upper()}\n" + "\n".join(rendered))
+    prompt = []
+    for block in _blocks(_field(last, "content")):
+        text = _render_block(block)
+        if text:
+            # A tool result riding in the compaction turn belongs to the transcript, not the prompt.
+            (lines if _field(block, "type") == "tool_result" else prompt).append(text)
+    transcript = "\n\n".join(lines)
+    return (
+        "Below is the transcript of an earlier agent conversation, quoted for you to read. "
+        "It is finished: do not continue it and do not call any tools.\n\n"
+        f"<transcript>\n{transcript}\n</transcript>\n\n" + "\n".join(prompt)
+    )
+
+
+def prepare_request(request_data):
+    """Compaction requests go upstream with no tools and the history as one quoted transcript.
+
+    No tools: the model can only answer in text. One transcript (`flatten_compaction_text`):
+    there is no agent loop left for it to carry on.
     Side effect: upstream FCC's no-tools local shortcuts (api/optimization_handlers.py) now see
     this request, and its title detector DOES match the CLI's system prompt -- see
     `guard_local_optimizations`, which must be installed alongside this.
     Every other request is returned unchanged (same object)."""
-    if not is_compaction_request(request_data) or not getattr(request_data, "tools", None):
+    if not is_compaction_request(request_data):
         return request_data
+    messages = request_data.messages
     logger.info(
-        "fcc_compaction_tools_stripped model=%s tools=%d messages=%d",
-        getattr(request_data, "model", None), len(request_data.tools), len(request_data.messages),
+        "fcc_compaction_flattened model=%s tools=%d messages=%d",
+        getattr(request_data, "model", None), len(getattr(request_data, "tools", None) or ()),
+        len(messages),
     )
-    return request_data.model_copy(update={"tools": None, "tool_choice": None})
+    turn = type(messages[-1]).model_validate({"role": "user", "content": flatten_compaction_text(messages)})
+    return request_data.model_copy(update={"tools": None, "tool_choice": None, "messages": [turn]})
 
 
 def guard_local_optimizations():

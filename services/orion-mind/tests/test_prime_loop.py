@@ -128,6 +128,8 @@ def test_a_funded_thought_opens_and_closes_its_act_and_a_treated_question_is_que
     asyncio.run(rt.tick())
     [want] = rt.bids
     assert want.family == "prime" and want.tier == 1 and want.verb == "infer" and want.lanes == ["chat"]
+    # Its own cost ceiling, never the market's one-whole-window default for an unmeasured family.
+    assert want.cost.gpu_slot_s_by_lane == {"chat": 60.0}
     assert rt.released == [want.want_id]
     [call] = rt.llm.calls
     assert call["route"] == "prime" and call["thinking"] is False and "first wake" in call["user_prompt"]
@@ -342,3 +344,20 @@ def test_a_crashing_thought_closes_its_act_and_still_waits_out_the_refractory(mo
     closed = [a for k, a in rt.bus.acts() if k == "act_closed"]
     assert len(closed) == 1 and closed[0]["outcome"]["value"] == 0.0 and "bad payload" in closed[0]["outcome"]["note"]
     assert len(rt.bids) == 1   # no hot loop: the second tick is inside the refractory interval
+
+
+def test_the_market_prices_prime_at_its_ceiling_not_a_whole_window():
+    """The live failure (10-30): no history -> one 3600 s window charged -> deferred forever."""
+    from orion.physiology.appetite import estimate_cost
+    from orion.physiology.families import load_families
+
+    from pathlib import Path
+
+    rt = runtime(answer=MOVE)
+    repo = Path(__file__).resolve().parents[3]
+    families, err = load_families(repo / "config/physiology/families.yaml")
+    assert err is None
+    cfg = families.families["prime"]
+    cost = estimate_cost(rt._cost_ceiling().model_dump(), cfg, SimpleNamespace(cost_q={}, lane_slot_s_q={},
+                                                                                total_slot_s_q=None))
+    assert cost.one_of_slot_s == 60.0 and "gpu_slot_s_by_lane" not in cost.unpriced

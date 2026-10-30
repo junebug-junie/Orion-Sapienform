@@ -77,7 +77,8 @@ def _host_line(p) -> str:
             f"{p.status}{seen}, telemetry {f.get('telemetry', '?')}" + (f"; services {svc}" if svc else ""))
 
 
-def summarize(atlas: BodyAtlasV1, *, out: str | None) -> str:
+def summarize(atlas: BodyAtlasV1, *, out: str | None, extra_footer: tuple[str, ...] = ()) -> str:
+    """``extra_footer`` lines go last before the file path, inside the line budget."""
     s = atlas.stats
     src = atlas.sources
     whole = bool(src.reads)
@@ -107,6 +108,7 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None) -> str:
         footer.append(f"not seen (no source yet): {len(atlas.known_gaps)} gaps, listed in the full atlas")
     if multi:
         footer.append("every member of one organ: python -P -m orion.dig body <organ_id>")
+    footer += list(extra_footer)
     budget = MAX_LINES - len(lines) - len(footer) - 2
     for i, organ in enumerate(multi[: max(budget, 0)], start=1):
         live = sum(1 for m in organ.members if status[m] == "live")

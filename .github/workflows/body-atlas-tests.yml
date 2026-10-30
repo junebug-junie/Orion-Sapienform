@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "orion/body_atlas/**"
+      - "config/body_atlas/**"
+      - "config/physiology/families.yaml"
+      - "config/physiology/contract.yaml"
       - "config/biometrics/node_catalog.yaml"
       - "config/vision_frame_router.yaml"
       - "orion/evals/model_replay/sandbox.py"
@@ -15,6 +18,9 @@ on:
     branches: [main]
     paths:
       - "orion/body_atlas/**"
+      - "config/body_atlas/**"
+      - "config/physiology/families.yaml"
+      - "config/physiology/contract.yaml"
       - "config/biometrics/node_catalog.yaml"
       - "config/vision_frame_router.yaml"
       - "orion/evals/model_replay/sandbox.py"

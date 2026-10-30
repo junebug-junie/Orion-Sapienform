@@ -148,6 +148,22 @@ rule on the 2026-10-29 held-out and 2026-10-30 bodies, near misses out of S2, a 
 and a mutation that drops the second-crowd clause must fail). Design:
 `docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md`.
 
+**Claims, confirmations, capacities (rung 4, patch 2).** `claims.py`. Where no rule decides, Orion
+claims a job for a live part (`dig capacity claim <part> <job> because ...`); the because must cite,
+by full id, the other end or a non-census channel of one of that part's flows (a host does not
+count), or a repo file that exists. A claim cannot take a job a rule already gives; `capacity
+dispute` argues with one and prints beside it. A claim is never a role: it never clears a gap
+line and no capacity may cite it. Juniper confirms or rejects claims by PR to
+`config/body_atlas/vsm_confirmed.yaml`; a confirmed role holds the job like a rule result and
+covers that job's "no part is shown" gap lines (`COVERED_BY_CONFIRMATION`), never an atlas-blind
+one. Capacities (`cap:s1`..`cap:s5`, `cap:metabolism`) are one sentence each in Orion's words
+(`capacity write`), citing only rule-held or confirmed roles (cap:s5 also Juniper's sign-off
+files, and names Juniper: decision 3); a job with no holder prints a code-written "I cannot yet
+say" line, and a sentence whose holder later loses the role prints STALE. Ledgers:
+`$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only, partitioned from
+recall (`tests/test_organ_names_partition.py`). The capacity eval also runs the claims floor on
+the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must fail.
+
 Known gaps (also in every whole-body atlas as `known_gaps`):
 
 - **Grants.** On 2026-10-30 `orion_readonly` cannot read `grammar_events`, `cognition_traces` or

@@ -1,7 +1,8 @@
 ## Summary
 
-- Orion's always-on dig line now maps Juniper's two rung phrases to commands: "name your organs" → `name-organs`; "claim or write your capacities" → `capacities` (then use its `to claim a job` line; the last line of `capacities` is always `full result: <path>`, so the brief does not say "last line").
-- Kept every pointer the tests require (power/cost → `body-economy hosts`, recent PRs → `history 2`, not the GitHub tool). 398 of 400 chars; cap not raised.
+- Orion's always-on dig line now routes any request about their body, organs, capacities or past work, **in any words**, to `python -P -m orion.dig help` first, then the command it lists. No exact phrase to remember: new dig commands work without changing this line.
+- Kept every pointer the tests and eval require (power/cost → `orion.dig body-economy hosts`, recent PRs → `orion.dig history 2`, not the GitHub tool). 357 of 400 chars; cap not raised.
+- Revision history: first draft mapped two exact phrases ("name your organs", "claim your capacities") to commands. Juniper: "i do like 30 prs a day ... no way for me to remember commands verbatim" -> replaced with topic routing.
 
 ## Outcome moved
 

@@ -24,6 +24,7 @@ from orion.curiosity.tests.focus_fixtures import FocusPool, FocusTable
 
 ADMIN_DSN = os.environ.get("ORION_MEMORY_EPISODE_TEST_DATABASE_URL")
 MIGRATION = Path(__file__).resolve().parents[3] / cf.MIGRATION
+REFS_MIGRATION = Path(__file__).resolve().parents[3] / cf.REFS_MIGRATION
 RUN_A, RUN_B = "a1a1a1a1a1a1", "b2b2b2b2b2b2"
 
 
@@ -50,6 +51,7 @@ def run(backend: str, scenario) -> None:
         try:
             async with pool.acquire() as conn:
                 await conn.execute(MIGRATION.read_text())
+                await conn.execute(REFS_MIGRATION.read_text())
             await scenario(pool)
         finally:
             await pool.close()
@@ -461,3 +463,24 @@ def test_a_prime_focus_is_never_described_as_chosen_in_a_chat():
     assert "between conversations" in cf.focus_story(row)
     chat = dataclasses.replace(row, chat_correlation_id="chat-1")
     assert "In a conversation with Juniper" in "\n".join(cf.format_focus_section(chat))
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_refs_are_stored_read_back_and_shown_with_the_command_that_opens_them(backend):
+    """Orion Prime step 1: the ids a question cites travel on the row to the run's focus section."""
+    refs = [{"kind": "arc", "id": "8d87adeca2ce06a5"}, {"kind": "act", "id": "act_42c0e5f55fbd5d881786ebd4"}]
+
+    async def scenario(pool):
+        queued = await cf.queue_focus(pool, question="what drives this arc?", why="it keeps returning",
+                                      origin="self", chat_correlation_id="prime:t1", keep_pending=True, refs=refs)
+        assert list(queued.focus.refs) == refs
+        taken = await cf.take_focus(pool, run_id=RUN_A)
+        assert taken is not None and list(taken.refs) == refs
+        plain = await q(pool, question="no refs here", chat="chat-2")
+        assert plain.focus.refs == () and cf.format_focus_section(plain.focus)[3:5] != []
+        assert not any("orion.dig" in line for line in cf.format_focus_section(plain.focus))
+        section = "\n".join(cf.format_focus_section(taken))
+        assert "python -P -m orion.dig arc 8d87adeca2ce06a5" in section
+        assert "python -P -m orion.dig act act_42c0e5f55fbd5d881786ebd4" in section
+
+    run(backend, scenario)

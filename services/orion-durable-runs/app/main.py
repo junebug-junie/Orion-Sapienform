@@ -817,6 +817,45 @@ async def temporal_self_arcs(day_id: Optional[str] = None, kind: Optional[str] =
     return {"day_id": day_id, "count": len(arcs), "arcs": arcs}
 
 
+@app.get("/temporal-self/arcs/{arc_id}")
+async def temporal_self_arc(arc_id: str):
+    """One arc by id (any retained day), or 404. The resolver for reference kind ``arc`` (orion/refs.py):
+    Prime checks an arc it cites opens here, and a curiosity run opens it with ``orion.dig arc <id>``."""
+    from orion.refs import KINDS
+
+    if not KINDS["arc"].id_re.fullmatch(arc_id):
+        raise HTTPException(422, f"arc id must look like {KINDS['arc'].id_example}")
+    arc = await _chronicle_read(_chronicle_store().arc(arc_id))
+    if arc is None:
+        raise HTTPException(404, f"arc {arc_id} is not in the chronicle (unknown, or past arc retention)")
+    return arc
+
+
+ACT_BY_ID_SQL = """
+SELECT act_id, parent_act_id, level, actor, verb, object_ref, test_before, signal_id, direction,
+       horizon_sec, expect_basis, predicted, goal_ref, opened_at, horizon_at, closed_at,
+       outcome_value, outcome_source, outcome_note, error, surprise_nats
+  FROM grammar_acts WHERE act_id = %(a)s
+"""
+
+
+@app.get("/acts/{act_id}")
+async def act_by_id(act_id: str):
+    """One act ledger row (grammar_acts) by id, or 404. Read-only. The resolver for reference kind
+    ``act`` (orion/refs.py), shared by Prime (before it sends) and ``orion.dig act <id>``."""
+    from orion.refs import KINDS
+
+    if not KINDS["act"].id_re.fullmatch(act_id):
+        raise HTTPException(422, f"act id must look like {KINDS['act'].id_example}")
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    async with _checkpointer_cm.connection() as conn:
+        row = await (await conn.execute(ACT_BY_ID_SQL, {"a": act_id})).fetchone()
+    if row is None:
+        raise HTTPException(404, f"act {act_id} is not on the act ledger")
+    return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in dict(row).items()}
+
+
 @app.get("/temporal-self/threads")
 async def temporal_self_threads():
     """Open threads: concern loops raised in conversation with no verdict yet (from the frame)."""

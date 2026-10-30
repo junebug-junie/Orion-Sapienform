@@ -15,6 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from orion.refs import MAX_REFS as REF_MAX, RefV1
+
 # MAX_ITEMS full-size items stay under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
 # (12000), the budget the harness proxy enforces on wrapped servers (it cuts
 # the JSON mid-item). orion-introspect is not wrapped today; the bound is kept
@@ -417,6 +419,10 @@ class QueueCuriosityFocusArguments(BaseModel):
     question: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
     why: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
     origin: Literal["self", "juniper"] = "self"
+    # Ids the question cites, each one a kind with a resolver and a dig command (orion/refs.py). Added
+    # 2026-10-30 (Orion Prime step 1), optional and consumer-first: Hub accepts it before orion-mind
+    # sends it, and a caller that sends none is unchanged. Stored on the focus row and shown to the run.
+    refs: list[RefV1] = Field(default_factory=list, max_length=REF_MAX)
 
     @field_validator("question", "why", mode="before")
     @classmethod

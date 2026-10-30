@@ -89,7 +89,7 @@ class FocusTable:
             found = [r for r in self.rows if r["status"] == cf.PENDING and r["expires_at"] > self.now]
             return self._eff(found[0]) if found else None
         if sql == cf.INSERT_SQL:
-            focus_id, question, why, origin, chat, ttl_sec = args
+            focus_id, question, why, origin, chat, ttl_sec, refs = args
             if any(r["focus_id"] == focus_id for r in self.rows):
                 raise UniqueViolation("pkey")
             # Each queue is its own transaction in Postgres, with its own now().
@@ -100,6 +100,7 @@ class FocusTable:
                 "expires_at": self.now + timedelta(seconds=ttl_sec), "status": cf.PENDING,
                 "status_at": self.now, "replaced_by": None, "offered_at": None, "offered_run_id": None,
                 "outcome_stamped_at": None, "turn_ok": None, "disposition": None, "disposition_raw": None,
+                "refs": refs,  # asyncpg hands jsonb back as text, as here
             }
             self.rows.append(row)
             self._check()

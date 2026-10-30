@@ -57,6 +57,7 @@ path of a file with the full result; read only what you need from that file.
                          write). Name it by what it takes in and gives out; the reason must cite
                          at least one of its parts by full name. Names show on the live body only.
   name-organs            every unnamed organ with its parts and a ready `name` line to fill in.
+  arc|act <id>           open an arc or act by id.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
@@ -672,6 +673,23 @@ def cmd_body_economy(args: list[str], out: Out) -> str:
     return capped(rt.render_report_text(report, sections, host=host).splitlines(), tail=f"full report: {path}")
 
 
+# --- references (orion/refs.py) ----------------------------------------------------------------
+
+def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
+    """Open one reference with the same resolver Prime used before it cited it."""
+    from orion import refs
+
+    try:
+        ref = refs.RefV1(kind=kind, id=ref_id)
+    except refs.ValidationError as exc:
+        raise DigError(f"{kind}: {refs.error_words(exc)}") from exc
+    res = refs.resolve(ref)
+    if not res.ok:
+        raise DigError(res.error or f"{kind} {ref_id}: unresolved")
+    path = out.write(f"{kind}-{ref_id}", res.data)
+    return capped(res.lines, tail=f"full {kind}: {path}")
+
+
 # --- notes ----------------------------------------------------------------------------------
 
 def cmd_notes(text: str | None, out: Out) -> str:
@@ -689,6 +707,10 @@ def cmd_notes(text: str | None, out: Out) -> str:
     if len(lines) > keep:
         lines = [f"(showing the newest {keep} of {len(lines)} lines; older ones are in the file)", *lines[-keep:]]
     return capped(lines, tail=f"notes: {path}")
+
+
+# One dig command per reference kind (orion/refs.py KINDS); orion/dig/tests/test_refs_contract.py checks the match.
+REF_COMMANDS = ("arc", "act")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -730,6 +752,8 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.command == "name" and len(a) >= 4 and "because" in a[2:]:
             cut = a.index("because", 2)  # name words before it, the reason after: quoted or not
             text = cmd_name(a[0], " ".join(a[1:cut]), " ".join(a[cut + 1:]), out)
+        elif ns.command in REF_COMMANDS and len(a) == 1:
+            text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):
             text = cmd_notes(" ".join(a[1:]) if a else None, out)
         else:

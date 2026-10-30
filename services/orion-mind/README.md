@@ -77,9 +77,36 @@ something. Prime is told when a question was held back. Readout: `orion/prime/ev
 
 **Acts** (`grammar_acts`, `actor = 'prime'`): `infer` per thought (produced = the answer parsed; `preempted` when a
 Juniper turn overlapped the call), `ask` per question (`test_before = holdback:<arm>`, `parent_act_id` = the
-thought, `goal_ref = prime_concern:<id>`).
+thought, `goal_ref = prime_concern:<id>`), `predict` per concern (below).
 
-**State** persists in Redis `orion:prime:state` (concerns, open questions, last reading), so a restart resumes.
+**Concerns are graded acts (step 1, 2026-10-30).** Holding a concern is a prediction: "acting on this will
+produce something". Each concern gets one `predict` act (`object_ref = prime_concern:<id>`, act id stable on the
+concern id). It closes **1 (settled)** when a question Prime sent about it (the move's `concern_id`) gets a
+curiosity run that writes something, within 144 h of the act opening (two question horizons: only one question
+is open at a time). It closes **0** when Prime drops the concern, lets it fade (not kept for a day), or holds it
+past 144 h unsettled ("lapsed"). A held-back (control) question never settles a concern. Settling or lapsing does
+not remove the concern; Prime decides whether to keep it. Nothing forbids a drop: the cost is the record. Each
+thought's frame shows Prime's last 20 concerns: how many settled, how many were dropped (and how many of those
+within an hour), faded, or lapsed. The record lives in `orion:prime:state` (`concern_record`), the same place
+the concerns live, so it survives a restart and resets only if the concerns are lost too. The record is also the
+outbox: a close is marked sent only after the bus accepts it, and the ledger keeps the first close of an act, so
+a restart never closes a concern twice. A concern held from before this change gets its act on the first tick.
+
+These acts are `actor = 'prime'`, the body-economy family `prime` (orion/physiology/appetite.py reads
+`grammar_acts.actor` as the family). Once the family has 30 graded closes in 30 days, its want's value is
+`intensity x mean outcome` ranked against its own history, so every abandoned concern (a 0) lowers the value of
+Prime's next bid. No new price, no veto. Note: any close, a 0 included, also resets the family's hunger clock.
+
+**References (step 1).** A question cites ids only through the move's `refs` (`[{kind, id}]`, kinds `arc` and
+`act`, `orion/refs.py`). Before sending, Prime opens every ref with the same resolver a curiosity run uses
+(`python -P -m orion.dig arc <id>` / `act <id>`, both GET orion-durable-runs). A ref that does not open, a
+malformed ref, or an id-looking word in the question or why that is not in `refs` (a 12+ character hex run with
+digits and letters, an `act_` id, or a UUID) refuses the move; the refusal is shown in the next frame as an
+outcome, not as news, so it cannot loop. Refs travel on the focus row (`curiosity_focus_request.refs`) and the
+run's focus section prints the command that opens each one.
+
+**State** persists in Redis `orion:prime:state` (concerns, open questions, last reading, concern record), so a
+restart resumes.
 
 **Juniper first.** `main.mind_run` marks a positively-marked Juniper turn (`engine.carries_live_turn`). `mind_run` runs
 the synchronous `run_mind` on the event loop, so Prime's tick cannot run during a turn at all (the `active()` check

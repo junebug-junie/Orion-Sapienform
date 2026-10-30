@@ -160,6 +160,20 @@ That lane also serves Juniper's turns, so the rules are:
 - **Deep thinking may move elsewhere.** A Tier 2 deep episode can bid for another lane (for example the agent lane) through the GPU pool. Lane 0 is the default for baseline thinking, not a lock.
 - **E9 is the main risk.** The first thing to measure is chat latency (time to first token and total) with Prime cycling on the same lane against Prime off.
 
+### 7.2 orion-mind is Prime (Juniper, 10-30)
+
+Prime is not a new service. `services/orion-mind` becomes Prime.
+
+**What orion-mind is today.** It is a request/response service. `run_mind()` takes a `MindRunRequestV1` and returns a `MindRunResultV1`. It calls the LLM gateway over the bus. It publishes a heartbeat, RPC-health snapshots, and an advisory `llm_surface_instability` metacog trigger. It has no loop of its own: it thinks only when something calls it.
+
+**What changes:**
+- **orion-mind gains a resident loop.** It starts in the FastAPI `lifespan`, next to the heartbeat. The loop is the deterministic runtime from section 1 plus the cycle from section 8. The working set and concerns are persisted, so a restart resumes them.
+- **`run_mind()` stays and keeps its contract.** A turn-path call keeps interactive priority and never bids.
+- **One mind, two entry points.** A chat turn and a reverie cycle read the same concerns and working set. A concern formed between conversations can shape the next reply, and a reply can open a concern. This is the causal continuity in section 1. It is a cognition-loop change, so it ships behind its own flag after 2A has proof.
+- **Lane:** the gateway calls go to circe chat lane 0 (section 7.1).
+
+**Check before 2A:** which callers use `run_mind()` on the turn path today. The body economy's question 10 marks Mind's turn-path reads as UNVERIFIED. The resident loop must not delay those calls.
+
 **Result:** Prime's cadence is not hand-tuned. It emerges from heat, load and hunger, which is the point of the body economy.
 
 ## 8. What Prime does each cycle
@@ -193,7 +207,7 @@ Kept from rev 2, now measured on the act ledger:
 
 | Step | What ships | Proof before the next step |
 |---|---|---|
-| **2A Prime live, one effector** | runtime on circe chat lane 0; `prime.think` verb with its `physiology` block; act candidates into the allocator; holdback as the narrator arm | Prime acts admitted and graded; held-back vs treated difference over ≥ 7 days; cadence follows price on cool vs warm days |
+| **2A Prime live, one effector** | resident loop in orion-mind, on circe chat lane 0; `prime.think` verb with its `physiology` block; act candidates into the allocator; holdback as the narrator arm | Prime acts admitted and graded; held-back vs treated difference over ≥ 7 days; cadence follows price on cool vs warm days |
 | **2B Hormones v1** | `regulate` to two organs (curiosity cadence, dream timing); receptor declarations; `target_moved` signal (after the metric gate) | regulate acts close with measured movement; unhandled-hormone count is 0 or visibly reported |
 | **2C Calls between organs** | 2–3 existing verbs published as calls; organ refusals recorded as closed acts | E3 and E4 both directions observed |
 | **2D Longitudinal** | add memory, body and relationship organs; run ablations | E1–E9 |
@@ -207,7 +221,7 @@ Feature flag per step, shipped ON per standing rule, with instant fallback to cu
 - **Privacy boundary:** none between Juniper and Orion (standing decision). No credentials or terminal access are shared with the development orchestrator.
 - **Trace that proves it worked:** `grammar_acts` rows with `actor = prime` that close with outcomes, and the holdback comparison.
 - **Dangerous failure:** runaway rumination or a regulate loop (Prime slows curiosity, curiosity's hunger rises, Prime slows it again). Guards: concern TTL, refractory interval per receiver, bid budget, and loop detection on `parent_act_id` chains.
-- **Rollback:** one flag per step. Organs ignore hormones when the flag is off. Prime's runtime can stop without affecting any organ.
+- **Rollback:** one flag per step. Organs ignore hormones when the flag is off. The orion-mind resident loop can stop without affecting `run_mind()` or any organ.
 
 ## 12. Missing questions
 
@@ -215,7 +229,7 @@ Feature flag per step, shipped ON per standing rule, with instant fallback to cu
 2. Shallow thinking: Tier 1 with a reserved share (recommended), or Tier 2 open market?
 3. Is `prime.think` one verb with a depth parameter, or two verbs (shallow and deep)?
 4. Is `target_moved` one signal with an object, or one signal per receptor?
-5. Which existing process owns the Prime runtime? Candidates are extending orion-mind or orion-thought, or a new small service. Inspect before choosing.
+5. ~~Which existing process owns the Prime runtime?~~ **Decided (Juniper, 10-30): orion-mind is Prime.** See section 7.2.
 
 ## 13. Non-goals
 

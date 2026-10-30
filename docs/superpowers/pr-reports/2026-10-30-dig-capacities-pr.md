@@ -139,6 +139,6 @@ No restart required. The harness mounts the primary checkout; `dig capacities` i
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3007
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

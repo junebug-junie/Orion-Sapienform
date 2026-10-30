@@ -30,8 +30,10 @@ GrammarEventKind = Literal[
 # body economy A5), say (hub chat
 # reply, outreach), ask (outreach), look (reading), play (hub retro leisure
 # session, 2026-10-22: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
-# section E). The others are reserved by the design and have no producer yet; a
-# new producer must ship with a test.
+# section E), infer / ask / predict (orion-mind Orion Prime: a thought, a question for
+# curiosity, and a held concern graded on whether a question about it settled;
+# orion/prime/acts.py, tests in orion/prime/tests). The others are reserved by the
+# design and have no producer yet; a new producer must ship with a test.
 ActVerb = Literal[
     "sense",
     "look",

@@ -1,6 +1,6 @@
 """Prime's acts on the act ledger (rung 2), the holdback draw, and how a nomination settles.
 
-Two acts, both ``actor = "prime"`` (the body-economy family ``prime``, so Prime's own history
+Three acts, all ``actor = "prime"`` (the body-economy family ``prime``, so Prime's own history
 prices its next bid):
 
 * **thought** -- verb ``infer``. Opens when a funded thought starts, closes when it ends.
@@ -11,6 +11,20 @@ prices its next bid):
   curiosity's next regular investigate run. ``test_before = "holdback:<arm>"`` records the draw:
   ``treated`` queues it in Hub's focus slot (orion/curiosity/focus.py); ``control`` is the narrator
   arm (design section 9): logged, never sent.
+
+* **concern** -- verb ``predict`` (Prime step 1, 2026-10-30). Holding a concern is a prediction:
+  "this is worth acting on, and acting on it will produce something". ``predict`` is the honest verb:
+  the act makes no call (not ``ask``), does not just hold still (``wait`` would grade patience, and a
+  concern is graded on whether Prime followed through), and is checked against a stated outcome by a
+  horizon. Opened when the runtime first sees the concern; ``artifact_produced`` = settled: a TREATED
+  question citing the concern (``goal_ref prime_concern:<id>``) settled produced (its run wrote
+  something) within ``CONCERN_HORIZON_SEC`` of the act opening. A control-arm question was never sent,
+  so it cannot settle a concern. 0 when Prime drops the concern unresolved, lets it fade (not kept for
+  a day), or holds it past the horizon unsettled ("lapsed"). Settling or lapsing closes the act but
+  does not remove the concern: Prime decides whether to keep holding it. If orion-mind is down past
+  the horizon, the ledger closes the act first as ``expired`` (outcome_source expired, not graded in
+  orion/physiology/appetite.py) and Prime's later "lapsed" close is ignored; run_prime_report.py counts
+  those apart as ``expired``.
 
 How a nomination closes (both arms on the same rule, so the arms are comparable):
 
@@ -42,7 +56,7 @@ from orion.curiosity.run_story import (
     OUTCOME_SENT,
 )
 from orion.grammar.acts import build_act
-from orion.prime.state import Arm
+from orion.prime.state import Arm, PrimeStateV1, close_concern, note_change
 from orion.schemas.grammar import ActV1
 
 ACTOR = "prime"
@@ -58,6 +72,20 @@ NOMINATION_BASIS = (
     "artifact_produced = the investigate run that took this focus (treated) or the first investigate run "
     "started after it (control) wrote something (outcome_kind finished/reached_out_*); horizon = focus TTL "
     "48h (orion/curiosity/focus.py) + the run act's own 86400s (services/orion-durable-runs/app/run_acts.py)"
+)
+# A concern's horizon: two question horizons. Only one question is open at a time, so a fresh concern
+# may first wait out another concern's open question (up to NOMINATION_HORIZON_SEC, 72 h: the 48 h focus
+# TTL, measured from the investigate line's longest gap of 21.1 h over 30 days, plus the run act's 24 h)
+# and then its own (another 72 h). 144 h. An unkept concern fades after CONCERN_TTL (24 h) long before
+# this, so the horizon only binds concerns Prime keeps holding. Live 2026-10-30 there were 2 Prime
+# questions in total, too few to measure a settle time from Prime's own record; re-derive once there are.
+CONCERN_HORIZON_SEC = 2 * NOMINATION_HORIZON_SEC
+CONCERN_COMPONENT = "prime.concern"
+CONCERN_BASIS = (
+    "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) "
+    "settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, "
+    "faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: "
+    "another concern's question may be open first), 2 x 259200s"
 )
 THOUGHT_MARGIN_SEC = 120.0
 THOUGHT_BASIS = (
@@ -104,6 +132,44 @@ def nomination_act(
         object_ref=f"curiosity_focus:{focus_id}", test_before=f"holdback:{arm}",
         parent_act_id=thought_act_id, goal_ref=f"prime_concern:{concern_id}" if concern_id else None,
     )
+
+
+def concern_act(concern_id: str) -> ActV1:
+    """Stable per concern (stable_act_id keyed on concern_id): a restart re-opens or re-closes the same act."""
+    return build_act(
+        actor=ACTOR, verb="predict", key=concern_id, signal_id="artifact_produced",
+        horizon_sec=CONCERN_HORIZON_SEC, basis=CONCERN_BASIS, object_ref=f"prime_concern:{concern_id}",
+    )
+
+
+def lapse_concerns(state: PrimeStateV1, now: datetime) -> PrimeStateV1:
+    """Concerns held past their act's horizon with no settling question: the act closes 0 ("lapsed").
+    The concern itself stays; Prime decides whether to keep holding it."""
+    concerns = []
+    for c in state.concerns:
+        if (c.graded is None and c.act_opened_at is not None
+                and (now - c.act_opened_at).total_seconds() > CONCERN_HORIZON_SEC):
+            state = close_concern(state, c, end="lapsed", now=now,
+                                  note=f"lapsed: no question about it settled within {CONCERN_HORIZON_SEC / 3600:.0f} h")
+            state = note_change(state, f"concern lapsed (held {CONCERN_HORIZON_SEC / 3600:.0f} h, no question "
+                                       f"about it settled): {c.text[:120]!r}")
+            c = c.model_copy(update={"graded": "lapsed"})
+        concerns.append(c)
+    return state.model_copy(update={"concerns": concerns})
+
+
+def settle_concern(state: PrimeStateV1, concern_id: Optional[str], *, arm: Arm, produced: bool, now: datetime,
+                   note: str) -> tuple[PrimeStateV1, Optional[str]]:
+    """A question citing ``concern_id`` settled. A treated, produced question settles a held concern whose
+    act is still open; returns (state, a plain line for Prime) or (state, None) when nothing changed."""
+    if not concern_id or arm != "treated" or not produced:
+        return state, None
+    concern = next((c for c in state.concerns if c.concern_id == concern_id), None)
+    if concern is None or concern.graded is not None:
+        return state, None
+    state = close_concern(state, concern, end="settled", now=now, note=f"settled: {note}")
+    concerns = [c.model_copy(update={"graded": "settled"}) if c.concern_id == concern_id else c for c in state.concerns]
+    return state.model_copy(update={"concerns": concerns}), f"concern settled: {concern.text[:120]!r}"
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "orion/dig/**"
+      - "orion/refs.py"
       - "orion/self_inventory.py"
       - "orion/body_atlas/**"
       - "orion/harness/prefix.py"
@@ -19,6 +20,7 @@ on:
     branches: [main]
     paths:
       - "orion/dig/**"
+      - "orion/refs.py"
       - "orion/self_inventory.py"
       - "orion/body_atlas/**"
       - "orion/harness/prefix.py"

@@ -10,7 +10,12 @@ would send to the model and checks it is something a mind could act on honestly:
 * settles   -- the runtime's own settlement rule finds a graded run for a control question opened
                before the newest finished run in the fixture (the eval would catch a settle rule that
                can never close on live run shapes);
-* refusals  -- the move check reads the live pending_focus shape (a focus waiting refuses the move).
+* refusals  -- the move check reads the live pending_focus shape (a focus waiting refuses the move);
+* refs      -- Prime's live question of 2026-10-30, which wrote "arc 8d87adeca2ce06a5" in its text with
+               no way for a curiosity run to open it, is refused; the same question with that arc in
+               ``refs`` passes, and the run's focus section prints the dig command that opens it;
+* record    -- the frame shows Prime's concern track record, counted the way state.track_record says
+               (settled / dropped within an hour / faded), from records shaped like the live concerns.
 
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_frame_eval.py`` (exit 1 on any failed check).
 """
@@ -23,8 +28,9 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from orion.curiosity.focus import FocusRow, format_focus_section
 from orion.prime.acts import settle_nomination
-from orion.prime.state import PrimeStateV1
+from orion.prime.state import PrimeConcernV1, PrimeStateV1, close_concern
 from orion.prime.thought import FrameInputs, PrimeAnswerV1, apply_answer, build_frame
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "prime_inputs_live_2026-10-30.json"
@@ -87,6 +93,38 @@ def run() -> list[tuple[str, bool, str]]:
     results.append(("move_check_reads_live_shape", (applied.move is not None) == expect_pass,
                     f"pending_focus available={pending.get('available')} focus={bool(pending.get('focus'))} "
                     f"-> move {'sent' if applied.move else 'refused: ' + str(applied.move_refusal)}"))
+
+    # refs: the live question (open nomination in orion:prime:state, 2026-10-30 16:05Z).
+    live_q = ("What specific conditions or patterns in arc 8d87adeca2ce06a5 correlate with the high demand on the "
+              "agent lane (39 requests for 1 slot), and does this congestion contribute to the observed energy overage?")
+    live_why = "The agent lane congestion is an immediate operational risk."
+    bare = apply_answer(PrimeStateV1(), PrimeAnswerV1.model_validate(
+        {"move": {"kind": "curiosity_focus", "question": live_q, "why": live_why}}),
+        now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False)
+    cited = apply_answer(PrimeStateV1(), PrimeAnswerV1.model_validate(
+        {"move": {"kind": "curiosity_focus", "question": live_q, "why": live_why,
+                  "refs": [{"kind": "arc", "id": "8d87adeca2ce06a5"}]}}),
+        now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False)
+    section = "\n".join(format_focus_section(FocusRow(
+        focus_id="f", question=live_q, why=live_why, origin="self", status="taken", chat_correlation_id="prime:t",
+        refs=tuple(r.model_dump() for r in cited.refs))))
+    results.append(("refs", bare.move is None and "8d87adeca2ce06a5" in (bare.move_refusal or "")
+                    and cited.move is not None and "python -P -m orion.dig arc 8d87adeca2ce06a5" in section,
+                    f"bare: {bare.move_refusal!r}; with refs: {'sent' if cited.move else cited.move_refusal}"))
+
+    # record: three concerns shaped like the live ones, ended three ways.
+    rec_state = PrimeStateV1()
+    for cid, end, minutes in (("777925ef197d44b1", "settled", 600), ("e474869546ec4641", "dropped", 40),
+                              ("a1b2c3d4e5f60718", "faded", 1500)):
+        opened = inputs.now - timedelta(minutes=minutes)
+        c = PrimeConcernV1(concern_id=cid, text="agent lane congestion", opened_at=opened, last_evidence_at=opened,
+                           act_opened_at=opened)
+        rec_state = close_concern(rec_state, c, end=end, now=inputs.now, note=end)
+    rec_frame = build_frame(rec_state, inputs)
+    want = "last 3 concerns: 1 settled"
+    results.append(("record", want in rec_frame and "1 dropped (1 of them within an hour of opening)" in rec_frame
+                    and "1 faded" in rec_frame and len(rec_frame) <= FRAME_CHAR_CAP,
+                    "track record line shown and counted"))
     return results
 
 

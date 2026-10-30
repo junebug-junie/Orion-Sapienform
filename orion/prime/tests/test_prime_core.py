@@ -248,3 +248,134 @@ def test_a_treated_focus_is_gone_only_when_neither_pending_nor_taken():
     assert pa.treated_focus_gone("F", _cur()) is True
     assert pa.treated_focus_gone("F", _cur(available=False)) is None
     assert pa.treated_focus_gone("F", None) is None
+
+
+# --- concerns as graded acts (Prime step 1) --------------------------------------------------------
+
+from orion.prime.state import MAX_CONCERN_RECORD, close_concern, track_record  # noqa: E402
+
+ARC = "8d87adeca2ce06a5"
+
+
+def _held(cid="c1", **kw) -> PrimeConcernV1:
+    return PrimeConcernV1(**{"concern_id": cid, "text": "the agent lane is congested", "opened_at": T0,
+                             "last_evidence_at": T0, "act_opened_at": T0, **kw})
+
+
+def test_concern_act_is_a_stable_predict_act_with_a_stated_settle_rule():
+    act = pa.concern_act("c1")
+    assert act.act_id == stable_act_id("prime", "predict", "c1") == pa.concern_act("c1").act_id
+    assert act.actor == "prime" and act.verb == "predict" and act.object_ref == "prime_concern:c1"
+    assert act.expect.signal_id == "artifact_produced" and act.expect.horizon_sec == 2 * pa.NOMINATION_HORIZON_SEC
+    assert "settled" in act.expect.basis and "dropped" in act.expect.basis
+
+
+def test_persisted_state_from_before_concern_acts_still_loads():
+    """The live orion:prime:state shape on 2026-10-30 (no act fields, no record)."""
+    raw = ('{"schema_version":"prime.state.v1","concerns":[{"concern_id":"e474869546ec4641","text":"Energy",'
+           '"arc_id":"a94bf8ec38978408","opened_at":"2026-10-30T08:48:24.448351Z",'
+           '"last_evidence_at":"2026-10-30T18:39:35.563352Z"}],"open_nominations":[],"pending_changes":[],'
+           '"recent_outcomes":[],"last_thought_at":null,"last_reading":"","thoughts_total":21,'
+           '"seen_active_arc_id":null,"seen_binding":null}')
+    state = PrimeStateV1.model_validate_json(raw)
+    assert state.concerns[0].act_opened_at is None and state.concerns[0].graded is None and state.concern_record == []
+
+
+def test_a_drop_closes_the_concern_act_at_zero_and_records_it():
+    state = PrimeStateV1(concerns=[_held()])
+    answer = PrimeAnswerV1.model_validate({"concerns": {"drop": [{"concern_id": "c1", "why": "attention moved"}]}})
+    applied = apply_answer(state, answer, now=T0 + timedelta(minutes=20), arc_ids=[], focus_pending=False)
+    [rec] = applied.state.concern_record
+    assert rec.end == "dropped" and rec.produced is False and not rec.published and "attention moved" in rec.note
+    assert "1 dropped (1 of them within an hour of opening)" in track_record(applied.state)
+
+
+def test_a_fade_closes_at_zero_and_a_settled_concern_is_not_closed_twice():
+    state = PrimeStateV1(concerns=[_held(), _held("c2", graded="settled")], seen_active_arc_id="arc1", seen_binding=[])
+    state = observe(state, _snap(), T0 + CONCERN_TTL + timedelta(minutes=1))
+    assert state.concerns == []
+    [rec] = state.concern_record
+    assert rec.concern_id == "c1" and rec.end == "faded" and rec.produced is False
+
+
+def test_only_a_treated_produced_question_settles_a_held_concern():
+    state = PrimeStateV1(concerns=[_held()])
+    for arm, produced in (("control", True), ("treated", False)):
+        same, line = pa.settle_concern(state, "c1", arm=arm, produced=produced, now=T0, note="n")
+        assert line is None and same.concern_record == []
+    settled, line = pa.settle_concern(state, "c1", arm="treated", produced=True, now=T0 + timedelta(hours=9),
+                                      note="treated run r1 finished")
+    assert "concern settled" in line and settled.concerns[0].graded == "settled"
+    [rec] = settled.concern_record
+    assert rec.end == "settled" and rec.produced is True
+    again, line = pa.settle_concern(settled, "c1", arm="treated", produced=True, now=T0, note="n")
+    assert line is None and len(again.concern_record) == 1
+
+
+def test_a_concern_held_past_its_horizon_lapses_once_and_stays_held():
+    state = PrimeStateV1(concerns=[_held()])
+    late = T0 + timedelta(seconds=pa.CONCERN_HORIZON_SEC + 60)
+    lapsed = pa.lapse_concerns(state, late)
+    assert lapsed.concerns[0].graded == "lapsed" and [r.end for r in lapsed.concern_record] == ["lapsed"]
+    assert any("lapsed" in c for c in lapsed.pending_changes)
+    assert pa.lapse_concerns(lapsed, late + timedelta(hours=1)).concern_record == lapsed.concern_record
+    # a not-yet-opened act (legacy concern before its first tick) never lapses
+    assert pa.lapse_concerns(PrimeStateV1(concerns=[_held(act_opened_at=None)]), late).concern_record == []
+
+
+def test_the_record_keeps_every_unpublished_close_and_the_last_twenty_published():
+    state = PrimeStateV1()
+    for i in range(MAX_CONCERN_RECORD + 5):
+        state = close_concern(state, _held(f"c{i}"), end="faded", now=T0, note="")
+        state = state.model_copy(update={"concern_record": [r.model_copy(update={"published": True})
+                                                            for r in state.concern_record]})
+    state = close_concern(state, _held("new"), end="dropped", now=T0, note="")
+    assert len(state.concern_record) == MAX_CONCERN_RECORD + 1 and not state.concern_record[-1].published
+    assert track_record(state).startswith(f"last {MAX_CONCERN_RECORD} concerns")
+
+
+def test_frame_shows_the_track_record_and_each_concern_grade():
+    state = PrimeStateV1(concerns=[_held(graded="settled")])
+    state = close_concern(state, _held("c9"), end="faded", now=T0, note="")
+    frame = build_frame(state, FrameInputs(now=T0 + timedelta(hours=2)))
+    assert "HOW YOUR CONCERNS HAVE ENDED:\nlast 1 concerns: 0 settled" in frame and "1 faded" in frame
+    assert "already settled" in frame and "held since 2 h ago" in frame
+
+
+# --- references on the move ------------------------------------------------------------------------
+
+
+def _move(question, why="w", refs=None):
+    return PrimeAnswerV1.model_validate({"move": {"kind": "curiosity_focus", "question": question, "why": why,
+                                                  **({"refs": refs} if refs is not None else {})}})
+
+
+def test_a_move_citing_an_id_in_text_but_not_in_refs_is_refused():
+    applied = apply_answer(PrimeStateV1(), _move(f"What happens in arc {ARC}?"), now=T0, arc_ids=[ARC],
+                           focus_pending=False)
+    assert applied.move is None and ARC in applied.move_refusal and "refs" in applied.move_refusal
+    applied = apply_answer(PrimeStateV1(), _move("Why?", why="concern e474869546ec4641 again"), now=T0, arc_ids=[],
+                           focus_pending=False)
+    assert applied.move is None and "e474869546ec4641" in applied.move_refusal
+
+
+def test_a_move_with_its_ids_in_refs_passes_with_the_refs():
+    applied = apply_answer(PrimeStateV1(), _move(f"What happens in arc {ARC}?", refs=[{"kind": "arc", "id": ARC}]),
+                           now=T0, arc_ids=[ARC], focus_pending=False)
+    assert applied.move is not None and [r.id for r in applied.refs] == [ARC]
+    assert f"refs arc:{ARC}" in summary_note(applied)
+
+
+def test_a_malformed_ref_refuses_the_move_not_the_thought():
+    applied = apply_answer(PrimeStateV1(), _move("What heats the cabinet?", refs=[{"kind": "run", "id": "34d7345e36e7"}]),
+                           now=T0, arc_ids=[], focus_pending=False)
+    assert applied.move is None and "kinds: arc, act" in applied.move_refusal and applied.state.thoughts_total == 1
+
+
+def test_the_same_drop_listed_twice_closes_once_and_never_crashes_the_thought():
+    """Review finding: a repeated drop raised StopIteration and lost the whole thought."""
+    state = PrimeStateV1(concerns=[_held()])
+    answer = PrimeAnswerV1.model_validate({"concerns": {"drop": [{"concern_id": "c1", "why": "a"},
+                                                                 {"concern_id": "c1", "why": "b"}]}})
+    applied = apply_answer(state, answer, now=T0, arc_ids=[], focus_pending=False)
+    assert applied.state.concerns == [] and len(applied.state.concern_record) == 1 and applied.warnings == []

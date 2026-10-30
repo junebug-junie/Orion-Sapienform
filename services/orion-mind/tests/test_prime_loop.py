@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID
@@ -94,13 +95,16 @@ SETTINGS = SimpleNamespace(
 
 
 def runtime(*, answer, bus=None, outcome="funded", runs=(), pending=None, holdback=0.0, turns=None, on_call=None,
-            now=T0):
+            now=T0, extra_pages=None):
     clock = {"now": now}
-    pages = {"http://dr:8121/physiology/state": BODY, "http://dr:8121/temporal-self/frame": TEMPORAL}
+    pages = {"http://dr:8121/physiology/state": BODY, "http://dr:8121/temporal-self/frame": TEMPORAL,
+             **(extra_pages or {})}
 
     def get_json(url):
         if url.startswith("http://hub:8080/curiosity/api/runs"):
             return curiosity(runs, pending)
+        if url not in pages:
+            raise urllib.error.HTTPError(url, 404, "not found", {}, None)
         return pages[url]
 
     bids, released = [], []
@@ -134,8 +138,9 @@ def test_a_funded_thought_opens_and_closes_its_act_and_a_treated_question_is_que
     [call] = rt.llm.calls
     assert call["route"] == "prime" and call["thinking"] is False and "first wake" in call["user_prompt"]
     kinds = [(k, a["verb"]) for k, a in rt.bus.acts()]
-    assert kinds == [("act_opened", "infer"), ("act_opened", "ask"), ("act_closed", "infer")]
-    closed = rt.bus.acts()[-1][1]
+    # The concern the thought added opens its own act (verb predict) once the thought has closed.
+    assert kinds == [("act_opened", "infer"), ("act_opened", "ask"), ("act_closed", "infer"), ("act_opened", "predict")]
+    closed = rt.bus.acts()[2][1]
     assert closed["outcome"]["value"] == 1.0 and "move curiosity_focus" in closed["outcome"]["note"]
     [(channel, env)] = rt.bus.rpcs
     assert channel == QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL
@@ -361,3 +366,130 @@ def test_the_market_prices_prime_at_its_ceiling_not_a_whole_window():
     cost = estimate_cost(rt._cost_ceiling().model_dump(), cfg, SimpleNamespace(cost_q={}, lane_slot_s_q={},
                                                                                 total_slot_s_q=None))
     assert cost.one_of_slot_s == 60.0 and "gpu_slot_s_by_lane" not in cost.unpriced
+
+
+# --- concerns as graded acts (Prime step 1) --------------------------------------------------------
+
+LIVE_STATE = (
+    '{"schema_version":"prime.state.v1","concerns":[{"concern_id":"777925ef197d44b1","text":"agent lane congestion",'
+    '"arc_id":null,"opened_at":"2026-10-30T11:04:46Z","last_evidence_at":"2026-10-30T11:39:35Z"}],'
+    '"open_nominations":[],"pending_changes":[],"recent_outcomes":[],"last_thought_at":"2026-10-30T11:00:00Z",'
+    '"last_reading":"","thoughts_total":21,"seen_active_arc_id":"arc1","seen_binding":[]}'
+)
+
+
+def _concern_acts(bus):
+    return [(k, a) for k, a in bus.acts() if a["verb"] == "predict"]
+
+
+def test_a_concern_held_before_concern_acts_is_adopted_once_on_the_first_tick():
+    bus = Bus()
+    bus.redis.kv[STATE_KEY] = LIVE_STATE
+    rt = runtime(answer={"reading": "ok"}, bus=bus)
+    asyncio.run(rt.load())
+    asyncio.run(rt.tick())
+    [(kind, act)] = _concern_acts(bus)
+    assert kind == "act_opened" and act["act_id"] == pa.concern_act("777925ef197d44b1").act_id
+    assert act["actor"] == "prime" and act["goal_ref"] is None and act["object_ref"] == "prime_concern:777925ef197d44b1"
+    assert rt.state.concerns[0].act_opened_at == T0
+    rt.clock_box["now"] = T0 + timedelta(seconds=15)
+    asyncio.run(rt.tick())
+    assert len(_concern_acts(bus)) == 1  # never re-opened
+
+
+def test_dropping_a_concern_closes_its_act_once_even_across_a_restart():
+    bus = Bus()
+    bus.redis.kv[STATE_KEY] = LIVE_STATE
+    rt = runtime(answer={"reading": "ok", "concerns": {"drop": [{"concern_id": "777925ef197d44b1", "why": "moved on"}]}},
+                 bus=bus)
+    asyncio.run(rt.load())
+    rt.state = rt.state.model_copy(update={"pending_changes": ["attention moved"]})
+    asyncio.run(rt.tick())
+    closes = [a for k, a in _concern_acts(bus) if k == "act_closed"]
+    assert len(closes) == 1 and closes[0]["outcome"]["value"] == 0.0 and "dropped unresolved" in closes[0]["outcome"]["note"]
+    [rec] = PrimeStateV1.model_validate_json(bus.redis.kv[STATE_KEY]).concern_record
+    assert rec.published and rec.end == "dropped"
+    # A restart reloads the saved state: nothing is re-sent.
+    rt2 = runtime(answer={"reading": "ok"}, bus=bus, now=T0 + timedelta(minutes=1))
+    asyncio.run(rt2.load())
+    asyncio.run(rt2.tick())
+    assert len([a for k, a in _concern_acts(bus) if k == "act_closed"]) == 1
+
+
+def test_a_failed_close_publish_stays_in_the_outbox_and_is_retried_with_the_same_act_id():
+    bus = Bus()
+    bus.redis.kv[STATE_KEY] = LIVE_STATE
+    rt = runtime(answer={"reading": "ok", "concerns": {"drop": [{"concern_id": "777925ef197d44b1", "why": "x"}]}},
+                 bus=bus)
+    asyncio.run(rt.load())
+    rt.state = rt.state.model_copy(update={"pending_changes": ["attention moved"]})
+    real = bus.publish
+
+    async def flaky(channel, envelope):
+        if envelope.payload.get("event_kind") == "act_closed" and envelope.payload["act"]["verb"] == "predict":
+            raise ConnectionError("bus blip")
+        await real(channel, envelope)
+
+    bus.publish = flaky
+    asyncio.run(rt.tick())
+    assert not rt.state.concern_record[0].published
+    bus.publish = real
+    rt.clock_box["now"] = T0 + timedelta(seconds=15)
+    asyncio.run(rt.tick())
+    [close] = [a for k, a in _concern_acts(bus) if k == "act_closed"]
+    assert close["act_id"] == pa.concern_act("777925ef197d44b1").act_id and rt.state.concern_record[0].published
+
+
+def test_a_treated_question_that_produced_settles_its_concern_at_one():
+    move = {**MOVE, "concerns": {"add": [{"text": "afternoon heat"}]},
+            "move": {**MOVE["move"], "concern_id": "new"}}
+    rt = runtime(answer=move)
+    asyncio.run(rt.tick())
+    nom = rt.state.open_nominations[0]
+    concern_id = rt.state.concerns[0].concern_id
+    assert nom.concern_id == concern_id
+    run = {"run_id": "r1", "line": "investigate", "started_at_iso": (T0 + timedelta(hours=1)).isoformat(),
+           "outcome_kind": "finished", "focus": {"focus_id": nom.focus_id, "disposition": "explored"}}
+    rt2 = runtime(answer={"reading": "ok", "concerns": {"keep": [concern_id]}}, bus=rt.bus, runs=[run],
+                  now=T0 + timedelta(hours=3))
+    asyncio.run(rt2.load())
+    asyncio.run(rt2.tick())
+    [close] = [a for k, a in _concern_acts(rt.bus) if k == "act_closed"]
+    assert close["act_id"] == pa.concern_act(concern_id).act_id and close["outcome"]["value"] == 1.0
+    assert nom.act_id in close["outcome"]["note"]
+    assert rt2.state.concerns[0].graded == "settled"  # still held: Prime decides whether to keep it
+    assert any("concern settled" in o for o in rt2.state.recent_outcomes)
+    assert "1 settled" in rt2.llm.calls[0]["user_prompt"]
+
+
+# --- references on the move ------------------------------------------------------------------------
+
+ARC = "8d87adeca2ce06a5"
+ARC_PAGE = {f"http://dr:8121/temporal-self/arcs/{ARC}": {"arc_id": ARC, "kind": "concern", "status": "open",
+                                                         "day_id": "2026-10-30"}}
+
+
+def _ref_move(refs, question=f"What drives arc {ARC}?"):
+    return {**MOVE, "move": {**MOVE["move"], "question": question, "refs": refs}}
+
+
+def test_a_resolvable_ref_travels_to_hub_on_the_request():
+    rt = runtime(answer=_ref_move([{"kind": "arc", "id": ARC}]), extra_pages=ARC_PAGE)
+    asyncio.run(rt.tick())
+    [(_, env)] = rt.bus.rpcs
+    assert env.payload["args"]["refs"] == [{"kind": "arc", "id": ARC}]
+
+
+def test_an_unresolvable_ref_refuses_the_move_and_tells_prime_without_waking_it():
+    rt = runtime(answer=_ref_move([{"kind": "arc", "id": ARC}]))  # durable-runs answers 404
+    asyncio.run(rt.tick())
+    assert rt.bus.rpcs == [] and rt.state.open_nominations == []
+    assert not [a for k, a in rt.bus.acts() if a["verb"] == "ask"]
+    assert f"arc {ARC}: not found" in rt.state.recent_outcomes[-1] and rt.state.pending_changes == []
+
+
+def test_a_question_with_no_refs_sends_no_refs_key_so_an_older_hub_accepts_it():
+    rt = runtime(answer=MOVE)
+    asyncio.run(rt.tick())
+    [(_, env)] = rt.bus.rpcs
+    assert "refs" not in env.payload["args"]

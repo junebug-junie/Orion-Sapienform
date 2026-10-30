@@ -7,6 +7,11 @@ curiosity's next regular investigate run (orion/curiosity/focus.py). "No move" i
 The runtime, not the model, checks every move. A move is refused (and the refusal shown in the
 next frame) when a question of Prime's is still open, when a focus is already pending in Hub, or
 when the text is empty. A model answer that does not parse is a failed thought, never a guess.
+
+References (orion/refs.py): a move cites ids only through ``refs`` (``[{kind, id}]``, kinds arc and
+act). Refused here when a ref is malformed, or when the question or why contains an id-looking word
+(``orion.refs.ID_TOKEN_RE``) that is not one of the refs; refused by the runtime when a ref does not
+open with its resolver. A curiosity run opens each ref with ``python -P -m orion.dig <kind> <id>``.
 """
 
 from __future__ import annotations
@@ -18,13 +23,17 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from orion.prime.acts import CONCERN_HORIZON_SEC
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
     PrimeConcernV1,
     PrimeStateV1,
+    close_concern,
     new_id,
+    track_record,
 )
+from orion.refs import RefV1, id_tokens_not_in, parse_refs
 from orion.schemas.introspect import FOCUS_TEXT_CAP
 
 READING_CAP = 600
@@ -58,6 +67,8 @@ class CuriosityFocusMoveV1(BaseModel):
     question: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
     why: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
     concern_id: Optional[str] = None
+    # Raw [{kind, id}]: checked in apply_answer so a bad ref refuses the move, not the whole thought.
+    refs: list[Any] = Field(default_factory=list)
 
 
 class PrimeAnswerV1(BaseModel):
@@ -81,14 +92,23 @@ While a question of yours is still open (asked, not yet answered), you cannot as
 Some of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.
 Only ask when a question would actually help with a concern. "move": null is a normal, good answer.
 
+Each concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a
+question you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,
+within <HORIZON_DAYS> days. Dropping a concern unresolved, or letting it fade, counts as not settled. Drop one freely
+when it no longer matters; the record just shows how often you follow through.
+
 Rules:
 - Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.
 - Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).
 - Refer to concerns by their concern_id; a move about the concern you add in this same answer uses "new".
 - arc_id must be an arc_id listed under ATTENTION (the hex id after "arc_id"), or null.
+- A question is read later by a curiosity run that cannot see this frame. Never write an id in "question" or
+  "why". To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
+  {"kind": "act", "id": "<act_...>"}); the run is told how to open each one. Any other id refuses the move.
 - Reply with ONE JSON object and nothing else:
 {"reading": "...", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
- "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null"}}"""
+ "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null",
+                 "refs": [{"kind": "arc" | "act", "id": "..."}]}}""".replace("<HORIZON_DAYS>", f"{CONCERN_HORIZON_SEC / 86400:g}")
 
 
 @dataclass
@@ -185,13 +205,18 @@ def _curiosity_lines(inputs: FrameInputs) -> list[str]:
     return lines or ["(no recent investigate runs)"]
 
 
+def _concern_line(c: PrimeConcernV1, now: datetime) -> str:
+    graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
+    return (f"- concern_id {c.concern_id}: {c.text} (arc {c.arc_id or 'none'}, held since "
+            f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
+
+
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
         "WHAT CHANGED SINCE YOUR LAST THOUGHT:\n" + "\n".join(f"- {c}" for c in state.pending_changes),
-        "YOUR CONCERNS:\n" + ("\n".join(
-            f"- concern_id {c.concern_id}: {c.text} (arc {c.arc_id or 'none'}, last kept {_age(inputs.now, c.last_evidence_at.isoformat())})"
-            for c in state.concerns) or "(none)"),
+        "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now) for c in state.concerns) or "(none)"),
+        "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
         "WHAT HAPPENED TO YOUR EARLIER MOVES:\n" + ("\n".join(f"- {o}" for o in state.recent_outcomes) or "(none yet)"),
         "QUESTIONS YOU ASKED THAT ARE STILL OPEN:\n" + ("\n".join(
@@ -223,6 +248,8 @@ class Applied:
     warnings: list[str]
     move: Optional[CuriosityFocusMoveV1]
     move_refusal: Optional[str]
+    # The move's references, checked for shape; the runtime still resolves each before sending.
+    refs: list[RefV1] = field(default_factory=list)
 
 
 def apply_answer(
@@ -234,9 +261,14 @@ def apply_answer(
     by_id = {c.concern_id for c in concerns}
     dropped: list[str] = []
     for drop in answer.concerns.drop:
-        if drop.concern_id not in by_id:
-            warnings.append(f"drop of unknown concern {drop.concern_id!r} ignored")
+        gone = next((c for c in concerns if c.concern_id == drop.concern_id), None)
+        if gone is None:
+            # Unknown, or listed twice in one answer (the first drop already removed it).
+            if drop.concern_id not in by_id:
+                warnings.append(f"drop of unknown concern {drop.concern_id!r} ignored")
             continue
+        state = close_concern(state, gone, end="dropped", now=now,
+                              note=f"dropped unresolved: {drop.why[:200] or 'no reason given'}")
         concerns = [c for c in concerns if c.concern_id != drop.concern_id]
         dropped.append(f"{drop.concern_id} ({drop.why[:120] or 'no reason given'})")
     kept_ids = set(answer.concerns.keep) & {c.concern_id for c in concerns}
@@ -255,9 +287,18 @@ def apply_answer(
         concerns.append(concern)
         added.append(concern.concern_id)
 
-    move, refusal = answer.move, None
+    move, refusal, refs = answer.move, None, []
     if move is not None:
-        if state.open_nominations:
+        refs, problems = parse_refs(move.refs)
+        stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)
+        if problems:
+            refusal = "; ".join(problems)
+        elif stray:
+            refusal = (f"the question cites {', '.join(stray[:3])} outside refs; a curiosity run cannot open "
+                       "an id written in the text. Put arcs and acts in refs, and no other ids")
+        if refusal is not None:
+            pass
+        elif state.open_nominations:
             refusal = "one of my questions to curiosity is still open"
         elif focus_pending is None:
             refusal = "could not read whether curiosity already has a focus waiting"
@@ -277,7 +318,8 @@ def apply_answer(
         "last_thought_at": now,
         "thoughts_total": state.thoughts_total + 1,
     })
-    return Applied(new_state, added, dropped, sorted(kept_ids), warnings, None if refusal else move, refusal)
+    return Applied(new_state, added, dropped, sorted(kept_ids), warnings, None if refusal else move, refusal,
+                   [] if refusal else refs)
 
 
 def summary_note(applied: Applied) -> str:
@@ -286,7 +328,8 @@ def summary_note(applied: Applied) -> str:
     if applied.dropped:
         parts.append("dropped " + "; ".join(applied.dropped))
     if applied.move is not None:
-        parts.append(f"move curiosity_focus {applied.move.question[:120]!r}")
+        cites = f" refs {', '.join(f'{r.kind}:{r.id}' for r in applied.refs)}" if applied.refs else ""
+        parts.append(f"move curiosity_focus {applied.move.question[:120]!r}{cites}")
     elif applied.move_refusal:
         parts.append(f"move refused: {applied.move_refusal}")
     else:

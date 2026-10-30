@@ -103,6 +103,7 @@ def _focus_extra(focus: FocusRow) -> dict[str, Any]:
         "queued_at": _iso(focus.created_at),
         "expires_at": _iso(focus.expires_at),
         "offered_run_id": focus.offered_run_id,
+        "refs": [dict(r) for r in focus.refs],
     }
 
 
@@ -180,7 +181,7 @@ class CuriosityFocusListener:
         chat_corr = binding.parent_trace_id or None
         queued = await queue_focus(
             pool, question=args.question, why=args.why, origin=args.origin, chat_correlation_id=chat_corr,
-            keep_pending=prime,
+            keep_pending=prime, refs=[r.model_dump(mode="json") for r in args.refs],
         )
         schedule = None
         if self.schedule_provider is not None:

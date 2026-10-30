@@ -756,6 +756,9 @@ and that whole local day is re-folded from its midnight (arc ids are determinist
 
 Routes (all read Postgres): `GET /temporal-self/frame` (current-day `TemporalSelfFrameV1`),
 `/temporal-self/day/{day_id}` (closed day, or 404), `/temporal-self/arcs?day_id=&kind=`,
+`/temporal-self/arcs/{arc_id}` (one arc by id from any retained day, or 404; the resolver for
+reference kind `arc` in `orion/refs.py`), and outside the chronicle `GET /acts/{act_id}` (one
+`grammar_acts` row, or 404; reference kind `act`),
 `/temporal-self/threads` (concern loops raised in conversation with no verdict yet),
 `/temporal-self/cursors` (per-source last folded row, the read watermark and its lag, late rows in
 the last 24 h; a watermark more than `READ_LAG + 10 ticks` behind is named in `warnings`).

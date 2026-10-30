@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -609,3 +610,19 @@ def test_prime_can_never_claim_juniper_asked():
     listener, table = _listener()
     out = _ask(listener, {**ARGS, "origin": "juniper"}, binding=PRIME)
     assert out.ok is False and "never juniper" in out.error and table.rows == []
+
+
+def test_prime_refs_are_stored_on_the_row_and_echoed_and_a_bad_ref_writes_nothing():
+    """Orion Prime step 1: refs travel Prime -> Hub -> the focus row (orion/refs.py kinds only)."""
+    listener, table = _listener()
+    refs = [{"kind": "arc", "id": "8d87adeca2ce06a5"}]
+    out = _ask(listener, {**ARGS, "refs": refs}, binding=PRIME)
+    assert out.ok is True and out.items[0].extra["refs"] == refs
+    [row] = table.rows
+    assert json.loads(row["refs"]) == refs
+    bad, empty = _listener()
+    out = _ask(bad, {**ARGS, "refs": [{"kind": "run", "id": "34d7345e36e7"}]}, binding=PRIME)
+    assert out.ok is False and "invalid queue_curiosity_focus request" in out.error and empty.rows == []
+    # A caller that cites nothing (every chat turn) is unchanged: no refs stored.
+    plain, plain_table = _listener()
+    assert _ask(plain, ARGS).ok is True and plain_table.rows[0]["refs"] is None

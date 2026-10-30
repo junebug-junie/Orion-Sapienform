@@ -195,6 +195,8 @@ def test_live_postgres_run_matches_in_memory_and_survives_a_restart():
         store = ChronicleStore(pool)
         arcs = await store.arcs("2026-10-10")
         assert {a["arc_id"]: canon(a) for a in arcs} == {k: canon(v) for k, v in mem.arcs.items()}
+        # By id (GET /temporal-self/arcs/{arc_id}, the resolver for orion/refs.py kind "arc").
+        assert canon(await store.arc(arcs[0]["arc_id"])) == canon(arcs[0]) and await store.arc("0" * 16) is None
         frame = await store.frame()
         assert canon(frame) == canon(mem.frame) and frame["skipped_at_or_before_watermark"] == 0
         cursors = {c["source_kind"]: c for c in await store.cursors()}

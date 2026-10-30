@@ -261,6 +261,13 @@ class ChronicleStore:
                 "SELECT day_json FROM temporal_self_day WHERE day_id = %(d)s", {"d": day_id})).fetchone()
         return row["day_json"] if row else None
 
+    async def arc(self, arc_id: str) -> Optional[dict]:
+        """One arc by id, any day still retained (orion/refs.py kind ``arc``)."""
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute(
+                "SELECT arc_json FROM temporal_self_arc WHERE arc_id = %(a)s", {"a": arc_id})).fetchone()
+        return row["arc_json"] if row else None
+
     async def arcs(self, day_id: str, kind: Optional[str] = None, limit: int = 500) -> list[dict]:
         sql = "SELECT arc_json FROM temporal_self_arc WHERE day_id = %(d)s"
         params: dict = {"d": day_id, "limit": limit}

@@ -12,7 +12,9 @@ Reports, whatever the result:
    control, with Fisher's exact two-sided p. A difference is called only at p < 0.05; with fewer than
    ``MIN_PER_ARM`` closed per arm the verdict is ``too_few``, never a lean.
 2. **Thoughts.** Opened, produced, preempted, failed.
-3. **Cadence vs price.** Funded share of bids when Prime's lane and heat prices were zero vs above zero.
+3. **Concerns** (verb ``predict``, Prime step 1): opened, settled (produced 1), and how the rest ended,
+   read from each close note's first word (dropped / faded / lapsed) or the ledger's ``expired``.
+4. **Cadence vs price.** Funded share of bids when Prime's lane and heat prices were zero vs above zero.
    2A's proof needs "cadence follows price on cool vs warm days": funded share lower when priced.
 
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_report.py --dsn postgresql://... [--days 14]``.
@@ -98,6 +100,24 @@ def thoughts(acts: Iterable[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+def concerns(acts: Iterable[dict[str, Any]]) -> dict[str, int]:
+    out = {"opened": 0, "open": 0, "settled": 0, "dropped": 0, "faded": 0, "lapsed": 0, "expired": 0, "other": 0}
+    for act in acts:
+        if act.get("verb") != "predict":
+            continue
+        out["opened"] += 1
+        if act.get("outcome_value") is None:
+            out["open"] += 1
+            continue
+        if float(act["outcome_value"]) == 1.0:
+            out["settled"] += 1
+            continue
+        word = str(act.get("outcome_note") or "").split(":", 1)[0].split(" ", 1)[0]
+        key = "expired" if act.get("outcome_source") == "expired" else word
+        out[key if key in out and key not in ("opened", "open", "settled") else "other"] += 1
+    return out
+
+
 def cadence(decisions: Iterable[dict[str, Any]], *, lane: str = "chat") -> dict[str, Any]:
     buckets = {"unpriced": [0, 0], "priced": [0, 0]}   # [funded, total]
     for row in decisions:
@@ -110,7 +130,7 @@ def cadence(decisions: Iterable[dict[str, Any]], *, lane: str = "chat") -> dict[
 
 
 ACTS_SQL = """
-SELECT verb, test_before, outcome_value, outcome_note, opened_at, closed_at
+SELECT verb, test_before, outcome_value, outcome_source, outcome_note, opened_at, closed_at
   FROM grammar_acts WHERE actor = 'prime' AND opened_at > now() - make_interval(days => %s)
 """
 BIDS_SQL = """
@@ -133,7 +153,8 @@ def main() -> int:
         acts = [dict(r) for r in cur.fetchall()]
         cur.execute(BIDS_SQL, (args.days,))
         bids = [dict(r) for r in cur.fetchall()]
-    report = {"days": args.days, "narrator": narrator(acts), "thoughts": thoughts(acts), "cadence": cadence(bids)}
+    report = {"days": args.days, "narrator": narrator(acts), "thoughts": thoughts(acts), "concerns": concerns(acts),
+              "cadence": cadence(bids)}
     print(json.dumps(report, indent=2, default=str))
     return 0
 

@@ -9,6 +9,8 @@ on:
   pull_request:
     paths:
       - "orion/prime/**"
+      - "orion/refs.py"
+      - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
       - "orion/curiosity/run_story.py"
       - "orion/grammar/acts.py"
@@ -21,6 +23,8 @@ on:
     branches: [main]
     paths:
       - "orion/prime/**"
+      - "orion/refs.py"
+      - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
       - "orion/curiosity/run_story.py"
       - "orion/grammar/acts.py"
@@ -51,6 +55,8 @@ jobs:
           python -m pip install httpx
       - name: Prime pure logic + readout arithmetic
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/prime
+      - name: References contract (every kind has a resolver, a dig command and a test)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/dig/tests/test_refs_contract.py
       - name: Frame eval on live inputs (grounded, bounded, honest gaps, settles)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_frame_eval.py
       - name: orion-mind (resident loop + every existing Mind test)

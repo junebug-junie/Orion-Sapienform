@@ -42,3 +42,14 @@ def test_thoughts_and_cadence_buckets():
 def test_frame_eval_passes_on_the_live_fixture():
     results = run_prime_frame_eval.run()
     assert all(ok for _, ok, _ in results), [r for r in results if not r[1]]
+
+
+def test_concerns_tally_reads_each_end_from_the_close():
+    acts = [{"verb": "predict", "outcome_value": 1.0, "outcome_note": "settled: question act x"},
+            {"verb": "predict", "outcome_value": 0.0, "outcome_note": "dropped unresolved: moved on"},
+            {"verb": "predict", "outcome_value": 0.0, "outcome_note": "faded: not kept for a day"},
+            {"verb": "predict", "outcome_value": 0.0, "outcome_note": "lapsed: no question"},
+            {"verb": "predict", "outcome_value": 0.0, "outcome_source": "expired", "outcome_note": ""},
+            {"verb": "predict"}, {"verb": "infer", "outcome_value": 1.0}]
+    assert rpt.concerns(acts) == {"opened": 6, "open": 1, "settled": 1, "dropped": 1, "faded": 1, "lapsed": 1,
+                                  "expired": 1, "other": 0}

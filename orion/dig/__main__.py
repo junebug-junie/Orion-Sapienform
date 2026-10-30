@@ -40,13 +40,13 @@ FIRST_DAY = date(2025, 6, 24)  # first commit in the repo
 HELP = f"""dig: read-only tools for your own history. Every command prints a short summary and the
 path of a file with the full result; read only what you need from that file.
 
-  open <date>            export the repo as it was at the end of <date> (YYYY-MM-DD, Denver)
+  open <date>            export the repo as of the end of <date> (YYYY-MM-DD, Denver)
                          to a plain folder (no git link). At most {MAX_OPEN} open; 24 h old ones go.
   close <date>           delete that export.  list: show open exports.
   inventory <date|now>   services, modules, channels, verbs, schemas in that checkout.
-  compare <date> [<date|now>]   what was added / removed between two checkouts.
+  compare <date> [<date|now>]   added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
-  history <days>         the same for the last <days> days (2 = since yesterday).
+  history <days>         the last <days> days (2 = since yesterday).
   body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
                          None = live now; a date = that export's files; an organ id = its members.
   capacities [gaps]      VSM jobs your parts do: by rule, by Juniper's confirmation, claimed.
@@ -54,11 +54,12 @@ path of a file with the full result; read only what you need from that file.
                          cite one of its flows by full id or a repo file. `capacity help`: rule.
   capacity write cap:<job> <sentence> because <reason>   a capacity, in your words.
   body-economy [<section>...]   what spins each machine, what it costs, binds, wants, waste.
-                         `body-economy --help` lists sections and flags.
+                         `body-economy --help`: sections, flags.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write) by what it takes in and gives out; cite one of its parts.
   name-organs            every unnamed organ, its parts, and a ready `name` line.
-  notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
+  arc|act <id>           open a cited arc/act.
+  notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
 Label what you say from a dig by its source:
@@ -749,6 +750,23 @@ def cmd_body_economy(args: list[str], out: Out) -> str:
     return capped(rt.render_report_text(report, sections, host=host).splitlines(), tail=f"full report: {path}")
 
 
+# --- references (orion/refs.py) ----------------------------------------------------------------
+
+def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
+    """Open one reference with the same resolver Prime used before it cited it."""
+    from orion import refs
+
+    try:
+        ref = refs.RefV1(kind=kind, id=ref_id)
+    except refs.ValidationError as exc:
+        raise DigError(f"{kind}: {refs.error_words(exc)}") from exc
+    res = refs.resolve(ref)
+    if not res.ok:
+        raise DigError(res.error or f"{kind} {ref_id}: unresolved")
+    path = out.write(f"{kind}-{ref_id}", res.data)
+    return capped(res.lines, tail=f"full {kind}: {path}")
+
+
 # --- notes ----------------------------------------------------------------------------------
 
 def cmd_notes(text: str | None, out: Out) -> str:
@@ -766,6 +784,10 @@ def cmd_notes(text: str | None, out: Out) -> str:
     if len(lines) > keep:
         lines = [f"(showing the newest {keep} of {len(lines)} lines; older ones are in the file)", *lines[-keep:]]
     return capped(lines, tail=f"notes: {path}")
+
+
+# One dig command per reference kind (orion/refs.py KINDS); orion/dig/tests/test_refs_contract.py checks the match.
+REF_COMMANDS = ("arc", "act")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -811,6 +833,8 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.command == "name" and len(a) >= 4 and "because" in a[2:]:
             cut = a.index("because", 2)  # name words before it, the reason after: quoted or not
             text = cmd_name(a[0], " ".join(a[1:cut]), " ".join(a[cut + 1:]), out)
+        elif ns.command in REF_COMMANDS and len(a) == 1:
+            text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):
             text = cmd_notes(" ".join(a[1:]) if a else None, out)
         else:

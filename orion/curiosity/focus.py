@@ -20,6 +20,7 @@ The run is SHOWN the focus, not forced: it goes through every normal gate, coold
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -30,6 +31,10 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 logger = logging.getLogger("orion.curiosity.focus")
 
 MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql"
+# The ``refs`` column (Orion Prime step 1, 2026-10-30): ids the question cites, each openable with
+# ``python -P -m orion.dig <kind> <id>`` (orion/refs.py). NULL on rows written before it and on any
+# question that cites nothing.
+REFS_MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_request_refs_v1.sql"
 
 # How long a pending focus waits for a run. Measured 2026-10-16 over the 30 days before
 # (206 regular investigate runs, durable_admission_runs): the line runs ~7 times right after
@@ -67,7 +72,7 @@ def focus_id_for(question: str, why: str, origin: str, chat_correlation_id: str 
 _COLS = (
     "focus_id, question, why, origin, chat_correlation_id, created_at, expires_at, status, "
     "status_at, replaced_by, offered_at, offered_run_id, outcome_stamped_at, turn_ok, "
-    "disposition, disposition_raw"
+    "disposition, disposition_raw, refs"
 )
 # What a reader should call the row now: a pending row past its expiry is expired even before
 # the sweep marks it.
@@ -97,8 +102,8 @@ UPDATE curiosity_focus_request
 """
 
 INSERT_SQL = f"""
-INSERT INTO curiosity_focus_request (focus_id, question, why, origin, chat_correlation_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6::double precision))
+INSERT INTO curiosity_focus_request (focus_id, question, why, origin, chat_correlation_id, expires_at, refs)
+VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6::double precision), $7::jsonb)
 RETURNING {_COLS}, 'pending' AS effective_status
 """
 
@@ -203,6 +208,36 @@ class FocusRow:
     turn_ok: Optional[bool] = None
     disposition: Optional[str] = None
     disposition_raw: Optional[str] = None
+    # [{"kind", "id"}, ...] as stored (orion/refs.py RefV1 shape); empty when none.
+    refs: tuple[dict[str, str], ...] = ()
+
+
+def _refs_value(raw: Any) -> tuple[dict[str, str], ...]:
+    """The stored refs column (asyncpg hands jsonb back as text), each one re-checked against its
+    kind's id shape (orion/refs.py): the focus section prints a command built from these, so a value
+    that is not a valid reference is dropped and logged, never printed. (The column itself must
+    exist: every focus SELECT names it, see REFS_MIGRATION.)"""
+    if raw is None:
+        return ()
+    if isinstance(raw, (str, bytes)):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            logger.warning("curiosity_focus_refs_unreadable raw=%r", str(raw)[:120])
+            return ()
+    if not isinstance(raw, list):
+        return ()
+    from orion.refs import RefV1
+
+    out = []
+    for item in raw:
+        try:
+            ref = RefV1.model_validate(item)
+        except ValueError:
+            logger.warning("curiosity_focus_ref_invalid ref=%r", str(item)[:120])
+            continue
+        out.append({"kind": ref.kind, "id": ref.id})
+    return tuple(out)
 
 
 def _row(r: Any) -> FocusRow:
@@ -223,6 +258,7 @@ def _row(r: Any) -> FocusRow:
         turn_ok=r["turn_ok"],
         disposition=r["disposition"],
         disposition_raw=r["disposition_raw"],
+        refs=_refs_value(r["refs"]),
     )
 
 
@@ -235,7 +271,7 @@ class QueueResult:
 
 async def queue_focus(
     pool: Any, *, question: str, why: str, origin: str, chat_correlation_id: Optional[str],
-    ttl: timedelta = FOCUS_TTL, keep_pending: bool = False,
+    ttl: timedelta = FOCUS_TTL, keep_pending: bool = False, refs: Sequence[dict[str, str]] = (),
 ) -> QueueResult:
     """Put ``question`` in the one pending slot. Raises FocusRefused (nothing written) when a
     Juniper-origin focus holds the slot and this is Orion's own choice, or, with ``keep_pending``
@@ -269,6 +305,7 @@ async def queue_focus(
                 await conn.execute(REPLACE_SQL, current["focus_id"], focus_id)
             inserted = await conn.fetchrow(
                 INSERT_SQL, focus_id, question, why, origin, chat_correlation_id, ttl.total_seconds(),
+                json.dumps([{"kind": r["kind"], "id": r["id"]} for r in refs]) if refs else None,
             )
     replaced = None
     if current is not None:
@@ -449,6 +486,7 @@ def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
         f"    {' '.join(focus.question.split())}",
         f"    Why, in your words then: {' '.join(focus.why.split())}",
         "",
+        *_refs_lines(focus),
         "It is an offer, not an order. You can explore it in this run or set it aside. Either way, "
         "say which on your :TurnOutcome at the end (the node is described under LAST below):",
         '    focus_disposition: "explored"                     // if you looked into it in this run',
@@ -457,6 +495,20 @@ def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
         "write no focus_disposition, it is recorded as unknown, not as explored.",
         "",
     ]
+
+
+def _refs_lines(focus: FocusRow) -> list[str]:
+    """What the question cites, each with the one command that opens it (orion/refs.py)."""
+    if not focus.refs:
+        return []
+    from orion.refs import KINDS, RefV1, dig_command
+
+    lines = ["It cites these; open each one with the command shown (the same read that checked it exists):"]
+    for r in focus.refs:
+        spec = KINDS.get(r["kind"])
+        what = f" -- {spec.what}" if spec else ""
+        lines.append(f"    {r['kind']} {r['id']}{what}: {dig_command(RefV1.model_validate(r))}")
+    return [*lines, ""]
 
 
 def focus_story(focus: FocusRow) -> str:

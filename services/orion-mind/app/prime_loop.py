@@ -54,16 +54,20 @@ from orion.introspect.transport import (
     RESULT_PREFIX,
 )
 from orion.prime.acts import (
+    CONCERN_COMPONENT,
     GONE_READS_TO_SETTLE,
     NOMINATION_COMPONENT,
     NOMINATION_HORIZON_SEC,
     SOURCE_SERVICE,
     THOUGHT_COMPONENT,
     chat_correlation_id,
+    concern_act,
     draw_arm,
+    lapse_concerns,
     nomination_act,
     prime_focus_id,
     Settlement,
+    settle_concern,
     settle_nomination,
     thought_act,
     treated_focus_gone,
@@ -76,9 +80,11 @@ from orion.prime.state import (
     new_id,
     note_outcome,
     observe,
+    trim_record,
     wants_to_think,
 )
 from orion.prime.thought import SYSTEM_PROMPT, FrameInputs, apply_answer, build_frame, parse_answer, summary_note
+from orion.refs import RefV1, resolve as resolve_ref
 from orion.schemas.grammar import ActV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
@@ -282,27 +288,55 @@ class PrimeRuntime:
         return await self._read(f"{base}/curiosity/api/runs?days={CURIOSITY_RUNS_DAYS}&line=investigate")
 
     # --- acts ------------------------------------------------------------------------------
-    async def _publish(self, event: Any) -> None:
+    async def _publish(self, event: Any) -> bool:
         try:
             await self.bus.publish(GRAMMAR_EVENT_CHANNEL, BaseEnvelope(
                 kind="grammar.event.v1", source=self.source, payload=event.model_dump(mode="json")))
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("prime_act_publish_failed act=%s err=%s", event.act.act_id if event.act else "-",
                            type(exc).__name__)
+            return False
 
-    async def _open(self, act: ActV1, component: str) -> None:
-        await self._publish(act_opened_event(act, source_service=SOURCE_SERVICE, source_component=component))
+    async def _open(self, act: ActV1, component: str, *, at: Optional[datetime] = None) -> bool:
+        return await self._publish(act_opened_event(act, source_service=SOURCE_SERVICE, source_component=component,
+                                                    at=at))
 
-    async def _close(self, act: ActV1, component: str, *, produced: bool, note: str) -> None:
-        await self._publish(act_closed_event(act, produced=produced, source_service=SOURCE_SERVICE,
-                                             source_component=component, note=note))
+    async def _close(self, act: ActV1, component: str, *, produced: bool, note: str,
+                     at: Optional[datetime] = None) -> bool:
+        return await self._publish(act_closed_event(act, produced=produced, source_service=SOURCE_SERVICE,
+                                                    source_component=component, note=note, at=at))
+
+    async def _flush_concern_acts(self) -> None:
+        """Open the act of every concern that has none yet (new, or held from before concern acts), then
+        publish the close of every unpublished concern record. Marked done only after a publish
+        succeeds, so a failed or interrupted send is retried next tick; the ledger keeps the first open
+        and the first close of an act, so a retry never counts twice."""
+        now = self.clock()
+        concerns = []
+        for c in self.state.concerns:
+            if c.act_opened_at is None and await self._open(concern_act(c.concern_id), CONCERN_COMPONENT, at=now):
+                c = c.model_copy(update={"act_opened_at": now})
+            concerns.append(c)
+        records = []
+        for r in self.state.concern_record:
+            if not r.published:
+                act = concern_act(r.concern_id)
+                opened = r.act_opened_at is not None or await self._open(act, CONCERN_COMPONENT, at=r.opened_at)
+                if opened and await self._close(act, CONCERN_COMPONENT, produced=r.produced, note=r.note,
+                                                at=r.closed_at):
+                    logger.info("prime_concern_closed concern=%s end=%s", r.concern_id, r.end)
+                    r = r.model_copy(update={"published": True})
+            records.append(r)
+        self.state = self.state.model_copy(update={"concerns": concerns, "concern_record": trim_record(records)})
 
     # --- the tick --------------------------------------------------------------------------
     async def tick(self) -> None:
         snap, inputs = await self._read_body_and_attention()
         now = self.clock()
-        self.state = observe(self.state, snap, now)
+        self.state = lapse_concerns(observe(self.state, snap, now), now)
         await self._maybe_settle(now)
+        await self._flush_concern_acts()
         await self.save()
         if self.turns.active():
             logger.info("prime_yield reason=juniper_turn pending=%d", len(self.state.pending_changes))
@@ -325,6 +359,7 @@ class PrimeRuntime:
             await self.think(inputs)
         finally:
             await self.release(want.want_id)
+            await self._flush_concern_acts()
             await self.save()
 
     def _cost_ceiling(self) -> Any:
@@ -383,15 +418,32 @@ class PrimeRuntime:
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending)
         self.state = applied.state
+        if applied.move is not None and applied.refs:
+            unopened = await self._unresolved(applied.refs)
+            if unopened:
+                applied.move, applied.refs = None, []
+                applied.move_refusal = f"it cites {'; '.join(unopened)}, which a curiosity run could not open"
         if applied.move_refusal:
             self.state = _with_outcome_line(self.state, f"my move was not sent: {applied.move_refusal}")
         if applied.move is not None:
-            await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now)
+            await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
+                                 refs=applied.refs)
         note = summary_note(applied)
         logger.info("prime_thought thought=%s %s reading=%r", thought_id, note, answer.reading[:200])
         return True, note
 
-    async def _nominate(self, move: Any, *, thought_id: str, thought_act_id: str, now: datetime) -> None:
+    async def _unresolved(self, refs: list[RefV1]) -> list[str]:
+        """Each ref opened with the same resolver a curiosity run's ``orion.dig <kind> <id>`` uses."""
+        base = self.s.PRIME_DURABLE_RUNS_URL
+        out = []
+        for ref in refs:
+            res = await asyncio.to_thread(resolve_ref, ref, base_url=base, get_json=self.get_json)
+            if not res.ok:
+                out.append(res.error or f"{ref.kind} {ref.id}")
+        return out
+
+    async def _nominate(self, move: Any, *, thought_id: str, thought_act_id: str, now: datetime,
+                        refs: Optional[list[RefV1]] = None) -> None:
         focus_id = prime_focus_id(question=move.question, why=move.why, thought_id=thought_id)
         arm = draw_arm(focus_id, float(self.s.PRIME_HOLDBACK_FRACTION))
         act = nomination_act(focus_id=focus_id, arm=arm, thought_act_id=thought_act_id, concern_id=move.concern_id)
@@ -399,21 +451,26 @@ class PrimeRuntime:
         nom = PrimeNominationV1(act_id=act.act_id, thought_id=thought_id, focus_id=focus_id, question=move.question,
                                 why=move.why, arm=arm, opened_at=now, concern_id=move.concern_id)
         if arm == "treated":
-            queued, error = await self._queue_focus(move.question, move.why, thought_id)
+            queued, error = await self._queue_focus(move.question, move.why, thought_id, refs=refs or [])
             nom = nom.model_copy(update={"queued": queued, "queue_error": error})
         logger.info("prime_nomination focus=%s arm=%s queued=%s err=%s question=%r",
                     focus_id, arm, nom.queued, nom.queue_error, move.question[:160])
         self.state = self.state.model_copy(update={"open_nominations": [*self.state.open_nominations, nom]})
 
-    async def _queue_focus(self, question: str, why: str, thought_id: str) -> tuple[Optional[bool], Optional[str]]:
+    async def _queue_focus(self, question: str, why: str, thought_id: str, *,
+                           refs: Optional[list[RefV1]] = None) -> tuple[Optional[bool], Optional[str]]:
         """(True, None) queued; (False, why) Hub refused before writing; (None, why) answer unknown."""
         corr = uuid4()
         reply = f"{RESULT_PREFIX}{corr}"
+        args = QueueCuriosityFocusArguments(question=question, why=why, origin="self",
+                                            refs=refs or []).model_dump(mode="json")
+        if not args["refs"]:
+            args.pop("refs")  # a Hub from before refs (extra="forbid") still accepts a question that cites nothing
         request = IntrospectRequestV1(
             operation="queue_curiosity_focus",
             binding=IntrospectToolBindingV1(invocation_context="prime", parent_run_id=thought_id,
                                             parent_trace_id=chat_correlation_id(thought_id), memory_allowed=False),
-            args=QueueCuriosityFocusArguments(question=question, why=why, origin="self").model_dump(mode="json"),
+            args=args,
         )
         try:
             raw = await self.bus.rpc_request(
@@ -472,5 +529,9 @@ class PrimeRuntime:
             logger.info("prime_nomination_settled focus=%s arm=%s produced=%s note=%s",
                         nom.focus_id, nom.arm, settled.produced, settled.note)
             seen = settled.note if nom.arm == "treated" else "held back as a control (it was never sent)"
-            self.state = note_outcome(self.state, f"my question {nom.question[:120]!r}: {seen}")
+            self.state, concern_line = settle_concern(self.state, nom.concern_id, arm=nom.arm,
+                                                      produced=settled.produced, now=now,
+                                                      note=f"question act {act.act_id}: {settled.note}")
+            tail = f"; {concern_line}" if concern_line else ""
+            self.state = note_outcome(self.state, f"my question {nom.question[:120]!r} (act {act.act_id}): {seen}{tail}")
         self.state = self.state.model_copy(update={"open_nominations": keep})

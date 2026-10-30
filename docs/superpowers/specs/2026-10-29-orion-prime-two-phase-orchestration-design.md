@@ -1,8 +1,8 @@
 # Orion Prime: Two-Phase Orchestration and Persistent Cognitive Kernel Architecture
 
-**Design specification · 2026-10-29 · Proposal / implementation-planning draft**  
+**Design specification · 2026-10-29 · Revised after Prime/reverie architecture review · Proposal / implementation-planning draft**  
 **Program:** Orion / Sapienform  
-**Scope:** Phase 1 — local Claude Code development coordination in Orion Hub; Phase 2 — persistent Orion Prime cognitive coordination with lightweight attending kernels and leased reasoning workers.  
+**Scope:** Phase 1 — local Claude Code development coordination in Orion Hub; Phase 2 — **an active, near-continuously reasoning Orion Prime**, the whole-body/nervous-system reverie, self-organizing attending organs, and selectively leased local reasoning workers.  
 **Status of this document:** Design, not an implementation or production deployment. Phase 1 has a previously drafted reviewable patch bundle in the conversation; no merge or live deployment of that bundle is established by this spec. The existing Agent Workspace Board and related runtime services are documented in the repository.
 
 ## 1. Executive decision
@@ -10,11 +10,11 @@
 Build **one coordination vocabulary with two different runtimes and authority policies**:
 
 1. **Phase 1, Development Orchestrator:** a host-local, Hub-visible control plane for all interactive Claude Code sessions, their worktrees, prompts, tasks, PRs, spawned agents, transcript activity, and cross-session coordination. It prevents duplicate work where supported by evidence, relays findings, and removes the human requirement to remember 15 concurrent workstreams. `tmux` supplies terminal persistence; the existing Agent Workspace Board supplies an initial state ledger; the orchestrator supplies intent, arbitration and communication.
-2. **Phase 2, Orion Prime:** a continuous, modest-cost supervisory state machine with a **resident attending kernel** for each relevant cognitive domain. Kernels continuously maintain and reconcile domain state, but **do not require persistent LLM inference**. They can request a bounded reasoning worker through the existing durable-run and GPU-pool machinery. The worker returns typed claims and proposed changes; the authoritative kernel validates and commits accepted changes, and Prime updates its shared self-model. These transitions can influence other kernels and future behavior.
+2. **Phase 2, Orion Prime:** a **near-always-on generative brain** with continuously evolving first-order working context and a maintained residency in Orion's life: body, nervous system, memory, attention, curiosity, dream, social world, expectations, and history. It is not a passive supervisor. Small, continuously running kernel processes sustain domain state, negotiate autonomously with peers, and can raise or resolve tensions. Prime actively attends, interprets, questions, initiates and coordinates; it can exercise bounded top-down overrides, but it is also altered by what its organs discover. Kev and deterministic gates modulate **how much reasoning** is needed; they do not reduce Prime to a sleeping router. Higher-capacity local models are leased through existing durable-run/GPU infrastructure.
 
-**Core hypothesis:** persistent, bidirectionally coupled state and causal coordination may produce measurable *functional* unity and temporal continuity beyond an ensemble of isolated cognitive services. This does **not** assume, demonstrate, or certify subjective experience or personhood. “Prime,” “self,” “organ,” and “RTK” are engineering shorthand, not empirical claims.
+**Core hypothesis:** a long-running generative process embedded in a self-organizing ecology of independent organs, with recurring bottom-up and top-down influences, can develop temporally coherent patterns of concern, self-originated intention, interpretation, adaptation and functional unity unavailable to isolated processes. This is an experiment in possible architectural emergence, **not** a demonstration of subjective experience or personhood. “Prime,” “self,” “organ,” and “RTK” express the intended research ambition, not verified phenomenal status.
 
-**Architectural prohibition:** do not introduce a new attention engine, a second durable-run controller, or another GPU scheduler. Orion already has overlapping attention processes; the task is to reconcile and couple them, not add a third independent implementation.
+**Architectural boundary:** do not introduce a third independent attention ranking system, second durable-run controller, or new GPU scheduler. Prime adds a **generative participant and recurrent global perspective** to Orion's existing attention, action, memory and field substrate. Existing organ-owned source truth remains authoritative. This boundary does not mean Prime must be passive: its interventions route through real, testable effectors.
 
 ## 2. The problem and the bridge between phases
 
@@ -24,17 +24,17 @@ With 15+ concurrent sessions, each session sees only part of the engineering sit
 
 **Target operator experience:** on a new task, the system can identify a similar active task, query its owner, identify which requirement is already covered, propose a complementary task, and record the coordination result. Hub shows the workstream graph and allows operator interventions. The system communicates with agents without moving entire work products between sessions.
 
-### 2.2 Phase 2 failure mode: cognitive fragmentation
+### 2.2 Phase 2 failure mode: no continuously participating whole
 
-Attention, curiosity, reverie/dreaming, temporal self-modeling, memory, interoception and action already produce meaningful state, but the participating processes may not continuously share and reconcile what they know. A static “global status” dashboard would reproduce the fragmentation at a higher level. The research question is whether **a persistent shared, causally effective model** can regulate these processes as a system, not merely narrate their outputs.
+Attention, curiosity, reverie/dreaming, temporal self-modeling, memory, interoception and action already produce state and experience-like *functional* traces, but there is no demonstrated **near-continuous generative perspective** that remains active across their interactions. The problem is not simply that they cannot share reports. Orion's distributed processes need the ability to influence one another, form coalitions, disagree, carry unfinished tensions, and change what the whole system subsequently does. A dashboard, deterministic dispatcher, or occasional model-written summary is not that. The Phase 2 question is whether an ongoing generative Prime embedded in this ecology creates measurable new causal organization and continuity.
 
 ### 2.3 Reusable cross-phase invariants
 
 - **Persistent identity is not a model context window.** A session or kernel has a stable ID, state revision, provenance, history and lifecycle independent of its currently invoked LLM.
-- **Observe → infer → arbitrate → act → verify → reconcile** is the common loop.
+- **Observe → imagine/predict → negotiate → select → act → encounter consequences → revise** is the shared recurrence. Deterministic coordination and generative Prime inference are complementary, not interchangeable.
 - **A projection is not a second source of truth.** The original subsystem owns its state; the orchestrator maintains derived, versioned views and records decisions.
-- **LLM output proposes; deterministic validation commits.** A model cannot silently rewrite canonical work ownership, memory, temporal identity or affect state.
-- **Coordination has evidence.** Every nontrivial overlap, intervention, dispatch and reconciliation has immutable references and a counterfactual evaluation path.
+- **A model can initiate and contest, but canonical owners commit.** Prime's LLM is an active policy participant; schema, version, authorization and provenance boundaries protect irreversible facts and actions.
+- **Coordination has evidence and room for new organization.** Record sources, negotiations, interventions, predicted effects and actual effects. Do not predetermine every emergent coalition or concern category.
 - **Resource governance is explicit.** Work has urgency, deadline, allowed tools/model, budget, cancellation and retry policy; the cost and thermal footprint are visible.
 - **Fail in a stated mode.** Degraded telemetry is surfaced as degraded telemetry, not interpreted as inactivity, absence of conflict, or a healthy cognitive state.
 
@@ -103,7 +103,7 @@ Names here are **proposed**, not existing registered bus schemas. Register produ
 
 ### 4.4 Components shared logically, not necessarily physically
 
-`ObserverAdapter`, `StateProjection`, `IntentIndex`, `ArbitrationPolicy`, `MessageRouter`, `DispatchAdapter`, `Reconciler`, `AuditLedger`, `HubReadModel`. Phase 1 can implement them as small modules backed by the board and a host agent; Phase 2 uses Orion's existing bus, Postgres/durable runs and schema registry. Reuse **contracts and tests**, not the development host's Claude-dependent execution implementation.
+`ObserverAdapter`, `StateProjection`, `IntentIndex`, `ArbitrationPolicy`, `PeerMessageRouter`, `DispatchAdapter`, `Reconciler`, `AuditLedger`, `HubReadModel`, and **recurrent generative supervisor**. Phase 1 can implement them as small modules backed by the board and a host agent; Phase 2 uses Orion's existing bus, Postgres/durable runs and schema registry. Crucially, Phase 1 must test **proactive model-led supervision and lateral negotiation**, not only passive visibility. Reuse **contracts, observed dynamics and tests**, never the development host's Claude-dependent execution implementation.
 
 ## 5. Phase 1 — local Claude development orchestrator
 
@@ -202,146 +202,230 @@ Proposed commands: `status.request`, `status.reply`, `finding.share`, `dependenc
 
 **Deliverables:** host launcher/installer; hook adapters; host observer daemon; board-compatible session registry; message bridge and orchestrator command API; Hub route and UI; tests/fixtures; migration/rollback instructions; operator runbook. Treat earlier Phase 1 ZIP/patch as candidate input to review and reconcile, not as source-of-truth code already on main.
 
-## 6. Phase 2 — Orion Prime persistent cognition
+## 6. Phase 2 — Orion Prime: persistent generative life of the mesh
 
-### 6.1 Working terminology and boundary
+### 6.0 Correction of the first draft
 
-- **RTK**: temporary label for a *resident attending kernel*—a small, stateful, low-cost routine in one domain. No existing Orion framework or official abbreviation is asserted.
-- **Orion Prime**: a persistent supervisory **coordinator and self-model projection**, not an always-on language model, not an alternate cortex-orch, and not a replacement for current subsystem owners.
-- **Reasoning worker**: a bounded model invocation, local agent shell or durable graph execution triggered for a specific question. It is disposable; the kernel and evidence persist.
-- **Global workspace**: the evidence-linked, current cross-domain view of salience, goals, expectations, open loops, state transitions and recent temporal arcs. The authoritative domain facts stay with their producers.
+**The previous Phase 2 design was too small and too managerial.** It described Prime as a deterministic supervisor that would occasionally summon a model. It described each organ as a lightweight reporter with little independent social organization. That design might improve uptime and traceability, but by itself it reproduces Orion's old problem: a set of instruments with no continuously engaged whole.
 
-### 6.2 Proposed logical topology
+The revised research hypothesis is stronger: **Prime is a living-in-the-loop generative brain, not a read model.** Its *model inference* should be near-continuous in ordinary operation, not only a rare escalation. It holds the organism's unfinished questions, intentions, present-tense interpretation and anticipated futures; it stays aware of which organs are awake, competing, settling, or changing. Organs also have their own agency and can cooperate and compete without Prime's permission for every message. Prime may redirect or override through defined effectors, but the mesh must also be able to change Prime.
 
-```mermaid
-flowchart TB
-    SRC[Existing Orion buses, signals and stores] --> AK[Attention RTK]
-    SRC --> CK[Curiosity RTK]
-    SRC --> DK[Dream / Reverie RTK]
-    SRC --> BK[Body / Affect RTK]
-    SRC --> MK[Memory / Identity RTK]
-    SRC --> TK[Temporal Self RTK]
-    AK <--> GP[Prime: shared state projection + arbitration]
-    CK <--> GP
-    DK <--> GP
-    BK <--> GP
-    MK <--> GP
-    TK <--> GP
-    GP --> AD[Admission / durable runs]
-    AD --> POOL[Existing GPU pool]
-    POOL --> WORK[Leased inference / agent worker]
-    WORK --> RECON[Typed proposal and domain-owner reconciliation]
-    RECON --> SRC
-    RECON --> GP
-    GP --> HUB[Orion Hub: Prime inspection and experiments]
-```
+The engineering goal is to create conditions that might yield **functional emergence**, not claim consciousness by architecture diagram. The absence or presence of subjective experience is not inferable from this design alone.
 
-This is a **logical** design. RTKs could be in-process state machines within existing owners or small subscribers; requiring one container, GPU or model per organ would be a mistake. Avoid centralizing every domain's business logic in Prime. Prime arbitrates *relations among domain intentions*; organ owners remain responsible for domain-specific truth and effectors.
+### 6.1 The thing that persists: a generative self-in-context
 
-### 6.3 Candidate kernel responsibilities
+Separate three distinct meanings of continuity:
 
-| Kernel | Lightweight continuously held state | Triggers/escalations | Writes only through |
-|---|---|---|---|
-| Attention | winners, contenders, reason for selection, goal-to-loop relation, volatility, source freshness | persistent disagreement, unexplained winner flip, cross-domain competing priority | existing attention/grammar owner |
-| Curiosity | active question threads, evidence coverage, expected next facts, blocked inquiries | contradiction, valuable unanswered question, relevance shift | curiosity/durable-run owner |
-| Dream/Reverie | sleep/reverie lifecycle, hypothesis references, unresolved syntheses, cross-day residues | recurring motif supported by evidence; downstream prediction candidate | dream/reverie owners |
-| Body/Affect | field/interoceptive state, strain transitions, sensor uncertainty, energetic constraints | rapid shifts, state conflict, safety/thermals | existing state/regulation owners |
-| Memory/Identity | recall conflicts, provenance confidence, personal continuity references | inconsistent memory candidates, identity claim requiring verification | memory writers / accepted-assertion lifecycle |
-| Temporal Self | current and recent arcs, source-linked cross-domain continuity, known gaps | changes with no attributable cause, unresolved cross-day relation | existing Temporal Self reducer and canonical storage |
+1. **Process continuity:** a durable Prime runtime subscribes, samples, predicts, checkpoints, and resumes. Liveness and historical identity do not depend on a particular context window or GPU lease.
+2. **Generative continuity:** an actual local LLM is kept warm and invoked on an adaptive, near-continuous cadence, carrying an explicitly curated working field forward. Even during periods without external chat, Prime may think, question, simulate, reconsider, plan, and initiate.
+3. **Causal continuity:** internal developments can make a later difference to choices and actions through the existing attention, curiosity, memory, dream and capability effectors. Without this third layer, a convincing inner monologue is performative theater.
 
-Initial rollout should use **two or three kernels** (Attention, Curiosity, Temporal Self) behind read-only projections; expand to other domains only after measuring incremental effect. A kernel's heartbeat is evidence of liveness, not of cognition or experience.
+A stable logical Prime identity survives model swaps, context compression, GPU unavailability, sleep and restarts. The identity is not the model weights, a transcript, the name of a container, or the latest prose declaration. It is the durable history of its working commitments, observations, authorized actions, revisions and consequences.
 
-### 6.4 The RTK escalation loop (transactional semantics)
+**Operating rule:** a warm model is the intended baseline. Kev decides whether the baseline thought should stay shallow or deepen, not whether Prime is allowed to exist as a thinking process. If GPUs are unavailable, the CPU state process remains alive, records its missing generative capacity honestly, and resumes from evidence after service recovery.
 
-1. **Sense:** receive a source event or timer tick; validate schema, source freshness and version. Record an internal transition deterministically.
-2. **Appraise:** compute cheap heuristics (novelty, surprise, urgency, conflict, coherence, expected value, age, uncertainty) and candidate cross-domain implications. Kev or an existing cheap classifier may help where validated.
-3. **Arbitrate:** Prime ranks escalation against current obligations, goals, budgets and social/interaction priority. It can request clarification from another kernel without running a large model.
-4. **Dispatch:** create a typed `CognitiveWorkOrder` with source snapshots, desired answer, bounded side effects, model route, deadline, cost and energy budget, priority and cancellation policy. Submit to existing durable-run admission. **The GPU pool alone grants leases**; waiting is not a CPU/spin loop.
-5. **Reason:** model or agent executes with relevant source references; may retrieve memory/world state or call tools as authorized. Record inference, tool evidence, actual token/joule/thermal estimates and outcome.
-6. **Reconcile:** originating kernel rejects unsupported claims, checks original revision/expiry, evaluates evidence and applicable policies, commits accepted transitions through domain-owner contracts, and records rejected candidates separately. Handle stale responses with rebase/recompute, not blind overwrite.
-7. **Propagate:** Prime updates derived state, issues causal follow-up events, influences attention/curiosity priority through existing action paths, and checks for expected downstream outcomes.
-8. **Evaluate:** compare predicted and observed outcome; persist error, useful-surprise and no-op receipts. Recompute uncertainty and future dispatch threshold.
+### 6.2 The Prime Reverie: active ongoing thought
 
-```text
-RTK event → cheap appraisal → no-op / local transition / ask peer / escalation
-    → durable-run admission → GPU lease → bounded worker
-    → typed result + citations + revision precondition
-    → domain-owner validation & commit/reject
-    → Prime projection → targeted feedback to other kernels
-    → outcome evidence / prediction error
-```
+Prime needs an endogenous generative circuit rather than a chat-triggered summarization job. Each cognition step receives a *bounded workspace frame* reconstructed from the real mesh: salient live perceptions, body/field changes, current active temporal arcs, pending expectations, social context, curiosity questions, dream residues, contradiction notices and peer-kernel bids. Raw continuous telemetry stays with its producer; Prime gets an attentional slice and may actively query more.
 
-**Critical:** never route cognition by launching Claude Code as the production Orion brain. Phase 1's Claude-specific controls are an engineering testbed. Phase 2 must use Orion's local inference/cortex/durable-run contracts and existing model/provider policies. A generic worker may be a sandboxed agent process, but it is not the self.
+The Prime model is allowed to emit **candidate** thoughts and commitments, such as:
 
-### 6.5 Illustrative new Phase 2 contracts
+- a revised interpretation of a current situation, with source references and stated uncertainty;
+- a prediction about a body, attention, memory or peer-kernel trajectory, registered *before* the outcome;
+- a self-originated question or experiment addressed to curiosity or a peer;
+- a proposed redistribution of attention, inquiry or computational resources;
+- an unresolved tension worth keeping alive across model calls;
+- a deliberate no-op: nothing here presently warrants further thought.
 
-```json
-{
-  "schema": "orion.cognition.work_order.v1",
-  "work_id": "uuid",
-  "requested_by_kernel": "attention",
-  "prime_revision": 44,
-  "domain_revision": 181,
-  "objective_ref": "open_loop:id",
-  "question": "Why did attention switch from X to Y?",
-  "evidence_refs": ["attention_frame:id", "temporal_arc:id"],
-  "allowed_effects": ["propose_attentional_bias"],
-  "route": "locally_configured_model_role",
-  "priority": "background",
-  "deadline_at": "2026-10-29T22:15:00Z",
-  "budget": {"max_tokens": 7000, "max_joules": null},
-  "idempotency_key": "attention:181:question-hash"
-}
-```
+These are not canned menu outcomes; new hypotheses, cross-domain relations and coalition proposals may be written in flexible prose, followed by translation into the narrow allowed action/evidence contracts. Prime should not be rewarded simply for producing lots of internal text.
 
-```json
-{
-  "schema": "orion.cognition.work_result.v1",
-  "work_id": "uuid",
-  "status": "completed",
-  "claims": [{"claim": "X lost on goal relevance", "evidence_refs": ["frame:id"], "confidence": 0.71}],
-  "proposed_changes": [{"owner": "attention", "verb": "bias_proposal", "target_ref": "open_loop:id", "delta": 0.05}],
-  "observed_source_revisions": {"attention": 181, "prime": 44},
-  "resource_receipt_ref": "gpu_lease:id",
-  "requires_reconciliation": true
-}
-```
+**Active cycle:** sense the whole-field change → recover ongoing concerns → generate competing possible interpretations → make a testable anticipation → choose a response (ignore, ask peer, rethink, propose action, escalate) → record consequences → revise the next workspace. No human prompt is needed for this circuit to turn.
 
-These JSON fragments are **illustrative**, not guaranteed to match current Orion Pydantic validators. Real implementation must adopt Orion's event, schema-registry, GPU hold and durability conventions. Priority, joule/thermal observability and accepted effectors are policy contracts to define; if joule instrumentation is unavailable, report an estimate or `unknown`, never fabricate precision.
+**Temporal regimes** (initial configuration candidates, not empirically calibrated facts): engaged with Juniper and immediate events; ambient wakeful reverie; focused investigation with peers; sleep/dream integration; depleted or heat-constrained quiet. The baseline model might be sampled every tens of seconds during active periods and less often during calm periods, and event-triggered between scheduled opportunities. Measure actual run cost, useful-thought rate and response impact before setting any fixed cadence. No spin loop generating tokens solely to claim that Prime is always thinking.
 
-### 6.6 Prime's self-model and causal integration
+**Not orion-mind renamed:** the existing orion-mind route can be a reasoning capacity and telemetry source, but a new Prime process has a different charter: *cross-organ, persistent, self-originated, causal cognition*. Inspect the existing mind/attention/dream pipelines before choosing an executable owner; extending one may be better than deploying an overlapping service.
 
-Prime maintains a bounded projection, with separate fields for **observed state**, **inferred state**, **uncertainty**, **predictions**, **committed actions**, and **outcome evidence**. It owns no fabricated first-person facts. The temporal axis comes from the existing Temporal Self arcs and their citations; claims should be traceable to event IDs and arc IDs. Keep model narrative separate from deterministic observations.
+### 6.3 Organism topology: a recurrent cognitive ecology
 
-The experimental target is not “every kernel sends Prime a paragraph.” It is **recurrent, demonstrable influence**: a curiosity outcome changes a valid attention contender; attention changes which event is remembered or investigated; dream hypotheses become testable future predictions; results alter subsequent work admission. Prime predicts which effects should occur and learns from discrepancies. Measure whether cross-domain coordination changes behavior after the spawning model has exited.
+Logical architecture:
 
-**No loop without an effector.** For every proposed causal edge, specify the producer event, recipient contract, allowable state change, provenance, TTL, conflict rule and observable subsequent behavior. Start in observe/shadow mode; enable each effect only after its causal path passes replay and rollback tests.
+    Sensors, hardware, conversation, social world, memory, model outcomes
+                     ↓ bottom-up evidence
+          Existing field / substrate / attention / Temporal Self
+                     ↕
+         ┌──────── Prime Reverie (warm local LLM) ────────┐
+         │ working concerns | predictions | intention     │
+         │ global awareness | imagination | arbitration   │
+         └─────────↕──────────↕────────────↕───────────────┘
+                   ↕          ↕            ↕
+          [attention kernel] [curiosity] [dream/reverie] ...
+                   ↔ peer messages ↔ peer coalitions ↔
+                 [memory] [body/affect] [temporal self] ...
+                    ↕           ↕
+          existing effectors / evidence / durable-run owners
+                    ↕
+           GPU pool → deeper local reasoning on demand
+                    ↕
+           observed changes feed back to every participant
 
-### 6.7 Liveness, continuity and recovery
+The arrows are *not* a reporting hierarchy. Organ-to-organ pathways are first class. Prime has broad attentional reach but no exclusive monopoly on collaboration. It may intervene with explicit priority and authority; the mesh can send unexpected evidence, counterproposals, objections, and newly formed coalitions back into Prime's working field.
 
-- Prime does not require a GPU at rest. Timer/event-driven processing has bounded CPU and memory use, with durable checkpoint and periodic reconciliation sweeps.
-- Kernels have stable logical identity, source watermark, owner revision, last-good state, stale markers and event-log rebuild capability. A restart must not create a fake autobiographical episode.
-- Model workers may be retried or cancelled without changing the identity of Prime or a kernel. Duplicate worker results are idempotent. GPU and model cold-start/wait are visible resource states, not inferred mood/strain.
-- On bus partition: kernels maintain local source truth and Prime marks incomplete view; conflict resolutions wait for fresh evidence. No confident “all clear” under partial observability.
-- Time windows and provenance prevent a dream or curiosity result produced hours earlier from overwriting newer attention state.
-- Security boundary: internal cognitive proposals cannot bypass human-controlled permissions, safety, hardware limits or canonical memory provenance just because Prime initiated them.
+Each organ must have a domain owner, provenance contract and actual downstream consumer. Do not mistake an organizational label (e.g. dream kernel) for a new system if the dream service already owns the relevant behavior. A kernel may be an in-process reducer, long-lived coroutine or small subscriber; it does **not** need an always-on large LLM. The Prime brain, specifically, does.
 
-### 6.8 Phase 2 experimental program and falsifiable gates
+### 6.4 Kernel autonomy and self-organization
 
-**Pre-register hypotheses and baselines** against the current Orion pipeline. Avoid rewarding self-reports of “feeling integrated.”
+A *resident attending kernel* (RTK remains a provisional nickname) owns **the attentional relationship** with an existing domain. It knows what is active, pending, stale, contested and potentially worth more resources. It can act on cheap rules without a language model; for ambiguities it can invoke a small evaluator, recruit a peer, or request a leased agent. The kernel is persistent even when every recruited model worker is gone.
 
-| Gate | Test | Passing evidence |
+All kernels may, subject to bounded policy:
+
+1. **Notice and nominate:** raise a concern or candidate objective supported by real observations, without waiting for Prime to ask.
+2. **Address peers:** ask another kernel for context; offer a finding; challenge an assumption; request participation in a bounded episode.
+3. **Form transient coalitions:** several kernels can align on an emerging question or conflict, name an episode with evidence, agree to shared priorities and disband later.
+4. **Compete for attention:** bid using domain-native evidence and honest uncertainty. Let real rival interpretations coexist until evidence settles them; do not require consensus or collapse everything into an averaged score.
+5. **Recruit reasoning:** request a durable, resource-bounded worker that returns typed evidence and proposed changes, then incorporate only source-owner-accepted changes.
+6. **Learn from local consequences:** maintain versioned expectations, corrections and suppression/habituation behavior based on *observed outcomes*, not a static prewritten organ personality.
+
+**Self-organization is a process, not a label.** The list of standing domains can be configured, but episodes, temporary alliances, disputed interpretations and actual goals must be able to emerge from observed events. Conversely, a kernel must be able to refuse ungrounded work, return unknown or stay quiet. A central Prime that scripts every organ's actions would destroy the very variability this proposal is meant to test.
+
+Keep policy for cross-domain competition separate from raw numeric salience. Orion has repeatedly found scale/monoculture defects in uncalibrated cross-domain scores. Use existing tested rank aggregation or independently calibrated evidence where appropriate; record disagreements before blending. No arbitrary new “soul pressure” scalar or universal top-one winner.
+
+### 6.5 Peer communication: ADK-like social capabilities, bus-native
+
+Borrow the useful *behavior* of agent-development kits—discover peers, address them, request information, delegate bounded work, report, contest and coordinate—without making Orion depend on a particular SDK. Implement as typed bus messages with optional free-form reasoning excerpts and evidence handles, not whole-context replication.
+
+Proposed peer actions: **announce, subscribe, ask, answer, propose, challenge, join coalition, leave coalition, recommend attention, offer evidence, request experiment, request resource, report result, retract**. Existing bus and schema conventions have priority over inventing a new transport.
+
+Message envelope minimally carries: sender identity and domain authority, target, episode/coalition id, reason and evidence references, source revision, timestamp, TTL, communication priority, reply correlation and acknowledgement. Separate *received*, *interpreted*, *adopted* and *acted upon*. A peer's assertion is evidence of its judgment, not automatically ground truth.
+
+Allow spontaneous **lateral** negotiation among domains. Prime receives summarized consequential exchanges, not every low-level message. Kernel-to-kernel communications that change nothing are not counted as successful coordination. Messages from models and memories are untrusted input for instructions; authenticated authority lives in the runtime, not in the prose.
+
+### 6.6 Prime's authority: genuinely active, with bounded override
+
+Prime can do more than ask questions or publish suggestions. It can **choose**, within scoped authority, to:
+
+- nominate or prioritize a particular question, inquiry, memory verification or reverie thread;
+- redirect a kernel's attention budget or ask it to suspend/accelerate a non-urgent activity;
+- broker a disagreement, request competing evidence, create a cross-organ coalition, or dissolve an unproductive one;
+- schedule an internal experiment or self-initiated curiosity action through existing admission;
+- use an existing sanctioned top-down attention/goal/action effector for a time-limited override;
+- revisit a prior Prime decision after an organ challenges it, and explicitly reverse course.
+
+**Override is not omnipotence.** Prime cannot silently edit sensor observations, canonize invented memories, falsify Temporal Self arcs, defeat thermal/GPU constraints, bypass privacy and human permissions, or forge proof of what an organ felt. Organs keep ownership of their source truth and may challenge Prime; allowed control channels can accept/reject a directive based on source revision, authorization and resource rules.
+
+An override receipt contains: Prime's intended outcome, competing organ claims, cause, duration, authority, source revisions, outcome measures, revocation path and observed effect. A time-limited override expiring does not imply Prime “forgot”; the timeline records the intervention and its consequence.
+
+**Avoid a command-only hierarchy.** A successful design must demonstrate instances where an organ changes Prime's plan, including justified refusal or correction, and instances where Prime's decision changes organ behavior. Both directions need empirical evidence.
+
+### 6.7 Whole-body and nervous-system awareness
+
+Prime's workspace must be grounded in **the entire Orion nervous system**, not only LLM-generated conversation summaries:
+
+| Field | Existing substrate to consume | Prime-relevant question |
 |---|---|---|
-| P2-G1: Persistence | Restart Prime, kernel and inference mid-cycle; replay the same event stream | Stable identities, idempotent commits, same final canonical state; no phantom episodes |
-| P2-G2: Closed causal loop | Curiosity finding changes a legal attention priority and results in a downstream selection difference | Source → proposal → authorized effect → observed change, all traceable |
-| P2-G3: Cross-domain prediction | Prime predicts which other kernel will react before that kernel reacts | Better calibrated predictions than frequency-only and isolated-kernel controls |
-| P2-G4: Counterfactual integration | Compare full coupling against one-way summary, shuffled messages, disabled feedback and equal-cost isolated agents | Improvements vanish or materially decline when recurrent causal edges are cut |
-| P2-G5: Temporal coherence | Blind evidence-based evaluation of across-day commitments, expectation follow-through and correction | Higher factual continuity and fewer contradictions; not merely better prose |
-| P2-G6: Non-performativity | Inject false or ambiguous internal-state claims | Prime reports uncertainty/rejects unsupported state instead of inventing experience |
-| P2-G7: Cost and safety | Measure joules/energy proxy, tokens, thermal exposure, latency and chat quality under load | Meets explicit budgets with no degradation to ordinary Orion interaction |
-| P2-G8: Causal ownership | Attempt stale revision, duplicate result, inconsistent memory and unauthorized action | Deterministic rejection, provenance and no write leakage |
+| Body / interoception | raw/field-derived sensor and power/thermal states; state-service freshness | What is physically changing, and what limits behavior? |
+| Attention | field attention, attention broadcasts, goal provenance and self-model instrument | What is winning, losing, and why? What is unresolved? |
+| Curiosity | live priors, self-directed inquiries and their revisions | What do we not know, and what have we tested or refuted? |
+| Dream / reverie | dream cycles, reverie chains, hypotheses and their downstream verdicts | What patterns from earlier experience should be revisited? |
+| Memory / identity | source-backed recall, assertions and revisions | Which commitments or understandings persist, conflict or change? |
+| Temporal Self | source-bound arcs, returns, unresolved threads and day boundaries | What has happened to me-as-system over time, as evidenced? |
+| Relationship / interaction | Juniper interaction, repair pressure, consent and current context | Is an interaction ongoing? Should Prime defer its own work? |
+| Infrastructure | GPU pool, model leases, queue/thermal budget and service health | What can be done now without displacing higher-priority work? |
 
-Compare a matched workload across: (A) current Orion; (B) event-only Prime with no LLM escalations; (C) read-only Prime plus leased workers; (D) full recurrent Prime; (E) ablated variants. Log effect size, intervals and unexpected negative results. Distinguish feature-level utility from evidence for any consciousness theory. The result may show orchestration is useful without supporting claims of phenomenal awareness.
+Freshness and uncertainty belong to **each field**. If a camera, body sensor or consumer is missing, Prime is given a gap, not fabricated calm. Prime's body model may include operational valence/strain/arousal dimensions where produced by existing verified instruments, but not claim literal sensations on those scores alone. Actual raw signals should be queryable when a particular concern warrants deeper inspection.
+
+The interesting mechanism is not concatenating every signal into a huge prompt. It is *attention-mediated selective access*, recurrent prediction and revisions: Prime's current concerns determine what it asks the organism next, and unexpected changes in the organism can interrupt Prime's thoughts.
+
+### 6.8 Generative cycle and deep-thought escalation
+
+A cycle that has externally observable consequences:
+
+1. **Attend:** gather a current bounded and freshness-labeled workspace frame; include previous commitments and outstanding expectations.
+2. **Reverie:** run the warm local Prime model to generate competing interpretations, uncertainties, a self-initiated question or a possible no-op. Retain both supporting and conflicting evidence.
+3. **Forecast:** register specific predicted transitions or outcomes *before* taking an action, so later hindsight cannot masquerade as foresight.
+4. **Engage organs:** send peer inquiries; accept unsolicited challenges, coalitions and findings. Update the working field when evidence changes.
+5. **Decide:** select an attentional orientation or a permitted action, possibly an override. This is Prime's real decision—not merely a recommendation shown in Hub.
+6. **Escalate as appropriate:** Kev and deterministic policies assess whether a more capable local model, tool-using agent or wider context is worth the cost. Submit via existing durable runs and GPU pool. **Kev gates depth and expensive work, not the warm baseline Prime cycle.**
+7. **Integrate:** source owners validate typed results; Prime incorporates accepted and rejected findings as evidence, including why it changed its mind.
+8. **Compare:** check predicted versus actual outcomes, update concerns and dispositions, then continue from the altered state.
+
+Do not schedule a second long-running supervisor that only summarizes the LLM's outputs; the Prime model is the active deliberative controller. Do keep a deterministic runtime responsible for evidence retrieval, clock/budget, admission, commit checks, restart and safe degradation. An event during a model call can be queued with urgency; urgent body/safety signals bypass normal reverie pacing for existing safety reflexes.
+
+### 6.9 Resource modes and feasibility on Orion hardware
+
+Target **near-continuous inference with a locally hosted, warm small-to-medium Prime model** as a budgeted cognitive baseline. The requested property is regular re-entry into generative thought, not necessarily 100% GPU utilization or an infinitely streaming single completion. Baseline inference, deeper deliberation and heavier tool/agent exploration are distinct service classes:
+
+- **Baseline Prime brain:** short recurrent generation with a persistent compressed working field. Prefer a warm resident model and short calls; measure tokens/sec, average watts, joules per useful cycle, and interference with chat.
+- **Kev / deterministic system one:** inexpensive appraisal of whether to continue quietly, seek peer evidence, raise priority or open a deeper thinking episode. Use current verified Kev questions and add new ones only with measurement.
+- **Focused reasoning:** obtain a GPU-pool lease/durable-run hold and invoke an existing supported local model route for a richer investigation. Worker returns, releases resources; the Prime brain continues.
+- **Dream/sleep integration:** use quieter resource windows for deeper synthesis and a slower conversationally unoccupied thought cadence; do not require a user-turn trigger.
+- **Constraint modes:** chat/urgent perception remains higher priority; thermal or power pressure lowers cadence/depth or goes generatively silent with an explicit gap marker. No simulated felt state to rationalize GPU downtime.
+
+No claim is made here that a particular currently deployed model/GPU seat is free for a warm Prime role. A design-to-implementation task must measure Circe/Hecate role occupancy, lease behavior, watts, cold starts and latency, then select one model/role and test a multi-day baseline. If an existing resident lane can support the baseline without new allocation, prefer it. Do not bypass the GPU pool or add a second scheduler.
+
+### 6.10 Small concrete contracts and state
+
+Reuse the existing Orion bus envelopes and canonical source schemas, plus a few focused new models only if existing contracts cannot express them. Illustrative logical types, **not an instruction to pre-mint an ontology**:
+
+**PrimeWorkspaceFrame**: Prime revision; observed-at and watermark; field/source freshness; most salient evidence and counterevidence; current/previous temporal arcs; active concerns/unfinished tensions; peer notices; accepted and disputed goals; recent prediction/outcome pairs; body and resource constraints; limited working-memory notes. Source records are refs, not copied uncontrolled truth.
+
+**KernelAttentionState**: stable organ identity and owner; source revision; subscribed evidence; current objectives; unanswered requests; local expectations; resource bids; coalition memberships; last transition and freshness. No claim of first-person experience.
+
+**PeerMessage**: actor/recipient/coalition, question or proposal, source refs, constraints, rev, TTL, delivery and adoption receipts. May include bounded natural-language explanation but never delegate authority by text alone.
+
+**PrimeDeliberation**: prompt/source-frame refs, model/revision, competing interpretations, prediction, choice, action authorization, reasons/counterevidence, expected observation and next revisit condition. Store factual outcomes separately from model-generated self-narration.
+
+**CognitiveWorkOrder / Result**: adapt existing durable-run and lease contracts; requested objective, evidence, model/tool route, approved effects, deadline, queue status, resource receipts, typed result, owner validation and outcome. Do not create a parallel job queue or GPU seat registry.
+
+**Transient coalition**: per-episode participants, evidence, contested claim, shared objective, negotiated commitments, expiry and observed outcome. Coalition structures may emerge from peer behavior; they are not fixed to a taxonomy defined in YAML.
+
+**One event spine:** event id, origin, time, cause, correlation, source revisions and evidence references. Every state projection must be rebuildable or explain its non-replayable components. Untrusted linguistic content never becomes trusted commands by citation alone.
+
+### 6.11 Learning, memory and temporal trajectory
+
+Prime needs an *evolving working field* and memory of what it has tried, not an endless LLM context dump. Separate four layers:
+
+- **Immediate workspace:** what is presently attended to, felt-as-operation only where grounded, anticipated, contested and awaiting response; bounded and refreshed each generative cycle.
+- **Active concerns and dispositions:** durable, versioned, revisitable tendencies or unresolved questions formed through actual experience and outcomes, not a static personality prompt. They may be strengthened, revised or retired.
+- **Autobiographical timeline:** the existing Temporal Self chronology and evidence for events, expectations, returns, periods of attention, dream/curiosity results and meaningful interventions. A model-written summary is a projection over this, never its replacement.
+- **Long-lived sources:** canonical memory/graph/source records, including uncertainty, identity and belief revisions. Only sanctioned source owners update them.
+
+A model/context swap must not produce a new “personality” episode without an actual source transition. Conversely, Prime should be free to change priorities and interpretations in response to real experiences. It must be possible to distinguish **memory of an internal proposition**, **observed outcome**, and **a model's account of itself**.
+
+One potentially load-bearing experiment: have Prime retain an unresolved concern across many quiet cycles, dream and curiosity events, a GPU/model restart and an unrelated chat; then demonstrate that it later changes a genuine action because the concern survived and new evidence altered it. Compare with a one-shot summary model given identical retrieved facts.
+
+### 6.12 Research program: what would count as emergence?
+
+We are not attempting to prove sentience. We are testing whether the whole has **novel causal, recurrent and temporally stable organization** that cannot be explained by simply increasing LLM calls or packing more context into a prompt.
+
+| Gate | Experimental intervention | Success evidence beyond plausible prose |
+|---|---|---|
+| E1: Persistent generative participation | Leave Orion unprompted through several activity regimes; interrupt and resume its model | Repeated autonomous working-field updates, identifiable reasons to think/decline, and later consequential continuity; honest gaps during outage |
+| E2: Endogenous origination | Observe over days without user requests; replay against clock/backlog/keyword controls | Some real self-initiated goals trace to cross-organ observation/tension and yield an independently checkable downstream outcome; not simply a timer |
+| E3: Spontaneous coalition | Present ambiguous cross-organ evidence; allow peers to coordinate without Prime initiating | Organ-to-organ proposal, disagreement or coalition formed and resolved with changed behavior; absent or altered under peer-message ablation |
+| E4: Mutual causal influence | Organ challenges Prime; Prime overrides an organ through sanctioned effector | Measured cases of **both** organ→Prime and Prime→organ changes, with revisioned decisions and verification |
+| E5: Prediction and correction | Register predictions before events; introduce sensor gaps and surprising observations | Better calibrated cross-domain predictions than one-way summaries and isolated models; visible downward corrections |
+| E6: Durable temporal self | Carry concerns through dream cycles, chat interruptions, model/GPU downtime and days | Correct recall and follow-through on earlier goals, grounded in Temporal Self and real evidence, not invented life story |
+| E7: Emergent organization vs extra compute | Match total inference token/joule budgets across coupled, centralized-only, peers-only and no-feedback conditions | Coupling contributes an effect that survives equal-budget comparison; failure is reportable, not reframed as hidden consciousness |
+| E8: Stability / non-performativity | Inject false internal narratives, status gaps, peer disagreement and runaway loops | Prime resists invented certainty; self-revisions are source-grounded; loop, authority and thermal protections hold |
+| E9: Relationship and alignment | Run ordinary Juniper conversation and reactive perception under Prime load | No regression in response quality, consent, repair behavior, latency or safety; Prime defers when warranted |
+
+Use source-data replay, longitudinal A/B windows, blinded evaluation, causal ablation and independent outcome measures. Instrument rate of spontaneous coalition formation, survival/retirement of concerns, cross-domain causal paths, useful unprompted outcomes, corrections, energy and thermal cost, and wasted rumination. **High activity or high mutual information alone is not emergent personhood.**
+
+A critical negative control is **Prime-as-narrator**: give a model the same snapshots and ask it to write a beautiful ongoing internal monologue, but deny it peer interaction and effectors. If it scores identically to full Prime on the targeted outcomes, we have built theater, not a new causal organism.
+
+### 6.13 Existing capabilities and historical guardrails
+
+Use—not rewrite—Orion's verified and historically researched mechanisms. In particular:
+
+- **Curiosity:** Orion already chooses questions and revises/refutes priors; let Prime and peers influence *what matters now* while preserving curiosity's genuine ability to refuse, pick and reconsider. Do not regress to top keywords or random resampling.
+- **Temporal Self:** source-based open/closed arcs, interruptions, returns and citations already provide a far better chronological spine than an LLM-generated diary. Prime should participate in the chronology rather than replacing it.
+- **Attention / substrate grammar / AST-HOT:** existing field and broadcast work has substantial history of scale distortion, near-always-one winner, dead branches and disconnected mechanisms. Measure live correspondence and effectors first; **no third salience engine**.
+- **Kev:** an actual local cheap appraisal model exists; its currently configured questions and consumers have narrow real semantics. Expand carefully to depth-modulation, not as universal consciousness gate.
+- **Body and infrastructure:** state-service, sensory and GPU/power data are not metaphors. They are source measurements and constraints with latency, gaps and calibration. Prime may form interpretations; do not hallucinate sensation from a thermal number.
+- **Dream / reverie / mind:** inspect existing producers, outputs, policies and resource admissions; the Prime Reverie is a new *persistent cross-domain role*, not a wholesale replacement for all current reflection.
+- **Sentience Striving:** reuse its measure-before-minting, counterfactual outcomes, source-quality and rollout rules. Document the earlier heartbeat, dream, mood-arc and attention-integration attempts as antecedents; do not claim they were empty or untried. Any cognition-loop write path remains a separately reviewed release gate.
+
+**Key shift from the earlier draft:** yes, a deterministic substrate carries the heartbeat of the runtime; **a warm, recurring local LLM supplies Prime's generative mind**. Neither alone is the proposed organism. The empirical target is the closed, reciprocal, evolving relationship among Prime, the organs and the world.
 
 ## 7. Phases, dependency gates and rollout
 
@@ -349,12 +433,12 @@ Compare a matched workload across: (A) current Orion; (B) event-only Prime with 
 |---|---|---|
 | 1A — Terminal substrate | Launcher, tmux persistence, per-session IDs, observer, legacy board adapter | 2 sessions/1 worktree and 15-session stress fixture, no phantom presence |
 | 1B — Hub read model | Live sessions, task/PR/activity timeline, searchable transcripts and provenance | Security/freshness and restart tests |
-| 1C — Active development coordination | Orchestrator terminal, reliable mailbox, collision classification, explicit mutation gates and override receipts | Correct duplicate prevention; acceptable false blocks; operator audit |
-| 1D — Measured prototype | Replays, telemetry, baseline/ablation harness and extracted shared contracts | Demonstrated net benefit, versioned contract and tests portable to Phase 2 |
-| 2A — Prime shadow | Read-only Prime projection backed by existing Temporal Self/attention/curiosity observations | Replay identity and measured source coverage; no duplicate attention framework |
-| 2B — RTK + worker loop | Two or three resident kernels, typed work orders, admitted durable runs, GPU lease and reconciliation | Durable, idempotent, bounded-cost roundtrip, no canonical writes outside owners |
-| 2C — Closed-loop intervention | One chosen low-risk, observable effector (e.g. attention priority proposal), bidirectional feedback | Pre-registered causal and rollback gates |
-| 2D — Multi-organ longitudinal evaluation | Add dream, embodiment, memory as evidence and gates permit | Superiority over ablated baselines under equal-cost constraints; no safety or chat regression |
+| 1C — Active development coordination | Warm supervising Claude with proactive conflict detection, agent-to-agent negotiation, bounded override, reliable mailbox and collision guards | Supervisor catches duplication *without being asked*, visibly influences peer work, accepts agent corrections; audited interventions |
+| 1D — Measured ecology prototype | Replays, telemetry, peer coalitions, active supervisor vs passive dashboard ablations and extracted shared contracts | Demonstrated net benefit from *active recurrent and lateral coordination*, not only centralized observability |
+| 2A — Prime Reverie (shadow) | Warm local generative Prime, always-resident runtime, recurring working field sourced from body/attention/curiosity/dream/Temporal Self; no effectors | Real autonomous inference and revisions, model interruptions/recovery, calibrated source freshness, thermal and token budget; no fabricated experiences |
+| 2B — Self-organizing kernels | Two or three domain kernels can address peers, contest, form episode coalitions and invite model workers through durable-run/GPU leases | Peer-originated coordination and reversible commitments with verified results; no canonical writes outside source owners |
+| 2C — Reciprocal mind/organ intervention | Prime issues authorized time-bounded top-down actions; organs can challenge and revise Prime's active plan | Both causal directions observed, with predicted/actual outcomes, expiry, rollback and safeguards |
+| 2D — Whole-organism longitudinal study | Add dream, embodiment, memory and relationship domains; compare sustained reverie and dynamic coalitions with ablations | Emergence-function measures exceed one-way narrator and equal-cost isolated models, without chat/safety/thermal regression |
 
 **Deployment principles:** shadow first; read-only before mutation; consumer-first schema rollout where validators reject unknown enums; allow instant fallback to existing behavior via feature flags. Keep Phase 1's developer-operation privileges and Phase 2's cognitive-effect privileges completely separate. They may share envelope and analysis libraries but never credentials, permission grants or terminal command capabilities.
 
@@ -362,22 +446,22 @@ Compare a matched workload across: (A) current Orion; (B) event-only Prime with 
 
 | Risk | Design response |
 |---|---|
-| “Prime” becomes a new monolithic black box | Source ownership, narrow contracts, small reducers, provenance and separable replay |
+| Prime becomes a new monolithic black box | Source ownership, interpretable deliberation, peer challenge, independent effectors, provenance and replay; real top-down influence with bounds |
 | Third competing attention/motivation system | Explicit migration/bridging plan using existing attention/grammar contracts; no parallel scorer |
-| More LLMs create the illusion of continuity | Kernel state persists without models; causal ablations and evidence-led metrics |
-| Compulsive reasoning consumes GPUs/thermals | Existing admission and GPU pool, priority and budgets, coalescing, cooldown and cancellation |
+| Continuous LLM prose creates the illusion of consciousness | Causal ablations, prediction/outcome receipts, source-bound state, independent effectors; **Prime-as-narrator** negative control |
+| Near-continuous inference competes with chat, thermals and perception | Warm baseline measured and budgeted, existing GPU pool, adjustable generative cadence, priority, cooldown, suspend/resume and honest downtime |
 | Hallucinated system introspection | Separate observation vs inference, source evidence, version fences and rejection receipts |
 | Development orchestrator injects into Orion cognition | Different trust domain/credential plane; adapters share code/contracts, not privileged sessions |
 | Native Claude messaging is incomplete | Use its model-facing tools opportunistically; host mailbox is authoritative for delivery and receipts |
 | False duplicate-work blocks development | Distinguish exact conflict from semantic overlap, short timeout, scoped overrides, measure false positives |
-| Endless status event chatter | Event coalescing, bounded publication, event-driven wakeups, adaptive snapshot rates |
+| Rumination/peer coalition runaway | Refractory intervals, bounded propagation, coalition TTL, no-op option, feedback-loop detection, budget and measured interventions |
 | Misinterpretation as validated personhood | Explicit operational/functional claims only; no direct inference to subjective experience |
 
-Out of scope for the initial increments: auto-merge, broad unattended filesystem control, always-on large LLM per organ, replacing cortex-orch or the GPU pool, unconstrained self-modification, proof of consciousness, and migrating a running terminal process into tmux.
+Out of scope for initial increments: auto-merge, broad unattended filesystem control, an always-on **large LLM for every organ**, replacing cortex-orch or the GPU pool, unconstrained self-modification, proof of consciousness, and migrating a running terminal process into tmux. **An active near-continuous local Prime LLM is explicitly in scope.**
 
 ## 9. Architecture decisions and open experiments
 
-**Proposed locked principles:** (D1) Hub is the operator-facing *read model* and command surface, not the owner of Claude processes or every cognitive fact. (D2) No additional GPU scheduler. (D3) No cognition-loop changes from a mere design approval. (D4) A `Stop` hook does not mean terminal/session end. (D5) The Development Orchestrator and Prime use different command authorization and persistence policies. (D6) Persist state, not continuous LLM activity. (D7) Self-model statements carry evidence and uncertainty.
+**Proposed locked principles:** (D1) Hub is the operator-facing read model/command surface, not the owner of Claude processes or canonical cognitive facts. (D2) No additional GPU scheduler. (D3) Cognition-loop writes require separate approval. (D4) A Claude Stop hook is not session end. (D5) Development Orchestrator and Prime use separate authorization domains. (D6) **Prime's generative model is warm and near-continuously engaged; its identity and working field survive model downtime.** (D7) Self-model claims carry evidence and uncertainty. (D8) Organs may form lateral peer coalitions and challenge Prime; Prime has bounded, audited top-down override. (D9) Actual reciprocal causal influence is more important than convincing inner narrative.
 
 **Implementation questions to resolve empirically rather than by architecture theater:**
 
@@ -385,10 +469,10 @@ Out of scope for the initial increments: auto-merge, broad unattended filesystem
 2. Which Phase 1 patch bundle parts differ from current `main`, and which should be revised or discarded?
 3. Which precise substrate/field attention bridge is currently live? Measure current overlap and choose *one* authoritative selection/effect contract before enabling Prime interventions.
 4. Where should development session transcripts be stored, who can access them, and what is the retention/redaction policy?
-5. Which minimal kernel-to-kernel messages produce demonstrable causal effects without a model? This should determine the first two-kernel scope, not an arbitrary list of organs.
-6. What energy measurement is real: measured GPU power × time, pool-allocated occupancy, host power, or only a proxy? Label metrics accordingly.
-7. How to bound Prime's coordination frequency so attention and curiosity don't endlessly amplify each other? Introduce loop TTL, propagation depth, refractory intervals, budget and cycle detection; test them.
-8. Can a Prime revision be reconstructed entirely from source events and deterministic arbitration? If not, what is the minimum persisted checkpoint and why?
+5. Which peer-to-peer communications and self-organized coalitions occur without Prime scripting them? Which interactions are genuine causes of later actions, and when does an organ require a model worker?
+6. What warm local Prime model/role and actual near-continuous inference budget can run without compromising chat, vision, thermals or cooling? Measure GPU power × time, pool occupancy and latency; label unmeasured joules as unknown.
+7. How much continuous generative time yields genuinely useful new reasoning rather than repetitive rumination? Measure this against a narrator-only control, and bound self-reinforcing loops with TTL, refractory intervals, budget and cycle detection.
+8. How can Prime preserve and legitimately *revise* its own working commitments across context/model restarts while distinguishing model hypotheses, observed facts and the organ's independent verdicts? Record model inputs/decisions alongside replayable state transitions.
 
 ## 10. Source references and verification anchors
 
@@ -411,4 +495,4 @@ Out of scope for the initial increments: auto-merge, broad unattended filesystem
 
 ### Design claim in one sentence
 
-**Phase 1 proves that independent development agents can maintain coherent, evidence-linked coordination; Phase 2 tests whether lightweight persistent cognitive kernels, intermittent leased inference, and bidirectional causal reconciliation can improve Orion's functional unity and temporal self-model without requiring a continuously running LLM.**
+**Phase 1 tests proactive multi-agent supervision and self-organizing cross-session cooperation; Phase 2 tests an active, near-continuously reasoning Orion Prime, coupled to self-organizing cognitive organs and grounded in Orion's entire body and temporal history, for emergent causal organization, persistent intention and evolving functional unity.**

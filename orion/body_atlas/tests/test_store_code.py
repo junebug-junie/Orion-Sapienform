@@ -90,11 +90,52 @@ def test_a_call_whose_verb_says_neither_is_uses():
 
 def test_verbs_split_snake_and_camel_case_and_ambiguous_names_say_nothing():
     assert verb_relation("_publish_semantic_upsert") == "writes"
-    assert verb_relation("graphQuery") == "reads"
+    assert verb_relation("ro_query") == "reads"
+    assert verb_relation("get_collection") is None and verb_relation("select_graph") is None  # handle binders
     assert verb_relation("get_or_create_collection") is None  # both: a handle, not an act
     assert verb_relation("SearchConfig") is None  # a constructor, not an act
     assert verb_relation("Settings") is None
     assert verb_relation("build_store") is None  # "store" is a noun here, not an act
+
+
+def test_calls_of_other_objects_are_not_the_stores_act():
+    """Review HIGH: any call holding the store somewhere in its arguments used to be classed by
+    its own name. Each of these named a real false direction on the live repo."""
+    a = {"orion_kg": "orion_kg", "KG_GRAPH": "orion_kg"}
+    cases = [
+        'g = db.select_graph("orion_kg")\nasyncio.create_task(loop(g))',
+        'p.add_argument("--graph", default="orion_kg")',
+        'NAME = "orion_kg"\nseen = set()\nseen.add(NAME)',
+        'g = db.select_graph("orion_kg")\ncache.update(other.lookup(g))',
+        'import os\nname = os.environ.get("KG_GRAPH", "orion_kg")',
+        'g = db.select_graph("orion_kg")\nresult = {"graph": g}\nresult.get("skipped")',
+        'NAME = "orion_kg"\nrow = {"graph": NAME, "n": 1}\nqueue.put_nowait(dict(row))',
+        'name = "orion_kg"\nd.get(p.name)',  # p.name is not the bound name `name`
+        'g = db.select_graph("orion_kg")\ninsert_retrieval_event(pool, {"g": g})',
+        # the result of an act is not the store: graphiti-adapter's `result.get("skipped")`
+        'result = backend.ingest_episode(pool, graph_name="orion_kg")\nresult.get("skipped")',
+        'g = db.select_graph("orion_kg")\nrows = g.ping()\nrows.add(1)',  # rows is a result, not g
+    ]
+    for src in cases:
+        assert _scan(src, a) == {"orion_kg": "uses"}, src
+
+
+def test_cypher_is_the_first_argument_in_upper_case_and_a_constant_resolves():
+    a = {"orion_kg": "orion_kg"}
+    english = 'g = db.select_graph("orion_kg")\ng.query("MATCH (n {k: $k}) RETURN n", {"k": "set"})'
+    assert _scan(english, a) == {"orion_kg": "reads"}
+    via_const = 'Q = "MERGE (n:X)"\ng = db.select_graph("orion_kg")\ng.query(Q)'
+    assert _scan(via_const, a) == {"orion_kg": "writes"}
+
+
+def test_a_script_run_by_hand_names_a_store_but_never_acts_on_it():
+    src = """
+        g = db.select_graph("orion_kg")
+        g.query("MERGE (n:Fix)")
+        if __name__ == "__main__":
+            main()
+    """
+    assert _scan(src, {"orion_kg": "orion_kg"}) == {"orion_kg": "uses"}
 
 
 # --- naming: exact, never a substring --------------------------------------------------------------
@@ -156,19 +197,25 @@ def test_shared_module_goes_to_the_services_that_import_it(tmp_path):
         ATLAS_CONCEPT_COLLECTION = "orion_atlas_concepts"
     """)
     _write(tmp_path, "orion/world_pulse_read/__init__.py", "")
-    # imports the constant and searches with it
+    # imports the constant and queries a handle bound from it
     _write(tmp_path, "services/orion-hub/scripts/main.py", """
         from orion.world_pulse_read.concept_search import ATLAS_CONCEPT_COLLECTION
-        hits = chroma.search(collection=ATLAS_CONCEPT_COLLECTION)
+        col = chroma.get_collection(ATLAS_CONCEPT_COLLECTION)
+        hits = col.query(query_texts=["x"])
     """)
-    # imports the module by its parent package path
+    # imports the module by its parent package path and reads the constant off it
     _write(tmp_path, "services/orion-reader/app/main.py", """
+        from orion.world_pulse_read import concept_search
+        cfg = Config(collection=concept_search.ATLAS_CONCEPT_COLLECTION)
+    """)
+    # imports the module but reads nothing off it: no store
+    _write(tmp_path, "services/orion-idle/app/main.py", """
         from orion.world_pulse_read import concept_search
     """)
     # a shared module that names a store but no service imports
     _write(tmp_path, "orion/lonely/graphs.py", 'G = "orion_express"\n')
     refs, out = _refs(tmp_path, {"orion_atlas_concepts", "orion_express"})
-    assert refs == {"orion_atlas_concepts": {("orion-hub", "reads"), ("orion-reader", "uses")}}
+    assert refs == {"orion_atlas_concepts": {("orion-hub", "reads"), ("orion-reader", "uses")}}  # not orion-idle
     assert out.unattributed == {"orion_express": ["orion/lonely/graphs.py"]}
     via = {r.service: r.via for r in out.refs["orion_atlas_concepts"]}
     assert via["orion-reader"] == "orion/world_pulse_read/concept_search.py:ATLAS_CONCEPT_COLLECTION (imported by orion-reader)"
@@ -205,7 +252,8 @@ def test_env_key_inside_a_shared_module_resolves_per_importing_service(tmp_path)
     _write(tmp_path, "services/orion-hub/.env_example", "CURIOSITY_GRAPH=orion_worldview\n")
     _write(tmp_path, "services/orion-hub/app/main.py", "from orion.curiosity.write_stamp import stamp\n")
     _write(tmp_path, "services/orion-peer/.env_example", "CURIOSITY_GRAPH=orion_peer_graph\n")
-    _write(tmp_path, "services/orion-peer/app/main.py", "from orion.curiosity import write_stamp\n")
+    _write(tmp_path, "services/orion-peer/app/main.py",
+           "from orion.curiosity import write_stamp\nwrite_stamp.stamp(db)\n")
     refs, _ = _refs(tmp_path, {"orion_worldview", "orion_peer_graph"})
     assert refs == {"orion_worldview": {("orion-hub", "writes")},
                     "orion_peer_graph": {("orion-peer", "writes")}}

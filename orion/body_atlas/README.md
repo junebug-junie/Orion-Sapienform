@@ -54,11 +54,14 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    sentence or an f-string), or reads an env key that service's `.env_example` / compose sets to
    the name. `services/<svc>/` is `<svc>`. A shared `orion/` module is split into its top-level
    symbols, and a service gets the stores of the symbols it imports or reads off the module (one
-   hop; a shared module no service imports is reported). Direction: a call on a handle bound from
-   the store, or taking it as an argument, writes when its name's verb writes (`upsert`, `add`,
-   `_publish_semantic_upsert`), reads when it reads (`query`, `get`, `search`); Cypher text decides
-   a FalkorDB `query`; `read_only=True` reads; a constructor (`SearchConfig(...)`) is not an act.
-   `tests/`, `evals/` and the atlas itself are skipped.
+   hop; a shared module no service imports is reported). Direction is claimed only from three
+   plain shapes, else `uses`: a method on a handle bound from the store (`col.upsert` writes,
+   `col.query` reads, a `query`'s first argument decides when it is upper-case Cypher); a plain
+   function taking the store directly and named for its act (`_publish_semantic_upsert(...)`);
+   `read_only=True`. A handle is the store object or its name (`get_collection(NAME)`,
+   `os.getenv(KEY)`, a constructor), never the result of an act. A method of any other object
+   (`seen.add(NAME)`, `parser.add_argument`) and a script run by hand (`if __name__ ==
+   "__main__":`) never set a direction. `tests/`, `evals/` and the atlas itself are skipped.
 
    A process's one unit is split over its runner and its doers by
    `log(1 + runs) × log(1 + N / df)`: how many of its runs the part showed up in, times how rare
@@ -101,7 +104,10 @@ Gates:
   graph from 2026-10-23 and the whole body from 2026-10-29 and 2026-10-30 (with process doers,
   then with stores named in code). Each must have Q ≥ 0.3, 5–25 organs, no organ above 35% of
   parts, every non-host part in exactly one organ, no host in any, no store with a writer or
-  reader left alone, and obvious pairs together. `--live` runs it on the live whole body; `--export F`
+  reader left alone, and obvious pairs together.
+- `python orion/body_atlas/evals/run_store_direction_eval.py`: the `writes` / `reads` labels on
+  this checkout against hand-checked facts (true ones, and false ones an earlier version
+  claimed). Precision must be 1.0 and no false claim may come back. `--live` runs it on the live whole body; `--export F`
   refreshes a fixture.
 
 Live results:
@@ -116,13 +122,17 @@ Live results:
   orion-gpu-pool, orion-harness-governor, orion-durable-runs and orion-substrate-runtime signal
   each other on the bus, and most durable runs are harness turns scheduled by orion-durable-runs.
 
-- 2026-10-30, stores named in code: singletons 8 → 5, Q 0.346 → 0.347, largest organ 31% → 32%,
-  15 organs (was 18). `chroma:orion_social_room` joined orion-vector-host (memory organ; it
-  writes it), `chroma:orion_atlas_concepts` and `chroma:orion_day_letter_parts` joined orion-hub
-  (substrate organ). No other part moved; the names carried (overlap 0.97, 0.96). The 5 left
-  alone are FalkorDB graphs with 0 nodes that no code, env or compose file in the repo names
-  (`orion_bus_mirror`, `orion_episodic`, `orion_express`, `orion_kg`, `orion_turns`): leftovers,
-  not hidden organs.
+- 2026-10-30, stores named in code: singletons 8 → 5, organs 18 → 15, Q 0.3464 → 0.3469,
+  largest organ 31% → 31%. `chroma:orion_social_room` joined orion-vector-host (memory organ;
+  it writes it), `chroma:orion_atlas_concepts` and `chroma:orion_day_letter_parts` joined
+  orion-hub (substrate organ). The rarity split also moved orion-bus-mirror and
+  `falkor:orion_bus_synapse` from substrate to guardian: bus-mirror's `.env_example` names only
+  that graph, so it now holds most of it, next to orion-mesh-guardian, which reads it. Names
+  carried (substrate 0.94, memory 0.96, guardian 0.75). The 5 left alone are FalkorDB graphs
+  with 0 nodes that no code, env or compose file in the repo names (`orion_bus_mirror`,
+  `orion_episodic`, `orion_express`, `orion_kg`, `orion_turns`): leftovers, not hidden organs.
+  Direction is claimed for 5 links, all hand-checked (`run_store_direction_eval.py`); every
+  other code link is `uses`.
 
 Known gaps (also in every whole-body atlas as `known_gaps`):
 

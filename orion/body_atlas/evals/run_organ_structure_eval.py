@@ -9,7 +9,7 @@ body of 2026-10-30 with each process linked to the services doing its work) or, 
 * 5..25 organs, and no organ holding more than 35% of the parts (a blob is not an organ);
 * every non-transient part in exactly one organ, and no host in any (hosts are placement);
 * pairs anyone would call one organ land together (eyes with eyes, cortex with cortex);
-* a store with any writer or reader flow is never a lone organ (only an unattributed one is).
+* a store with any writes / reads / uses flow is never a lone organ (only an unattributed one is).
 
     python orion/body_atlas/evals/run_organ_structure_eval.py              # frozen fixture
     python orion/body_atlas/evals/run_organ_structure_eval.py --live       # needs $FALKORDB_URI
@@ -117,7 +117,7 @@ def evaluate(atlas) -> list[str]:
     alone = [p.part_id for p in atlas.parts if p.kind == "store" and p.part_id in linked
              and size.get(organ_of.get(p.part_id, ""), 0) == 1]
     if alone:
-        failures.append(f"{len(alone)} stores with a writer or reader sit alone, e.g. {alone[:3]}")
+        failures.append(f"{len(alone)} stores with a writes, reads or uses flow sit alone, e.g. {alone[:3]}")
     for a, b in SAME_ORGAN:
         if organ_of.get(f"part:{a}") is None or organ_of.get(f"part:{a}") != organ_of.get(f"part:{b}"):
             failures.append(f"{a} and {b} are in different organs")

@@ -477,7 +477,10 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             who = sorted(svc for svc, v in per_svc.items() if v[0] == rel)
             if who:
                 facts[label] = ", ".join(who[:3]) + (f" +{len(who) - 3}" if len(who) > 3 else "")
-        if not per_svc:
+        if not per_svc and st.links:  # named, but by names that matched no part (see unmatched)
+            facts["evidence"] = ("named by " + ", ".join(sorted({raw for raw, *_ in st.links})[:3]) +
+                                 ", which matched no part")
+        elif not per_svc:
             facts["evidence"] = "none: no service's code, env or route names it"
             if st.named_in_unimported:
                 facts["evidence"] += f"; named only in {', '.join(st.named_in_unimported[:2])}, which no service imports"

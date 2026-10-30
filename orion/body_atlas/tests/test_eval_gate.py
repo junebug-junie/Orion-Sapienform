@@ -68,4 +68,14 @@ def test_a_linked_store_left_alone_fails_the_eval():
         stores=[StoreIn(name="s", store="chroma", rows=1, links=[("orion-a", "writes", "declared_code", "m.py")])]))
     atlas.organs = [o.model_copy(update={"members": [m for m in o.members if m != "part:chroma:s"]})
                     for o in atlas.organs] + [atlas.organs[0].model_copy(update={"members": ["part:chroma:s"]})]
-    assert any("stores with a writer or reader sit alone" in f for f in _EVAL.evaluate(atlas))
+    assert any("stores with a writes, reads or uses flow sit alone" in f for f in _EVAL.evaluate(atlas))
+
+
+def test_store_directions_on_this_checkout_are_true():
+    """Ground truth for writes / reads: hand-checked facts from the live repo (run_store_direction_eval.py)."""
+    spec = importlib.util.spec_from_file_location(
+        "run_store_direction_eval", Path(__file__).parents[1] / "evals" / "run_store_direction_eval.py")
+    ev = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ev)
+    failures, summary = ev.evaluate(Path(__file__).resolve().parents[3])
+    assert failures == [], summary

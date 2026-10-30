@@ -15,17 +15,21 @@ store -> service list:
    to every service whose own code imports it (one hop). A shared module no service imports
    directly is reported (``unattributed``), never guessed. ``tests/`` and ``evals/`` are not
    the running body and are skipped; so is the atlas itself (``orion/body_atlas``, ``orion/dig``).
-3. **Direction.** Inside a module that names the store, names bound from it are followed
-   (``col = client.get_or_create_collection(NAME)``; ``self._col = ...``). A call on such a
-   handle, or a call taking it as an argument, is a write when its verb is a write verb
-   (``upsert``, ``add``, ``_publish_semantic_upsert``), a read when it is a read verb
-   (``query``, ``get``, ``search``). A Cypher text decides a FalkorDB ``query``: ``MERGE`` /
-   ``CREATE`` / ``SET`` / ``DELETE`` write, ``MATCH`` alone reads. ``read_only=True`` on the
-   call reads. Anything else is ``uses``: the code names the store, the call does not say how.
+3. **Direction.** Claimed only from three plain shapes; anything else is ``uses`` (the code
+   names the store, the call does not say how). A handle is a name bound from the store itself
+   (``col = client.get_collection(NAME)``, ``self._col = col``), never from an expression that
+   merely contains it. (a) A method called on a handle: ``col.upsert`` writes, ``col.query``
+   reads, and a ``query`` call's first argument decides when it is Cypher (``MERGE`` / ``CREATE``
+   / ``SET`` / ``DELETE`` write, ``MATCH`` alone reads). (b) A plain function taking the store
+   directly and named for its act: ``_publish_semantic_upsert(collection_name=NAME)`` writes.
+   (c) ``read_only=True`` on a call taking the store directly reads. A method of any other
+   object (``seen.add(NAME)``, ``os.environ.get(KEY, NAME)``, ``parser.add_argument``) is not
+   the store's act, and a module run by hand (``if __name__ == "__main__":``) only names.
 """
 from __future__ import annotations
 
 import ast
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -33,6 +37,8 @@ from pathlib import Path
 from typing import Iterable
 
 import yaml
+
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)  # the C loader when built in
 
 # The atlas names stores in its own docs and gaps; the observer is not a part of what it sees.
 _SKIP_PREFIXES = ("orion/body_atlas/", "orion/dig/")
@@ -44,10 +50,13 @@ _WRITE = {"add", "upsert", "insert", "update", "delete", "merge", "create", "wri
           "persist", "index", "save"}
 _READ = {"query", "get", "search", "read", "fetch", "count", "peek", "find", "match", "select",
          "lookup", "load", "recall"}
-_CYPHER_WRITE = re.compile(r"\b(MERGE|CREATE|SET|DELETE|DETACH|REMOVE)\b", re.I)
-_CYPHER_READ = re.compile(r"\bMATCH\b", re.I)
+_CYPHER_WRITE = re.compile(r"\b(MERGE|CREATE|SET|DELETE|DETACH|REMOVE)\b")  # upper case: Cypher, not English
+_CYPHER_READ = re.compile(r"\bMATCH\b")
 _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*['\"]?([^'\"#\s]*)['\"]?\s*(#.*)?$")
 _COMPOSE_DEFAULT = re.compile(r"\$\{([A-Z][A-Z0-9_]*):?-([^}]*)\}")
+
+# a call naming one of these returns the store object (a handle), it does not act on it
+_HANDLE = {"collection", "collections", "graph", "client"}
 
 RANK = {"writes": 2, "reads": 1, "uses": 0}
 
@@ -75,8 +84,11 @@ def _tokens(name: str) -> set[str]:
 
 def verb_relation(name: str) -> str | None:
     """writes / reads from a call's own name; None when it says neither or both. A CapWords
-    name builds an object (``SearchConfig(collection=...)``): a constructor is not an act."""
+    name builds an object (``SearchConfig(collection=...)``): a constructor is not an act. A
+    name about the store object itself (``get_collection``, ``select_graph``) binds a handle."""
     if name[:1].isupper():
+        return None
+    if _tokens(name) & _HANDLE:
         return None
     toks = _tokens(name)
     w, r = bool(toks & _WRITE), bool(toks & _READ)
@@ -101,7 +113,7 @@ def _compose_pairs(text: str) -> Iterable[tuple[str, str]]:
     for key, default in _COMPOSE_DEFAULT.findall(text):
         yield key, default.strip().strip("'\"")
     try:
-        data = yaml.safe_load(text) or {}
+        data = yaml.load(text, Loader=_YAML_LOADER) or {}
     except yaml.YAMLError:
         return
     for spec in (data.get("services") or {}).values() if isinstance(data, dict) else ():
@@ -118,8 +130,9 @@ def _compose_pairs(text: str) -> Iterable[tuple[str, str]]:
 
 
 def service_env_keys(root: Path, names: set[str]) -> dict[str, dict[str, str]]:
-    """service -> {env key: store name} from its ``.env_example`` and compose files, keeping only
-    keys whose value (or compose ``${KEY:-default}``) is exactly a store name."""
+    """service -> {env key: store name} from its ``.env_example``, then its compose files (a key
+    the ``.env_example`` already sets keeps that value), keeping only keys whose value (or
+    compose ``${KEY:-default}``) is exactly a store name."""
     out: dict[str, dict[str, str]] = defaultdict(dict)
     for svc_dir in sorted(p for p in (root / "services").glob("*") if p.is_dir()):
         env = svc_dir / ".env_example"
@@ -137,8 +150,9 @@ def service_env_keys(root: Path, names: set[str]) -> dict[str, dict[str, str]]:
 
 # --- one module ---------------------------------------------------------------------------------
 
-def _label(node: ast.AST) -> str | None:
-    """The label a node spells: a string constant, a name, or an attribute's last name."""
+def _anchor_label(node: ast.AST) -> str | None:
+    """What an anchor can match: a string constant, a bare name, an attribute's last name
+    (``settings.FOO_GRAPH`` reads env key ``FOO_GRAPH``)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.Name):
@@ -148,14 +162,22 @@ def _label(node: ast.AST) -> str | None:
     return None
 
 
+def _path(node: ast.AST) -> str | None:
+    """A bound handle's full spelling: ``col``, ``self._col``. Never just the last name, so
+    ``p.name`` is not ``name``."""
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        try:
+            return ast.unparse(node)
+        except Exception:  # noqa: BLE001 - an odd node is just not a handle
+            return None
+    return None
+
+
 def _target_names(target: ast.AST) -> list[str]:
-    if isinstance(target, ast.Name):
-        return [target.id]
-    if isinstance(target, ast.Attribute):
-        return [target.attr]
     if isinstance(target, (ast.Tuple, ast.List)):
         return [n for e in target.elts for n in _target_names(e)]
-    return []
+    p = _path(target)
+    return [p] if p else []
 
 
 def _call_name(func: ast.AST) -> str:
@@ -166,111 +188,159 @@ def _call_name(func: ast.AST) -> str:
     return ""
 
 
-def _strings(call: ast.Call) -> str:
-    parts = []
-    for a in [*call.args, *(k.value for k in call.keywords)]:
-        for n in ast.walk(a):
-            if isinstance(n, ast.Constant) and isinstance(n.value, str):
-                parts.append(n.value)
-    return " ".join(parts)
-
-
-def _index(tree: ast.AST) -> tuple[list[ast.AST], dict[int, tuple[ast.AST, str]]]:
-    """Every node once, and child id -> (parent, the parent field holding the child). Cached on
-    the tree: one walk per module, however many times it is scanned."""
-    cached = getattr(tree, "_atlas_index", None)
+def _index(tree: ast.AST) -> list[ast.AST]:
+    """Every node once, cached on the tree: one walk per module, however often it is scanned."""
+    cached = getattr(tree, "_atlas_nodes", None)
     if cached is None:
-        nodes = list(ast.walk(tree))
-        parent: dict[int, tuple[ast.AST, str]] = {}
-        for node in nodes:
-            for fname, value in ast.iter_fields(node):
-                for child in value if isinstance(value, list) else [value]:
-                    if isinstance(child, ast.AST):
-                        parent[id(child)] = (node, fname)
-        cached = tree._atlas_index = (nodes, parent)  # type: ignore[attr-defined]
+        cached = tree._atlas_nodes = list(ast.walk(tree))  # type: ignore[attr-defined]
     return cached
 
 
-def _ancestors(node: ast.AST, parent: dict[int, tuple[ast.AST, str]]):
-    """(ancestor, field of the ancestor the path came through, the child on the path)."""
-    while id(node) in parent:
-        up, fname = parent[id(node)]
-        yield up, fname, node
-        node = up
+def _is_main_guard(stmt: ast.stmt) -> bool:
+    t = stmt.test if isinstance(stmt, ast.If) else None
+    return (isinstance(t, ast.Compare) and isinstance(t.left, ast.Name) and t.left.id == "__name__"
+            and any(isinstance(c, ast.Constant) and c.value == "__main__" for c in t.comparators))
+
+
+def is_cli_script(tree: ast.AST) -> bool:
+    """A module with a top-level ``if __name__ == "__main__":`` is a script someone runs by hand
+    (a migration, a diagnostic), not the running service: it may name a store, never act on it."""
+    return any(_is_main_guard(s) for s in getattr(tree, "body", []))
+
+
+class _Taint:
+    """Which expressions stand for which stores, in one module."""
+
+    def __init__(self, anchors: dict[str, str]) -> None:
+        self.anchors = anchors  # literal / env key / imported constant -> store
+        self.handles: dict[str, set[str]] = defaultdict(set)  # bound path -> stores
+
+    def direct(self, expr: ast.AST | None) -> set[str]:
+        """Stores an expression IS (not merely contains): an anchor, a bound handle, or a call
+        made on / with one directly (``client.get_collection(NAME)``, ``os.getenv("KEY")``)."""
+        if expr is None:
+            return set()
+        lab = _anchor_label(expr)
+        if lab is not None and lab in self.anchors:
+            return {self.anchors[lab]}
+        path = _path(expr)
+        if path is not None and path in self.handles:
+            return set(self.handles[path])
+        if isinstance(expr, ast.Await):
+            return self.direct(expr.value)
+        if isinstance(expr, ast.Call) and _passes_store_through(expr):
+            out: set[str] = set()
+            if isinstance(expr.func, ast.Attribute):
+                out |= self.direct(expr.func.value)
+            for a in [*expr.args, *(k.value for k in expr.keywords)]:
+                out |= self.direct(a)
+            return out
+        return set()
+
+
+# calls that return the name they were given (``os.getenv("KEY")``, ``str(x).strip()``)
+_VALUE_CALLS = {"getenv", "str", "strip"}
+
+
+def _passes_store_through(call: ast.Call) -> bool:
+    """Does this call's result still stand for the store? Yes for the store object or its name:
+    a handle binder (``get_collection``, ``select_graph``, ``client``), a constructor
+    (``RedisGraphQueryClient(graph_name=...)``), an env read or a string cleanup. No for an act:
+    ``rows = g.query(...)`` and ``result = backend.ingest_episode(graph_name=G)`` are results,
+    not the store."""
+    name = _call_name(call.func)
+    if name[:1].isupper() or _tokens(name) & _HANDLE or name in _VALUE_CALLS:
+        return True
+    # os.environ.get("KEY", default)
+    return name == "get" and isinstance(call.func, ast.Attribute) and _path(call.func.value) == "os.environ"
+
+
+def _first_text(call: ast.Call, consts: dict[str, str]) -> str:
+    """The query text: the first positional argument, a literal or a module-level constant."""
+    if not call.args:
+        return ""
+    a = call.args[0]
+    if isinstance(a, ast.Constant) and isinstance(a.value, str):
+        return a.value
+    if isinstance(a, ast.JoinedStr):
+        return "".join(v.value for v in a.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    if isinstance(a, ast.Name):
+        return consts.get(a.id, "")
+    return ""
+
+
+def _str_consts(tree: ast.AST) -> dict[str, str]:
+    out = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            out.update({t.id: node.value.value for t in node.targets if isinstance(t, ast.Name)})
+    return out
 
 
 def scan_module(tree: ast.AST, anchors: dict[str, str], text: str | None = None) -> dict[str, str]:
     """``anchors``: label -> store (a literal store name, an env key, an imported constant).
-    Returns store -> relation for every store the module names. ``text`` (the source) lets a
-    module that spells no anchor skip the walk."""
+    Returns store -> relation for every store the module names.
+
+    Direction is claimed only from three plain shapes, everything else is ``uses``:
+    (a) a method called on a handle bound from the store (``col.upsert(...)``,
+    ``g.query("MERGE ...")``); (b) a plain function (not a method of some other object) taking
+    the store directly as an argument and named for its act (``_publish_semantic_upsert(
+    collection_name=NAME)``); (c) ``read_only=True`` on a call taking the store directly."""
     if text is not None and not any(a in text for a in anchors):
         return {}
-    nodes, parent = _index(tree)
-    labelled = [(n, lab) for n in nodes if (lab := _label(n)) is not None]
-    named = {anchors[lab] for _, lab in labelled if lab in anchors}
+    nodes = _index(tree)
+    named = {anchors[lab] for n in nodes if (lab := _anchor_label(n)) is not None and lab in anchors}
     if not named:
         return {}
-    # label -> stores it stands for; follow bindings to a fixpoint:
-    # X = <expr naming a store>; self.y = X; z = client.f(y)
-    label_stores: dict[str, set[str]] = defaultdict(set)
-    for label, store in anchors.items():
-        label_stores[label].add(store)
+    taint = _Taint(anchors)
+    # bind handles to a fixpoint: X = NAME; col = client.get_collection(X); self._col = col
     for _ in range(4):
         grew = False
-        for n, lab in labelled:
-            if lab not in label_stores:
+        for node in nodes:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
                 continue
-            for up, fname, _child in _ancestors(n, parent):
-                if isinstance(up, (ast.Assign, ast.AnnAssign)) and fname == "value":
-                    targets = up.targets if isinstance(up, ast.Assign) else [up.target]
-                    for t in (t for tg in targets for t in _target_names(tg)):
-                        if label_stores[lab] - label_stores[t]:
-                            label_stores[t] |= label_stores[lab]
-                            grew = True
-                    break
-                if isinstance(up, ast.stmt):
-                    break
+            stores = taint.direct(node.value)
+            if not stores:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in (t for tg in targets for t in _target_names(tg)):
+                if stores - taint.handles[t]:
+                    taint.handles[t] |= stores
+                    grew = True
         if not grew:
             break
 
     rel: dict[str, str] = {s: "uses" for s in named}
-    # call id -> (call, stores reached through its receiver, stores reached through its args)
-    calls: dict[int, tuple[ast.Call, set[str], set[str]]] = {}
-    for n, lab in labelled:
-        if lab not in label_stores:
-            continue
-        for up, fname, child in _ancestors(n, parent):
-            if isinstance(up, ast.stmt):
-                break
-            if not isinstance(up, ast.Call):
-                continue
-            entry = calls.setdefault(id(up), (up, set(), set()))
-            if fname == "func":
-                # x.upsert(...): x is the handle; the callee's own name is not a reference
-                if child is n:
-                    continue
-                entry[1].update(label_stores[lab])
-            else:
-                entry[2].update(label_stores[lab])
+    if is_cli_script(tree):
+        return rel
+    consts = _str_consts(tree)
 
     def bump(stores: set[str], r: str | None) -> None:
         for s in stores if r else ():
             if RANK[r] > RANK[rel.get(s, "uses")]:
                 rel[s] = r
 
-    for call, on_handle, in_args in calls.values():
-        stores = on_handle | in_args
-        if not stores:
+    for call in nodes:
+        if not isinstance(call, ast.Call):
             continue
-        if any(k.arg == "read_only" and isinstance(k.value, ast.Constant) and k.value.value is True
-               for k in call.keywords):
-            bump(stores, "reads")
+        args = set()
+        for a in [*call.args, *(k.value for k in call.keywords)]:
+            args |= taint.direct(a)
+        if args and any(k.arg == "read_only" and isinstance(k.value, ast.Constant) and k.value.value is True
+                        for k in call.keywords):
+            bump(args, "reads")  # (c)
             continue
         name = _call_name(call.func)
-        r = verb_relation(name)
-        if name.lower().endswith("query"):  # query / ro_query / graph_query: the Cypher decides
-            r = cypher_relation(_strings(call)) or r
-        bump(stores, r)
+        if isinstance(call.func, ast.Attribute):
+            on = taint.direct(call.func.value)
+            if not on:
+                continue  # a method of some other object (a dict, asyncio, a parser): not the store's act
+            r = verb_relation(name)
+            if name.lower().endswith("query"):  # (a) query / ro_query: the Cypher decides
+                r = cypher_relation(_first_text(call, consts)) or r
+            bump(on, r)
+        elif isinstance(call.func, ast.Name) and args and len(_tokens(name)) > 1:
+            bump(args, verb_relation(name))  # (b)
     return rel
 
 
@@ -278,15 +348,15 @@ def scan_module(tree: ast.AST, anchors: dict[str, str], text: str | None = None)
 
 def _py_files(root: Path) -> Iterable[Path]:
     for base in (root / "services", root / "orion"):
-        if not base.is_dir():
-            continue
-        for p in sorted(base.rglob("*.py")):
-            rel = p.relative_to(root).as_posix()
-            if rel.startswith(_SKIP_PREFIXES) or _SKIP_DIRS & set(p.relative_to(root).parts[:-1]):
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS and not d.startswith("."))
+            rel_dir = Path(dirpath).relative_to(root).as_posix() + "/"
+            if rel_dir.startswith(_SKIP_PREFIXES):
+                dirnames[:] = []
                 continue
-            if p.name.startswith("test_") or p.name == "conftest.py":
-                continue
-            yield p
+            for f in sorted(filenames):
+                if f.endswith(".py") and not f.startswith("test_") and f != "conftest.py":
+                    yield Path(dirpath) / f
 
 
 def _service_of(rel: str) -> str | None:
@@ -320,28 +390,38 @@ def _attrs_on(tree: ast.AST, alias: str) -> set[str]:
     """Attribute names read off a module alias: ``fs.build_x()`` -> {"build_x"}. A dotted alias
     (``import orion.a.b``) matches ``orion.a.b.build_x``."""
     out = set()
-    for node in _index(tree)[0]:
-        if isinstance(node, ast.Attribute) and ast.unparse(node.value) == alias:
+    for node in _index(tree):
+        if isinstance(node, ast.Attribute) and _path(node.value) == alias:
             out.add(node.attr)
     return out
 
 
 def _symbols(tree: ast.AST) -> dict[str, ast.Module]:
-    """Top-level name -> the statement defining it, as a scannable module. Statements that bind
-    no name (``register(...)`` at import time) run for any importer: symbol ``*``."""
+    """Top-level name -> the statements defining it, as a scannable module. A top-level
+    ``if`` / ``try`` is opened to find the names it defines. Statements that bind no name
+    (``register(...)`` at import time) run for any importer: symbol ``*``. The
+    ``if __name__ == "__main__":`` block runs for nobody who imports the module."""
     out: dict[str, list[ast.stmt]] = defaultdict(list)
-    for stmt in getattr(tree, "body", []):
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names = [stmt.name]
-        elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
-            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
-            names = [n for t in targets for n in _target_names(t)] or ["*"]
-        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
-            continue
-        else:
-            names = ["*"]
-        for n in names:
-            out[n].append(stmt)
+
+    def visit(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names = [stmt.name]
+            elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                names = [n for t in targets for n in _target_names(t)] or ["*"]
+            elif isinstance(stmt, (ast.Import, ast.ImportFrom)) or _is_main_guard(stmt):
+                continue
+            elif isinstance(stmt, (ast.If, ast.Try)):
+                visit([*stmt.body, *stmt.orelse, *getattr(stmt, "finalbody", []),
+                       *(x for h in getattr(stmt, "handlers", []) for x in h.body)])
+                continue
+            else:
+                names = ["*"]
+            for n in names:
+                out[n].append(stmt)
+
+    visit(list(getattr(tree, "body", [])))
     return {n: ast.Module(body=stmts, type_ignores=[]) for n, stmts in out.items()}
 
 
@@ -424,28 +504,34 @@ def code_store_refs(root: Path, names: Iterable[str]) -> CodeRefs:
                     if name in consts:
                         anchors[alias] = consts[name]
                 else:  # the module itself: the attributes this file reads off it
-                    picked = _attrs_on(tree, alias) or set(symbols)
+                    picked = _attrs_on(tree, alias)  # none read: only import-time code ("*") runs
                 used[dotted][svc] |= {sym for sym in picked if sym in symbols} | ({"*"} & set(symbols))
         for store, relation in scan_module(tree, anchors, texts[rel]).items():
             add(store, svc, relation, rel)
     result.modules_scanned = scanned
 
     # phase 3: each used shared symbol, its stores to the importing service; the importer's env
-    # resolves an env key the symbol reads
+    # resolves an env key the symbol reads. Literal scans are done once per symbol.
+    sym_cache: dict[tuple[str, str], dict[str, str]] = {}
     for dotted, (rel, symbols, consts) in shared.items():
+        base = {**literal, **consts}
+        own = {sym: sym_cache.setdefault((dotted, sym), scan_module(mod, base)) for sym, mod in symbols.items()}
         reached: set[str] = set()
         for svc, picked in sorted(used.get(dotted, {}).items()):
+            keys = env_keys.get(svc, {})
             for sym in sorted(picked):
-                anchors = {**literal, **{c: v for c, v in consts.items()}, **env_keys.get(svc, {})}
-                for store, relation in scan_module(symbols[sym], anchors).items():
+                found = dict(own[sym])
+                if keys:
+                    for store, relation in scan_module(symbols[sym], {**base, **keys}).items():
+                        if RANK[relation] >= RANK[found.get(store, "uses")]:
+                            found[store] = relation
+                for store, relation in found.items():
                     add(store, svc, relation, f"{rel}:{sym} (imported by {svc})")
                     reached.add(store)
-        for sym, mod in symbols.items():
-            for store in scan_module(mod, {**literal, **consts}):
-                if store not in reached:
-                    result.unattributed.setdefault(store, [])
-                    if rel not in result.unattributed[store]:
-                        result.unattributed[store].append(rel)
+        for found in own.values():
+            for store in found:
+                if store not in reached and rel not in result.unattributed.setdefault(store, []):
+                    result.unattributed[store].append(rel)
 
     result.refs = {s: sorted(v.values(), key=lambda r: r.service) for s, v in sorted(per.items())}
     # a store some service reaches is attributed, whatever other modules also name it

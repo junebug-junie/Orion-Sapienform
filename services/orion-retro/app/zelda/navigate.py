@@ -93,7 +93,11 @@ def edge_tiles(walls, blocked, start, direction):
     return [t for t in area if sign * t[axis] == best], best
 
 
-DOOR_DEPTH = 2   # tiles: a dungeon doorway's outer frame is collision, yet the game walks Link through
+# Tiles from the screen edge at which a dungeon opening starts: the outer frame reads as collision,
+# yet the game walks Link through. W/E is 3: live 2026-10-30 (room 85) the floor of bombed holes
+# stops 3 tiles short, a doorway's 2; a plain W/E wall stops 4 short. N/S: a plain N wall stops
+# 3 short, so 2 is the most N can take.
+DOOR_DEPTH = {'N': 2, 'S': 2, 'W': 3, 'E': 3}
 
 
 def on_screen_edge(tile, direction, slack=0):
@@ -105,11 +109,11 @@ def on_screen_edge(tile, direction, slack=0):
 def open_sides(walls, blocked, start, dungeon=False):
     """Sides whose screen edge Link can walk to from `start` (the only sides an exit can use).
     Computed by the motor's own search, so the planner never has to read the map to know.
-    In a dungeon a side is open when the floor reaches its doorway (DOOR_DEPTH from the edge);
-    a locked or shuttered door has no gap there, so it stays closed."""
+    In a dungeon a side is open when the floor reaches its doorway or bombed hole (DOOR_DEPTH
+    from the edge); a locked or shuttered door has no gap there, so it stays closed."""
     area = reachable(walls, blocked, start) | {start}
-    slack = DOOR_DEPTH if dungeon else 0
-    return [d for d in DIRS if any(on_screen_edge(t, d, slack) for t in area)]
+    return [d for d in DIRS
+            if any(on_screen_edge(t, d, DOOR_DEPTH[d] if dungeon else 0) for t in area)]
 
 
 def terrain(obs, learned=(), caves=()):

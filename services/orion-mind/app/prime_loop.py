@@ -312,7 +312,7 @@ class PrimeRuntime:
         from orion.schemas.physiology_want import WantV1
 
         want = WantV1(want_id=f"prime-think-{uuid4().hex[:12]}", family=FAMILY, producer=PRODUCER, verb="infer",
-                      tier=1, lanes=[self.s.PRIME_BID_LANE])
+                      tier=1, lanes=[self.s.PRIME_BID_LANE], cost=self._cost_ceiling())
         decision = await self.bid(want)
         outcome = getattr(decision, "outcome", None)
         if outcome != "funded":
@@ -326,6 +326,20 @@ class PrimeRuntime:
         finally:
             await self.release(want.want_id)
             await self.save()
+
+    def _cost_ceiling(self) -> Any:
+        """One thought's lane cost at its enforced maximum: the model call's timeout, on Prime's lane.
+
+        Without it a family with no measured slot time is priced at a whole lane window
+        (orion/physiology/choice.py "priced_at_one_window"). Live 10-30, every Prime bid was then
+        deferred capacity_reserved on lane:chat (24/24), so Prime could never think and never build the
+        history that would price it. Same rule as a dispatch route's cold_cost_ceiling_sec: charge the
+        doer's enforced maximum while nothing is on record."""
+        from orion.schemas.grammar import ActCostV2
+
+        ceiling = float(self.s.PRIME_LLM_TIMEOUT_SEC)
+        return ActCostV2(gpu_slot_s_by_lane={self.s.PRIME_BID_LANE: ceiling},
+                         basis={"gpu_slot_s_by_lane": f"ceiling: PRIME_LLM_TIMEOUT_SEC {ceiling:g} s per thought"})
 
     # --- the thought -----------------------------------------------------------------------
     async def think(self, inputs: FrameInputs) -> None:

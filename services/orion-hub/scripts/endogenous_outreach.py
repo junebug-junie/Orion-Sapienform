@@ -470,6 +470,9 @@ class OutreachGateInputs:
 
 
 REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
+# Body economy shadow bids: a strain-held tick re-bids at most once per this many seconds (or per
+# the outreach cooldown, if longer). See EndogenousOutreach._strain_shadow_bid_due.
+STRAIN_SHADOW_BID_MIN_WINDOW_SEC = 600.0
 
 
 def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
@@ -1774,6 +1777,10 @@ class EndogenousOutreach:
             trigger_evaluator = current_run
         self._trigger_evaluator = trigger_evaluator
         self._last_tension_reason: Optional[Any] = None
+        # When the last strain-held shadow bid was placed (self._monotonic()). See
+        # `_strain_shadow_bid_due`: one strain-held bid per window, not one per tick.
+        self._strain_shadow_bid_at: Optional[float] = None
+        self._monotonic: Callable[[], float] = time.monotonic  # tests replace this one clock only
 
         self._bus: Any = None
         self._harness_rpc_bus: Any = None
@@ -2183,6 +2190,23 @@ class EndogenousOutreach:
             shadow.settle(real_from_result(result), act_correlation_id=result.get("correlation_id"))
             return result
 
+    def _strain_shadow_bid_due(self) -> bool:
+        """True at most once per ``max(min_cooldown_sec, STRAIN_SHADOW_BID_MIN_WINDOW_SEC)``.
+
+        A strain-held tick is one candidate want ("say something to Juniper"), held by strain.
+        The tick repeats every ``tick_interval_sec`` (10 s live), so bidding on every tick put
+        ~360 hub.outreach rows an hour into want_ledger while real sends were a few a day. That
+        swelled Tier 2's funded-want count, which the exploration floor divides by, and filled the
+        shadow-vs-real table with copies of one decision. A real send cannot happen more than once
+        per cooldown, so the held want is re-bid once per cooldown window. Marks the bid as placed.
+        """
+        now = self._monotonic()
+        window = max(self.min_cooldown_sec, STRAIN_SHADOW_BID_MIN_WINDOW_SEC)
+        if self._strain_shadow_bid_at is not None and now - self._strain_shadow_bid_at < window:
+            return False
+        self._strain_shadow_bid_at = now
+        return True
+
     async def _spoke_ago(self) -> Optional[float]:
         self._last_spoke_read_at = time.time()
         try:
@@ -2202,10 +2226,11 @@ class EndogenousOutreach:
         if not blocked:
             self._last_spoke_ago = await self._spoke_ago()
             blocked = outreach_block_reason(self._gate_inputs())
-        if blocked == AROUSAL_STRAINED_REASON and shadow is not None:
+        if blocked == AROUSAL_STRAINED_REASON and shadow is not None and self._strain_shadow_bid_due():
             # Strain alone holds this tick: the gate the economy is meant to replace. Bid, and
             # record the real outcome as the strain hold whatever the strain report door does
-            # (that door's message is a report about strain, not this want).
+            # (that door's message is a report about strain, not this want). Once per window:
+            # a strain hold repeats on every 10 s tick, but it is one held want, not 360 an hour.
             shadow.place()
             shadow.real = f"blocked:{AROUSAL_STRAINED_REASON}"
         if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:

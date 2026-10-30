@@ -8,6 +8,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import re
 from contextlib import suppress
 from copy import deepcopy
 
@@ -79,11 +80,28 @@ def _render_block(block):
         return f"[called tool {_field(block, 'name')} with {args}]"
     if kind == "tool_result":
         body = _field(block, "content")
-        text = body if isinstance(body, str) else _text_of(body if isinstance(body, list) else [body])
+        parts = [_render_block(b) for b in _blocks(body if isinstance(body, (str, list)) else [body])]
+        text = "\n".join(p for p in parts if p)
         return f"[tool result{' (error)' if _field(block, 'is_error') else ''}]\n{text}"
+    if kind in ("web_search_tool_result", "web_fetch_tool_result"):
+        body = json.dumps(jsonable_encoder(_field(block, "content")), ensure_ascii=False)
+        return f"[{kind}]\n{body[:_WEB_RESULT_CHARS]}"
     if kind in ("image", "document"):
         return f"[{kind} omitted]"
     return None  # thinking / redacted_thinking: the visible turns already carry the work
+
+
+_WEB_RESULT_CHARS = 4000  # raw search/fetch JSON is mostly markup; the summary needs the gist
+_TRANSCRIPT_CLOSE = re.compile(r"</\s*transcript\s*>", re.IGNORECASE)
+
+
+def _quoted(text):
+    """Text that cannot close the transcript quote early (agents read files holding the tag)."""
+    return _TRANSCRIPT_CLOSE.sub("<\\/transcript>", text)
+
+
+def _section(role, texts):
+    return f"### {str(role).upper()}\n" + "\n".join(_quoted(t) for t in texts)
 
 
 def flatten_compaction_text(messages):
@@ -100,13 +118,17 @@ def flatten_compaction_text(messages):
     for message in history:
         rendered = [t for t in map(_render_block, _blocks(_field(message, "content"))) if t]
         if rendered:
-            lines.append(f"### {str(_field(message, 'role')).upper()}\n" + "\n".join(rendered))
-    prompt = []
+            lines.append(_section(_field(message, "role"), rendered))
+    # The CLI merges adjacent user turns, so the compaction turn can also carry tool results,
+    # reminders or a queued message. Only the prompt itself stays outside the quote.
+    prompt, rest = [], []
     for block in _blocks(_field(last, "content")):
         text = _render_block(block)
         if text:
-            # A tool result riding in the compaction turn belongs to the transcript, not the prompt.
-            (lines if _field(block, "type") == "tool_result" else prompt).append(text)
+            is_prompt = _field(block, "type") != "tool_result" and any(m in text for m in COMPACTION_PROMPT_MARKS)
+            (prompt if is_prompt else rest).append(text)
+    if rest:
+        lines.append(_section("user", rest))
     transcript = "\n\n".join(lines)
     return (
         "Below is the transcript of an earlier agent conversation, quoted for you to read. "

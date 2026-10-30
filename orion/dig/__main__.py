@@ -49,6 +49,7 @@ path of a file with the full result; read only what you need from that file.
   history <days>         the same for the last <days> days, today included (2 = since yesterday).
   body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
                          None = live now; a date = that export's files; an organ id = its members.
+  capacities [gaps]      which jobs of a viable system your parts are shown to do, by rule; gaps.
   body-economy [<section>...] [--host <h>] [--window 24h|7d|30d] [--family <f>]   your body
                          economy now: what spins each machine and what it costs, what binds,
                          wants, waste. `body-economy --help` lists sections and flags.
@@ -590,6 +591,18 @@ def cmd_name(ref: str, name: str, because: str, out: Out) -> str:
             f"names ledger: {names_path()}")
 
 
+def cmd_capacities(arg: str | None, out: Out) -> str:
+    """Read-only: the VSM jobs the live atlas shows a part doing, by rule (orion/body_atlas/
+    capacities.py). ``gaps``: the code-written gap lines. Writes nothing but the dig result file."""
+    from orion.body_atlas import capacities, names
+
+    records, _ = names.load(names_path())
+    reading = capacities.read_capacities(names.apply_names(_live_atlas(), records))
+    path = out.write("capacities", json.loads(reading.model_dump_json()))
+    lines = capacities.render_gaps(reading) if arg == "gaps" else capacities.render(reading)
+    return capped(lines, tail=f"full result: {path}")
+
+
 # --- body economy ---------------------------------------------------------------------------
 
 BODY_ECONOMY_HELP = """body-economy [<section>...] [--host circe|athena|hecate] [--window 24h|7d|30d] [--family <f>]
@@ -708,6 +721,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_history(*_last_days(a[0]), out)
         elif ns.command == "body" and len(a) <= 1:
             text = cmd_body(a[0] if a else None, out)
+        elif ns.command == "capacities" and (not a or a == ["gaps"]):
+            text = cmd_capacities(a[0] if a else None, out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)
         elif ns.command == "name-organs" and not a:

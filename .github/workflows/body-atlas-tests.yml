@@ -25,7 +25,7 @@ on:
 
 jobs:
   body-atlas:
-    name: Body atlas — tests + organ structure eval
+    name: Body atlas — tests + organ structure + capacity roles evals
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,3 +39,5 @@ jobs:
         run: PYTHONPATH=. python -m pytest -q orion/body_atlas/tests
       - name: Organ structure eval (frozen bus graph + frozen whole bodies)
         run: python orion/body_atlas/evals/run_organ_structure_eval.py
+      - name: Capacity roles eval (rules vs reviewed sets, held-out 10-29, mutation must fail)
+        run: python orion/body_atlas/evals/run_capacity_roles_eval.py

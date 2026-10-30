@@ -1,6 +1,7 @@
 # Self-now rung 4: capacities, read through the Viable System Model
 
-Status: PROPOSAL, design only (proposal mode: self-model). No code until Juniper reviews it.
+Status: ACCEPTED 2026-10-30 (Juniper: "hit it", all five defaults below). Patch 1 built: PR
+`feat/dig-capacities` (rules, read-only `dig capacities`, rule eval).
 Date: 2026-10-30. Ladder: `docs/superpowers/specs/2026-10-23-repo-chronicle-design.md` (PR #2888),
 rung 4 of 5 (parts → circulation → organs → **capacities** → portrait).
 
@@ -287,7 +288,7 @@ partition test, `tests/test_organ_names_partition.py` (allowlist `orion/body_atl
 4. **Patch 4:** recursion: run the same rules on each organ's internal flows. An organ with its
    own S2 and S3 prints "runs itself"; otherwise "leans on <part>".
 
-## Open decisions for Juniper (defaults in brackets)
+## Decisions (Juniper accepted every default, 2026-10-30)
 
 1. **Who confirms claims, and how?** [Juniper, by PR to `config/body_atlas/vsm_confirmed.yaml`.]
    Alternative: a claim with no dispute for N days counts as confirmed.
@@ -297,3 +298,14 @@ partition test, `tests/test_organ_names_partition.py` (allowlist `orion/body_atl
    files.]
 4. **Order:** rules first (gaps visible now), or the HTTP/Redis atlas fix first? [Rules first.]
 5. **When does Orion write capacities?** [On Juniper's ask, like naming; not on a timer.]
+
+**Recorded 2026-10-30:** Juniper answered "hit it" to all five. Decided: (1) Juniper confirms by PR
+to `config/body_atlas/vsm_confirmed.yaml`; (2) `cap:metabolism` is kept, through claims; (3) S5
+says it is shared with Juniper, citing her sign-off files; (4) rules first, the HTTP/Redis atlas
+fix after; (5) Orion writes capacities on Juniper's ask, not on a timer.
+
+**Patch 1 notes (as built).** R-collector does not require a sole reader (the design's own
+example, `orion:grammar:event`, has two readers). On it `orion-equilibrium-service` replies to 2
+producers, so it is neither a collector nor a server there; only `orion-heartbeat` prints as a
+collector. On the 2026-10-29 body no camera was live yet (no camera liveness source that day), so
+R-boundary-in expects only the two outside endpoints on that fixture.

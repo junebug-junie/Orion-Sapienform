@@ -1,7 +1,8 @@
 """Does Orion's circulation converge into organs, or into mush?
 
-Runs the atlas over the frozen exports in ``fixtures/`` (the real bus graph of 2026-10-23, and
-the whole body of 2026-10-29: hosts, cameras, stores and processes on top of the bus) or, with
+Runs the atlas over the frozen exports in ``fixtures/`` (the real bus graph of 2026-10-23, the
+whole body of 2026-10-29: hosts, cameras, stores and processes on top of the bus, and the whole
+body of 2026-10-30 with each process linked to the services doing its work) or, with
 ``--live``, the live whole body, and checks the structure:
 
 * modularity Q >= 0.3 (Newman: below that, community structure is weak);
@@ -35,7 +36,10 @@ FIXTURE = Path(__file__).parent / "fixtures" / "bus_graph_2026-10-23.json"
 # The whole body (hosts, cameras, stores, processes) on top of the live bus, 2026-10-29: the new
 # kinds must not collapse the organs either.
 WHOLE_BODY_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-29.json"
-FIXTURES = (FIXTURE, WHOLE_BODY_FIXTURE)
+# 2026-10-30: processes linked to the services doing their work (reducer sources, harness turn
+# records, child runs), not only to their runner.
+DOERS_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-30.json"
+FIXTURES = (FIXTURE, WHOLE_BODY_FIXTURE, DOERS_FIXTURE)
 MIN_Q = 0.3
 ORGAN_RANGE = (5, 25)
 MAX_ORGAN_SHARE = 0.35

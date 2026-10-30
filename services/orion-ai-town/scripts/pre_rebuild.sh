@@ -11,6 +11,7 @@
 #    the overlay copies, so the chain applies from scratch every time
 #    (re-applying on a patched tree stops at orion-conversation-proximity.patch).
 # 3. Apply the chain.
+# 4. Regenerate convex/_generated/ so the image build sees new modules.
 #
 # Override: AITOWN_ALLOW_EXAMPLE_CARDS=1 (deploy with the redacted example
 # cards), AITOWN_BACKUP_ROOT (default ~/.orion).
@@ -74,4 +75,17 @@ if [[ -d "${ROOT}/overlay" ]]; then
   done
 fi
 bash "${ROOT}/scripts/apply_upstream_patches.sh"
-echo "pre_rebuild: upstream/ is the pin plus the patch chain"
+# The image build type-checks convex/ against convex/_generated/, which only
+# `convex dev` (post_rebuild.sh, after the build) used to regenerate. A new
+# module failed the build on circe 2026-10-29: crons.ts called internal.sim.*
+# and the pin's api.d.ts has no sim. codegen writes only _generated/ and does
+# not change the deployment, but it reads the running backend, so start the
+# backend first (a no-op when it runs): otherwise a stopped stack fails here
+# and the skipped `up` never starts it again.
+if [[ -n "${AITOWN_TEST_BACKEND_UP:-}" ]]; then
+  bash -c "${AITOWN_TEST_BACKEND_UP}"
+else
+  bash "${ROOT}/../../scripts/safe_docker_build.sh" orion-ai-town up -d --wait backend
+fi
+bash "${ROOT}/scripts/run_convex.sh" codegen --typecheck disable
+echo "pre_rebuild: upstream/ is the pin plus the patch chain, codegen done"

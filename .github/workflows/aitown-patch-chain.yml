@@ -10,6 +10,8 @@ on:
       - 'services/orion-ai-town/patches/**'
       - 'services/orion-ai-town/overlay/**'
       - 'services/orion-ai-town/scripts/pre_rebuild.sh'
+      - 'services/orion-ai-town/scripts/post_rebuild.sh'
+      - 'services/orion-ai-town/scripts/run_convex.sh'
       - 'services/orion-ai-town/scripts/apply_upstream_patches.sh'
       - 'services/orion-ai-town/scripts/generate_descriptions.py'
       - 'services/orion-ai-town/cards/**'

@@ -51,9 +51,19 @@ def _run(svc: Path, tmp_path: Path, script: str = "pre_rebuild.sh") -> subproces
     env.pop("AITOWN_ALLOW_EXAMPLE_CARDS", None)
     env.update(
         AITOWN_BACKUP_ROOT=str(tmp_path / "backups"),
-        AITOWN_TEST_CONVEX_PUSH=f"pwd >> {tmp_path / 'pushes'}",
+        # Records each convex call with its cwd, and whether the sim overlay
+        # was already in place (codegen must see the patched tree).
+        AITOWN_TEST_CONVEX=(
+            f"echo \"$(pwd) sim=$(test -f convex/sim/tick.ts && echo yes || echo no) $*\" >> {tmp_path / 'convex_calls'}"
+        ),
+        AITOWN_TEST_BACKEND_UP=f"echo backend-up >> {tmp_path / 'convex_calls'}",
     )
     return subprocess.run(["bash", str(svc / "scripts" / script)], env=env, capture_output=True, text=True)
+
+
+def _calls(tmp_path: Path) -> list[str]:
+    path = tmp_path / "convex_calls"
+    return path.read_text().splitlines() if path.exists() else []
 
 
 def _tree(svc: Path) -> dict[str, str]:
@@ -89,7 +99,10 @@ def test_rebuilds_a_hand_edited_tree_to_the_fresh_chain(town, tmp_path):
     backup = sorted((tmp_path / "backups").glob("aitown-upstream-backup-*"))[-1]
     assert "// staged hand edit" in (backup / "tracked.diff").read_text()
     assert "// untracked hand edit" in (backup / "untracked" / "src" / "lib" / "hubEmbed.ts").read_text()
-    assert not (tmp_path / "pushes").exists()  # pre never pushes
+    # pre runs codegen on the patched tree each time and never pushes.
+    up = town / "upstream"
+    # The backend is started before each codegen, so a stopped stack recovers.
+    assert _calls(tmp_path) == ["backend-up", f"{up} sim=yes codegen --typecheck disable"] * 2
 
 
 def test_refuses_without_local_cards(town, tmp_path):
@@ -113,8 +126,8 @@ def test_refuses_when_upstream_head_is_not_the_pin(town, tmp_path):
 def test_post_rebuild_pushes_from_upstream(town, tmp_path):
     run = _run(town, tmp_path, "post_rebuild.sh")
     assert run.returncode == 0, run.stderr
-    assert "NOT pushing functions" in run.stderr
-    assert (tmp_path / "pushes").read_text().strip() == str(town / "upstream")
+    assert "NOT running convex dev --once" in run.stderr
+    assert _calls(tmp_path) == [f"{town / 'upstream'} sim=no dev --once"]
 
 
 def test_seed_render_failure_leaves_no_example_seed(town, tmp_path):
@@ -126,3 +139,14 @@ def test_seed_render_failure_leaves_no_example_seed(town, tmp_path):
     sim = town / "upstream" / "convex" / "sim"
     assert (sim / "core.ts").is_file()
     assert not (sim / "seed.ts").exists() and not (sim / "seed.ts.tmp").exists()
+    assert _calls(tmp_path) == []  # no codegen on a failed chain
+
+
+def test_codegen_failure_fails_pre_rebuild(town, tmp_path):
+    env = os.environ.copy()
+    env.update(
+        AITOWN_BACKUP_ROOT=str(tmp_path / "backups"), AITOWN_TEST_BACKEND_UP="true", AITOWN_TEST_CONVEX="exit 4"
+    )
+    run = subprocess.run(["bash", str(town / "scripts" / "pre_rebuild.sh")], env=env, capture_output=True, text=True)
+    assert run.returncode == 4
+    assert "codegen done" not in run.stdout

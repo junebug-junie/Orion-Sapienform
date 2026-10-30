@@ -148,6 +148,18 @@ Prime is a customer of the body economy. It is not exempt from it.
 - **Price sets frequency. Kev sets depth.** On a cool afternoon prices are low and Prime thinks every few tens of seconds. When the cabinet heats up, the price rises and Prime thinks less. No veto is involved. Kev decides whether a cycle stays shallow or escalates to a deep run.
 - **Prime's acts bid too.** Prime's act candidates compete in the allocator against every other doer, with the same lane prices. Prime gets no back door.
 
+### 7.1 Where Prime runs: circe chat lane 0 (Juniper, 10-30)
+
+Prime's baseline thinking runs on circe's chat lane 0 by default. The model is already warm there, so Prime needs no new allocation and has no cold starts.
+
+That lane also serves Juniper's turns, so the rules are:
+
+- **Juniper's turn always goes first.** Interactive and urgent requests never bid and are never shed (spinal cord). Prime's cycles request the lane at a lower GPU-pool priority.
+- **Prime yields mid-cycle.** If a Juniper turn arrives while Prime is generating, the Prime call is cancelled or deprioritized, and the cycle is recorded as `preempted`. It is never recorded as a thought.
+- **The lane price carries the contention.** When chat is busy, the chat lane's price rises, and Prime's shallow cycles wait. Nothing is hard-coded.
+- **Deep thinking may move elsewhere.** A Tier 2 deep episode can bid for another lane (for example the agent lane) through the GPU pool. Lane 0 is the default for baseline thinking, not a lock.
+- **E9 is the main risk.** The first thing to measure is chat latency (time to first token and total) with Prime cycling on the same lane against Prime off.
+
 **Result:** Prime's cadence is not hand-tuned. It emerges from heat, load and hunger, which is the point of the body economy.
 
 ## 8. What Prime does each cycle
@@ -181,7 +193,7 @@ Kept from rev 2, now measured on the act ledger:
 
 | Step | What ships | Proof before the next step |
 |---|---|---|
-| **2A Prime live, one effector** | runtime + warm model; `prime.think` verb with its `physiology` block; act candidates into the allocator; holdback as the narrator arm | Prime acts admitted and graded; held-back vs treated difference over ≥ 7 days; cadence follows price on cool vs warm days |
+| **2A Prime live, one effector** | runtime on circe chat lane 0; `prime.think` verb with its `physiology` block; act candidates into the allocator; holdback as the narrator arm | Prime acts admitted and graded; held-back vs treated difference over ≥ 7 days; cadence follows price on cool vs warm days |
 | **2B Hormones v1** | `regulate` to two organs (curiosity cadence, dream timing); receptor declarations; `target_moved` signal (after the metric gate) | regulate acts close with measured movement; unhandled-hormone count is 0 or visibly reported |
 | **2C Calls between organs** | 2–3 existing verbs published as calls; organ refusals recorded as closed acts | E3 and E4 both directions observed |
 | **2D Longitudinal** | add memory, body and relationship organs; run ablations | E1–E9 |
@@ -199,7 +211,7 @@ Feature flag per step, shipped ON per standing rule, with instant fallback to cu
 
 ## 12. Missing questions
 
-1. Which model and lane holds warm Prime? Measure lane occupancy, watts and latency against chat before 2A.
+1. ~~Which model and lane holds warm Prime?~~ **Decided (Juniper, 10-30): circe chat lane 0 by default.** See section 7.1.
 2. Shallow thinking: Tier 1 with a reserved share (recommended), or Tier 2 open market?
 3. Is `prime.think` one verb with a depth parameter, or two verbs (shallow and deep)?
 4. Is `target_moved` one signal with an object, or one signal per receptor?
@@ -222,4 +234,4 @@ Feature flag per step, shipped ON per standing rule, with instant fallback to cu
 
 ## Recommended next patch
 
-Measurement only: find which lane can hold a warm small model, and at what watts and chat-latency cost, on a cool day and on a warm day. Then build 2A.
+Measurement only, on circe chat lane 0: run a synthetic Prime cycle (a short prompt and a short output) at several cadences. Record Juniper-turn latency (time to first token and total), lane occupancy and watts against a Prime-off baseline, on a cool day and on a warm day. The result sets the Tier 1 reserved share. Then build 2A.

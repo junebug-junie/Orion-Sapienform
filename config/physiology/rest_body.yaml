@@ -12,8 +12,8 @@
 #   * rest_w > approved_rest_w is REFUSED for that host (its acts fall back to GPU above idle, the
 #     reason is in basis). Raising rest hides Orion's activity, so it needs Juniper: change
 #     approved_rest_w in a PR she merges. Lowering rest_w is always allowed.
-#   * Values below are the proposal's defaults (p05 of chassis_watts over 2026-10-01..10-13, before
-#     the dojo and the 10-14 affectgpt crash loop). NOT YET APPROVED by Juniper: approved_at is unset.
+#   * Values below are p05 of chassis_watts over 2026-10-01..10-13 (before the dojo and the 10-14
+#     affectgpt crash loop). Approved by Juniper 2026-10-30.
 #
 # sponsored: workloads Juniper started and only Juniper stops. Their CPU share of the above-rest
 # chassis watts (container_cpu_watts.<name>, scaled by the same load overhead the acts pay) is
@@ -21,9 +21,9 @@
 # container names; `until` (YYYY-MM-DD, UTC, exclusive) or null.
 version: 1
 hosts:
-  circe:  {rest_w: 541, approved_rest_w: 541, measured: "2026-10-01..2026-10-13", method: "p05 chassis_watts", approved_at: null}
-  athena: {rest_w: 340, approved_rest_w: 340, measured: "2026-10-01..2026-10-13", method: "p05 chassis_watts", approved_at: null}
-  hecate: {rest_w: 96,  approved_rest_w: 96,  measured: "standby", method: "p50 chassis_watts when asleep", approved_at: null}
+  circe:  {rest_w: 541, approved_rest_w: 541, measured: "2026-10-01..2026-10-13", method: "p05 chassis_watts", approved_at: "2026-10-30"}
+  athena: {rest_w: 340, approved_rest_w: 340, measured: "2026-10-01..2026-10-13", method: "p05 chassis_watts", approved_at: "2026-10-30"}
+  hecate: {rest_w: 96,  approved_rest_w: 96,  measured: "standby", method: "p50 chassis_watts when asleep", approved_at: "2026-10-30"}
 cooling: rest
 sponsored:
   - {name: zelda_dojo, containers: "zelda-dojo-live-*", host: athena, until: null, note: "Juniper runs it until she kills it"}

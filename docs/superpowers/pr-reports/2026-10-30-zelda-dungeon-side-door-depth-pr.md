@@ -51,7 +51,8 @@ Live check after the deploy: hand off to Orion in a dungeon room with W/E holes 
 
 ## Review findings fixed
 
-See below (filled in after review).
+- No material findings. The reviewer checked that the overworld never gets the dungeon rule: level 0 is confirmed, and `'unknown'` appears only in dungeons. The reviewer also checked every side's tile arithmetic for both holes and plain walls, the existing fixtures, the exit motor (`edge_tiles` does not use `DOOR_DEPTH`), and every other reader of `open_sides`. 138 passed.
+- Noted, not changed: W/E has a 1-tile margin (holes stop 3 short, walls 4). N/S holes are still not detected. Both are listed under Risks.
 
 ## Restart required
 
@@ -65,4 +66,4 @@ The Retro service rebuilds on `git pull`.
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2983

@@ -237,6 +237,6 @@ Rollback without a code change: set `ORION_PHYSIOLOGY_BID_DREAM_CYCLE=shadow` in
 
 ## PR link
 
-(added after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3014
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

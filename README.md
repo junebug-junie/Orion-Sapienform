@@ -77,7 +77,7 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 |---|---|---|---|
 | **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | 1× Tesla P4 8GB, 1× Tesla T10 16GB | Live |
 | **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 2× V100-PCIE 32GB, 1× V100-SXM2 32GB, 1× PG500-216 | Live |
-| **Hecate** | Inspur NF5288M5 (AGX-2) 8-slot SXM2 server; on-demand deep inference and training | 1× V100-SXM2 32GB installed | On demand |
+| **Hecate** | Inspur NF5288M5 (NF5288M5-G3GPU01, AGX-2) 8-slot SXM2 server, 2× Xeon Gold 6148, 183 GB RAM; on-demand deep inference and training | 1× V100-SXM2 32GB installed | On demand |
 | **Cameras** | Office and web cameras, embodiment experiments (1 street cam up and coming) | — | Live |
 | **Sensors** | 2x Nano Ardiunos and mics with various cabinet sensors | — | Live |
 

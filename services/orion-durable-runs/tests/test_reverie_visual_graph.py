@@ -645,7 +645,7 @@ def test_completed_or_paused_reverie_run_never_abandons():
 @pytest.mark.parametrize("status", sorted(TERMINAL_STATE_NODE))
 def test_every_admitted_terminal_of_every_workflow_reaches_the_state_channel(status):
     async def run():
-        rt, published = runtime("self_study.reflect")
+        rt, published = runtime("self_sense_eval")
         state = {"run_id": RUN, "correlation_id": "trace-001", "status": status, "last_error": "boom",
                  "llm_call_ok": False, "findings": []}
         if status == "completed":
@@ -654,7 +654,7 @@ def test_every_admitted_terminal_of_every_workflow_reaches_the_state_channel(sta
                                     "run_id": RUN, "thread_id": RUN, "correlation_id": "trace-001",
                                     "generated_at": "2026-09-28T00:00:00+00:00", "detail": {}})
         else:
-            await rt._terminal(RUN, status, state, workflow="self_study.reflect")
+            await rt._terminal(RUN, status, state, workflow="self_sense_eval")
         await rt._publish_outbox()
         [event] = [m for ch, kind, m in published if kind == DURABLE_RUN_STATE_KIND]
         assert event.status == status and event.node == TERMINAL_STATE_NODE[status]

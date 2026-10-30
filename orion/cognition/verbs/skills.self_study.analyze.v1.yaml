@@ -62,8 +62,12 @@ plan:
 
 # Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
 # checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+# 2026-10-30 (fold self-study into curiosity, Juniper's decision): tier 0 autonomic plumbing.
+# Four windowed SELECTs, no GPU, no want; it never bid as tier 1 either. Its journal
+# source_ref prefixes stay exactly as they are: orion-thought's ANALYSIS_SOURCES allowlist
+# (the reverie painter's third context slot) depends on them.
 physiology:
-  tier: 1
-  family: self_study
+  tier: 0
+  family: autonomic
   lanes: []
-  deferrable_window_s: 21600
+  deferrable_window_s: 0

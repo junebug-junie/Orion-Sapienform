@@ -43,10 +43,10 @@ def _req(verb, **kw) -> CortexClientRequest:
     ("actions", "dream_cycle", {"priority": "interactive"}, "interactive_priority"),
     ("actions", "dream_cycle", {"priority": "urgent"}, "interactive_priority"),
     ("orion-durable-runs", "journal.compose", {}, "inside_durable_run"),      # already bid at admission
-    # cortex-exec's capability bridge inside Juniper's turn, and its nested self-study call (review 1, 2)
+    # cortex-exec's capability bridge inside Juniper's turn, and any other nested call it makes (review 1, 2)
     ("cortex-exec", "skills.perception.look_at_camera.v1",
      {"policy_dispatch_only": True, "source": "cortex_exec_capability_bridge"}, "nested_exec_call"),
-    ("cortex-exec", "self_study.reflect", {"policy_dispatch_only": True}, "nested_exec_call"),
+    ("cortex-exec", "journal.compose", {"policy_dispatch_only": True}, "nested_exec_call"),
     ("cortex-exec", "skills.runtime.image_prune.v1", {}, "nested_exec_call"),
     ("actions", "dream_cycle", {"policy_dispatch_only": True}, "nested_exec_call"),
     ("actions", "dream_cycle", {}, None),

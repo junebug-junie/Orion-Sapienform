@@ -65,7 +65,9 @@ CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 # (and anything else that parses DurableRunRequestV1/DurableRunStateV1) before a producer
 # submits the new workflow. orion_day.letter: orion/schemas/orion_day.py.
 DurableWorkflowV1 = Literal[
-    "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual",
+    "curiosity.investigate", "self_sense_eval", "reading.turn", "reverie.visual",
+    # (A self-study reflect workflow was removed 2026-10-30 with the reflect loop; zero runs
+    # of it ever reached durable_run_workflow, so no stored row carries it.)
     # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs before cortex-orch (orch
     # submits these), or an old validator rejects the request.
     "compactor.digest",
@@ -109,16 +111,6 @@ CURIOSITY_NODES: tuple[str, ...] = (
 # no material/worldview read, no journal, no outreach -- ask the four fixed
 # questions, score and publish self_sense_eval_log rows, done.
 SELF_SENSE_EVAL_NODES: tuple[str, ...] = ("ask_questions", "publish", "finish")
-
-# self_study.reflect's own graph (services/orion-durable-runs/app/reflect_graph.py):
-# ONE LLM call, no publish -- finding validation and journal/self_concept_history
-# writes stay in cortex-exec (they need the full snapshot/concepts for
-# evidence-chain construction, not just the small input this graph carries),
-# unlike self_sense_eval's publish, which is simple enough to run here.
-# cortex-exec dispatches, awaits this run's completion synchronously, and
-# does the rest itself -- same external contract `_call_self_study_reflect_llm`
-# always had.
-SELF_STUDY_REFLECT_NODES: tuple[str, ...] = ("llm_call", "finish")
 
 DurableRunStatusV1 = Literal[
     "accepted", "queued", "waiting_resource", "admitted", "running", "paused",
@@ -181,7 +173,7 @@ class CuriosityRunBriefV1(BaseModel):
     # orion-durable-runs before orion-hub, or an old runner rejects the
     # brief and Hub falls back to running the turn in-process (logged as
     # curiosity_durable_dispatch_fell_back).
-    line: Literal["investigate", "self_inquiry", "self_sense_eval", "reflect"] = "investigate"
+    line: Literal["investigate", "self_inquiry", "self_sense_eval"] = "investigate"
     # self_sense_eval only, additive: the fixed (question_key, question_text)
     # pairs to ask, in order -- Hub owns `orion.schemas.self_sense.SELF_SENSE_QUESTIONS`
     # as the source of truth and just carries a copy here so the runner
@@ -192,17 +184,6 @@ class CuriosityRunBriefV1(BaseModel):
     # above) so `build_row` can score each answer's self-report grounding.
     self_definition_version: int | None = None
     lived_answers: list[dict[str, Any]] | None = None
-    # reflect only, additive: cortex-exec's own
-    # `_self_study_reflect_input(snapshot, concepts)` dict (snapshot_id,
-    # counts_by_kind, concepts) -- the ENTIRE input the LLM call needs.
-    # Unlike self_sense_eval/investigate, reflect's downstream finding
-    # validation and publish (evidence-chain construction against the real
-    # snapshot/concepts) stay in cortex-exec, unmoved -- this brief only
-    # carries what the runner's `llm_call` node needs to make the actual
-    # LLM request; cortex-exec awaits the run's completion synchronously
-    # (see self_study.py's `_call_self_study_reflect_llm`) and does the
-    # rest itself, same as it always has.
-    self_study_reflect_input: dict[str, Any] | None = None
     llm_route: str | None = None
     # Additive, investigate only: set for an urgent run (orion/schemas/curiosity_urgent.py).
     # Producers dump with exclude_none=True, so an unset seed never reaches an old runner.

@@ -34,8 +34,8 @@ requires_memory: false
 # 240000 now that the lane's real completion time (181-202s observed live)
 # again exceeds 120s -- if it drifts again, check the agent lane's current
 # model/load before just re-raising a third time; see PR #2108 for the full
-# incident writeup and self_study.py's SELF_STUDY_REFLECT_TIMEOUT_SEC for
-# the matching precedent.
+# incident writeup (the matching precedent, a self-study reflect timeout, was
+# retired with that verb on 2026-10-30).
 timeout_ms: 240000
 
 services:

@@ -167,12 +167,6 @@ families:
     # verbs: orion_day_carry_forward_v1, orion_day_note_v1
     lanes: [agent]
     placement: one_of
-  self_study:
-    tier: 1
-    deferrable_window_s: 21600
-    # verbs: self_concept_induce, self_concept_reflect, self_repo_inspect, self_retrieve, self_study.reflect, skills.self_study.analyze.v1
-    lanes: [agent]
-    placement: one_of
   spark.introspect:
     tier: 1
     deferrable_window_s: 600

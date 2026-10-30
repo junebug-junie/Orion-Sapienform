@@ -19,8 +19,8 @@ Never bids (each a named skip reason, logged):
 * ``interactive_lane``: the verb is a chat verb, or the caller pinned the interactive ``chat`` lane;
 * ``interactive_priority``: the caller marked it ``interactive`` / ``urgent``;
 * ``inside_durable_run``: orion-durable-runs is the caller -- the run already bid at its admission;
-* ``nested_exec_call``: cortex-exec is the caller (its capability bridge inside a turn, or a nested
-  self-study call inside a verb that already bid) -- the parent turn or dispatch owns the act;
+* ``nested_exec_call``: cortex-exec is the caller (its capability bridge inside a turn, or another nested
+  call inside a verb that already bid) -- the parent turn or dispatch owns the act;
 * ``tier_0`` / ``no_physiology`` / ``physiology_invalid``: the verb never bids, or declares nothing.
 
 Gated by ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED. Never raises into dispatch.

@@ -1,6 +1,7 @@
 """Session-continuous `claude -p` invocation for one social room.
 
-Derived from `services/orion-self-study-enrichment/app/claude_runner.py`,
+Derived from the self-study enrichment service's `app/claude_runner.py` (service
+deleted 2026-10-30; the file is in git history),
 which is a *one-shot* evidence-in/prose-out call. The difference that
 justifies a separate module rather than a parameter on that one: a room
 participant has to remember the conversation.

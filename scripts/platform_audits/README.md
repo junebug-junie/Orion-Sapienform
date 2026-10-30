@@ -26,8 +26,9 @@ bugs) and were deliberately **not** touched by the rename — removing ~24
 files' worth of now-redundant guards is a separate, larger cleanup, not
 bundled into this patch. See:
 
-- `scripts/self_study_enrichment_hook.py`'s module docstring for the full
-  incident writeup (the case that got this traced to its root cause).
+- the module docstring of the retired self-study enrichment hook (deleted
+  2026-10-30; read it with `git log --all -- scripts/self_study_enrichment_hook.py`)
+  for the full incident writeup (the case that got this traced to its root cause).
 - `scripts/check_scripts_dir_no_stdlib_shadow.py` — a new deterministic
   gate that fails if anything under `scripts/` ever collides with a stdlib
   module name again (this exact `platform` collision, or any future one).

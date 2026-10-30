@@ -72,26 +72,3 @@ def test_admitted_turn_on_the_wire_carries_the_hold_and_no_route_label():
     assert envelope.payload["gpu_lease"] == HOLD.model_dump(mode="json")
     assert "assigned_lane" not in envelope.payload and "lease" not in envelope.payload
     assert "fcc_model_label" not in envelope.payload
-
-
-def test_reflect_llm_call_sends_the_hold_ref_in_options_and_keeps_its_route():
-    """Stage 4.4 hazard: the reflect call carried neither lease. Under a hold it must carry the ref
-    (cortex-exec forwards options.gpu_lease, the gateway attaches), with llm_route unchanged."""
-    from orion.core.bus.bus_schemas import BaseEnvelope as Env
-    from orion.schemas.cortex.contracts import CortexClientRequest
-
-    codec = OrionCodec()
-    reply = Env(kind="cortex.orch.result", source=ServiceRef(name="cortex-orch"),
-                payload={"ok": True, "final_text": '{"findings": [{"kind": "k"}]}'})
-    bus = SimpleNamespace(codec=codec, rpc_request=AsyncMock(return_value={"data": codec.encode(reply)}))
-    settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI="postgresql://unused",
-                        ORION_BUS_ENABLED=False)
-    runner = DurableRunner(settings, bus=bus, checkpointer=None)
-    for ref in (HOLD, None):
-        asyncio.run(runner._call_reflect_llm({"snapshot_id": "s"}, "agent", **({"gpu_lease": ref} if ref else {})))
-        sent = CortexClientRequest.model_validate(bus.rpc_request.await_args.args[1].payload)
-        assert sent.options["llm_route"] == "agent"
-        if ref:
-            assert sent.options["gpu_lease"] == HOLD.model_dump(mode="json")
-        else:
-            assert "gpu_lease" not in sent.options

@@ -127,7 +127,8 @@ reasons for wanting it converged on the same fix.
 
 ## Credential isolation
 
-Identical in shape and rationale to `orion-self-study-enrichment` — read that
+Identical in shape and rationale to the self-study enrichment service (deleted
+2026-10-30; read its README from git history) — read that
 service's "Credential isolation (safety requirement)" section too; it carries
 the incident history. That service still uses the file-mount pattern this one
 retired 2026-08-18; the staleness bug below applies to it identically and is
@@ -170,8 +171,8 @@ reported `model` and `cost_usd`.
 ### FIXED 2026-08-18: the `:ro` credential mount went stale on token refresh
 
 This section is kept as the incident record; the mount it describes no longer
-exists in this service. **It still applies unfixed to
-`orion-self-study-enrichment`**, which uses the same pattern.
+exists in this service. It also applied, unfixed, to the self-study enrichment service until that service
+was deleted on 2026-10-30.
 
 Confirmed live 2026-08-14, and it broke the room roughly every 7.5 hours.
 Claude Code refreshes the OAuth login by **atomic rename**, which creates a
@@ -191,9 +192,8 @@ after refresh        host      inode=5936397 mtime=1786725885
                      container inode=5936136 mtime=1786697381   <- pinned, stale
 ```
 
-`orion-self-study-enrichment` was silently in this state too, with the same
-revoked-token error, and had been since the refresh — still is, as of this
-writing, since it has not received this fix.
+The self-study enrichment service (deleted 2026-10-30) was silently in this state
+too, with the same revoked-token error.
 
 **Real fix applied**: switched to `claude setup-token`'s long-lived (1-year)
 OAuth token, passed as `CLAUDE_CODE_OAUTH_TOKEN` — see "Credential isolation"

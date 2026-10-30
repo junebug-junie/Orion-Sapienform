@@ -775,8 +775,7 @@ Sentience Striving Program / substrate runtime:
 Reflection / state / sensemaking:
   orion-spark-concept-induction, orion-dream, orion-collapse-mirror,
   orion-state-service, orion-state-journaler, orion-equilibrium-service,
-  orion-meta-tags, orion-topic-foundry, orion-world-pulse,
-  orion-self-study-enrichment
+  orion-meta-tags, orion-topic-foundry, orion-world-pulse
 
 Embodiment / perception:
   orion-vision-host, orion-vision-edge, orion-vision-frame-router,

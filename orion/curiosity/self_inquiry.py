@@ -124,7 +124,7 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("substrate_attention_schema", "what you were attending to, and why, per process"),
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),
     ("self_knowledge_items", "facts about your own code, hardware and behaviour"),
-    ("self_concept_history", "your previous self-definitions and induced self-concepts"),
+    ("self_concept_history", "your previous self-definitions (and older, retired self-study reflections)"),
     (
         "substrate_endogenous_curiosity_candidates",
         "what your substrate flagged as worth curiosity; a seed noted "
@@ -793,6 +793,25 @@ LEDGER_TS_COLUMNS: dict[str, str] = {
 }
 
 
+# What stopped writing, when and why (2026-10-30, fold of self-study into curiosity).
+# A ledger count that freezes looks the same as a part of Orion that died. When a producer
+# is retired on purpose, the ledger says so under that table's row, so a self-inquiry run
+# reads a frozen count as a decision with a date, not as a fault to chase. Code-owned text:
+# add a line here in the same patch that retires a producer of one of these tables.
+LEDGER_RETIREMENTS: dict[str, tuple[str, ...]] = {
+    "self_concept_history": (
+        "retired 2026-10-30: the daily self-study reflection (produced_by='layer3_reflect') "
+        "no longer writes here -- nothing read it, and self-inquiry does that work now. "
+        "Its old rows stay as history. Your own self:definition rows still come from self-inquiry.",
+    ),
+    "self_knowledge_items": (
+        "since 2026-10-30 this daily repo/hardware/behavior scan is the only self-study part "
+        "left; it feeds Self Atlas only. Reflection, concept induction, retrieve and the "
+        "Claude enrichment notes were retired the same day.",
+    ),
+}
+
+
 @dataclass(frozen=True)
 class LedgerRow:
     table: str
@@ -801,7 +820,8 @@ class LedgerRow:
 
 
 def format_ledger(rows: list[LedgerRow]) -> list[str]:
-    """`dreams  17 rows, last 2026-09-06T08:27Z` -- one line per table."""
+    """`dreams  17 rows, last 2026-09-06T08:27Z` -- one line per table, plus one
+    indented line per ``LEDGER_RETIREMENTS`` note for that table."""
     if not rows:
         return []
     width = max(len(r.table) for r in rows)
@@ -809,6 +829,8 @@ def format_ledger(rows: list[LedgerRow]) -> list[str]:
     for r in rows:
         last = _clip(r.last, 20) if r.last else "never"
         out.append(f"      {r.table.ljust(width)}  {r.count} rows, last {last}")
+        for note in LEDGER_RETIREMENTS.get(r.table, ()):
+            out.append(f"      {' ' * width}  ({note})")
     return out
 
 

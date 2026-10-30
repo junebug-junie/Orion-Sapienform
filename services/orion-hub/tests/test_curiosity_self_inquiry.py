@@ -856,3 +856,41 @@ def test_self_inquiry_kickoff_puts_the_eyes_in_the_prompt(monkeypatch) -> None:
     asyncio.run(loop.tick_self_inquiry())
     assert seen["senses"] == clauses
     assert "YOUR EYES, read just now." in seen["text"] and clauses[0] in seen["text"]
+
+
+class _StrainedArousal:
+    def level(self, now):
+        return "strained"
+
+
+def test_the_chat_phrase_force_cannot_override_strain_but_run_now_can() -> None:
+    """2026-10-30: "reflect on yourself" reaches tick_self_inquiry through
+    orion:curiosity:self_inquiry:request with force limited to cooldown + daily cap
+    (Juniper's decision). A strained body still holds it; the operator's run-now
+    (full FORCE_OVERRIDABLE_REASONS) still overrides, as before."""
+    import asyncio as _asyncio
+
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.core.bus.codec import OrionCodec
+    from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
+    from orion.schemas.curiosity_self_inquiry_request import (
+        SELF_INQUIRY_REQUEST_KIND,
+        CuriositySelfInquiryRequestV1,
+    )
+    from scripts.curiosity_self_inquiry_request import handle_self_inquiry_request
+
+    bus = _FakeBus()
+    bus.codec = OrionCodec()
+    loop = _self_loop(bus, reader=_DefinitionReader(), conn=_GrantConn(), kickoff_via_cortex=False,
+                      arousal_self_inquiry_enabled=True)
+    loop.arousal_reader = _StrainedArousal()
+    env = BaseEnvelope(
+        kind=SELF_INQUIRY_REQUEST_KIND,
+        source=ServiceRef(name="orion-cortex-orch"),
+        payload=CuriositySelfInquiryRequestV1(requested_by="workflow:self_review").model_dump(mode="json"),
+    )
+    reason = _asyncio.run(handle_self_inquiry_request(bus, loop, {"data": bus.codec.encode(env)}))
+    assert reason == AROUSAL_STRAINED_REASON
+    assert _mirrors(bus) == []
+    # The operator button keeps its wider override.
+    assert _asyncio.run(loop.tick_self_inquiry(force=True)) is None

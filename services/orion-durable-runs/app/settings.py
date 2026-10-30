@@ -89,19 +89,9 @@ class Settings(BaseSettings):
     resume_max_failures: int = Field(10, ge=1, le=1000, alias="DURABLE_RUNS_RESUME_MAX_FAILURES")
     resume_min_failure_span_sec: float = Field(600.0, ge=0.0, alias="DURABLE_RUNS_RESUME_MIN_FAILURE_SPAN_SEC")
 
-    # self_study.reflect's llm_call node only: the SAME channel cortex-exec's
-    # own self_study.py reads via its CORTEX_REQUEST_CHANNEL env var
-    # (default "orion:cortex:request") -- this service becomes a caller of
-    # it for the first time with the reflect workflow (every other graph
-    # here only talks to Hub and the state channel).
+    # cortex-orch's public request channel: the compactor digest and other verb calls the
+    # runner makes go here. Same value as cortex-exec's CORTEX_REQUEST_CHANNEL.
     cortex_request_channel: str = Field("orion:cortex:request", alias="CORTEX_REQUEST_CHANNEL")
-    # RPC budget for that single LLM call. Mirrors cortex-exec's own
-    # SELF_STUDY_REFLECT_TIMEOUT_SEC (480s -> 1400s, 2026-09-21) plus slack
-    # for the round trip -- cortex-exec's synchronous wait for this run's
-    # completion event uses its OWN timeout as the real deadline; this is
-    # only how long the runner itself waits on the verb-dispatch RPC before
-    # giving up and failing the node (resumable, same as harness_turn).
-    reflect_llm_call_timeout_sec: float = Field(1500.0, gt=0.0, alias="DURABLE_RUNS_REFLECT_LLM_CALL_TIMEOUT_SEC")
     # reverie.visual: how long the runner waits on one orion-thought stage RPC (prepare runs
     # interpret, caption runs the vision caption). generate waits max(this, brief.timeout_sec).
     # A timeout is a retry (backoff, no attempt spent), bounded only by the run's deadline.

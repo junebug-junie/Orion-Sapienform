@@ -1106,7 +1106,7 @@ channels:
     # container that no longer exists. orion-spark-concept-induction was
     # listed as a producer but never actually published here (grep found zero
     # call sites) -- stale entry predating this cleanup. The one real
-    # producer, orion-cortex-exec's self_concept_induce/reflect verbs, wrote
+    # producer, orion-cortex-exec's self-study induce/reflect verbs (both retired 2026-10-30), wrote
     # to graph names ("orion:self:induced", "orion:self:reflective") that
     # stale_listener.py's own _GRAPH_TO_SCOPE map didn't even recognize --
     # publish calls removed from self_study.py in the same patch.
@@ -2393,11 +2393,11 @@ channels:
     kind: "event"
     schema_id: "SelfConceptHistoryV1"
     message_kind: "self_concept.history.write.v1"
-    producer_services: ["orion-cortex-exec", "orion-hub"]
+    producer_services: ["orion-hub"]
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-05"
-    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by three producers: Layer 3's real LLM reflection findings (orion-cortex-exec), Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
+    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by two live producers (a third, Layer 3 self-study reflection from orion-cortex-exec, was retired 2026-10-30; its layer3_reflect rows stay as history): Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
 
   - name: "orion:personality:naming"
     kind: "event"
@@ -3669,6 +3669,17 @@ channels:
     since: "2026-09-28"
     description: "Start an urgent, seeded curiosity run (manual from Hub, heat/cooling from the hardware watcher); Hub dispatches it at priority urgent, at most one open run per incident_id. docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md"
 
+  - name: "orion:curiosity:self_inquiry:request"
+    kind: "request"
+    schema_id: "CuriositySelfInquiryRequestV1"
+    message_kind: "curiosity.self_inquiry.request.v1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-30"
+    description: "Ask Hub to take one curiosity self-inquiry turn now (tick_self_inquiry(force=True) limited to the line's cooldown and daily cap; heat, strain, rest, the time window, enabled and the health gates still hold it). cortex-orch checks the channel has a listener (PUBSUB NUMSUB) before claiming the request. Published by cortex-orch's self_review workflow, which the chat phrase 'reflect on yourself' resolves to, after the self-study reflection loop was retired. docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md"
+
   - name: "orion:hardware:watch:incident"
     kind: "event"
     schema_id: "HardwareWatchIncidentV1"
@@ -3878,16 +3889,6 @@ channels:
 
   # --- Self-study semantic enrichment (dev-tooling-adjacent, not yet a live
   # consumer-facing cognition capability) ---
-  - name: "orion:self_study:enrichment:requested"
-    kind: "request"
-    schema_id: "SelfStudyEnrichmentRequestV1"
-    message_kind: "self_study.enrichment.request.v1"
-    producer_services: ["orion-git-hooks"]
-    consumer_services: ["orion-self-study-enrichment"]
-    single_consumer: true
-    stability: "experimental"
-    since: "2026-08-12"
-
   # General reading: Pub/Sub RPC receipt follows Postgres commit.
   - name: "orion:reading:tool:request"
     kind: "request"

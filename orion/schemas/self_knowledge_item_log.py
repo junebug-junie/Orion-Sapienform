@@ -3,7 +3,7 @@ items.
 
 Part of the Orion self-model rebuild arc, Patch 2 (prerequisite for Patch 3:
 pointing topic-foundry's real clustering pipeline at self-facts instead of
-chat). Confirmed live 2026-09-05: a self_repo_inspect run's Layer-1 items
+chat). Confirmed live 2026-09-05: a self-study inspect run's Layer-1 items
 were never durably stored across runs -- the journal write is an explicit
 one-off summary, "not treated as storage of record"
 (services/orion-cortex-exec/app/self_study.py::build_self_study_summary).

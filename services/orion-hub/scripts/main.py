@@ -64,6 +64,7 @@ from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.curiosity_urgent import urgent_request_loop
+from scripts.curiosity_self_inquiry_request import self_inquiry_request_loop
 from scripts.urgent_report import UrgentReporter, read_urgent_run_progress
 from orion.notify.client import NotifyClient
 from scripts.energy_stakes_gate import read_latest_energy_stakes
@@ -828,6 +829,13 @@ async def startup_event():
                 curiosity_investigation.urgent_listener_task = asyncio.create_task(
                     urgent_request_loop(bus, curiosity_investigation)
                 )
+            # "Reflect on yourself" (cortex-orch's self_review workflow) asks for one
+            # self-inquiry turn on orion:curiosity:self_inquiry:request. Same gate as the
+            # self-inquiry line itself. Cancelled by curiosity_investigation.stop().
+            if curiosity_investigation.enabled and curiosity_investigation.self_inquiry_enabled:
+                curiosity_investigation.self_inquiry_request_listener_task = asyncio.create_task(
+                    self_inquiry_request_loop(bus, curiosity_investigation)
+                )
 
             # World-pulse Stage 1 concept-read. Same lifecycle and the same
             # real unified-turn pipeline as curiosity above, isolated Wallet A
@@ -1506,7 +1514,7 @@ async def startup_event():
                 # same tick interval. Own ENABLE (default on since 2026-09-05,
                 # see settings.py's own comment). The training step refuses to
                 # re-cluster an unchanged self_knowledge_items table -- its
-                # rows arrive from cortex-exec's daily self_repo_inspect
+                # rows arrive from cortex-exec's daily self-study inspect
                 # refresh, not from this tick. Writes into a
                 # different FalkorDB graph (FALKORDB_SELF_SUBSTRATE_GRAPH) and a
                 # different topic-foundry dataset/model

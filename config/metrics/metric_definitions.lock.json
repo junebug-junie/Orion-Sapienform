@@ -2,11 +2,13 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 770,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 1,
+    "change_count": 4,
+    "high_severity_count": 2,
     "changes": [
-      "high   removed metric://bus_channel/orion-harness-governor/orion:llm:call:usage",
-      "medium added metric://bus_channel/orion-llm-gateway/orion:llm:call:usage"
+      "high   removed metric://bus_channel/orion-cortex-exec/orion:self_concept:history:write",
+      "high   removed metric://bus_channel/orion-git-hooks/orion:self_study:enrichment:requested",
+      "medium added metric://bus_channel/orion-cortex-orch/orion:curiosity:self_inquiry:request",
+      "medium added metric://bus_channel/orion-hub/orion:self_concept:history:write"
     ]
   },
   "definitions": {
@@ -956,18 +958,6 @@
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-cortex-exec/orion:self_concept:history:write": {
-      "schema_id": "SelfConceptHistoryV1",
-      "all_producers": [
-        "orion-cortex-exec",
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-cortex-exec/orion:self_study:items:write": {
       "schema_id": "SelfKnowledgeItemLogV1",
       "all_producers": [
@@ -1113,6 +1103,17 @@
         "orion-hub"
       ],
       "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:curiosity:self_inquiry:request": {
+      "schema_id": "CuriositySelfInquiryRequestV1",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-orch/orion:durable:run:request": {
@@ -1673,17 +1674,6 @@
         "orion-substrate-runtime"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-git-hooks/orion:self_study:enrichment:requested": {
-      "schema_id": "SelfStudyEnrichmentRequestV1",
-      "all_producers": [
-        "orion-git-hooks"
-      ],
-      "declared_consumers": [
-        "orion-self-study-enrichment"
-      ],
-      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-gpu-lane-controller/orion:gpu_pool:actuate:result": {
@@ -2453,6 +2443,17 @@
       ],
       "declared_consumers": [
         "orion-room-companion"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:self_concept:history:write": {
+      "schema_id": "SelfConceptHistoryV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

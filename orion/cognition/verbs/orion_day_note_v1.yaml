@@ -16,7 +16,7 @@ requires_memory: false
 recall_profile: null
 # Above the durable run's per-call RPC wait (OrionDayRunBriefV1.timeout_sec, default
 # 1800 s) so the caller times out first with a clean, retryable error -- same ordering
-# rule as self_study.reflect.yaml. A ~70k-token prompt plus a long note on the 27B
+# rule the retired self-study reflect verb used. A ~70k-token prompt plus a long note on the 27B
 # agent lane is the slowest single completion in the mesh.
 timeout_ms: 1900000
 max_recursion_depth: 0

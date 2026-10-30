@@ -543,3 +543,21 @@ def test_the_read_ceiling_is_actually_passed_to_the_query() -> None:
     engine = _LimitCapturingEngine(window_rows=_engine_for(20, 80).window_rows)
     _run(engine=engine, bus=_RecordingBus())
     assert limits and set(limits) == {analysis_module._MAX_ROWS_PER_WINDOW}
+
+
+def test_journaled_source_ref_stays_inside_orion_thoughts_allowlist() -> None:
+    """2026-10-30 fold of self-study into curiosity: the analysis verb moved to tier 0
+    `autonomic`, but its journal source_ref prefixes must not move. orion-thought's reverie
+    painter only admits `source_kind='self_study'` rows whose source_ref starts with one of
+    `f"{source}:" for source in ANALYSIS_SOURCES` (services/orion-thought/app/store.py); a
+    prefix drift silently empties the painter's third context slot."""
+    from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
+
+    assert ANALYSIS_SOURCES == ("concept_induction", "vision_events", "affective_state", "cocreation_signals")
+    thought_prefixes = tuple(f"{source}:" for source in ANALYSIS_SOURCES)
+    bus = _RecordingBus()
+    result = _run(engine=_engine_for(20, 80), bus=bus)
+    assert result.status == "journaled"
+    [(_, envelope)] = bus.published
+    assert envelope.payload["source_ref"].startswith(thought_prefixes)
+    assert envelope.payload["source_kind"] == "self_study"

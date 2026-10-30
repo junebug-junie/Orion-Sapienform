@@ -182,7 +182,7 @@ def test_legacy_hops_without_a_clock_stay_ordered_by_n_and_get_no_attempt() -> N
 
 def test_a_reflect_row_is_excluded_from_the_strip() -> None:
     rows = RunStoryRows(lifecycle=[
-        _life("reflect1", "finish", "completed", 0, workflow="self_study.reflect", detail={"line": "reflect"}),
+        _life("reflect1", "finish", "completed", 0, workflow="reading.turn", detail={"line": "reflect"}),
         _completed("real1", 10),
     ])
     assert set(build_stories(rows)) == {"real1"}
@@ -665,7 +665,7 @@ def test_a_failed_and_a_cancelled_admission_run() -> None:
 
 def test_a_reflect_admission_row_and_its_events_are_excluded() -> None:
     rows = RunStoryRows(
-        admission=[_admission("refl", 0, workflow="self_study.reflect", line="reflect")],
+        admission=[_admission("refl", 0, workflow="reading.turn", line="reflect")],
         resource_events=[_event("refl", "run.accepted", 0), _event("refl", "run.completed", 5, {}, entry_id="refl:terminal:completed")],
         event_counts=[{"run_id": "refl", "event": "run.checkpoint_resume_failed", "n": 3}],
     )

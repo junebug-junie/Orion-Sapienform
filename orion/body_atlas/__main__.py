@@ -100,6 +100,16 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None, extra_footer: tuple[str, .
     if unread:
         lines.append(f"UNREAD {len(unread)} source(s), this body is missing what they hold:")
         lines += [f"  {r.name}{' (partial)' if r.status == 'partial' else ''}: {r.detail[:110]}" for r in unread]
+    orphans = [p for p in atlas.parts if p.kind == "store" and p.facts.get("evidence", "").startswith("none")]
+
+    def _rows(p) -> str:
+        n = p.facts.get("rows", p.facts.get("rows_est", "not read"))
+        return "empty" if n == "0" else ("rows not read" if n == "not read" else f"{n} rows")
+
+    if orphans:  # one line: no writer or reader found is a finding, not a guess
+        shown = ", ".join(f"{p.name} ({_rows(p)})" for p in orphans[:6])
+        more = f" +{len(orphans) - 6}" if len(orphans) > 6 else ""
+        lines.append(f"UNATTRIBUTED {len(orphans)} store(s), no service's code, env or route names them: {shown}{more}")
     names = {p.part_id: p.name for p in atlas.parts}
     status = {p.part_id: p.status for p in atlas.parts}
     multi = [o for o in atlas.organs if len(o.members) > 1]

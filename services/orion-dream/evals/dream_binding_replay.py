@@ -19,12 +19,16 @@ Two lanes:
   (its own act and later sleeps excluded), re-bidding every check until admitted. Scenarios: no charge (what
   binding alone would have done); a 0.5 slow charge in force the whole time (an upper bound Prime cannot
   reach); 6 h on / 6 h off in both phases (the most Prime can do: each signal is followed by an equal rest).
-  Also prints the live shadow ledger's agreement with what really ran. Gates: with no charge, no sleep is
-  held longer than one hour (binding alone must not silence or badly delay sleep); under the most Prime can
-  do, no sleep is held past its bound, and some bids outbid the charge (it is a price, not a veto).
+  Also prints the live shadow ledger's agreement with what really ran. Gates: with no charge, no sleep priced
+  on dream's own rhythm is held longer than one hour (binding alone must not silence or badly delay sleep;
+  cold-start holds are printed, not gated); under the most Prime can do, at most 5% of those sleeps run only
+  because their window ran out, and some bids outbid the charge (it is a price, not a veto); the regulate
+  grade is not stuck at 0 or 1.
 
-Optimistic by construction about the dream's own gates: a held sleep is assumed to still clear pressure,
-idle and arousal at each later check (a real one might not, which only makes a hold matter less).
+Each want starts at the real sleep's start: the first check that cleared the dream's own gates, arousal
+included, which is where the binding bid first happens (the economy's window starts at the first bid,
+app/physiology_bind.py). Optimistic about those gates afterwards: a held sleep is assumed to still clear
+pressure, idle and arousal at each later check (a real one might not, which only makes a hold matter less).
 
     PYTHONPATH=. .venv/bin/python services/orion-dream/evals/dream_binding_replay.py [--live --days 7]
 """
@@ -277,7 +281,8 @@ def ledger_agreement(ex: dict) -> dict:
     return out
 
 
-def live(days: float, magnitude: float, cache: Optional[str], max_unbound_hold_min: float) -> list[str]:
+def live(days: float, magnitude: float, cache: Optional[str], max_unbound_hold_min: float,
+         max_window_end_share: float = 0.05) -> list[str]:
     import body_economy_shadow_vs_real as svr
 
     end = datetime.now(timezone.utc).replace(microsecond=0)
@@ -299,7 +304,8 @@ def live(days: float, magnitude: float, cache: Optional[str], max_unbound_hold_m
     wh = base["warm_held_min"]
     print(f"    priced on dream's own rhythm (warm history): {base['warm_n']} sleeps, held {len(wh)}"
           f"{f' (max {max(wh):.0f} min)' if wh else ''}; cold-start sleeps (fewer than 6 closes in 30 days, tau = the "
-          f"6 h window): {base['n'] - base['warm_n']}, held {base['held'] - len(wh)}")
+          f"6 h window): {base['n'] - base['warm_n']}, held {base['held'] - len(wh)} (NOT gated: a cold-start "
+          f"artifact, bounded by the window; it recurs only if dream has fewer than 6 sleeps in 30 days)")
     if not base["warm_n"]:
         fails.append("no sleep in the window was priced on dream's own rhythm: nothing to judge binding on")
     if wh and max(wh) > max_unbound_hold_min:
@@ -321,10 +327,11 @@ def live(days: float, magnitude: float, cache: Optional[str], max_unbound_hold_m
         print(_line(f"6 h on / 6 h off, phase {phase} (the most Prime can do)", s))
         if s["charged_bids"] and not s["outbid_bids"]:
             fails.append(f"phase {phase}: no bid outbid the charge: it would act as a veto")
-        if s["held_min"] and max(s["held_min"]) > 6 * 60:
-            fails.append(f"phase {phase}: a sleep was held {max(s['held_min']):.0f} min, past the 6 h window")
-    if up["held_min"] and max(up["held_min"]) > 6 * 60:
-        fails.append(f"upper bound: a sleep was held {max(up['held_min']):.0f} min, past the 6 h window")
+        # The market, not the timer, must be what releases a sleep Prime slowed: at most max_window_end_share of
+        # the warm-history sleeps may run only because their window ran out (#3011's gate for curiosity, 5%).
+        if s["warm_n"] and s["warm_window_end"] / s["warm_n"] > max_window_end_share:
+            fails.append(f"phase {phase}: {s['warm_window_end']}/{s['warm_n']} warm-history sleeps held to the end of "
+                         f"their window (> {max_window_end_share:.0%}): the charge would act as a timer, not a price")
     # The regulate act's grade (artifact_produced = the charge changed a decision) for 3 h signals opened every
     # 30 min, from the always-on bids (a held sleep re-bids every check, so a signal sees every bid in force).
     eff = [(datetime.fromisoformat(a), e) for a, e in up["bid_effects"]]
@@ -351,8 +358,10 @@ def main(argv=None) -> int:
     ap.add_argument("--magnitude", type=float, default=pc.DEFAULT_MAGNITUDE)
     ap.add_argument("--cache", default=None, help="read/write the live extract as JSON")
     ap.add_argument("--max-unbound-hold-min", type=float, default=60.0)
+    ap.add_argument("--max-window-end-share", type=float, default=0.05)
     a = ap.parse_args(argv)
-    fails = live(a.days, a.magnitude, a.cache, a.max_unbound_hold_min) if a.live else fixture()
+    fails = (live(a.days, a.magnitude, a.cache, a.max_unbound_hold_min, a.max_window_end_share) if a.live
+             else fixture())
     for f in fails:
         print("FAIL", f)
     print("PASS" if not fails else f"FAIL ({len(fails)})")

@@ -212,3 +212,17 @@ def test_the_market_charges_a_dream_bid_once_dream_declares_slow_and_refuses_qui
     put(r2, signal(direction="quicken", family=D))
     d2 = asyncio.run(market(r2).bid(want.model_copy(update={"want_id": "sleep2"}), NOW))
     assert "Prime" not in d2.why and effects(r2, D) == {}
+
+
+def test_a_shadow_bid_of_a_receiving_family_is_never_charged_or_recorded():
+    """Rollback to shadow (or a forced dream sleep's shadow bid): the charge would change nothing that is obeyed, so
+    the market neither applies it nor records an effect Prime would be graded on."""
+    from orion.physiology.binding import BINDING_PRODUCERS
+
+    r = Redis(_state().model_dump_json())
+    put(r, signal())
+    shadow = WantV1(want_id="run9", family=C, producer="orion-durable-runs.admission", verb="infer", tier=2,
+                    intensity=0.25)
+    assert shadow.producer not in BINDING_PRODUCERS
+    d = asyncio.run(market(r).bid(shadow, NOW))
+    assert "Prime" not in d.why and effects(r) == {} and r.reads == 0

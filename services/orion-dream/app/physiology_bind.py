@@ -17,8 +17,10 @@ curiosity investigate obeys (``orion.physiology.binding.bind_verdict``, #3010):
 
 Bounds: a held sleep is never dropped and never held past ``hold_end``, the EARLIER of
 
-* the want's start + the family's deferrable window (``DEFERRABLE_WINDOW_S``, 6 h; the same number as
-  config/physiology/families.yaml ``dream.cycle``, asserted by a test), and
+* the want's FIRST bid + the family's deferrable window (``DEFERRABLE_WINDOW_S``, 6 h; the same number as
+  config/physiology/families.yaml ``dream.cycle``, asserted by a test). From the first bid, not from the
+  first check that wanted to sleep: the dream's own arousal hold often runs for hours first and must not use
+  up the economy's window; and
 * the overdue line: the last good sleep's start + ``DREAM_LOOKBACK_HOURS`` (48 h). Past it, replay
   material starts falling out of the window, so a sleep that is overdue (the backstop) never bids at
   all: it sleeps (``floor:overdue``). The economy can delay consolidation; it cannot starve it.
@@ -26,7 +28,8 @@ Bounds: a held sleep is never dropped and never held past ``hold_end``, the EARL
 The want. One want per stretch between sleeps: the first check that clears the dream's gates opens it
 (cycle id minted then), and every later check re-uses the same cycle id until a sleep attempt ends, so
 the want_ledger, the market's Prime record and the eventual act all carry one id. Held in process: a
-restart opens a new want (and a new 6 h window); the overdue line is the bound that survives a restart.
+restart opens a new want (and a new 6 h window), so the 6 h bound is per process lifetime; across repeated
+restarts the bound is the overdue line (48 h), which survives a restart.
 
 Every verdict is one log line (``physiology_bind ... obeyed=true``) with the market's own reason, net,
 charge and ``why``; the decision itself is in ``want_ledger`` with producer ``BINDING_PRODUCER``. A sleep
@@ -124,6 +127,12 @@ class HeldWant:
     first_why: str = ""
     last_why: str = ""
     funded: bool = False
+    # The economy's window starts at the want's FIRST bid, not when it opened: checks the dream's own gates
+    # held (arousal, mostly; live 10-29/30 that was hours before most sleeps) must not use it up.
+    first_bid_at: Optional[datetime] = None
+    # Set when a bind admits it: a second check racing on the same want (the loop and a manual run) is
+    # refused instead of opening a second act with the same cycle id.
+    admitted: bool = False
 
 
 async def _abid(want: Any, timeout_sec: float) -> Any:
@@ -145,12 +154,13 @@ class DreamBinder:
     def __init__(self, *, timeout_sec: float = BIND_TIMEOUT_SEC) -> None:
         self.want: Optional[HeldWant] = None
         self._timeout = timeout_sec
+        self._lock: Optional[asyncio.Lock] = None
         self.counts = {"bid": 0, "admitted": 0, "held": 0, "no_answer": 0, "floor": 0, "window_end": 0}
 
     def current(self, now: datetime, last_attempt_end: Optional[datetime]) -> HeldWant:
         """The open want, or a new one. A sleep attempt that ended after the want opened closed it."""
         last = _utc(last_attempt_end)
-        if self.want is not None and last is not None and last >= self.want.opened_at:
+        if self.want is not None and (self.want.admitted or (last is not None and last >= self.want.opened_at)):
             self.want = None
         if self.want is None:
             self.want = HeldWant(cycle_id=f"dc-{uuid4().hex[:12]}", opened_at=now)
@@ -162,13 +172,27 @@ class DreamBinder:
 
     async def bind(self, want: HeldWant, now: datetime, *, last_window_start: Optional[datetime],
                    lookback_hours: float, check_interval_sec: float, overdue: bool) -> BindVerdict:
-        """The verdict for this check. Never raises; any failure is an ``admit`` (today's behaviour)."""
-        try:
-            return await self._bind(want, now, last_window_start=last_window_start, lookback_hours=lookback_hours,
-                                    check_interval_sec=check_interval_sec, overdue=overdue)
-        except Exception:  # noqa: BLE001 -- never hold a sleep because this code failed
-            logger.warning("physiology_bind_failed family=%s cycle_id=%s", FAMILY, want.cycle_id, exc_info=True)
-            return BindVerdict(True, "no_answer:bind_failed")
+        """The verdict for this check. Never raises; any failure is an ``admit`` (today's behaviour).
+
+        Serialized per process: the sleep loop and a manual run may hold the same want. The first to be
+        admitted takes it; the other is refused (``duplicate``) and opens nothing."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            if want.admitted:
+                v = BindVerdict(False, "duplicate", detail={"reason": "duplicate",
+                                                            "why": "another check is already sleeping this want"})
+                self._log(want, "-", v)
+                return v
+            try:
+                v = await self._bind(want, now, last_window_start=last_window_start, lookback_hours=lookback_hours,
+                                     check_interval_sec=check_interval_sec, overdue=overdue)
+            except Exception:  # noqa: BLE001 -- never hold a sleep because this code failed
+                logger.warning("physiology_bind_failed family=%s cycle_id=%s", FAMILY, want.cycle_id, exc_info=True)
+                v = BindVerdict(True, "no_answer:bind_failed")
+            if v.admit:
+                want.admitted = True
+            return v
 
     async def _bind(self, want: HeldWant, now: datetime, *, last_window_start: Optional[datetime],
                     lookback_hours: float, check_interval_sec: float, overdue: bool) -> BindVerdict:
@@ -182,7 +206,9 @@ class DreamBinder:
             v = BindVerdict(True, "floor:overdue")
             self._log(want, want_id, v)
             return v
-        end = hold_end(want.opened_at, last_window_start, lookback_hours=lookback_hours)
+        if want.first_bid_at is None:
+            want.first_bid_at = now
+        end = hold_end(want.first_bid_at, last_window_start, lookback_hours=lookback_hours)
         if now >= end:
             self.counts["window_end"] += 1
             v = BindVerdict(True, "window_end", detail={"why": want.last_why} if want.last_why else {})
@@ -255,7 +281,7 @@ def held_note(want: Optional[HeldWant], now: datetime) -> str:
     """The cycle note's line for a sleep that the economy held first ('' when it never held)."""
     if want is None or want.holds <= 0:
         return ""
-    mins = (now - want.opened_at).total_seconds() / 60.0
+    mins = (now - (want.first_bid_at or want.opened_at)).total_seconds() / 60.0
     return (f" | body economy: held {want.holds} time(s) over {mins:.0f} min before this sleep; "
             f"first why: {want.first_why[:200]}")
 

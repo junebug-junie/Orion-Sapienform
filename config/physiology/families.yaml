@@ -57,7 +57,8 @@ families:
     # physiology_bind.py). Slow only. Live 7 days to 2026-10-30: of the 7 sleeps priced on dream's own
     # rhythm, 4 bid at a value under 0.5 (the ~6 h-gap sleeps), so a slow charge really changes when Orion
     # sleeps; a held sleep loses no replay material (the window reaches back to the last good sleep), is
-    # held at most this family's 6 h window, and an overdue sleep (48 h, DREAM_LOOKBACK_HOURS) never bids.
+    # held at most this family's 6 h window from its first bid (per process lifetime; across restarts the
+    # bound is the overdue line), and an overdue sleep (48 h, DREAM_LOOKBACK_HOURS) never bids.
     # No quicken: dream had no price deferrals, and its only holds ("no hunger yet", a cold-start
     # artifact) are exactly what a credit never touches. services/orion-dream/evals/dream_binding_replay.py.
     receptors: [slow]

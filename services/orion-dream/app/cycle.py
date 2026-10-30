@@ -583,6 +583,9 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         )
     except BaseException as exc:  # noqa: BLE001 -- closed at 0, then re-raised unchanged
         await act.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")
+        if want is not None:
+            # A funded sleep that failed must not hold its metacog reservation until it expires.
+            await deps.economy.release_after_sleep(want)
         raise
     finally:
         act.unbind_leases(lease_token)

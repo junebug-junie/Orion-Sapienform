@@ -23,6 +23,13 @@ from typing import Any, Optional
 REBID_MIN_SEC = 120.0           # one physiology tick: a sooner re-bid reads the same prices
 REBID_MAX_SEC = 3600.0          # one lane window: a lane's measured use is a trailing hour
 REBID_DEFAULT_SEC = 600.0       # the market named no relief time (a stuck price, sated)
+# The producers whose bids are OBEYED (want_ledger's ``shadow`` is always true, so the producer is the record).
+# The market applies Prime's regulate charge only to these: a charge on a shadow bid changes nothing, and
+# grading Prime on it would credit Prime with holds that never happened (a rollback to shadow, a forced run).
+BINDING_PRODUCERS = frozenset({
+    "orion-durable-runs.admission.binding",     # curiosity investigate (#3010), services/orion-durable-runs/app/run_bids.py
+    "orion-dream.dream_cycle.binding",          # the dream cycle, services/orion-dream/app/physiology_bind.py
+})
 # The market could not decide: these are "no answer", not deferrals.
 NO_ANSWER_REASONS = frozenset({"physiology_unavailable", "unknown_family", "family_never_bids"})
 
@@ -91,5 +98,5 @@ def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
     return BindVerdict(False, f"deferred:{reason}", retry_at=min(end, now + timedelta(seconds=wait)), detail=detail)
 
 
-__all__ = ["BindVerdict", "NO_ANSWER_REASONS", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC",
+__all__ = ["BINDING_PRODUCERS", "BindVerdict", "NO_ANSWER_REASONS", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC",
            "bind_verdict", "decision_detail"]

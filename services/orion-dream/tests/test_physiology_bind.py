@@ -102,6 +102,13 @@ def _run(deps, **kw):
 
 # --- the contract with config ---------------------------------------------------------------------------
 
+def test_the_producer_is_one_the_market_charges_for_prime():
+    from app.physiology_bind import BINDING_PRODUCER
+    from orion.physiology.binding import BINDING_PRODUCERS
+
+    assert BINDING_PRODUCER in BINDING_PRODUCERS
+
+
 def test_the_window_matches_families_yaml_and_dream_declares_slow_only():
     from app.physiology_bind import DEFERRABLE_WINDOW_S, FAMILY
     from orion.physiology.families import load_families
@@ -209,7 +216,7 @@ def test_a_held_sleep_goes_at_the_end_of_its_window_without_a_bid(market, reason
     f = _fakes()
     deps, _, _ = _bound(f)
     assert _run(deps) is None
-    deps.economy.want.opened_at -= timedelta(hours=6, minutes=1)
+    deps.economy.want.first_bid_at -= timedelta(hours=6, minutes=1)
     deps.economy.want.retry_at = None
     cycle = _run(deps)
     assert cycle is not None and cycle.status == "completed" and len(market.wants) == 1
@@ -305,3 +312,62 @@ def test_the_real_choice_holds_a_short_gap_sleep_under_primes_slow_charge_and_a_
     ctx2 = build_context(fams, acts, [], state.model_copy(update={"generated_at": later}), later, weights={})
     d2 = decide(want, state.model_copy(update={"generated_at": later}), ctx2, ReservationBook(), later, prime=sig)
     assert d2.outcome == "funded" and "beat Prime's slow charge" in d2.why
+
+
+def test_arousal_holds_do_not_use_up_the_economys_window(market):
+    """Live 10-29/30: arousal held most due checks for hours before the sleep. The window starts at the first bid."""
+    f = _fakes()
+    deps, _, _ = _bound(f, level="engaged")
+    assert _run(deps) is None and deps.hold_reason == "arousal_engaged" and market.wants == []
+    want = deps.economy.want
+    assert want is not None and want.first_bid_at is None
+    want.opened_at -= timedelta(hours=7)                     # the want arose 7 h ago; arousal held it since
+    deps2, _, _ = _bound(f)
+    deps2.economy = deps.economy
+    market.answers = [("deferred", "price", {"net": -0.2})]
+    assert _run(deps2) is None and deps2.hold_reason == "economy_price"   # priced, not waved through as window_end
+    assert want.first_bid_at is not None and len(market.wants) == 1
+
+
+def test_two_checks_racing_on_one_want_open_one_sleep(market):
+    from app.cycle import run_cycle_once
+
+    f = _fakes()
+    deps, _, events = _bound(f)
+    deps_b, _, _ = _bound(f)
+    deps_b.economy = deps.economy
+    gate = asyncio.Event()
+    orig = market.pb._abid
+
+    async def slow_abid(want, timeout_sec):
+        await gate.wait()
+        return await orig(want, timeout_sec)
+
+    market.pb._abid = slow_abid
+
+    async def go():
+        a = asyncio.create_task(run_cycle_once(deps))
+        b = asyncio.create_task(run_cycle_once(deps_b))
+        await asyncio.sleep(0.05)
+        gate.set()
+        return await a, await b
+
+    ra, rb = asyncio.run(go())
+    done = [c for c in (ra, rb) if c is not None]
+    assert len(done) == 1 and done[0].status == "completed"
+    assert len({c.cycle_id for c in f.persisted}) == len(f.persisted) == 1
+    assert "economy_duplicate" in (deps.hold_reason, deps_b.hold_reason)
+
+
+def test_a_funded_sleep_that_raises_frees_its_reservation(market):
+    f = _fakes()
+    deps, _, _ = _bound(f)
+
+    def boom(cycle):
+        raise RuntimeError("db down")
+
+    deps.persist_cycle = boom
+    with pytest.raises(RuntimeError):
+        _run(deps)
+    (want,) = market.wants
+    assert market.released == [want.want_id]

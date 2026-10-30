@@ -24,6 +24,8 @@ as the prices. A TREATED signal in force is applied as a bounded charge (slow) o
 Either way the market writes what the charge did to this want back into the same hash
 (``w:<want_id>``), which is how Prime grades its signal and sees "did curiosity outbid me, and why".
 Off, unreadable, expired or not received: no charge, exactly as before. A Redis error never fails a bid.
+Only bids from ``orion.physiology.binding.BINDING_PRODUCERS`` (the obeyed ones) read the signal: a shadow bid of
+the same family (its producer rolled back to shadow, or a forced dream sleep) is never charged or recorded.
 
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
@@ -52,6 +54,7 @@ from orion.physiology.choice import (
     unavailable,
 )
 from orion.physiology import prime_charge as pc
+from orion.physiology.binding import BINDING_PRODUCERS
 from orion.physiology.families import FamiliesConfig
 from orion.physiology.weights import UseRecord, weights_now
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
@@ -215,7 +218,8 @@ class Market:
             # Never fund on a missing market: physiology_unavailable.
             decision = unavailable(want, now, why=why, state=state)
         else:
-            sig = await self._prime_signal(want.family, now)
+            # Only an OBEYED bid takes Prime's charge (a shadow bid would grade Prime on holds that never happened).
+            sig = await self._prime_signal(want.family, now) if want.producer in BINDING_PRODUCERS else None
             applied = sig if sig is not None and sig.arm == "treated" else None
             other = None
             if sig is not None:

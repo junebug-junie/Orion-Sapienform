@@ -306,16 +306,23 @@ This uses the same rule curiosity investigate obeys (`orion/physiology/binding.p
 - One want per stretch between sleeps: the first check that clears the gates opens it, and every
   re-bid and the eventual sleep's act share its cycle id. The want lives in process memory, so a
   restart opens a new one.
-- Bounds. A held sleep is never dropped. It goes anyway at the earlier of the want's start + 6 h
+- Bounds. A held sleep is never dropped. It goes anyway at the earlier of its first bid + 6 h
   (`dream.cycle` `deferrable_window_s` in `config/physiology/families.yaml`) and the overdue line
-  (the last good sleep + `DREAM_LOOKBACK_HOURS`). An overdue sleep never bids at all
-  (`floor:overdue`). Delay costs no replay material: the window reaches back to the last good sleep.
+  (the last good sleep + `DREAM_LOOKBACK_HOURS`). The 6 h counts from the first bid, not from the
+  first check that wanted to sleep, so hours of arousal holds do not use it up. The 6 h is per
+  process lifetime: a restart opens a new want, so across repeated restarts the bound is the 48 h
+  overdue line. An overdue sleep never bids at all (`floor:overdue`). Delay costs no replay
+  material: the window reaches back to the last good sleep.
+- Two checks racing on one want (the loop and a manual run): the first admitted takes it; the other
+  is refused (`economy_duplicate`) and opens nothing.
 - Record: one log line per verdict, `physiology_bind family=dream.cycle ... verdict=... reason=...
   binding=... net=... why=... obeyed=true`. The decision is in `want_ledger` with producer
   `orion-dream.dream_cycle.binding`. A sleep that ran after a hold says so in its cycle note
   (`body economy: held N time(s) over M min ...`). The funded reservation is released when the act closes.
 - Prime's `slow` receptor: `dream.cycle` declares `receptors: [slow]`, so Prime can put a bounded,
   temporary charge on these bids (at most half of the sleep's value). A hungry sleep outbids it.
+  Only binding bids take the charge: with the flag at `shadow`, or on a forced run, the market
+  neither applies it nor records it for Prime's grade.
   Quicken is not declared: dream has no price deferrals for a credit to lift.
 - Switch: `ORION_PHYSIOLOGY_BID_DREAM_CYCLE=on` (default). `shadow` = the shadow bid above, exactly as
   before (instant rollback). Code: `app/physiology_bind.py`. Tests: `tests/test_physiology_bind.py`.

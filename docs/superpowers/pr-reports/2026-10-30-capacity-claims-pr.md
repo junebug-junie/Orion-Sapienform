@@ -185,6 +185,6 @@ and the normal post-pull update.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3008
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

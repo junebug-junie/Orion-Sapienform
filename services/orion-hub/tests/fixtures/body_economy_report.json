@@ -2986,7 +2986,7 @@
  "missing": [
   {
    "section": "processes",
-   "reason": "top 4 of 9 shown"
+   "reason": "partial: circe: CPU below the fitted idle floor this sample, so no honest split"
   }
  ]
 }

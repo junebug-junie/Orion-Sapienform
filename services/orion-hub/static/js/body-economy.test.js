@@ -157,11 +157,12 @@ test("processes: one bar per process, longest first, labelled with name, host, w
   assert.match(html, /orion-athena-vector-host <span class="muted">athena<\/span>.*?width:100\.0%/);
   assert.match(html, /orion-llamacpp-chat <span class="muted">circe<\/span>.*?width:42\.3%/);
   assert.ok(html.includes("50.6 W · cores ?"));                  // unknown cores say so, never 0
+  // the producer sends cores: null today; the fixture's 3.5 exercises the future path
   assert.ok(html.includes("21.4 W · 3.5 cores"));
   assert.ok(html.includes("busy cores not published per container"));
   assert.ok(!html.includes("data-empty"));
   // a non-empty section still shows its own missing notes
-  assert.ok(html.includes("data-process-notes") && html.includes("top 4 of 9 shown"));
+  assert.ok(html.includes("data-process-notes") && html.includes("partial: circe: CPU below the fitted idle floor"));
 });
 
 test("processes empty state says why: the report's missing reason, unreachable, or a default", () => {
@@ -173,6 +174,12 @@ test("processes empty state says why: the report's missing reason, unreachable, 
   assert.ok(tab.processesHtml({ missing: [] }, null).includes("No per-process CPU watts yet."));   // absent key
   const err = { status: 502, unreachable_since: "2026-10-29T17:00:00Z" };
   assert.match(tab.processesHtml(null, err, "UTC"), /durable-runs unreachable since 29\/10, 17:00/);
+  // every processes reason shows, not just the first
+  const two = { processes: [], missing: [{ section: "processes", reason: "a" }, { section: "processes", reason: "b" }] };
+  assert.ok(tab.processesHtml(two, null).includes("a; b"));
+  // same name and watts on two hosts: a stable order
+  const tie = { processes: [{ host: "b", name: "x", watts: 1 }, { host: "a", name: "x", watts: 1 }], missing: [] };
+  assert.deepEqual([...tab.processesHtml(tie, null).matchAll(/data-process="([^"]+)"/g)].map((m) => m[1]), ["a:x", "b:x"]);
   // rows without a number are dropped, not drawn as 0 W
   assert.ok(tab.processesHtml({ processes: [{ host: "a", name: "x", watts: null }], missing: [] }, null).includes("data-empty"));
 });

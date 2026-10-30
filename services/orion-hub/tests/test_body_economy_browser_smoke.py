@@ -91,7 +91,8 @@ def test_body_economy_tab_deferred_row_brush_window_and_tooltip():
         assert procs.count() == 4
         assert procs.first.get_attribute("data-process") == "athena:orion-athena-vector-host"   # longest first
         assert "50.6 W" in procs.first.inner_text() and "athena" in procs.first.inner_text()
-        assert "top 4 of 9 shown" in frame.locator("#beProcesses").inner_text()
+        assert "CPU below the fitted idle floor" in frame.locator("#beProcesses").inner_text()
+        assert "1 section(s) missing or partial" in frame.locator("#beStatus").inner_text()
         assert "Juniper replied" in frame.locator("#beValue").inner_text()
         assert "room without Orion 29.6 C" in frame.locator("#beSees").inner_text()             # verbatim why
         assert frame.locator("#beCount").inner_text() == "10 of 10 decisions"

@@ -155,3 +155,21 @@ def test_an_unreadable_families_config_is_a_gap_in_the_frame_not_a_crash():
     [call] = rt.llm.calls
     assert "unavailable: families config unreadable" in call["user_prompt"]
     assert not regulate_acts(rt)
+
+
+def test_after_a_signal_the_organ_rests_as_long_as_it_lasted_then_prime_may_signal_again():
+    rt = rt_with(SLOW)
+    first_tick(rt)
+    [reg] = rt.state.open_regulations
+    rt.clock_box["now"] = reg.expires_at + timedelta(minutes=3)
+    asyncio.run(rt.tick())                                   # graded; Prime thinks again (no move)
+    assert rt.state.regulation_rest_until[C] == reg.expires_at + timedelta(hours=2)
+    rt.llm.answer = SLOW
+    rt.state = rt.state.model_copy(update={"pending_changes": ["something moved"], "last_thought_at": None})
+    asyncio.run(rt.tick())
+    assert len([a for k, a in regulate_acts(rt) if k == "act_opened"]) == 1
+    assert any("rests from my signals" in o for o in rt.state.recent_outcomes)
+    rt.clock_box["now"] = reg.expires_at + timedelta(hours=2, minutes=1)
+    rt.state = rt.state.model_copy(update={"pending_changes": ["something moved"], "last_thought_at": None})
+    asyncio.run(rt.tick())
+    assert len([a for k, a in regulate_acts(rt) if k == "act_opened"]) == 2 and C not in rt.state.regulation_rest_until

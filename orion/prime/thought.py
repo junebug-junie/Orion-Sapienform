@@ -270,6 +270,9 @@ def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
     lines.append("Your signals not yet graded:")
     if not state.open_regulations:
         lines.append("(none)")
+    for fam, rest in sorted(state.regulation_rest_until.items()):
+        if rest > inputs.now:
+            lines.append(f"- {fam} rests from your signals until {rest.strftime('%H:%MZ')}")
     for r in state.open_regulations:
         arm = "held back as a control, not applied" if r.arm == "control" else "applied"
         effects = inputs.regulation_effects.get(r.signal_id)
@@ -323,7 +326,7 @@ class Applied:
 
 
 def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
-                     receptors: Optional[Mapping[str, Sequence[str]]]) -> Optional[str]:
+                     receptors: Optional[Mapping[str, Sequence[str]]], now: datetime) -> Optional[str]:
     """Why a regulate move cannot go, or None. Never silently dropped: the reason is shown to Prime."""
     if receptors is None:
         return "regulation is off or the organs' receptors could not be read; no signal was sent"
@@ -338,6 +341,10 @@ def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
     if open_one is not None:
         return (f"my {open_one.direction} signal to {move.family} is not graded yet (in force until "
                 f"{open_one.expires_at.strftime('%H:%MZ')}, graded after); one signal per organ at a time")
+    rest = state.regulation_rest_until.get(move.family)
+    if rest is not None and now < rest:
+        return (f"{move.family} rests from my signals until {rest.strftime('%H:%MZ')} (as long as my last "
+                "signal to it lasted): my charge may hold an organ at most half the time")
     return None
 
 
@@ -380,7 +387,7 @@ def apply_answer(
 
     move, refusal, refs = answer.move, None, []
     if isinstance(move, RegulateMoveV1):
-        refusal = regulate_refusal(move, state, receptors)
+        refusal = regulate_refusal(move, state, receptors, now)
         if refusal is None:
             move = move.model_copy(update={"hours": clamp_hours(move.hours)})
     elif move is not None:

@@ -225,6 +225,10 @@ jobs:
         run: |
           python services/orion-durable-runs/evals/curiosity_binding_replay.py
           python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_binding_replay.py
+      - name: Prime slow-charge eval (Orion Prime step 3 -- held by the charge, released by its own hunger)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/prime_charge_replay.py
       - name: Deploy-order skew eval (old pool refuses holds, then upgrades) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

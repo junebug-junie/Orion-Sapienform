@@ -143,6 +143,9 @@ class PrimeStateV1(BaseModel):
     concern_record: list[PrimeConcernRecordV1] = Field(default_factory=list)
     # Regulate signals not yet graded (step 3). Default keeps older persisted state loading.
     open_regulations: list[PrimeRegulationOpenV1] = Field(default_factory=list)
+    # family -> no new signal to it before this time: one rest as long as the last signal, counted from its
+    # end. Caps Prime's charge on one organ at half of any stretch of time (the loop guard, design section 11).
+    regulation_rest_until: dict[str, AwareDatetime] = Field(default_factory=dict)
     last_thought_at: Optional[AwareDatetime] = None
     last_reading: str = ""
     thoughts_total: int = 0

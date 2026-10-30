@@ -53,3 +53,22 @@ def test_concerns_tally_reads_each_end_from_the_close():
             {"verb": "predict"}, {"verb": "infer", "outcome_value": 1.0}]
     assert rpt.concerns(acts) == {"opened": 6, "open": 1, "settled": 1, "dropped": 1, "faded": 1, "lapsed": 1,
                                   "expired": 1, "other": 0}
+
+
+def test_regulation_counts_changes_and_starts_per_signal_hour_per_arm():
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime(2026, 10, 30, 6, 0, tzinfo=timezone.utc)
+    fam = "durable.curiosity_investigate"
+
+    def reg(arm, value, start_h, hours=2.0):
+        return {"verb": "regulate", "test_before": f"holdback:{arm}", "outcome_value": value,
+                "object_ref": f"physiology_family:{fam}", "horizon_sec": hours * 3600 + rpt.REGULATE_GRACE_SEC,
+                "opened_at": t0 + timedelta(hours=start_h)}
+
+    acts = [reg("treated", 1.0, 0), reg("treated", 0.0, 10), reg("control", 1.0, 20), reg("control", None, 30)]
+    starts = [{"actor": fam, "opened_at": t0 + timedelta(hours=h)} for h in (0.5, 21, 21.5, 23)]
+    out = rpt.regulation(acts, starts)
+    assert out["treated"] | {} == {"signals": 2, "open": 0, "closed": 2, "changed": 1, "signal_hours": 4.0, "starts": 1,
+                                   "changed_share": 0.5, "starts_per_hour": 0.25}
+    assert out["control"]["starts"] == 2 and out["control"]["open"] == 1 and out["verdict"] == "too_few"

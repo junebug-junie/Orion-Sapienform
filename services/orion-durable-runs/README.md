@@ -911,6 +911,24 @@ days, re-read with the history) plus this process's own funded decisions, dedupl
 `decision_id`. A Tier 2 family under 5% of Tier 2's funded wants is funded when only the price said
 defer; each floor fund raises its share, so the floor stops by itself. No ledger read yet: no floor.
 
+**Prime's slow / quicken charges (2026-10-30, Orion Prime step 3).** Prime (orion-mind) can ask one
+organ to slow down or quicken. Only a family that lists the signal under `receptors` in
+`config/physiology/families.yaml` takes it; today that is curiosity investigate, the one family whose
+bid binds. Prime writes the signal to Redis `orion:prime:regulate:<family>` (same Redis as the prices).
+On every bid of that family the market reads it and, when it is in force, adds a temporary charge
+(slow) or credit (quicken) of `magnitude x family_weight`, magnitude at most 0.5. So a want ranked
+above the middle of its own family's history still beats it, and its hunger keeps rising while it
+waits. The exploration floor works as before, and a held run still goes at the end of its 6 h window.
+The decision's `why` names the charge ("value 0.31 - lane charge 0.00 did not beat Prime's slow charge
+0.54"); a deferral it causes has `binding_constraint = prime:slow`. After each bid the market writes
+back what the charge did to that want (`held` / `outbid` / `released` / `unchanged` / `floor`) into the
+same hash; Prime grades its signal from that record. A signal Prime held back (`arm = control`) is read
+but never applied: the market records what it would have done. Code: `orion/physiology/prime_charge.py`,
+`orion/physiology/choice.py` (`decide(..., prime=)`), `app/physiology_market.py`. Off:
+`ORION_PHYSIOLOGY_PRIME_REGULATION=false` (the hash is never read). Replay of what a 0.5 slow charge
+would have done to the last 7 days of real curiosity runs:
+`services/orion-durable-runs/evals/prime_charge_replay.py --live --days 7`.
+
 ### Admission bids (2026-10-27, body economy Patch C3a, SHADOW)
 
 `app/run_bids.py`: a run in a want family (curiosity investigate, self-inquiry, self-sense eval,

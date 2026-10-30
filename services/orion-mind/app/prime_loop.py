@@ -587,7 +587,13 @@ class PrimeRuntime:
         A record that is gone (Redis lost it, or Prime was down past the grace) is not graded here: the act
         is left to the ledger's horizon expiry, which is not counted as Prime's outcome."""
         keep: list[PrimeRegulationOpenV1] = []
+        rest = dict(self.state.regulation_rest_until)
+        for fam in [f for f, until in rest.items() if until <= now]:
+            del rest[fam]
         for reg in self.state.open_regulations:
+            if reg.expires_at <= now:
+                # The rest (no new signal to this organ) runs as long as the signal did, from its end.
+                rest[reg.family] = max(rest.get(reg.family, now), reg.expires_at + (reg.expires_at - reg.opened_at))
             act = regulate_act(reg.signal_id, family=reg.family, arm=reg.arm, hours=regulation_hours(reg),
                                thought_act_id=thought_act(reg.thought_id, llm_timeout_sec=0).act_id)
             if reg.written is False:
@@ -618,7 +624,7 @@ class PrimeRuntime:
             logger.info("prime_regulation_settled signal=%s act=%s produced=%s note=%s",
                         reg.signal_id, reg.act_id, produced, note)
             self.state = note_outcome(self.state, f"my {reg.direction} signal to {reg.family} (act {reg.act_id}): {note}")
-        self.state = self.state.model_copy(update={"open_regulations": keep})
+        self.state = self.state.model_copy(update={"open_regulations": keep, "regulation_rest_until": rest})
 
     # --- settling questions ----------------------------------------------------------------
     async def _maybe_settle(self, now: datetime) -> None:

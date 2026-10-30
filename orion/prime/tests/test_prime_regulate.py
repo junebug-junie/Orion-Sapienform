@@ -127,3 +127,13 @@ def test_the_regulate_act_is_the_existing_verb_with_a_horizon_past_the_signal():
 def test_persisted_state_from_before_regulation_still_loads():
     old = '{"schema_version": "prime.state.v1", "concerns": [], "open_nominations": [], "thoughts_total": 3}'
     assert PrimeStateV1.model_validate_json(old).open_regulations == []
+
+
+def test_an_organ_rests_from_prime_as_long_as_the_last_signal_lasted():
+    state = PrimeStateV1(regulation_rest_until={C: T0 + timedelta(hours=2)})
+    a = apply_answer(state, answer(), now=T0, arc_ids=[], focus_pending=False, receptors=RECEPTORS)
+    assert a.move is None and "rests from my signals until 14:00Z" in a.move_refusal
+    later = apply_answer(state, answer(), now=T0 + timedelta(hours=2), arc_ids=[], focus_pending=False,
+                         receptors=RECEPTORS)
+    assert later.move_refusal is None
+    assert "rests from your signals until 14:00Z" in build_frame(state, FrameInputs(now=T0, receptors=RECEPTORS))

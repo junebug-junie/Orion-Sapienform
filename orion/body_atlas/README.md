@@ -134,6 +134,20 @@ Live results:
   Direction is claimed for 5 links, all hand-checked (`run_store_direction_eval.py`); every
   other code link is `uses`.
 
+**Capacities (rung 4, patch 1).** `capacities.py` reads the atlas through Stafford Beer's Viable
+System Model and finds roles on parts, never organs, by three rules over **live parts only**
+(live services and endpoints, operator ids out): R-boundary-in (live cameras, outside endpoints:
+S1), R-matchmaker (the only reader of a fan-in channel that replies, and the only reader of a
+second channel fed by a disjoint crowd: S2), R-census-reader (reads the census, replies to < 10%:
+S3* candidate). The census is every channel above the largest drop in the top-10 publish shares.
+Near misses (R-server, R-collector) and input candidates (R-source) are printed, not roles.
+Every other job prints NO RULE plus a gap line written by code. Read-only:
+`python -P -m orion.dig capacities [gaps]`. Gate:
+`python orion/body_atlas/evals/run_capacity_roles_eval.py` (precision and recall 1.0 for every
+rule on the 2026-10-29 held-out and 2026-10-30 bodies, near misses out of S2, a stable census,
+and a mutation that drops the second-crowd clause must fail). Design:
+`docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md`.
+
 Known gaps (also in every whole-body atlas as `known_gaps`):
 
 - **Grants.** On 2026-10-30 `orion_readonly` cannot read `grammar_events`, `cognition_traces` or

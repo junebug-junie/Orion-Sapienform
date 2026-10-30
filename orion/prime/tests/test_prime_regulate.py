@@ -137,3 +137,26 @@ def test_an_organ_rests_from_prime_as_long_as_the_last_signal_lasted():
                          receptors=RECEPTORS)
     assert later.move_refusal is None
     assert "rests from your signals until 14:00Z" in build_frame(state, FrameInputs(now=T0, receptors=RECEPTORS))
+
+
+def test_primes_receivers_come_from_families_yaml_and_list_dream_slow_only():
+    """Orion Prime step 4: the dream cycle declares `slow`, so Prime's frame lists it as a receiver and a slow
+    signal to it goes; quicken is refused visibly. Nothing in Prime names dream: receivers are read from config."""
+    from pathlib import Path
+
+    from orion.physiology.families import load_families
+    from orion.prime.thought import regulate_refusal
+
+    fams, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
+    assert fams is not None, err
+    receptors = {f: c.receptors for f, c in fams.families.items() if c.receptors}   # prime_loop._receptors
+    assert receptors == {C: ("slow",), "dream.cycle": ("slow",)}
+    frame = build_frame(PrimeStateV1(), FrameInputs(now=T0, receptors=receptors))
+    assert "- dream.cycle: slow" in frame and f"- {C}: slow" in frame
+    move = RegulateMoveV1(kind="regulate", family="dream.cycle", direction="slow", why="w", hours=3)
+    assert regulate_refusal(move, PrimeStateV1(), receptors, T0) is None
+    quick = RegulateMoveV1(kind="regulate", family="dream.cycle", direction="quicken", why="w", hours=3)
+    assert regulate_refusal(quick, PrimeStateV1(), receptors, T0) == "dream.cycle handles slow, not quicken"
+    # Without the receptor, the frame does not list dream (shown only when declared).
+    only_c = {C: ("slow",)}
+    assert "dream.cycle" not in build_frame(PrimeStateV1(), FrameInputs(now=T0, receptors=only_c))

@@ -232,6 +232,12 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/prime_charge_replay.py
+      - name: Dream binding bid + Prime slow receptor (Orion Prime step 4 -- the sleep obeys its bid, never past its window or the overdue line)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_physiology_bind.py \
+            services/orion-dream/tests/test_physiology_shadow_bid.py services/orion-dream/evals/test_dream_binding_replay_eval.py
       - name: Deploy-order skew eval (old pool refuses holds, then upgrades) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

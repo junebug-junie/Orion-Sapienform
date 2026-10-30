@@ -17,8 +17,9 @@ would send to the model and checks it is something a mind could act on honestly:
 * record    -- the frame shows Prime's concern track record, counted the way state.track_record says
                (settled / dropped within an hour / faded), from records shaped like the live concerns.
 * regulate  -- with the receptors read from the real config/physiology/families.yaml, the frame lists only
-               curiosity investigate as signalable; a slow signal to it goes; the same signal to self-inquiry
-               (no receptors) is refused with a reason Prime can read; the frame stays under the cap.
+               curiosity investigate and the dream cycle as signalable (step 4 added dream, slow only); a slow
+               signal to each goes; the same signal to self-inquiry (no receptors) is refused with a reason Prime
+               can read; quicken to dream is refused; the frame stays under the cap.
 
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_frame_eval.py`` (exit 1 on any failed check).
 """
@@ -144,9 +145,14 @@ def run() -> list[tuple[str, bool, str]]:
             now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False, receptors=receptors)
 
     ok_move, refused = regulate("durable.curiosity_investigate"), regulate("durable.self_inquiry")
-    results.append(("regulate", err is None and list(receptors) == ["durable.curiosity_investigate"]
-                    and "- durable.curiosity_investigate: slow" in reg_frame
-                    and ok_move.move is not None and refused.move is None
+    ok_dream = regulate("dream.cycle")
+    dream_quicken = apply_answer(PrimeStateV1(), PrimeAnswerV1.model_validate(
+        {"move": {"kind": "regulate", "family": "dream.cycle", "direction": "quicken", "why": "w", "hours": 3}}),
+        now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False, receptors=receptors)
+    results.append(("regulate", err is None and sorted(receptors) == ["dream.cycle", "durable.curiosity_investigate"]
+                    and "- durable.curiosity_investigate: slow" in reg_frame and "- dream.cycle: slow" in reg_frame
+                    and ok_move.move is not None and ok_dream.move is not None and refused.move is None
+                    and dream_quicken.move is None and "not quicken" in (dream_quicken.move_refusal or "")
                     and "declares no receptors" in (refused.move_refusal or "") and len(reg_frame) <= FRAME_CHAR_CAP,
                     f"receptors {receptors}; self_inquiry: {refused.move_refusal!r}"))
     return results

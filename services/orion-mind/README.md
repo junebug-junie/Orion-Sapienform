@@ -116,7 +116,7 @@ run's focus section prints the command that opens each one.
 **Regulate signals (step 3, 2026-10-30).** Prime's second kind of move asks one organ to slow down or quicken:
 `{"kind": "regulate", "family", "direction": "slow" | "quicken", "why", "hours": 1-6}`. It uses the existing act
 verb `regulate` (no new verbs). Only a family that declares the signal under `receptors` in
-`config/physiology/families.yaml` takes it (today: curiosity investigate, `slow` only). Prime reads that file from the read-only
+`config/physiology/families.yaml` takes it (today: curiosity investigate and the dream cycle, both `slow` only; dream since step 4). Prime reads that file from the read-only
 repo mount (`PRIME_FAMILIES_PATH`). A signal to any other family, or a direction the family does not handle, is
 refused, and the reason is shown in Prime's next frame; it is never dropped silently.
 

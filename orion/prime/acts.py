@@ -28,7 +28,7 @@ prices its next bid):
 
 * **regulate** -- verb ``regulate`` (Orion Prime step 3, design section 4: hormones are this existing
   verb, no new ones). One "slow down" or "quicken" signal to one want family that declares the receptor
-  (config/physiology/families.yaml; today only curiosity investigate). It is a bounded, temporary charge
+  (config/physiology/families.yaml; today curiosity investigate and the dream cycle). It is a bounded, temporary charge
   on that family's bids in the body economy (orion/physiology/prime_charge.py), never a command.
   ``test_before = "holdback:<arm>"``: a ``control`` signal is written but the market does not apply it; it
   records what the charge WOULD have done. ``artifact_produced`` = the charge changed at least one of the

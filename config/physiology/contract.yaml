@@ -44,6 +44,10 @@ protected_paths:
   # Patch D 2026-10-30: curiosity investigate's bid binds here (bind_verdict). Not a `readers` row: it
   # reads no regulation/price state itself, it obeys the market's decision (the checker sees no read).
   - {glob: "services/orion-durable-runs/app/run_bids.py", organ: "choice (Patch D bid site: curiosity investigate binds)"}
+  # Patch D for dream 2026-10-30: the dream cycle's bid binds here. Both bid sites now import the shared pure rule
+  # (orion/physiology/binding.py), so the checker sees them as readers: listed below as `bidder` (a binding bid
+  # site obeys the market's decision; it reads no regulation or price state of its own).
+  - {glob: "services/orion-dream/app/physiology_bind.py", organ: "choice (Patch D bid site: the dream cycle binds)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -101,6 +105,14 @@ readers:
     role: bidder
     reason: wires the Redis regulation read into the dream cycle's arousal hold.
     note: pending Patch D
+  - module: services/orion-dream/app/physiology_bind.py
+    role: bidder
+    reason: the dream cycle's BINDING bid (Patch D) -- a sleep that clears the dream's own gates obeys the market's decision (orion.physiology.binding); held at most the 6 h window, never past the overdue line.
+    note: 2026-10-30, already the Patch D shape. The arousal hold in app/cycle.py stays until this has run on for 7 days with the acceptance checks green
+  - module: services/orion-durable-runs/app/run_bids.py
+    role: bidder
+    reason: curiosity investigate's BINDING bid (Patch D, #3010) obeys the market's decision via the shared rule orion.physiology.binding; shadow bids for the other durable families.
+    note: 2026-10-30, already the Patch D shape (registered when the rule moved to orion/physiology/binding.py)
   - module: services/orion-hub/scripts/curiosity_investigation.py
     role: bidder
     reason: curiosity scheduling refuses on arousal_strained; engaged stretches cooldown.
@@ -173,7 +185,7 @@ readers:
   - module: services/orion-dream/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (a dream check that would sleep) logged beside the real gate; never obeyed.
-    note: Patch C3b; becomes the bid site when Patch D cuts each producer over
+    note: Patch C3b; since Patch D for dream (app/physiology_bind.py) only the ORION_PHYSIOLOGY_BID_DREAM_CYCLE=shadow fallback
   - module: orion/introspect/power_attribution.py
     role: display
     reason: heat archaeology for the power_attribution introspect tool; reads hourly watts/leases read-only and returns a correlational answer to Orion; gates nothing.

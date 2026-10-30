@@ -51,9 +51,10 @@ def st():
     return body(lane("agent"), lane("agent-gpu2", slots=2))
 
 
-def test_only_curiosity_investigate_declares_receptors_and_the_parser_refuses_bad_ones():
-    assert FAMS.get(C).receptors == ("slow",)
-    assert [f for f, c in FAMS.families.items() if c.receptors] == [C]
+def test_only_binding_families_declare_receptors_and_the_parser_refuses_bad_ones():
+    # A receptor only on a family whose bids bind: curiosity investigate (#3010/#3011) and the dream cycle (step 4).
+    assert FAMS.get(C).receptors == ("slow",) and FAMS.get("dream.cycle").receptors == ("slow",)
+    assert sorted(f for f, c in FAMS.families.items() if c.receptors) == ["dream.cycle", C]
     base = {"version": 1, "families": {"x": {"tier": 2, "deferrable_window_s": 60, "receptors": ["calm"]}}}
     with pytest.raises(ValueError, match="receptors"):
         parse_families(base)

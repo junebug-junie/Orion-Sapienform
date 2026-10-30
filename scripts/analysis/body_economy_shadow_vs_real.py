@@ -63,7 +63,7 @@ sys.path.insert(0, str(_ROOT))
 NO_MARKET = ("physiology_unavailable", "unknown_family", "family_never_bids")
 # Patch D: binding bids are obeyed (a deferral is a hold that re-bids), so "deferred & ran" is not a
 # disagreement for them. They are kept out of the table; body_economy_binding_replay.py covers them.
-BINDING_PRODUCERS = frozenset({"orion-durable-runs.admission.binding"})
+from orion.physiology.binding import BINDING_PRODUCERS  # noqa: E402
 # Hand-run verification bids (deploy checks, probes, replays) are not producers' wants (the floor's own list).
 from orion.physiology.choice import SYNTHETIC_PRODUCERS  # noqa: E402
 OPEN_SLACK = timedelta(seconds=60)    # an act may be stamped a moment before the decision row

@@ -20,7 +20,7 @@ existing focus slot (orion/curiosity/focus.py) with binding.invocation_context "
 questions (PRIME_HOLDBACK_FRACTION) is the narrator arm: opened as an act, never sent.
 
 The second move (step 3, 2026-10-30): a regulate signal ("slow" / "quicken") to one want family that
-declares the receptor in config/physiology/families.yaml (today only curiosity investigate). Written to
+declares the receptor in config/physiology/families.yaml (today curiosity investigate and the dream cycle). Written to
 Redis ``orion:prime:regulate:<family>`` (orion/physiology/prime_charge.py), where the body-economy market
 (orion-durable-runs) applies it as a bounded, temporary charge on that family's bids and records what it
 did to each bid. Each signal is a ``regulate`` act; after the signal ends the runtime reads the market's

@@ -47,6 +47,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-mind/requirements.txt
           python -m pip install -r requirements-dev.txt
+          # starlette's TestClient (orion-mind's HTTP contract tests) needs httpx.
+          python -m pip install httpx
       - name: Prime pure logic + readout arithmetic
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/prime
       - name: Frame eval on live inputs (grounded, bounded, honest gaps, settles)

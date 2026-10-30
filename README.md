@@ -75,8 +75,9 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 
 | Node | Role | GPUs | Status |
 |---|---|---|---|
-| **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | — | Live |
-| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 4× V100 32GB, 2× V100 16GB, 1× T10 16GB | Live |
+| **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | 1× Tesla P4 8GB, 1× Tesla T10 16GB | Live |
+| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 2× V100-PCIE 32GB, 1× V100-SXM2 32GB, 1× PG500-216 | Live |
+| **Hecate** | Inspur NF5288M5 (AGX-2) 8-slot SXM2 server; on-demand deep inference and training | 1× V100-SXM2 32GB installed | On demand |
 | **Cameras** | Office and web cameras, embodiment experiments (1 street cam up and coming) | — | Live |
 | **Sensors** | 2x Nano Ardiunos and mics with various cabinet sensors | — | Live |
 
@@ -807,7 +808,8 @@ Service placement can move. The current mesh shape and specs:
 ```text
 Athena — Core Services / Orchestration
   HP ProLiant DL380 Gen10, dual Intel Xeon Platinum-class CPUs, large ECC memory.
-  No GPU (its old P100 16GB moved to Circe -- see below).
+  2x Xeon Platinum 8168, 377 GB RAM. GPUs: Tesla P4 8GB + Tesla T10 16GB
+  (nvidia-smi, 2026-10-30).
   Role: Hub, Cortex, memory, FalkorDB, scheduler, durable service spine.
   Note (2026-08-21): this is physically the chassis that used to be Atlas.
   Athena's disks were moved into it when Atlas was decommissioned, so it
@@ -816,8 +818,8 @@ Athena — Core Services / Orchestration
 
 Circe — High-Density GPU Expansion Server
   Gigabyte G481-HA0 4U GPU server. 24 DDR4 RDIMM/LRDIMM slots, six-channel memory.
-  4× NVIDIA V100 32GB, plus 2× NVIDIA V100 16GB and 1× NVIDIA P100 16GB
-  absorbed from Atlas/Athena on 2026-08-21.
+  2x Xeon Gold 6150, 251 GB RAM. GPUs on 2026-10-30 (nvidia-smi): 2× V100-PCIE
+  32GB, 1× V100-SXM2 32GB, 1× PG500-216 (config/gpu_pool.yaml has the lane map).
   2× 10GbE (Intel X550-AT2), 2× 1GbE (Intel I350-AM2).
   Role: heavy inference workhorse plus training experiments. Status: live.
 

@@ -1321,9 +1321,16 @@ async def startup_event():
             # runs sat uningested. See
             # docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
             #
-            # The startup tick is cheap and idempotent by construction:
-            # topic-foundry dedups an identical training window by spec_hash,
-            # and ingestion re-upserts by deterministic node_id. It is gated
+            # The startup tick must stay cheap, because Hub restarts 7-11
+            # times a day during merges. Before 2026-10-30 it was NOT: the
+            # spec_hash dedup only matched queued/running runs, so each
+            # restart retrained the same window (six times on 10-29), and
+            # each new run sent its segments back through the LLM. Now
+            # topic-foundry returns a same-spec run that completed within
+            # TOPIC_FOUNDRY_TRAIN_DEDUP_COMPLETE_WINDOW_SECS (24 h) instead of
+            # training, and enrichment reuses earlier LLM answers for
+            # unchanged segment text (topic_foundry_enrichment_cache).
+            # Ingestion re-upserts by deterministic node_id. It is gated
             # anyway so an operator can turn it off without disabling the
             # whole scheduler.
             startup_pending = bool(

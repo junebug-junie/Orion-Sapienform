@@ -19,7 +19,8 @@ nodes:
       - athena
       - athena.tail348bbe.ts.net
     role: orchestration
-    hardware: HP DL380 G10 (orchestration + vision/audio node)
+    # Read 2026-10-30 on the box (dmi, lscpu, free, nvidia-smi).
+    hardware: HPE ProLiant DL380 Gen10, 2x Xeon Platinum 8168 (2.7 GHz), 377 GB RAM, Tesla P4 8GB + Tesla T10 16GB (orchestration + vision/audio node)
     expected_online: true
     capabilities:
       hub: true
@@ -43,7 +44,8 @@ nodes:
     # on its value. Pinned by tests/test_static_body_descriptions.py.
     role: primary_cognition_gpu
     # Juniper 2026-10-29: "daily inference node, Gigabyte" -- the model name was cut off.
-    hardware: Gigabyte (model not recorded; daily inference node)
+    # Read 2026-10-30 over ssh circe@circe (dmi, lscpu, free, nvidia-smi).
+    hardware: Gigabyte G481-HA0 (board MG61-G40), 2x Xeon Gold 6150 (2.7 GHz), 251 GB RAM, 2x V100-PCIE-32GB + PG500-216 + V100-SXM2-32GB (daily inference node)
     # Was false: circe was intermittent/burst-only. A real llamacpp chat worker
     # (orion-atlas-llamacpp-chat, port 8011) has been running on circe continuously
     # for days (2026-07-18) -- expected_online=false was making pressure_organ.py
@@ -87,7 +89,9 @@ nodes:
       - hecate
       - hecate.tail348bbe.ts.net
     role: gpu_server
-    hardware: Inspur NF5288M5, 8-GPU (deep inference and training node)
+    # Offline since 2026-10-15; from its last biometrics row (1 GPU, 80 CPU threads) and
+    # config/gpu_pool.yaml hecate-gpu0. CPU model and RAM not recorded.
+    hardware: Inspur NF5288M5 (AGX-2, 8 SXM2 slots), 1x V100-SXM2-32GB installed, 80 CPU threads (deep inference and training node)
     expected_online: false
     capabilities:
       local_llm_heavy: false
@@ -110,7 +114,8 @@ unmonitored_nodes:
       - carbon-x1
       - carbon-x1.tail348bbe.ts.net
     role: juniper_laptop
-    hardware: Lenovo ThinkPad X1 Carbon (Juniper's laptop)
+    # Read 2026-10-30 over ssh juniper@carbon-x1.
+    hardware: Lenovo ThinkPad X1 Carbon Gen 12 (21KC0046US), Core Ultra 7 155U, 32 GB RAM, integrated camera (Juniper's laptop)
     expected_online: false
     # camera streams (config/vision_frame_router.yaml `streams:`) that are this machine's own
     # camera: `carbon` is the laptop webcam (docs/operations/carbon-webcam.md)
@@ -120,7 +125,11 @@ unmonitored_nodes:
     aliases:
       - janus
       - janus.tail348bbe.ts.net
-    role: unknown
+    # Read 2026-10-30 over ssh janus@janus: a GNOME desktop (remote desktop on) with a local
+    # PostgreSQL 16 and no containers. Several services' PROJECT defaults are still
+    # "orion-janus" (services/orion-hub/app/settings.py), so Orion likely started here.
+    role: desktop_workstation
+    hardware: HP ProDesk 600 G2 DM mini PC, Core i7-6700T, 16 GB RAM, 1 TB NVMe
     expected_online: false
   pan-1:
     # services/orion-office-env/README.md: "It runs on pan-1 only" (Nano ESP32 + SHT40 by USB).
@@ -128,6 +137,8 @@ unmonitored_nodes:
       - pan-1
       - pan-1.tail348bbe.ts.net
     role: office_sensor_host
+    # Hardware not recorded: no ssh login reaches pan-1 from athena (2026-10-30). Its sensor is
+    # an Arduino Nano ESP32 + SHT40 on USB (firmware/pan-1-office-nano/README.md).
     expected_online: false
     runs_services:
       - orion-office-env

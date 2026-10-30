@@ -90,37 +90,91 @@ A refused move is shown to Prime in its next frame as an outcome line, not as ne
 ## Tests run
 
 ```text
-TESTS_PLACEHOLDER
+PYTHONPATH=. pytest orion/prime orion/dig/tests orion/curiosity/tests   -> 286 passed, 23 skipped
+  (refs contract: orion/dig/tests/test_refs_contract.py, 10 tests incl. the per-kind resolver/dig/sample check)
+focus lifecycle on a throwaway Postgres 16 (both migrations applied):  -> 62 passed
+services/orion-mind: pytest tests                                    -> 146 passed
+services/orion-hub: pytest tests/test_*curiosity*.py tests/test_*introspect*.py -> 603 passed, 7 skipped
+services/orion-durable-runs: pytest tests                            -> 589 passed, 115 skipped
+services/orion-durable-runs: test_temporal_self_chronicle_postgres.py on throwaway Postgres -> 14 passed
+  (includes the new arc-by-id read)
+.github/workflows/orion-static-gates.yml, every run step locally     -> 40 ok, 0 failed
+scripts/check_definition_drift.py                                    -> no definition changes
+scripts/check_migration_required_by.py                               -> OK (1 new migration)
 ```
 
 ## Evals run
 
 ```text
-EVALS_PLACEHOLDER
+PYTHONPATH=. python orion/prime/evals/run_prime_frame_eval.py   -> 8/8 PASS
+  new: refs   -- the live 10-30 question ("... arc 8d87adeca2ce06a5 ...", no refs) is refused; the same
+                 question with the arc in refs is sent, and the focus section prints
+                 "python -P -m orion.dig arc 8d87adeca2ce06a5"
+  new: record -- the frame shows the concern track record, counted correctly
+services/orion-hub/evals/run_curiosity_focus_eval.py               -> PASS
+orion/prime/evals/run_prime_report.py gains a `concerns` tally (unit-tested; live run needs concern acts first)
 ```
 
 ## Docker/build/smoke checks
 
 ```text
-SMOKE_PLACEHOLDER
+Live read smoke (read-only session against the live conjourney DB, no deploy):
+  act_by_id("act_42c0e5f55fbd5d881786ebd4")  -> the real row (prime ask, control, closed 0 "control run 34d7345e36e7 died")
+  temporal_self_arc("8d87adeca2ce06a5")      -> the real arc (concern, open, 8 segments, carried from 997fd25d701e4067)
+  orion.refs.resolve on both answers         -> ok, rendered
+  act_by_id("act_000...")                    -> 404
+apply_post_pull_migrations.py --dry-run on the new migration -> "would apply (single transaction, lock_timeout=10s)"
+No docker build run: no Dockerfile, requirement or compose change. The new routes, dig commands and Prime
+behaviour are UNVERIFIED live until deployed.
 ```
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+- Finding (blocker): a drop listed twice in one answer raised StopIteration and lost the whole thought.
+  - Fix: a missing concern on drop is skipped; a duplicate is silent, an unknown id still warns.
+  - Evidence: `test_the_same_drop_listed_twice_closes_once_and_never_crashes_the_thought`.
+- Finding: the id-word check missed ids glued to an underscore (`run_34d7345e36e7`, `prime_act_...`).
+  - Fix: only a letter or digit next to the run hides it now.
+  - Evidence: added cases in `test_id_tokens_in_text`.
+- Finding: stored refs were printed into the run's prompt as a shell command without re-checking their shape.
+  - Fix: `_refs_value` re-validates each ref with `RefV1` and drops (and logs) anything invalid; the focus section uses the validated model.
+  - Evidence: `test_a_stored_ref_that_is_not_a_valid_reference_is_dropped_never_printed_as_a_command`.
+- Finding: a `_get` helper suggested focus reads survive a missing column; they do not (every SELECT names it).
+  - Fix: removed; the docstring and this report state the deploy order (migration, Hub, mind).
+- Finding: concern closes also feed the body economy's hunger clock and close rhythm (a fade closes on a quiet tick).
+  - Fix: not changed in this PR (no new price or rule was in scope); stated plainly in the orion-mind README with the concrete follow-up fix in `appetite.py`, and the report now counts concern ends so it can be measured.
+- Finding: rolling back orion-mind would fail to read the new persisted state and start empty.
+  - Fix: documented under Risks with the exact rollback step.
+- Finding: the ledger can close a concern act `expired` before Prime's "lapsed" if orion-mind is down past the horizon.
+  - Fix: documented in `orion/prime/acts.py`; the report counts `expired` apart.
+- Finding: the outbox had no cap. Fix: capped at 200 unpublished records.
+- Finding: one test assertion could never fail. Fix: removed.
 
 ## Restart required
 
 ```bash
-RESTART_PLACEHOLDER
+# Not deployed (as asked). After merge, from the clean primary main checkout:
+# 1. migration first (post-pull rebuild auto-applies it; by hand if needed):
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_curiosity_focus_request_refs_v1.sql
+# 2. Hub, then durable-runs, then mind (Hub must accept refs before mind sends them):
+scripts/safe_docker_build.sh orion-hub up -d --build
+scripts/safe_docker_build.sh orion-durable-runs up -d --build
+scripts/safe_docker_build.sh orion-mind up -d --build
+# orion-harness-governor reads /app/orion from its image: rebuild it for the new dig commands.
+scripts/safe_docker_build.sh orion-harness-governor up -d --build
 ```
 
 ## Risks / concerns
 
-RISKS_PLACEHOLDER
+- Severity: medium. Concern: deploy order. Hub selects the new `refs` column in every focus read, so Hub fails its focus reads until the migration is applied. The deploy gate refuses Hub's `up` until then, and the post-pull rebuild applies the migration first. An older Hub refuses a Prime question that carries refs (the act closes 0, no loop). Mitigation: migration, Hub, durable-runs, then mind.
+- Severity: medium. Concern: until orion-durable-runs is redeployed, every ref fails to open (404 on the new route), so every Prime question that cites an arc or act is refused. Questions without refs still go. Mitigation: deploy durable-runs before mind.
+- Severity: medium. Concern: rollback of orion-mind. The old code cannot read the new state fields (`extra=forbid`) and starts with no concerns; open concern acts then close `expired` at their horizon. Mitigation: before rolling back, save `orion:prime:state` and strip `concern_record`, `act_opened_at`, `graded`.
+- Severity: low. Concern: concern closes also reset the `prime` family's hunger clock and shorten its close rhythm (see README). Mitigation: measure with `run_prime_report.py` after a week; the fix is to count only `infer` closes for the clock in `appetite.py`.
+- Severity: low. Concern: Prime may write concern ids or run ids in a question's text and have the move refused more often at first. Mitigation: the prompt says not to; the refusal tells Prime exactly why; it cannot loop.
+- UNVERIFIED: live behaviour of every new path (routes, dig commands in the harness container, Prime refs, concern acts on the ledger). Only the two SQL reads were exercised against live data.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3009
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

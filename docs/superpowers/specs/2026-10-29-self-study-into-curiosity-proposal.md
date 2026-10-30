@@ -297,7 +297,7 @@ from Tier 1 to Tier 0 `autonomic` is a tier change. So is dropping a Tier 1 fami
 
 ## Juniper's decisions (2026-10-30) and what shipped
 
-Juniper approved the proposal on 2026-10-30 with four answers. Patches 1 and 2 shipped together as one kill patch (branch `feat/self-study-fold-into-curiosity`).
+Juniper approved the proposal on 2026-10-30 with four answers. Patches 1 and 2 shipped together as one kill patch (PR #2986).
 
 1. **Self Atlas: keep for now.** The daily Layer 1 scan (`run_self_repo_inspect`, `self_study_refresh_loop`, `SELF_STUDY_INSPECT_INTERVAL_SEC`) stays, cut down to that one job. No new sensor service. `self_study.py` went from ~3,400 lines to ~800. **Self Atlas and this feed are the next retirement candidates.**
 2. **Analyze moves to tier 0, family `autonomic`** (`lanes: []`, window 0). The `self_study` family is gone from `config/physiology/families.yaml` (it was never in `contract.yaml`). The `ANALYSIS_SOURCES` source_ref prefixes are unchanged and pinned by a test, because orion-thought's allowlist depends on them.

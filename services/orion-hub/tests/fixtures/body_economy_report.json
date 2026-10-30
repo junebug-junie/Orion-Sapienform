@@ -2957,5 +2957,36 @@
    }
   ]
  },
- "missing": []
+ "processes": [
+  {
+   "host": "circe",
+   "name": "d590a9d48af2",
+   "watts": 8.9,
+   "cores": null
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-vector-host",
+   "watts": 50.6,
+   "cores": null
+  },
+  {
+   "host": "athena",
+   "name": "(host, not in a container)",
+   "watts": 12.6,
+   "cores": null
+  },
+  {
+   "host": "circe",
+   "name": "orion-llamacpp-chat",
+   "watts": 21.4,
+   "cores": 3.5
+  }
+ ],
+ "missing": [
+  {
+   "section": "processes",
+   "reason": "top 4 of 9 shown"
+  }
+ ]
 }

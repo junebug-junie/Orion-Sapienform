@@ -54,6 +54,7 @@
     vram: "No GPU memory readings.",
     value_per_cost: "No value-per-cost figures yet.",
     services: "No service check yet.",
+    processes: "No per-process CPU watts yet.",
     sees: "No limit gave a reason in this window.",
   };
 
@@ -623,6 +624,39 @@
       }).join(""));
   }
 
+  // Every `missing` reason for one section, in order (a non-empty section can still carry notes:
+  // "top 12 of 55 shown", "partial: ...").
+  function missingReasons(report, section) {
+    return ((report && report.missing) || []).filter(function (m) { return m && m.section === section; })
+      .map(function (m) { return String(m.reason || "missing"); });
+  }
+
+  // One bar per process, longest first. Bar length is CPU watts above idle (orion-biometrics
+  // container_cpu_watts.*); cores is null until busy cores are published per container, and says so.
+  function processesHtml(report, err, tz) {
+    var rows = ((report && report.processes) || []).filter(function (p) { return p && num(p.watts) !== null; })
+      .slice().sort(function (a, b) { return b.watts - a.watts || (String(a.name) < String(b.name) ? -1 : 1); });
+    if (!rows.length) return emptyHtml(emptyText(report, "processes", err, tz));
+    var max = Math.max.apply(null, rows.map(function (p) { return Math.max(0, p.watts); }).concat([1]));
+    var bars = rows.map(function (p) {
+      var cores = num(p.cores);
+      var coresText = cores === null ? "cores ?" : cores.toFixed(1) + " cores";
+      var label = esc(p.name) + ' <span class="muted">' + esc(p.host || "?") + "</span>";
+      var tip = p.name + " on " + (p.host || "?") + " · " + p.watts.toFixed(1) + " W above idle · " +
+        (cores === null ? "busy cores not published per container" : cores.toFixed(1) + " busy cores");
+      return '<div data-process="' + esc((p.host || "?") + ":" + p.name) + '">' +
+        hbar(label, Math.max(0, p.watts), max, p.watts.toFixed(1) + " W · " + coresText, tip, "#c98500") + "</div>";
+    }).join("");
+    var notes = missingReasons(report, "processes");
+    return '<div class="legend"><span class="key"><span class="sw" style="background:#c98500"></span>CPU watts above idle</span></div>' +
+      bars + (notes.length ? '<ul class="plain small muted" data-process-notes>' +
+        notes.map(function (n) { return "<li>" + esc(n) + "</li>"; }).join("") + "</ul>" : "");
+  }
+
+  function renderProcesses(doc) {
+    setBody(doc, "beProcesses", processesHtml(state.report, state.err, state.tz));
+  }
+
   function renderClaude(doc) {
     var c = sectionData("claude");
     if (!c || !c.window_tokens) { setBody(doc, "beClaude", empty("claude")); return; }
@@ -732,6 +766,7 @@
     renderQueue(doc);
     renderVram(doc);
     renderClaude(doc);
+    renderProcesses(doc);
     renderUnits(doc);
     renderValue(doc);
     renderSees(doc);
@@ -901,7 +936,7 @@
     limitSvg: limitSvg, pointAt: pointAt, limitTip: limitTip, topFamilies: topFamilies, bucketWants: bucketWants,
     brushWindow: brushWindow, filterDecisions: filterDecisions, reasonWords: reasonWords, blockedBy: blockedBy,
     decisionLife: decisionLife, pricesList: pricesList, missingReason: missingReason, unreachableText: unreachableText,
-    emptyText: emptyText, esc: esc, isReport: isReport, state: state, render: render, init: init, load: load,
+    emptyText: emptyText, missingReasons: missingReasons, processesHtml: processesHtml, esc: esc, isReport: isReport, state: state, render: render, init: init, load: load,
   };
   if (typeof window !== "undefined") window.BodyEconomyTab = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -87,6 +87,11 @@ def test_body_economy_tab_deferred_row_brush_window_and_tooltip():
         assert "agent" in frame.locator("#beWaste").inner_text() and "31 min" in frame.locator("#beWaste").inner_text()
         assert "gpu2" in frame.locator("#beVram").inner_text() and "agent-gpu2, diffusion" in frame.locator("#beVram").inner_text()
         assert "$14.62" in frame.locator("#beClaude").inner_text()
+        procs = frame.locator("#beProcesses [data-process]")
+        assert procs.count() == 4
+        assert procs.first.get_attribute("data-process") == "athena:orion-athena-vector-host"   # longest first
+        assert "50.6 W" in procs.first.inner_text() and "athena" in procs.first.inner_text()
+        assert "top 4 of 9 shown" in frame.locator("#beProcesses").inner_text()
         assert "Juniper replied" in frame.locator("#beValue").inner_text()
         assert "room without Orion 29.6 C" in frame.locator("#beSees").inner_text()             # verbatim why
         assert frame.locator("#beCount").inner_text() == "10 of 10 decisions"
@@ -144,9 +149,11 @@ def test_body_economy_tab_empty_sections_say_why():
     missing = copy.deepcopy(FIXTURE)
     missing["wants"] = {"families": [], "hourly": []}
     missing["vram"] = []
+    missing["processes"] = []
     missing["services"] = {"checked_at": "2026-10-29T18:55:00Z", "down": []}
     missing["missing"] = [{"section": "wants", "reason": "no wants yet: want_ledger has no rows in this window"},
-                          {"section": "vram", "reason": "no VRAM reading: the pool has not reported cards"}]
+                          {"section": "vram", "reason": "no VRAM reading: the pool has not reported cards"},
+                          {"section": "processes", "reason": "per-container CPU watts are not reported yet"}]
     calls = {"n": 0}
 
     def report(route, url):
@@ -159,7 +166,7 @@ def test_body_economy_tab_empty_sections_say_why():
 
     def check(page, frame):
         frame.locator('#beWantsChart [data-empty]').wait_for()
-        for section in ("#beWantsChart", "#beRhythm", "#beMoney", "#beUnits", "#beDecEmpty", "#beClaude"):
+        for section in ("#beWantsChart", "#beRhythm", "#beMoney", "#beUnits", "#beDecEmpty", "#beClaude", "#beProcesses"):
             assert "durable-runs unreachable since" in frame.locator(section).inner_text(), section
         assert "unreachable since" in frame.locator("#beStatus").inner_text()
 
@@ -167,6 +174,8 @@ def test_body_economy_tab_empty_sections_say_why():
         frame.locator('[data-tile="heat"]').wait_for()
         assert "no wants yet: want_ledger has no rows" in frame.locator("#beWantsChart").inner_text()
         assert "the pool has not reported cards" in frame.locator("#beVram").inner_text()
+        assert "per-container CPU watts are not reported yet" in frame.locator("#beProcesses [data-empty]").inner_text()
+        assert frame.locator("#beProcesses [data-process]").count() == 0
         assert "all running" in frame.locator('[data-tile="services"]').inner_text()
         assert frame.locator("#beDecRows tr").count() == 10
 

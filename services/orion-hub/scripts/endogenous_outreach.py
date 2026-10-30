@@ -2198,7 +2198,12 @@ class EndogenousOutreach:
         ~360 hub.outreach rows an hour into want_ledger while real sends were a few a day. That
         swelled Tier 2's funded-want count, which the exploration floor divides by, and filled the
         shadow-vs-real table with copies of one decision. A real send cannot happen more than once
-        per cooldown, so the held want is re-bid once per cooldown window. Marks the bid as placed.
+        per cooldown, so the held want is re-bid once per cooldown window.
+
+        Marks a bid ATTEMPT (also when the shadow is off or ``place()`` fails). The window is one
+        held want per cooldown, not one per strain episode: it is not reset when strain clears.
+        It lives in memory, so a Hub restart bids on its first strain-held tick (one row per
+        restart, not the old flood). A forced (debug) call bids without using up the window.
         """
         now = self._monotonic()
         window = max(self.min_cooldown_sec, STRAIN_SHADOW_BID_MIN_WINDOW_SEC)
@@ -2226,7 +2231,7 @@ class EndogenousOutreach:
         if not blocked:
             self._last_spoke_ago = await self._spoke_ago()
             blocked = outreach_block_reason(self._gate_inputs())
-        if blocked == AROUSAL_STRAINED_REASON and shadow is not None and self._strain_shadow_bid_due():
+        if blocked == AROUSAL_STRAINED_REASON and shadow is not None and (force or self._strain_shadow_bid_due()):
             # Strain alone holds this tick: the gate the economy is meant to replace. Bid, and
             # record the real outcome as the strain hold whatever the strain report door does
             # (that door's message is a report about strain, not this want). Once per window:

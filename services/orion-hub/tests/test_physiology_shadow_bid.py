@@ -315,7 +315,8 @@ async def test_outreach_strain_bid_window_has_a_floor_when_cooldown_is_zero(econ
     for _ in range(120):  # 20 minutes of 10 s ticks
         await _tick(outreach)
         clock["t"] += 10.0
-    assert len(economy.wants) == 1200 // int(eo.STRAIN_SHADOW_BID_MIN_WINDOW_SEC)
+    assert eo.STRAIN_SHADOW_BID_MIN_WINDOW_SEC == 600.0
+    assert len(economy.wants) == 2  # t=0 and t=600 s
 
 
 @pytest.mark.asyncio

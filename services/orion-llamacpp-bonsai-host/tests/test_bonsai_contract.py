@@ -64,7 +64,8 @@ def test_shared_llamacpp_host_keeps_the_fork_off_every_lane_but_agent_gpu2():
         assert "bonsai" not in text and "prism" not in text, name
     workers = yaml.safe_load((shared / "docker-compose.atlas-workers.yml").read_text(encoding="utf-8"))["services"]
     for name, svc in workers.items():
-        uses_fork = "prism" in (str(svc["build"]["dockerfile"]) + str(svc["image"])).lower()
+        # atlas-chat runs the Strata image and has no build block
+        uses_fork = "prism" in (str(svc.get("build", {}).get("dockerfile", "")) + str(svc["image"])).lower()
         assert uses_fork == (name == "atlas-agent-burst"), name
 
 

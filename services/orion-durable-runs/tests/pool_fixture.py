@@ -107,7 +107,7 @@ class InProcessPool:
             _, file, slots, ctx = self.live[role]
             return Probe(True, {"model_path": f"/models/gguf/{file}", "total_slots": slots,
                                 "default_generation_settings": {"n_ctx": ctx}, "modalities": {"vision": False}},
-                         checked_at=self.clock())
+                         checked_at=self.clock(), backend=CFG.roles[role].backend)
 
         self.rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=MemoryStore(),
                               graph=build_lease_graph(lambda: CFG, MemorySaver()), bus=_PoolSideBus(self),

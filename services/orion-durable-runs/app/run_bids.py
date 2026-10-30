@@ -1,4 +1,11 @@
-"""Durable-runs' own bid site (body economy Patch C3a, SHADOW: logged, never obeyed).
+"""Durable-runs' own bid site (body economy Patch C3a SHADOW; Patch D BINDING for curiosity investigate).
+
+Patch D (2026-10-30): runs of ``BINDING_FAMILIES`` (curiosity investigate only) do not bid at
+submit. They bid at their first ``resource_request`` (``RunBidder.bind``, before the run asks the
+GPU pool for a hold) and OBEY the answer -- see ``bind_verdict`` for the rule. A held run records a
+``run.economy_held`` event with the market's own reason (net, charge, binding constraint, why) and
+bids again later. Flag: ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE (``on`` binds; ``shadow`` -> the
+C3a shadow bid at submit, exactly as before). Every other family below is still shadow.
 
 Design: docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, "Execution seam" and
 Phase 1 Patch C ("every producer bids in shadow: it logs a would-fund decision next to its real
@@ -31,8 +38,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from app.run_acts import run_act_family
@@ -41,8 +51,32 @@ from orion.schemas.physiology_want import WantV1, WantWindowV1
 logger = logging.getLogger(__name__)
 
 PRODUCER = "orion-durable-runs.admission"
-BID_TIMEOUT_SEC = 30.0          # a cold history read is a 30-day scan; the run never waits on it
+# Binding bids carry their own producer, so want_ledger (whose ``shadow`` is always true) still tells
+# an obeyed decision from a shadow one.
+BINDING_PRODUCER = "orion-durable-runs.admission.binding"
+BID_TIMEOUT_SEC = 30.0          # shadow: a cold history read is a 30-day scan; the run never waits on it
+# Binding: the run DOES wait on this bid (it holds a driver slot), so it is short; a timeout asks the
+# pool as before.
+BIND_TIMEOUT_SEC = 5.0
 SEEN_MAX = 5000
+
+# --- Patch D: binding bids (one family per PR; curiosity investigate first) -----------------------
+# A run in a BINDING family asks the market before it asks the GPU pool for a hold. Funded: it asks
+# the pool, as before. Deferred: it is HELD (status waiting_resource, no pool request) and bids again
+# later. It is never dropped: at the end of its family's deferrable window it asks the pool anyway,
+# exactly as it would have without the economy. No answer from the market (down, stale state, history
+# unread, timeout): it asks the pool, as before -- this patch removes no other gate (Hub's own vetoes,
+# the pool's queue and the heat reflex still apply), so "no answer" falls back to the old gates, never
+# to "funded by the economy" and never to "held forever".
+BINDING_FAMILIES = frozenset({"durable.curiosity_investigate"})
+REBID_MIN_SEC = 120.0           # one physiology tick: a sooner re-bid reads the same prices
+REBID_MAX_SEC = 3600.0          # one lane window: a lane's measured use is a trailing hour
+REBID_DEFAULT_SEC = 600.0       # the market named no relief time (a stuck price, sated)
+HOLD_DEADLINE_MARGIN_SEC = 1800.0   # a run with its own deadline is released this long before it
+# The market could not decide: these are "no answer", not deferrals.
+NO_ANSWER_REASONS = frozenset({"physiology_unavailable", "unknown_family", "family_never_bids"})
+HOLD_EVENT = "run.economy_held"
+RELEASE_EVENT = "run.economy_admitted"
 
 
 def _aware(v: Any) -> Optional[datetime]:
@@ -58,7 +92,7 @@ def _aware(v: Any) -> Optional[datetime]:
     return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
 
 
-def want_for_run(request: dict[str, Any], tier: int) -> Optional[WantV1]:
+def want_for_run(request: dict[str, Any], tier: int, *, producer: str = PRODUCER) -> Optional[WantV1]:
     """The run's want, or None when the run is not one of Orion's own wants (or not a bidding tier)."""
     family = run_act_family(request)
     if family is None or tier not in (1, 2):
@@ -69,18 +103,113 @@ def want_for_run(request: dict[str, Any], tier: int) -> Optional[WantV1]:
     admission = request.get("admission") if isinstance(request.get("admission"), dict) else {}
     corr = request.get("correlation_id")
     return WantV1(
-        want_id=run_id, family=family.actor, producer=PRODUCER, verb=family.verb,
+        want_id=run_id, family=family.actor, producer=producer, verb=family.verb,
         object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
         window=WantWindowV1(latest=_aware(admission.get("deadline_at"))),
         correlation_id=str(corr) if corr else None)
+
+
+def hold_end(want: WantV1, deferrable_window_s: float) -> Optional[datetime]:
+    """When a held want stops waiting and asks the pool anyway: ``opened_at`` + the family's
+    deferrable window, but never later than ``HOLD_DEADLINE_MARGIN_SEC`` before the run's own
+    admission deadline (a run released AT its deadline would fail at once). None: no opened_at and
+    no deadline -- the caller treats that as "do not hold" (an unbounded hold is never allowed)."""
+    ends = []
+    if want.opened_at is not None and deferrable_window_s > 0:
+        ends.append(want.opened_at + timedelta(seconds=deferrable_window_s))
+    if want.window.latest is not None:
+        ends.append(want.window.latest - timedelta(seconds=HOLD_DEADLINE_MARGIN_SEC))
+    return min(ends) if ends else None
+
+
+@dataclass(frozen=True)
+class BindVerdict:
+    """What a binding bid tells admission. ``admit``: ask the pool now. Otherwise hold until ``retry_at``."""
+    admit: bool
+    why: str                         # funded | no_answer:<reason> | window_end | deferred:<reason>
+    retry_at: Optional[datetime] = None
+    detail: dict = field(default_factory=dict)
+
+
+def decision_detail(decision: Any) -> dict:
+    """The market's own reason, as a run event / log carries it: a refusal must be readable."""
+    if decision is None:
+        return {}
+    keys = ("decision_id", "outcome", "reason", "binding_constraint", "lane", "net", "charge", "cost_frac",
+            "retry_after_sec", "why", "state_tick_id")
+    out = {}
+    for k in keys:
+        v = getattr(decision, k, None)
+        if v is not None:
+            out[k] = v
+    return out
+
+
+def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
+                 capacity_queues_at_pool: bool = True) -> BindVerdict:
+    """Pure: a binding family's decision -> admit now (ask the GPU pool), or hold until the next bid.
+
+    * no decision, or a NO_ANSWER reason -> admit (today's path; no other gate is removed);
+    * funded -> admit;
+    * ``capacity_reserved`` with a POSITIVE net -> admit (``queued_at_pool``). The lane is full, but
+      the want is worth its price: the GPU pool's own queue is the queue (it holds the run until a
+      real slot frees). A second queue in front of it, judged on a trailing hour of lane use, held
+      43 of 46 real curiosity runs for hours in the 7-day replay (scripts/analysis/
+      body_economy_binding_replay.py, ``capacity_queues_at_pool=False``). A capacity deferral is
+      queueing, never refusal;
+    * any other deferral -- ``price`` (charge beats value), ``sated`` (no hunger), ``capacity_reserved``
+      with net <= 0 (the price says no as well), ``no_acceptable_lane`` -> HOLD: the next bid is at
+      ``retry_after_sec`` clamped to [REBID_MIN_SEC, REBID_MAX_SEC] (REBID_DEFAULT_SEC when the
+      market named none), never later than ``end``; at ``end`` the run is admitted anyway
+      (``window_end``: held, never dropped);
+    * no ``end`` (nothing bounds the hold) -> admit: an unbounded hold could silence the run.
+    """
+    detail = decision_detail(decision)
+    if decision is None:
+        return BindVerdict(True, "no_answer:no_decision", detail=detail)
+    reason = str(getattr(decision, "reason", "") or "")
+    if getattr(decision, "outcome", None) == "funded":
+        return BindVerdict(True, "funded", detail=detail)
+    if reason in NO_ANSWER_REASONS:
+        return BindVerdict(True, f"no_answer:{reason}", detail=detail)
+    net = getattr(decision, "net", None)
+    worth_it = isinstance(net, (int, float)) and math.isfinite(net) and net > 0
+    if capacity_queues_at_pool and reason == "capacity_reserved" and worth_it:
+        return BindVerdict(True, "queued_at_pool", detail=detail)
+    if end is None:
+        return BindVerdict(True, "no_answer:unbounded_hold", detail=detail)
+    if now >= end:
+        return BindVerdict(True, "window_end", detail=detail)
+    ra = getattr(decision, "retry_after_sec", None)
+    wait = float(ra) if isinstance(ra, (int, float)) and math.isfinite(ra) else REBID_DEFAULT_SEC
+    wait = min(REBID_MAX_SEC, max(REBID_MIN_SEC, wait))
+    return BindVerdict(False, f"deferred:{reason}", retry_at=min(end, now + timedelta(seconds=wait)), detail=detail)
+
+
+def binding_family(request: dict[str, Any], enabled: bool) -> Optional[str]:
+    """The run's family when its bid binds (flag on, the family is in BINDING_FAMILIES, and the run is
+    not an operator's forced run -- Hub "Run now" sets ``brief.operator_forced``: the operator's call,
+    not curiosity's want, so it is never held), else None."""
+    if not enabled:
+        return None
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    if brief.get("operator_forced"):
+        return None
+    fam = run_act_family(request)
+    return fam.actor if fam is not None and fam.actor in BINDING_FAMILIES else None
 
 
 class RunBidder:
     """``market_getter`` returns the process's ``Market`` (or None while the market is off)."""
 
     def __init__(self, *, enabled: bool, market_getter: Callable[[], Any],
-                 timeout_sec: float = BID_TIMEOUT_SEC) -> None:
+                 timeout_sec: float = BID_TIMEOUT_SEC, binding_enabled: bool = False,
+                 bind_timeout_sec: float = BIND_TIMEOUT_SEC) -> None:
         self.enabled = bool(enabled)
+        # Patch D: BINDING_FAMILIES' runs bid at their first resource_request and obey (``bind``);
+        # off -> those runs bid in shadow at submit like every other family.
+        self.binding_enabled = bool(binding_enabled)
+        self._bind_timeout = bind_timeout_sec
         self._market = market_getter
         self._timeout = timeout_sec
         self._tasks: set[asyncio.Task] = set()
@@ -88,10 +217,11 @@ class RunBidder:
         # Runs whose bid is still in flight, and what happened to them meanwhile: an open (its time)
         # or the terminal. Applied when the bid lands, so a fast run never leaks a reservation.
         self._inflight: dict[str, dict[str, Any]] = {}
-        self.counts = {"bid": 0, "skipped": 0, "failed": 0, "opened": 0, "released": 0}
+        self.counts = {"bid": 0, "skipped": 0, "failed": 0, "opened": 0, "released": 0,
+                       "bind_admitted": 0, "bind_held": 0, "bind_no_answer": 0}
 
     def _market_or_none(self) -> Any:
-        if not self.enabled:
+        if not (self.enabled or self.binding_enabled):
             return None
         try:
             return self._market()
@@ -100,10 +230,14 @@ class RunBidder:
 
     def on_submit(self, request: dict[str, Any]) -> Optional[asyncio.Task]:
         """Schedule the shadow bid for an accepted run. Returns the task (tests await it), or None."""
+        if not self.enabled:
+            return None
         market = self._market_or_none()
         if market is None or getattr(market, "families", None) is None:
             return None
         try:
+            if binding_family(request, self.binding_enabled) is not None:
+                return None          # its binding bid (``bind``, at resource_request) is its one bid
             run_id = str(request.get("run_id") or "")
             if not run_id or run_id in self._seen:
                 return None          # a duplicate submit of the same run bids once
@@ -159,6 +293,59 @@ class RunBidder:
             logger.warning("physiology_shadow_bid_book_call_failed", exc_info=True)
             return 0
 
+    async def bind(self, request: dict[str, Any], now: datetime) -> Optional[BindVerdict]:
+        """Patch D: the binding bid of a run that has not asked the pool yet. None when the run's family
+        does not bind (flag off, or not in BINDING_FAMILIES): admission goes on exactly as before.
+
+        Never raises. No market / timeout / failure -> an ``admit`` verdict with ``no_answer:*``."""
+        try:
+            family = binding_family(request, self.binding_enabled)
+        except Exception:  # noqa: BLE001
+            logger.warning("physiology_bind_family_failed run=%s", request.get("run_id"), exc_info=True)
+            return None
+        if family is None:
+            return None
+        market = self._market_or_none()
+        cfg = market.families.get(family) if market is not None and getattr(market, "families", None) else None
+        if cfg is None:
+            self.counts["bind_no_answer"] += 1
+            v = BindVerdict(True, "no_answer:market_off" if market is None else "no_answer:no_families_config")
+            self._log(request, v)
+            return v
+        want = want_for_run(request, cfg.tier, producer=BINDING_PRODUCER)
+        if want is None:
+            return None
+        decision = None
+        t0 = time.monotonic()
+        try:
+            decision = await asyncio.wait_for(market.bid(want, now, reserve_at_open=True), self._bind_timeout)
+        except Exception:  # noqa: BLE001 -- incl. timeout: the run asks the pool as before
+            logger.warning("physiology_bind_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
+        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
+        verdict = bind_verdict(decision, now, hold_end(want, cfg.deferrable_window_s))
+        verdict.detail["bid_ms"] = elapsed_ms
+        if decision is None or decision.outcome != "funded":
+            # Nothing of this want may stay in the book: a held or pool-queued want reserves nothing
+            # (its use shows in the lane's measured level). wait_for cancels a timed-out bid; the
+            # release is a no-op then.
+            self._safe(market.release, want.want_id)
+        if decision is not None:
+            self.counts["bid"] += 1
+        key = "bind_held" if not verdict.admit else (
+            "bind_no_answer" if verdict.why.startswith("no_answer") else "bind_admitted")
+        self.counts[key] += 1
+        self._log(request, verdict)
+        return verdict
+
+    @staticmethod
+    def _log(request: dict[str, Any], v: BindVerdict) -> None:
+        d = v.detail
+        logger.info("physiology_bind run=%s corr=%s verdict=%s admit=%s retry_at=%s decision_id=%s outcome=%s "
+                    "reason=%s binding=%s net=%s charge=%s bid_ms=%s obeyed=true", request.get("run_id"),
+                    request.get("correlation_id"), v.why, v.admit, v.retry_at.isoformat() if v.retry_at else None,
+                    d.get("decision_id"), d.get("outcome"), d.get("reason"), d.get("binding_constraint"),
+                    d.get("net"), d.get("charge"), d.get("bid_ms"))
+
     def on_grant(self, run_id: str, at: Optional[datetime] = None) -> int:
         """The run got a pool grant (its act opens at the first one): start its reservation."""
         market = self._market_or_none()
@@ -191,4 +378,5 @@ class RunBidder:
         return n
 
 
-__all__ = ["PRODUCER", "RunBidder", "want_for_run"]
+__all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "PRODUCER", "RELEASE_EVENT", "RunBidder", "bind_verdict",
+           "binding_family", "decision_detail", "hold_end", "want_for_run"]

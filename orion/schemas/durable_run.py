@@ -188,6 +188,11 @@ class CuriosityRunBriefV1(BaseModel):
     # Additive, investigate only: set for an urgent run (orion/schemas/curiosity_urgent.py).
     # Producers dump with exclude_none=True, so an unset seed never reaches an old runner.
     urgent: CuriosityUrgentSeedV1 | None = None
+    # Additive (body economy Patch D, 2026-10-30): True only on an operator's forced run (Hub
+    # "Run now", tick(force=True)). Durable-runs never holds such a run on the economy: a forced run
+    # is the operator's call, not curiosity's want. Producers dump with exclude_none=True, so a
+    # scheduled run never carries the key and an old consumer never sees it from one.
+    operator_forced: bool | None = None
     # Additive: what recall searches for during this run's turn -- the run's
     # standing question (self-inquiry: the picked question; urgent: the seed's
     # question; investigate: the continuation note). Carried on the brief so it

@@ -28,7 +28,7 @@ sys.path.insert(0, str(_HERE.parents[1]))
 
 import body_economy_shadow_vs_real as svr  # noqa: E402
 
-PLACES = (*svr.CELLS, "no_market", "no_act_producer", "before_act_producer", "synthetic_probe")
+PLACES = (*svr.CELLS, "no_market", "no_act_producer", "before_act_producer", "synthetic_probe", "binding_obeyed")
 
 
 def check_invariants(report: dict) -> list[str]:

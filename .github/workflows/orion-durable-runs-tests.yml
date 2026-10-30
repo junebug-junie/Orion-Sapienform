@@ -8,6 +8,9 @@ on:
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "scripts/analysis/body_economy_binding_replay.py"
+      - "scripts/analysis/body_economy_shadow_vs_real.py"
+      - "scripts/analysis/tests/test_body_economy_binding_replay.py"
       - "orion/personality/**"
       - "orion/schemas/personality.py"
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
@@ -216,6 +219,12 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/hold_fairness.py
+      - name: Curiosity binding-bid eval (body economy Patch D -- capacity queues at the pool, holds bounded)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-durable-runs/evals/curiosity_binding_replay.py
+          python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_binding_replay.py
       - name: Deploy-order skew eval (old pool refuses holds, then upgrades) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

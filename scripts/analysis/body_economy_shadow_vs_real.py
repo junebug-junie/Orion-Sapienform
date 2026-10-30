@@ -61,6 +61,9 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_ROOT))
 
 NO_MARKET = ("physiology_unavailable", "unknown_family", "family_never_bids")
+# Patch D: binding bids are obeyed (a deferral is a hold that re-bids), so "deferred & ran" is not a
+# disagreement for them. They are kept out of the table; body_economy_binding_replay.py covers them.
+BINDING_PRODUCERS = frozenset({"orion-durable-runs.admission.binding"})
 # Hand-run verification bids (deploy checks, probes, replays) are not producers' wants (the floor's own list).
 from orion.physiology.choice import SYNTHETIC_PRODUCERS  # noqa: E402
 OPEN_SLACK = timedelta(seconds=60)    # an act may be stamped a moment before the decision row
@@ -142,6 +145,8 @@ def classify(decisions: Iterable[Decision], acts: Iterable[Act]) -> list[dict]:
                "cell": None, "excluded": None}
         if d.producer in SYNTHETIC_PRODUCERS:
             row["excluded"] = "synthetic_probe"
+        elif d.producer in BINDING_PRODUCERS:
+            row["excluded"] = "binding_obeyed"
         elif d.reason in NO_MARKET:
             row["excluded"] = "no_market"
         elif d.family not in producing:
@@ -171,7 +176,7 @@ def summarize(rows: list[dict], vetoes: Optional[dict] = None) -> dict:
     for r in rows:
         f = fams.setdefault(r["family"], {"bids": 0, "funded": 0, "deferred": 0, "ran": 0, "not_run": 0,
                                           "unknown_outcome": 0, **{c: 0 for c in CELLS}, "no_market": 0,
-                                          "no_act_producer": 0, "before_act_producer": 0, "synthetic_probe": 0,
+                                          "no_act_producer": 0, "before_act_producer": 0, "synthetic_probe": 0, "binding_obeyed": 0,
                                           "binding": Counter(),
                                           "reasons": Counter(), "deferred_ran_by_reason": Counter(), "waits": []})
         f["bids"] += 1
@@ -201,7 +206,7 @@ def summarize(rows: list[dict], vetoes: Optional[dict] = None) -> dict:
                     "old_vetoes": (vetoes or {}).get(fam), "old_vetoes_note": UNLOGGED_VETOES.get(fam)}
     total = {c: sum(x[c] for x in out.values()) for c in (*CELLS, "bids", "funded", "deferred", "ran", "not_run",
                                                           "no_market", "no_act_producer", "before_act_producer",
-                                                          "synthetic_probe", "in_table")}
+                                                          "synthetic_probe", "binding_obeyed", "in_table")}
     dr = Counter()
     for x in out.values():
         dr.update(x["deferred_ran_by_reason"])

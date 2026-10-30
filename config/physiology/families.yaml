@@ -109,6 +109,16 @@ families:
     tier: 2
     deferrable_window_s: 3600
     lanes: []
+  aitown.session:
+    # 2026-10-30 (Juniper): an AI Town session Orion chooses (orion-embodiment session controller,
+    # act play:aitown.session). New family, tier 2 like the other leisure wants; Juniper signs off on
+    # the tier in PR review. The town's NPC dialogue runs on quick_background (pool class fast,
+    # circe gpu3) by route, so the calls span `fast` and nothing is placed. Hard cap 2 h per local
+    # day is the controller's, independent of bids.
+    tier: 2
+    deferrable_window_s: 7200
+    lanes: [fast]
+    placement: fixed
 
   # --- Verb families (Patch C3 follow-up, 2026-10-27). Mirrors each cortex verb's own
   # `physiology:` block (orion/cognition/verbs/*.yaml, Patch C2), so a cortex-orch dispatch bid

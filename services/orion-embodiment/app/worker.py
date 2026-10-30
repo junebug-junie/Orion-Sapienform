@@ -12,6 +12,7 @@ from typing import Optional
 from uuid import uuid4
 
 from app.settings import get_settings
+from app.town_sessions import TownConfig, TownSessionController
 
 from orion.autonomy.fcc_env import expand_env_path, load_fcc_env
 from orion.core.bus.async_service import OrionBusAsync
@@ -20,6 +21,7 @@ from orion.core.bus.codec import OrionCodec
 from orion.core.bus.resilience import publish_with_reconnect, run_subscription
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.embodiment import aitown_client
+from orion.schemas.aitown_session import AITOWN_SESSION_START_REQUEST_CHANNEL
 from orion.embodiment.arbiter import ArbiterState, decide
 from orion.embodiment.intents import build_intent
 from orion.embodiment.worldmap import walkable_tiles
@@ -171,6 +173,14 @@ class EmbodimentWorker:
         # or unavailable -> resolver falls back to unconstrained wander.
         self._walkable: Optional[set[tuple[int, int]]] = None
         self._walkable_loaded = False
+        # AI Town sessions (2026-10-30): the town runs only in sessions Orion chooses (capped per
+        # local day) or that Juniper opens by hand. See app/town_sessions.py.
+        self._town = TownSessionController(
+            TownConfig.from_settings(self._settings),
+            redis_getter=lambda: self._bus.redis,
+            world_id_getter=lambda: self._world_id or None,
+            bus_getter=lambda: self._bus,
+        )
 
     def _walkable_tiles(self) -> Optional[set[tuple[int, int]]]:
         """Fail-open, cached walkable set from the AI Town map. Fetched once."""
@@ -351,6 +361,8 @@ class EmbodimentWorker:
         await self._bus.connect()
         self._rpc_health_publisher.start()
         asyncio.create_task(self._consume_loop(), name="embodiment-consume")
+        asyncio.create_task(self._town_loop(), name="embodiment-town-sessions")
+        asyncio.create_task(self._town_rpc_loop(), name="embodiment-town-session-rpc")
         if self._settings.perception_interval_sec > 0:
             asyncio.create_task(self._perception_loop(), name="embodiment-perception")
 
@@ -365,6 +377,33 @@ class EmbodimentWorker:
             self._bus, self._settings.channel_intent, self._handle_logged,
             stop_event=self._stop, name="embodiment-intent",
         )
+
+    async def _town_loop(self) -> None:
+        """The session controller's own clock: the cap check must not wait on a slow perception tick."""
+        interval = max(1.0, float(getattr(self._settings, "town_tick_sec", 10.0)))
+        while not self._stop.is_set():
+            self._refresh_aitown_runtime()
+            try:
+                await self._town.tick()
+            except Exception:
+                logger.exception("embodiment_town_session_tick_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _town_rpc_loop(self) -> None:
+        await run_subscription(
+            self._bus, AITOWN_SESSION_START_REQUEST_CHANNEL, self._handle_town_rpc,
+            stop_event=self._stop, name="embodiment-town-session-rpc",
+        )
+
+    async def _handle_town_rpc(self, raw_msg: dict) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("embodiment_town_rpc_decode_failed: %s", decoded.error)
+            return
+        await self._town.handle(decoded.envelope, publish=self._bus.publish, source_ref=self._service_ref())
 
     async def _handle_logged(self, raw_msg: dict) -> None:
         try:
@@ -706,7 +745,10 @@ class EmbodimentWorker:
         player_id = (self._orion_player_id or "").strip()
         if not player_id:
             return None
-        if getattr(self._settings, "world_heartbeat_enabled", False):
+        town = getattr(self, "_town", None)
+        if getattr(self._settings, "world_heartbeat_enabled", False) and not (town is not None and town.cfg.enabled):
+            # Legacy always-on heartbeat, read only while town sessions are OFF (the rollback path).
+            # With sessions on, the session controller heartbeats during Orion's own sessions only.
             # Wake/keep the engine running so actuation lands (inactive worlds drop inputs).
             try:
                 await asyncio.to_thread(aitown_client.heartbeat_world, self._world_id or None)
@@ -1172,6 +1214,9 @@ class EmbodimentWorker:
             self._abandon_own_utterances[convo_id] = (
                 int(self._abandon_own_utterances.get(convo_id, 0)) + 1
             )
+            town = getattr(self, "_town", None)
+            if town is not None:
+                town.note_utterance()
             # Record Orion's contribution so the journal gate sees a real exchange
             # when this conversation later completes.
             if convo_id == getattr(self, "_active_conversation_id", None):

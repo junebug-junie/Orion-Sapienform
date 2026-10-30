@@ -51,7 +51,7 @@ from orion.execution_dispatch.builder import (
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
-from orion.execution_dispatch.policy import RETRO_LEISURE_EXECUTOR_VERB, READ_PULL_EXECUTOR_VERB, SHED_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.execution_dispatch.policy import AITOWN_SESSION_EXECUTOR_VERB, RETRO_LEISURE_EXECUTOR_VERB, READ_PULL_EXECUTOR_VERB, SHED_EXECUTOR_VERB, load_execution_dispatch_policy
 from orion.schemas.world_pulse_read_pull import (
     WORLD_PULSE_READ_PULL_REPLY_PREFIX,
     WORLD_PULSE_READ_PULL_REQUEST_CHANNEL,
@@ -90,6 +90,7 @@ from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
+from app.aitown_session_dispatch import AITownSessionDispatchMixin
 from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 
 logger = logging.getLogger("orion.execution_dispatch.runtime")
@@ -299,7 +300,7 @@ def tick_can_yield_control(to_send) -> bool:
     )
 
 
-class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin):
+class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDispatchMixin):
     def __init__(self) -> None:
         self._settings = get_settings()
         self._store = ExecutionDispatchRuntimeStore(
@@ -763,7 +764,8 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin):
                 # would only queue behind it (and, cold, would be re-admitted every tick until its
                 # first close lands). Also one per act per tick, and none when the belief could not
                 # be read (fail closed: unreadable is not cold).
-                held = self._reading_pull_held_reason(item) or self._retro_leisure_held_reason(item)
+                held = (self._reading_pull_held_reason(item) or self._retro_leisure_held_reason(item)
+                        or self._aitown_session_held_reason(item))
                 if held is not None:
                     act_held[item.dispatch_id] = held
                 elif (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
@@ -2300,6 +2302,8 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin):
             return await self._send_read_pull(bus, frame, candidate, now=now)
         if candidate.cortex_verb == RETRO_LEISURE_EXECUTOR_VERB:
             return await self._send_retro_leisure(bus, frame, candidate, now=now)
+        if candidate.cortex_verb == AITOWN_SESSION_EXECUTOR_VERB:
+            return await self._send_aitown_session(bus, frame, candidate, now=now)
         if candidate.cortex_verb == "skills.imagination.render_scene.v1":
             candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
         result_id = f"result:{candidate.dispatch_id}"

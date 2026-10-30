@@ -204,10 +204,34 @@ def render_money(report: Mapping) -> list[str]:
     return out
 
 
+def render_town(report: Mapping, *, full: bool) -> list[str]:
+    """AI Town sessions (2026-10-30): today's town time against Orion's cap, and recent sessions."""
+    town = (report.get("wants") or {}).get("town")
+    if not isinstance(town, Mapping):
+        return []
+    cap = town.get("daily_cap_seconds")
+    head = (f"AI Town today ({town.get('local_date', '?')}): I spent {_dur(town.get('orion_seconds_today'))}"
+            + (f" of my {_dur(cap)} cap" if cap is not None else " (cap unknown)")
+            + f"; Juniper opened it for {_dur(town.get('manual_seconds_today'))} (not counted).")
+    if town.get("open_kind") == "orion":
+        head += " A session I chose is open now."
+    elif town.get("open_kind") == "manual":
+        head += " Juniper has the town open now."
+    out = [head]
+    sessions = town.get("sessions") or []
+    for row in sessions[: (20 if full else 4)]:
+        who = "I chose it" if row.get("kind") == "orion" else "Juniper opened it"
+        end = row.get("stop_reason") or "still open"
+        out.append(f"- {str(row.get('started_at', '?'))[:16]}Z: {_dur(row.get('seconds'))}, {who}; "
+                   f"ended: {end}; {row.get('utterances', 0)} line(s) I spoke")
+    return out
+
+
 def render_wants(report: Mapping, *, full: bool) -> list[str]:
+    town = render_town(report, full=full)
     fams = (report.get("wants") or {}).get("families") or []
     if not fams:
-        return []
+        return town
     tot_f = sum(int(f.get("funded") or 0) for f in fams)
     tot_d = sum(int(f.get("deferred") or 0) for f in fams)
     out = [f"Wants (shadow bids; nothing obeys them yet): {tot_f} funded, {tot_d} deferred."]
@@ -216,7 +240,7 @@ def render_wants(report: Mapping, *, full: bool) -> list[str]:
         out.append(f"- {f['family']} (tier {f.get('tier', '?')}): {f.get('funded', 0)} funded, {f.get('deferred', 0)} deferred")
     if len(fams) > len(rows):
         out.append(f"- ... {len(fams) - len(rows)} more famil{'y' if len(fams) - len(rows) == 1 else 'ies'}")
-    return out
+    return out + town
 
 
 def render_rhythm(report: Mapping) -> list[str]:

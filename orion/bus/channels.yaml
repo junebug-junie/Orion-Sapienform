@@ -3090,6 +3090,10 @@ channels:
       # replay and closed when it is persisted (services/orion-dream/app/act_emit.py), gated by
       # DREAM_ACT_EMIT_ENABLED.
       - orion-dream
+      # act ledger (2026-10-30): the AI Town session's `play` act (actor aitown.session), opened when
+      # the session controller unpauses the town and closed when it pauses it
+      # (services/orion-embodiment/app/town_sessions.py).
+      - orion-embodiment
       # act ledger (body economy A5): want-family durable runs publish act_opened at their
       # first pool grant and act_closed at their terminal (infer / ask / sense / make) --
       # services/orion-durable-runs/app/run_acts.py, gated by ORION_DURABLE_ACT_EMIT_ENABLED.
@@ -3543,6 +3547,26 @@ channels:
     stability: "experimental"
     since: "2026-10-22"
     description: "Per-request reply to orion:retro_leisure:start:request (orion.schemas.retro_leisure.RETRO_LEISURE_START_REPLY_PREFIX): state started|refused, the session id and its act-ledger key, the runner's named refusal and retry_after_sec."
+
+  - name: "orion:aitown_session:start:request"
+    kind: "request"
+    schema_id: "AITownSessionStartRequestV1"
+    message_kind: "aitown_session.start.request.v1"
+    producer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-embodiment"]
+    stability: "experimental"
+    since: "2026-10-30"
+    description: "AI Town sessions (Juniper 2026-10-30): the motor allocator admitted one AI Town session (route aitown_session, act play:aitown.session:artifact_produced). orion-embodiment's session controller runs its own gate (EMBODIMENT_TOWN_SESSIONS_ENABLED, 2 h per America/Denver day, 1 h gap, one session at a time, no manual session open); when it passes it unpauses the town (testing:resume) and opens the play act keyed aitown_session_dispatch:<dispatch_id>. Reply AITownSessionStartResultV1 on orion:aitown_session:start:reply:*."
+
+  - name: "orion:aitown_session:start:reply:*"
+    kind: "result"
+    schema_id: "AITownSessionStartResultV1"
+    message_kind: "aitown_session.start.result.v1"
+    producer_services: ["orion-embodiment"]
+    consumer_services: ["orion-execution-dispatch-runtime"]
+    stability: "experimental"
+    since: "2026-10-30"
+    description: "Per-request reply to orion:aitown_session:start:request (orion.schemas.aitown_session.AITOWN_SESSION_START_REPLY_PREFIX): state started|refused, the session id and its act-ledger key, the controller's named refusal and retry_after_sec (the next local midnight for daily_cap)."
 
   - name: "orion:gpu_pool:actuate:request"
     kind: "request"

@@ -167,3 +167,18 @@ def test_processes_render_largest_first():
                         {"host": "circe", "name": "(host, not in a container)", "watts": 2.0, "cores": None}]
     text = rt.render_report_text(rep, ("processes",))
     assert "- circe orion-circe-atlas-agent: 18.5 W" in text and "CPU watts above idle" in text
+
+
+def test_town_sessions_read_in_plain_words():
+    rep = empty()
+    rep["wants"]["town"] = {
+        "local_date": "2026-10-30", "orion_seconds_today": 1800.0, "manual_seconds_today": 600.0,
+        "daily_cap_seconds": 7200.0, "open_kind": "orion",
+        "sessions": [{"session_id": "o1", "kind": "orion", "started_at": "2026-10-30T15:00:00Z",
+                      "seconds": 1800.0, "start_reason": "want_funded", "stop_reason": "session_cap",
+                      "utterances": 2}],
+    }
+    text = rt.render_report_text(rep, sections=("wants",))
+    assert "AI Town today (2026-10-30): I spent 30 min of my 2.0 h cap" in text
+    assert "Juniper opened it for 10 min (not counted)" in text
+    assert "I chose it; ended: session_cap; 2 line(s) I spoke" in text

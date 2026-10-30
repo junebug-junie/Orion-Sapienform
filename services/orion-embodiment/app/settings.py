@@ -36,10 +36,31 @@ class Settings(BaseSettings):
     wander_radius: float = Field(3.0, alias="EMBODIMENT_WANDER_RADIUS")
     locations_json: str = Field("{}", alias="EMBODIMENT_LOCATIONS_JSON")
     idle_heartbeat_sec: float = Field(0.0, alias="EMBODIMENT_IDLE_HEARTBEAT_SEC")
-    # Keep the AI Town engine awake so queued inputs (moveTo) are processed. An
-    # `inactive` world silently drops all inputs. Off by default (keeping the town
-    # alive also runs the other town agents' LLM loops).
+    # LEGACY always-on town heartbeat. Read ONLY while EMBODIMENT_TOWN_SESSIONS_ENABLED=false (the
+    # rollback path): it keeps the town running all day (~1,100 NPC LLM calls/day, measured
+    # 2026-10-30). With sessions on, the session controller heartbeats during Orion's sessions only.
     world_heartbeat_enabled: bool = Field(False, alias="EMBODIMENT_WORLD_HEARTBEAT_ENABLED")
+    # AI Town sessions (Juniper 2026-10-30, app/town_sessions.py). true: the town is paused except in
+    # a session Orion chose (motor allocator -> orion:aitown_session:start:request) or one Juniper
+    # opened by hand. false: Orion's sessions are refused and an open one is closed `disabled`;
+    # Juniper's manual sessions are still logged. Shipped ON.
+    town_sessions_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_SESSIONS_ENABLED")
+    # One Orion session's limit, and Orion's total per local day (the hard cap, enforced every tick).
+    town_session_max_sec: float = Field(1800.0, gt=0.0, alias="EMBODIMENT_TOWN_SESSION_MAX_SEC")
+    town_daily_cap_sec: float = Field(7200.0, ge=0.0, alias="EMBODIMENT_TOWN_DAILY_CAP_SEC")
+    # Minimum time from the end of one Orion session to the start of the next (spreads the cap).
+    town_min_gap_sec: float = Field(3600.0, ge=0.0, alias="EMBODIMENT_TOWN_MIN_GAP_SEC")
+    # Do not start a session with less than this much of today's cap left.
+    town_min_session_sec: float = Field(300.0, ge=0.0, alias="EMBODIMENT_TOWN_MIN_SESSION_SEC")
+    # The day the cap counts in.
+    town_tz: str = Field("America/Denver", alias="EMBODIMENT_TOWN_TZ")
+    # How often the controller checks the caps and heartbeats an open Orion session.
+    town_tick_sec: float = Field(10.0, gt=0.0, alias="EMBODIMENT_TOWN_TICK_SEC")
+    # Set the Convex env var ORION_TOWN_CORRELATION_ID to the open session's id, so NPC LLM calls
+    # carry X-Orion-Correlation-Id (patches/orion-town-correlation-id.patch) into llm_call_usage.
+    town_correlation_env_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_CORRELATION_ENV_ENABLED")
+    # SHADOW bid for the aitown.session want at each start request (logged, never obeyed).
+    physiology_shadow_bid_enabled: bool = Field(True, alias="EMBODIMENT_PHYSIOLOGY_SHADOW_BID_ENABLED")
     orion_sprite: str = Field("f1", alias="EMBODIMENT_ORION_SPRITE")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")
     social_cooldown_sec: float = Field(120.0, alias="EMBODIMENT_SOCIAL_COOLDOWN_SEC")

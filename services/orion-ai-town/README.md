@@ -350,7 +350,7 @@ npx convex run sim/state:snapshot '{"events": 100}'
 npx convex run sim/tick:run '{"minutes": 60, "force": true}'   # advance by hand, even while the town is stopped (at most 1440)
 ```
 
-The cron does nothing while the town is not running (`stoppedByDeveloper` or `inactive`). Embodiment's heartbeat keeps the world running while Orion's town body is up. Game time pauses with the world and does not catch up afterwards, so after any pause game hours drift away from wall-clock hours: game 08:00 (breakfast) is not 08:00 on the wall. The first tick or event creates the world from the card seed. To reset it to the seed (the event log stays, and the game clock carries on):
+The cron does nothing while the town is not running (`stoppedByDeveloper` or `inactive`). Since 2026-10-30 the town is paused by default and runs only in sessions: one Orion chose (capped at 2 hours a day), or one Juniper opened with Unfreeze. orion-embodiment's session controller heartbeats the world only during Orion's own sessions (see `services/orion-embodiment/README.md`, "AI Town sessions"). Game time pauses with the world and does not catch up afterwards, so after any pause game hours drift away from wall-clock hours: game 08:00 (breakfast) is not 08:00 on the wall. The first tick or event creates the world from the card seed. To reset it to the seed (the event log stays, and the game clock carries on):
 
 ```bash
 npx convex run sim/state:bootstrap '{"replace": true}'
@@ -410,6 +410,10 @@ npx convex run testing:resume
 # re-bootstrap Orion's external body:
 cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write
 ```
+
+### Session correlation id (`patches/orion-town-correlation-id.patch`)
+
+Every gateway call from `convex/util/llm.ts` (chat, embeddings, moderation) sends `X-Orion-Correlation-Id` when the Convex env var `ORION_TOWN_CORRELATION_ID` is set. orion-embodiment's session controller sets it to the open session's id and removes it when the session ends (the same admin call as `npx convex env set|remove`). The LLM gateway records it in `llm_call_usage.correlation_id`, so AI Town tokens join to the session (and to the `play:aitown.session` act, whose correlation id is the same). Before this the town's ~1,100 calls a day carried no correlation id. A deploy with no session open sends no header.
 
 ### Engine recovery (`patches/orion-engine-recovery.patch`)
 

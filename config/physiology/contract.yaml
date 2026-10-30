@@ -159,6 +159,10 @@ readers:
   - module: orion/grammar/act_energy_fill.py
     role: display
     reason: act energy cost (2026-10-29); reads the heat fit to price an act's heat_c_by_host in grammar_acts.cost_json. Records a cost, gates nothing.
+  - module: services/orion-embodiment/app/physiology_shadow.py
+    role: display
+    reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.
+    note: 2026-10-30; becomes the bid site when Patch D cuts each producer over
   - module: services/orion-dream/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (a dream check that would sleep) logged beside the real gate; never obeyed.

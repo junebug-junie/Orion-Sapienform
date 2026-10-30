@@ -20,9 +20,12 @@ existing focus slot (orion/curiosity/focus.py) with binding.invocation_context "
 questions (PRIME_HOLDBACK_FRACTION) is the narrator arm: opened as an act, never sent.
 
 Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tracked by JUNIPER_TURNS.
-Prime does not bid while one is running, and a thought whose model call overlapped one is recorded
-``preempted`` and discarded. The gateway call itself is NOT cancelled mid-generation (the bus RPC has
-no cancel); the background route only keeps it from STARTING while Juniper's call holds the slot.
+Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
+all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
+work today: a thought whose model call (in a worker thread) overlapped a turn is recorded ``preempted``
+and discarded, and the ``prime`` route's background priority keeps a Prime call from STARTING while
+Juniper's call holds the slot. A call already generating is NOT cancelled (the bus RPC has no cancel);
+the gateway generates nothing for a call granted after its 60 s budget (llm-gateway app/main.py).
 
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
@@ -51,6 +54,7 @@ from orion.introspect.transport import (
     RESULT_PREFIX,
 )
 from orion.prime.acts import (
+    GONE_READS_TO_SETTLE,
     NOMINATION_COMPONENT,
     NOMINATION_HORIZON_SEC,
     SOURCE_SERVICE,
@@ -59,8 +63,10 @@ from orion.prime.acts import (
     draw_arm,
     nomination_act,
     prime_focus_id,
+    Settlement,
     settle_nomination,
     thought_act,
+    treated_focus_gone,
 )
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
@@ -327,6 +333,17 @@ class PrimeRuntime:
         thought_id = new_id()
         act = thought_act(thought_id, llm_timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC))
         await self._open(act, THOUGHT_COMPONENT)
+        # Counts for the refractory interval from the moment it opens, whatever happens next (a failed,
+        # preempted or crashed thought must not retry every tick); its pending changes stay unless applied.
+        self.state = self.state.model_copy(update={"last_thought_at": now})
+        try:
+            produced, note = await self._think(act, thought_id, inputs, now)
+        except Exception as exc:  # noqa: BLE001 -- the act always closes
+            logger.exception("prime_thought_crashed thought=%s", thought_id)
+            produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
+        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=note)
+
+    async def _think(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime) -> tuple[bool, str]:
         curiosity, curiosity_err = await self._read_curiosity()
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
         frame = build_frame(self.state, inputs)
@@ -340,18 +357,13 @@ class PrimeRuntime:
             )
         except Exception as exc:  # noqa: BLE001
             parsed, err = None, f"{type(exc).__name__}: {str(exc)[:160]}"
-        # A failed or preempted thought still counts for the refractory interval (no hot retry loop);
-        # its pending changes stay, so the next funded thought reads them.
-        self.state = self.state.model_copy(update={"last_thought_at": now})
         if self.turns.started_since(started):
             logger.info("prime_thought_preempted thought=%s", thought_id)
-            await self._close(act, THOUGHT_COMPONENT, produced=False, note="preempted: a Juniper turn started")
-            return
+            return False, "preempted: a Juniper turn started"
         answer, perr = (None, err) if err else parse_answer(parsed)
         if answer is None:
             logger.info("prime_thought_failed thought=%s err=%s", thought_id, perr)
-            await self._close(act, THOUGHT_COMPONENT, produced=False, note=f"failed: {perr}")
-            return
+            return False, f"failed: {perr}"
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
@@ -363,7 +375,7 @@ class PrimeRuntime:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now)
         note = summary_note(applied)
         logger.info("prime_thought thought=%s %s reading=%r", thought_id, note, answer.reading[:200])
-        await self._close(act, THOUGHT_COMPONENT, produced=True, note=note)
+        return True, note
 
     async def _nominate(self, move: Any, *, thought_id: str, thought_act_id: str, now: datetime) -> None:
         focus_id = prime_focus_id(question=move.question, why=move.why, thought_id=thought_id)
@@ -426,6 +438,12 @@ class PrimeRuntime:
         for nom in self.state.open_nominations:
             settled = settle_nomination(arm=nom.arm, focus_id=nom.focus_id, opened_at=nom.opened_at, queued=nom.queued,
                                         queue_error=nom.queue_error, runs=runs, now=now)
+            if settled is None and nom.arm == "treated":
+                gone = treated_focus_gone(nom.focus_id, curiosity)
+                nom = nom.model_copy(update={"gone_reads": nom.gone_reads + 1 if gone else 0})
+                if nom.gone_reads >= GONE_READS_TO_SETTLE:
+                    settled = Settlement(False, "treated focus left Hub's slot with no run taking it "
+                                                "(replaced, cleared, expired, or never written)")
             if settled is None and (now - nom.opened_at).total_seconds() <= NOMINATION_HORIZON_SEC:
                 keep.append(nom)
                 continue

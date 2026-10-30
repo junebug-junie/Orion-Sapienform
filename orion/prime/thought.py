@@ -74,6 +74,7 @@ You hold at most 3 concerns: unfinished things worth keeping in mind. Each thoug
 
 The one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.
 Curiosity decides for itself: it may explore your question or set it aside, and you will see which.
+While a question of yours is still open (asked, not yet answered), you cannot ask another.
 Some of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.
 Only ask when a question would actually help with a concern. "move": null is a normal, good answer.
 
@@ -102,6 +103,15 @@ class FrameInputs:
     bid_lane: str = "chat"
 
 
+def _num(value: Any) -> float:
+    """A number from a payload field, 0.0 when absent or not numeric (a bad field never crashes a thought)."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return out if out == out else 0.0
+
+
 def _age(now: datetime, iso: Any) -> str:
     try:
         then = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
@@ -115,7 +125,7 @@ def _body_lines(inputs: FrameInputs) -> list[str]:
     if inputs.body is None:
         return [f"(unavailable: {inputs.body_error or 'not read'})"]
     body = inputs.body
-    lines = [f"(read {int(float(body.get('age_sec') or 0))} s after the body last measured itself)"]
+    lines = [f"(read {int(_num(body.get('age_sec')))} s after the body last measured itself)"]
     strain = body.get("strain") or {}
     if strain.get("why"):
         lines.append(f"strain: {strain['why']}")
@@ -125,7 +135,7 @@ def _body_lines(inputs: FrameInputs) -> list[str]:
     for name in ("heat", "energy", f"lane:{inputs.bid_lane}", "attention:juniper"):
         price = prices.get(name)
         if isinstance(price, dict) and price.get("why"):
-            lines.append(f"{name} (price {float(price.get('value') or 0):.2f}): {price['why']}")
+            lines.append(f"{name} (price {_num(price.get('value')):.2f}): {price['why']}")
         else:
             lines.append(f"{name}: (unavailable: not in the body state)")
     return lines
@@ -140,7 +150,7 @@ def _attention_lines(inputs: FrameInputs) -> list[str]:
     if active:
         lines.append(
             f"now: {active.get('subject_label') or active.get('subject_ref')} "
-            f"(arc_id {active.get('arc_id')}, kind {active.get('kind')}, dwell {int(float(active.get('cumulative_dwell_sec') or 0))} s)"
+            f"(arc_id {active.get('arc_id')}, kind {active.get('kind')}, dwell {int(_num(active.get('cumulative_dwell_sec')))} s)"
         )
     for arc in (t.get("arcs_today") or [])[:8]:
         label = arc.get("subject_label") or arc.get("subject_ref") or "?"

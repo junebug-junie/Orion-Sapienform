@@ -101,7 +101,7 @@ async def _start_prime() -> None:
     try:
         bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=True)
         prime_bus = bus
-        prime_runtime = PrimeRuntime(settings=settings, bus=bus, llm=MindLLMClient())
+        prime_runtime = PrimeRuntime(settings=settings, bus=bus, llm=MindLLMClient(rpc_health=False))
         await prime_runtime.start(connect=True)
     except Exception as exc:
         logger.warning("prime_start_failed error=%s", exc)

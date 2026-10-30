@@ -134,6 +134,24 @@ def _graded(run: dict[str, Any], arm: Arm, disposition: Optional[str]) -> Option
     return None  # running, or the stores disagree ("unknown"): wait
 
 
+# Consecutive settle reads (PRIME_SETTLE_INTERVAL_SEC apart) that must agree a treated focus is gone
+# before it is closed: one read can land between a run taking the focus and the run being listed.
+GONE_READS_TO_SETTLE = 2
+
+
+def treated_focus_gone(focus_id: str, curiosity: Optional[dict[str, Any]]) -> Optional[bool]:
+    """True when Hub's pending slot does not hold this focus AND no listed run took it: replaced by a
+    chat focus, cleared by Juniper, expired, or never written (an RPC with no answer). None = unknown."""
+    if not isinstance(curiosity, dict) or not isinstance(curiosity.get("runs"), list):
+        return None
+    pending = ((curiosity.get("schedule") or {}).get("pending_focus") or {})
+    if not pending.get("available"):
+        return None
+    if ((pending.get("focus") or {}).get("focus_id")) == focus_id:
+        return False
+    return not any((r.get("focus") or {}).get("focus_id") == focus_id for r in curiosity["runs"])
+
+
 def settle_nomination(
     *, arm: Arm, focus_id: str, opened_at: datetime, queued: Optional[bool], queue_error: Optional[str],
     runs: Iterable[dict[str, Any]], now: datetime,

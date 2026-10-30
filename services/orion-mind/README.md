@@ -81,9 +81,14 @@ thought, `goal_ref = prime_concern:<id>`).
 
 **State** persists in Redis `orion:prime:state` (concerns, open questions, last reading), so a restart resumes.
 
-**Juniper first.** `main.mind_run` marks a positively-marked Juniper turn (`engine.carries_live_turn`). Prime does not
-bid during one and discards a thought whose model call overlapped one. NOT done: cancelling a model call already
-generating on the chat lane (the bus RPC has no cancel); `PRIME_MAX_TOKENS` bounds that delay.
+**Juniper first.** `main.mind_run` marks a positively-marked Juniper turn (`engine.carries_live_turn`). `mind_run` runs
+the synchronous `run_mind` on the event loop, so Prime's tick cannot run during a turn at all (the `active()` check
+keeps that true if `run_mind` ever moves to a thread). A thought whose model call overlapped a turn is discarded
+(`preempted`), and the `background` route keeps a Prime call from starting while Juniper's call holds the slot.
+NOT done: cancelling a model call already generating on the chat lane (the bus RPC has no cancel);
+`PRIME_MAX_TOKENS` bounds that delay (live smoke: ~220 tokens, 3-7 s on the 8B metacog model; lane 0 UNVERIFIED).
+Prime's model calls do not count in orion-mind's RPC-health window (`MindLLMClient(rpc_health=False)`): they wait
+for slack by design.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

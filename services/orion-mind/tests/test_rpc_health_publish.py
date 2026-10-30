@@ -155,3 +155,20 @@ async def test_lifespan_starts_and_stops_publisher_bus(monkeypatch) -> None:
     fake_pub.stop.assert_awaited_once()
     fake_bus.close.assert_awaited_once()
     assert main_mod.rpc_health_bus is None
+
+
+def test_prime_calls_never_land_in_the_published_window(monkeypatch) -> None:
+    """Orion Prime's client (rpc_health=False) rides a background route that waits by design: its
+    waits and timeouts are not transport health."""
+    import app.llm_client as llm_client
+    import app.main as main_mod
+
+    monkeypatch.setattr(llm_client, "OrionBusAsync", _CallBus)
+    _CallBus.instances = []
+    _CallBus.time_out = True
+    llm_client.RPC_HEALTH_SINK.drain_into(OrionBusAsync(url="redis://u:1/0", enabled=False)._rpc_health)
+    with pytest.raises(TimeoutError):
+        _call(llm_client.MindLLMClient(rpc_health=False))
+    assert _CallBus.instances[0].closed
+    payload = _drain_publish(main_mod, OrionBusAsync(url="redis://unused:6379/0", enabled=False))
+    assert payload["success_count"] == 0 and payload["timeout_count"] == 0

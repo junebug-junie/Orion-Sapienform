@@ -222,3 +222,25 @@ def test_a_move_can_cite_the_concern_added_in_the_same_answer():
                                                   "concern_id": "new"}})
     applied = apply_answer(PrimeStateV1(), lone, now=T0, arc_ids=[], focus_pending=False)
     assert applied.move.concern_id is None and any('"new"' in w for w in applied.warnings)
+
+
+def test_a_concern_on_the_arc_attention_stays_on_keeps_its_evidence():
+    concern = PrimeConcernV1(concern_id="c1", text="heat", arc_id="arc1", opened_at=T0, last_evidence_at=T0)
+    state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
+    later = T0 + CONCERN_TTL + timedelta(hours=1)
+    state = observe(state, _snap(active_arc_id="arc1"), later)
+    assert state.concerns and state.concerns[0].last_evidence_at == later and state.pending_changes == []
+
+
+def _cur(runs=(), pending_id=None, available=True):
+    return {"runs": list(runs), "schedule": {"pending_focus": {
+        "available": available, "focus": {"focus_id": pending_id} if pending_id else None}}}
+
+
+def test_a_treated_focus_is_gone_only_when_neither_pending_nor_taken():
+    assert pa.treated_focus_gone("F", _cur(pending_id="F")) is False
+    assert pa.treated_focus_gone("F", _cur(runs=[{"focus": {"focus_id": "F"}}])) is False
+    assert pa.treated_focus_gone("F", _cur(pending_id="OTHER")) is True
+    assert pa.treated_focus_gone("F", _cur()) is True
+    assert pa.treated_focus_gone("F", _cur(available=False)) is None
+    assert pa.treated_focus_gone("F", None) is None

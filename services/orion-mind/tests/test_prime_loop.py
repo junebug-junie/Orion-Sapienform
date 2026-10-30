@@ -311,3 +311,34 @@ def test_lifespan_starts_prime_on_its_own_bus_without_blocking_and_stops_it(monk
 
 async def _anoop(*a, **k):
     return None
+
+
+def test_a_focus_replaced_in_hub_settles_after_two_reads_and_frees_prime():
+    rt = runtime(answer=MOVE)
+    asyncio.run(rt.tick())
+    nom = rt.state.open_nominations[0]
+    # A chat focus replaced Prime's: the slot holds another id and no run took Prime's.
+    rt2 = runtime(answer={"reading": "ok"}, bus=rt.bus, pending={"focus_id": "chat-focus", "question": "from chat"},
+                  now=T0 + timedelta(minutes=10))
+    asyncio.run(rt2.load())
+    asyncio.run(rt2.tick())
+    assert rt2.state.open_nominations[0].gone_reads == 1
+    rt2.clock_box["now"] = T0 + timedelta(minutes=16)
+    asyncio.run(rt2.tick())
+    closes = [a for k, a in rt2.bus.acts() if k == "act_closed" and a["verb"] == "ask"]
+    assert closes[0]["act_id"] == nom.act_id and closes[0]["outcome"]["value"] == 0.0
+    assert "left Hub's slot" in closes[0]["outcome"]["note"] and rt2.state.open_nominations == []
+
+
+def test_a_crashing_thought_closes_its_act_and_still_waits_out_the_refractory(monkeypatch):
+    rt = runtime(answer=MOVE)
+    rt.llm.request_json = lambda **kw: (_ for _ in ()).throw(AssertionError("unreachable"))
+    # The loop module's own globals (conftest re-imports `app`, so sys.modules may hold another copy).
+    monkeypatch.setitem(PrimeRuntime._think.__globals__, "build_frame",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("bad payload")))
+    asyncio.run(rt.tick())
+    rt.clock_box["now"] = T0 + timedelta(seconds=30)
+    asyncio.run(rt.tick())
+    closed = [a for k, a in rt.bus.acts() if k == "act_closed"]
+    assert len(closed) == 1 and closed[0]["outcome"]["value"] == 0.0 and "bad payload" in closed[0]["outcome"]["note"]
+    assert len(rt.bids) == 1   # no hot loop: the second tick is inside the refractory interval

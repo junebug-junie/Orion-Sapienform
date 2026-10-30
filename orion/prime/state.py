@@ -66,6 +66,8 @@ class PrimeNominationV1(BaseModel):
     # Treated only: what Hub answered. None until it answered; False with queue_error on refusal.
     queued: Optional[bool] = None
     queue_error: Optional[str] = None
+    # Consecutive settle reads that found this treated focus neither pending nor taken by a run.
+    gone_reads: int = 0
 
 
 class PrimeStateV1(BaseModel):
@@ -120,16 +122,18 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
     if snap.temporal_self_ok and snap.active_arc_id and snap.active_arc_id != state.seen_active_arc_id:
         label = snap.active_arc_label or snap.active_arc_id
         state = note_change(state, f"attention moved to {label!r} (arc {snap.active_arc_id})")
-        concerns = [
-            c.model_copy(update={"last_evidence_at": now}) if c.arc_id == snap.active_arc_id else c
-            for c in state.concerns
-        ]
-        state = state.model_copy(update={"seen_active_arc_id": snap.active_arc_id, "concerns": concerns})
+        state = state.model_copy(update={"seen_active_arc_id": snap.active_arc_id})
 
     if snap.body_ok and snap.binding is not None and snap.binding != state.seen_binding:
         now_binding = ", ".join(snap.binding) or "nothing"
         state = note_change(state, f"body: binding constraints now {now_binding}")
         state = state.model_copy(update={"seen_binding": snap.binding})
+
+    if snap.temporal_self_ok and snap.active_arc_id:
+        # Attention still on a concern's arc is evidence for it on every tick, not only on arrival.
+        state = state.model_copy(update={"concerns": [
+            c.model_copy(update={"last_evidence_at": now}) if c.arc_id == snap.active_arc_id else c
+            for c in state.concerns]})
 
     kept: list[PrimeConcernV1] = []
     for concern in state.concerns:

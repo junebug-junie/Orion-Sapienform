@@ -11,7 +11,10 @@ What counts as a change (each one is a fact Prime can be shown, never a score):
 * the set of BINDING body constraints changed (``prices[*].bind_state == "binding"`` from GET
   /physiology/state: the body's own label; slack and "out of my hands" (exogenous) are not news);
 * one of Prime's own acts settled (written by the runtime when a nomination closes);
-* a concern faded: no evidence for ``CONCERN_TTL`` (an arc it points to was not active);
+* a concern faded: Prime has not kept it for ``CONCERN_TTL`` (a thought keeps a concern by naming it
+  under ``concerns.keep``; nothing outside a thought renews it -- 2026-10-30, Juniper: an arc the model
+  tied a concern to is not evidence for it; the first live concern, about energy, was tied to a
+  conversation arc and was being renewed by that conversation);
 * first wake: Prime has never thought.
 
 The model's hunger (``WantV1.intensity``) is NOT computed here: the body-economy market fills it
@@ -31,7 +34,7 @@ MAX_CONCERNS = 3
 MAX_PENDING_CHANGES = 20
 MAX_RECENT_OUTCOMES = 10
 CONCERN_TEXT_CAP = 300
-# A concern with no evidence for a day fades. One day, because Temporal Self's arcs are per day
+# A concern Prime has not kept for a day fades. One day, because Temporal Self's arcs are per day
 # (``/temporal-self/frame`` day_id): an arc not seen for a whole day is no longer part of today.
 CONCERN_TTL = timedelta(hours=24)
 
@@ -43,10 +46,10 @@ class PrimeConcernV1(BaseModel):
 
     concern_id: str
     text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
-    # The Temporal Self arc this concern is about, when it is about one. Evidence for the concern is
-    # that arc being Orion's active arc again.
+    # The Temporal Self arc the model said this concern is about. A reference only, never evidence.
     arc_id: Optional[str] = None
     opened_at: AwareDatetime
+    # When a thought last kept it (or opened it). Name kept for the persisted state's schema.
     last_evidence_at: AwareDatetime
 
 
@@ -129,16 +132,10 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
         state = note_change(state, f"body: binding constraints now {now_binding}")
         state = state.model_copy(update={"seen_binding": snap.binding})
 
-    if snap.temporal_self_ok and snap.active_arc_id:
-        # Attention still on a concern's arc is evidence for it on every tick, not only on arrival.
-        state = state.model_copy(update={"concerns": [
-            c.model_copy(update={"last_evidence_at": now}) if c.arc_id == snap.active_arc_id else c
-            for c in state.concerns]})
-
     kept: list[PrimeConcernV1] = []
     for concern in state.concerns:
         if now - concern.last_evidence_at > CONCERN_TTL:
-            state = note_change(state, f"concern faded with no evidence for a day: {concern.text!r}")
+            state = note_change(state, f"concern faded, not kept for a day: {concern.text!r}")
         else:
             kept.append(concern)
     return state.model_copy(update={"concerns": kept})

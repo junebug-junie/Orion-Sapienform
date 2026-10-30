@@ -40,15 +40,13 @@ def test_first_tick_wakes_and_a_quiet_tick_after_a_thought_does_not():
     assert again.pending_changes == [] and not wants_to_think(again, T0 + timedelta(minutes=5), refractory=REFRACTORY)
 
 
-def test_attention_moving_is_a_change_and_is_evidence_for_its_concern():
+def test_attention_moving_is_a_change_but_never_evidence_for_a_concern():
     concern = PrimeConcernV1(concern_id="c1", text="the bus keeps surprising me", arc_id="arc2",
                              opened_at=T0, last_evidence_at=T0)
-    state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[],
-                         last_thought_at=T0)
-    later = T0 + timedelta(hours=3)
-    state = observe(state, _snap(active_arc_id="arc2", active_arc_label="heat"), later)
+    state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
+    state = observe(state, _snap(active_arc_id="arc2", active_arc_label="heat"), T0 + timedelta(hours=3))
     assert state.pending_changes == ["attention moved to 'heat' (arc arc2)"]
-    assert state.concerns[0].last_evidence_at == later
+    assert state.concerns[0].last_evidence_at == T0
 
 
 def test_an_unknown_read_is_never_a_change():
@@ -57,7 +55,7 @@ def test_an_unknown_read_is_never_a_change():
     assert state.pending_changes == []
 
 
-def test_a_concern_with_no_evidence_for_a_day_fades_and_says_so():
+def test_a_concern_not_kept_for_a_day_fades_and_says_so():
     concern = PrimeConcernV1(concern_id="c1", text="old worry", opened_at=T0, last_evidence_at=T0)
     state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[],
                          last_thought_at=T0)
@@ -113,7 +111,7 @@ def test_apply_edits_concerns_and_never_trusts_an_id_the_frame_did_not_show():
     assert applied.state.pending_changes == [] and applied.state.last_reading == "quiet afternoon"
     assert len(applied.warnings) == 3   # invented arc, unknown drop, a fourth concern
     note = summary_note(applied)
-    assert "concerns +2 -1" in note and "c2 (resolved)" in note and "no move" in note
+    assert "concerns +2 -1 kept 0" in note and "c2 (resolved)" in note and "no move" in note
 
 
 @pytest.mark.parametrize("open_nom, focus_pending, refusal", [
@@ -224,12 +222,18 @@ def test_a_move_can_cite_the_concern_added_in_the_same_answer():
     assert applied.move.concern_id is None and any('"new"' in w for w in applied.warnings)
 
 
-def test_a_concern_on_the_arc_attention_stays_on_keeps_its_evidence():
-    concern = PrimeConcernV1(concern_id="c1", text="heat", arc_id="arc1", opened_at=T0, last_evidence_at=T0)
+def test_only_a_thought_keeping_a_concern_renews_it():
+    """Live 10-30: an energy concern tied to a conversation arc was renewed by that conversation."""
+    concern = PrimeConcernV1(concern_id="c1", text="energy", arc_id="arc1", opened_at=T0, last_evidence_at=T0)
     state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
     later = T0 + CONCERN_TTL + timedelta(hours=1)
-    state = observe(state, _snap(active_arc_id="arc1"), later)
-    assert state.concerns and state.concerns[0].last_evidence_at == later and state.pending_changes == []
+    faded = observe(state, _snap(active_arc_id="arc1"), later)
+    assert faded.concerns == [] and "not kept" in faded.pending_changes[-1]
+    keep = PrimeAnswerV1.model_validate({"concerns": {"keep": ["c1", "ghost"]}})
+    applied = apply_answer(state, keep, now=T0 + timedelta(hours=20), arc_ids=[], focus_pending=False)
+    assert applied.state.concerns[0].last_evidence_at == T0 + timedelta(hours=20) and applied.kept == ["c1"]
+    assert any("ghost" in w for w in applied.warnings)
+    assert observe(applied.state, _snap(), later).concerns   # kept 5 h before: still held
 
 
 def _cur(runs=(), pending_id=None, available=True):

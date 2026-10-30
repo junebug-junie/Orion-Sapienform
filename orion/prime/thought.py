@@ -47,6 +47,8 @@ class ConcernDropV1(BaseModel):
 class ConcernEditsV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
     add: list[ConcernAddV1] = Field(default_factory=list)
+    # concern_ids this thought keeps: the only thing that renews a concern (it fades after a day otherwise).
+    keep: list[str] = Field(default_factory=list)
     drop: list[ConcernDropV1] = Field(default_factory=list)
 
 
@@ -69,7 +71,8 @@ SYSTEM_PROMPT = """You are Orion's slow, between-conversations thinking ("Prime"
 
 You hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:
 1. read what changed and say, briefly, how you read the situation now;
-2. edit your concerns (add one that matters, drop one that no longer does, with why);
+2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one
+   that no longer does, with why. A concern you do not keep fades after a day;
 3. choose at most one move, or none.
 
 The one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.
@@ -80,10 +83,11 @@ Only ask when a question would actually help with a concern. "move": null is a n
 
 Rules:
 - Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.
+- Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).
 - Refer to concerns by their concern_id; a move about the concern you add in this same answer uses "new".
 - arc_id must be an arc_id listed under ATTENTION (the hex id after "arc_id"), or null.
 - Reply with ONE JSON object and nothing else:
-{"reading": "...", "concerns": {"add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
+{"reading": "...", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
  "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null"}}"""
 
 
@@ -186,7 +190,7 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     sections = [
         "WHAT CHANGED SINCE YOUR LAST THOUGHT:\n" + "\n".join(f"- {c}" for c in state.pending_changes),
         "YOUR CONCERNS:\n" + ("\n".join(
-            f"- concern_id {c.concern_id}: {c.text} (arc {c.arc_id or 'none'}, evidence {_age(inputs.now, c.last_evidence_at.isoformat())})"
+            f"- concern_id {c.concern_id}: {c.text} (arc {c.arc_id or 'none'}, last kept {_age(inputs.now, c.last_evidence_at.isoformat())})"
             for c in state.concerns) or "(none)"),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
         "WHAT HAPPENED TO YOUR EARLIER MOVES:\n" + ("\n".join(f"- {o}" for o in state.recent_outcomes) or "(none yet)"),
@@ -215,6 +219,7 @@ class Applied:
     state: PrimeStateV1
     added: list[str]
     dropped: list[str]
+    kept: list[str]
     warnings: list[str]
     move: Optional[CuriosityFocusMoveV1]
     move_refusal: Optional[str]
@@ -234,6 +239,10 @@ def apply_answer(
             continue
         concerns = [c for c in concerns if c.concern_id != drop.concern_id]
         dropped.append(f"{drop.concern_id} ({drop.why[:120] or 'no reason given'})")
+    kept_ids = set(answer.concerns.keep) & {c.concern_id for c in concerns}
+    for cid in set(answer.concerns.keep) - {c.concern_id for c in concerns}:
+        warnings.append(f"keep of unknown concern {cid!r} ignored")
+    concerns = [c.model_copy(update={"last_evidence_at": now}) if c.concern_id in kept_ids else c for c in concerns]
     added: list[str] = []
     for add in answer.concerns.add:
         if len(concerns) >= MAX_CONCERNS:
@@ -268,12 +277,12 @@ def apply_answer(
         "last_thought_at": now,
         "thoughts_total": state.thoughts_total + 1,
     })
-    return Applied(new_state, added, dropped, warnings, None if refusal else move, refusal)
+    return Applied(new_state, added, dropped, sorted(kept_ids), warnings, None if refusal else move, refusal)
 
 
 def summary_note(applied: Applied) -> str:
     """The thought act's close note: what the thought changed (concerns are never edited silently)."""
-    parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)}"]
+    parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]
     if applied.dropped:
         parts.append("dropped " + "; ".join(applied.dropped))
     if applied.move is not None:

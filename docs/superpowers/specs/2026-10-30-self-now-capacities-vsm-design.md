@@ -1,7 +1,8 @@
 # Self-now rung 4: capacities, read through the Viable System Model
 
 Status: ACCEPTED 2026-10-30 (Juniper: "hit it", all five defaults below). Patch 1 built: PR
-`feat/dig-capacities` (rules, read-only `dig capacities`, rule eval).
+`feat/dig-capacities` (rules, read-only `dig capacities`, rule eval). Patch 2 built: PR
+`feat/capacity-claims` (claims, disputes, confirmations, capacity sentences; see "Patch 2 notes").
 Date: 2026-10-30. Ladder: `docs/superpowers/specs/2026-10-23-repo-chronicle-design.md` (PR #2888),
 rung 4 of 5 (parts → circulation → organs → **capacities** → portrait).
 
@@ -309,3 +310,15 @@ example, `orion:grammar:event`, has two readers). On it `orion-equilibrium-servi
 producers, so it is neither a collector nor a server there; only `orion-heartbeat` prints as a
 collector. On the 2026-10-29 body no camera was live yet (no camera liveness source that day), so
 R-boundary-in expects only the two outside endpoints on that fixture.
+
+**Patch 2 notes (as built).** `orion/body_atlas/claims.py`, `config/body_atlas/vsm_confirmed.yaml`.
+A claim may sit on any live part except a host or operator id (stores and processes included, so
+`pg:self_concept_history` can be claimed). "Cites a flow of that part" means the other end or a
+non-census channel of a flow touching it; `runs_on` (a host) and the census are not evidence of a
+job. Only "no part is shown" gap lines are covered by a confirmation (`gap:s2-none`,
+`gap:s3star-none`, `gap:s3star-unconfirmed`, and `gap:s5-unread` by a confirmed S5 *service*);
+the atlas-blind ones (`gap:s3-unseen`, `gap:s4-to-s3`, `gap:algedonic-unseen`) wait for patch 3.
+The S3* candidate is not a capacity holder until confirmed. Decision 3 lives in the YAML
+(`s5_shared_with`: Juniper, citing `config/physiology/families.yaml` and `contract.yaml`, whose own
+comments say a change needs her sign-off); `confirmed` and `rejected` ship empty. `metabolism` is a
+job line (NO RULE, claims only). `capacities <organ>` is not built (the role mix is in the JSON).

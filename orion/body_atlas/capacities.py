@@ -1,10 +1,14 @@
-"""Rung 4, patch 1: which jobs of a viable system the body atlas shows a part doing, by rule.
+"""Rung 4: which jobs of a viable system the body atlas shows a part doing, by rule, by
+Juniper's confirmation, or by Orion's claim.
 
 Design: ``docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md`` (Stafford Beer's
 Viable System Model: S1 operations, S2 coordination, S3 control, S3* audit, S4 intelligence,
-S5 identity, the algedonic line). Three rules decide a role; the rest of the jobs print "no rule"
-plus a gap line written here, never by Orion. Read-only: nothing here writes a file, a ledger or
-a store. Claims, confirmations and capacity sentences are patch 2.
+S5 identity, the algedonic line), plus ``metabolism`` (the body economy; Juniper's decision 2,
+claims only). Three rules decide a role; the rest of the jobs print "no rule" plus a gap line
+written here, never by Orion. Pure: nothing here reads or writes a file. Patch 2 adds the inputs
+``claims.py`` loads: Juniper's confirmations (``config/body_atlas/vsm_confirmed.yaml``), Orion's
+claims and disputes, and the capacity sentences Orion writes. A confirmation gives a role; a claim
+never does, and never clears a gap line.
 
 Every count uses **live parts only**: a ``service`` or ``endpoint`` part with status ``live``,
 operator ids (``operator:...``) excluded. Transient smokes and probes are never live. A channel's
@@ -36,6 +40,7 @@ channel above the largest drop among the top CENSUS_TOP_N shares. No fixed perce
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date as Date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,10 +55,18 @@ SECOND_MIN_PRODUCERS = 3
 CENSUS_REPLY_MAX = 0.10
 OPERATOR_PREFIX = "operator:"
 
-Job = Literal["S1", "S2", "S3", "S3*", "S4", "S5", "algedonic"]
-JOBS: tuple[Job, ...] = ("S1", "S2", "S3", "S3*", "S4", "S5", "algedonic")
+Job = Literal["S1", "S2", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]
+JOBS: tuple[Job, ...] = ("S1", "S2", "S3", "S3*", "S4", "S5", "algedonic", "metabolism")
 JOB_TITLES = {"S1": "operations", "S2": "coordination", "S3": "control", "S3*": "audit",
-              "S4": "intelligence", "S5": "identity", "algedonic": "(pain line)"}
+              "S4": "intelligence", "S5": "identity", "algedonic": "(pain line)", "metabolism": "(economy)"}
+# one sentence per capacity; S3* and the algedonic line report under cap:s3 and cap:s5 (design 4)
+CAP_JOBS: dict[str, tuple[Job, ...]] = {
+    "cap:s1": ("S1",), "cap:s2": ("S2",), "cap:s3": ("S3", "S3*"), "cap:s4": ("S4",),
+    "cap:s5": ("S5", "algedonic"), "cap:metabolism": ("metabolism",)}
+# gap lines that say "no part is shown doing this job": a confirmed role covers them. The others
+# say what the atlas cannot see (HTTP, Redis, S4 -> S3); only a new atlas source clears those.
+COVERED_BY_CONFIRMATION = {"gap:s2-none": ("S2", None), "gap:s3star-none": ("S3*", None),
+                           "gap:s3star-unconfirmed": ("S3*", None), "gap:s5-unread": ("S5", "service")}
 
 
 class RoleEvidenceV1(BaseModel):
@@ -65,7 +78,7 @@ class RoleEvidenceV1(BaseModel):
     part_id: str
     role: Job
     rule: str
-    strength: Literal["rule", "candidate"]
+    strength: Literal["rule", "candidate", "confirmed"]
     evidence: list[str] = Field(default_factory=list)  # channels / flows, by full id
     counts: dict[str, int] = Field(default_factory=dict)
 
@@ -94,7 +107,7 @@ class JobLineV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     job: Job
-    status: Literal["BY RULE", "CANDIDATE", "NO PART FOUND", "NO RULE"]
+    status: Literal["BY RULE", "CANDIDATE", "CONFIRMED", "NO PART FOUND", "NO RULE"]
     text: str
 
 
@@ -117,6 +130,84 @@ class OrganMixV1(BaseModel):
     roles: dict[str, list[str]] = Field(default_factory=dict)  # job -> part ids
 
 
+class ConfirmationV1(BaseModel):
+    """Juniper's word on one role of one part (``config/body_atlas/vsm_confirmed.yaml``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    part: str  # part name, e.g. orion-durable-runs
+    role: Job
+    date: Date  # YAML reads 2026-11-01 as a date; a quoted string parses too
+    note: str = ""
+
+
+class S5SharedV1(BaseModel):
+    """Decision 3: S5 (identity, policy) is shared with Juniper, citing her sign-off files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    who: str
+    signoff_files: list[str]
+    decided: Date
+
+
+class VsmConfirmedV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: list[ConfirmationV1] = Field(default_factory=list)
+    rejected: list[ConfirmationV1] = Field(default_factory=list)
+    s5_shared_with: S5SharedV1 | None = None
+
+
+class CapacityClaimV1(BaseModel):
+    """One line of Orion's claims ledger. ``dispute`` argues with a rule result; it changes nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    part_id: str
+    role: Job
+    kind: Literal["claim", "dispute"]
+    because: str
+    cites: list[str]  # the part's flows (other end or channel) and repo files the because names
+    at: str
+    dig: str
+
+
+class CapacityV1(BaseModel):
+    """One capacity sentence in Orion's words. The latest line per ``cap_id`` is the one that reads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cap_id: str
+    sentence: str
+    because: str
+    cites: list[str]  # role holders (part names) or Juniper's sign-off files the text names
+    at: str
+    dig: str
+    replaces: str | None = None  # ``at`` of the line it supersedes
+
+
+class ClaimViewV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    part_id: str
+    role: Job
+    kind: Literal["claim", "dispute"]
+    status: Literal["unconfirmed", "confirmed", "rejected", "part not live now", "rule holds", "rule gone"]
+    because: str
+    at: str
+
+
+class CapacityViewV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cap_id: str
+    status: Literal["written", "stale", "not written", "gap"]
+    holders: list[str]  # who may be cited today
+    sentence: str | None = None
+    text: str  # what prints
+
+
 class CapacityReadingV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -133,6 +224,12 @@ class CapacityReadingV1(BaseModel):
     jobs: list[JobLineV1]
     gaps: list[GapV1]
     organ_mixes: list[OrganMixV1]
+    # patch 2 (all empty when nothing was passed in)
+    confirmed: list[RoleEvidenceV1] = Field(default_factory=list)
+    s5_shared_with: S5SharedV1 | None = None
+    claims: list[ClaimViewV1] = Field(default_factory=list)
+    capacities: list[CapacityViewV1] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 # --- the index the rules read -----------------------------------------------------------------
@@ -317,7 +414,33 @@ def _names(parts: list[str], k: int) -> str:
     return shown + (f" +{len(parts) - k}" if len(parts) > k else "")
 
 
-def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True) -> CapacityReadingV1:
+def claimable(atlas: BodyAtlasV1) -> dict[str, str]:
+    """name -> part id for every part a role can sit on: live, not a host, not an operator id."""
+    return {p.name: p.part_id for p in atlas.parts
+            if p.status == "live" and p.kind != "host" and not p.name.startswith(OPERATOR_PREFIX)}
+
+
+def _confirmed_roles(atlas: BodyAtlasV1, vsm: VsmConfirmedV1 | None) -> tuple[list[RoleEvidenceV1], list[str]]:
+    if vsm is None:
+        return [], []
+    parts = claimable(atlas)
+    out, notes = [], []
+    rejected = {(c.part, c.role) for c in vsm.rejected}
+    for c in vsm.confirmed:
+        if (c.part, c.role) in rejected:
+            notes.append(f"{c.part} {c.role} is both confirmed and rejected in vsm_confirmed.yaml; read as rejected")
+        elif c.part not in parts:
+            notes.append(f"Juniper confirmed {c.part} {c.role}, but no live part has that name now")
+        else:
+            out.append(RoleEvidenceV1(part_id=parts[c.part], role=c.role, rule="confirmed", strength="confirmed",
+                                      evidence=[f"Juniper confirmed {c.date}" + (f": {c.note}" if c.note else "")]))
+    return out, notes
+
+
+def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
+                    vsm: VsmConfirmedV1 | None = None) -> CapacityReadingV1:
+    """``vsm``: Juniper's confirmations. A confirmed role holds the job like a rule result does,
+    and covers the "no part is shown" gap lines of that job; it never clears an atlas-blind gap."""
     idx = _Index(atlas)
     boundary = rule_boundary_in(atlas, idx)
     s2, servers = rule_matchmaker(idx, second_set=second_set)
@@ -364,6 +487,8 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True) -> CapacityR
     jobs.append(JobLineV1(job="algedonic", status="NO RULE", text="strain is a Redis key, not in the atlas"))
     gaps.append(GapV1(gap_id="gap:algedonic-unseen", job="algedonic", text=(
         "my pain/pleasure line is not in my atlas: strain is a Redis key it does not read")))
+    jobs.append(JobLineV1(job="metabolism", status="NO RULE",
+                          text="claims only: the market and prices are HTTP, not in the atlas"))
     for r in s2:
         o = organ_of.get(r.part_id)
         if o is not None and len(o.members) > 1:
@@ -371,8 +496,29 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True) -> CapacityR
                 f"{_bare(r.part_id)} coordinates from inside organ {o.name or o.organ_id} ({len(o.members)} parts): "
                 "jobs do not follow organ lines")))
 
+    confirmed, notes = _confirmed_roles(atlas, vsm)
+    kind = {p.part_id: p.kind for p in atlas.parts}
+    by_job: dict[str, list[RoleEvidenceV1]] = defaultdict(list)
+    for c in confirmed:
+        by_job[c.role].append(c)
+    for i, j in enumerate(jobs):
+        got = by_job.get(j.job)
+        if not got:
+            continue
+        shown = "confirmed by Juniper: " + _names([c.part_id for c in got], 4)
+        status = j.status if j.status in ("BY RULE", "CANDIDATE") else "CONFIRMED"
+        jobs[i] = JobLineV1(job=j.job, status=status, text=f"{j.text} · {shown}" if status != "CONFIRMED"
+                            else f"{shown} · {j.text}")
+    gaps = [g for g in gaps if not (g.gap_id in COVERED_BY_CONFIRMATION and any(
+        c.role == COVERED_BY_CONFIRMATION[g.gap_id][0]
+        and COVERED_BY_CONFIRMATION[g.gap_id][1] in (None, kind.get(c.part_id)) for c in confirmed))]
+    if vsm is not None and vsm.s5_shared_with is not None:
+        sh = vsm.s5_shared_with
+        jobs = [j if j.job != "S5" else JobLineV1(job="S5", status=j.status, text=(
+            f"shared with {sh.who} (signs off {', '.join(sh.signoff_files)}) · {j.text}")) for j in jobs]
+
     mixes: dict[str, OrganMixV1] = {}
-    for r in roles:
+    for r in roles + confirmed:
         o = organ_of.get(r.part_id)
         if o is None:
             continue
@@ -384,7 +530,71 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True) -> CapacityR
         atlas_as_of=atlas.as_of, live_parts=len(idx.live), census=idx.census_rows, roles=roles,
         near_misses=servers + collectors, sources=rule_sources(idx), silent_services=silent,
         declared=declared_runner(atlas), jobs=jobs, gaps=gaps,
-        organ_mixes=sorted(mixes.values(), key=lambda m: -m.size))
+        organ_mixes=sorted(mixes.values(), key=lambda m: -m.size), confirmed=confirmed,
+        s5_shared_with=vsm.s5_shared_with if vsm else None, notes=notes)
+
+
+def holders(reading: CapacityReadingV1, cap_id: str) -> list[str]:
+    """Who a capacity may cite: parts holding its jobs by rule (not a candidate) or by Juniper's
+    confirmation, and for cap:s5 Juniper's sign-off files. Never a claim."""
+    jobs = CAP_JOBS[cap_id]
+    out = [r.part_id for r in reading.roles + reading.confirmed if r.role in jobs and r.strength != "candidate"]
+    if cap_id == "cap:s5" and reading.s5_shared_with is not None:
+        out += reading.s5_shared_with.signoff_files
+    return list(dict.fromkeys(out))
+
+
+def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfirmedV1 | None,
+                   claims: list[CapacityClaimV1], written: list[CapacityV1]) -> CapacityReadingV1:
+    """Copy of ``reading`` with Orion's claims and capacity sentences read against today's roles.
+    The latest line per (part, role, kind) and per cap id wins."""
+    out = reading.model_copy(deep=True)
+    live = set(claimable(atlas).values())
+    confirmed = {(r.part_id, r.role) for r in out.confirmed}
+    names = {p.name: p.part_id for p in atlas.parts}
+    rejected = {(names.get(c.part, f"part:{c.part}"), c.role) for c in (vsm.rejected if vsm else [])}
+    ruled = {(r.part_id, r.role) for r in out.roles}
+    latest: dict[tuple[str, str, str], CapacityClaimV1] = {}
+    for c in claims:
+        latest[(c.part_id, c.role, c.kind)] = c
+    for c in latest.values():
+        key = (c.part_id, c.role)
+        if c.kind == "dispute":
+            status = "rule holds" if key in ruled else "rule gone"
+        elif key in rejected:
+            status = "rejected"
+        elif c.part_id not in live:
+            status = "part not live now"
+        else:
+            status = "confirmed" if key in confirmed else "unconfirmed"
+        out.claims.append(ClaimViewV1(part_id=c.part_id, role=c.role, kind=c.kind, status=status,
+                                      because=c.because, at=c.at))
+        if status == "rule holds":  # the dispute prints beside the rule result it argues with
+            out.jobs = [j if j.job != c.role else j.model_copy(update={"text": f"{j.text} · I dispute "
+                        f"{_bare(c.part_id)}"}) for j in out.jobs]
+    last: dict[str, CapacityV1] = {}
+    for w in written:
+        last[w.cap_id] = w
+    for cap_id in CAP_JOBS:
+        hs = holders(out, cap_id)
+        held = {_bare(h) for h in hs}
+        w = last.get(cap_id)
+        jobs = "/".join(CAP_JOBS[cap_id])
+        if w is not None:
+            gone = [c for c in w.cites if c not in held]
+            if gone:
+                out.capacities.append(CapacityViewV1(cap_id=cap_id, status="stale", holders=hs, sentence=w.sentence,
+                                                     text=f'STALE ({", ".join(gone)} no longer holds {jobs}): "{w.sentence}"'))
+            else:
+                out.capacities.append(CapacityViewV1(cap_id=cap_id, status="written", holders=hs, sentence=w.sentence,
+                                                     text=f'"{w.sentence}"'))
+        elif hs:
+            out.capacities.append(CapacityViewV1(cap_id=cap_id, status="not written", holders=hs,
+                                                 text="not written yet; may cite " + _names(hs, 4)))
+        else:
+            out.capacities.append(CapacityViewV1(cap_id=cap_id, status="gap", holders=[], text=(
+                f"I cannot yet say: no part holds {jobs} by rule or by Juniper's confirmation")))
+    return out
 
 
 def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
@@ -406,7 +616,24 @@ def render(reading: CapacityReadingV1) -> list[str]:
     census = [c for c in reading.census if c.census]
     lines.append("census: " + (", ".join(f"{c.channel} {c.share:.0%}" for c in census) or "none"))
     lines += [f"declared: {d}" for d in reading.declared]
-    lines.append(f"gaps: {len(reading.gaps)} (python -P -m orion.dig capacities gaps) · claims: not built yet")
+    disputes = [c for c in reading.claims if c.kind == "dispute"]
+    by_status: dict[str, list[str]] = defaultdict(list)
+    for c in reading.claims:
+        if c.kind == "claim":
+            by_status[c.status].append(f"{_bare(c.part_id)} {c.role}")
+    lines.append(f"my claims: {sum(len(v) for v in by_status.values())} ({len(by_status['confirmed'])} confirmed by "
+                 f"Juniper) · disputes: {len(disputes)}")
+    for status in ("unconfirmed", "rejected", "part not live now"):
+        if by_status[status]:
+            lines.append(f"  {status}: " + _names(by_status[status], 6) + (
+                " (my claim, not a role until Juniper confirms)" if status == "unconfirmed" else ""))
+    for d in disputes[:3]:
+        lines.append(f"  I dispute {_bare(d.part_id)} {d.role} ({d.status}): {d.because[:100]}")
+    lines += [f"note: {n}" for n in reading.notes[:3]]
+    if reading.capacities:
+        lines.append("capacities (my words; may cite only rule-held or confirmed roles):")
+        lines += [f"  {c.cap_id:<14} {c.text}" for c in reading.capacities]
+    lines.append(f"gaps: {len(reading.gaps)} (python -P -m orion.dig capacities gaps)")
     return lines
 
 

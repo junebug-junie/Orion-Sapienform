@@ -43,7 +43,7 @@ BIND_WORDS = {
 }
 #: The energy envelope binds "exogenously" when the always-on floor alone reaches it. That floor is
 #: my own body at rest, so "not from my load" would be false for energy (Juniper, 2026-10-30).
-ENERGY_EXOGENOUS_WORDS = "BINDING: my body at rest alone reaches the envelope"
+ENERGY_EXOGENOUS_WORDS = "BINDING: my always-on body alone reaches the envelope"
 
 
 def bind_words(constraint: Any, bind_state: Any) -> str:
@@ -203,7 +203,7 @@ def render_money(report: Mapping) -> list[str]:
     line = (f"Money: {_usd(m.get('mtd_usd'))} spent on electricity this month against a {_usd(m.get('envelope_usd'), 0)} "
             f"envelope; forecast {_usd(m.get('forecast_usd'))} by month end. ")
     if m.get("floor_usd") is not None:
-        line += f"My body at rest alone reaches {_usd(m.get('floor_usd'))} this month. "
+        line += f"My always-on body alone (rest plus anything left running) reaches {_usd(m.get('floor_usd'))} this month. "
     if m.get("rate_usd_per_kwh") is not None:
         line += f"Electricity now costs {_usd(m.get('rate_usd_per_kwh'), 3)}/kWh."
     out = [line.strip()]
@@ -371,7 +371,7 @@ FLOOR_DRIFT_W = 20.0
 
 def _card_above(c: Mapping) -> float:
     w, idle = c.get("watts"), c.get("idle_w")
-    return float(w) - float(idle) if (w is not None and idle is not None) else float(w or 0.0)
+    return float(w) - float(idle) if (w is not None and idle is not None) else 0.0  # unknown rest: not "busy"
 
 
 def host_headline(h: Mapping, *, short: bool = False) -> str:
@@ -398,7 +398,10 @@ def floor_drift(h: Mapping) -> Optional[str]:
     floor, rest = h.get("recent_floor_w"), h.get("chassis_w_rest")
     if floor is None or rest is None or float(floor) - float(rest) < FLOOR_DRIFT_W:
         return None
-    return f"this week's lowest draw is {_w(floor)}, {float(floor) - float(rest):.0f} W above the pinned rest: new always-on draw"
+    spons = sum(float(sp["cpu_w"]) for sp in h.get("sponsored") or [] if sp.get("cpu_w") is not None)
+    tail = f" (sponsored work is {spons:.0f} W CPU of it or more now)" if spons else ""
+    return (f"this week's lowest draw is {_w(floor)}, {float(floor) - float(rest):.0f} W above the pinned rest: "
+            f"new always-on draw{tail}")
 
 
 def sponsored_words(h: Mapping) -> list[str]:
@@ -481,9 +484,11 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
             out.append(f"- above rest but charged to no act: {_w(h['unattributed_above_rest_w'])}")
         days = h.get("daily") or []
         if days:
-            out.append("- daily average: " + ", ".join(f"{d['d'][5:]} {_w(d.get('chassis_w_avg'))}" for d in days[-7:]))
+            out.append("- daily average (first and last day partial): "
+                       + ", ".join(f"{d['d'][5:]} {_w(d.get('chassis_w_avg'))}" for d in days[-7:]))
     out.append("- measured: whole-machine watts (wall PDU or BMC), card watts (nvidia-smi), CPU watts (RAPL), "
-               "held time (GPU pool leases: time held, not time computing). Estimated: rest (pinned: the 5th "
+               "held time (GPU pool leases: time held, not time computing; holds overlap, and a lease that closed in "
+               "the window counts its whole hold). Estimated: rest (pinned: the 5th "
                "percentile of a dated window), CPU watts per container (a linear model), $/month (this rate x 730 h).")
     return out
 

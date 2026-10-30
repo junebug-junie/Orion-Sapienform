@@ -146,10 +146,16 @@ test("hosts: no machine reading says why; an asleep machine's note is shown", ()
   assert.match(tab.hostsHtml(null, err, "UTC"), /durable-runs unreachable since/);
   const odd = tab.hostsHtml({ hosts: [{ host: "x", chassis_w_now: null, cards: [{ card: "g", watts: null }] }] }, null, "UTC");
   assert.ok(odd.includes("<strong>x</strong> ? now") && !odd.includes("NaN"));
+  // no chassis reading: the bar scales to the parts, never past 100%
+  const parts = tab.hostsHtml({ hosts: [{ host: "y", chassis_w_now: null, gpu_w: 300, cpu_w: 100, other_w: null, cards: [] }] }, null, "UTC");
+  const widths = [...parts.matchAll(/width:([0-9.]+)%/g)].map((m) => Number(m[1]));
+  assert.ok(widths.length === 2 && widths.every((w) => w <= 100));
+  assert.match(tab.hostsHtml({ hosts: [{ host: "z", chassis_w_now: 500, gpu_w: 400, cpu_w: 150, other_w: -50, cards: [] }] }, null, "UTC"),
+    /meters disagree/);
 });
 
-test("energy over its envelope reads as Orion's body at rest, never 'not Orion's doing'", () => {
-  assert.equal(tab.stateWordsFor("energy", "exogenous_bind"), "Orion's body at rest alone reaches the envelope");
+test("energy over its envelope reads as Orion's own always-on body, never 'not Orion's doing'", () => {
+  assert.equal(tab.stateWordsFor("energy", "exogenous_bind"), "Orion's always-on body alone reaches the envelope");
   assert.equal(tab.stateWordsFor("heat", "exogenous_bind"), "over its line, not Orion's doing");
   assert.equal(tab.stateWordsFor("energy", "slack"), "room to spare");
 });

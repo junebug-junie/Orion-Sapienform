@@ -233,8 +233,13 @@ def energy_ask(reading: PhysiologyConstraintReadingV1, body: BodyInputs, now: da
         # Rest is Orion's body at rest (Juniper's lever, Orion's cost); activity is above it.
         elapsed_h = max(0.0, (now - month_start).total_seconds() / 3600.0)
         activity_mtd = max(0.0, to_date - floor_rate * elapsed_h)
-        why = (f"my body at rest costs about ${floor_rate * HOURS_PER_MONTH:.0f}/month, more than the "
-               f"${env:.0f} envelope by itself; my activity above rest adds about ${activity_mtd:.0f} this month "
+        # floor_rate is a ROLLING low: it holds anything left running (sponsored work included),
+        # so it is named "my always-on body", not the pinned rest the hosts report uses.
+        rest_month = floor_rate * HOURS_PER_MONTH
+        reach = (f"more than the ${env:.0f} envelope by itself" if rest_month > env else
+                 f"and with this month's spending so far it reaches the ${env:.0f} envelope")
+        why = (f"my always-on body (rest plus anything left running) costs about ${rest_month:.0f}/month, {reach}; "
+               f"my activity above it adds about ${activity_mtd:.0f} this month "
                f"(pace ${max(0.0, rate - floor_rate) * HOURS_PER_MONTH:.0f}/month); ") + why
     return _Ask(use, env, bind, why, budget_floor=0.05 * env)
 

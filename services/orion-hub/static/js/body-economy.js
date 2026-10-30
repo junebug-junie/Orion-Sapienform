@@ -25,7 +25,7 @@
   var STATE_RANK = { stuck_at_ceiling: 0, binding: 1, exogenous_bind: 2, no_reading: 3, slack: 4 };
   // The energy envelope binds "exogenously" when the always-on floor alone reaches it. That floor is
   // Orion's own body at rest, so "not Orion's doing" is false for energy (Juniper, 2026-10-30).
-  var ENERGY_EXO_WORDS = "Orion's body at rest alone reaches the envelope";
+  var ENERGY_EXO_WORDS = "Orion's always-on body alone reaches the envelope";
   function stateWordsFor(constraint, bindState) {
     if (constraint === "energy" && bindState === "exogenous_bind") return ENERGY_EXO_WORDS;
     return STATE_WORDS[bindState] || bindState || "";
@@ -528,7 +528,7 @@
     var figs = [["Spent so far", m.mtd_usd], ["Forecast by month end", m.forecast_usd], ["Envelope", m.envelope_usd]]
       .map(function (p) { return '<div><div class="muted small">' + p[0] + '</div><div class="big">' + esc(fmtUsd(p[1])) + "</div></div>"; }).join("");
     var note = num(m.floor_usd) !== null
-      ? '<p class="small">Orion\'s body at rest alone reaches ' + esc(fmtUsd(m.floor_usd)) + " this month" +
+      ? '<p class="small">Orion\'s always-on body alone (rest plus anything left running) reaches ' + esc(fmtUsd(m.floor_usd)) + " this month" +
         (num(m.envelope_usd) !== null && m.floor_usd > m.envelope_usd ? ", over the envelope by itself (hatched in the limits chart). Activity above rest adds the rest of the forecast." : ".") +
         (num(m.rate_usd_per_kwh) !== null ? " Rate: " + esc(fmtUsd(m.rate_usd_per_kwh)) + " per kWh." : "") + "</p>"
       : "";
@@ -584,7 +584,6 @@
   // Kept in its own functions (hostNotes, hostStackHtml, hostCardsHtml, hostsHtml, renderHosts) so
   // the processes panel (fix/hub-body-economy-processes-panel) merges without touching these lines.
   var HOST_COLORS = { gpu: "#3987e5", cpu: "#c98500", other: "#6b7280" };
-  var HOURS_PER_MONTH = 730;
 
   function hostNotes(report) {
     return ((report && report.missing) || []).filter(function (m) { return m && m.section === "hosts"; })
@@ -602,13 +601,15 @@
     var parts = [["gpu", "GPUs", h.gpu_w, h.gpu_w_rest], ["cpu", "CPU", h.cpu_w, h.cpu_w_rest], ["other", "Other (fans, PSU loss, memory, disks)", h.other_w, h.other_w_rest]];
     var segs = parts.filter(function (p) { return num(p[2]) !== null && p[2] > 0; }).map(function (p) {
       var tip = p[1] + " · " + fmtW(p[2]) + " now" + (num(p[3]) !== null ? " · its rest " + fmtW(p[3]) : "");
-      return '<span data-part="' + p[0] + '" data-tip="' + esc(tip) + '" style="width:' + (p[2] / maxW * 100).toFixed(2) +
+      return '<span data-part="' + p[0] + '" data-tip="' + esc(tip) + '" style="width:' + Math.min(100, p[2] / maxW * 100).toFixed(2) +
         "%;background:" + HOST_COLORS[p[0]] + '"></span>';
     }).join("");
     var rest = num(h.chassis_w_rest);
     var tick = rest === null ? "" : '<span class="rest-tick" data-tip="' + esc("rest " + fmtW(rest) + " (" + (h.rest_basis || "") + ")") +
       '" style="left:' + Math.min(100, rest / maxW * 100).toFixed(2) + '%"></span>';
-    return '<div class="stack" data-host-stack="' + esc(h.host) + '">' + segs + tick + "</div>";
+    var neg = num(h.other_w) !== null && h.other_w < 0
+      ? '<div class="muted small">GPU + CPU meters read more than the whole machine (other ' + esc(fmtW(h.other_w)) + "): the meters disagree this sample.</div>" : "";
+    return '<div class="stack" data-host-stack="' + esc(h.host) + '">' + segs + tick + "</div>" + neg;
   }
 
   function hostCardsHtml(h) {
@@ -630,7 +631,9 @@
     var hosts = ((report && report.hosts) || []).filter(function (h) { return h && h.host; });
     var notes = hostNotes(report);
     if (!hosts.length) return emptyHtml(unreachableText(err, tz) || notes.join("; ") || "No machine reading yet.");
-    var maxW = Math.max.apply(null, hosts.map(function (h) { return num(h.chassis_w_now) || 0; }).concat([1]));
+    var maxW = Math.max.apply(null, hosts.map(function (h) {
+      return Math.max(num(h.chassis_w_now) || 0, (num(h.gpu_w) || 0) + (num(h.cpu_w) || 0) + Math.max(0, num(h.other_w) || 0));
+    }).concat([1]));
     var legend = '<div class="legend">' + [["gpu", "GPUs"], ["cpu", "CPU"], ["other", "other (fans, PSU loss, memory, disks)"]].map(function (k) {
       return '<span class="key"><span class="sw" style="background:' + HOST_COLORS[k[0]] + '"></span>' + k[1] + "</span>";
     }).join("") + '<span class="key"><span class="sw rest-key"></span>rest</span></div>';

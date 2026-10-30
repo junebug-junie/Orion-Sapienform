@@ -233,8 +233,8 @@ def test_energy_exogenous_bind_is_my_body_at_rest_not_not_my_load():
     lim = {"constraint": "energy", "label": "Energy money this month", "unit": "usd", "line": 100.0,
            "now": {"level": 183.7, "bind_state": "exogenous_bind", "why": "my body at rest costs about $146/month"}}
     line = rt._limit_line(lim)
-    assert "BINDING: my body at rest alone reaches the envelope" in line and "not from my load" not in line
+    assert "BINDING: my always-on body alone reaches the envelope" in line and "not from my load" not in line
     heat = {**lim, "constraint": "heat"}
     assert "not from my load" in rt._limit_line(heat)    # heat: the room really is outside Orion
     money = rt.render_money({"money": {"mtd_usd": 183.7, "envelope_usd": 100.0, "forecast_usd": 196.7, "floor_usd": 194.0}})
-    assert "My body at rest alone reaches $194.00 this month" in money[0] and "switched on" not in money[0]
+    assert "My always-on body alone (rest plus anything left running) reaches $194.00 this month" in money[0] and "switched on" not in money[0]

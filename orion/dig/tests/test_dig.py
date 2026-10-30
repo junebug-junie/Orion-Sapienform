@@ -269,8 +269,9 @@ def test_body_economy_help_lists_sections_and_flags(world, capsys):
     assert code == 0 and out.strip() == dig.BODY_ECONOMY_HELP
     for word in ("hosts", "processes", "unit_costs", "--host", "--window", "--family", "measured", "estimate"):
         assert word in out, word
-    code, _, err = run(capsys, "body-economy", "--host")
-    assert code == 1 and "--host needs a machine name" in err
+    for bad in ((), ("../x",)):
+        code, _, err = run(capsys, "body-economy", "--host", *bad)
+        assert code == 1 and "--host needs a machine name" in err
     code, _, err = run(capsys, "body-economy", "--hots", "circe")
     assert code == 1 and "--help lists them" in err
     code, out, _ = run(capsys, "help")

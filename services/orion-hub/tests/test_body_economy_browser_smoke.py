@@ -85,7 +85,7 @@ def test_body_economy_tab_deferred_row_brush_window_and_tooltip():
         assert "W now · rest 541 W" in hosts.locator('[data-host="circe"]').inner_text()
         assert hosts.locator('[data-host-stack="circe"] [data-part]').count() == 3
         assert "held by" in hosts.locator('[data-host-card="circe:gpu1"]').inner_text()
-        assert "body at rest alone reaches" in frame.locator('#beLimitRows [data-limit="energy"]').inner_text()
+        assert "always-on body alone reaches" in frame.locator('#beLimitRows [data-limit="energy"]').inner_text()
         assert "orion-harness-worker" in frame.locator('[data-tile="services"]').inner_text()   # services tile
         assert "2 idle lanes folded away" in frame.locator("#beLimitIdle").inner_text()      # fast + diffusion
         assert frame.locator('#beLimitRows [data-limit="energy"] rect.c-exo').count() == 24    # hatched, not coloured

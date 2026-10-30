@@ -82,7 +82,7 @@
     /* hosts: one stacked bar per machine (GPUs / CPU / other) with a tick at its rest */
     .host { padding: 10px 0; border-top: 1px solid #1f2937; } .host:first-of-type { border-top: 0; }
     .host-head { font-size: 14px; margin-bottom: 6px; }
-    .stack { position: relative; display: flex; height: 14px; border-radius: 5px; background: #1f2937; margin-bottom: 10px; }
+    .stack { position: relative; display: flex; overflow: hidden; height: 14px; border-radius: 5px; background: #1f2937; margin-bottom: 10px; }
     .stack > span:not(.rest-tick) { height: 100%; } .stack > span:first-child { border-radius: 5px 0 0 5px; }
     .stack .rest-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #f3f4f6; }
     .sw.rest-key { width: 2px; background: #f3f4f6; border-radius: 0; }

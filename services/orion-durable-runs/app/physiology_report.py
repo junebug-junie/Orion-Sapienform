@@ -441,7 +441,7 @@ _PINNED_PARTS_CACHE: dict[tuple, tuple[datetime, list[dict]]] = {}
 
 
 async def pinned_parts_rows(pool: Any, params: Mapping[str, Any], now: datetime) -> list[dict]:
-    key = (id(pool), params["rest_since"], params["rest_until"], tuple(params["hosts"]))
+    key = (id(pool), params["p"], params["rest_since"], params["rest_until"], tuple(params["hosts"]))
     hit = _PINNED_PARTS_CACHE.get(key)
     if hit and now - hit[0] < PINNED_PARTS_TTL:
         return hit[1]
@@ -454,7 +454,7 @@ async def pinned_parts_rows(pool: Any, params: Mapping[str, Any], now: datetime)
 def load_rest_body(path: str) -> tuple[dict, str, Optional[str]]:
     """(rest body doc, source words, error). Missing file -> the dated defaults (said, never silent)."""
     doc, err = _load_yaml(path)
-    if doc is None or not isinstance(doc.get("hosts"), dict):
+    if not isinstance(doc, dict) or not isinstance(doc.get("hosts"), dict):
         why = err or "no hosts in it"
         return DEFAULT_REST_BODY, "pinned default (config/physiology/rest_body.yaml not present yet)", (
             None if (err or "").startswith("missing:") else f"rest_body.yaml unreadable ({why}): using the pinned defaults")
@@ -465,9 +465,15 @@ def rest_window(doc: Mapping) -> tuple[str, str]:
     """The dated window the pinned rest was measured over ('2026-10-01..2026-10-13', end inclusive),
     as [since, until) biometrics timestamps. A host with no dated window (hecate 'standby') uses the default."""
     for spec in (doc.get("hosts") or {}).values():
-        m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})", str((spec or {}).get("measured") or ""))
+        if not isinstance(spec, Mapping):
+            continue
+        m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})", str(spec.get("measured") or ""))
         if m:
-            end = (datetime.fromisoformat(m.group(2)) + timedelta(days=1)).date().isoformat()
+            try:
+                datetime.fromisoformat(m.group(1))
+                end = (datetime.fromisoformat(m.group(2)) + timedelta(days=1)).date().isoformat()
+            except ValueError:
+                continue  # not a real date: the defaults below, never a 500
             return m.group(1), end
     end = (datetime.fromisoformat(DEFAULT_REST_WINDOW[1]) + timedelta(days=1)).date().isoformat()
     return DEFAULT_REST_WINDOW[0], end
@@ -1037,13 +1043,18 @@ def merge_by_node(*row_sets: Sequence[Mapping]) -> list[dict]:
     return list(out.values())
 
 
-def _pinned_rest(spec: Mapping) -> Optional[float]:
-    """Juniper's approved number wins over the measured one (rest can only rise with her sign-off)."""
-    for k in ("approved_rest_w", "rest_w"):
-        v = _f((spec or {}).get(k))
-        if v is not None:
-            return v
-    return None
+def _pinned_rest(spec: Any) -> tuple[Optional[float], Optional[str]]:
+    """(rest in use, refusal note). ``rest_w`` is the value in use; ``approved_rest_w`` is Juniper's
+    ceiling (allowance proposal PR #2989: lowering rest is always allowed, raising it needs her
+    sign-off). A rest_w above the approved number is refused: the approved number is used."""
+    if not isinstance(spec, Mapping):
+        return _f(spec), None   # a bare number: the rest itself, no ceiling
+    rest, ceiling = _f(spec.get("rest_w")), _f(spec.get("approved_rest_w"))
+    if rest is None:
+        return ceiling, None
+    if ceiling is not None and rest > ceiling:
+        return ceiling, f"rest_w {rest:.0f} W is above Juniper's approved {ceiling:.0f} W: the approved number is used"
+    return rest, None
 
 
 def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily_rows: Sequence[Mapping],
@@ -1086,7 +1097,8 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
     cards = _card_map(gpu_pool_doc) if gpu_pool_doc else []
     if pool_err:
         missing.append({"section": "hosts", "reason": f"card -> role map unavailable ({pool_err}): cards show no roles"})
-    sponsors = [sp for sp in body.get("sponsored") or [] if isinstance(sp, Mapping)]
+    sponsored_raw = body.get("sponsored")
+    sponsors = [sp for sp in (sponsored_raw if isinstance(sponsored_raw, list) else []) if isinstance(sp, Mapping)]
     asleep: list[str] = []
     recent_idle_hosts: list[str] = []
     out: list[dict] = []
@@ -1099,8 +1111,11 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
         gpu = _f(m.get("gpu_watts_total"))
         cpu = _f(m.get("cpu_watts_total"))
         rr = rest.get(host) or {}
-        spec = pinned.get(host) or {}
-        rest_w = _pinned_rest(spec)
+        raw_spec = pinned.get(host)
+        spec = raw_spec if isinstance(raw_spec, Mapping) else {}
+        rest_w, refused = _pinned_rest(raw_spec)
+        if refused:
+            missing.append({"section": "hosts", "reason": f"{host}: {refused}"})
         above = (chassis - rest_w) if (chassis is not None and rest_w is not None) else None
         per_month = lambda w: (_r(w * HOURS_PER_MONTH / 1000.0 * rate_usd_per_kwh, 2)  # noqa: E731
                                if (w is not None and rate_usd_per_kwh is not None) else None)

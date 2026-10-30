@@ -544,7 +544,7 @@ def cmd_body_economy(args: list[str], out: Out) -> str:
             family = next(it, "") or None
         elif a == "--host":
             host = (next(it, "") or "").strip().lower() or None
-            if host is None:
+            if host is None or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", host):
                 raise DigError("body-economy: --host needs a machine name (circe, athena, hecate)")
         elif a.startswith("--"):
             raise DigError(f"body-economy: unknown option {a} (use --host, --window or --family; --help lists them)")

@@ -190,12 +190,23 @@ def test_energy_floor_over_the_envelope_is_exogenous_bind():
     assert p.bind_state == "exogenous_bind"
     # Wording (2026-10-30): the always-on floor is Orion's own body at rest, never "not by what I do".
     assert "not by what I do" not in p.why and "stays switched on" not in p.why
-    assert "my body at rest costs about $177/month, more than the $100 envelope by itself" in p.why
-    assert "my activity above rest adds about $" in p.why and "(pace $0/month)" in p.why
+    assert "my always-on body (rest plus anything left running) costs about $177/month, more than the $100 envelope by itself" in p.why
+    assert "my activity above it adds about $" in p.why and "(pace $0/month)" in p.why
     # The report's money.floor_usd still parses the unchanged mechanism text.
     assert "the always-on floor alone ($0.243/h) reaches $" in p.why
     assert p.use > 100.0 and p.value <= 0.25 * 120 / 3600 + 1e-9
     assert out.strain.exogenous_bind == ["energy"] and out.strain.value is None
+
+
+def test_energy_bind_wording_when_rest_alone_is_under_the_envelope():
+    """Review fix: late-month spending can bind while rest per month is below the envelope; then
+    the why must not claim rest alone is over it."""
+    e = _energy(26, 0.5)                       # ~$44/month always-on, under a $50 envelope
+    reading = R(constraint="energy", unit="usd", level=60.0, budget=50.0, budget_kind="envelope")
+    by, _, _ = run([reading], b=body(energy=e))
+    p = by["energy"].price
+    assert p.bind_state == "exogenous_bind"
+    assert "by itself" not in p.why and "with this month's spending so far it reaches the $50 envelope" in p.why
 
 
 def test_energy_under_a_generous_envelope_is_slack():

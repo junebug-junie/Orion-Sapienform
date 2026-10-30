@@ -572,6 +572,29 @@ def _hosts_rows() -> dict:
     return rows
 
 
+@pytest.fixture(autouse=True)
+def _fresh_pinned_parts_cache():
+    pr._PINNED_PARTS_CACHE.clear()   # FakePool ids can be reused across tests
+    yield
+    pr._PINNED_PARTS_CACHE.clear()
+
+
+@pytest.mark.parametrize("body", [
+    "- just\n- a list\n",                                                   # top level is not a mapping
+    "hosts:\n  circe: 541\n  athena: 340\n",                               # bare numbers
+    "hosts:\n  circe: {rest_w: 541, measured: '2026-10-01..2026-10-32'}\n",  # not a real date
+    "hosts: [1, 2]\nsponsored: 7\n",
+])
+def test_a_malformed_rest_body_is_never_a_500(tmp_path, body):
+    (tmp_path / "heat_sensitivity.yaml").write_text(Path(HEAT_CFG).read_text())
+    (tmp_path / "rest_body.yaml").write_text(body)
+    deps = pr.ReportDeps(pool=FakePool(_hosts_rows()), heat_sensitivity_path=str(tmp_path / "heat_sensitivity.yaml"),
+                         gpu_pool_path=POOL_CFG)
+    rep = asyncio.run(pr.build_report(deps, pr.parse_query("24h", "hosts", None, None, None), now=NOW))
+    circe = next(h for h in rep.hosts if h.host == "circe")
+    assert circe.chassis_w_rest == 541.0
+
+
 def _names():
     async def fn():
         return {"d590a9d48af2": "orion-circe-atlas-llamacpp-fast", "e5287fa21cba": "orion-circe-atlas-llamacpp-metacog"}
@@ -617,14 +640,18 @@ def test_hosts_say_what_spins_each_machine():
 def test_rest_body_yaml_overrides_the_defaults(tmp_path):
     (tmp_path / "heat_sensitivity.yaml").write_text(Path(HEAT_CFG).read_text())
     (tmp_path / "rest_body.yaml").write_text(
-        "version: 1\nhosts:\n  circe: {rest_w: 541, measured: '2026-10-01..2026-10-13', method: 'p05 chassis_watts', "
-        "approved_rest_w: 600}\n  athena: {rest_w: 340, measured: '2026-10-01..2026-10-13'}\nsponsored: []\n")
+        "version: 1\nhosts:\n  circe: {rest_w: 500, measured: '2026-10-01..2026-10-13', method: 'p05 chassis_watts', "
+        "approved_rest_w: 541}\n  athena: {rest_w: 400, measured: '2026-10-01..2026-10-13', approved_rest_w: 340}\n"
+        "sponsored: []\n")
     pool = FakePool(_hosts_rows())
     deps = pr.ReportDeps(pool=pool, heat_sensitivity_path=str(tmp_path / "heat_sensitivity.yaml"), gpu_pool_path=POOL_CFG)
     rep = asyncio.run(pr.build_report(deps, pr.parse_query("24h", "hosts", None, None, None), now=NOW))
     c = next(h for h in rep.hosts if h.host == "circe")
-    assert c.chassis_w_rest == 600.0 and c.rest_basis.startswith("pinned in config/physiology/rest_body.yaml")
+    # rest_w is the value in use (lowering is always allowed); approved_rest_w is only a ceiling
+    assert c.chassis_w_rest == 500.0 and c.rest_basis.startswith("pinned in config/physiology/rest_body.yaml")
     a = next(h for h in rep.hosts if h.host == "athena")
+    assert a.chassis_w_rest == 340.0
+    assert any("athena: rest_w 400 W is above Juniper's approved 340 W" in r for r in _reasons(rep, "hosts"))
     assert a.sponsored == [] and any(x.name.startswith("zelda-dojo") for x in a.top_containers)
     assert pr.rest_window(pr.DEFAULT_REST_BODY) == ("2026-10-01", "2026-10-14")
 

@@ -52,7 +52,7 @@ def st():
 
 
 def test_only_curiosity_investigate_declares_receptors_and_the_parser_refuses_bad_ones():
-    assert FAMS.get(C).receptors == ("slow", "quicken")
+    assert FAMS.get(C).receptors == ("slow",)
     assert [f for f, c in FAMS.families.items() if c.receptors] == [C]
     base = {"version": 1, "families": {"x": {"tier": 2, "deferrable_window_s": 60, "receptors": ["calm"]}}}
     with pytest.raises(ValueError, match="receptors"):
@@ -64,6 +64,9 @@ def test_only_curiosity_investigate_declares_receptors_and_the_parser_refuses_ba
 def test_the_charge_is_bounded_by_half_the_family_weight_and_signed_by_direction():
     assert pc.amount(sig("slow", 0.5), 1.08) == pytest.approx(0.54)
     assert pc.amount(sig("quicken", 0.3), 1.0) == pytest.approx(-0.3)
+    # Never a mandate: a credit is not applied to a want ranked 0.
+    assert pc.amount(sig("quicken"), 1.0, value_rank=0.0) == 0.0
+    assert pc.amount(sig("quicken"), 1.0, value_rank=0.2) == pytest.approx(-0.5)
     assert pc.amount(sig("slow"), float("nan")) == 0.0
     with pytest.raises(ValidationError):
         sig("slow", 0.9)          # a charge above the bound cannot even be written
@@ -80,14 +83,15 @@ def test_a_slow_charge_holds_a_low_value_want_and_names_itself_as_the_binding_co
     # No price to decay: the default re-bid re-tests the want's growing hunger.
     assert d.retry_after_sec is None
     assert "did not beat Prime's slow charge 0.50" in d.why and "curiosity ran five times" in d.why
-    assert pc.effect_of("slow", net_with=d.net, net_without=d.net + 0.5, floor_funded=False) == "held"
+    assert pc.effect_between("slow", d, plain) == "held"
 
 
 def test_a_hungry_valuable_want_outbids_the_largest_slow_charge():
+    plain = decide(cwant(), st(), ctx_for(ACTS, st()), ReservationBook(), NOW)
     d = decide(cwant(), st(), ctx_for(ACTS, st()), ReservationBook(), NOW, prime=sig())
     assert d.outcome == "funded" and d.net > 0
     assert "value 1.00 - lane charge 0.00 beat Prime's slow charge 0.50" in d.why
-    assert pc.effect_of("slow", net_with=d.net, net_without=d.net + 0.5, floor_funded=False) == "outbid"
+    assert pc.effect_between("slow", d, plain) == "outbid"
 
 
 @pytest.mark.parametrize("weight", [0.2, 0.6, 1.0, 1.5])
@@ -97,28 +101,33 @@ def test_never_a_veto_any_want_ranked_above_the_middle_beats_a_max_slow_charge(w
     assert d.value_rank > 0.5 and d.outcome == "funded"
 
 
-def test_a_quicken_credit_releases_a_want_the_market_held_for_no_hunger():
+def test_a_quicken_credit_lifts_a_price_deferred_want_but_never_funds_one_valued_at_zero():
+    priced = body(lane("agent", p=1.0))
+    plain = decide(cwant(intensity=0.4), priced, ctx_for(ACTS, priced), ReservationBook(), NOW)
+    d = decide(cwant(intensity=0.4), priced, ctx_for(ACTS, priced), ReservationBook(), NOW, prime=sig("quicken"))
+    assert plain.reason == "price" and plain.net <= 0
+    assert d.outcome == "funded" and "Prime's quicken credit 0.50" in d.why
+    assert pc.effect_between("quicken", d, plain) == "released"
+    # The family just acted (rank 0): the credit does not apply, the want stays sated. Never a mandate.
     fresh = history(C, slot={"agent": 1800.0}, last_h=0.0)
-    plain = decide(cwant(), st(), ctx_for(fresh, st()), ReservationBook(), NOW)
-    d = decide(cwant(), st(), ctx_for(fresh, st()), ReservationBook(), NOW, prime=sig("quicken"))
-    assert plain.reason == "sated" and plain.net == 0.0
-    assert d.outcome == "funded" and d.net == pytest.approx(0.5)
-    assert "Prime's quicken credit 0.50" in d.why
-    assert pc.effect_of("quicken", net_with=d.net, net_without=0.0, floor_funded=False) == "released"
+    sated = decide(cwant(), st(), ctx_for(fresh, st()), ReservationBook(), NOW, prime=sig("quicken"))
+    assert sated.reason == "sated" and sated.net == 0.0 and "does not apply" in sated.why
 
 
 def test_a_slow_charge_on_a_want_that_would_wait_anyway_changes_nothing():
     fresh = history(C, slot={"agent": 1800.0}, last_h=0.0)
+    plain = decide(cwant(), st(), ctx_for(fresh, st()), ReservationBook(), NOW)
     d = decide(cwant(), st(), ctx_for(fresh, st()), ReservationBook(), NOW, prime=sig())
     assert d.outcome == "deferred" and d.binding_constraint == "prime:slow"
-    assert pc.effect_of("slow", net_with=d.net, net_without=d.net + 0.5, floor_funded=False) == "unchanged"
+    assert pc.effect_between("slow", d, plain) == "unchanged"
 
 
 def test_the_exploration_floor_still_funds_a_starved_family_through_a_slow_charge():
     starved = {C: 1, "durable.self_inquiry": 99}
+    plain = decide(cwant(intensity=0.25), st(), ctx_for(ACTS, st()), seeded_book(starved), NOW)
     d = decide(cwant(intensity=0.25), st(), ctx_for(ACTS, st()), seeded_book(starved), NOW, prime=sig())
     assert d.outcome == "funded" and d.reason == "exploration_floor" and d.net <= 0
-    assert pc.effect_of("slow", net_with=d.net, net_without=d.net + 0.5, floor_funded=True) == "floor"
+    assert pc.effect_between("slow", d, plain) == "floor"
     assert STARVED  # the shared fixture still exists (other family starved there)
 
 
@@ -129,6 +138,7 @@ def test_a_slow_charge_on_a_full_lane_turns_a_worth_it_capacity_deferral_into_a_
     assert plain.reason == "capacity_reserved" and plain.net > 0          # queues at the pool (Patch D)
     assert d.reason == "capacity_reserved" and d.net <= 0                 # held: the charge says not now
     assert "Prime's slow charge" in d.why
+    assert pc.goes_ahead(plain) and not pc.goes_ahead(d) and pc.effect_between("slow", d, plain) == "held"
 
 
 def test_effects_merge_keeps_the_strongest_and_tally_counts_wants_not_bids():
@@ -141,6 +151,12 @@ def test_effects_merge_keeps_the_strongest_and_tally_counts_wants_not_bids():
     fields = {b"signal": pc.dumps(sig()).encode(), b"w:w2": pc.dumps(o).encode(), "w:w1": pc.dumps(e), "w:bad": "{"}
     assert sorted(x.want_id for x in pc.parse_effects(fields)) == ["w1", "w2"]
     assert pc.parse_signal(fields[b"signal"]).signal_id == "s1" and pc.parse_signal("nope") is None
+    # Records are tied to their signal: one left over from an earlier signal never counts for a new one.
+    a = pc.merge(None, "w3", "held", NOW, "x", signal_id="A")
+    b = pc.merge(a, "w3", "outbid", NOW, "y", signal_id="B")
+    assert (b.signal_id, b.effect, b.bids) == ("B", "outbid", 1)
+    mixed = {"w:w3": pc.dumps(a), "w:w4": pc.dumps(pc.merge(None, "w4", "held", NOW, "z", signal_id="B"))}
+    assert [e.want_id for e in pc.parse_effects(mixed, signal_id="B")] == ["w4"]
 
 
 def test_a_signal_is_active_only_inside_its_window():

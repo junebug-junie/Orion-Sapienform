@@ -17,7 +17,9 @@ Reports, whatever the result:
 5. **Regulate signals** (verb ``regulate``, Prime step 3): per arm, how many changed at least one of the
    organ's decisions (the act's grade), and the organ's real starts per signal-hour while the signal was in
    force (``grammar_acts`` opens of the receiving family). The treated-minus-control difference in starts
-   per hour is the effect on the organ; it is called only with ``MIN_PER_ARM`` closed signals per arm.
+   per hour is the effect on the organ. It is called only with ``MIN_PER_ARM`` closed signals per arm AND an
+   exact conditional test at p < 0.05 (given all starts, each lands in the treated arm with probability
+   treated hours / all hours under "no effect"); otherwise ``too_few`` or ``no_difference``.
 4. **Cadence vs price.** Funded share of bids when Prime's lane and heat prices were zero vs above zero.
    2A's proof needs "cadence follows price on cool vs warm days": funded share lower when priced.
 
@@ -161,10 +163,25 @@ def regulation(acts: Iterable[dict[str, Any]], starts: Iterable[dict[str, Any]])
         o["changed_share"] = o["changed"] / o["closed"] if o["closed"] else None
         o["starts_per_hour"] = o["starts"] / o["signal_hours"] if o["signal_hours"] else None
     t, c = out["treated"], out["control"]
-    out["verdict"] = ("too_few" if min(t["closed"], c["closed"]) < MIN_PER_ARM else
-                      "slower_when_treated" if t["starts_per_hour"] < c["starts_per_hour"] else
-                      "not_slower_when_treated")
+    out["p"] = None
+    if (min(t["closed"], c["closed"]) < MIN_PER_ARM or t["starts_per_hour"] is None
+            or c["starts_per_hour"] is None):
+        out["verdict"] = "too_few"
+        return out
+    p = binomial_two_sided(t["starts"], t["starts"] + c["starts"],
+                           t["signal_hours"] / (t["signal_hours"] + c["signal_hours"]))
+    out["p"] = p
+    out["verdict"] = ("no_difference" if p >= ALPHA else
+                      "slower_when_treated" if t["starts_per_hour"] < c["starts_per_hour"] else "faster_when_treated")
     return out
+
+
+def binomial_two_sided(k: int, n: int, q: float) -> float:
+    """Exact two-sided p for k successes of n at probability q (sum of outcomes no likelier than k)."""
+    if n == 0:
+        return 1.0
+    pmf = [math.comb(n, i) * q ** i * (1 - q) ** (n - i) for i in range(n + 1)]
+    return min(1.0, sum(x for x in pmf if x <= pmf[k] * (1 + 1e-9)))
 
 
 def cadence(decisions: Iterable[dict[str, Any]], *, lane: str = "chat") -> dict[str, Any]:

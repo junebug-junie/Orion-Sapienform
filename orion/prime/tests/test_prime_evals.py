@@ -72,3 +72,29 @@ def test_regulation_counts_changes_and_starts_per_signal_hour_per_arm():
     assert out["treated"] | {} == {"signals": 2, "open": 0, "closed": 2, "changed": 1, "signal_hours": 4.0, "starts": 1,
                                    "changed_share": 0.5, "starts_per_hour": 0.25}
     assert out["control"]["starts"] == 2 and out["control"]["open"] == 1 and out["verdict"] == "too_few"
+
+
+def test_regulation_verdict_needs_enough_signals_and_a_significant_rate_difference():
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    fam = "durable.curiosity_investigate"
+
+    def reg(arm, i):
+        return {"verb": "regulate", "test_before": f"holdback:{arm}", "outcome_value": 0.0,
+                "object_ref": f"physiology_family:{fam}", "horizon_sec": 2 * 3600 + rpt.REGULATE_GRACE_SEC,
+                "opened_at": t0 + timedelta(hours=10 * i + (0 if arm == "treated" else 5))}
+
+    acts = [reg("treated", i) for i in range(10)] + [reg("control", i) for i in range(10)]
+    # Control windows each hold 3 starts; treated windows none: 0 of 30 starts over equal hours.
+    starts = [{"actor": fam, "opened_at": t0 + timedelta(hours=10 * i + 5, minutes=m)} for i in range(10)
+              for m in (10, 40, 70)]
+    out = rpt.regulation(acts, starts)
+    assert out["verdict"] == "slower_when_treated" and out["p"] < 0.05
+    even = starts + [{"actor": fam, "opened_at": t0 + timedelta(hours=10 * i, minutes=m)} for i in range(10)
+                     for m in (10, 40, 70)]
+    assert rpt.regulation(acts, even)["verdict"] == "no_difference"
+    # Closed acts with no usable window never crash the verdict.
+    broken = [{**a, "opened_at": None} for a in acts]
+    assert rpt.regulation(broken, starts)["verdict"] == "too_few"
+    assert rpt.binomial_two_sided(5, 10, 0.5) == 1.0

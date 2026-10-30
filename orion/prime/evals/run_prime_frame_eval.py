@@ -145,7 +145,7 @@ def run() -> list[tuple[str, bool, str]]:
 
     ok_move, refused = regulate("durable.curiosity_investigate"), regulate("durable.self_inquiry")
     results.append(("regulate", err is None and list(receptors) == ["durable.curiosity_investigate"]
-                    and "- durable.curiosity_investigate: slow, quicken" in reg_frame
+                    and "- durable.curiosity_investigate: slow" in reg_frame
                     and ok_move.move is not None and refused.move is None
                     and "declares no receptors" in (refused.move_refusal or "") and len(reg_frame) <= FRAME_CHAR_CAP,
                     f"receptors {receptors}; self_inquiry: {refused.move_refusal!r}"))

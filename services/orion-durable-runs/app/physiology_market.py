@@ -32,6 +32,7 @@ fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import dataclasses
@@ -216,9 +217,15 @@ class Market:
         else:
             sig = await self._prime_signal(want.family, now)
             applied = sig if sig is not None and sig.arm == "treated" else None
-            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
+            other = None
             if sig is not None:
-                await self._record_prime_effect(sig, want, decision, now, applied=applied is not None)
+                # The same bid decided the other way, on a throwaway copy of the book (it must not reserve or
+                # count anything): what the charge changed is read from two real decisions, both arms alike.
+                other = decide(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
+                               prime=None if applied is not None else sig)
+            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
+            if sig is not None and other is not None:
+                await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
         try:
             await self._publish(decision)
@@ -257,26 +264,23 @@ class Market:
         return sig
 
     async def _record_prime_effect(self, sig: pc.PrimeRegulationV1, want: WantV1, decision: WantDecisionV1,
-                                   now: datetime, *, applied: bool) -> None:
-        """Write what the charge did (treated) or would have done (control) to this want. Best-effort."""
-        if decision.net is None or decision.family_weight is None:
+                                   other: WantDecisionV1, now: datetime, *, applied: bool) -> None:
+        """Write what the charge did (treated) or would have done (control) to this want. Best-effort.
+        ``decision`` is the one the market made; ``other`` the same bid decided the other way."""
+        if decision.net is None or other.net is None:
             return          # the market could not price the want: nothing to say about the charge
-        part = pc.amount(sig, decision.family_weight)
-        net_with, net_without = ((decision.net, decision.net + part) if applied
-                                 else (decision.net - part, decision.net))
-        eff = pc.effect_of(sig.direction, net_with=net_with, net_without=net_without,
-                           floor_funded=decision.reason == "exploration_floor")
+        with_c, without_c = (decision, other) if applied else (other, decision)
+        eff = pc.effect_between(sig.direction, with_c, without_c)
         self.counts["prime_applied" if applied else "prime_control"] += 1
-        why = decision.why if applied else (
-            f"held back (control, not applied): with the charge the net would have been {net_with:+.3f}; "
-            f"{decision.why}")
+        why = decision.why if applied else f"held back (control, not applied): with it, {with_c.why}"
+        net_with, net_without = with_c.net, without_c.net
         redis = self._redis_getter()
         if redis is None:
             return
         k, field_name = pc.key(sig.family), f"{pc.WANT_FIELD_PREFIX}{want.want_id}"
         try:
             prev = await redis.hget(k, field_name)
-            if prev is None and await redis.hlen(k) > pc.MAX_WANT_FIELDS:
+            if prev is None and await redis.hlen(k) >= pc.MAX_WANT_FIELDS + 1:      # + the signal field
                 return
             prev_m = None
             if prev is not None:
@@ -284,7 +288,7 @@ class Market:
                     prev_m = pc.PrimeChargeEffectV1.model_validate_json(prev.decode() if isinstance(prev, bytes) else prev)
                 except Exception:  # noqa: BLE001
                     prev_m = None
-            rec = pc.merge(prev_m, want.want_id, eff, now, why)
+            rec = pc.merge(prev_m, want.want_id, eff, now, why, signal_id=sig.signal_id)
             await redis.hset(k, field_name, pc.dumps(rec))
             # Never leave a key without an expiry (hset on a key that just expired would recreate it).
             await redis.expire(k, max(1, int((sig.expires_at - now).total_seconds() + pc.GRACE_SEC)))

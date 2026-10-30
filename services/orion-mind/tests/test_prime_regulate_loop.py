@@ -8,6 +8,8 @@ import asyncio
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from orion.physiology import prime_charge as pc
 from test_prime_loop import T0, Bus, Redis, runtime
 
@@ -38,6 +40,31 @@ class HashRedis(Redis):
     async def expire(self, key, sec):
         self.ttl[key] = sec
 
+    def pipeline(self, transaction=True):
+        return Pipe(self)
+
+
+class Pipe:
+    """MULTI/EXEC: queued commands apply together at execute(), or none do."""
+
+    def __init__(self, r):
+        self.r, self.ops = r, []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def __getattr__(self, name):
+        return lambda *a: self.ops.append((name, a))
+
+    async def execute(self):
+        if self.r.fail_write:
+            raise ConnectionError("redis down")
+        for name, a in self.ops:
+            await getattr(self.r, name)(*a)
+
 
 def rt_with(answer, *, holdback=0.0, enabled=True, fail_write=False, path=FAMILIES):
     bus = Bus()
@@ -61,7 +88,7 @@ def test_a_slow_move_writes_the_signal_for_the_market_and_opens_a_regulate_act()
     rt = rt_with(SLOW)
     asyncio.run(rt.tick())
     [call] = rt.llm.calls
-    assert '"kind": "regulate"' in call["system_prompt"] and f"- {C}: slow, quicken" in call["user_prompt"]
+    assert '"kind": "regulate"' in call["system_prompt"] and f"- {C}: slow\n" in call["user_prompt"]
     [(kind, act)] = regulate_acts(rt)
     assert kind == "act_opened" and act["actor"] == "prime" and act["test_before"] == "holdback:treated"
     assert act["object_ref"] == f"physiology_family:{C}" and act["expect"]["horizon_sec"] == 2 * 3600 + pc.GRACE_SEC
@@ -85,10 +112,12 @@ def test_after_the_signal_ends_the_act_closes_from_the_markets_record_and_prime_
     first_tick(rt)
     [reg] = rt.state.open_regulations
     rec = pc.merge(None, "run9", "held", T0 + timedelta(minutes=30), "value 0.31 - lane charge 0.00 did not beat "
-                   "Prime's slow charge 0.54")
+                   "Prime's slow charge 0.54", signal_id=reg.signal_id)
     rec = pc.merge(rec, "run9", "outbid", T0 + timedelta(minutes=80), "value 0.71 - lane charge 0.00 beat Prime's "
-                   "slow charge 0.54")
+                   "slow charge 0.54", signal_id=reg.signal_id)
     rt.bus.redis.h[pc.key(C)]["w:run9"] = pc.dumps(rec)
+    # A record left by an earlier signal in the same hash never counts for this one.
+    rt.bus.redis.h[pc.key(C)]["w:old"] = pc.dumps(pc.merge(None, "old", "held", T0, "x", signal_id="earlier"))
     rt.clock_box["now"] = reg.expires_at + timedelta(seconds=30)
     asyncio.run(rt.tick())
     assert [k for k, _ in regulate_acts(rt)] == ["act_opened"]      # not yet: the lag after the signal ends
@@ -96,7 +125,7 @@ def test_after_the_signal_ends_the_act_closes_from_the_markets_record_and_prime_
     asyncio.run(rt.tick())
     closes = [a for k, a in regulate_acts(rt) if k == "act_closed"]
     assert len(closes) == 1 and closes[0]["outcome"]["value"] == 1.0
-    assert "1 held by my charge" in closes[0]["outcome"]["note"]
+    assert "1 of its runs bid, 1 held by my charge" in closes[0]["outcome"]["note"]
     assert rt.state.open_regulations == []
     assert any("beat Prime's slow charge 0.54" in o for o in rt.state.recent_outcomes)
 
@@ -125,6 +154,7 @@ def test_a_failed_write_closes_the_act_zero_and_never_wakes_prime_again():
     asyncio.run(rt.tick())
     [reg] = rt.state.open_regulations
     assert reg.written is False and "ConnectionError" in reg.write_error
+    assert not rt.bus.redis.h            # all-or-nothing: nothing of the signal is in force
     rt.clock_box["now"] = T0 + timedelta(seconds=15)
     asyncio.run(rt.tick())
     [close] = [a for k, a in regulate_acts(rt) if k == "act_closed"]
@@ -173,3 +203,57 @@ def test_after_a_signal_the_organ_rests_as_long_as_it_lasted_then_prime_may_sign
     rt.state = rt.state.model_copy(update={"pending_changes": ["something moved"], "last_thought_at": None})
     asyncio.run(rt.tick())
     assert len([a for k, a in regulate_acts(rt) if k == "act_opened"]) == 2 and C not in rt.state.regulation_rest_until
+
+
+def test_with_the_markets_switch_off_prime_is_told_so_not_that_no_bid_came():
+    rt = rt_with(SLOW)
+    first_tick(rt)
+    [reg] = rt.state.open_regulations
+    base = rt.get_json
+
+    def get_json(url):
+        if url.endswith("/health"):
+            return {"ok": True, "physiology_market": {"prime_regulation": False}}
+        return base(url)
+
+    rt.get_json = get_json
+    rt.clock_box["now"] = reg.expires_at + timedelta(minutes=3)
+    asyncio.run(rt.tick())
+    [close] = [a for k, a in regulate_acts(rt) if k == "act_closed"]
+    assert close["outcome"]["value"] == 0.0 and "switched off" in close["outcome"]["note"]
+
+
+def test_a_malformed_hours_never_loses_the_thought():
+    move = {**SLOW, "move": {**SLOW["move"], "hours": "three"}}
+    rt = rt_with(move)
+    asyncio.run(rt.tick())
+    [reg] = rt.state.open_regulations
+    assert (reg.expires_at - reg.opened_at) == timedelta(hours=pc.DEFAULT_HOURS)
+    assert rt.state.last_reading.startswith("curiosity has run")
+
+
+def test_real_redis_client_semantics_with_fakeredis():
+    """The same write/read path against redis-py's own asyncio client (fakeredis): MULTI pipeline, TTL,
+    bytes keys and values from HGETALL. Skipped where fakeredis is not installed."""
+    fakeredis = pytest.importorskip("fakeredis")
+    bus = Bus()
+    bus.redis = fakeredis.aioredis.FakeRedis()
+    rt = runtime(answer=SLOW, bus=bus)
+    rt.s.PRIME_REGULATE_ENABLED, rt.s.PRIME_FAMILIES_PATH = True, FAMILIES
+    rt.llm.answer = SLOW
+
+    async def flow():
+        await rt.tick()
+        rt.llm.answer = {"reading": "watching", "concerns": {}, "move": None}
+        [reg] = rt.state.open_regulations
+        ttl = await bus.redis.ttl(pc.key(C))
+        rec = pc.merge(None, "run1", "held", T0, "did not beat Prime's slow charge 0.54", signal_id=reg.signal_id)
+        await bus.redis.hset(pc.key(C), "w:run1", pc.dumps(rec))
+        rt.clock_box["now"] = reg.expires_at + timedelta(minutes=3)
+        await rt.tick()
+        return reg, ttl
+
+    reg, ttl = asyncio.run(flow())
+    assert reg.written is True and 0 < ttl <= int(2 * 3600 + pc.GRACE_SEC)
+    [close] = [a for k, a in regulate_acts(rt) if k == "act_closed"]
+    assert close["outcome"]["value"] == 1.0

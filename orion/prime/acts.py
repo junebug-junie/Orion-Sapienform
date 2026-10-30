@@ -202,11 +202,17 @@ def describe_effects(reg: PrimeRegulationOpenV1, effects: list[pc.PrimeChargeEff
     return ", ".join(parts) + f"; latest: {last.why[:220]!r}"
 
 
-def settle_regulation(reg: PrimeRegulationOpenV1, effects: list[pc.PrimeChargeEffectV1]) -> tuple[bool, str]:
-    """(produced, note) for a regulate act once its signal has ended. Same rule both arms."""
+def settle_regulation(reg: PrimeRegulationOpenV1, effects: list[pc.PrimeChargeEffectV1], *,
+                      market_on: Optional[bool] = None) -> tuple[bool, str]:
+    """(produced, note) for a regulate act once its signal has ended. Same rule both arms.
+    ``market_on`` False: the market's Prime regulation is switched off (its /health says so), so an empty
+    record means nobody read the signal, not that no bid came."""
     if reg.written is False:
         return False, f"{reg.arm}: not delivered ({reg.write_error or 'write failed'})"
     produced = pc.changed_any(effects)
+    if not effects and market_on is False:
+        return False, (f"{reg.arm} {reg.direction} {reg.family}: the body economy has Prime's signals switched off, "
+                       "so no bid read it")
     return produced, f"{reg.arm} {reg.direction} {reg.family}: {describe_effects(reg, effects)}"
 
 

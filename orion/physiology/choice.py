@@ -58,7 +58,9 @@ Holdback stays the allocator's own; Choice does not randomize.
 Prime's regulate charge (Orion Prime step 3, orion/physiology/prime_charge.py). ``decide(..., prime=sig)``
 adds a temporary, bounded charge (slow) or credit (quicken) to the want's charge, listed in ``why`` as
 ``prime:<direction>``: ``magnitude x family_weight``, magnitude <= 0.5, so a want ranked above the middle
-of its family's history still beats it. The exploration floor and the capacity line work as before.
+of its family's history still beats it. The exploration floor and the capacity line work as before. A
+quicken credit is never applied to a want ranked 0 (never a mandate). The decision's ``charge`` and ``net``
+include Prime's part; ``cost_frac`` and ``prices_seen`` do not (it is not a posted price).
 The caller passes only a signal in force for the want's family (the market process checks the family's
 receptors, the arm and the flag); ``decide`` itself applies whatever it is handed.
 
@@ -553,7 +555,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     lane_charge = charge
     prime_part = 0.0
     if prime is not None:
-        prime_part = prime_amount(prime, weight)
+        prime_part = prime_amount(prime, weight, value_rank=rank)
         parts[f"prime:{prime.direction}"] = prime_part
         charge += prime_part
     net = value - charge

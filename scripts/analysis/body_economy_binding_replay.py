@@ -102,7 +102,8 @@ def replay(ex: dict, fams, binding: frozenset[str], *, subtract_own_use: bool = 
 
     ``prime``: optional ``(family, t) -> PrimeRegulationV1 | None`` -- a Prime regulate charge in force at
     ``t`` (Orion Prime step 3), applied to the binding family's bids exactly as the market applies it.
-    Each bid then also records the charge's effect (``orion.physiology.prime_charge.effect_of``)."""
+    Each bid then also records the charge's effect (``orion.physiology.prime_charge.effect_between``: the
+    same bid decided without the charge on a throwaway copy of the book, exactly as the market does)."""
     from app.run_acts import run_act_family
     from app.run_bids import bind_verdict, hold_end, want_for_run
 
@@ -188,16 +189,20 @@ def replay(ex: dict, fams, binding: frozenset[str], *, subtract_own_use: bool = 
             runs[want.want_id]["verdict"] = "censored_at_data_end"
             continue
         sig = prime(want.family, t) if (prime is not None and p["bound"]) else None
+        without = None
+        if sig is not None:
+            import copy
+
+            without = decide(want, current, ctx_cache[key], copy.deepcopy(book), t, reserve_at_open=True)
         d = decide(want, current, ctx_cache[key], book, t, reserve_at_open=True, prime=sig)
         if not p["bound"]:
             continue
         run = runs[want.want_id]
         effect = None
-        if sig is not None and d.net is not None and d.family_weight is not None:
-            from orion.physiology.prime_charge import amount, effect_of
+        if without is not None and d.net is not None and without.net is not None:
+            from orion.physiology.prime_charge import effect_between
 
-            effect = effect_of(sig.direction, net_with=d.net, net_without=d.net + amount(sig, d.family_weight),
-                               floor_funded=d.reason == "exploration_floor")
+            effect = effect_between(sig.direction, d, without)
         v = bind_verdict(d, t, hold_end(want, cfg.deferrable_window_s if cfg is not None else 0.0),
                          capacity_queues_at_pool=capacity_queues_at_pool)
         run["bids"].append({"at": t.isoformat(), "outcome": d.outcome, "reason": d.reason,

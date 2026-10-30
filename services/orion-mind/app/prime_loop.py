@@ -425,7 +425,7 @@ class PrimeRuntime:
         inputs.receptors, inputs.receptors_error = receptors, receptors_err
         if receptors is not None or receptors_err:
             for reg in self.state.open_regulations:
-                rec = await self._read_regulation(reg.family)
+                rec = await self._read_regulation(reg.family, reg.signal_id)
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
         frame = build_frame(self.state, inputs)
@@ -542,9 +542,10 @@ class PrimeRuntime:
         return {f: c.receptors for f, c in fams.families.items() if c.receptors}, None
 
     async def _read_regulation(
-        self, family: str,
+        self, family: str, signal_id: str,
     ) -> Optional[tuple[Optional[pc.PrimeRegulationV1], list[pc.PrimeChargeEffectV1]]]:
-        """(the signal in the hash, the market's per-want record); None when Redis could not be read."""
+        """(the signal in the hash, the market's per-want record for ``signal_id``); None when Redis could
+        not be read."""
         try:
             fields = await self.bus.redis.hgetall(pc.key(family))
         except Exception as exc:  # noqa: BLE001
@@ -552,7 +553,15 @@ class PrimeRuntime:
             return None
         fields = fields or {}
         raw = fields.get(pc.SIGNAL_FIELD, fields.get(pc.SIGNAL_FIELD.encode()))
-        return pc.parse_signal(raw), pc.parse_effects(fields)
+        return pc.parse_signal(raw), pc.parse_effects(fields, signal_id=signal_id)
+
+    async def _market_regulation_on(self) -> Optional[bool]:
+        """The market's own switch, from orion-durable-runs /health (None: unread or the market is off)."""
+        data, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/health")
+        market = (data or {}).get("physiology_market")
+        if not isinstance(market, dict) or "prime_regulation" not in market:
+            return None
+        return bool(market["prime_regulation"])
 
     async def _regulate(self, move: RegulateMoveV1, *, thought_id: str, thought_act_id: str, now: datetime) -> None:
         signal_id = new_id()
@@ -571,9 +580,13 @@ class PrimeRuntime:
         try:
             # Both arms are written: the market applies a treated signal and only records what a control
             # one would have done. The key outlives the signal by GRACE_SEC so the final record can be read.
-            await self.bus.redis.delete(key)
-            await self.bus.redis.hset(key, pc.SIGNAL_FIELD, pc.dumps(sig))
-            await self.bus.redis.expire(key, int(hours * 3600.0 + pc.GRACE_SEC))
+            # One MULTI: the signal is in force with its expiry, or not at all (never "not delivered" while
+            # the market applies it, never a key without a TTL).
+            async with self.bus.redis.pipeline(transaction=True) as pipe:
+                pipe.delete(key)
+                pipe.hset(key, pc.SIGNAL_FIELD, pc.dumps(sig))
+                pipe.expire(key, int(hours * 3600.0 + pc.GRACE_SEC))
+                await pipe.execute()
             reg = reg.model_copy(update={"written": True})
         except Exception as exc:  # noqa: BLE001
             reg = reg.model_copy(update={"written": False, "write_error": f"{type(exc).__name__}: {str(exc)[:120]}"})
@@ -607,7 +620,7 @@ class PrimeRuntime:
             if (now - reg.expires_at).total_seconds() < REGULATE_SETTLE_LAG_SEC:
                 keep.append(reg)
                 continue
-            rec = await self._read_regulation(reg.family)
+            rec = await self._read_regulation(reg.family, reg.signal_id)
             gone = rec is not None and (rec[0] is None or rec[0].signal_id != reg.signal_id)
             past_grace = (now - reg.expires_at).total_seconds() > pc.GRACE_SEC
             if rec is None and not past_grace:
@@ -617,7 +630,8 @@ class PrimeRuntime:
                 self.state = note_outcome(self.state, f"my {reg.direction} signal to {reg.family} (act {reg.act_id}) "
                                                       "could not be graded: the market's record of it is gone")
                 continue
-            produced, note = settle_regulation(reg, rec[1])
+            market_on = None if rec[1] else await self._market_regulation_on()
+            produced, note = settle_regulation(reg, rec[1], market_on=market_on)
             if not await self._close(act, REGULATE_COMPONENT, produced=produced, note=note):
                 keep.append(reg)
                 continue

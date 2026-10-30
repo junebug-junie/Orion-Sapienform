@@ -75,8 +75,11 @@ families:
     deferrable_window_s: 21600
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
-    # The only family whose bids bind (Patch D, ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on).
-    receptors: [slow, quicken]
+    # The only family whose bids bind (Patch D, ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on). Slow only:
+    # a quicken credit is never applied to a want the market values at zero, and over the 7 days to
+    # 2026-10-30 curiosity's only holds were exactly those ("no hunger yet") with lane prices ~0, so on
+    # curiosity a credit could change nothing. Declare quicken when an organ has real price deferrals.
+    receptors: [slow]
   durable.self_inquiry:
     tier: 2
     deferrable_window_s: 21600

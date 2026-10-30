@@ -8,8 +8,9 @@ Two lanes:
   binding rule (``app.run_bids.bind_verdict``), re-bidding at each verdict's ``retry_at`` as admission
   does. Its hunger grows between bids. Checks: with no charge it goes ahead at the first bid that has any
   hunger; with the largest slow charge (0.5) it is held, and released by its OWN growing hunger, long
-  before the family's 6 h window (never a veto); a quicken credit lets it go at once; and the decision's
-  ``why`` names the charge each time.
+  before the family's 6 h window (never a veto); a quicken credit does NOT fund it while the market values it
+  at zero (never a mandate), so it goes exactly when it would have; and the decision's ``why`` names the
+  charge each time.
 * ``--live``: ``scripts/analysis/body_economy_binding_replay.py`` over the last ``--days`` of REAL
   curiosity admissions (live Choice code, live physiology_state, read-only): no charge; a slow charge of
   ``--magnitude`` in force the WHOLE time (an upper bound Prime cannot reach: after each signal the organ
@@ -113,10 +114,12 @@ def fixture() -> list[str]:
         fails.append("every decision under the charge must name it in why")
     if "did not beat" not in slow["whys"][0] or " beat Prime's slow charge" not in slow["whys"][-1]:
         fails.append(f"why should read held then outbid: {slow['whys'][0][-120:]} / {slow['whys'][-1][-120:]}")
-    if quick["held_sec"] != 0.0 or "quicken credit" not in quick["whys"][0]:
-        fails.append(f"quicken should let the first bid go and say so: {quick}")
+    if quick["held_sec"] != base["held_sec"] or "quicken credit does not apply" not in quick["whys"][0]:
+        fails.append(f"quicken must not fund a want valued at zero (never a mandate): {quick['held_sec']} s, "
+                     f"{quick['whys'][0][-120:]}")
     print(f"fixture: no charge held {base['held_sec']:.0f} s ({base['bids']} bids); slow 0.5 held "
-          f"{slow['held_sec']:.0f} s ({slow['bids']} bids, {slow['verdict']}); quicken held {quick['held_sec']:.0f} s")
+          f"{slow['held_sec']:.0f} s ({slow['bids']} bids, {slow['verdict']}); quicken held {quick['held_sec']:.0f} s "
+          "(a credit never funds a want valued at zero)")
     print(f"  first slow why: ...{slow['whys'][0][-150:]}")
     print(f"  last slow why:  ...{slow['whys'][-1][-150:]}")
     return fails

@@ -72,11 +72,11 @@ FUNDED = [{"decision_id": f"{f}{i}@t", "family": f, "tier": 2, "decided_at": NOW
           for f in (C, "durable.self_inquiry") for i in range(20)]
 
 
-def market(redis, *, on=True):
+def market(redis, *, on=True, funded=FUNDED):
     async def publish(d):
         return None
 
-    return Market(families=FAMS, families_error=None, pool_getter=lambda: _Pool(acts=_curiosity_acts(), funded=FUNDED),
+    return Market(families=FAMS, families_error=None, pool_getter=lambda: _Pool(acts=_curiosity_acts(), funded=funded),
                   redis_getter=lambda: redis, publish=publish, prime_regulation=on)
 
 
@@ -110,7 +110,7 @@ def test_a_treated_slow_signal_holds_a_low_value_run_and_records_why_for_prime()
     assert not v.admit and v.why == "deferred:price" and v.retry_at == NOW + timedelta(seconds=600)
     assert "did not beat Prime's slow charge" in v.detail["why"]
     e = effects(r)["run0"]
-    assert (e.effect, e.bids) == ("held", 1) and "Prime's slow charge" in e.why
+    assert (e.effect, e.bids, e.signal_id) == ("held", 1, "sig1") and "Prime's slow charge" in e.why
     assert r.ttl[pc.key(C)] == pytest.approx(2 * 3600 + pc.GRACE_SEC, abs=2)
     # The same run bids again, hungrier: it outbids the charge, and stays recorded as held once.
     d2 = asyncio.run(m.bid(cwant(intensity=1.0), NOW + timedelta(minutes=2)))
@@ -127,6 +127,19 @@ def test_a_control_signal_is_never_applied_but_records_what_it_would_have_done()
     assert d.outcome == "funded" and "Prime" not in d.why          # not applied
     e = effects(r)["run0"]
     assert e.effect == "held" and e.why.startswith("held back (control, not applied)")
+    assert "did not beat Prime's slow charge" in e.why          # the charged decision's own words
+
+
+@pytest.mark.parametrize("arm", ["treated", "control"])
+def test_both_arms_class_an_exploration_floor_fund_the_same_way(arm):
+    """Review finding: control once read the floor off the UNcharged decision and called this 'held'."""
+    starved = [{"decision_id": f"s{i}@t", "family": "durable.self_inquiry", "tier": 2,
+                "decided_at": NOW - timedelta(days=1)} for i in range(99)]
+    starved.append({"decision_id": "c@t", "family": C, "tier": 2, "decided_at": NOW - timedelta(days=1)})
+    r = Redis(_state().model_dump_json())
+    put(r, signal(arm=arm))
+    asyncio.run(market(r, funded=starved).bid(cwant(), NOW))
+    assert effects(r)["run0"].effect == "floor"
 
 
 def test_off_expired_not_received_or_foreign_signals_are_never_read_as_charges():
@@ -135,6 +148,7 @@ def test_off_expired_not_received_or_foreign_signals_are_never_read_as_charges()
         put(r, sig)
         d = asyncio.run(market(r, on=on).bid(cwant(), NOW))
         assert d.outcome == "funded" and "Prime" not in d.why and not effects(r)
+        assert (r.reads == 0) is (not on)            # off: the signal is never even read
     # A family without receptors: its key is never even read.
     r = Redis(_state().model_dump_json())
     put(r, signal(family="durable.self_inquiry"))
@@ -152,3 +166,24 @@ def test_a_redis_failure_never_fails_a_bid_and_never_charges():
     m = market(r)
     d = asyncio.run(m.bid(cwant(), NOW))
     assert d.outcome == "funded" and m.health(NOW)["prime_read_failed"] == 1
+
+
+def test_real_redis_client_semantics_with_fakeredis():
+    """hget/hset/hlen/expire against redis-py's own asyncio client (fakeredis), bytes in and out. Skipped
+    where fakeredis is not installed."""
+    fakeredis = pytest.importorskip("fakeredis")
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY
+
+    r = fakeredis.aioredis.FakeRedis()
+    m = market(r)
+
+    async def flow():
+        await r.set(PHYSIOLOGY_STATE_REDIS_KEY, _state().model_dump_json())
+        await r.hset(pc.key(C), pc.SIGNAL_FIELD, pc.dumps(signal()))
+        d = await m.bid(cwant(), NOW)
+        return d, await r.hgetall(pc.key(C)), await r.ttl(pc.key(C))
+
+    d, fields, ttl = asyncio.run(flow())
+    assert d.binding_constraint == "prime:slow"
+    [e] = pc.parse_effects(fields, signal_id="sig1")
+    assert e.effect == "held" and 0 < ttl <= int(2 * 3600 + pc.GRACE_SEC) + 1

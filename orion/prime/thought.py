@@ -87,10 +87,11 @@ class RegulateMoveV1(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
     kind: Literal["regulate"]
-    family: str = Field(min_length=1, max_length=120)
-    direction: str = Field(min_length=1, max_length=40)
-    why: str = Field(min_length=1, max_length=600)
-    hours: Optional[float] = None
+    family: str = Field(min_length=1)
+    direction: str = Field(min_length=1)
+    why: str = Field(min_length=1)
+    # Anything: clamp_hours turns a bad value into the default (never a parse error that loses the thought).
+    hours: Any = None
 
 
 Move = Annotated[Union[CuriosityFocusMoveV1, RegulateMoveV1], Field(discriminator="kind")]
@@ -331,9 +332,9 @@ def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
     if receptors is None:
         return "regulation is off or the organs' receptors could not be read; no signal was sent"
     if move.direction not in pc.DIRECTIONS:
-        return f"direction {move.direction!r} is not a signal any organ handles (slow or quicken)"
+        return f"direction {move.direction[:40]!r} is not a signal any organ handles (slow or quicken)"
     if move.family not in receptors or not receptors.get(move.family):
-        return (f"{move.family} declares no receptors, so nothing would handle the signal; "
+        return (f"{move.family[:120]} declares no receptors, so nothing would handle the signal; "
                 f"organs that do: {', '.join(sorted(f for f, d in receptors.items() if d)) or 'none'}")
     if move.direction not in receptors[move.family]:
         return f"{move.family} handles {', '.join(receptors[move.family])}, not {move.direction}"
@@ -389,7 +390,7 @@ def apply_answer(
     if isinstance(move, RegulateMoveV1):
         refusal = regulate_refusal(move, state, receptors, now)
         if refusal is None:
-            move = move.model_copy(update={"hours": clamp_hours(move.hours)})
+            move = move.model_copy(update={"hours": clamp_hours(move.hours), "why": move.why[:600]})
     elif move is not None:
         refs, problems = parse_refs(move.refs)
         stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)

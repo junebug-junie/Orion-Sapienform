@@ -20,6 +20,12 @@ It is bounded so it can never be a veto:
 * a binding run is held at most to its family's deferrable window (app.run_bids.hold_end), then asks
   the GPU pool anyway.
 
+A quicken credit has the mirror bound: it is never a mandate. It is not applied to a want the market
+values at zero (value rank 0: the family just acted, nothing in its history is less hungry), so it can
+only lift a want that already has some value over a price. No organ declares ``quicken`` yet:
+on curiosity (7 days to 2026-10-30) the only holds were "no hunger yet", which this rule leaves alone, and
+lane prices were ~0, so a credit would change nothing there.
+
 Where it lives. One Redis hash per receiving family, ``orion:prime:regulate:<family>`` on the bus
 Redis (the same Redis the market already reads the posted prices from). Field ``signal`` is the
 ``PrimeRegulationV1`` JSON, written by Prime; fields ``w:<want_id>`` are written by the market, one per
@@ -28,8 +34,10 @@ key expires ``GRACE_SEC`` after the signal, so Prime can read the final record a
 and a dead Prime can never leave a charge in force (the market also checks ``expires_at`` itself).
 
 Holdback. A ``control`` signal is written the same way; the market computes what the charge WOULD have
-done on each bid and records it, but does not apply it. Both arms are graded on the same rule, so the
-treated-minus-control difference in curiosity's real start times is the effect.
+done on each bid and records it, but does not apply it. Both arms are graded on the same rule: the
+market decides the bid both ways (the second decision on a throwaway copy of its reservation book) and
+compares the two real decisions (``effect_between``), so the exploration floor and the capacity line count
+the same in both arms. The treated-minus-control difference in curiosity's real starts is the effect.
 
 Pure: no I/O. The market (services/orion-durable-runs/app/physiology_market.py) and Prime
 (services/orion-mind/app/prime_loop.py) do the Redis reads and writes.
@@ -102,6 +110,9 @@ class PrimeChargeEffectV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     want_id: str
+    # The signal the effect belongs to: a bid that read the previous signal just before Prime replaced it
+    # never counts for the new one.
+    signal_id: Optional[str] = None
     effect: Effect               # the strongest effect over its bids (a run held once, then outbid, was held)
     last: Effect                 # the latest bid's effect
     bids: int = Field(ge=1)
@@ -118,35 +129,48 @@ def active(sig: PrimeRegulationV1, now: datetime) -> bool:
     return sig.opened_at <= now < sig.expires_at
 
 
-def amount(sig: PrimeRegulationV1, weight: float) -> float:
-    """The signed charge on a bid: + for slow, - for quicken. Bounded by MAX_MAGNITUDE x weight."""
+def amount(sig: PrimeRegulationV1, weight: float, *, value_rank: Optional[float] = None) -> float:
+    """The signed charge on a bid: + for slow, - for quicken. Bounded by MAX_MAGNITUDE x weight. A quicken
+    credit is 0 for a want ranked 0 (never a mandate: it cannot fund a want the market values at nothing)."""
     w = float(weight) if isinstance(weight, (int, float)) and math.isfinite(weight) and weight > 0 else 0.0
     m = min(MAX_MAGNITUDE, max(0.0, float(sig.magnitude))) * w
-    return m if sig.direction == "slow" else -m
+    if sig.direction == "slow":
+        return m
+    return 0.0 if value_rank is not None and not value_rank > 0 else -m
 
 
 def receives(receptors: Iterable[str], direction: str) -> bool:
     return direction in set(receptors or ())
 
 
-def effect_of(direction: str, *, net_with: float, net_without: float, floor_funded: bool) -> Effect:
-    """What the charge changed. "Goes ahead" is net > 0 (a funded bid, or a binding run whose capacity
-    deferral queues at the pool) or a floor fund; a deferral with net <= 0 holds a binding run."""
-    if floor_funded:
-        return "floor"
-    with_go, without_go = net_with > 0, net_without > 0
+def goes_ahead(decision: object) -> bool:
+    """Does this decision let the run go now? Funded, or (Patch D, app.run_bids.bind_verdict) a capacity
+    deferral worth its price, which queues at the GPU pool. Anything else holds a binding run."""
+    if getattr(decision, "outcome", None) == "funded":
+        return True
+    net = getattr(decision, "net", None)
+    return (getattr(decision, "reason", None) == "capacity_reserved" and isinstance(net, (int, float))
+            and math.isfinite(net) and net > 0)
+
+
+def effect_between(direction: str, with_charge: object, without_charge: object) -> Effect:
+    """What the charge changed, from the market's two real decisions on the same bid (one with the charge,
+    one without). Same rule for both arms; the exploration floor and capacity count as they really did."""
+    w, wo = goes_ahead(with_charge), goes_ahead(without_charge)
     if direction == "slow":
-        if with_go:
-            return "outbid"
-        return "held" if without_go else "unchanged"
-    return "released" if with_go and not without_go else "unchanged"
+        if w:
+            return "floor" if getattr(with_charge, "reason", None) == "exploration_floor" else "outbid"
+        return "held" if wo else "unchanged"
+    return "released" if w and not wo else "unchanged"
 
 
 def merge(prev: Optional[PrimeChargeEffectV1], want_id: str, eff: Effect, now: datetime,
-          why: str) -> PrimeChargeEffectV1:
+          why: str, *, signal_id: Optional[str] = None) -> PrimeChargeEffectV1:
+    if prev is not None and prev.signal_id != signal_id:
+        prev = None          # left over from an earlier signal: never mixed into this one
     if prev is None:
-        return PrimeChargeEffectV1(want_id=want_id, effect=eff, last=eff, bids=1, first_at=now, last_at=now,
-                                   why=why[:300])
+        return PrimeChargeEffectV1(want_id=want_id, signal_id=signal_id, effect=eff, last=eff, bids=1,
+                                   first_at=now, last_at=now, why=why[:300])
     strongest = eff if _RANK[eff] > _RANK[prev.effect] else prev.effect
     return prev.model_copy(update={"effect": strongest, "last": eff, "bids": prev.bids + 1, "last_at": now,
                                    "why": why[:300]})
@@ -161,16 +185,19 @@ def parse_signal(raw: object) -> Optional[PrimeRegulationV1]:
         return None
 
 
-def parse_effects(fields: Mapping[object, object]) -> list[PrimeChargeEffectV1]:
+def parse_effects(fields: Mapping[object, object], *, signal_id: Optional[str] = None) -> list[PrimeChargeEffectV1]:
+    """The market's per-want records; with ``signal_id``, only those written under that signal."""
     out = []
     for k, v in (fields or {}).items():
         name = k.decode() if isinstance(k, bytes) else str(k)
         if not name.startswith(WANT_FIELD_PREFIX):
             continue
         try:
-            out.append(PrimeChargeEffectV1.model_validate_json(v.decode() if isinstance(v, bytes) else str(v)))
+            e = PrimeChargeEffectV1.model_validate_json(v.decode() if isinstance(v, bytes) else str(v))
         except Exception:  # noqa: BLE001
             continue
+        if signal_id is None or e.signal_id == signal_id:
+            out.append(e)
     return sorted(out, key=lambda e: e.first_at)
 
 
@@ -192,6 +219,9 @@ def why_clause(sig: PrimeRegulationV1, *, value: float, lane_charge: float, prim
         verdict = "beat" if net > 0 else "did not beat"
         return (f"value {value:.2f} - lane charge {lane_charge:.2f} {verdict} Prime's slow charge {prime:.2f} "
                 f"(until {sig.expires_at.strftime('%H:%MZ')}: {sig.why[:120]})")
+    if prime == 0:
+        return (f"Prime's quicken credit does not apply: the want has no value yet (until "
+                f"{sig.expires_at.strftime('%H:%MZ')}: {sig.why[:120]})")
     return (f"Prime's quicken credit {abs(prime):.2f} added to value {value:.2f} - lane charge {lane_charge:.2f} "
             f"(until {sig.expires_at.strftime('%H:%MZ')}: {sig.why[:120]})")
 
@@ -219,7 +249,8 @@ __all__ = [
     "amount",
     "changed_any",
     "dumps",
-    "effect_of",
+    "effect_between",
+    "goes_ahead",
     "key",
     "merge",
     "parse_effects",

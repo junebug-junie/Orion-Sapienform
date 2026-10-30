@@ -261,6 +261,15 @@ After:   my resting body has cost $140 this month (Juniper's lever: hardware, co
 
 ---
 
+## Juniper's decisions (2026-10-30)
+
+- **Zelda dojo:** Juniper is turning it off. The `sponsored` line stays in `rest_body.yaml` for any future Juniper-run workload.
+- **Juniper's chat turns do NOT count against Orion's allowance.** Report them on their own line; exclude them from the allowance's spend.
+- **Allowance:** $50/month, as proposed.
+- **Pinned rest:** approved (circe 541 W, athena 340 W, hecate 96 W), recorded in `config/physiology/rest_body.yaml` on PR #2992 with `approved_at: 2026-10-30`.
+- **AC cost: OPEN.** Juniper notes that the AC's extra load is directly proportional to the heat Orion makes when running hard. The candidate v2 rule: charge Orion's allowance the share of above-baseline cooling kWh that matches Orion's share of cabinet heat (heat fit × above-rest watts). This needs a measured cooling kWh series (`home_cooling_sample.cooling_watts` exists) and a metric-gate pass. v1 still excludes it.
+- **AI Town:** becomes an Orion-chosen want family with a hard cap of 2 h/day (separate PR).
+
 ## Missing questions
 
 1. **Is the dojo sponsored (Juniper's line) or Orion's activity?** This design assumes sponsored, because only Juniper can stop it. If it counts as Orion's, the allowance must be about $80 or the price will bind hard from day one.

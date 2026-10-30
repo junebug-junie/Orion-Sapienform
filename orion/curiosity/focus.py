@@ -1,5 +1,5 @@
-"""Curiosity focus: one question Orion chose in a chat with Juniper, offered once to the next
-regular investigate run.
+"""Curiosity focus: one question Orion chose in a chat with Juniper (or, since 2026-10-30, alone
+in Prime's between-conversations thinking), offered once to the next regular investigate run.
 
 Design: docs/superpowers/specs/2026-10-16-orion-queue-curiosity-focus-design.md. Table:
 services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql.
@@ -50,6 +50,7 @@ DISPOSITION_CAP = 300
 JUNIPER_PROTECTED = (
     "Juniper asked for this focus; it stays until a run takes it or it expires"
 )
+PENDING_KEPT = "a focus is already waiting for the next run; it is not replaced by a question chosen alone"
 
 _ID_NS = uuid5(NAMESPACE_URL, "orion.curiosity.focus.v1")
 # Serializes the multi-statement writers (queue, release, clear) so two of them cannot both
@@ -234,11 +235,13 @@ class QueueResult:
 
 async def queue_focus(
     pool: Any, *, question: str, why: str, origin: str, chat_correlation_id: Optional[str],
-    ttl: timedelta = FOCUS_TTL,
+    ttl: timedelta = FOCUS_TTL, keep_pending: bool = False,
 ) -> QueueResult:
     """Put ``question`` in the one pending slot. Raises FocusRefused (nothing written) when a
-    Juniper-origin focus holds the slot and this is Orion's own choice. Database errors raise:
-    the caller cannot know whether the commit happened."""
+    Juniper-origin focus holds the slot and this is Orion's own choice, or, with ``keep_pending``
+    (Prime's between-conversations questions), when ANY focus is pending: a question chosen in a
+    conversation outranks one chosen alone. Database errors raise: the caller cannot know whether
+    the commit happened."""
     if origin not in (ORIGIN_SELF, ORIGIN_JUNIPER):
         raise FocusRefused(f"origin must be 'self' or 'juniper', not {origin!r}")
     focus_id = focus_id_for(question, why, origin, chat_correlation_id)
@@ -260,6 +263,8 @@ async def queue_focus(
             if current is not None and current["origin"] == ORIGIN_JUNIPER and origin == ORIGIN_SELF:
                 # Raising inside the transaction rolls back the expiry sweep too: nothing written.
                 raise FocusRefused(JUNIPER_PROTECTED + f" (pending: {str(current['question'])[:200]!r})")
+            if current is not None and keep_pending:
+                raise FocusRefused(PENDING_KEPT + f" (pending: {str(current['question'])[:200]!r})")
             if current is not None:
                 await conn.execute(REPLACE_SQL, current["focus_id"], focus_id)
             inserted = await conn.fetchrow(
@@ -418,14 +423,25 @@ def read_disposition(reader: Any, run_id: str) -> tuple[Optional[str], Optional[
 FOCUS_HEADER = "THE FOCUS YOU QUEUED FOR THIS RUN"
 
 
+# Prime's resident loop (services/orion-mind/app/prime_loop.py) stores "prime:<thought_id>" as the
+# row's chat_correlation_id: the question was chosen between conversations, not in a chat.
+PRIME_CORRELATION_PREFIX = "prime:"
+
+
+def is_prime_focus(focus: FocusRow) -> bool:
+    return str(focus.chat_correlation_id or "").startswith(PRIME_CORRELATION_PREFIX)
+
+
 def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
     if focus is None:
         return []
-    who = (
-        "Juniper asked you to look into this next, and you queued it"
-        if focus.origin == ORIGIN_JUNIPER
-        else "In a conversation with Juniper you chose this as what your next curiosity run should look at"
-    )
+    if focus.origin == ORIGIN_JUNIPER:
+        who = "Juniper asked you to look into this next, and you queued it"
+    elif is_prime_focus(focus):
+        who = ("Between conversations, in your own slow thinking (Prime), you chose this as what your "
+               "next curiosity run should look at")
+    else:
+        who = "In a conversation with Juniper you chose this as what your next curiosity run should look at"
     return [
         f"{FOCUS_HEADER} (shown to you once).",
         f"{who}:",
@@ -449,7 +465,8 @@ def focus_story(focus: FocusRow) -> str:
     def at(value: Optional[datetime]) -> str:
         return value.strftime("%Y-%m-%d %H:%M UTC") if value is not None else "?"
 
-    who = "Juniper asked" if focus.origin == ORIGIN_JUNIPER else "you chose it"
+    who = ("Juniper asked" if focus.origin == ORIGIN_JUNIPER
+           else "you chose it between conversations" if is_prime_focus(focus) else "you chose it")
     parts = [f"queued {at(focus.created_at)} ({who})"]
     status = focus.status
     if status == PENDING:

@@ -193,7 +193,8 @@ def build_atlas(
     if body is not None:
         # move a persisted channel only when its table is a part with a writes link for it; the
         # producers are catalog producers, so always parts (never left with no flow at all)
-        linked = {via for st in body.stores for _, rel, _, via in st.links if rel == "writes" and via}
+        linked = {via for st in body.stores for _, rel, ev, via in st.links
+                  if rel == "writes" and ev == "declared_route" and via}
         persisted = {ch: w for ch, w in body.persisted.items() if ch in linked}
 
     def consumers_of(entry: dict) -> list[str]:
@@ -443,25 +444,52 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
         for h in on:  # placement, like a service's: never an organ edge (hosts are not in organs)
             link(name, f"host:{h}", 1.0, "declared_placement", None, "runs_on")
 
-    # stores (writes: producer -> store; uses: service -> store)
+    # stores (writes: producer -> store; reads: service -> store it reads; uses: direction
+    # unknown). One edge per service: its strongest relation (writes > reads > uses), every
+    # evidence kept. A route link's ``via`` is the persisted channel; a code link's is a module.
+    rank = {"writes": 2, "reads": 1, "uses": 0}
+    store_idf = _store_source_idf(body.stores)
     for st in body.stores:
         name = f"{_STORE_PREFIX[st.store]}:{st.name}"
-        edges, seen_pairs = [], set()
+        per_svc: dict[str, list] = {}
         for raw, relation, evidence, via in st.links:
             svc = match_part(raw, known, host_names)
             if svc is None:
                 unmatched[evidence].add(raw)
                 continue
-            if (svc, relation) in seen_pairs:
+            cur = per_svc.get(svc)
+            channel = via if evidence == "declared_route" else ""
+            idf = store_idf[via]
+            if cur is None:
+                per_svc[svc] = [relation, [evidence], channel, idf]
                 continue
-            seen_pairs.add((svc, relation))
-            edges.append((svc, name, relation, evidence, via))
+            if rank.get(relation, 0) > rank.get(cur[0], 0):
+                cur[0] = relation
+            if evidence not in cur[1]:
+                cur[1].append(evidence)
+            cur[2] = cur[2] or channel
+            cur[3] = max(cur[3], idf)  # the service's most specific source counts
         status = "declared_only" if st.rows is None else ("live" if st.rows > 0 else "dormant")
         # Postgres rows are pg_stat_user_tables.n_live_tup: the statistics' estimate, not a count
         key = "rows_est" if st.store == "postgres" else "rows"
         facts = {"store": st.store, key: "not read" if st.rows is None else str(st.rows)}
+        for rel, label in (("writes", "written_by"), ("reads", "read_by"), ("uses", "used_by")):
+            who = sorted(svc for svc, v in per_svc.items() if v[0] == rel)
+            if who:
+                facts[label] = ", ".join(who[:3]) + (f" +{len(who) - 3}" if len(who) > 3 else "")
+        if not per_svc and st.links:  # named, but by names that matched no part (see unmatched)
+            facts["evidence"] = ("named by " + ", ".join(sorted({raw for raw, *_ in st.links})[:3]) +
+                                 ", which matched no part")
+        elif not per_svc:
+            facts["evidence"] = "none: no service's code, env or route names it"
+            if st.named_in_unimported:
+                facts["evidence"] += f"; named only in {', '.join(st.named_in_unimported[:2])}, which no service imports"
         add(name, kind="store", status=status, declared=True, facts=facts)
-        spread(name, edges)
+        # one unit, split by how specific each service's source is (see _store_source_idf)
+        total = sum(v[3] for v in per_svc.values())
+        for svc, (rel, ev, ch, idf) in per_svc.items():
+            link(svc, name, BODY_PART_UNIT * idf / total, ev[0], ch or None, rel)
+            flows[(svc, name)].evidence.update(ev)
 
     # processes: parts first (a spawns flow needs its child to exist), then flows
     for pr in body.processes:
@@ -485,6 +513,20 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             parts[name].facts["work_split"] = ", ".join(
                 f"{t} {share:.0%}" for t, share in _shares(edges, name)[:3])
     return {k: sorted(v) for k, v in sorted(unmatched.items())}
+
+
+def _store_source_idf(stores) -> dict[str, float]:
+    """Source (a link's ``via``: env file, code module, persisted channel) -> log(1 + N / df),
+    df = how many of the N stores that source names. The process rule's rarity factor, applied
+    to stores: a registry module naming every collection (orion/memory/vector_collection_policy.py,
+    imported by orion-biometrics) keeps a small share of each, and the module that names one
+    store keeps most of it. Equal sources give equal shares: the plain one-unit split."""
+    df: Counter = Counter()
+    for st in stores:
+        for via in {via for _, _, _, via in st.links}:
+            df[via] += 1
+    n = max(len(stores), 1)
+    return {via: math.log(1 + n / k) for via, k in df.items()}
 
 
 @dataclass

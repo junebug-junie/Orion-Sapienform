@@ -8,7 +8,8 @@ body of 2026-10-30 with each process linked to the services doing its work) or, 
 * modularity Q >= 0.3 (Newman: below that, community structure is weak);
 * 5..25 organs, and no organ holding more than 35% of the parts (a blob is not an organ);
 * every non-transient part in exactly one organ, and no host in any (hosts are placement);
-* pairs anyone would call one organ land together (eyes with eyes, cortex with cortex).
+* pairs anyone would call one organ land together (eyes with eyes, cortex with cortex);
+* a store with any writes / reads / uses flow is never a lone organ (only an unattributed one is).
 
     python orion/body_atlas/evals/run_organ_structure_eval.py              # frozen fixture
     python orion/body_atlas/evals/run_organ_structure_eval.py --live       # needs $FALKORDB_URI
@@ -39,7 +40,10 @@ WHOLE_BODY_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-29
 # 2026-10-30: processes linked to the services doing their work (reducer sources, harness turn
 # records, child runs), not only to their runner.
 DOERS_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-30.json"
-FIXTURES = (FIXTURE, WHOLE_BODY_FIXTURE, DOERS_FIXTURE)
+# 2026-10-30, later: Chroma/FalkorDB stores linked to the services whose code names them
+# (store_code.py), so a store named only in code is no longer a lone organ.
+STORES_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-30_stores.json"
+FIXTURES = (FIXTURE, WHOLE_BODY_FIXTURE, DOERS_FIXTURE, STORES_FIXTURE)
 MIN_Q = 0.3
 ORGAN_RANGE = (5, 25)
 MAX_ORGAN_SHARE = 0.35
@@ -108,6 +112,12 @@ def evaluate(atlas) -> list[str]:
     if hosts_in:
         failures.append(f"hosts are placement, not function, yet {hosts_in[:3]} sit in organs")
     organ_of = {m: o.organ_id for o in atlas.organs for m in o.members}
+    size = {o.organ_id: len(o.members) for o in atlas.organs}
+    linked = {f.target for f in atlas.flows if f.relation in ("writes", "reads", "uses")}
+    alone = [p.part_id for p in atlas.parts if p.kind == "store" and p.part_id in linked
+             and size.get(organ_of.get(p.part_id, ""), 0) == 1]
+    if alone:
+        failures.append(f"{len(alone)} stores with a writes, reads or uses flow sit alone, e.g. {alone[:3]}")
     for a, b in SAME_ORGAN:
         if organ_of.get(f"part:{a}") is None or organ_of.get(f"part:{a}") != organ_of.get(f"part:{b}"):
             failures.append(f"{a} and {b} are in different organs")

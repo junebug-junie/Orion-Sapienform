@@ -50,3 +50,56 @@ every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` as an `RpcHealthSnapshotV1` on
 Rollout is consumer-first: the schema is `extra="forbid"`, so rebuild
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before deploying
 this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
+
+## Orion Prime 2A: the resident loop (2026-10-30)
+
+orion-mind keeps thinking between conversations. Design: `docs/superpowers/specs/2026-10-29-orion-prime-design.md`
+(PR #2980), rollout step 2A. Code: `app/prime_loop.py` (I/O) and `orion/prime/` (pure logic).
+
+**What it does.** Every `PRIME_TICK_SEC` a CPU-only tick reads the body (durable-runs `GET /physiology/state`)
+and attention (`GET /temporal-self/frame`) and records what changed: attention moved to another arc, the set of
+*binding* body constraints changed, one of Prime's own questions settled, a concern faded. If something changed,
+the refractory interval has passed and no Juniper turn is running, Prime bids in the body economy (family `prime`,
+Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits. A thought is one model
+call on route `prime` (circe chat lane 0 at `background` priority, so Juniper's call always starts first). Prime
+answers with how it reads things now, edits to its at most 3 concerns, and at most one move.
+
+**The one move (2A).** A question for curiosity's next regular investigate run, queued in Hub's existing focus slot
+(`orion/curiosity/focus.py`) with `binding.invocation_context = "prime"`. Hub stores it origin `self` with
+`chat_correlation_id = "prime:<thought_id>"`, never replaces a pending focus with it, and tells the run it was
+chosen "between conversations", not in a chat. Why not allocator candidates (the spec's first plan): reading,
+painting and retro leisure are already admitted on almost every dispatch tick (live 10-30: 3,519 / 2,129 / 3,322 a
+day), so a duplicate candidate from Prime could not change anything.
+
+**Narrator control.** `PRIME_HOLDBACK_FRACTION` of questions are opened as acts and never sent. Both arms are graded
+the same way: did the curiosity run that took the question (treated) or the next one after it (control) write
+something. Prime is told when a question was held back. Readout: `orion/prime/evals/run_prime_report.py`.
+
+**Acts** (`grammar_acts`, `actor = 'prime'`): `infer` per thought (produced = the answer parsed; `preempted` when a
+Juniper turn overlapped the call), `ask` per question (`test_before = holdback:<arm>`, `parent_act_id` = the
+thought, `goal_ref = prime_concern:<id>`).
+
+**State** persists in Redis `orion:prime:state` (concerns, open questions, last reading), so a restart resumes.
+
+**Juniper first.** `main.mind_run` marks a positively-marked Juniper turn (`engine.carries_live_turn`). `mind_run` runs
+the synchronous `run_mind` on the event loop, so Prime's tick cannot run during a turn at all (the `active()` check
+keeps that true if `run_mind` ever moves to a thread). A thought whose model call overlapped a turn is discarded
+(`preempted`), and the `background` route keeps a Prime call from starting while Juniper's call holds the slot.
+NOT done: cancelling a model call already generating on the chat lane (the bus RPC has no cancel);
+`PRIME_MAX_TOKENS` bounds that delay (live smoke: ~220 tokens, 3-7 s on the 8B metacog model; lane 0 UNVERIFIED).
+Prime's model calls do not count in orion-mind's RPC-health window (`MindLLMClient(rpc_health=False)`): they wait
+for slack by design.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `PRIME_ENABLED` | `true` | the loop; off = no bids, no acts, run_mind unchanged |
+| `PRIME_TICK_SEC` | `15` | CPU tick |
+| `PRIME_REFRACTORY_SEC` | `300` | least time between thoughts (at most 12 an hour while E9 is measured) |
+| `PRIME_SETTLE_INTERVAL_SEC` | `300` | how often open questions are checked against curiosity's runs |
+| `PRIME_LLM_ROUTE` | `prime` | gateway route (config/gpu_pool.yaml) |
+| `PRIME_BID_LANE` | `chat` | lane named in the bid and shown in the frame |
+| `PRIME_MAX_TOKENS` | `700` | answer budget (live smoke: ~220 tokens used) |
+| `PRIME_LLM_TIMEOUT_SEC` | `60` | model call timeout |
+| `PRIME_HOLDBACK_FRACTION` | `0.2` | narrator arm share |
+| `PRIME_DURABLE_RUNS_URL` | `http://orion-athena-durable-runs:8121` | body + attention |
+| `PRIME_HUB_URL` | `http://100.92.216.81:8080` | curiosity runs + pending focus |

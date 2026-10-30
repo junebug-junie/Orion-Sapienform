@@ -67,7 +67,8 @@ def test_view_from_state_uses_the_config_the_pool_sent():
 ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "metacog_perception",  # Orion's sight, 2026-10-23 (pinned below)
                              "quick_turn",          # repair-pressure probe, 2026-10-23 (pinned below)
-                             "quick_embodied"}      # Orion's town speech, 2026-10-23
+                             "quick_embodied",      # Orion's town speech, 2026-10-23
+                             "prime"}               # Orion Prime's thoughts, 2026-10-30 (pinned below)
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 
@@ -188,3 +189,21 @@ def test_quick_turn_route_is_system_only_on_the_fast_class():
     assert "quick_turn" in SYSTEM_LLM_ROUTES and "quick_turn" not in METACOG_LLM_ROUTES
     assert CFG.routes["quick_turn"].priority == "interactive"
     assert CFG.routes["quick_turn"].work_class == CFG.routes["quick"].work_class == "fast"
+
+
+def test_prime_route_is_the_chat_worker_at_background():
+    """Orion Prime's thoughts (2026-10-30): served exactly like `chat` (same class, same roles, same
+    warm model), but background in the pool so the gateway waits for slot slack (Juniper's turn
+    goes first) and the heat reflex sheds it. A background route cannot also be system-only
+    (orion/llm/routes.py), so it is not hidden from the picker; picking it gains nothing."""
+    from orion.llm.routes import BACKGROUND_LLM_ROUTES, METACOG_LLM_ROUTES, SYSTEM_LLM_ROUTES
+    view = build_route_view(None, CFG)
+    [r] = [e for e in view["routes"] if e["id"] == "prime"]
+    [chat] = [e for e in view["routes"] if e["id"] == "chat"]
+    same = lambda e: {k: v for k, v in e.items() if k not in ("id", "priority")}  # noqa: E731
+    assert same(r) == same(chat)
+    assert CFG.routes["prime"].priority == "background"
+    assert CFG.routes["prime"].work_class == CFG.routes["chat"].work_class == "chat"
+    assert r["priority"] == "background"
+    assert "prime" in BACKGROUND_LLM_ROUTES and "prime" not in SYSTEM_LLM_ROUTES
+    assert "prime" not in METACOG_LLM_ROUTES

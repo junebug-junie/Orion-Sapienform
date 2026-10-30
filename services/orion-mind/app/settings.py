@@ -124,6 +124,28 @@ class Settings(BaseSettings):
         alias="MIND_LLM_INTAKE_CHANNEL",
     )
     MIND_LLM_REPLY_PREFIX: str = Field(default="orion:mind:llm:reply", alias="MIND_LLM_REPLY_PREFIX")
+    # Orion Prime 2A (docs/superpowers/specs/2026-10-29-orion-prime-design.md): the resident loop
+    # (app/prime_loop.py). Off: no loop, no bids, no acts; run_mind is unaffected either way.
+    PRIME_ENABLED: bool = Field(default=True, alias="PRIME_ENABLED")
+    # The CPU tick: reads body + attention, records changes. Never calls a model.
+    PRIME_TICK_SEC: float = Field(default=15.0, gt=0.0, alias="PRIME_TICK_SEC")
+    # Least time between two thoughts. Price decides frequency above this floor.
+    PRIME_REFRACTORY_SEC: float = Field(default=300.0, ge=0.0, alias="PRIME_REFRACTORY_SEC")
+    # How often open questions are checked against curiosity's runs (one Hub read).
+    PRIME_SETTLE_INTERVAL_SEC: float = Field(default=300.0, gt=0.0, alias="PRIME_SETTLE_INTERVAL_SEC")
+    # circe chat lane 0 at background priority (config/gpu_pool.yaml route `prime`).
+    PRIME_LLM_ROUTE: str = Field(default="prime", alias="PRIME_LLM_ROUTE")
+    # The pool role the bid names (config/physiology/families.yaml family `prime`).
+    PRIME_BID_LANE: str = Field(default="chat", alias="PRIME_BID_LANE")
+    PRIME_MAX_TOKENS: int = Field(default=700, gt=0, alias="PRIME_MAX_TOKENS")
+    PRIME_LLM_TIMEOUT_SEC: float = Field(default=60.0, gt=0.0, alias="PRIME_LLM_TIMEOUT_SEC")
+    # Share of questions held back (logged as acts, never sent): the narrator control arm.
+    PRIME_HOLDBACK_FRACTION: float = Field(default=0.2, ge=0.0, le=1.0, alias="PRIME_HOLDBACK_FRACTION")
+    # Body (/physiology/state) and attention (/temporal-self/frame).
+    PRIME_DURABLE_RUNS_URL: str = Field(default="http://orion-athena-durable-runs:8121", alias="PRIME_DURABLE_RUNS_URL")
+    # Hub (host network on athena): curiosity's runs and pending focus (/curiosity/api/runs).
+    PRIME_HUB_URL: str = Field(default="http://100.92.216.81:8080", alias="PRIME_HUB_URL")
+
     # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
     ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")
 

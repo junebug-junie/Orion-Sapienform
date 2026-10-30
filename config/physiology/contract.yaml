@@ -159,6 +159,10 @@ readers:
   - module: orion/grammar/act_energy_fill.py
     role: display
     reason: act energy cost (2026-10-29; whole machine 2026-10-30); reads the heat fit and the pinned rest (rest_body.yaml) to price an act's wh_by_host / heat_c_by_host in grammar_acts.cost_json and the hourly attribution rows. Records a cost, gates nothing.
+  - module: services/orion-mind/app/prime_loop.py
+    role: bidder
+    reason: Orion Prime bids (family prime, Tier 1) for each thought and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. No arousal/thermal veto of its own.
+    note: 2026-10-30, Orion Prime 2A; the first binding bid (already the Patch D shape), so nothing left to cut over
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.

@@ -30,6 +30,9 @@ FlowEvidence = Literal[
     "declared_route",
     # uses: a service's .env_example names the store (read or write: the env does not say which)
     "declared_env",
+    # writes / reads / uses: the service's code names the store (a literal, an env key, a shared
+    # module's constant); writes / reads only when the call's verb or Cypher says which
+    "declared_code",
     # runs: the producer of the run-state channel (channels.yaml) / no machine-readable runner
     # exists, so the service that owns this family's state table (labeled as an assumption)
     "declared_runner", "assumed_runner",
@@ -43,10 +46,11 @@ FlowEvidence = Literal[
     "declared_reducer_source",
 ]
 # signals: bus circulation (the v1 relation). runs_on: service -> host. sees_through: camera ->
-# service. writes: producer -> store. uses: service -> store. runs: runner -> process.
+# service. writes: producer -> store. reads: service -> store it reads. uses: service -> store
+# (direction unknown). runs: runner -> process.
 # does: service -> process it works for. spawns: process -> process it starts. feeds: service ->
 # reducer that reads its events.
-FlowRelation = Literal["signals", "runs_on", "sees_through", "writes", "uses", "runs", "does", "spawns", "feeds"]
+FlowRelation = Literal["signals", "runs_on", "sees_through", "writes", "reads", "uses", "runs", "does", "spawns", "feeds"]
 
 
 class PartV1(BaseModel):

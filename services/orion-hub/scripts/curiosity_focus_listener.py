@@ -6,7 +6,8 @@ Orion had no way to do it (2026-10-16). This responder is that way: one
 investigate run. Design: docs/superpowers/specs/2026-10-16-orion-queue-curiosity-focus-design.md.
 
 Before anything is written:
-* the request is a chat turn (curiosity runs already carry their own continuation note);
+* the request is a chat turn (curiosity runs already carry their own continuation note), or Prime's
+  resident loop (origin self only; it never replaces a pending focus);
 * the focus queue is on (HUB_CURIOSITY_FOCUS_ENABLED);
 * a pending focus Juniper asked for is never replaced by Orion's own choice.
 
@@ -41,6 +42,10 @@ from orion.schemas.introspect import (
 logger = logging.getLogger("orion-hub.curiosity_focus")
 
 OPERATION = "queue_curiosity_focus"
+# Orion Prime 2A (2026-10-30): the resident loop in orion-mind (services/orion-mind/app/prime_loop.py)
+# queues its own between-conversations question here. Origin self only, and it never replaces a
+# pending focus (orion/curiosity/focus.py keep_pending). parent_trace_id is "prime:<thought_id>".
+PRIME_CONTEXT = "prime"
 # Not "not queued": a connection lost after the commit lands here too.
 UNAVAILABLE = "queue_curiosity_focus_unavailable; answer unknown"
 DISABLED = "the curiosity focus queue is switched off (HUB_CURIOSITY_FOCUS_ENABLED=false)"
@@ -158,11 +163,15 @@ class CuriosityFocusListener:
         self, request: IntrospectRequestV1, args: QueueCuriosityFocusArguments, now: datetime,
     ) -> IntrospectResultV1:
         binding = request.binding
-        if binding.invocation_context != "unified_chat":
+        prime = binding.invocation_context == PRIME_CONTEXT
+        if binding.invocation_context != "unified_chat" and not prime:
             raise FocusRefused(
                 "a focus is queued from a conversation with Juniper; this is a "
                 f"{binding.invocation_context} turn (a curiosity run already has its continuation note)"
             )
+        if prime and args.origin != "self":
+            # Prime thinks alone: it can never say Juniper asked.
+            raise FocusRefused("a question Prime chose alone is origin self, never juniper")
         if not self.enabled:
             raise FocusRefused(DISABLED)
         pool = self.pool_provider()
@@ -171,6 +180,7 @@ class CuriosityFocusListener:
         chat_corr = binding.parent_trace_id or None
         queued = await queue_focus(
             pool, question=args.question, why=args.why, origin=args.origin, chat_correlation_id=chat_corr,
+            keep_pending=prime,
         )
         schedule = None
         if self.schedule_provider is not None:

@@ -18,7 +18,7 @@ Orion keeps no picture of the current situation between chat turns. Each turn re
   - The chat log copy was outside the 8-turn window.
   - The crystallization was in the belief search's candidate pool, but the open-loop bucket filter dropped it (`services/orion-recall/app/collectors/active_packet.py:19,185-186`). Over 7 days, belief recall picked that open-loop profile on 634 of 634 turns.
   - Episode memory has no chat reader, and `validate.py:406-407` drops `expires_at` unless `purpose=follow_up`.
-- **The distiller also stored a confabulated row:** "Juniper corrected me that she lives in her home city, not Chicago" (`c0dc86c8…`). Its only evidence quote grounds "lives in <home city>". The "correction" came from Orion's own reply.
+- **The distiller also stored a confabulated row:** "Juniper corrected me that she lives in [her city], not Chicago" (`c0dc86c8…`). Its only evidence quote grounds "lives in [her city]". The "correction" came from Orion's own reply.
 
 **Per-turn search cost today** (`recall_telemetry`, 7-day averages):
 

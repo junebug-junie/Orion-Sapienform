@@ -2239,8 +2239,10 @@ class Settings(BaseSettings):
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE"
     )
     # Bounds worst-case LLM calls per scheduler tick -- _run_enrichment only
-    # processes segments with enriched_at IS NULL (force=False), so this caps
-    # a single tick's LLM spend without needing to track state across ticks.
+    # processes segments with enriched_at IS NULL (force=False), and since
+    # 2026-10-30 a segment whose text was already enriched in an earlier run
+    # reuses that result without an LLM call and without counting toward this
+    # limit. So the limit caps fresh LLM calls only.
     SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT: int = Field(
         default=200, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT"
     )

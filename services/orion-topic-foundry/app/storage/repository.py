@@ -18,6 +18,7 @@ from app.storage.ddl import (
     DRIFT_DDL,
     EVENTS_DDL,
     EDGES_DDL,
+    ENRICHMENT_CACHE_DDL,
     MODEL_EVENTS_DDL,
     MODELS_DDL,
     RUNS_DDL,
@@ -44,6 +45,7 @@ def ensure_tables() -> None:
             cur.execute(CONVERSATIONS_DDL)
             cur.execute(CONVERSATION_BLOCKS_DDL)
             cur.execute(CONVERSATION_OVERRIDES_DDL)
+            cur.execute(ENRICHMENT_CACHE_DDL)
             cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS spec_hash VARCHAR")
             cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS stage VARCHAR")
             cur.execute(
@@ -288,17 +290,34 @@ def fetch_run(run_id: UUID) -> Optional[Dict[str, Any]]:
             return cur.fetchone()
 
 
-def fetch_run_by_spec_hash(spec_hash: str) -> Optional[Dict[str, Any]]:
+def fetch_run_by_spec_hash(spec_hash: str, *, complete_within_secs: int = 0) -> Optional[Dict[str, Any]]:
+    """Find a run that makes a new run with this ``spec_hash`` redundant.
+
+    A queued or running run always counts. A complete run counts only when it
+    completed within the last ``complete_within_secs`` seconds (0 = never).
+
+    Before 2026-10-30 only queued/running runs counted, so a finished run did
+    not stop an identical new one. Hub runs a training tick on every restart,
+    and spec_hash 569e0f36f1 trained six times on 2026-10-29 alone.
+    """
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT * FROM topic_foundry_runs
-                WHERE spec_hash = %s AND status IN ('queued', 'running')
+                WHERE spec_hash = %s
+                  AND (
+                    status IN ('queued', 'running')
+                    OR (
+                      %s > 0
+                      AND status = 'complete'
+                      AND completed_at >= NOW() - make_interval(secs => %s)
+                    )
+                  )
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (spec_hash,),
+                (spec_hash, int(complete_within_secs), int(complete_within_secs)),
             )
             return cur.fetchone()
 
@@ -677,6 +696,33 @@ def fetch_segment(segment_id: UUID) -> Optional[Dict[str, Any]]:
                 (str(segment_id),),
             )
             return cur.fetchone()
+
+
+def fetch_enrichment_cache(cache_keys: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Return ``{cache_key: enrichment}`` for every key already in the cache."""
+    keys = sorted({k for k in cache_keys if k})
+    if not keys:
+        return {}
+    with pg_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT cache_key, enrichment FROM topic_foundry_enrichment_cache WHERE cache_key = ANY(%s)",
+                (keys,),
+            )
+            return {row["cache_key"]: row["enrichment"] for row in (cur.fetchall() or [])}
+
+
+def insert_enrichment_cache(cache_key: str, *, enrichment: Dict[str, Any], enricher: str) -> None:
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO topic_foundry_enrichment_cache (cache_key, enricher, enrichment)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (cache_key) DO NOTHING
+                """,
+                (cache_key, enricher, Json(enrichment)),
+            )
 
 
 def update_segment_enrichment(segment_id: UUID, *, enrichment: Dict[str, Any], enrichment_version: str) -> None:

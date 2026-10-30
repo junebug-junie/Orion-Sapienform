@@ -189,7 +189,7 @@ def _stub_enrichment(monkeypatch, run_row, *, fetch_segments_raises=False):
 
     monkeypatch.setattr(enrichment_module, "fetch_segments", _fetch_segments)
     monkeypatch.setattr(
-        enrichment_module, "_enrich_segment", lambda seg, tax, enr, tmap: {"meaning": {}}
+        enrichment_module, "_enrich_segment", lambda seg, tax, enr, tmap: ({"meaning": {}}, "heuristic")
     )
     monkeypatch.setattr(
         enrichment_module, "update_segment_enrichment", lambda sid, **kw: None

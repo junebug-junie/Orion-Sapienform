@@ -25,6 +25,7 @@ from app.services.enrichment import enqueue_enrichment
 from app.services.run_recovery import enrich_refusal_reason
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
+from app.settings import settings
 from app.storage.repository import (
     create_run,
     fetch_dataset,
@@ -69,8 +70,15 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         model_spec=specs.model,
         enrichment_spec=specs.enrichment,
     )
-    existing = fetch_run_by_spec_hash(spec_hash)
+    complete_window = 0 if payload.force else max(0, int(settings.topic_foundry_train_dedup_complete_window_secs))
+    existing = fetch_run_by_spec_hash(spec_hash, complete_within_secs=complete_window)
     if existing:
+        logger.info(
+            "train_dedup_hit spec_hash=%s run_id=%s status=%s",
+            spec_hash[:10],
+            existing["run_id"],
+            existing["status"],
+        )
         return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"])
     run = RunRecord(
         run_id=run_id,

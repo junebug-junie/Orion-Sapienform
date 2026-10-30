@@ -9,14 +9,20 @@ requests under the two guards added 2026-10-30:
 1. A train request is answered by an earlier same-spec_hash run that
    completed within ``--window-secs`` (no new run).
 2. Enrichment makes an LLM call only for segment text not seen in an earlier
-   run (text-hash cache). The cache is seeded with every run that completed
-   before the day, i.e. the steady state once the cache has filled.
+   run (text-hash cache). By default the cache is seeded with every run that
+   completed before the day: the steady state once the cache has filled.
+   ``--cold-cache`` starts it empty: the first day after deploy.
+
+"Segments enriched before" counts every segment enriched that day, by any
+source (LLM, heuristic fallback, inline training enrichment). "LLM after"
+counts distinct new texts, i.e. fresh LLM calls. The per-tick limit (200)
+spreads the cold-cache calls over more ticks; it does not change the total.
 
 Usage (from the repo root, on the host that runs Postgres):
 
     python3 services/orion-topic-foundry/evals/replay_repeat_work.py --day 2026-10-29
 
-Exit code 1 if "after" does not cut both train runs and LLM calls.
+Exit code 1 if "after" does not cut train runs, or (warm cache) LLM calls.
 """
 
 from __future__ import annotations
@@ -63,15 +69,18 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--day", required=True, help="UTC day, YYYY-MM-DD")
     ap.add_argument("--window-secs", type=int, default=86400)
+    ap.add_argument("--cold-cache", action="store_true", help="start with an empty enrichment cache")
     args = ap.parse_args()
     day = datetime.fromisoformat(args.day)
+    # SQL is built from the parsed date, never from the raw argument.
+    day_s = day.date().isoformat()
     nxt = (day + timedelta(days=1)).date().isoformat()
     window = timedelta(seconds=args.window_secs)
 
     runs = q(
         "select m.name, r.run_id, r.spec_hash, r.status, r.created_at, coalesce(r.completed_at::text,'') "
         "from topic_foundry_runs r join topic_foundry_models m using(model_id) "
-        f"where r.created_at < '{nxt}' and r.created_at >= timestamptz '{args.day}' - interval '3 days' "
+        f"where r.created_at < '{nxt}' and r.created_at >= timestamptz '{day_s}' - interval '3 days' "
         "order by r.created_at"
     )
     by_model: dict[str, list[dict]] = defaultdict(list)
@@ -85,13 +94,14 @@ def main() -> int:
         for row in q(
             "select m.name, count(*) from topic_foundry_segments s join topic_foundry_runs r using(run_id) "
             "join topic_foundry_models m on m.model_id = r.model_id "
-            f"where s.enriched_at >= '{args.day}' and s.enriched_at < '{nxt}' group by 1"
+            f"where s.enriched_at >= '{day_s}' and s.enriched_at < '{nxt}' group by 1"
         )
     )
 
     totals = defaultdict(int)
-    print(f"Replay of {args.day}, dedup window {args.window_secs}s\n")
-    print(f"{'model':40} {'train before':>12} {'train after':>11} {'LLM before':>10} {'LLM after':>9}")
+    mode = "cold cache (first day after deploy)" if args.cold_cache else "steady state (warm cache)"
+    print(f"Replay of {day_s}, dedup window {args.window_secs}s, {mode}\n")
+    print(f"{'model':40} {'train before':>12} {'train after':>11} {'enriched before':>15} {'LLM after':>9}")
     for name, model_runs in sorted(by_model.items()):
         prior = [r for r in model_runs if r["created"] < day.replace(tzinfo=r["created"].tzinfo)]
         today = [r for r in model_runs if r not in prior]
@@ -99,7 +109,7 @@ def main() -> int:
             continue
         # Steady-state cache: everything completed before the day.
         cache: set[str] = set()
-        for r in prior:
+        for r in ([] if args.cold_cache else prior):
             if r["status"] == "complete":
                 cache.update(text_hashes(r["run_id"]))
         kept: list[dict] = [r for r in prior]
@@ -124,20 +134,23 @@ def main() -> int:
                 llm_after += len(fresh)
                 cache.update(fresh)
         before_llm = enriched_before.get(name, 0)
-        print(f"{name:40} {len(today):>12} {trains_after:>11} {before_llm:>10} {llm_after:>9}")
+        print(f"{name:40} {len(today):>12} {trains_after:>11} {before_llm:>15} {llm_after:>9}")
         totals["train_before"] += len(today)
         totals["train_after"] += trains_after
         totals["llm_before"] += before_llm
         totals["llm_after"] += llm_after
     print(
         f"{'TOTAL':40} {totals['train_before']:>12} {totals['train_after']:>11} "
-        f"{totals['llm_before']:>10} {totals['llm_after']:>9}"
+        f"{totals['llm_before']:>15} {totals['llm_after']:>9}"
     )
     print(
-        "\nLLM after = distinct new segment texts (steady state). Failed runs never dedup;"
+        "\nLLM after = distinct new segment texts. Failed runs never dedup;"
         " they are counted as trains in both columns."
     )
-    ok = totals["train_after"] < totals["train_before"] and totals["llm_after"] < totals["llm_before"]
+    # A cold cache pays the one-time fill, so only the train count must drop.
+    ok = totals["train_after"] < totals["train_before"] and (
+        args.cold_cache or totals["llm_after"] < totals["llm_before"]
+    )
     return 0 if ok else 1
 
 

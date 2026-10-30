@@ -188,8 +188,15 @@ Two guards stop that from repeating work:
   The enrich `limit` caps fresh enrichments only. `force=true` skips the cache
   read. Heuristic fallbacks are never cached. Run stats count reuse as
   `enrichment_cache_hits`; log line: `enrichment_pass ... cache_hits=N`.
-  The table is created by `ensure_tables()` at startup. Bump
-  `ENRICHMENT_CACHE_VERSION` in `app/services/enrichment.py` to invalidate it.
+  Empty LLM answers (title "untitled" and no content) are not cached either.
+  `force=true` overwrites the stored answer. The table is created by
+  `ensure_tables()` at startup. The key names the bus route, not the model
+  behind it: if the route starts serving a different model, bump
+  `ENRICHMENT_CACHE_VERSION` in `app/services/enrichment.py` (or delete the
+  rows) to invalidate it.
+- **Code changes do not reset the train dedup.** The spec hash covers the
+  spec, not the training code. After a training-code fix, send `"force": true`
+  or wait for the next UTC day.
 
 ### LLM boundary judge knobs
 - `llm_boundary_context_blocks` (default 3)

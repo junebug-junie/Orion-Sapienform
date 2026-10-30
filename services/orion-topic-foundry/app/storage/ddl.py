@@ -216,7 +216,9 @@ CREATE INDEX IF NOT EXISTS ix_topic_foundry_conversation_overrides_dataset_id ON
 
 # Enrichment results keyed by the exact LLM request that produced them
 # (system prompt + user prompt, which holds the segment text and taxonomy,
-# + bus route). A new training run makes new segment_ids, so a per-segment
+# + bus route + temperature + ENRICHMENT_CACHE_VERSION; see
+# app/services/enrichment.py::enrichment_cache_key). Only LLM answers with
+# real content are stored. A new training run makes new segment_ids, so a per-segment
 # enriched_at cannot carry over; this table lets unchanged text reuse its
 # earlier result instead of calling the LLM again. Added 2026-10-30.
 ENRICHMENT_CACHE_DDL = """

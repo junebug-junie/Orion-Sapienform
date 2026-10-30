@@ -719,7 +719,10 @@ def insert_enrichment_cache(cache_key: str, *, enrichment: Dict[str, Any], enric
                 """
                 INSERT INTO topic_foundry_enrichment_cache (cache_key, enricher, enrichment)
                 VALUES (%s, %s, %s)
-                ON CONFLICT (cache_key) DO NOTHING
+                ON CONFLICT (cache_key) DO UPDATE
+                SET enrichment = EXCLUDED.enrichment,
+                    enricher = EXCLUDED.enricher,
+                    created_at = NOW()
                 """,
                 (cache_key, enricher, Json(enrichment)),
             )

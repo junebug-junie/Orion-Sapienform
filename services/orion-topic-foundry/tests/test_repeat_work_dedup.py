@@ -213,13 +213,13 @@ def store(monkeypatch):
     )
 
     def _insert(key, *, enrichment, enricher):
-        st.cache[key] = enrichment
+        st.cache[key] = enrichment  # real SQL: ON CONFLICT DO UPDATE (overwrite)
 
     monkeypatch.setattr(enrichment_module, "insert_enrichment_cache", _insert)
 
     def _llm(text, taxonomy):
         st.llm_calls.append(text)
-        return {"title": f"t:{text[:10]}", "aspects": [], "meaning": {}, "sentiment": {}}
+        return {"title": f"t:{text[:10]}", "aspects": ["memory"], "meaning": {}, "sentiment": {}}
 
     monkeypatch.setattr(enrichment_module, "_llm_enrich", _llm)
     return st
@@ -270,11 +270,40 @@ def test_heuristic_fallback_is_not_cached(store, monkeypatch):
     assert store.cache == {}
 
 
-def test_force_bypasses_the_cache(store):
+def test_force_bypasses_the_cache_and_overwrites_it(store, monkeypatch):
     texts = ["x", "y"]
     _enrich(store.add_run(texts))
+
+    def _llm_v2(text, taxonomy):
+        store.llm_calls.append(text)
+        return {"title": f"v2:{text}", "aspects": ["memory"], "meaning": {}, "sentiment": {}}
+
+    monkeypatch.setattr(enrichment_module, "_llm_enrich", _llm_v2)
     _enrich(store.add_run(texts), force=True)
     assert store.llm_calls == ["x", "y", "x", "y"]
+
+    third = store.add_run(texts)
+    _enrich(third)  # unforced: must get the forced (new) answer from the cache
+    assert store.llm_calls == ["x", "y", "x", "y"]
+    assert store.segments[third][0]["enrichment"]["title"] == "v2:x"
+
+
+def test_empty_llm_answer_is_not_cached(store, monkeypatch):
+    def _empty(text, taxonomy):
+        store.llm_calls.append(text)
+        return {}
+
+    monkeypatch.setattr(enrichment_module, "_llm_enrich", _empty)
+    _enrich(store.add_run(["blank"]))
+    assert store.cache == {}
+
+
+def test_duplicate_texts_get_separate_dicts(store):
+    run = store.add_run(["dup"] * 3)
+    _enrich(run)
+    enrichments = [seg["enrichment"] for seg in store.segments[run]]
+    assert len({id(e) for e in enrichments}) == 3
+    assert all("enriched_at" not in value for value in store.cache.values())
 
 
 def test_cached_enrichment_does_not_carry_a_stale_enriched_at(store):

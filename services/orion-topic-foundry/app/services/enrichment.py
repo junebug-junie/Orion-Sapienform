@@ -180,7 +180,11 @@ def _run_enrichment(
                 enrichment, source = _enrich_segment(segment, taxonomy, chosen_enricher, text_map)
                 # Copy BEFORE update_segment_enrichment: it stamps enriched_at
                 # into the dict, which must not be reused by another segment.
-                cacheable = copy.deepcopy(enrichment) if key and source == "llm" else None
+                cacheable = (
+                    copy.deepcopy(enrichment)
+                    if key and source == "llm" and _is_substantive(enrichment)
+                    else None
+                )
                 update_segment_enrichment(UUID(segment_id), enrichment=enrichment, enrichment_version="v1")
                 enriched_count += 1
                 enriched_payloads.append({"segment_id": segment_id, "enrichment": enrichment})
@@ -331,6 +335,20 @@ def _enrich_segment(
         if result is not None:
             return _finalize_enrichment(result), "llm"
     return _finalize_enrichment(_heuristic_enrich(text, taxonomy)), "heuristic"
+
+
+def _is_substantive(enrichment: Dict[str, Any]) -> bool:
+    """True when an LLM enrichment carries real content worth reusing.
+
+    The LLM path counts as "llm" whenever it returns any parsed JSON, so
+    ``{}`` becomes title="untitled" with empty fields. Caching that would pin
+    an empty answer to this text for every later run, so it is not cached;
+    the next run gets a fresh try.
+    """
+    title = str(enrichment.get("title") or "").strip().lower()
+    if not title or title == "untitled":
+        return False
+    return any(enrichment.get(field) for field in ("aspects", "meaning", "sentiment"))
 
 
 def _segment_text(segment: Dict[str, Any], text_map: Dict[str, str]) -> str:

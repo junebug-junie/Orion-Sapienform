@@ -215,6 +215,6 @@ harness's read-only mount of main; no restart is needed for them beyond the pull
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2991
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

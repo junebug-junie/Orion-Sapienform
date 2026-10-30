@@ -1037,6 +1037,12 @@ PR report: `docs/superpowers/pr-reports/2026-10-27-patch-c3a-bid-sites-pr.md`.
   in 88% of physiology ticks, so most want-family runs are deferred on `lane:agent` capacity, and most
   of those ran anyway after a median ~1.3-1.6 h wait in the pool's queue. That cell is the pool's queue,
   not a veto disagreement. The live ledger holds only 2 hand-run probes until the bid sites deploy.
+- **Outreach strain-hold bids, fixed 2026-10-30.** Hub's outreach bid on every 10 s tick that strain
+  held: ~360 hub.outreach rows an hour in strained hours, 1,662 of the ledger's first 1,693 outreach rows,
+  and 64% of all Tier 2 funded wants that week. A strain hold now bids once per outreach cooldown window
+  (min 600 s). Each compose still bids once. Replayed on 10-27..10-30: 1,693 rows -> 38. The rows
+  already written stay in the floor's 7-day window, so the floor reads other families as too small
+  until about 2026-11-06 (no cleanup was run).
 
 ## Review findings fixed (independent adversarial review, 2026-10-23)
 

@@ -463,7 +463,7 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
         add(name, kind="store", status=status, declared=True, facts=facts)
         spread(name, edges)
 
-    # processes (runs: runner -> process)
+    # processes: parts first (a spawns flow needs its child to exist), then flows
     for pr in body.processes:
         name = f"{_PROCESS_PREFIX[pr.family]}:{pr.name}"
         facts = {"family": pr.family, "runner": pr.runner or "unknown"}
@@ -473,13 +473,86 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             facts["last_run"] = _iso(pr.last_run_epoch) or ""
         add(name, kind="process", declared=pr.declared, last_seen_at=_iso(pr.last_run_epoch), facts=facts,
             status=_status(pr.last_run_epoch, now_epoch, window, seen=pr.runs is not None))
-        runner = match_part(pr.runner, known, host_names) if pr.runner else None
-        if runner is None:
-            if pr.runner:
-                unmatched[pr.runner_evidence].add(pr.runner)
+    edges = {f"{_PROCESS_PREFIX[pr.family]}:{pr.name}": _process_edges(pr, parts, known, host_names, unmatched)
+             for pr in body.processes}
+    for _name, (src, dst, relation, evidence, weight) in _weigh_process_edges(edges):
+        if src == dst:
             continue
-        spread(name, [(runner, name, "runs", pr.runner_evidence, "")])
+        link(src, dst, weight, evidence[0], None, relation)
+        flows[(src, dst)].evidence.update(evidence)
+    for name, cands in edges.items():
+        if len(cands) > 1:  # a runner-only process would just repeat its runner fact
+            parts[name].facts["work_split"] = ", ".join(
+                f"{t} {share:.0%}" for t, share in _shares(edges, name)[:3])
     return {k: sorted(v) for k, v in sorted(unmatched.items())}
+
+
+@dataclass
+class _Doer:
+    relation: str  # runs / does / feeds (part -> process) or spawns (process -> part)
+    evidence: set[str]
+    runs: int
+
+
+def _process_edges(pr, parts: dict[str, PartV1], known: set[str], host_names: list[str],
+                   unmatched: dict[str, set[str]]) -> dict[str, _Doer]:
+    """part -> evidence that it does this process's work. The runner comes first, so a runner
+    also seen in the traces keeps relation ``runs``."""
+    name = f"{_PROCESS_PREFIX[pr.family]}:{pr.name}"
+    cands: dict[str, _Doer] = {}
+
+    def put(target: str, relation: str, evidence: str, runs: int) -> None:
+        d = cands.setdefault(target, _Doer(relation, set(), 0))
+        d.evidence.add(evidence)
+        d.runs = max(d.runs, runs)
+
+    if pr.runner:
+        runner = match_part(pr.runner, known, host_names)
+        if runner is None:
+            unmatched[pr.runner_evidence].add(pr.runner)
+        else:
+            put(runner, "runs", pr.runner_evidence, pr.runs or 1)
+    for raw, evidence, runs in pr.doers:
+        svc = match_part(raw, known, host_names)
+        if svc is None or parts[svc].kind not in ("service", "endpoint"):
+            unmatched[evidence].add(raw)
+            continue
+        put(svc, "feeds" if evidence == "declared_reducer_source" else "does", evidence, runs)
+    for child, runs in pr.children:
+        child_part = f"run:{child}"
+        if child_part in parts and child_part != name:
+            put(child_part, "spawns", "observed_child_run", runs)
+        else:
+            unmatched["observed_child_run"].add(child)
+    return cands
+
+
+def _scores(edges: dict[str, dict[str, _Doer]], name: str) -> dict[str, float]:
+    """Each candidate's score: log(1 + runs) x log(1 + N / df), where df is how many of the N
+    processes with any evidence the candidate appears in (inverse document frequency). A part in
+    every process (the scheduler, the GPU lease) keeps a small share; one only this process uses
+    keeps a large one. Same spirit as the channel hyperedge rule: plumbing cannot glue."""
+    n = sum(1 for c in edges.values() if c)
+    df = Counter(t for c in edges.values() for t in c)
+    return {t: math.log1p(max(d.runs, 1)) * math.log1p(n / df[t]) for t, d in edges[name].items()}
+
+
+def _shares(edges: dict[str, dict[str, _Doer]], name: str) -> list[tuple[str, float]]:
+    scores = _scores(edges, name)
+    total = sum(scores.values())
+    return sorted(((t, s / total) for t, s in scores.items()), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _weigh_process_edges(edges: dict[str, dict[str, _Doer]]):
+    """(process, (src, dst, relation, evidence, weight)): each process adds at most one unit
+    (BODY_PART_UNIT), split over its candidates by score."""
+    for name, cands in sorted(edges.items()):
+        if not cands:
+            continue
+        for t, share in _shares(edges, name):
+            d = cands[t]
+            src, dst = (name, t) if d.relation == "spawns" else (t, name)
+            yield name, (src, dst, d.relation, sorted(d.evidence), BODY_PART_UNIT * share)
 
 
 def _placement(flows: dict, parts: dict[str, PartV1]) -> dict[str, str]:

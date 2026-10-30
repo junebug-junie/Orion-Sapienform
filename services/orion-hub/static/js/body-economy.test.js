@@ -12,7 +12,7 @@ const END = Date.parse(FIXTURE.window.end);
 
 test("fixture carries every top-level section the page reads", () => {
   for (const key of ["generated_at", "window", "limits", "wants", "rhythm", "money", "unit_costs", "waste",
-    "queue_wait", "decisions", "missing", "claude", "vram", "value_per_cost", "services"]) {
+    "queue_wait", "decisions", "missing", "claude", "vram", "value_per_cost", "services", "processes"]) {
     assert.ok(key in FIXTURE, key);
   }
 });
@@ -117,6 +117,49 @@ test("empty states say why: missing reason, unreachable since, or a plain defaul
   assert.match(tab.unreachableText({ status: 400, detail: "bad window" }), /refused \(HTTP 400\): bad window/);
 });
 
+test("hosts: what is spinning each machine -- now vs rest, a GPU/CPU/other bar, cards with holders", () => {
+  const html = tab.hostsHtml(FIXTURE, null, "UTC");
+  const hosts = [...html.matchAll(/data-host="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(hosts, FIXTURE.hosts.map((h) => h.host));
+  const circe = FIXTURE.hosts.find((h) => h.host === "circe");
+  assert.ok(html.includes("<strong>circe</strong> " + Math.round(circe.chassis_w_now) + " W now · rest 541 W"));
+  assert.ok(html.includes("+" + Math.round(circe.above_rest_w) + " W above rest"));
+  // the stacked bar: three parts, scaled to the biggest machine, with a tick at rest
+  assert.match(html, /data-host-stack="circe"><span data-part="gpu"[^>]*style="width:[0-9.]+%;background:#3987e5"/);
+  assert.ok(html.includes('data-part="cpu"') && html.includes('data-part="other"') && html.includes('class="rest-tick"'));
+  // each card: watts, its rest, and who held it (plain-word labels)
+  assert.ok(html.includes('data-host-card="circe:gpu1"'));
+  assert.match(html, /held by curiosity\.investigate runs [0-9.]+ h/);
+  // sponsored work is not in Orion's top CPU users; it has its own line
+  assert.ok(!/Top CPU users[^<]*zelda-dojo/.test(html));
+  assert.match(html, /data-sponsored="zelda_dojo">Sponsored by Juniper, not Orion's activity: zelda_dojo · 32 containers/);
+  assert.ok(html.includes("Orion's body at rest here costs $49.56/month"));
+  // this week's floor 578 W is 37 W over the pinned 541 W: said as new always-on draw
+  assert.ok(html.includes("37 W above the pinned rest: new always-on draw"));
+});
+
+test("hosts: no machine reading says why; an asleep machine's note is shown", () => {
+  const none = tab.hostsHtml({ missing: [{ section: "hosts", reason: "no biometrics row in the last 15 min for hecate" }] }, null, "UTC");
+  assert.ok(none.includes("no biometrics row in the last 15 min for hecate"));
+  assert.ok(tab.hostsHtml({}, null, "UTC").includes("No machine reading yet."));
+  const err = { status: 502, detail: "durable_runs_unavailable", unreachable_since: "2026-10-29T17:00:00Z" };
+  assert.match(tab.hostsHtml(null, err, "UTC"), /durable-runs unreachable since/);
+  const odd = tab.hostsHtml({ hosts: [{ host: "x", chassis_w_now: null, cards: [{ card: "g", watts: null }] }] }, null, "UTC");
+  assert.ok(odd.includes("<strong>x</strong> ? now") && !odd.includes("NaN"));
+  // no chassis reading: the bar scales to the parts, never past 100%
+  const parts = tab.hostsHtml({ hosts: [{ host: "y", chassis_w_now: null, gpu_w: 300, cpu_w: 100, other_w: null, cards: [] }] }, null, "UTC");
+  const widths = [...parts.matchAll(/width:([0-9.]+)%/g)].map((m) => Number(m[1]));
+  assert.ok(widths.length === 2 && widths.every((w) => w <= 100));
+  assert.match(tab.hostsHtml({ hosts: [{ host: "z", chassis_w_now: 500, gpu_w: 400, cpu_w: 150, other_w: -50, cards: [] }] }, null, "UTC"),
+    /meters disagree/);
+});
+
+test("energy over its envelope reads as Orion's own always-on body, never 'not Orion's doing'", () => {
+  assert.equal(tab.stateWordsFor("energy", "exogenous_bind"), "Orion's always-on body alone reaches the envelope");
+  assert.equal(tab.stateWordsFor("heat", "exogenous_bind"), "over its line, not Orion's doing");
+  assert.equal(tab.stateWordsFor("energy", "slack"), "room to spare");
+});
+
 test("formatting never turns unknown into zero", () => {
   assert.equal(tab.fmtUsd(null), "not measured");
   assert.equal(tab.fmtUsd(0.00005), "$0.000050");
@@ -145,4 +188,41 @@ test("odd family values never throw", () => {
   assert.equal(tab.colorForFamily(null), "#6b7280");
   assert.equal(tab.colorForFamily(42), "#6b7280");
   assert.equal(tab.filterDecisions([{ family: null, outcome: "funded", decided_at: "2026-10-29T00:00:00Z" }], { query: "x" }).length, 0);
+});
+
+test("processes: one bar per process, longest first, labelled with name, host, watts and cores", () => {
+  const html = tab.processesHtml(FIXTURE, null, "UTC");
+  const order = [...html.matchAll(/data-process="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, ["athena:orion-athena-vector-host", "circe:orion-llamacpp-chat",
+    "athena:(host, not in a container)", "circe:d590a9d48af2"]);
+  assert.equal((html.match(/class="hbar"/g) || []).length, FIXTURE.processes.length);
+  // bar length is watts above idle, against the biggest process
+  assert.match(html, /orion-athena-vector-host <span class="muted">athena<\/span>.*?width:100\.0%/);
+  assert.match(html, /orion-llamacpp-chat <span class="muted">circe<\/span>.*?width:42\.3%/);
+  assert.ok(html.includes("50.6 W · cores ?"));                  // unknown cores say so, never 0
+  // the producer sends cores: null today; the fixture's 3.5 exercises the future path
+  assert.ok(html.includes("21.4 W · 3.5 cores"));
+  assert.ok(html.includes("busy cores not published per container"));
+  assert.ok(!html.includes("data-empty"));
+  // a non-empty section still shows its own missing notes
+  assert.ok(html.includes("data-process-notes") && html.includes("partial: circe: CPU below the fitted idle floor"));
+});
+
+test("processes empty state says why: the report's missing reason, unreachable, or a default", () => {
+  const reason = "per-container CPU watts are not reported yet: no fresh orion_biometrics_summary row";
+  const report = { processes: [], missing: [{ section: "vram", reason: "other" }, { section: "processes", reason }] };
+  const html = tab.processesHtml(report, null, "UTC");
+  assert.ok(html.includes('data-empty="1"') && html.includes(reason));
+  assert.ok(!html.includes('class="hbar"'));
+  assert.ok(tab.processesHtml({ missing: [] }, null).includes("No per-process CPU watts yet."));   // absent key
+  const err = { status: 502, unreachable_since: "2026-10-29T17:00:00Z" };
+  assert.match(tab.processesHtml(null, err, "UTC"), /durable-runs unreachable since 29\/10, 17:00/);
+  // every processes reason shows, not just the first
+  const two = { processes: [], missing: [{ section: "processes", reason: "a" }, { section: "processes", reason: "b" }] };
+  assert.ok(tab.processesHtml(two, null).includes("a; b"));
+  // same name and watts on two hosts: a stable order
+  const tie = { processes: [{ host: "b", name: "x", watts: 1 }, { host: "a", name: "x", watts: 1 }], missing: [] };
+  assert.deepEqual([...tab.processesHtml(tie, null).matchAll(/data-process="([^"]+)"/g)].map((m) => m[1]), ["a:x", "b:x"]);
+  // rows without a number are dropped, not drawn as 0 W
+  assert.ok(tab.processesHtml({ processes: [{ host: "a", name: "x", watts: null }], missing: [] }, null).includes("data-empty"));
 });

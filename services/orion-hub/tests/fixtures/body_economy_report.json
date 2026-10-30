@@ -5,6 +5,279 @@
   "start": "2026-10-28T19:00:00Z",
   "end": "2026-10-29T19:00:00Z"
  },
+ "hosts": [
+  {
+   "host": "circe",
+   "at": "2026-10-30T03:29:57.348655Z",
+   "chassis_w_now": 1355.0,
+   "chassis_w_rest": 541.0,
+   "rest_basis": "pinned default (config/physiology/rest_body.yaml not present yet): p05 chassis_watts over 2026-10-01..2026-10-13",
+   "recent_floor_w": 578.0,
+   "above_rest_w": 814.0,
+   "usd_per_month_at_this_rate": 74.57,
+   "rest_usd_per_month": 49.56,
+   "gpu_w": 563.5,
+   "cpu_w": 139.2,
+   "other_w": 652.3,
+   "gpu_w_rest": 193.4,
+   "cpu_w_rest": 45.3,
+   "other_w_rest": 279.5,
+   "parts_rest_window": "2026-10-01..2026-10-13",
+   "fan_pct": 56.1,
+   "unattributed_above_rest_w": null,
+   "cards": [
+    {
+     "card": "gpu0",
+     "watts": 37.8,
+     "idle_w": 37.4,
+     "temp_c": 42.0,
+     "mem_used_mb": 27962.0,
+     "roles": [
+      "chat",
+      "experiment"
+     ],
+     "top_holders": [
+      {
+       "holder": "durable-runs:curiosity.investigate",
+       "label": "curiosity.investigate runs",
+       "lease_s": 19914.7
+      },
+      {
+       "holder": "durable-runs:reading.turn",
+       "label": "reading.turn runs",
+       "lease_s": 17102.3
+      },
+      {
+       "holder": "http:anthropic",
+       "label": "harness turns",
+       "lease_s": 10165.7
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 9791.9
+      }
+     ]
+    },
+    {
+     "card": "gpu1",
+     "watts": 228.7,
+     "idle_w": 41.7,
+     "temp_c": 74.0,
+     "mem_used_mb": 24888.0,
+     "roles": [
+      "agent",
+      "experiment"
+     ],
+     "top_holders": [
+      {
+       "holder": "durable-runs:curiosity.investigate",
+       "label": "curiosity.investigate runs",
+       "lease_s": 38791.4
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 27771.2
+      },
+      {
+       "holder": "durable-runs:reading.turn",
+       "label": "reading.turn runs",
+       "lease_s": 25291.0
+      },
+      {
+       "holder": "http:anthropic",
+       "label": "harness turns",
+       "lease_s": 13572.3
+      }
+     ]
+    },
+    {
+     "card": "gpu2",
+     "watts": 148.1,
+     "idle_w": 41.7,
+     "temp_c": 61.0,
+     "mem_used_mb": 24904.0,
+     "roles": [
+      "agent-gpu2",
+      "diffusion",
+      "experiment",
+      "world"
+     ],
+     "top_holders": [
+      {
+       "holder": "durable-runs:reading.turn",
+       "label": "reading.turn runs",
+       "lease_s": 21989.4
+      },
+      {
+       "holder": "durable-runs:self_sense_eval",
+       "label": "self_sense_eval runs",
+       "lease_s": 13546.7
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 11903.6
+      },
+      {
+       "holder": "operator:gpu-power-bench",
+       "label": "operator:gpu-power-bench",
+       "lease_s": 4541.5
+      }
+     ]
+    },
+    {
+     "card": "gpu3",
+     "watts": 148.9,
+     "idle_w": 72.7,
+     "temp_c": 64.0,
+     "mem_used_mb": 19483.0,
+     "roles": [
+      "experiment",
+      "fast",
+      "kev",
+      "metacog"
+     ],
+     "top_holders": [
+      {
+       "holder": "vision-council",
+       "label": "vision-council",
+       "lease_s": 33160.2
+      },
+      {
+       "holder": "orion-topic-foundry",
+       "label": "orion-topic-foundry",
+       "lease_s": 20402.4
+      },
+      {
+       "holder": "http:openai",
+       "label": "AI Town",
+       "lease_s": 11838.4
+      },
+      {
+       "holder": "cortex-exec",
+       "label": "cortex-exec",
+       "lease_s": 5359.0
+      }
+     ]
+    }
+   ],
+   "top_containers": [
+    {
+     "name": "orion-circe-atlas-llamacpp-agent-burst",
+     "cpu_w": 8.0
+    },
+    {
+     "name": "orion-circe-atlas-llamacpp-fast",
+     "cpu_w": 7.8
+    },
+    {
+     "name": "orion-circe-atlas-llamacpp-metacog",
+     "cpu_w": 7.6
+    },
+    {
+     "name": "orion-circe-atlas-llamacpp-agent",
+     "cpu_w": 7.2
+    },
+    {
+     "name": "(host, not in a container)",
+     "cpu_w": 7.0
+    }
+   ],
+   "sponsored": [],
+   "daily": [
+    {
+     "d": "2026-10-28",
+     "chassis_w_avg": 1023.8
+    },
+    {
+     "d": "2026-10-29",
+     "chassis_w_avg": 963.2
+    }
+   ]
+  },
+  {
+   "host": "athena",
+   "at": "2026-10-30T03:29:40.943940Z",
+   "chassis_w_now": 700.0,
+   "chassis_w_rest": 340.0,
+   "rest_basis": "pinned default (config/physiology/rest_body.yaml not present yet): p05 chassis_watts over 2026-10-01..2026-10-13",
+   "recent_floor_w": 387.0,
+   "above_rest_w": 360.0,
+   "usd_per_month_at_this_rate": 32.98,
+   "rest_usd_per_month": 31.15,
+   "gpu_w": 108.2,
+   "cpu_w": 340.6,
+   "other_w": 251.2,
+   "gpu_w_rest": 79.0,
+   "cpu_w_rest": 118.0,
+   "other_w_rest": 92.4,
+   "parts_rest_window": "2026-10-01..2026-10-13",
+   "fan_pct": 72.0,
+   "unattributed_above_rest_w": null,
+   "cards": [
+    {
+     "card": "athena-gpu0",
+     "watts": 42.3,
+     "idle_w": 24.4,
+     "temp_c": 57.0,
+     "mem_used_mb": 4519.0,
+     "roles": [],
+     "top_holders": []
+    },
+    {
+     "card": "athena-gpu1",
+     "watts": 65.9,
+     "idle_w": 51.2,
+     "temp_c": 76.0,
+     "mem_used_mb": 13305.0,
+     "roles": [],
+     "top_holders": []
+    }
+   ],
+   "top_containers": [
+    {
+     "name": "orion-athena-whisper-tts",
+     "cpu_w": 22.2
+    },
+    {
+     "name": "orion-athena-meta-tags",
+     "cpu_w": 18.1
+    },
+    {
+     "name": "orion-athena-vector-host",
+     "cpu_w": 9.2
+    },
+    {
+     "name": "(host, not in a container)",
+     "cpu_w": 9.1
+    },
+    {
+     "name": "orion-athena-vision-host",
+     "cpu_w": 4.4
+    }
+   ],
+   "sponsored": [
+    {
+     "name": "zelda_dojo",
+     "note": "Juniper runs it until she kills it (pending her decision)",
+     "containers": 32,
+     "cpu_w": 150.4
+    }
+   ],
+   "daily": [
+    {
+     "d": "2026-10-28",
+     "chassis_w_avg": 724.0
+    },
+    {
+     "d": "2026-10-29",
+     "chassis_w_avg": 733.3
+    }
+   ]
+  }
+ ],
  "limits": [
   {
    "constraint": "heat",
@@ -2957,5 +3230,36 @@
    }
   ]
  },
- "missing": []
+ "processes": [
+  {
+   "host": "circe",
+   "name": "d590a9d48af2",
+   "watts": 8.9,
+   "cores": null
+  },
+  {
+   "host": "athena",
+   "name": "orion-athena-vector-host",
+   "watts": 50.6,
+   "cores": null
+  },
+  {
+   "host": "athena",
+   "name": "(host, not in a container)",
+   "watts": 12.6,
+   "cores": null
+  },
+  {
+   "host": "circe",
+   "name": "orion-llamacpp-chat",
+   "watts": 21.4,
+   "cores": 3.5
+  }
+ ],
+ "missing": [
+  {
+   "section": "processes",
+   "reason": "partial: circe: CPU below the fitted idle floor this sample, so no honest split"
+  }
+ ]
 }

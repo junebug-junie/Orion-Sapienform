@@ -33,10 +33,20 @@ FlowEvidence = Literal[
     # runs: the producer of the run-state channel (channels.yaml) / no machine-readable runner
     # exists, so the service that owns this family's state table (labeled as an assumption)
     "declared_runner", "assumed_runner",
+    # does: a trace row keyed by the run's own correlation id names the service / keyed by the
+    # turn the run started (detail.turn_correlation_id) / a turn record exists for the run, and
+    # its table's declared writers are the service (the row itself names none)
+    "observed_trace", "observed_turn", "declared_turn_writer",
+    # spawns: the run's detail.child_run_ids name runs of another workflow
+    "observed_child_run",
+    # feeds: orion-substrate-runtime's REDUCER_SPECS names the one service a reducer reads
+    "declared_reducer_source",
 ]
 # signals: bus circulation (the v1 relation). runs_on: service -> host. sees_through: camera ->
 # service. writes: producer -> store. uses: service -> store. runs: runner -> process.
-FlowRelation = Literal["signals", "runs_on", "sees_through", "writes", "uses", "runs"]
+# does: service -> process it works for. spawns: process -> process it starts. feeds: service ->
+# reducer that reads its events.
+FlowRelation = Literal["signals", "runs_on", "sees_through", "writes", "uses", "runs", "does", "spawns", "feeds"]
 
 
 class PartV1(BaseModel):

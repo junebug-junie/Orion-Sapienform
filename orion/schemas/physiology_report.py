@@ -31,7 +31,7 @@ REPORT_WINDOWS = ("24h", "7d", "30d")
 #: Every section key a caller may ask for with ``sections=``. ``missing`` is always returned.
 REPORT_SECTIONS = (
     "limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
-    "claude", "vram", "value_per_cost", "services", "processes",
+    "claude", "vram", "value_per_cost", "services", "processes", "hosts",
 )
 
 
@@ -192,6 +192,81 @@ class ProcessV1(BaseModel):
     cores: Optional[float] = None
 
 
+class HostHolderV1(BaseModel):
+    holder: str = Field(description="GPU-pool lease holder; a durable run is named by its workflow "
+                                    "(durable-runs:curiosity.investigate), other run ids are folded")
+    label: str = Field(default="", description="plain words for the holder (http:anthropic -> harness turns)")
+    lease_s: float = Field(description="seconds this holder HELD the card in the window (closed leases); held, "
+                                       "not necessarily computing")
+
+
+class HostCardV1(BaseModel):
+    card: str
+    watts: Optional[float] = Field(default=None, description="draw now (gpuN_watts, nvidia-smi: measured)")
+    idle_w: Optional[float] = Field(default=None, description="the card's rest: its 5th percentile over the pinned rest window")
+    temp_c: Optional[float] = None
+    mem_used_mb: Optional[float] = None
+    roles: List[str] = Field(default_factory=list)
+    top_holders: List[HostHolderV1] = Field(default_factory=list)
+
+
+class HostContainerV1(BaseModel):
+    name: str
+    cpu_w: float = Field(description="CPU package watts above idle, split by busy cores (estimated: linear model)")
+
+
+class HostSponsoredV1(BaseModel):
+    """Work Juniper started and only Juniper stops (config/physiology/rest_body.yaml ``sponsored``),
+    shown apart from Orion's own activity (today: the Zelda dojo, pending her decision)."""
+
+    name: str
+    note: str = ""
+    containers: int = 0
+    cpu_w: Optional[float] = Field(default=None, description="its containers' CPU watts above idle (estimated); None: none running")
+
+
+class HostDayV1(BaseModel):
+    d: str = Field(description="local America/Denver date, YYYY-MM-DD")
+    chassis_w_avg: float
+
+
+class HostPowerV1(BaseModel):
+    """What one machine draws now, against its own rest, and what the draw is made of.
+
+    ``chassis_w_now`` is the whole machine (BMC or wall PDU: measured). ``gpu_w`` (nvidia-smi) and
+    ``cpu_w`` (RAPL) are INSIDE it, so ``other_w`` = chassis - gpu - cpu is fans, PSU loss, memory,
+    disks. ``chassis_w_rest`` is a low percentile of the chassis draw over a trailing window
+    (``rest_basis`` names it), so "above rest" is what is spinning the machine now."""
+
+    host: str
+    at: Optional[AwareDatetime] = Field(default=None, description="the biometrics sample the 'now' figures are from")
+    chassis_w_now: Optional[float] = None
+    chassis_w_rest: Optional[float] = None
+    rest_basis: str = ""
+    recent_floor_w: Optional[float] = Field(default=None, description="5th percentile of chassis watts, trailing 7 days")
+    above_rest_w: Optional[float] = None
+    usd_per_month_at_this_rate: Optional[float] = Field(
+        default=None, description="above_rest_w held for a 730-hour month at the newest electricity rate")
+    rest_usd_per_month: Optional[float] = Field(
+        default=None, description="chassis_w_rest held for a 730-hour month at the newest electricity rate")
+    gpu_w: Optional[float] = None
+    cpu_w: Optional[float] = None
+    other_w: Optional[float] = Field(default=None, description="chassis - gpu - cpu: fans, PSU loss, memory, disks")
+    gpu_w_rest: Optional[float] = Field(default=None, description="each part's own 5th percentile over the pinned "
+                                                                  "rest window; the part rests do not sum to the chassis rest")
+    cpu_w_rest: Optional[float] = None
+    other_w_rest: Optional[float] = None
+    parts_rest_window: str = Field(default="", description="the dated window the part and card rests come from")
+    fan_pct: Optional[float] = None
+    unattributed_above_rest_w: Optional[float] = Field(
+        default=None, description="above-rest draw no act is charged for (from the per-act meter; None until it publishes)")
+    cards: List[HostCardV1] = Field(default_factory=list)
+    top_containers: List[HostContainerV1] = Field(default_factory=list,
+                                                  description="largest CPU users, sponsored work left out")
+    sponsored: List[HostSponsoredV1] = Field(default_factory=list)
+    daily: List[HostDayV1] = Field(default_factory=list)
+
+
 class ValuePerCostV1(BaseModel):
     family: str
     evidence_n: int
@@ -239,6 +314,7 @@ class PhysiologyReportV1(BaseModel):
     value_per_cost: List[ValuePerCostV1] = Field(default_factory=list)
     services: ServicesV1 = Field(default_factory=ServicesV1)
     processes: List[ProcessV1] = Field(default_factory=list)
+    hosts: List[HostPowerV1] = Field(default_factory=list)
     missing: List[MissingV1] = Field(default_factory=list)
     query: Dict[str, Any] = Field(default_factory=dict, description="the window, sections, family, outcome, limit asked")
     timing_ms: Dict[str, float] = Field(default_factory=dict, description="per-section read time, for H5")
@@ -254,6 +330,12 @@ __all__ = [
     "ClaudeV1",
     "DailyKwhV1",
     "DecisionV1",
+    "HostCardV1",
+    "HostContainerV1",
+    "HostDayV1",
+    "HostHolderV1",
+    "HostPowerV1",
+    "HostSponsoredV1",
     "LimitHourV1",
     "LimitNowV1",
     "LimitV1",

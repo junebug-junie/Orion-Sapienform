@@ -9,10 +9,16 @@ text Orion would read:
 * honest     -- every asked section shows content or its ``missing`` reason, never silence;
 * compact    -- the overview fits the dig cap (40 lines, 4000 chars);
 * no shells  -- no "None", "nan" or raw JSON in the text;
-* failure    -- an unreachable report gives a plain reason and exit 1, never an empty success.
+* failure    -- an unreachable report gives a plain reason and exit 1, never an empty success;
+* hosts      -- ``body-economy hosts --host circe`` answers "what is spinning circe?": its first line
+                is circe's own watts now vs rest from the report, its $/month is the report's,
+                no other machine appears, and it says what is measured and what is estimated;
+                the overview carries one "what is spinning" line per machine;
+* brief      -- the dig line in every chat/curiosity prompt points at ``body-economy hosts`` for
+                "what is using my power" and stays under its cap.
 
-Scenarios: the live 24 h report captured 2026-10-29 (real data), an all-empty report, and a report
-whose lease-event reads failed. Run: ``PYTHONPATH=. python orion/physiology/evals/physiology_state_skill_eval.py``.
+Scenarios: the live 24 h report captured 2026-10-30 (real data, with ``hosts``), an all-empty report,
+and a report whose lease-event reads failed. Run: ``PYTHONPATH=. python orion/physiology/evals/physiology_state_skill_eval.py``.
 """
 
 from __future__ import annotations
@@ -28,9 +34,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "physiology_report_live_2026-10-29_24h.json"
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "physiology_report_live_2026-10-30_24h.json"
 SECTIONS = ("limits", "wants", "rhythm", "money", "unit_costs", "waste", "queue_wait", "decisions",
-            "claude", "vram", "value_per_cost", "services", "processes")
+            "claude", "vram", "value_per_cost", "services", "processes", "hosts")
+OVERVIEW = ("limits", "hosts", "money", "wants", "waste", "services")
 BINDING = ("binding", "exogenous_bind", "stuck_at_ceiling")
 
 
@@ -115,6 +122,58 @@ def check(name: str, report: dict, text: str, sections: tuple[str, ...]) -> list
     return fails
 
 
+def _host_head(h: dict) -> str:
+    return f"{h['host']} draws {h['chassis_w_now']:.0f} W now vs {h['chassis_w_rest']:.0f} W at rest"
+
+
+def check_hosts_circe(report: dict, text: str) -> list[str]:
+    """"What is spinning circe?" in a couple of lines, grounded in the report."""
+    fails: list[str] = []
+    body = text.rsplit("\nfull report:", 1)[0]
+    circe = next((h for h in report.get("hosts") or [] if h["host"] == "circe"), None)
+    if circe is None:
+        return ["hosts: the live fixture has no circe row"]
+    lines = body.splitlines()
+    if len(lines) < 3 or not lines[2].startswith(_host_head(circe)):
+        fails.append(f"hosts --host circe: line 3 is not circe's headline {_host_head(circe)!r}: {lines[2:3]}")
+    usd = circe.get("usd_per_month_at_this_rate")
+    if usd is not None and f"about ${usd:,.0f}/month at this rate" not in body:
+        fails.append(f"hosts --host circe: $/month above rest ${usd:,.0f} not shown")
+    for other in report.get("hosts") or []:
+        if other["host"] != "circe" and _host_head(other) in body:
+            fails.append(f"hosts --host circe: {other['host']} shown too")
+    for c in circe.get("cards") or []:
+        if c.get("watts") is not None and f"- {c['card']} {c['watts']:.0f} W" not in body:
+            fails.append(f"hosts --host circe: card {c['card']} missing")
+        top = (c.get("top_holders") or [{}])[0]
+        if top.get("label") and top["label"] not in body:
+            fails.append(f"hosts --host circe: {c['card']}'s top holder {top['label']} missing")
+    if "measured:" not in body or "Estimated:" not in body:
+        fails.append("hosts --host circe: does not say what is measured vs estimated")
+    if "machine circe" not in lines[0]:
+        fails.append("hosts --host circe: the first line does not say the view is narrowed to circe")
+    return fails
+
+
+def check_overview_hosts(report: dict, text: str) -> list[str]:
+    body = text.rsplit("\nfull report:", 1)[0]
+    return [f"overview: no 'what is spinning' line for {h['host']}" for h in report.get("hosts") or []
+            if h.get("chassis_w_now") is not None and h.get("chassis_w_rest") is not None
+            and f"- {_host_head(h)}" not in body]
+
+
+def check_brief() -> list[str]:
+    sys.path.insert(0, str(ROOT))
+    from orion.dig.brief import DIG_BRIEF_LINE, MAX_BRIEF_CHARS
+
+    fails = []
+    if "orion.dig body-economy hosts" not in DIG_BRIEF_LINE or "power" not in DIG_BRIEF_LINE:
+        fails.append("brief: the dig line does not point 'what is using my power' at body-economy hosts")
+    if len(DIG_BRIEF_LINE) > MAX_BRIEF_CHARS:
+        fails.append(f"brief: {len(DIG_BRIEF_LINE)} chars, over {MAX_BRIEF_CHARS}")
+    return fails
+
+
 def main() -> int:
     reports = scenarios()
     srv = _Server(reports)
@@ -123,7 +182,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as home:
         for name in reports:
             srv.current = name
-            for args, secs in (((), ("limits", "money", "wants", "waste", "services")), (("all", "--window", "7d"), SECTIONS)):
+            for args, secs in (((), OVERVIEW), (("all", "--window", "7d"), SECTIONS)):
                 code, out, err = run_dig(srv.url, home, *args)
                 f = [] if code == 0 else [f"{name}: exit {code}: {err.strip()[:200]}"]
                 if code == 0:
@@ -133,12 +192,26 @@ def main() -> int:
                 results.append({"scenario": name, "args": list(args), "exit": code, "lines": len(out.splitlines()),
                                 "chars": len(out), "fails": f})
                 fails += f
+                if name == "live" and not args and code == 0:
+                    f2 = check_overview_hosts(reports[name], out)
+                    results.append({"scenario": name, "args": ["overview:hosts"], "fails": f2})
+                    fails += f2
+            if name == "live":
+                code, out, err = run_dig(srv.url, home, "hosts", "--host", "circe")
+                f = [f"hosts --host circe: exit {code}: {err.strip()[:200]}"] if code else \
+                    check(name, reports[name], out, ("hosts",)) + check_hosts_circe(reports[name], out)
+                results.append({"scenario": name, "args": ["hosts", "--host", "circe"], "exit": code,
+                                "lines": len(out.splitlines()), "chars": len(out), "fails": f})
+                fails += f
         srv.srv.shutdown()
         code, out, err = run_dig("http://127.0.0.1:9", home)
         unreachable_ok = code == 1 and "unreachable" in err and not out.strip()
         results.append({"scenario": "unreachable", "exit": code, "fails": [] if unreachable_ok else [err[:200]]})
         if not unreachable_ok:
             fails.append("unreachable: no plain failure")
+    f = check_brief()
+    results.append({"scenario": "dig_brief_line", "fails": f})
+    fails += f
     print(json.dumps({"eval": "physiology_state_skill", "passed": not fails, "cases": results}, indent=1))
     return 0 if not fails else 1
 

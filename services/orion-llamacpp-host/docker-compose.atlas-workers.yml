@@ -75,6 +75,15 @@ services:
       - LLM_ROLE=chat
       - LLM_ANNOUNCE_PORT=${ATLAS_CHAT_HOST_PORT:-8011}
       - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_CHAT_CUDA_VISIBLE_DEVICES}
+    # Healthy when the engine it announces answers. The base image's own check calls llama-server on
+    # localhost, which announce-only mode never starts. Strata refuses unknown Host names (403), so
+    # the request names itself as local.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -m 5 -H 'Host: 127.0.0.1:8080' http://atlas-chat:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30m
     networks:
       - app-net
 

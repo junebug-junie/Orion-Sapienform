@@ -32,12 +32,22 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    | `writes` | producer → table | `declared_route`: orion-sql-writer's `DEFAULT_ROUTE_MAP` (kind → table) joined with that kind's channel producers |
    | `uses` | service → Chroma/FalkorDB store | `declared_env`: its `.env_example` names the store (read or write: the env does not say) |
    | `runs` | runner → process | `declared_runner` (producer of `durable.run.state.v1`), `assumed_runner` (reducers → orion-substrate-runtime) |
+   | `does` | service → durable run | `observed_trace` (a `grammar_events` / `cognition_traces` / `cockpit_turn_sighting` row with the run's `correlation_id` names the service), `observed_turn` (same, keyed by the turn the run started, `detail.turn_correlation_id`), `declared_turn_writer` (a `harness_turn_trace` row exists for the run; that table's declared writers) |
+   | `spawns` | run → run | `observed_child_run` (`detail.child_run_ids`, e.g. dream.carry → reverie.visual) |
+   | `feeds` | service → reducer | `declared_reducer_source` (orion-substrate-runtime's `REDUCER_SPECS`: the one service whose grammar events the reducer reads) |
 
    A channel is one hyperedge: it contributes one unit, split over the pairs it joins, so a
    broadcast heartbeat cannot glue the body together. The new kinds follow the same rule: one
    camera, store or process adds at most one unit, split over its edges. With the body, a
    channel orion-sql-writer persists no longer also links its producer to orion-sql-writer:
    that fact now lives on the `writes` flow to the real table (counted once, not twice).
+
+   A process's one unit is split over its runner and its doers by
+   `log(1 + runs) × log(1 + N / df)`: how many of its runs the part showed up in, times how rare
+   the part is across the N processes (`df` = processes it appears in). The scheduler
+   (orion-durable-runs) and the GPU lease appear in nearly every process, so they keep a small
+   share without any hand-typed "plumbing" list. A process with only its runner keeps the whole
+   unit on it. Each process's `work_split` fact shows its top three shares.
 3. **Organs.** Louvain communities over Newman modularity. `stats.modularity` (Q) is the
    convergence test: about 0.3 and up is real structure; near 0 is mush. **Hosts never join
    organs**: athena runs ~130 containers, so placement edges would glue the body into one
@@ -69,10 +79,10 @@ writes to any DB, graph or bus.
 Gates:
 
 - `pytest orion/body_atlas/tests`
-- `python orion/body_atlas/evals/run_organ_structure_eval.py`: two frozen fixtures, the real bus
-  graph from 2026-10-23 and the whole body from 2026-10-29. Each must have Q ≥ 0.3, 5–25
-  organs, no organ above 35% of parts, every non-host part in exactly one organ, no host in
-  any, and obvious pairs together. `--live` runs it on the live whole body; `--export F`
+- `python orion/body_atlas/evals/run_organ_structure_eval.py`: three frozen fixtures, the real bus
+  graph from 2026-10-23 and the whole body from 2026-10-29 and 2026-10-30 (with process doers).
+  Each must have Q ≥ 0.3, 5–25 organs, no organ above 35% of parts, every non-host part in
+  exactly one organ, no host in any, and obvious pairs together. `--live` runs it on the live whole body; `--export F`
   refreshes a fixture.
 
 Live results:
@@ -81,12 +91,21 @@ Live results:
 - 2026-10-29, whole body: 254 parts (7 hosts, 4 cameras, 91 stores, 13 processes, 35
   transient), 19 organs (8 singletons), Q = 0.350, largest organ 32%. Bus only, same day:
   Q = 0.334, largest 31%.
+- 2026-10-30, process doers: the largest organ went from 75 parts (34%) to 68 (31%), Q 0.350 →
+  0.349, 18 organs both ways. 7 of 8 reducers left it for the organ of the service they read.
+  The 12 durable workflows stay: their readable doers are the harness and the scheduler. The rest of that organ is real: orion-hub,
+  orion-gpu-pool, orion-harness-governor, orion-durable-runs and orion-substrate-runtime signal
+  each other on the bus, and most durable runs are harness turns scheduled by orion-durable-runs.
 
 Known gaps (also in every whole-body atlas as `known_gaps`):
 
-- **Grants.** On 2026-10-29 `orion_readonly` could not read `substrate_durable_run_state`,
-  `substrate_reduction_cursor` or `vision_events` (it can read 24 of 351 tables). Until it can,
-  processes and cameras are `declared_only` and reducers are missing; the printout says so.
+- **Grants.** On 2026-10-30 `orion_readonly` cannot read `grammar_events`, `cognition_traces` or
+  `cockpit_turn_sighting`, so the `observed_trace`/`observed_turn` doers are missing (each is
+  UNREAD with the exact GRANT it needs). The run-state, cursor and camera tables are readable now.
+  Those two evidence kinds have never run live: after the grant, check the `grammar_events` join
+  (1.4 M rows, no `correlation_id` index; bounded to 31 days) with `EXPLAIN` and a live run.
+- **Run products.** A run's detail carries ids it made (`entry_id`, `dream_id`, `episode_id`), but
+  no declared source says which table holds each id, so processes have no `writes` flow yet.
 - **Other hosts' docker.** Only this host's containers are observed; circe placement is
   declared (its allowlist), hecate has none.
 - **No machine-readable source yet:** the mood v4 autoencoder, the personality program as a

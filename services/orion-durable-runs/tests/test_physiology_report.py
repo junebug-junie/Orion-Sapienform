@@ -93,9 +93,27 @@ def full_rows() -> dict:
         pr.VRAM_SQL: [{"node": "circe", "ts": (NOW - timedelta(minutes=1)).isoformat(),
                        "measurements": {"gpu_count": 4.0, "gpu1_mem_used_mb": 30000.0, "gpu1_mem_total_mb": 32768.0,
                                         "gpu1_watts": 210.0, "cpu_busy_cores": 9.0, "cpu_idle_watts": 100.0,
+                                        "chassis_watts": 1150.0, "gpu_watts_total": 450.0, "cpu_watts_total": 120.0,
+                                        "fan_pct_max": 50.0, "gpu1_temp_c": 71.0,
                                         "container_cpu_watts.orion-circe-atlas-agent": 18.5,
                                         "container_cpu_watts.orion-circe-vision-host": 4.25,
                                         "container_cpu_watts_small": 1.0, "cpu_watts_host_other": 2.0}}],
+        pr.ATTRIBUTION_PRESENT_SQL: [{"present": True}],
+        # circe, 2026-10-30 00-03Z replayed live (evals/act_energy_closure.py): 0.8% coverage.
+        pr.ATTRIBUTION_DAILY_SQL: [
+            {"host": "circe", "day": "2026-10-30", "hours": 3, "rest_wh": 1623.0, "above_rest_wh": 1748.35,
+             "sponsored_wh": 0.0, "metered_wh": 13.91, "leased_unmetered_wh": 1495.07, "unattributed_wh": 1734.44,
+             "min_hour_unattributed_wh": 500.0, "covered_h": 3.0, "split_unknown_h": 0.0},
+            {"host": "athena", "day": "2026-10-30", "hours": 3, "rest_wh": 1020.0, "above_rest_wh": 1228.95,
+             "sponsored_wh": 549.37, "metered_wh": 0.0, "leased_unmetered_wh": 0.0, "unattributed_wh": 679.57,
+             "min_hour_unattributed_wh": 200.0, "covered_h": 3.0, "split_unknown_h": 0.0}],
+        pr.ATTRIBUTION_CHARGED_SQL: [{"host": "circe", "day": "2026-10-30", "charged_wh": 13.97, "acts": 58}],
+        pr.HOSTS_REST_SQL: [{"node": "circe", "chassis_rest": 541.0, "gpu_rest": 190.0, "cpu_rest": 45.0,
+                              "other_rest": 280.0, "gpu1_rest": None}],
+        pr.HOSTS_FLOOR_SQL: [{"node": "circe", "chassis_floor": 578.0, "gpu1_floor": 42.0}],
+        pr.HOSTS_DAILY_SQL: [{"node": "circe", "d": "2026-10-28", "w": 1027.4}, {"node": "circe", "d": "2026-10-29", "w": 962.0}],
+        pr.HOSTS_HOLDERS_SQL: [{"card": "gpu1", "holder": "durable-runs:curiosity.investigate", "lease_s": 38791.0},
+                               {"card": "gpu1", "holder": "http:anthropic", "lease_s": 13572.3}],
         pr.SERVICES_SQL: [{"created_at": (NOW - timedelta(hours=2)).replace(tzinfo=None),
                            "context": {"event": "stopped_container", "service_id": "orion-kev/kev",
                                        "containers": ["orion-athena-kev"], "states": ["exited"],
@@ -178,6 +196,11 @@ def test_full_report_fills_every_section_from_rows():
     assert units["one reverie_diffusion run"].status == "measured"
     assert units["one hub.outreach act (estimate: family mean)"].wh == 2.0 and units["one hub.outreach act (estimate: family mean)"].usd == 0.0003
     assert units["per 1k tokens"].status == "not_measured" and "token" in units["per 1k tokens"].source
+    circe = units["work not yet metered on circe, 2026-10-30 UTC"]
+    assert circe.status == "measured" and circe.wh == 1734.4 and circe.usd == pytest.approx(1734.44 / 1000 * 0.1255, abs=1e-4)
+    assert "coverage 0.8% of activity" in circe.source and "GPU leases whose turn has no act 1495" in circe.source
+    assert "acts actually charged 14 (58 acts)" in circe.source and "OVER" not in circe.source
+    assert "sponsored 549" in units["work not yet metered on athena, 2026-10-30 UTC"].source
     assert rep.waste.failed_lease_s_by_lane["agent"] == 8858.2 and rep.waste.top[0].reason == "attempt_failed"
     assert rep.queue_wait[0].p90_s == 5275.0
     assert rep.decisions[0].prices_seen == {"heat": 0.5, "lane:agent": 0.3}
@@ -199,7 +222,10 @@ def test_full_report_fills_every_section_from_rows():
     assert "total" in rep.timing_ms
     assert any(r.startswith("partial:") for r in _reasons(rep, "vram"))      # only circe gpu1 reports
     assert any("hecate" in r and "athena" in r for r in _reasons(rep, "vram"))  # no fresh rows for them
-    assert {m.section for m in rep.missing} <= {"value_per_cost", "vram"}
+    circe = rep.hosts[0]
+    assert (circe.host, circe.chassis_w_now, circe.chassis_w_rest, circe.above_rest_w) == ("circe", 1150.0, 541.0, 609.0)
+    assert circe.other_w == 580.0 and circe.fan_pct == 50.0
+    assert {m.section for m in rep.missing} <= {"value_per_cost", "vram", "hosts"}
     assert rep.query == {"window": "24h", "sections": list(REPORT_SECTIONS), "family": None, "outcome": None,
                          "limit": 50}
 
@@ -315,6 +341,12 @@ def test_report_sql_on_postgres():
            priority varchar, role varchar, cards json, turn_correlation_id varchar, attempt integer,
            waited_ms double precision, held_ms double precision, reason varchar, detail json)""",
         "CREATE TABLE orion_energy_hourly (hour_start timestamptz, source varchar, kwh double precision, PRIMARY KEY (hour_start, source))",
+        # services/orion-sql-writer/app/models/orion_energy_attribution_hourly.py
+        """CREATE TABLE orion_energy_attribution_hourly (hour_start timestamptz, host varchar, rest_w double precision,
+           rest_wh double precision, above_rest_wh double precision, sponsored_wh double precision,
+           metered_wh double precision, leased_unmetered_wh double precision, unattributed_wh double precision,
+           covered_sec double precision, split_unknown_sec double precision, rest_source varchar,
+           updated_at timestamptz, PRIMARY KEY (hour_start, host))""",
         """CREATE TABLE energy_run_cost (id bigserial PRIMARY KEY, intent_id varchar, workload_kind varchar,
            window_start timestamptz, energy_kwh double precision, estimated_run_cost_usd double precision)""",
         "CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, opened_at timestamptz, cost_json jsonb, correlation_id varchar)",
@@ -324,6 +356,7 @@ def test_report_sql_on_postgres():
            priced_session_count integer, unpriced_session_count integer)""",
         "CREATE TABLE orion_biometrics_summary (id serial PRIMARY KEY, \"timestamp\" varchar, node varchar, measurements jsonb)",
         "CREATE TABLE notify_requests (notification_id varchar PRIMARY KEY, source_service varchar, created_at timestamp, context jsonb)",
+        "CREATE TABLE durable_run_workflow (run_id text PRIMARY KEY, workflow text NOT NULL, created_at timestamptz, terminal text)",
         # services/orion-sql-db/manual_migration_llm_call_usage_v1.sql (PR #2974), the columns this report reads
         """CREATE TABLE llm_call_usage (call_id text PRIMARY KEY, recorded_at timestamptz NOT NULL, recorder text NOT NULL,
            correlation_id text, prompt_tokens integer, cached_prompt_tokens integer, completion_tokens integer)""",
@@ -361,8 +394,15 @@ def test_report_sql_on_postgres():
                                            "waited_ms, held_ms, reason) VALUES (%s, %s, %s, %s, 'background', 'agent', %s, %s, %s)",
                                            (f"e{i}", now - timedelta(minutes=30 - i), ev, holder, waited, held, reason))
                     await conn.execute("INSERT INTO orion_energy_hourly VALUES (%s, 'athena', 1.5)", (now - timedelta(hours=3),))
+                    for h in (2, 3):
+                        await conn.execute("INSERT INTO orion_energy_attribution_hourly VALUES (%s, 'circe', 541, 541, "
+                                           "600, 0, 10, 500, 590, 3600, 0, 'fixture', now())",
+                                           (now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h),))
                     await conn.execute("INSERT INTO energy_run_cost (workload_kind, window_start, energy_kwh, estimated_run_cost_usd) "
                                        "VALUES ('reverie_diffusion', %s, 0.0004, 0.00005)", (now - timedelta(hours=1),))
+                    await conn.execute("INSERT INTO grammar_acts VALUES ('a2', 'hub.chat_reply', %s, %s, 'corr-2')",
+                                       (now - timedelta(hours=2), json.dumps({"wh_by_host": {"circe": 7.0},
+                                                                              "wh_gpu_by_host": {"circe": 3.0}})))
                     await conn.execute("INSERT INTO grammar_acts VALUES ('a1', 'hub.outreach', %s, %s, 'corr-1')",
                                        (now - timedelta(hours=1), json.dumps({"wh_by_host": {"athena": 1.5, "circe": 0.5}, "usd": 0.001})))
                     for cid, rec, corr, p_, c_ in (("c1", "gateway", "corr-1", 900, 100), ("c2", "harness_relay", "corr-1", 400, 100),
@@ -371,8 +411,20 @@ def test_report_sql_on_postgres():
                                            (cid, now - timedelta(minutes=50), rec, corr, p_, c_))
                     await conn.execute("INSERT INTO dev_economics_ledger_log VALUES ('x', %s, 1, 2, 3, 4, 0.5, 1, 0)",
                                        (now - timedelta(hours=1),))
+                    # the writer's varchar shape ('2026-10-30 03:09:37.461097+00'), which the hosts reads compare as text
                     await conn.execute("INSERT INTO orion_biometrics_summary (\"timestamp\", node, measurements) VALUES (%s, 'circe', %s)",
-                                       (now.isoformat(), json.dumps({"gpu_count": 4, "gpu0_mem_used_mb": 100, "gpu0_mem_total_mb": 32768})))
+                                       ((now - timedelta(seconds=20)).strftime("%Y-%m-%d %H:%M:%S.%f+00"), json.dumps({"gpu_count": 4, "gpu0_mem_used_mb": 100, "gpu0_mem_total_mb": 32768,
+                                                                     "chassis_watts": 1150, "gpu_watts_total": 450,
+                                                                     "cpu_watts_total": 120, "gpu1_watts": 230})))
+                    # inside the pinned rest window (2026-10-01..13), in the varchar shape the writer uses
+                    await conn.execute("INSERT INTO orion_biometrics_summary (\"timestamp\", node, measurements) VALUES "
+                                       "('2026-10-05 12:00:00.000001+00', 'circe', %s)",
+                                       (json.dumps({"chassis_watts": 541, "gpu_watts_total": 190, "cpu_watts_total": 45}),))
+                    await conn.execute("INSERT INTO durable_run_workflow VALUES ('run9', 'curiosity.investigate', %s, 'completed')",
+                                       (now - timedelta(hours=2),))
+                    await conn.execute("INSERT INTO gpu_pool_events (event_id, generated_at, event, holder, priority, role, "
+                                       "cards, held_ms, reason) VALUES ('h1', %s, 'released', 'durable-runs:run9', 'interactive', "
+                                       "'agent', '[\"gpu1\"]', 600000.0, 'ok')", (now - timedelta(days=5),))
                     await conn.execute("INSERT INTO notify_requests VALUES ('n1', 'orion-mesh-guardian', %s, %s)",
                                        ((now - timedelta(hours=1)).replace(tzinfo=None),
                                         json.dumps({"event": "stopped_container", "service_id": "orion-kev/kev",
@@ -393,6 +445,14 @@ def test_report_sql_on_postgres():
                 assert rep.claude.window_tokens.cache_write == 3 and rep.claude.usd_est == 0.5
                 assert next(c for c in rep.vram if c.card == "gpu0").headroom_mb == 32668.0
                 assert rep.services.down[0].name == "orion-kev/kev"
+                circe = next(h for h in rep.hosts if h.host == "circe")
+                assert (circe.chassis_w_now, circe.chassis_w_rest, circe.other_w) == (1150.0, 541.0, 580.0)
+                assert (circe.gpu_w_rest, circe.cpu_w_rest, circe.other_w_rest) == (190.0, 45.0, 306.0)
+                assert circe.recent_floor_w == 1150.0 and circe.daily
+                gpu1 = next(c for c in circe.cards if c.card == "gpu1")
+                assert gpu1.watts == 230.0 and gpu1.idle_w == 230.0   # only one recent sample: its own floor
+                assert [(x.holder, x.label, x.lease_s) for x in gpu1.top_holders] == [
+                    ("durable-runs:curiosity.investigate", "curiosity.investigate runs", 600.0)]
                 assert any(u.unit == "one hub.outreach act (estimate: family mean)" and u.wh == 2.0 for u in rep.unit_costs)
                 tok = next(u for u in rep.unit_costs if u.unit == "per 1k tokens")
                 # act corr-1: 2.0 Wh over 1,000 tokens -- gateway rows only. The leftover harness_relay row
@@ -400,6 +460,9 @@ def test_report_sql_on_postgres():
                 # would double the act's tokens. Totals: gateway only (2 calls, 1,100).
                 assert tok.status == "measured" and tok.wh == pytest.approx(2.0 * 1000 / 1000, abs=1e-3)
                 assert "2 gateway calls, 1,100 tokens" in tok.source
+                met = [u for u in rep.unit_costs if u.unit.startswith("work not yet metered on circe")]
+                assert met and sum(u.wh for u in met) == pytest.approx(1180.0) and "coverage 1.7%" in met[0].source
+                assert any("acts actually charged 7 (1 acts)" in u.source for u in met)
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
                 await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
@@ -506,6 +569,162 @@ def test_processes_below_idle_floor_is_a_reason_not_zero():
     rep = _build(rows, q=pr.parse_query("24h", "processes", None, None, None))
     assert rep.processes == []
     assert any("below the fitted idle floor" in r for r in _reasons(rep, "processes"))
+
+
+def test_attribution_says_absent_table_and_flags_over_attribution():
+    rows = full_rows()
+    rows[pr.ATTRIBUTION_PRESENT_SQL] = [{"present": False}]
+    units = {u.unit: u for u in _build(rows).unit_costs}
+    assert "does not exist yet" in units["work not yet metered (per host per day)"].source
+    rows[pr.ATTRIBUTION_PRESENT_SQL] = [{"present": True}]
+    rows[pr.ATTRIBUTION_DAILY_SQL] = [dict(rows[pr.ATTRIBUTION_DAILY_SQL][0], min_hour_unattributed_wh=-3.5)]
+    units = {u.unit: u for u in _build(rows).unit_costs}
+    assert "OVER-ATTRIBUTED: an hour reads -3.50" in units["work not yet metered on circe, 2026-10-30 UTC"].source
+    rows[pr.ATTRIBUTION_DAILY_SQL] = [dict(rows[pr.ATTRIBUTION_DAILY_SQL][0], split_unknown_h=2.0)]
+    rows[pr.ATTRIBUTION_CHARGED_SQL] = [{"host": "circe", "day": "2026-10-30", "charged_wh": 5000.0, "acts": 3}]
+    src = {u.unit: u for u in _build(rows).unit_costs}["work not yet metered on circe, 2026-10-30 UTC"].source
+    assert "OVER-CHARGED: acts were charged 5000" in src and "PARTIAL: for 2.0 h" in src
+    rows[pr.ATTRIBUTION_DAILY_SQL] = []
+    units = {u.unit: u for u in _build(rows).unit_costs}
+    assert units["work not yet metered (per host per day)"].status == "not_measured"
+
+
+# --- hosts: what is spinning each machine ------------------------------------------------------
+
+
+def _hosts_rows() -> dict:
+    rows = full_rows()
+    rows[pr.VRAM_SQL] = [
+        {"node": "circe", "ts": (NOW - timedelta(minutes=1)).isoformat(),
+         "measurements": {"gpu_count": 4.0, "chassis_watts": 1150.0, "gpu_watts_total": 450.0, "cpu_watts_total": 120.0,
+                          "fan_pct_max": 50.0, "gpu1_watts": 230.0, "gpu1_temp_c": 71.0, "gpu1_mem_used_mb": 24888.0,
+                          "gpu3_watts": 220.0, "gpu0_watts": 0.0,
+                          "container_cpu_watts.d590a9d48af2": 8.4, "container_cpu_watts.e5287fa21cba": 6.1,
+                          "container_cpu_watts.0123456789ab": 1.0, "cpu_watts_host_other": 2.0}},
+        {"node": "athena", "ts": (NOW - timedelta(minutes=2)).isoformat(),
+         "measurements": {"gpu_count": 2.0, "chassis_watts": 720.0, "gpu_watts_total": 90.0, "cpu_watts_total": 350.0,
+                          "gpu0_watts": 26.0, "gpu1_watts": 64.0, "container_cpu_watts.orion-athena-sql-db": 13.8,
+                          **{f"container_cpu_watts.zelda-dojo-live-{i}": 5.5 for i in range(32)}}},
+        {"node": "hecate", "ts": (NOW - timedelta(hours=5)).isoformat(), "measurements": {"chassis_watts": 96.0}},
+    ]
+    rows[pr.HOSTS_REST_SQL] = [{"node": "circe", "chassis_rest": 541.0, "gpu_rest": 190.0, "cpu_rest": 45.0,
+                                "other_rest": 280.0, "gpu1_rest": None, "gpu3_rest": None},
+                               {"node": "athena", "chassis_rest": 340.0, "gpu_rest": 76.0, "cpu_rest": 118.0,
+                                "other_rest": 92.0}]
+    rows[pr.HOSTS_FLOOR_SQL] = [{"node": "circe", "chassis_floor": 578.0, "gpu1_floor": 41.8, "gpu3_floor": 72.3},
+                                {"node": "athena", "chassis_floor": 690.0}]
+    rows[pr.HOSTS_HOLDERS_SQL] = [
+        {"card": "gpu1", "holder": "durable-runs:curiosity.investigate", "lease_s": 38791.0},
+        {"card": "gpu1", "holder": "http:anthropic", "lease_s": 13572.3},
+        {"card": "gpu3", "holder": "vision-council", "lease_s": 32944.1},
+        {"card": "gpu3", "holder": "http:openai", "lease_s": 11640.2}]
+    return rows
+
+
+@pytest.fixture(autouse=True)
+def _fresh_pinned_parts_cache():
+    pr._PINNED_PARTS_CACHE.clear()   # FakePool ids can be reused across tests
+    yield
+    pr._PINNED_PARTS_CACHE.clear()
+
+
+@pytest.mark.parametrize("body", [
+    "- just\n- a list\n",                                                   # top level is not a mapping
+    "hosts:\n  circe: 541\n  athena: 340\n",                               # bare numbers
+    "hosts:\n  circe: {rest_w: 541, measured: '2026-10-01..2026-10-32'}\n",  # not a real date
+    "hosts: [1, 2]\nsponsored: 7\n",
+])
+def test_a_malformed_rest_body_is_never_a_500(tmp_path, body):
+    (tmp_path / "heat_sensitivity.yaml").write_text(Path(HEAT_CFG).read_text())
+    (tmp_path / "rest_body.yaml").write_text(body)
+    deps = pr.ReportDeps(pool=FakePool(_hosts_rows()), heat_sensitivity_path=str(tmp_path / "heat_sensitivity.yaml"),
+                         gpu_pool_path=POOL_CFG)
+    rep = asyncio.run(pr.build_report(deps, pr.parse_query("24h", "hosts", None, None, None), now=NOW))
+    circe = next(h for h in rep.hosts if h.host == "circe")
+    assert circe.chassis_w_rest == 541.0
+
+
+def _names():
+    async def fn():
+        return {"d590a9d48af2": "orion-circe-atlas-llamacpp-fast", "e5287fa21cba": "orion-circe-atlas-llamacpp-metacog"}
+    return fn
+
+
+def test_hosts_say_what_spins_each_machine():
+    rep = _build(_hosts_rows(), q=pr.parse_query("24h", "hosts,processes", None, None, None), container_names=_names())
+    assert [h.host for h in rep.hosts] == ["circe", "athena"]          # largest draw first; hecate asleep
+    c = rep.hosts[0]
+    # pinned rest (no rest_body.yaml in the repo yet): the dated default, never the rolling floor
+    assert c.chassis_w_rest == 541.0 and c.recent_floor_w == 578.0 and "2026-10-01..2026-10-13" in c.rest_basis
+    # rest_body.yaml now exists (#2992), so the basis names the file; without it, "pinned default".
+    assert "pinned in config/physiology/rest_body.yaml" in c.rest_basis or "pinned default" in c.rest_basis
+    assert c.above_rest_w == 609.0 and c.usd_per_month_at_this_rate == round(609 * 730 / 1000 * 0.1255, 2)
+    assert c.rest_usd_per_month == round(541 * 730 / 1000 * 0.1255, 2)
+    assert (c.gpu_w, c.cpu_w, c.other_w) == (450.0, 120.0, 580.0)       # other = chassis - gpu - cpu
+    assert (c.gpu_w_rest, c.cpu_w_rest, c.other_w_rest) == (190.0, 45.0, 280.0)
+    gpu1 = next(x for x in c.cards if x.card == "gpu1")
+    assert gpu1.watts == 230.0 and gpu1.idle_w == 41.8 and "agent" in gpu1.roles and gpu1.temp_c == 71.0
+    assert [(h.holder, h.label) for h in gpu1.top_holders] == [
+        ("durable-runs:curiosity.investigate", "curiosity.investigate runs"), ("http:anthropic", "harness turns")]
+    assert next(x for x in c.cards if x.card == "gpu3").top_holders[1].label == "AI Town"
+    assert next(x for x in c.cards if x.card == "gpu0").watts == 0.0   # 0 W is a reading, kept
+    assert [x.card for x in c.cards] == ["gpu0", "gpu1", "gpu3"]        # gpu2 reports nothing: not a 0 W card
+    # container ids -> names from the census; an id it does not know stays an id, and is said
+    assert [x.name for x in c.top_containers][:2] == ["orion-circe-atlas-llamacpp-fast", "orion-circe-atlas-llamacpp-metacog"]
+    assert "0123456789ab" in [x.name for x in c.top_containers]
+    assert any(r.startswith("circe: some containers show as 12-char ids") for r in _reasons(rep, "hosts"))
+    assert any(p.name == "orion-circe-atlas-llamacpp-fast" for p in rep.processes)
+    assert [d.chassis_w_avg for d in c.daily] == [1027.4, 962.0]
+    # athena: the Zelda dojo is Juniper's sponsored work, apart from Orion's own top containers
+    a = rep.hosts[1]
+    assert a.sponsored[0].name == "zelda_dojo" and a.sponsored[0].containers == 32 and a.sponsored[0].cpu_w == 176.0
+    assert all(not x.name.startswith("zelda-dojo") for x in a.top_containers)
+    assert a.top_containers[0].name == "orion-athena-sql-db"
+    assert c.sponsored == []
+    reasons = " | ".join(_reasons(rep, "hosts"))
+    assert "hecate (asleep or its reporter is down)" in reasons
+    assert "fix/act-energy-whole-machine" in reasons and all(h.unattributed_above_rest_w is None for h in rep.hosts)
+    assert "per-card watts began 2026-10-29" in reasons
+
+
+def test_rest_body_yaml_overrides_the_defaults(tmp_path):
+    (tmp_path / "heat_sensitivity.yaml").write_text(Path(HEAT_CFG).read_text())
+    (tmp_path / "rest_body.yaml").write_text(
+        "version: 1\nhosts:\n  circe: {rest_w: 500, measured: '2026-10-01..2026-10-13', method: 'p05 chassis_watts', "
+        "approved_rest_w: 541}\n  athena: {rest_w: 400, measured: '2026-10-01..2026-10-13', approved_rest_w: 340}\n"
+        "sponsored: []\n")
+    pool = FakePool(_hosts_rows())
+    deps = pr.ReportDeps(pool=pool, heat_sensitivity_path=str(tmp_path / "heat_sensitivity.yaml"), gpu_pool_path=POOL_CFG)
+    rep = asyncio.run(pr.build_report(deps, pr.parse_query("24h", "hosts", None, None, None), now=NOW))
+    c = next(h for h in rep.hosts if h.host == "circe")
+    # rest_w is the value in use (lowering is always allowed); approved_rest_w is only a ceiling
+    assert c.chassis_w_rest == 500.0 and c.rest_basis.startswith("pinned in config/physiology/rest_body.yaml")
+    a = next(h for h in rep.hosts if h.host == "athena")
+    assert a.chassis_w_rest == 340.0
+    assert any("athena: rest_w 400 W is above Juniper's approved 340 W" in r for r in _reasons(rep, "hosts"))
+    assert a.sponsored == [] and any(x.name.startswith("zelda-dojo") for x in a.top_containers)
+    assert pr.rest_window(pr.DEFAULT_REST_BODY) == ("2026-10-01", "2026-10-14")
+
+
+def test_hosts_holder_read_failure_keeps_the_machines():
+    rep = _build(_hosts_rows(), q=pr.parse_query("24h", "hosts", None, None, None), fail={"durable_run_workflow"})
+    assert rep.hosts and rep.hosts[0].chassis_w_now == 1150.0 and rep.hosts[0].cards[1].top_holders == []
+    assert any(r.startswith("read failed (hosts_holders)") for r in _reasons(rep, "hosts"))
+
+
+def test_fold_holder_twin_and_census_names():
+    assert pr.fold_holder("durable-runs:reading-ad8cac98-4dee-56fd-be1b-a7c1636534a5") == "durable-runs:reading"
+    assert pr.fold_holder("durable-runs:d590a9d48af2") == "durable-runs:run"
+    assert pr.fold_holder("durable-runs:20261029T220907Z-45bc34") == "durable-runs:run"
+    assert pr.fold_holder("durable-runs:curiosity-compaction:weekly:2026-10-12:r0") == "durable-runs:curiosity-compaction:weekly"
+    assert pr.fold_holder("durable-runs:c8363ab11231", "curiosity.investigate") == "durable-runs:curiosity.investigate"
+    assert pr.fold_holder("vision-council") == "vision-council"
+    raw = {b"gpu-lane-controller@circe": json.dumps({"details": {"container_restarts": {"counts": {
+               "orion-circe-atlas-llamacpp-fast@d590a9d48af2": 0, "bad-key": 1}}}}).encode(),
+           "biometrics@circe": json.dumps({"details": {}}), "x": "not json container_restarts"}
+    assert pr.container_names_from_census(raw) == {"d590a9d48af2": "orion-circe-atlas-llamacpp-fast"}
+    assert pr.container_label("d590a9d48af2", {"d590a9d48af2": "n"}) == "n"
+    assert pr.container_label("unknown12345", {}) == "unknown12345"
 
 
 # --- wants.town: AI Town sessions (2026-10-30) ------------------------------------------------

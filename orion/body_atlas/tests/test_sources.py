@@ -87,6 +87,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "chat.history": "ChatHistoryLogSQL",
     "world.pulse.v1": "WorldPulseRun",
     "unmapped.kind": "NoSuchModel",
+    "harness.run.v1": "HarnessTurnTraceSQL",
 }
 """
 MODELS = """
@@ -95,6 +96,9 @@ class ChatHistoryLogSQL(Base):
 
 class WorldPulseRun(Base):
     __tablename__ = "world_pulse_run"
+
+class HarnessTurnTraceSQL(Base):
+    __tablename__ = "harness_turn_trace"
 """
 
 
@@ -147,6 +151,15 @@ class FakeSql:
         for table in self.deny:
             if table in sql:
                 return f"psql:<stdin>:2: ERROR:  permission denied for table {table}\n", 3
+        if "child_run_ids" in sql:
+            return "parent,child,runs\ndream.carry,reverie.visual,3\n", 0
+        if "JOIN grammar_events t" in sql:
+            return ("workflow,via,service,runs\nreverie.visual,run,cortex-exec,40\n"
+                    "situation.update,turn,orion-hub,9\nreading.turn,run,,2\n"), 0
+        if "JOIN cognition_traces t" in sql or "JOIN cockpit_turn_sighting t" in sql:
+            return "workflow,via,service,runs\n", 0
+        if "JOIN harness_turn_trace t" in sql:
+            return "workflow,via,runs\nreading.turn,turn,4\n", 0
         if "pg_stat_user_tables" in sql:
             return "relname,n_live_tup\nchat_history_log,813\nunrelated_table,5\n", 0
         if "orion_biometrics_summary" in sql:
@@ -185,7 +198,9 @@ def _root(tmp_path):
 
 
 CHANNELS = [{"name": "orion:chat:history", "message_kind": "chat.history",
-             "producer_services": ["orion-hub"], "consumer_services": ["orion-sql-writer"]}]
+             "producer_services": ["orion-hub"], "consumer_services": ["orion-sql-writer"]},
+            {"name": "orion:harness:run:artifact", "message_kind": "harness.run.v1",
+             "producer_services": ["orion-harness-governor"], "consumer_services": ["orion-sql-writer"]}]
 
 
 def test_gather_reads_everything_and_reports_what_failed(tmp_path):

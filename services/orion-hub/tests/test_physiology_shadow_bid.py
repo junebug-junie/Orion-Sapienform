@@ -264,6 +264,78 @@ async def test_outreach_strain_held_tick_bids_and_is_unchanged(economy, caplog, 
     assert all(r == results[0] for r in results)
 
 
+def _offline(monkeypatch, outreach, clock):
+    """Many ticks: skip the per-tick decision-log write and sent-today DB recovery; fake clock."""
+    from scripts import endogenous_outreach_decisions as dec
+
+    monkeypatch.setattr(dec, "record_decision", lambda *a, **k: None)
+    outreach._sent_today_recovered = True
+    outreach._monotonic = lambda: clock["t"]
+    return outreach
+
+
+@pytest.mark.asyncio
+async def test_outreach_strain_hold_bids_once_per_window_not_every_tick(economy, caplog, monkeypatch) -> None:
+    """Regression (2026-10-30): a strain hold repeats on every 10 s tick. Live, that put ~360
+    hub.outreach shadow bids an hour into want_ledger (one per tick) while real sends were a few
+    a day. One held want is one bid per cooldown window."""
+    from scripts import endogenous_outreach as eo
+
+    caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
+    _stub_tick(monkeypatch, [])
+    monkeypatch.setattr(eo, "outreach_block_reason", lambda inputs, **kw: eo.AROUSAL_STRAINED_REASON)
+    clock = {"t": 1000.0}
+    economy.answer = ANSWERS[0]
+    economy.wants.clear()
+    outreach = _offline(monkeypatch, _outreach(strain_report_enabled=False, min_cooldown_sec=2700.0,
+                                                tick_interval_sec=10.0), clock)
+    reasons = set()
+    for _ in range(360):  # one hour of 10 s ticks
+        result = await _tick(outreach)
+        reasons.add(result["reason"])
+        clock["t"] += 10.0
+    assert reasons == {eo.AROUSAL_STRAINED_REASON}  # the real outcome is unchanged on every tick
+    # Before the fix: 360. After: t=0 and t=2700 s.
+    assert len(economy.wants) == 2
+    assert len({w.want_id for w in economy.wants}) == 2
+    assert [_fields(line)["real"] for line in _shadow_lines(caplog)] == [
+        f"blocked:{eo.AROUSAL_STRAINED_REASON}"] * 2
+
+
+@pytest.mark.asyncio
+async def test_outreach_strain_bid_window_has_a_floor_when_cooldown_is_zero(economy, monkeypatch) -> None:
+    from scripts import endogenous_outreach as eo
+
+    _stub_tick(monkeypatch, [])
+    monkeypatch.setattr(eo, "outreach_block_reason", lambda inputs, **kw: eo.AROUSAL_STRAINED_REASON)
+    clock = {"t": 0.0}
+    economy.answer = ANSWERS[0]
+    economy.wants.clear()
+    outreach = _offline(monkeypatch, _outreach(strain_report_enabled=False, min_cooldown_sec=0.0), clock)
+    for _ in range(120):  # 20 minutes of 10 s ticks
+        await _tick(outreach)
+        clock["t"] += 10.0
+    assert eo.STRAIN_SHADOW_BID_MIN_WINDOW_SEC == 600.0
+    assert len(economy.wants) == 2  # t=0 and t=600 s
+
+
+@pytest.mark.asyncio
+async def test_outreach_compose_still_bids_on_every_compose(economy, monkeypatch) -> None:
+    """The fix touches only the strain hold. Each real compose is a new candidate and bids."""
+    from scripts import endogenous_outreach as eo
+
+    _stub_tick(monkeypatch, [])
+    clock = {"t": 0.0}
+    economy.answer = ANSWERS[0]
+    economy.wants.clear()
+    outreach = _offline(monkeypatch, _outreach(daily_cap=10), clock)
+    for _ in range(3):
+        result = await _tick(outreach)
+        assert result["reason"] == "sent"
+        clock["t"] += 10.0
+    assert len(economy.wants) == 3
+
+
 # --- retro leisure ---------------------------------------------------------------------------
 
 

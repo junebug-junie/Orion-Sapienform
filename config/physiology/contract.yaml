@@ -158,7 +158,7 @@ readers:
     reason: loads cabinet temperature points for the cabinet-heat tick.
   - module: orion/grammar/act_energy_fill.py
     role: display
-    reason: act energy cost (2026-10-29); reads the heat fit to price an act's heat_c_by_host in grammar_acts.cost_json. Records a cost, gates nothing.
+    reason: act energy cost (2026-10-29; whole machine 2026-10-30); reads the heat fit and the pinned rest (rest_body.yaml) to price an act's wh_by_host / heat_c_by_host in grammar_acts.cost_json and the hourly attribution rows. Records a cost, gates nothing.
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.
@@ -172,7 +172,7 @@ readers:
     reason: heat archaeology for the power_attribution introspect tool; reads hourly watts/leases read-only and returns a correlational answer to Orion; gates nothing.
   - module: services/orion-durable-runs/app/physiology_report.py
     role: display
-    reason: GET /physiology/report (PhysiologyReportV1); reads physiology_state, want_ledger, lease events and the heat sensitivities read-only for the Hub page and Orion's own body read; gates nothing.
+    reason: GET /physiology/report (PhysiologyReportV1); reads physiology_state, want_ledger, lease events, biometrics, the heat sensitivities and the pinned rest body (rest_body.yaml) read-only for the Hub page and Orion's own body read; gates nothing.
   - module: orion/dig/__main__.py
     role: display
     reason: "`dig body-economy` prints the body-economy report as text for Orion (skills.physiology.state.v1 from Bash); gates nothing."

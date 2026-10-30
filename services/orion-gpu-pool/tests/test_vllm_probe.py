@@ -24,3 +24,14 @@ async def test_failed_vllm_probe_is_down(path):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         probe = await _probe(client, 'agent-deep', 'http://hecate:8021', 'llm', '/health', 'vllm')
     assert not probe.ok
+
+
+@pytest.mark.asyncio
+async def test_strata_probe_reads_props_and_keeps_its_backend():
+    seen = []
+    def handle(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json={'model_path': '/data/x.gguf', 'total_slots': 1})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        probe = await _probe(client, 'chat', 'http://circe:8011', 'llm', '/health', 'strata')
+    assert probe.ok and probe.backend == 'strata' and seen == ['/props']

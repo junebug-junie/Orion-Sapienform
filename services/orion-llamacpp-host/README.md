@@ -320,6 +320,35 @@ curl -fsS http://100.87.202.68:8021/health
 `HECATE_AGENT_DEEP_HOST_PORT` must equal the pool role's port: discovery reports `mismatch` otherwise.
 The first boot downloads the 27B GGUF into `LLM_CACHE_DIR`.
 
+## Chat lane on Strata (circe gpu0, 2026-10-30)
+
+The `chat` role runs [Strata](https://github.com/Niko1221/Strata) serving Qwen3.8-Flash-Next IQ3_S on one V100,
+not llama.cpp. Bench: `docs/bench/2026-10-30-strata-hecate/` (hard set 20/20, 94 tok/s average output).
+
+- `atlas-chat` is the Strata engine (`ghcr.io/niko1221/strata:0.2.7-cuda12`, `strata launch --no-api-key`), port 8011,
+  pinned to the CPUs of gpu0's socket. Model data: `ATLAS_CHAT_STRATA_DATA_DIR` (NVMe).
+- `atlas-chat-announce` is this image with a `backend: strata` profile: it heartbeats and announces, and launches nothing.
+- `config/gpu_pool.yaml` gives `chat` `backend: strata`. The pool confirms it through Strata's `/props` (same shape as
+  llama.cpp's). The gateway sends OpenAI/Anthropic calls but never llama.cpp's `/apply-template` + `/completion`.
+- One request at a time (`--parallel 1`), as the llama.cpp chat lane was. Concurrency is untested.
+
+First start, from the clean primary checkout on circe (model files copied to the data dir beforehand):
+
+```bash
+docker compose --env-file services/orion-llamacpp-host/.env -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml up -d atlas-chat atlas-chat-announce
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v /mnt/telemetry/strata:/data \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" ghcr.io/niko1221/strata:0.2.7-cuda12 \
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/chat-defaults.json
+docker restart orion-circe-atlas-strata-chat
+```
+
+The merge puts the old lane's defaults into Strata's run config: thinking off unless a request asks, temperature 0.48,
+presence penalty 1.10. Setup keeps these keys on later starts. Check: `curl -s localhost:8011/props | jq .model_path`.
+
+Rollback to llama.cpp (same port and role): stop `atlas-chat` and `atlas-chat-announce`, then
+`... --profile chat-llamacpp up -d atlas-chat-llamacpp`, and set `chat` back to `backend: llamacpp` in
+`config/gpu_pool.yaml` for the pool and gateway.
+
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 
 `atlas-agent-burst` (pool role `agent-gpu2`, gpu2, port 8016) runs its own image,

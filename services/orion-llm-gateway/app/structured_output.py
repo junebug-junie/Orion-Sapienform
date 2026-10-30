@@ -150,7 +150,7 @@ def apply_structured_output_to_payload(
 
     if (
         thinking_policy == "disabled_for_artifact"
-        and backend_name in ("llamacpp", "llama-cola")
+        and backend_name in ("llamacpp", "llama-cola", "strata")
     ):
         ctk = opts.get("chat_template_kwargs")
         if not isinstance(ctk, dict):

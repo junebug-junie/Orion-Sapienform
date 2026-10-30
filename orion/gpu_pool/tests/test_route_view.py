@@ -69,6 +69,8 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "quick_turn",          # repair-pressure probe, 2026-10-23 (pinned below)
                              "quick_embodied",      # Orion's town speech, 2026-10-23
                              "prime"}               # Orion Prime's thoughts, 2026-10-30 (pinned below)
+# Roles whose server type changed after the freeze report the current one wherever they serve.
+BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata"}   # Strata on the chat card, 2026-10-30
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 
@@ -87,7 +89,10 @@ def test_view_matches_the_old_gateway_generator_output(case):
     # Routes added after the freeze have no old-generator output to match; each is pinned on its own.
     frozen = {r["id"] for r in golden["routes"]}
     assert {r["id"] for r in got} - frozen == ROUTES_ADDED_AFTER_GOLDEN
-    assert [r for r in got if r["id"] in frozen] == golden["routes"]
+    # served_by is "<host>-worker-<role>", the role whose backend the entry reports (route_view._entry)
+    expected = [{**r, "backend": BACKEND_CHANGED_AFTER_GOLDEN.get(r["served_by"].rsplit("-worker-", 1)[1], r["backend"])}
+                if r["backend"] else r for r in golden["routes"]]
+    assert [r for r in got if r["id"] in frozen] == expected
 
 
 def test_down_route_carries_no_model_ctx_or_vision():

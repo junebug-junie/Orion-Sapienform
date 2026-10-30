@@ -328,6 +328,36 @@ profiles:
       - Thinking enabled, but generation budget kept moderate for survivable latency.
       - If OOM: lower ctx_size to 24576, then lower batch_size to 512.
 
+  qwen38-flash-next-iq3s-strata-1xv100-circe-chat:
+    display_name: "Qwen3.8-Flash-Next – IQ3_S (Strata, 1x V100 32GB, circe chat lane)"
+    task_type: chat
+    backend: strata
+    # Strata's own model name (GET /v1/models); any name in a request is served.
+    model_id: "qwen3.8-flash-next-iq3_s"
+
+    supports_tools: true
+    supports_embeddings: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 131072
+      max_concurrent_requests: 1
+
+    # Read by the GPU pool's discovery: the file Strata's /props reports as model_path (its --native
+    # GGUF, the first shard). The engine itself is launched by docker-compose.atlas-workers.yml atlas-chat.
+    strata:
+      family: qwen
+      model: IQ3_S
+      model_file: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+      defaults: services/orion-llamacpp-host/strata/chat-defaults.json
+    notes: >-
+      ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S (54.8 GB) on Strata 0.2.7 (engine 0.1.52), 128K context,
+      one request at a time, int8 KV, vision on. Benched on hecate 2026-10-30 (docs/bench/2026-10-30-strata-hecate):
+      hard set 20/20, 94 tok/s average output. Replaces qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition
+      on the chat role; thinking off by default and the same sampling, via strata/chat-defaults.json.
+
   qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition:
     # display_name said "2x V100 32GB" until 2026-10-14; the lane has run on ONE card
     # since 2026-09-21 (device_ids [0], CUDA_VISIBLE_DEVICES_OVERRIDE=0 live on circe).

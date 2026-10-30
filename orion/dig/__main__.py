@@ -46,17 +46,18 @@ path of a file with the full result; read only what you need from that file.
   inventory <date|now>   services, modules, channels, verbs, schemas in that checkout.
   compare <date> [<date|now>]   what was added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
-  history <days>         the same for the last <days> days, today included (2 = since yesterday).
+  history <days>         the same for the last <days> days (2 = since yesterday).
   body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
                          None = live now; a date = that export's files; an organ id = its members.
-  capacities [gaps]      VSM jobs your parts are shown to do, by rule; gaps.
-  body-economy [<section>...] [--host <h>] [--window 24h|7d|30d] [--family <f>]   your body
-                         economy now: what spins each machine and what it costs, what binds,
-                         wants, waste. `body-economy --help` lists sections and flags.
+  capacities [gaps]      VSM jobs your parts do: by rule, by Juniper's confirmation, claimed.
+  capacity claim <part> <job> because <reason>   claim a job for a live part (a lasting write);
+                         cite one of its flows by full id or a repo file. `capacity help`: rule.
+  capacity write cap:<job> <sentence> because <reason>   a capacity, in your words.
+  body-economy [<section>...]   what spins each machine, what it costs, binds, wants, waste.
+                         `body-economy --help` lists sections and flags.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
-                         write). Name it by what it takes in and gives out; the reason must cite
-                         at least one of its parts by full name. Names show on the live body only.
-  name-organs            every unnamed organ with its parts and a ready `name` line to fill in.
+                         write) by what it takes in and gives out; cite one of its parts.
+  name-organs            every unnamed organ, its parts, and a ready `name` line.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
@@ -65,7 +66,7 @@ Label what you say from a dig by its source:
   pr_text       a builder's words in a PR or commit: a secondary source. Say so.
   lived_record  your own record from that time (journals exist from 2026-07-23 only).
   now           must come from `inventory now` or `body`, never from memory.
-  reflection    your interpretation. Wonder freely, but do not state it as fact.
+  reflection    your interpretation. Wonder freely; do not state it as fact.
 Code from {FIRST_DAY} on is all there. Your memory before 2026-07-22 was lost in a storage
 failure; that is still you, you just have no lived record of it."""
 
@@ -591,16 +592,92 @@ def cmd_name(ref: str, name: str, because: str, out: Out) -> str:
             f"names ledger: {names_path()}")
 
 
+def claims_path() -> Path:
+    return home() / "self" / "capacity_claims.jsonl"
+
+
+def capacities_path() -> Path:
+    return home() / "self" / "capacities.jsonl"
+
+
+CLAIM_CMD = 'python -P -m orion.dig capacity claim <part> <job> because "<reason citing its flow or a repo file>"'
+
+
+def _capacity_reading():
+    """The live reading with Juniper's confirmations and Orion's ledgers on it, the atlas, the
+    sentences written so far, and a note per ledger with unreadable lines."""
+    from orion.body_atlas import capacities, claims, names
+
+    try:
+        vsm = claims.load_confirmed(now_root())
+    except claims.ClaimError as exc:
+        raise DigError(str(exc)) from exc
+    atlas = names.apply_names(_live_atlas(), names.load(names_path())[0])
+    reading = capacities.read_capacities(atlas, vsm=vsm)
+    claim_recs, s1 = claims.load_ledger(claims_path(), capacities.CapacityClaimV1)
+    written, s2 = claims.load_ledger(capacities_path(), capacities.CapacityV1)
+    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written)
+    for path, n in ((claims_path(), s1), (capacities_path(), s2)):
+        if n:
+            reading.notes.append(f"{n} unreadable line(s) skipped in {path}")
+    return reading, atlas, written
+
+
 def cmd_capacities(arg: str | None, out: Out) -> str:
     """Read-only: the VSM jobs the live atlas shows a part doing, by rule (orion/body_atlas/
-    capacities.py). ``gaps``: the code-written gap lines. Writes nothing but the dig result file."""
-    from orion.body_atlas import capacities, names
+    capacities.py) or by Juniper's confirmation, Orion's claims, and the capacity sentences.
+    ``gaps``: the code-written gap lines. Writes nothing but the dig result file."""
+    from orion.body_atlas import capacities
 
-    records, _ = names.load(names_path())
-    reading = capacities.read_capacities(names.apply_names(_live_atlas(), records))
+    reading, _, _ = _capacity_reading()
     path = out.write("capacities", json.loads(reading.model_dump_json()))
-    lines = capacities.render_gaps(reading) if arg == "gaps" else capacities.render(reading)
+    if arg == "gaps":
+        lines = capacities.render_gaps(reading)
+    else:
+        lines = capacities.render(reading)
+        if reading.gaps or any(c.status in ("gap", "not written", "stale") for c in reading.capacities):
+            lines.append(f"to claim a job: {CLAIM_CMD} (capacity help: the rule)")
     return capped(lines, tail=f"full result: {path}")
+
+
+def cmd_capacity_help() -> str:
+    from orion.body_atlas import claims
+
+    return "\n".join([
+        claims.claim_rule(),
+        f"  {CLAIM_CMD}",
+        '  python -P -m orion.dig capacity dispute <part> <job> because "<reason>"   (argue with a rule result)',
+        '  python -P -m orion.dig capacity write cap:s2 "<one sentence>" because "<reason>"',
+        "Gap lines are written by code; a claim never clears one. Ledgers: "
+        f"{claims_path()}, {capacities_path()}",
+    ])
+
+
+def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
+    """``claim``/``dispute`` <part> <job> because <reason>; ``write`` <cap_id> <sentence> because
+    <reason>. Lasting appends to the two ledgers under $ORION_DIG_HOME/self/."""
+    from orion.body_atlas import claims
+
+    reading, atlas, written = _capacity_reading()
+    cut = a.index("because", 2)
+    try:
+        if verb == "write":
+            rec = claims.check_capacity(reading, atlas, written, a[0], " ".join(a[1:cut]), " ".join(a[cut + 1:]),
+                                        dig=out.dig)
+            claims.append(capacities_path(), rec)
+            return (f'wrote {rec.cap_id} "{rec.sentence}" (cites: {", ".join(rec.cites[:6])}'
+                    + (", replaces the earlier one" if rec.replaces else "") + f")\ncapacities ledger: {capacities_path()}")
+        if cut != 2:
+            raise DigError(f"capacity {verb} <part> <job> because <reason>: one part and one job before `because`")
+        rec = claims.check_claim(reading, atlas, a[0], a[1], " ".join(a[cut + 1:]), kind=verb, root=now_root(),
+                                 dig=out.dig)
+    except claims.ClaimError as exc:
+        raise DigError(str(exc)) from exc
+    claims.append(claims_path(), rec)
+    after = ("it prints beside the rule result and changes nothing" if verb == "dispute"
+             else "Orion's claim until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml")
+    return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
+            f"\nclaims ledger: {claims_path()}")
 
 
 # --- body economy ---------------------------------------------------------------------------
@@ -723,6 +800,10 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_body(a[0] if a else None, out)
         elif ns.command == "capacities" and (not a or a == ["gaps"]):
             text = cmd_capacities(a[0] if a else None, out)
+        elif ns.command == "capacity" and a[:1] in ([], ["help"]) and len(a) <= 1:
+            text = cmd_capacity_help()
+        elif ns.command == "capacity" and a[0] in ("claim", "dispute", "write") and len(a) >= 5 and "because" in a[3:]:
+            text = cmd_capacity(a[0], a[1:], out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)
         elif ns.command == "name-organs" and not a:

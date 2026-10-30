@@ -1,0 +1,28 @@
+# Juniper's word on Orion's capacity claims (rung 4, patch 2).
+# Design: docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md, "Decisions" 1 and 3.
+# Read by orion/body_atlas/claims.py (load_confirmed); `python -P -m orion.dig capacities` prints it.
+#
+# Orion claims a job for a part with `python -P -m orion.dig capacity claim <part> <job> because ...`.
+# A claim is not a role. Juniper confirms or rejects one here, by PR; the PR is the review.
+# A confirmed role holds the job like a rule result: a capacity sentence may cite it, and it
+# covers the "no part is shown doing this" gap line of that job. Only Juniper edits this file.
+#
+# part: the part name as `dig capacities` / `dig body <organ>` print it (no "part:" prefix).
+# role: S1, S2, S3, S3*, S4, S5, algedonic or metabolism.  date: YYYY-MM-DD.  note: optional.
+#
+# Example (not a confirmation):
+#   confirmed:
+#     - {part: orion-durable-runs, role: S2, date: 2026-11-01, note: "schedules the durable runs"}
+#   rejected:
+#     - {part: orion-hub, role: S3, date: 2026-11-01, note: "it routes; it does not control"}
+confirmed: []
+rejected: []
+
+# Decision 3 (Juniper, 2026-10-30): S5 is shared with Juniper. These files each say in their own
+# comments that a change needs her sign-off (tiers; spinal vetoes).
+s5_shared_with:
+  who: Juniper
+  signoff_files:
+    - config/physiology/families.yaml
+    - config/physiology/contract.yaml
+  decided: "2026-10-30"

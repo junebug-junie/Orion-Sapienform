@@ -10,9 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from orion.schemas.feedback_frame import FeedbackFrameV1
+
+from .pg_engine import module_engine
 
 router = APIRouter(prefix="/api/substrate/feedback", tags=["substrate-feedback"])
 
@@ -21,7 +23,7 @@ def _engine():
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
-    return create_engine(uri, pool_pre_ping=True)
+    return module_engine(__name__, uri)
 
 
 def _load_latest_feedback_frame() -> FeedbackFrameV1 | None:

@@ -9,7 +9,9 @@ IMAGE=ghcr.io/niko1221/strata:0.2.7-cuda12
 PORT=8090; URL=http://127.0.0.1:$PORT/v1/chat/completions
 cd "$(dirname "$0")"; export BENCH_DIR=$PWD/out-$MODE-$MODEL BENCH_STREAM=1; mkdir -p "$BENCH_DIR"
 LOG=$BENCH_DIR/run.log
-KEY_FILE=$DATA/api_key; [ -s "$KEY_FILE" ] || openssl rand -hex 24 > "$KEY_FILE"; export BENCH_API_KEY=$(cat "$KEY_FILE")
+# key lives beside the kit: docker creates $DATA root-owned, and an empty key makes Strata invent its own
+KEY_FILE=$PWD/.api_key; [ -s "$KEY_FILE" ] || openssl rand -hex 24 > "$KEY_FILE"; export BENCH_API_KEY=$(cat "$KEY_FILE")
+[ -n "$BENCH_API_KEY" ] || { echo "no API key" >&2; exit 1; }
 PIN=(); [ "$MODE" = pin ] && PIN=(--cpuset-cpus "$CPUS" --cpuset-mems "$NODE")
 
 docker rm -f strata-bench >/dev/null 2>&1

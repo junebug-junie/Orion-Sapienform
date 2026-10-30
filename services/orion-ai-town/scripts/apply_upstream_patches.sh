@@ -23,6 +23,7 @@ PATCHES=(
   "orion-live-turn-roles.patch"
   "orion-walkover-meet.patch"
   "orion-sim-core-hooks.patch"
+  "orion-town-correlation-id.patch"
 )
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then

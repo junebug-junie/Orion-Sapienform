@@ -51,6 +51,9 @@ READ_PULL_EXECUTOR_VERB = "orion.world_pulse_read.pull.v1"
 # Orion plays Zelda (2026-10-22, spec section E): the executor key the dispatch runtime maps to one
 # retro leisure start RPC (orion/schemas/retro_leisure.py). Hub's leisure runner runs every gate.
 RETRO_LEISURE_EXECUTOR_VERB = "orion.retro_leisure.start.v1"
+# AI Town sessions (Juniper 2026-10-30): the executor key the dispatch runtime maps to one AI Town
+# session start RPC (orion/schemas/aitown_session.py). orion-embodiment's controller runs every gate.
+AITOWN_SESSION_EXECUTOR_VERB = "orion.aitown_session.start.v1"
 
 # Keys a route's static `skill_args` may never carry, because a real value
 # for them is derived from runtime safety state rather than chosen by an

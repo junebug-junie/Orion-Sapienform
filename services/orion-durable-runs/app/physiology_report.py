@@ -28,6 +28,9 @@ Sources (all read-only):
                  per host, card -> roles from ``config/gpu_pool.yaml``
 * value_per_cost -- the market's own family weights evidence (``Market.family_weights``)
 * services    -- mesh-guardian ``stopped_container`` cards in ``notify_requests``
+* wants.town  -- Redis ``orion:aitown:sessions`` (+ ``:config``): AI Town sessions, written by
+                 orion-embodiment's session controller (2026-10-30). Not SQL: the ledger is the
+                 controller's own cap state, read here as it is.
 * hosts       -- per machine: newest fresh ``orion_biometrics_summary`` row (chassis, GPU, CPU, fans,
                  per card, per container) against its PINNED rest (``config/physiology/rest_body.yaml``,
                  else dated defaults), card -> lease holders from ``gpu_pool_events.cards``, daily
@@ -627,6 +630,28 @@ def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Ma
         scope = f" for family {family}" if family else ""
         missing.append({"section": "wants", "reason": f"no bid decision{scope} in the window; {first}"})
     return out, missing
+
+
+TOWN_FAMILY = "aitown.session"
+
+
+def shape_town(rows: Sequence[Any], config: Any, now: datetime, since: datetime,
+               tz: str = "America/Denver") -> tuple[dict, list[dict]]:
+    """``wants.town``: AI Town use today against the controller's own cap, and the window's sessions."""
+    from orion.embodiment.town_sessions import summarize
+
+    cap = getattr(config, "daily_cap_sec", None)
+    zone = getattr(config, "tz", None) or tz
+    town = summarize(rows, now.timestamp(), since=since.timestamp(), daily_cap_sec=cap, tz=zone)
+    town["session_max_seconds"] = getattr(config, "session_max_sec", None)
+    town["sessions_enabled"] = getattr(config, "enabled", None)
+    missing = []
+    if config is None:
+        missing.append({"section": "wants", "reason": "town: the AI Town session controller has not written its "
+                        "limits (orion-embodiment not on the session build yet?)"})
+    if not town["sessions"]:
+        missing.append({"section": "wants", "reason": "town: no AI Town session in the window"})
+    return town, missing
 
 
 def shape_rhythm(rows: Sequence[Mapping]) -> tuple[list[dict], list[dict]]:
@@ -1373,6 +1398,8 @@ class ReportDeps:
     tiers: Mapping[str, int] = field(default_factory=dict)
     #: async () -> mapping family -> FamilyWeight, or raises. None: the market is off.
     family_weights: Optional[Callable[[], Awaitable[Mapping[str, Any]]]] = None
+    #: async () -> (session rows, controller config or None), or raises. None: not wired.
+    town: Optional[Callable[[], Awaitable[tuple[Sequence[Any], Any]]]] = None
     #: async () -> {id12: container name} (circe's container census). None: ids stay ids.
     container_names: Optional[Callable[[], Awaitable[Mapping[str, str]]]] = None
     concurrency: int = 3
@@ -1527,6 +1554,9 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             "since_naive": (now - SERVICES_LOOKBACK).replace(tzinfo=None)}), ("services",))
     if "value_per_cost" in wanted and deps.family_weights is not None:
         tasks["weights"] = timed("value_per_cost", deps.family_weights, ("value_per_cost",))
+    want_town = "wants" in wanted and deps.town is not None and q.family in (None, TOWN_FAMILY)
+    if want_town:
+        tasks["town"] = timed("town", deps.town, ("wants",))
 
     t_all = time.perf_counter()
     results = dict(zip(tasks, await asyncio.gather(*tasks.values())))
@@ -1560,6 +1590,14 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         add("limits", lambda: shape_limits(results["limits"][0], latest_row, results["limits"][1], since))
     if "wants" in wanted and results.get("wants") is not None:
         add("wants", lambda: shape_wants(results["wants"][0], results["wants"][1], deps.tiers, q.family))
+    if want_town and results.get("town") is not None:
+        try:
+            town, miss = shape_town(results["town"][0], results["town"][1], now, since, deps.tz)
+            out.setdefault("wants", {"families": [], "hourly": []})["town"] = town
+            missing.extend(miss)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("physiology_report_shape_failed section=wants.town", exc_info=True)
+            missing.append({"section": "wants", "reason": f"shaping failed (town): {type(exc).__name__}: {str(exc)[:160]}"})
     if "rhythm" in wanted and results.get("rhythm") is not None:
         add("rhythm", lambda: shape_rhythm(results["rhythm"]))
     if "money" in wanted and results.get("money") is not None:

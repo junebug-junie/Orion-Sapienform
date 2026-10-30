@@ -267,6 +267,17 @@ class Settings(BaseSettings):
     orion_dispatch_retro_leisure_rpc_timeout_sec: float = Field(
         15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_RETRO_LEISURE_RPC_TIMEOUT_SEC"
     )
+    # AI Town sessions (Juniper 2026-10-30): route aitown_session -> orion.aitown_session.start.v1, one
+    # bus RPC to orion-embodiment's session controller. false -> its candidates are refused
+    # `aitown_session_disabled` and no RPC is sent (the town stays paused, except Juniper's manual
+    # opens). The controller has its own switch (EMBODIMENT_TOWN_SESSIONS_ENABLED), the daily cap and
+    # every other gate. Shipped ON.
+    orion_dispatch_aitown_session_enabled: bool = Field(True, alias="ORION_DISPATCH_AITOWN_SESSION_ENABLED")
+    # 60 s: the controller's start does an engine read and a resume mutation on Convex (each up to its
+    # 30 s client timeout; 15-25 s measured under contention), so 15 s would time out real starts.
+    orion_dispatch_aitown_session_rpc_timeout_sec: float = Field(
+        60.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_AITOWN_SESSION_RPC_TIMEOUT_SEC"
+    )
     # 2026-10-01 -- attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md
     # D5). The MASTER switch for world actions (SELF_REVERSIBLE_SCOPE routes, today only
     # shed_background_gpu). false -> every such candidate is blocked `world_actions_disabled`, visibly.

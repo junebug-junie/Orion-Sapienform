@@ -238,3 +238,18 @@ def test_energy_exogenous_bind_is_my_body_at_rest_not_not_my_load():
     assert "not from my load" in rt._limit_line(heat)    # heat: the room really is outside Orion
     money = rt.render_money({"money": {"mtd_usd": 183.7, "envelope_usd": 100.0, "forecast_usd": 196.7, "floor_usd": 194.0}})
     assert "My always-on body alone (rest plus anything left running) reaches $194.00 this month" in money[0] and "switched on" not in money[0]
+
+
+def test_town_sessions_read_in_plain_words():
+    rep = empty()
+    rep["wants"]["town"] = {
+        "local_date": "2026-10-30", "orion_seconds_today": 1800.0, "manual_seconds_today": 600.0,
+        "daily_cap_seconds": 7200.0, "open_kind": "orion",
+        "sessions": [{"session_id": "o1", "kind": "orion", "started_at": "2026-10-30T15:00:00Z",
+                      "seconds": 1800.0, "start_reason": "want_funded", "stop_reason": "session_cap",
+                      "utterances": 2}],
+    }
+    text = rt.render_report_text(rep, sections=("wants",))
+    assert "AI Town today (2026-10-30): I spent 30 min of my 2.0 h cap" in text
+    assert "Juniper opened it for 10 min (not counted)" in text
+    assert "I chose it; ended: session_cap; 2 line(s) I spoke" in text

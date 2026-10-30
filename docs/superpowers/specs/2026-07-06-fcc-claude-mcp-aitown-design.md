@@ -224,7 +224,7 @@ Calls self-hosted Convex HTTP API using admin key. Primary mutation: `aiTown/mai
 | `aitown_move_player` | `sendInput("moveTo", { playerId, destination })` — defaults `playerId` to `AITOWN_ORION_PLAYER_ID` |
 | `aitown_create_agent` | `sendInput("createAgent", { descriptionIndex })` |
 | `aitown_stop_world` | `testing:stop` mutation |
-| `aitown_resume_world` | `testing:resume` mutation |
+| `aitown_resume_world` | refused since 2026-10-30 (the town opens only in capped sessions; see services/orion-embodiment/README.md "AI Town sessions") |
 | `aitown_kick_engine` | `testing:kick` mutation |
 | `aitown_send_input` | God-mode: arbitrary `sendInput(worldId, name, args)` |
 

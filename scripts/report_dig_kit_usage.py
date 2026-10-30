@@ -14,7 +14,8 @@ first user message carries the run's prompt, so it says which line the turn belo
 * ``other_harness_turn``      -- any other harness turn (chat, reading, ...)
 
 Per session it records whether any Bash call ran ``orion.dig`` and whether any tool call read repo
-code (Read/Grep/Glob on a repo path, or a read-only shell command on one). Run it inside the
+code (Read/Grep/Glob on a repo path, or a read-only shell command on one). "read_code" is a loose
+upper bound: any ls/find/git/grep/cat that names a repo path or a .py/.yaml file counts. Run it inside the
 governor container, which owns the transcripts (read-only):
 
     docker exec -i orion-athena-harness-governor python3 - 3 < scripts/report_dig_kit_usage.py

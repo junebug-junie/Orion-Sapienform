@@ -3678,7 +3678,7 @@ channels:
     single_consumer: true
     stability: "experimental"
     since: "2026-10-30"
-    description: "Ask Hub to take one curiosity self-inquiry turn now (tick_self_inquiry(force=True): skips the line's cooldown and daily cap, keeps enabled and the health gates). Published by cortex-orch's self_review workflow, which the chat phrase 'reflect on yourself' resolves to, after the self-study reflection loop was retired. docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md"
+    description: "Ask Hub to take one curiosity self-inquiry turn now (tick_self_inquiry(force=True) limited to the line's cooldown and daily cap; heat, strain, rest, the time window, enabled and the health gates still hold it). cortex-orch checks the channel has a listener (PUBSUB NUMSUB) before claiming the request. Published by cortex-orch's self_review workflow, which the chat phrase 'reflect on yourself' resolves to, after the self-study reflection loop was retired. docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md"
 
   - name: "orion:hardware:watch:incident"
     kind: "event"

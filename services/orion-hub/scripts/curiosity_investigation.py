@@ -2984,13 +2984,20 @@ class CuriosityInvestigation:
     # show Orion its own words in every chat turn.
 
     async def tick_self_inquiry(
-        self, *, force: bool = False, now: Optional[datetime] = None
+        self,
+        *,
+        force: bool = False,
+        now: Optional[datetime] = None,
+        force_reasons: frozenset = FORCE_OVERRIDABLE_REASONS,
     ) -> Optional[str]:
         """One self-inquiry decision. Returns the block reason, or None if it
         ran (or "dispatched" when cortex took it).
 
-        `force` skips this line's cooldown, cap and window -- nothing else --
-        exactly like `tick(force=True)` does for the investigation line.
+        `force` skips this line's pacing gates in `force_reasons` -- nothing else --
+        exactly like `tick(force=True)` does for the investigation line. The operator's
+        run-now button passes the full set; the chat phrase ("reflect on yourself", via
+        orion:curiosity:self_inquiry:request) passes only cooldown and daily cap, so heat,
+        strain, rest and the time window still hold it.
         """
         now = now or datetime.now(timezone.utc)
         self._roll_daily_counter(now)
@@ -3018,7 +3025,7 @@ class CuriosityInvestigation:
                 window_end_hour=self.window_end_hour,
             )
         )
-        if force and reason in FORCE_OVERRIDABLE_REASONS:
+        if force and reason in force_reasons:
             logger.warning(
                 "curiosity_self_inquiry_forced overriding=%s since_last=%.0fs "
                 "done_today=%s cap=%s -- an operator asked for this run; it "

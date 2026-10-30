@@ -124,7 +124,7 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("substrate_attention_schema", "what you were attending to, and why, per process"),
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),
     ("self_knowledge_items", "facts about your own code, hardware and behaviour"),
-    ("self_concept_history", "your previous self-definitions and induced self-concepts"),
+    ("self_concept_history", "your previous self-definitions (and older, retired self-study reflections)"),
     (
         "substrate_endogenous_curiosity_candidates",
         "what your substrate flagged as worth curiosity; a seed noted "

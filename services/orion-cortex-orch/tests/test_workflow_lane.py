@@ -484,7 +484,8 @@ def test_self_review_routes_to_a_curiosity_self_inquiry_request(monkeypatch) -> 
     assert result.metadata['workflow']['workflow_id'] == 'self_review'
     assert result.metadata['workflow']['routed_to'] == SELF_INQUIRY_REQUEST_CHANNEL
     assert result.metadata['workflow']['persisted'] == []
-    assert "Self-inquiry turn requested" in (result.final_text or "")
+    assert "Asked Hub for a self-inquiry turn" in (result.final_text or "")
+    assert "Hub decides whether it starts now" in (result.final_text or "")
     published = [(ch, env) for ch, env in bus.published if ch == SELF_INQUIRY_REQUEST_CHANNEL]
     assert len(published) == 1
     channel, env = published[0]
@@ -492,6 +493,43 @@ def test_self_review_routes_to_a_curiosity_self_inquiry_request(monkeypatch) -> 
     request = CuriositySelfInquiryRequestV1.model_validate(env.payload)
     assert request.requested_by == "workflow:self_review"
     assert request.correlation_id == corr
+
+
+class _CountingRedis:
+    def __init__(self, listeners: int) -> None:
+        self.listeners = listeners
+
+    async def pubsub_numsub(self, *channels):
+        return [(channels[0], self.listeners)]
+
+
+def test_self_review_refuses_to_claim_a_request_nobody_hears(monkeypatch) -> None:
+    """Pub/sub drops an unheard message silently; with zero listeners the workflow must say so."""
+    from orion.schemas.curiosity_self_inquiry_request import SELF_INQUIRY_REQUEST_CHANNEL
+
+    async def _no_verb(*args, **kwargs):
+        raise AssertionError("self_review must not call a verb any more")
+
+    for listeners, ok in ((0, False), (1, True)):
+        bus = DummyBus()
+        bus.redis = _CountingRedis(listeners)
+        result = asyncio.run(
+            execute_chat_workflow(
+                bus=bus,
+                source=ServiceRef(name='cortex-orch'),
+                req=_req('self_review'),
+                correlation_id='00000000-0000-0000-0000-000000010005',
+                causality_chain=[],
+                trace={},
+                call_verb_runtime=_no_verb,
+            )
+        )
+        assert result.ok is ok, listeners
+        assert result.metadata['workflow']['listeners'] == listeners
+        sent = [ch for ch, _ in bus.published if ch == SELF_INQUIRY_REQUEST_CHANNEL]
+        assert len(sent) == (1 if ok else 0)
+        if not ok:
+            assert "Hub is not listening" in (result.final_text or "")
 
 
 def test_self_review_reports_failure_when_the_request_cannot_be_published(monkeypatch) -> None:

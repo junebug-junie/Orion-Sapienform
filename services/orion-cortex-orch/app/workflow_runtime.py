@@ -1055,7 +1055,21 @@ async def _execute_self_review(
     )
     published = True
     error_text = ""
+    # Pub/sub drops a message nobody is subscribed to without an error. Ask Redis how many
+    # listeners the channel has first, so "requested" is never said to an empty room
+    # (Hub down, its listener gated off, or Hub not yet deployed with this consumer).
+    listeners: int | None = None
     try:
+        numsub = await bus.redis.pubsub_numsub(SELF_INQUIRY_REQUEST_CHANNEL)
+        listeners = int(numsub[0][1]) if numsub else 0
+    except Exception as exc:  # noqa: BLE001 -- unknown, not zero
+        logger.info("self_review_listener_count_unavailable corr=%s error=%s", correlation_id, str(exc)[:200])
+    if listeners == 0:
+        published = False
+        error_text = "Hub is not listening for self-inquiry requests (Hub down, or its self-inquiry line is off)"
+    try:
+        if not published:
+            raise RuntimeError(error_text)
         await bus.publish(
             SELF_INQUIRY_REQUEST_CHANNEL,
             BaseEnvelope(
@@ -1071,9 +1085,10 @@ async def _execute_self_review(
         logger.warning("self_review_self_inquiry_publish_failed corr=%s error=%s", correlation_id, error_text)
     if published:
         summary = (
-            "Self-inquiry turn requested. Orion will read their own records and repo and may "
-            "revise their self-definition; it takes about 20 minutes and lands in "
-            "self_concept_history (self:definition) if it completes."
+            "Asked Hub for a self-inquiry turn. Hub decides whether it starts now: heat, strain, "
+            "rest, the time window or a turn already running can still hold it. If it runs, Orion "
+            "reads their own records and repo (about 20 minutes) and any revised self-definition "
+            "lands in self_concept_history (self:definition)."
         )
     else:
         summary = f"Could not request a self-inquiry turn: {error_text or 'bus publish failed'}."
@@ -1085,6 +1100,7 @@ async def _execute_self_review(
         "status": status,
         "executed": published,
         "routed_to": SELF_INQUIRY_REQUEST_CHANNEL,
+        "listeners": listeners,
         "persisted": [],
         "scheduled": [],
         "main_result": summary,

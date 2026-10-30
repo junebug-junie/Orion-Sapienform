@@ -6,8 +6,9 @@ self-study reflection loop. That loop was retired on 2026-10-30
 routes here instead: cortex-orch publishes one ``CuriositySelfInquiryRequestV1`` on
 ``orion:curiosity:self_inquiry:request`` and Hub calls
 ``CuriosityInvestigation.tick_self_inquiry(force=True)``, the same path as the operator's
-``POST /api/self-inquiry/run-now``. The force skips only the line's cooldown and daily cap;
-``enabled`` and every health gate still apply.
+``POST /api/self-inquiry/run-now``, but narrower: the chat phrase may skip only the line's
+cooldown and daily cap. Heat, strain, rest, the time window, ``enabled`` and every health gate
+still apply.
 """
 
 from __future__ import annotations

@@ -2,9 +2,11 @@
 
 cortex-orch's ``self_review`` workflow ("reflect on yourself") publishes one
 ``CuriositySelfInquiryRequestV1`` here. Hub answers by taking one self-inquiry turn,
-``CuriosityInvestigation.tick_self_inquiry(force=True)`` -- the same call as
-``POST /api/self-inquiry/run-now``. The force skips only the line's cooldown and daily cap;
-``enabled`` and every health gate still apply, and the run counts against the budget.
+``CuriosityInvestigation.tick_self_inquiry(force=True, force_reasons=CHAT_FORCE_REASONS)``.
+Unlike the operator's ``POST /api/self-inquiry/run-now`` (which also overrides the window,
+rest and arousal holds), a chat phrase skips only the line's cooldown and daily cap: heat,
+strain, rest, the time window, ``enabled`` and every health gate still apply, and the run
+counts against the budget.
 
 This replaced the self-study reflection loop the phrase used to run (retired with the
 fold of self-study into curiosity). Invalid payloads are logged and dropped.
@@ -22,6 +24,9 @@ from orion.schemas.curiosity_self_inquiry_request import (
 )
 
 logger = logging.getLogger("orion-hub.curiosity_self_inquiry_request")
+
+# Juniper's decision (2026-10-30): the chat phrase may skip pacing only.
+CHAT_FORCE_REASONS = frozenset({"cooldown", "daily_cap"})
 
 RESUBSCRIBE_DELAY_SEC = 5.0
 
@@ -46,7 +51,7 @@ async def handle_self_inquiry_request(bus: Any, investigation: Any, msg: dict[st
         request.requested_by,
         request.correlation_id,
     )
-    reason = await investigation.tick_self_inquiry(force=True)
+    reason = await investigation.tick_self_inquiry(force=True, force_reasons=CHAT_FORCE_REASONS)
     logger.info(
         "self_inquiry_request_handled requested_by=%s corr=%s blocked=%s",
         request.requested_by,

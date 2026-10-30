@@ -147,6 +147,21 @@ def _priority(row: dict) -> str | None:
     return (((row.get("request") or {}).get("admission")) or {}).get("priority")
 
 
+def _bind_mode(value: Any) -> str:
+    """ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE: ``on`` binds, ``shadow`` does not. Anything else is
+    shadow, said loudly (a typo must not silently change what binds -- nor crash admission)."""
+    mode = str(value or "").strip().lower()
+    if mode not in ("on", "shadow"):
+        logger.warning("physiology_bind_flag_unknown value=%r -> shadow (expected on|shadow)", value)
+        return "shadow"
+    return mode
+
+
+def _economy_held(state: dict) -> bool:
+    """The run is held by its binding bid (``_economy_gate``): no pool request exists yet."""
+    return bool((state.get("hold") or {}).get("economy"))
+
+
 def _without_backoff(hold: dict) -> dict:
     """The hold minus the pool-refusal backoff fields: the pool answered, the episode is over."""
     return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
@@ -176,7 +191,7 @@ class AdmissionRuntime:
         self.bids = RunBidder(
             enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
             market_getter=market_getter or (lambda: None),
-            binding_enabled=str(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")).strip().lower() == "on")
+            binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on")
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.
@@ -483,7 +498,7 @@ class AdmissionRuntime:
             else:
                 detail["retry_at"] = verdict.retry_at.isoformat()
                 await self.store.record_event(run_id, HOLD_EVENT, detail,
-                                              event_id=f"economy_held:{run_id}:{verdict.detail.get('decision_id') or detail['retry_at']}")
+                                              event_id=f"economy_held:{run_id}:{verdict.detail.get('decision_id')}:{detail['retry_at']}")
         except Exception:  # noqa: BLE001 -- the event is evidence, never a reason to change the verdict
             logger.warning("durable_economy_event_failed run=%s verdict=%s", run_id, verdict.why, exc_info=True)
         if verdict.admit:
@@ -1169,7 +1184,9 @@ class AdmissionRuntime:
                             and self.now() < datetime.fromisoformat(state["retry_at"]):
                         return
                     resume = Command(resume=True)
-                    if snap.next != ("image_wait",):   # a child poll is not a lifecycle fact
+                    if snap.next != ("image_wait",) and not _economy_held(state):
+                        # A child poll is not a lifecycle fact; neither is an economy re-bid (its
+                        # run.economy_held / run.economy_admitted events are the record).
                         await self.event(state, "run.resumed", {"node": snap.next[0]})
                 async for update in graph.astream(resume, cfg, stream_mode="updates", durability="sync"):
                     snap = await graph.aget_state(cfg)
@@ -1180,6 +1197,8 @@ class AdmissionRuntime:
                         status = state.get("status", "running")
                         if status in TERMINAL or node in TIMED_WAIT_NODES:
                             continue  # Atomic terminal projection owns terminal lifecycle facts.
+                        if node in ("resource_request", "resource_wait") and _economy_held(state):
+                            continue  # still held by the economy: one hold cycle, no status rows
                         checkpoint = snap.config["configurable"].get("checkpoint_id", "")
                         await self.store.record_event(run_id, "run."+status, {"node": node},
                             event_id=f"{run_id}:{checkpoint}:{node}:{status}")

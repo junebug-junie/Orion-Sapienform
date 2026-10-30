@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -50,7 +51,13 @@ from orion.schemas.physiology_want import WantV1, WantWindowV1
 logger = logging.getLogger(__name__)
 
 PRODUCER = "orion-durable-runs.admission"
-BID_TIMEOUT_SEC = 30.0          # a cold history read is a 30-day scan; the run never waits on it
+# Binding bids carry their own producer, so want_ledger (whose ``shadow`` is always true) still tells
+# an obeyed decision from a shadow one.
+BINDING_PRODUCER = "orion-durable-runs.admission.binding"
+BID_TIMEOUT_SEC = 30.0          # shadow: a cold history read is a 30-day scan; the run never waits on it
+# Binding: the run DOES wait on this bid (it holds a driver slot), so it is short; a timeout asks the
+# pool as before.
+BIND_TIMEOUT_SEC = 5.0
 SEEN_MAX = 5000
 
 # --- Patch D: binding bids (one family per PR; curiosity investigate first) -----------------------
@@ -85,7 +92,7 @@ def _aware(v: Any) -> Optional[datetime]:
     return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
 
 
-def want_for_run(request: dict[str, Any], tier: int) -> Optional[WantV1]:
+def want_for_run(request: dict[str, Any], tier: int, *, producer: str = PRODUCER) -> Optional[WantV1]:
     """The run's want, or None when the run is not one of Orion's own wants (or not a bidding tier)."""
     family = run_act_family(request)
     if family is None or tier not in (1, 2):
@@ -96,7 +103,7 @@ def want_for_run(request: dict[str, Any], tier: int) -> Optional[WantV1]:
     admission = request.get("admission") if isinstance(request.get("admission"), dict) else {}
     corr = request.get("correlation_id")
     return WantV1(
-        want_id=run_id, family=family.actor, producer=PRODUCER, verb=family.verb,
+        want_id=run_id, family=family.actor, producer=producer, verb=family.verb,
         object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
         window=WantWindowV1(latest=_aware(admission.get("deadline_at"))),
         correlation_id=str(corr) if corr else None)
@@ -180,8 +187,13 @@ def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
 
 
 def binding_family(request: dict[str, Any], enabled: bool) -> Optional[str]:
-    """The run's family when its bid binds (flag on and the family is in BINDING_FAMILIES), else None."""
+    """The run's family when its bid binds (flag on, the family is in BINDING_FAMILIES, and the run is
+    not an operator's forced run -- Hub "Run now" sets ``brief.operator_forced``: the operator's call,
+    not curiosity's want, so it is never held), else None."""
     if not enabled:
+        return None
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    if brief.get("operator_forced"):
         return None
     fam = run_act_family(request)
     return fam.actor if fam is not None and fam.actor in BINDING_FAMILIES else None
@@ -191,11 +203,13 @@ class RunBidder:
     """``market_getter`` returns the process's ``Market`` (or None while the market is off)."""
 
     def __init__(self, *, enabled: bool, market_getter: Callable[[], Any],
-                 timeout_sec: float = BID_TIMEOUT_SEC, binding_enabled: bool = False) -> None:
+                 timeout_sec: float = BID_TIMEOUT_SEC, binding_enabled: bool = False,
+                 bind_timeout_sec: float = BIND_TIMEOUT_SEC) -> None:
         self.enabled = bool(enabled)
         # Patch D: BINDING_FAMILIES' runs bid at their first resource_request and obey (``bind``);
         # off -> those runs bid in shadow at submit like every other family.
         self.binding_enabled = bool(binding_enabled)
+        self._bind_timeout = bind_timeout_sec
         self._market = market_getter
         self._timeout = timeout_sec
         self._tasks: set[asyncio.Task] = set()
@@ -298,18 +312,22 @@ class RunBidder:
             v = BindVerdict(True, "no_answer:market_off" if market is None else "no_answer:no_families_config")
             self._log(request, v)
             return v
-        want = want_for_run(request, cfg.tier)
+        want = want_for_run(request, cfg.tier, producer=BINDING_PRODUCER)
         if want is None:
             return None
         decision = None
+        t0 = time.monotonic()
         try:
-            decision = await asyncio.wait_for(market.bid(want, now, reserve_at_open=True), self._timeout)
+            decision = await asyncio.wait_for(market.bid(want, now, reserve_at_open=True), self._bind_timeout)
         except Exception:  # noqa: BLE001 -- incl. timeout: the run asks the pool as before
             logger.warning("physiology_bind_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
+        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
         verdict = bind_verdict(decision, now, hold_end(want, cfg.deferrable_window_s))
+        verdict.detail["bid_ms"] = elapsed_ms
         if decision is None or decision.outcome != "funded":
-            # Nothing of this want may stay in the book: a timed-out bid can still land, and a held or
-            # pool-queued want reserves nothing (its use shows in the lane's measured level).
+            # Nothing of this want may stay in the book: a held or pool-queued want reserves nothing
+            # (its use shows in the lane's measured level). wait_for cancels a timed-out bid; the
+            # release is a no-op then.
             self._safe(market.release, want.want_id)
         if decision is not None:
             self.counts["bid"] += 1
@@ -323,10 +341,10 @@ class RunBidder:
     def _log(request: dict[str, Any], v: BindVerdict) -> None:
         d = v.detail
         logger.info("physiology_bind run=%s corr=%s verdict=%s admit=%s retry_at=%s decision_id=%s outcome=%s "
-                    "reason=%s binding=%s net=%s charge=%s shadow=false obeyed=true", request.get("run_id"),
+                    "reason=%s binding=%s net=%s charge=%s bid_ms=%s obeyed=true", request.get("run_id"),
                     request.get("correlation_id"), v.why, v.admit, v.retry_at.isoformat() if v.retry_at else None,
                     d.get("decision_id"), d.get("outcome"), d.get("reason"), d.get("binding_constraint"),
-                    d.get("net"), d.get("charge"))
+                    d.get("net"), d.get("charge"), d.get("bid_ms"))
 
     def on_grant(self, run_id: str, at: Optional[datetime] = None) -> int:
         """The run got a pool grant (its act opens at the first one): start its reservation."""
@@ -360,5 +378,5 @@ class RunBidder:
         return n
 
 
-__all__ = ["BINDING_FAMILIES", "BindVerdict", "HOLD_EVENT", "PRODUCER", "RELEASE_EVENT", "RunBidder", "bind_verdict",
+__all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "PRODUCER", "RELEASE_EVENT", "RunBidder", "bind_verdict",
            "binding_family", "decision_detail", "hold_end", "want_for_run"]

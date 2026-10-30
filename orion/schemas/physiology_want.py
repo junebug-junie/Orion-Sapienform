@@ -11,8 +11,10 @@ Design: docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, "Orga
   constraint and what it displaced. One per bid. Bus ``orion:physiology:want:decision``,
   persisted by orion-sql-writer to ``want_ledger``.
 
-SHADOW: every decision carries ``shadow=True``. No caller obeys it yet (design Patch D cuts
-over one reader per PR). A caller that gets no decision (timeout, error, stale prices) keeps its
+SHADOW: every decision carries ``shadow=True`` (``Literal[True]``), but two callers OBEY theirs:
+Orion Prime (services/orion-mind/app/prime_loop.py) and, since Patch D (2026-10-30), curiosity
+investigate durable runs (producer ``orion-durable-runs.admission.binding``,
+services/orion-durable-runs/app/run_bids.py). Patch D cuts over one reader per PR. A caller that gets no decision (timeout, error, stale prices) keeps its
 current gate. It never treats "no answer" as "funded".
 
 Tier 0 (Juniper's turns, perception) NEVER bids: ``WantV1.tier`` is 1 or 2 only.

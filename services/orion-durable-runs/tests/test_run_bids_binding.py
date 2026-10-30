@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
 
 from app.run_bids import (  # noqa: E402
-    BINDING_FAMILIES, HOLD_DEADLINE_MARGIN_SEC, HOLD_EVENT, RELEASE_EVENT, REBID_DEFAULT_SEC, REBID_MAX_SEC,
+    BINDING_FAMILIES, BINDING_PRODUCER, HOLD_DEADLINE_MARGIN_SEC, HOLD_EVENT, RELEASE_EVENT, REBID_DEFAULT_SEC, REBID_MAX_SEC,
     REBID_MIN_SEC, RunBidder, bind_verdict, binding_family, hold_end, want_for_run,
 )
 from orion.physiology.families import load_families  # noqa: E402
@@ -103,6 +103,17 @@ def test_only_curiosity_investigate_binds_and_only_with_the_flag_on():
     assert binding_family(_req(line="self_inquiry"), True) is None
     assert binding_family(_req("self_sense_eval", None), True) is None
     assert binding_family({**_req(), "brief": {"urgent": {"subject": "cabinet_ac"}}}, True) is None   # a reflex
+    # Juniper's "Run now" (Hub tick(force=True)) is the operator's call: never held.
+    forced = _req()
+    forced["brief"] = {**forced["brief"], "operator_forced": True}
+    assert binding_family(forced, True) is None
+
+
+def test_unknown_flag_value_is_shadow_not_a_crash():
+    from app.admission_runtime import _bind_mode
+
+    assert _bind_mode("on") == "on" and _bind_mode(" ON ") == "on" and _bind_mode("shadow") == "shadow"
+    assert _bind_mode("true") == "shadow" and _bind_mode(None) == "shadow"
 
 
 # --- the bidder's binding call ----------------------------------------------------------------------
@@ -136,6 +147,8 @@ def test_bind_holds_on_price_admits_on_funding_and_reserves_only_when_funded():
         price = _Market(_dec())
         v = await RunBidder(enabled=True, binding_enabled=True, market_getter=lambda: price).bind(_req(), T0)
         assert not v.admit and price.released == ["run-1"] and price.bids[0][1] == T0
+        # The ledger tells an obeyed bid from a shadow one by producer (shadow is always true there).
+        assert price.bids[0][0].producer == BINDING_PRODUCER and "bid_ms" in v.detail
         funded = _Market(_dec("funded", "net_positive", net=0.5))
         b = RunBidder(enabled=True, binding_enabled=True, market_getter=lambda: funded)
         v2 = await b.bind(_req(), T0)
@@ -236,6 +249,12 @@ def test_a_held_run_never_asks_the_pool_records_why_and_runs_once_funded():
         # Before retry_at: the driver leaves it alone (no second bid).
         await rt._drive(await store.get_run(req.run_id))
         assert len(m.bids) == 1
+        # Still deferred after retry_at: a second held event, and no resumed / waiting rows for the cycle.
+        clock[0] = clock[0] + timedelta(seconds=601)
+        await rt._drive(await store.get_run(req.run_id))
+        hist = await store.history(req.run_id)
+        assert len(m.bids) == 2 and len([e for e in hist if e["event"] == HOLD_EVENT]) == 2
+        assert not any(e["event"] in ("run.resumed", "run.waiting_resource") for e in hist)
         # After retry_at, funded: it asks the pool and runs.
         m.fund = True
         clock[0] = clock[0] + timedelta(seconds=601)
@@ -246,7 +265,7 @@ def test_a_held_run_never_asks_the_pool_records_why_and_runs_once_funded():
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
         hist = await store.history(req.run_id)
         assert [e["detail"]["verdict"] for e in hist if e["event"] == RELEASE_EVENT] == ["funded"]
-        assert len(m.bids) == 2 and m.opened == [req.run_id] and m.released[-1] == req.run_id
+        assert len(m.bids) == 3 and m.opened == [req.run_id] and m.released[-1] == req.run_id
         await rt.close()
     asyncio.run(with_database(scenario))
 

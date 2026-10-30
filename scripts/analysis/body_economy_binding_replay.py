@@ -178,14 +178,15 @@ def replay(ex: dict, fams, binding: frozenset[str], *, subtract_own_use: bool = 
             ctx_cache.clear()
             ctx_cache[key] = build_context(fams, before, [u for u in uses if u.started_at and u.started_at < t],
                                            current, t, weights=series.get(t.date(), {}))
+        if p["bound"] and t > end:
+            # Past the extract: no physiology state to bid against. Censored, not "no answer"; never
+            # decided, so the book is not touched.
+            runs[want.want_id]["verdict"] = "censored_at_data_end"
+            continue
         d = decide(want, current, ctx_cache[key], book, t, reserve_at_open=True)
         if not p["bound"]:
             continue
         run = runs[want.want_id]
-        if t > end:
-            # Past the extract: no physiology state to bid against. Censored, not "no answer".
-            run["verdict"] = "censored_at_data_end"
-            continue
         v = bind_verdict(d, t, hold_end(want, cfg.deferrable_window_s if cfg is not None else 0.0),
                          capacity_queues_at_pool=capacity_queues_at_pool)
         run["bids"].append({"at": t.isoformat(), "outcome": d.outcome, "reason": d.reason,
@@ -250,7 +251,8 @@ BOUND_NOTE = {
     "hold_on_capacity_pessimistic": ("NOT shipped: every deferral holds, capacity included. Real lane levels "
                                      "(they include the held runs' own real use at their real times)"),
     "hold_on_capacity_optimistic": ("NOT shipped: every deferral holds, capacity included. Lane levels minus the "
-                                    "binding family's own real use (never added back later)"),
+                                    "binding family's own real use (never added back later). Only lane LEVELS are lowered: the "
+                                    "stored prices are unchanged, so price deferrals do not move"),
 }
 
 

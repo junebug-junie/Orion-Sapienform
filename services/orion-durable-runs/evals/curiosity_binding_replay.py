@@ -75,11 +75,15 @@ def fixture() -> list[str]:
         r = simulate(none)
         if r["held_sec"] != 0.0 or not r["verdict"].startswith("no_answer"):
             fails.append(f"no market answer must never hold: {r}")
-    sated = lambda n, t: _dec("deferred", "capacity_reserved", 0.0, 3600.0) if n == 0 else full(n, t)  # noqa: E731
-    r = simulate(sated)
+    no_hunger_full = lambda n, t: _dec("deferred", "capacity_reserved", 0.0, 3600.0) if n == 0 else full(n, t)  # noqa: E731
+    r = simulate(no_hunger_full)
     if (r["verdict"], r["held_sec"]) != ("queued_at_pool", 3600.0):
-        fails.append(f"no hunger on a full lane should hold one re-bid, then queue: {r}")
-    print(f"fixture: {6 - len(fails)}/6 streams as expected; saturated lane: shipped holds 0 s, "
+        fails.append(f"no hunger (net 0) on a full lane should hold one re-bid, then queue: {r}")
+    sated = lambda n, t: _dec("deferred", "sated", 0.0, None) if n == 0 else _dec("funded", "net_positive", 0.3, None)  # noqa: E731
+    r = simulate(sated)
+    if (r["verdict"], r["held_sec"]) != ("funded", 600.0):
+        fails.append(f"sated (no relief time named) should re-bid after the 600 s default: {r}")
+    print(f"fixture: {7 - len(fails)}/7 streams as expected; saturated lane: shipped holds 0 s, "
           f"not-shipped holds {old['held_sec']:.0f} s")
     return fails
 

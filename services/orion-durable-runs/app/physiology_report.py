@@ -218,7 +218,7 @@ WHERE generated_at < %(until)s ORDER BY generated_at DESC LIMIT 1
 LIMITS_FIRST_SQL = "SELECT MIN(generated_at) AS first_at FROM physiology_state"
 
 WANTS_HOURLY_SQL = """
-SELECT date_trunc('hour', decided_at) AS h, family, outcome, COUNT(*) AS n, MAX(tier) AS tier
+SELECT date_trunc('hour', decided_at) AS h, family, outcome, COUNT(DISTINCT want_id) AS n, MAX(tier) AS tier
 FROM want_ledger
 WHERE decided_at >= %(since)s AND decided_at < %(until)s
   AND producer <> ALL(%(synthetic)s)

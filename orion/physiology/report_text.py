@@ -245,7 +245,7 @@ def render_wants(report: Mapping, *, full: bool) -> list[str]:
         return town
     tot_f = sum(int(f.get("funded") or 0) for f in fams)
     tot_d = sum(int(f.get("deferred") or 0) for f in fams)
-    out = [f"Wants (shadow bids; nothing obeys them yet): {tot_f} funded, {tot_d} deferred."]
+    out = [f"Wants (shadow bids, except curiosity investigate, which obeys its bid since 2026-10-30): {tot_f} funded, {tot_d} deferred."]
     rows = fams if full else fams[:6]
     for f in rows:
         out.append(f"- {f['family']} (tier {f.get('tier', '?')}): {f.get('funded', 0)} funded, {f.get('deferred', 0)} deferred")

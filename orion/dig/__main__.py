@@ -55,6 +55,7 @@ path of a file with the full result; read only what you need from that file.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write). Name it by what it takes in and gives out; the reason must cite
                          at least one of its parts by full name. Names show on the live body only.
+  name-organs            every unnamed organ with its parts and a ready `name` line to fill in.
   notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
@@ -479,7 +480,101 @@ def cmd_body(arg: str | None, out: Out) -> str:
             return organ_view(atlas, organ, out=str(path)) + note
         except names.NamingError as exc:
             raise DigError(str(exc)) from exc
-    return summarize(atlas, out=str(path)) + note
+    if arg is not None:
+        return summarize(atlas, out=str(path))
+    # the ledger note goes in the footer, so the file path stays the last line
+    return summarize(atlas, out=str(path), extra_footer=(*_unnamed_footer(atlas), *([note.strip()] if note else [])))
+
+
+def _unnamed(atlas) -> list:
+    """Multi-part organs with no name, largest first (singletons are not named)."""
+    return sorted((o for o in atlas.organs if len(o.members) > 1 and not o.name),
+                  key=lambda o: -len(o.members))
+
+
+def _unnamed_footer(atlas) -> tuple[str, ...]:
+    n = len(_unnamed(atlas))
+    return (f"{n} organ{'s' if n != 1 else ''} unnamed: python -P -m orion.dig name-organs",) if n else ()
+
+
+def _name_rule() -> str:
+    """Built from the limits ``names.check`` enforces, so the rule cannot drift from the check."""
+    from orion.body_atlas import names as n
+
+    return (f"Name each organ by what it takes in and gives out (1-{n.NAME_MAX_WORDS} words, at most "
+            f"{n.NAME_MAX_CHARS} chars). The because ({n.BECAUSE_MIN_CHARS}-{n.BECAUSE_MAX_CHARS} chars) "
+            "must cite at least one of its parts by full name, as written below.")
+
+
+NAME_ORGANS_MEMBERS_CHARS = 300  # per organ in the printout; every member is in the file
+
+
+def cmd_name_organs(out: Out) -> str:
+    """Read-only: every unnamed multi-part organ of the live body, largest first, with its parts
+    and a ready `name` line to fill in. Writes nothing but the dig result file."""
+    from orion.body_atlas import names
+
+    records, skipped = names.load(names_path())
+    atlas = names.apply_names(_live_atlas(), records)
+    part_name = {p.part_id: p.name for p in atlas.parts}
+    multi = [o for o in atlas.organs if len(o.members) > 1]
+    todo = _unnamed(atlas)
+    note = f"names ledger: {skipped} unreadable line(s) skipped in {names_path()}" if skipped else None
+    if not todo:
+        lines = [f"all {len(multi)} multi-part organs are named:", *([note] if note else [])]
+        lines += [f'  "{o.name}" {o.organ_id} ({len(o.members)} parts)' for o in multi]
+        path = out.write("name-organs", {"unnamed": [], "named": [
+            {"organ_id": o.organ_id, "name": o.name, "named_by": o.named_by, "size": len(o.members)} for o in multi]})
+        return capped(lines, tail=f"full result: {path}")
+
+    def cmd(o) -> str:
+        # quoted: unquoted <...> is a bash redirect, and an apostrophe in a reason breaks bash
+        return f'python -P -m orion.dig name {o.organ_id} "<name>" because "<reason citing a part>"'
+
+    def hosts(o) -> str:
+        return ", ".join(f"{h} {n}" for h, n in o.placement.items()) or "-"
+
+    path = out.write("name-organs", {"rule": _name_rule(), "unnamed": [
+        {"organ_id": o.organ_id, "size": len(o.members), "hosts": o.placement,
+         "members": [part_name.get(m, m) for m in o.members], "command": cmd(o)} for o in todo]})
+    tail = f"every part of every organ: {path}"
+    lines = [f"{len(todo)} of {len(multi)} multi-part organs have no name, largest first.", _name_rule(),
+             "Run each name line (a lasting write); rerun name-organs to see what is left."]
+    if note:
+        lines.append(note)
+    room_lines = MAX_LINES - len(lines) - 2  # the tail and a "more" line
+    room_chars = MAX_CHARS - sum(len(x) + 1 for x in lines) - len(tail) - 80
+    shown = 0
+    for o in todo:
+        members = [part_name.get(m, m) for m in o.members]
+        text, cut = "", 0
+        for i, m in enumerate(members):
+            nxt = f"{text}, {m}" if text else m
+            if len(nxt) > NAME_ORGANS_MEMBERS_CHARS:
+                if i == 0:  # always show one part to cite, cut to fit
+                    text, i = m[:NAME_ORGANS_MEMBERS_CHARS], 1
+                cut = len(members) - i
+                break
+            text = nxt
+        block = [f"{shown + 1}. {o.organ_id}: {len(o.members)} parts ({_kinds_short(o.kinds)}); hosts {hosts(o)}",
+                 f"   parts: {text}" + (f" (+{cut} more in the file)" if cut else ""),
+                 f"   {cmd(o)}"]
+        size = sum(len(x) + 1 for x in block)
+        if shown and (len(block) > room_lines or size > room_chars):
+            break  # the first organ always shows, so there is always one ready line
+        lines += block
+        room_lines -= len(block)
+        room_chars -= size
+        shown += 1
+    if shown < len(todo):
+        lines.append(f"showing {shown} of {len(todo)} unnamed organs; the rest are in the file")
+    return capped(lines, tail=tail)
+
+
+def _kinds_short(kinds: dict[str, int]) -> str:
+    from orion.body_atlas.__main__ import _kinds
+
+    return _kinds(kinds) or "-"
 
 
 def cmd_name(ref: str, name: str, because: str, out: Out) -> str:
@@ -615,6 +710,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_body(a[0] if a else None, out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)
+        elif ns.command == "name-organs" and not a:
+            text = cmd_name_organs(out)
         elif ns.command == "name" and len(a) >= 4 and "because" in a[2:]:
             cut = a.index("because", 2)  # name words before it, the reason after: quoted or not
             text = cmd_name(a[0], " ".join(a[1:cut]), " ".join(a[cut + 1:]), out)

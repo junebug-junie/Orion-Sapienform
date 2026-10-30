@@ -125,7 +125,7 @@ def find_organ(atlas: BodyAtlasV1, ref: str) -> OrganV1:
     for organ in atlas.organs:
         if organ.organ_id == key and len(organ.members) > 1:
             return organ
-    raise NamingError(f"no multi-part organ {key!r} in the live body; run `body` and copy an id")
+    raise NamingError(f"no multi-part organ {key!r} in the live body; run `name-organs` (or `body`) again and copy a current id")
 
 
 def _cited(name: str, text: str) -> bool:

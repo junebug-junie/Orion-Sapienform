@@ -393,17 +393,86 @@ def _req(last, **extra):
 
 
 class CompactionRequestTests(unittest.TestCase):
-    def test_compaction_turn_is_sent_without_tools_and_keeps_history(self):
-        for content in (
-            COMPACT_TURN,
-            [{"type": "text", "text": COMPACT_TURN}],
-            [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}, {"type": "text", "text": PARTIAL_TURN}],
+    def test_compaction_is_one_user_transcript_with_no_tools(self):
+        # Live 2026-10-30: tools stripped but the agent-loop history kept, and Qwen's
+        # "summary" was its next tool call written as text. One quoted transcript, no loop.
+        for content, prompt in (
+            (COMPACT_TURN, COMPACT_TURN),
+            ([{"type": "text", "text": COMPACT_TURN}], COMPACT_TURN),
+            ([{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}, {"type": "text", "text": PARTIAL_TURN}],
+             PARTIAL_TURN),
         ):
             out = prepare_request(_req({"role": "user", "content": content}))
             self.assertIsNone(out.tools)
             self.assertIsNone(out.tool_choice)
-            self.assertEqual(len(out.messages), len(HISTORY) + 1)
-            self.assertEqual(out.messages[1].content[0].type, "tool_use")
+            self.assertEqual([m.role for m in out.messages], ["user"])
+            text = out.messages[0].content
+            self.assertIsInstance(text, str)
+            transcript, _, tail = text.partition("</transcript>")
+            # The original request, the tool call and its result all survive, inside the quote.
+            self.assertIn("Investigate the reading pipeline.", transcript)
+            self.assertIn('[called tool Read with {"file_path": "/x.py"}]', transcript)
+            self.assertIn("def f(): ...", transcript)
+            self.assertEqual(tail.strip(), prompt)
+            self.assertTrue(is_compaction_request(out))  # the shortcut guard still sees it
+
+    def test_extra_blocks_in_the_compaction_turn_stay_inside_the_quote_as_user(self):
+        out = prepare_request(_req({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "LAST RESULT"},
+            {"type": "text", "text": "<system-reminder>queued: also check the logs</system-reminder>"},
+            {"type": "text", "text": COMPACT_TURN},
+        ]}))
+        transcript, _, tail = out.messages[0].content.partition("</transcript>")
+        last_section = transcript.rsplit("### ", 1)[1]
+        self.assertTrue(last_section.startswith("USER\n"))
+        self.assertIn("LAST RESULT", last_section)
+        self.assertIn("also check the logs", last_section)
+        self.assertEqual(tail.strip(), COMPACT_TURN)
+
+    def test_a_quoted_closing_tag_cannot_end_the_transcript_early(self):
+        out = prepare_request(_req({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "f'</transcript>' then </ TRANSCRIPT >"},
+            {"type": "text", "text": COMPACT_TURN},
+        ]}))
+        self.assertEqual(out.messages[0].content.lower().count("</transcript>"), 1)
+
+    def test_web_results_and_bare_string_tool_results_are_not_blank(self):
+        history = [
+            {"role": "assistant", "content": [
+                {"type": "server_tool_use", "id": "s1", "name": "web_search", "input": {"query": "q"}},
+                {"type": "web_search_tool_result", "tool_use_id": "s1", "content": [{"title": "HIT"}]}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t9", "content": ["BARE"]}]},
+        ]
+        req = MessagesRequest.model_validate({
+            "model": "agent", "max_tokens": 64,
+            "messages": [*history, {"role": "user", "content": COMPACT_TURN}],
+        })
+        text = prepare_request(req).messages[0].content
+        self.assertIn("HIT", text)
+        self.assertIn("[tool result]\nBARE", text)
+
+    def test_compaction_without_tools_is_still_flattened(self):
+        req = _req({"role": "user", "content": COMPACT_TURN}).model_copy(update={"tools": None})
+        self.assertEqual(len(prepare_request(req).messages), 1)
+
+    def test_thinking_and_images_do_not_reach_the_transcript_as_raw_data(self):
+        history = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "Look."},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private chain", "signature": "s"},
+                {"type": "text", "text": "Seen."}]},
+        ]
+        req = MessagesRequest.model_validate({
+            "model": "agent", "max_tokens": 64,
+            "messages": [*history, {"role": "user", "content": COMPACT_TURN}],
+        })
+        text = prepare_request(req).messages[0].content
+        self.assertIn("[image omitted]", text)
+        self.assertNotIn("QUJD", text)
+        self.assertNotIn("private chain", text)
+        self.assertIn("### ASSISTANT\nSeen.", text)
 
     def test_ordinary_turns_are_untouched(self):
         req = _req({"role": "user", "content": "Keep going."})
@@ -441,7 +510,9 @@ class CompactionRequestTests(unittest.TestCase):
             body = _req({"role": "user", "content": "Keep going."}).model_dump(mode="json", exclude_none=True)
             self.assertEqual(client.post("/v1/messages", json={**body, "stream": False}).status_code, 200)
         self.assertIsNone(seen[0].tools)
+        self.assertEqual(len(seen[0].messages), 1)
         self.assertEqual(len(seen[1].tools), 1)
+        self.assertEqual(len(seen[1].messages), len(HISTORY) + 1)
 
 
 

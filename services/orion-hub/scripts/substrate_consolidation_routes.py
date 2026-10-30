@@ -70,7 +70,7 @@ async def consolidation_latest() -> dict[str, Any]:
 async def consolidation_motifs(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> list[dict[str, Any]]:
-    motifs = load_recent_motifs(_postgres_uri(), limit)
+    motifs = load_recent_motifs(_postgres_uri(), limit, engine=_engine())
     return [motif.model_dump(mode="json") for motif in motifs]
 
 
@@ -78,7 +78,7 @@ async def consolidation_motifs(
 async def consolidation_expectations(
     trigger_motif_id: str = Query(..., min_length=1),
 ) -> list[dict[str, Any]]:
-    expectations = load_expectations_for_motif(_postgres_uri(), trigger_motif_id)
+    expectations = load_expectations_for_motif(_postgres_uri(), trigger_motif_id, engine=_engine())
     return [expectation.model_dump(mode="json") for expectation in expectations]
 
 
@@ -86,7 +86,7 @@ async def consolidation_expectations(
 async def consolidation_schema_candidates(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> list[dict[str, Any]]:
-    candidates = load_schema_candidates(_postgres_uri(), limit)
+    candidates = load_schema_candidates(_postgres_uri(), limit, engine=_engine())
     return [candidate.model_dump(mode="json") for candidate in candidates]
 
 
@@ -94,5 +94,5 @@ async def consolidation_schema_candidates(
 async def consolidation_tensor_slices_latest(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> list[dict[str, Any]]:
-    slices = load_latest_tensor_slices(_postgres_uri(), limit)
+    slices = load_latest_tensor_slices(_postgres_uri(), limit, engine=_engine())
     return [tensor_slice.model_dump(mode="json") for tensor_slice in slices]

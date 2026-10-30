@@ -76,6 +76,29 @@ def test_each_module_keeps_its_own_pool(fake_create_engine) -> None:
     assert len(fake_create_engine) == 2
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "loader", "kwargs"),
+    [
+        ("consolidation_motifs", "load_recent_motifs", {"limit": 5}),
+        ("consolidation_expectations", "load_expectations_for_motif", {"trigger_motif_id": "m1"}),
+        ("consolidation_schema_candidates", "load_schema_candidates", {"limit": 5}),
+        ("consolidation_tensor_slices_latest", "load_latest_tensor_slices", {"limit": 5}),
+    ],
+)
+def test_consolidation_endpoints_pass_the_module_engine(
+    endpoint, loader, kwargs, fake_create_engine, monkeypatch
+) -> None:
+    """repository._engine_for() builds a fresh engine when none is passed in."""
+    import asyncio
+
+    routes = importlib.import_module("scripts.substrate_consolidation_routes")
+    seen: list = []
+    monkeypatch.setattr(routes, loader, lambda *a, engine=None: seen.append(engine) or [])
+    for _ in range(3):
+        asyncio.run(getattr(routes, endpoint)(**kwargs))
+    assert seen and all(e is routes._engine() for e in seen)
+
+
 def _per_call_engine_functions(path: Path) -> set[tuple[str, str]]:
     """Functions that call create_engine() without caching the result.
 

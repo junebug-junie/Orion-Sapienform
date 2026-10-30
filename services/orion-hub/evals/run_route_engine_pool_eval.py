@@ -78,6 +78,17 @@ def main() -> int:
                 with engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
             engines_per_module[name] = len(seen)
+        # The consolidation endpoints reach Postgres through
+        # orion/consolidation/repository.py, which builds its own engine unless
+        # one is passed in -- call the real endpoints, not just `_engine()`.
+        import asyncio
+
+        routes = importlib.import_module("scripts.substrate_consolidation_routes")
+        for _ in range(REQUESTS_PER_MODULE):
+            asyncio.run(routes.consolidation_motifs(limit=5))
+            asyncio.run(routes.consolidation_schema_candidates(limit=5))
+            asyncio.run(routes.consolidation_tensor_slices_latest(limit=5))
+            asyncio.run(routes.consolidation_expectations(trigger_motif_id="route-pool-eval"))
         held = _held_connections(uri)
     except Exception as exc:  # noqa: BLE001
         print(f"UNKNOWN: database unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -86,7 +97,7 @@ def main() -> int:
     for name, count in engines_per_module.items():
         print(f"{name}: {count} distinct engine(s) over {REQUESTS_PER_MODULE} requests")
     limit = len(MODULES)
-    print(f"connections held after {REQUESTS_PER_MODULE * limit} requests: {held} (limit {limit})")
+    print(f"connections held after {REQUESTS_PER_MODULE * (limit + 4)} requests: {held} (limit {limit})")
 
     reused = all(count == 1 for count in engines_per_module.values())
     if reused and held <= limit:

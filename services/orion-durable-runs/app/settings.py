@@ -251,6 +251,13 @@ class Settings(BaseSettings):
     # self-sense eval, journal compose) bid in-process at submit, mark their act opened at the first
     # grant and release at terminal. Decisions go to want_ledger; admission is unchanged.
     physiology_shadow_bids_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED")
+    # Body economy Patch D (2026-10-30): curiosity investigate runs OBEY their bid. on -> the run bids
+    # before asking the GPU pool: funded, or a capacity deferral worth its price, asks the pool (its
+    # queue is the queue); a price / sated / net<=0 deferral holds the run and re-bids (at most the
+    # family's deferrable window, never dropped); no market answer asks the pool as before.
+    # shadow (or anything else) -> the C3a shadow bid at submit, admission unchanged. Needs the market
+    # (ORION_PHYSIOLOGY_BID_ENABLED); does not need ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED.
+    physiology_bid_curiosity_investigate: str = Field("on", alias="ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE")
     # Body-economy report (2026-10-29): GET /physiology/report, read-only (PhysiologyReportV1). Readers:
     # the Hub #body-economy page and skills.physiology.state.v1 (Orion's own body read). false -> 503.
     physiology_report_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_REPORT_ENABLED")

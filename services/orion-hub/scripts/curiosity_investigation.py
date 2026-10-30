@@ -2403,6 +2403,7 @@ class CuriosityInvestigation:
                 correlation_id=correlation_id,
                 material=material,
                 done_today=done_today,
+                operator_forced=force,
             )
 
     async def _investigate(
@@ -2413,6 +2414,7 @@ class CuriosityInvestigation:
         correlation_id: str,
         material: StudyMaterial,
         done_today: int,
+        operator_forced: bool = False,
     ) -> Optional[str]:
         """The turn itself. Split out so `tick` can hold one lock across it."""
         last_run_id = await self._read_last_run_id()
@@ -2572,6 +2574,7 @@ class CuriosityInvestigation:
                     material=material,
                     retrieval_query=retrieval_query,
                     **({"focus": focus_anchor} if focus_anchor is not None else {}),
+                    **({"operator_forced": True} if operator_forced else {}),
                 )
             except asyncio.CancelledError:
                 # Hub going away mid-dispatch (the RPC to cortex-orch can take
@@ -4913,6 +4916,7 @@ class CuriosityInvestigation:
         timeout_sec: Optional[float] = None,
         retrieval_query: Optional[str] = None,
         focus: Optional[CuriosityFocusAnchorV1] = None,
+        operator_forced: bool = False,
     ) -> CuriosityRunBriefV1:
         # An urgent run is shown no study material: the brief's counts stay zero.
         material_brief = (
@@ -4938,6 +4942,7 @@ class CuriosityInvestigation:
             urgent=urgent,
             retrieval_query=cap_retrieval_query(retrieval_query),
             focus=focus,
+            operator_forced=True if operator_forced else None,
         )
 
     async def _dispatch_via_cortex(
@@ -5020,6 +5025,7 @@ class CuriosityInvestigation:
         timeout_sec: Optional[float] = None,
         retrieval_query: Optional[str] = None,
         focus: Optional[CuriosityFocusAnchorV1] = None,
+        operator_forced: bool = False,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -5030,7 +5036,7 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             brief=self._run_brief(
                 prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec,
-                retrieval_query=retrieval_query, focus=focus,
+                retrieval_query=retrieval_query, focus=focus, operator_forced=operator_forced,
             ),
             admission=(ResourceRequirementV1(
                 preferred_lane=self.llm_route or "agent",

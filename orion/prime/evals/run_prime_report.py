@@ -14,6 +14,12 @@ Reports, whatever the result:
 2. **Thoughts.** Opened, produced, preempted, failed.
 3. **Concerns** (verb ``predict``, Prime step 1): opened, settled (produced 1), and how the rest ended,
    read from each close note's first word (dropped / faded / lapsed) or the ledger's ``expired``.
+5. **Regulate signals** (verb ``regulate``, Prime step 3): per arm, how many changed at least one of the
+   organ's decisions (the act's grade), and the organ's real starts per signal-hour while the signal was in
+   force (``grammar_acts`` opens of the receiving family). The treated-minus-control difference in starts
+   per hour is the effect on the organ. It is called only with ``MIN_PER_ARM`` closed signals per arm AND an
+   exact conditional test at p < 0.05 (given all starts, each lands in the treated arm with probability
+   treated hours / all hours under "no effect"); otherwise ``too_few`` or ``no_difference``.
 4. **Cadence vs price.** Funded share of bids when Prime's lane and heat prices were zero vs above zero.
    2A's proof needs "cadence follows price on cool vs warm days": funded share lower when priced.
 
@@ -118,6 +124,66 @@ def concerns(acts: Iterable[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+REGULATE_GRACE_SEC = 3600.0   # orion/physiology/prime_charge.py GRACE_SEC: the horizon is signal + grace
+
+
+def regulation(acts: Iterable[dict[str, Any]], starts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """``starts``: rows {actor, opened_at} of the receiving families' acts (their real starts)."""
+    from datetime import timedelta
+
+    by_family: dict[str, list] = {}
+    for s in starts:
+        if s.get("opened_at") is not None:
+            by_family.setdefault(str(s["actor"]), []).append(s["opened_at"])
+    out: dict[str, Any] = {}
+    for arm in ("treated", "control"):
+        out[arm] = {"signals": 0, "open": 0, "closed": 0, "changed": 0, "signal_hours": 0.0, "starts": 0}
+    for act in acts:
+        if act.get("verb") != "regulate":
+            continue
+        arm = str(act.get("test_before") or "").removeprefix("holdback:")
+        if arm not in out:
+            continue
+        o = out[arm]
+        o["signals"] += 1
+        if act.get("outcome_value") is None:
+            o["open"] += 1
+            continue
+        o["closed"] += 1
+        o["changed"] += int(float(act["outcome_value"]) == 1.0)
+        family = str(act.get("object_ref") or "").removeprefix("physiology_family:")
+        hours = max(0.0, (float(act.get("horizon_sec") or 0.0) - REGULATE_GRACE_SEC) / 3600.0)
+        lo = act.get("opened_at")
+        if lo is None or hours <= 0:
+            continue
+        hi = lo + timedelta(hours=hours)
+        o["signal_hours"] += hours
+        o["starts"] += sum(1 for t in by_family.get(family, []) if lo <= t < hi)
+    for o in out.values():
+        o["changed_share"] = o["changed"] / o["closed"] if o["closed"] else None
+        o["starts_per_hour"] = o["starts"] / o["signal_hours"] if o["signal_hours"] else None
+    t, c = out["treated"], out["control"]
+    out["p"] = None
+    if (min(t["closed"], c["closed"]) < MIN_PER_ARM or t["starts_per_hour"] is None
+            or c["starts_per_hour"] is None):
+        out["verdict"] = "too_few"
+        return out
+    p = binomial_two_sided(t["starts"], t["starts"] + c["starts"],
+                           t["signal_hours"] / (t["signal_hours"] + c["signal_hours"]))
+    out["p"] = p
+    out["verdict"] = ("no_difference" if p >= ALPHA else
+                      "slower_when_treated" if t["starts_per_hour"] < c["starts_per_hour"] else "faster_when_treated")
+    return out
+
+
+def binomial_two_sided(k: int, n: int, q: float) -> float:
+    """Exact two-sided p for k successes of n at probability q (sum of outcomes no likelier than k)."""
+    if n == 0:
+        return 1.0
+    pmf = [math.comb(n, i) * q ** i * (1 - q) ** (n - i) for i in range(n + 1)]
+    return min(1.0, sum(x for x in pmf if x <= pmf[k] * (1 + 1e-9)))
+
+
 def cadence(decisions: Iterable[dict[str, Any]], *, lane: str = "chat") -> dict[str, Any]:
     buckets = {"unpriced": [0, 0], "priced": [0, 0]}   # [funded, total]
     for row in decisions:
@@ -130,8 +196,15 @@ def cadence(decisions: Iterable[dict[str, Any]], *, lane: str = "chat") -> dict[
 
 
 ACTS_SQL = """
-SELECT verb, test_before, outcome_value, outcome_source, outcome_note, opened_at, closed_at
+SELECT verb, test_before, outcome_value, outcome_source, outcome_note, opened_at, closed_at, object_ref, horizon_sec
   FROM grammar_acts WHERE actor = 'prime' AND opened_at > now() - make_interval(days => %s)
+"""
+# The real starts of every family Prime has signalled (an act opens at a durable run's first GPU grant).
+STARTS_SQL = """
+SELECT actor, opened_at FROM grammar_acts
+ WHERE actor IN (SELECT DISTINCT replace(object_ref, 'physiology_family:', '') FROM grammar_acts
+                  WHERE actor = 'prime' AND verb = 'regulate' AND opened_at > now() - make_interval(days => %s))
+   AND opened_at > now() - make_interval(days => %s)
 """
 BIDS_SQL = """
 SELECT outcome, reason, decision FROM want_ledger
@@ -153,8 +226,10 @@ def main() -> int:
         acts = [dict(r) for r in cur.fetchall()]
         cur.execute(BIDS_SQL, (args.days,))
         bids = [dict(r) for r in cur.fetchall()]
+        cur.execute(STARTS_SQL, (args.days, args.days + 1))
+        starts = [dict(r) for r in cur.fetchall()]
     report = {"days": args.days, "narrator": narrator(acts), "thoughts": thoughts(acts), "concerns": concerns(acts),
-              "cadence": cadence(bids)}
+              "regulation": regulation(acts, starts), "cadence": cadence(bids)}
     print(json.dumps(report, indent=2, default=str))
     return 0
 

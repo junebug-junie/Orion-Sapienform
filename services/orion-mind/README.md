@@ -113,8 +113,36 @@ digits and letters, an `act_` id, or a UUID) refuses the move; the refusal is sh
 outcome, not as news, so it cannot loop. Refs travel on the focus row (`curiosity_focus_request.refs`) and the
 run's focus section prints the command that opens each one.
 
-**State** persists in Redis `orion:prime:state` (concerns, open questions, last reading, concern record), so a
-restart resumes.
+**Regulate signals (step 3, 2026-10-30).** Prime's second kind of move asks one organ to slow down or quicken:
+`{"kind": "regulate", "family", "direction": "slow" | "quicken", "why", "hours": 1-6}`. It uses the existing act
+verb `regulate` (no new verbs). Only a family that declares the signal under `receptors` in
+`config/physiology/families.yaml` takes it (today: curiosity investigate, `slow` only). Prime reads that file from the read-only
+repo mount (`PRIME_FAMILIES_PATH`). A signal to any other family, or a direction the family does not handle, is
+refused, and the reason is shown in Prime's next frame; it is never dropped silently.
+
+The signal is not a command. Prime writes it to Redis `orion:prime:regulate:<family>`, and the body-economy market
+(orion-durable-runs) turns it into a temporary charge on that family's bids, at most half of what the want is
+worth: a hungry, valuable run still outbids it (`orion/physiology/prime_charge.py`). The market writes back what the
+charge did to each bid. Prime's frame shows, per signal, how many runs bid, how many its charge held and how many
+outbid it, with the market's own sentence for the latest one.
+
+Each signal is a `regulate` act (`test_before = holdback:<arm>`). Two minutes after the signal ends, Prime reads the
+market's record and closes the act: **1** when the charge changed at least one of the organ's decisions (slow: a run
+that would have gone was held; quicken: one that would have waited went), **0** when every bid outbid it or no bid
+came. If the market's own switch is off (its `/health` says so), the 0 says that instead of "no bid came".
+The write is one Redis transaction: the signal is in force with its expiry, or not at all (then the act closes 0,
+"not delivered"). A held-back signal (`PRIME_HOLDBACK_FRACTION`) is written as `control`: the market records what it would have
+done and does not apply it, so both arms are graded the same way, and `run_prime_report.py` compares the organ's real
+starts per hour under treated vs control signals. If the market's record is gone (Redis lost it), the act is left to
+the ledger's horizon expiry, which is not counted as Prime's outcome.
+
+Guards: one signal per organ until it is graded, then the organ rests from Prime's signals for as long as the last
+signal lasted (so Prime's charge can hold an organ at most half the time); 1-6 hours per signal.
+
+**State** persists in Redis `orion:prime:state` (concerns, open questions, open regulate signals, last reading,
+concern record), so a restart resumes. Rolling the image back to before step 3 needs the two new keys stripped
+first (the older code refuses unknown keys and would start empty):
+`redis-cli -u redis://100.92.216.81:6379/0 GET orion:prime:state | python3 -c "import json,sys;d=json.load(sys.stdin);[d.pop(k,None) for k in ('open_regulations','regulation_rest_until')];print(json.dumps(d))" | redis-cli -u redis://100.92.216.81:6379/0 -x SET orion:prime:state`.
 
 **Juniper first.** `main.mind_run` marks a positively-marked Juniper turn (`engine.carries_live_turn`). `mind_run` runs
 the synchronous `run_mind` on the event loop, so Prime's tick cannot run during a turn at all (the `active()` check
@@ -138,3 +166,5 @@ for slack by design.
 | `PRIME_HOLDBACK_FRACTION` | `0.2` | narrator arm share |
 | `PRIME_DURABLE_RUNS_URL` | `http://orion-athena-durable-runs:8121` | body + attention |
 | `PRIME_HUB_URL` | `http://100.92.216.81:8080` | curiosity runs + pending focus |
+| `PRIME_REGULATE_ENABLED` | `true` | offer the regulate move; off = not offered, answers using it refused (open signals still graded) |
+| `PRIME_FAMILIES_PATH` | `/repo/config/physiology/families.yaml` | where Prime reads the receptors (read-only repo mount) |

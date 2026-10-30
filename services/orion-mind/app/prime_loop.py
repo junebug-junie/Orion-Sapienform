@@ -19,6 +19,15 @@ The move (2A): one question for curiosity's next regular investigate run, queued
 existing focus slot (orion/curiosity/focus.py) with binding.invocation_context "prime". A share of
 questions (PRIME_HOLDBACK_FRACTION) is the narrator arm: opened as an act, never sent.
 
+The second move (step 3, 2026-10-30): a regulate signal ("slow" / "quicken") to one want family that
+declares the receptor in config/physiology/families.yaml (today only curiosity investigate). Written to
+Redis ``orion:prime:regulate:<family>`` (orion/physiology/prime_charge.py), where the body-economy market
+(orion-durable-runs) applies it as a bounded, temporary charge on that family's bids and records what it
+did to each bid. Each signal is a ``regulate`` act; after the signal ends the runtime reads the market's
+record and closes the act (1 = the charge changed at least one decision). A share is held back
+(PRIME_HOLDBACK_FRACTION): written as ``control``, never applied, graded the same way. PRIME_REGULATE_ENABLED
+false: the move is not offered and any regulate answer is refused (signals already sent are still graded).
+
 Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tracked by JUNIPER_TURNS.
 Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
 all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
@@ -53,8 +62,13 @@ from orion.introspect.transport import (
     RESULT_KIND,
     RESULT_PREFIX,
 )
+from orion.physiology import prime_charge as pc
 from orion.prime.acts import (
     CONCERN_COMPONENT,
+    REGULATE_COMPONENT,
+    regulate_act,
+    regulation_hours,
+    settle_regulation,
     GONE_READS_TO_SETTLE,
     NOMINATION_COMPONENT,
     NOMINATION_HORIZON_SEC,
@@ -75,6 +89,7 @@ from orion.prime.acts import (
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
     PrimeNominationV1,
+    PrimeRegulationOpenV1,
     PrimeSnapshotV1,
     PrimeStateV1,
     new_id,
@@ -83,7 +98,15 @@ from orion.prime.state import (
     trim_record,
     wants_to_think,
 )
-from orion.prime.thought import SYSTEM_PROMPT, FrameInputs, apply_answer, build_frame, parse_answer, summary_note
+from orion.prime.thought import (
+    FrameInputs,
+    RegulateMoveV1,
+    apply_answer,
+    build_frame,
+    parse_answer,
+    summary_note,
+    system_prompt,
+)
 from orion.refs import RefV1, resolve as resolve_ref
 from orion.schemas.grammar import ActV1
 from orion.schemas.introspect import (
@@ -101,6 +124,8 @@ PRODUCER = "orion-mind.prime"
 HTTP_TIMEOUT_SEC = 4.0
 FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
+# A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
+REGULATE_SETTLE_LAG_SEC = 120.0
 
 
 class JuniperTurns:
@@ -336,6 +361,7 @@ class PrimeRuntime:
         now = self.clock()
         self.state = lapse_concerns(observe(self.state, snap, now), now)
         await self._maybe_settle(now)
+        await self._settle_regulations(now)
         await self._flush_concern_acts()
         await self.save()
         if self.turns.active():
@@ -395,12 +421,19 @@ class PrimeRuntime:
     async def _think(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime) -> tuple[bool, str]:
         curiosity, curiosity_err = await self._read_curiosity()
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        receptors, receptors_err = self._receptors()
+        inputs.receptors, inputs.receptors_error = receptors, receptors_err
+        if receptors is not None or receptors_err:
+            for reg in self.state.open_regulations:
+                rec = await self._read_regulation(reg.family, reg.signal_id)
+                inputs.regulation_effects[reg.signal_id] = (
+                    None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
         frame = build_frame(self.state, inputs)
         started = time.monotonic()
         try:
             parsed, err, _meta = await asyncio.to_thread(
                 self.llm.request_json,
-                system_prompt=SYSTEM_PROMPT, user_prompt=frame, route=self.s.PRIME_LLM_ROUTE,
+                system_prompt=system_prompt(receptors), user_prompt=frame, route=self.s.PRIME_LLM_ROUTE,
                 max_tokens=int(self.s.PRIME_MAX_TOKENS), temperature=0.4, thinking=False,
                 timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC),
             )
@@ -416,7 +449,8 @@ class PrimeRuntime:
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
-        applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending)
+        applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
+                               receptors=receptors)
         self.state = applied.state
         if applied.move is not None and applied.refs:
             unopened = await self._unresolved(applied.refs)
@@ -425,7 +459,9 @@ class PrimeRuntime:
                 applied.move_refusal = f"it cites {'; '.join(unopened)}, which a curiosity run could not open"
         if applied.move_refusal:
             self.state = _with_outcome_line(self.state, f"my move was not sent: {applied.move_refusal}")
-        if applied.move is not None:
+        if isinstance(applied.move, RegulateMoveV1):
+            await self._regulate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now)
+        elif applied.move is not None:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
         note = summary_note(applied)
@@ -491,6 +527,118 @@ class PrimeRuntime:
         if "answer unknown" in (result.error or ""):
             return None, result.error
         return False, (result.error or "refused")[:300]
+
+    # --- regulate signals (step 3) ------------------------------------------------------------
+    def _receptors(self) -> tuple[Optional[dict[str, tuple[str, ...]]], Optional[str]]:
+        """(family -> directions it receives, None) when regulation is on; (None, None) when off;
+        (None, reason) when the families config could not be read (shown to Prime as a gap)."""
+        if not bool(getattr(self.s, "PRIME_REGULATE_ENABLED", False)):
+            return None, None
+        from orion.physiology.families import load_families
+
+        fams, err = load_families(getattr(self.s, "PRIME_FAMILIES_PATH", "/repo/config/physiology/families.yaml"))
+        if fams is None:
+            return None, f"families config unreadable ({err})"
+        return {f: c.receptors for f, c in fams.families.items() if c.receptors}, None
+
+    async def _read_regulation(
+        self, family: str, signal_id: str,
+    ) -> Optional[tuple[Optional[pc.PrimeRegulationV1], list[pc.PrimeChargeEffectV1]]]:
+        """(the signal in the hash, the market's per-want record for ``signal_id``); None when Redis could
+        not be read."""
+        try:
+            fields = await self.bus.redis.hgetall(pc.key(family))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prime_regulation_read_failed family=%s err=%s", family, type(exc).__name__)
+            return None
+        fields = fields or {}
+        raw = fields.get(pc.SIGNAL_FIELD, fields.get(pc.SIGNAL_FIELD.encode()))
+        return pc.parse_signal(raw), pc.parse_effects(fields, signal_id=signal_id)
+
+    async def _market_regulation_on(self) -> Optional[bool]:
+        """The market's own switch, from orion-durable-runs /health (None: unread or the market is off)."""
+        data, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/health")
+        market = (data or {}).get("physiology_market")
+        if not isinstance(market, dict) or "prime_regulation" not in market:
+            return None
+        return bool(market["prime_regulation"])
+
+    async def _regulate(self, move: RegulateMoveV1, *, thought_id: str, thought_act_id: str, now: datetime) -> None:
+        signal_id = new_id()
+        arm = draw_arm(f"regulate:{signal_id}", float(self.s.PRIME_HOLDBACK_FRACTION))
+        hours = float(move.hours or pc.DEFAULT_HOURS)
+        act = regulate_act(signal_id, family=move.family, arm=arm, hours=hours, thought_act_id=thought_act_id)
+        await self._open(act, REGULATE_COMPONENT, at=now)
+        expires = now + timedelta(hours=hours)
+        reg = PrimeRegulationOpenV1(act_id=act.act_id, signal_id=signal_id, thought_id=thought_id, family=move.family,
+                                    direction=move.direction, why=move.why, arm=arm, magnitude=pc.DEFAULT_MAGNITUDE,
+                                    opened_at=now, expires_at=expires)
+        sig = pc.PrimeRegulationV1(signal_id=signal_id, act_id=act.act_id, family=move.family,
+                                   direction=move.direction, arm=arm, magnitude=pc.DEFAULT_MAGNITUDE,
+                                   why=move.why[:600], opened_at=now, expires_at=expires)
+        key = pc.key(move.family)
+        try:
+            # Both arms are written: the market applies a treated signal and only records what a control
+            # one would have done. The key outlives the signal by GRACE_SEC so the final record can be read.
+            # One MULTI: the signal is in force with its expiry, or not at all (never "not delivered" while
+            # the market applies it, never a key without a TTL).
+            async with self.bus.redis.pipeline(transaction=True) as pipe:
+                pipe.delete(key)
+                pipe.hset(key, pc.SIGNAL_FIELD, pc.dumps(sig))
+                pipe.expire(key, int(hours * 3600.0 + pc.GRACE_SEC))
+                await pipe.execute()
+            reg = reg.model_copy(update={"written": True})
+        except Exception as exc:  # noqa: BLE001
+            reg = reg.model_copy(update={"written": False, "write_error": f"{type(exc).__name__}: {str(exc)[:120]}"})
+        logger.info("prime_regulate signal=%s act=%s family=%s direction=%s arm=%s hours=%g written=%s err=%s why=%r",
+                    signal_id, act.act_id, move.family, move.direction, arm, hours, reg.written, reg.write_error,
+                    move.why[:160])
+        self.state = self.state.model_copy(update={"open_regulations": [*self.state.open_regulations, reg]})
+
+    async def _settle_regulations(self, now: datetime) -> None:
+        """Grade each signal once it has ended (+ a short lag): its act closes with what the MARKET recorded.
+        A record that is gone (Redis lost it, or Prime was down past the grace) is not graded here: the act
+        is left to the ledger's horizon expiry, which is not counted as Prime's outcome."""
+        keep: list[PrimeRegulationOpenV1] = []
+        rest = dict(self.state.regulation_rest_until)
+        for fam in [f for f, until in rest.items() if until <= now]:
+            del rest[fam]
+        for reg in self.state.open_regulations:
+            if reg.expires_at <= now:
+                # The rest (no new signal to this organ) runs as long as the signal did, from its end.
+                rest[reg.family] = max(rest.get(reg.family, now), reg.expires_at + (reg.expires_at - reg.opened_at))
+            act = regulate_act(reg.signal_id, family=reg.family, arm=reg.arm, hours=regulation_hours(reg),
+                               thought_act_id=thought_act(reg.thought_id, llm_timeout_sec=0).act_id)
+            if reg.written is False:
+                produced, note = settle_regulation(reg, [])
+                if not await self._close(act, REGULATE_COMPONENT, produced=produced, note=note):
+                    keep.append(reg)
+                    continue
+                self.state = _with_outcome_line(self.state, f"my {reg.direction} signal to {reg.family} was not "
+                                                            f"delivered: {reg.write_error or 'write failed'}")
+                continue
+            if (now - reg.expires_at).total_seconds() < REGULATE_SETTLE_LAG_SEC:
+                keep.append(reg)
+                continue
+            rec = await self._read_regulation(reg.family, reg.signal_id)
+            gone = rec is not None and (rec[0] is None or rec[0].signal_id != reg.signal_id)
+            past_grace = (now - reg.expires_at).total_seconds() > pc.GRACE_SEC
+            if rec is None and not past_grace:
+                keep.append(reg)          # Redis unread: try again next tick
+                continue
+            if rec is None or gone:
+                self.state = note_outcome(self.state, f"my {reg.direction} signal to {reg.family} (act {reg.act_id}) "
+                                                      "could not be graded: the market's record of it is gone")
+                continue
+            market_on = None if rec[1] else await self._market_regulation_on()
+            produced, note = settle_regulation(reg, rec[1], market_on=market_on)
+            if not await self._close(act, REGULATE_COMPONENT, produced=produced, note=note):
+                keep.append(reg)
+                continue
+            logger.info("prime_regulation_settled signal=%s act=%s produced=%s note=%s",
+                        reg.signal_id, reg.act_id, produced, note)
+            self.state = note_outcome(self.state, f"my {reg.direction} signal to {reg.family} (act {reg.act_id}): {note}")
+        self.state = self.state.model_copy(update={"open_regulations": keep, "regulation_rest_until": rest})
 
     # --- settling questions ----------------------------------------------------------------
     async def _maybe_settle(self, now: datetime) -> None:

@@ -454,7 +454,8 @@ def _build_market():
     return Market(families=families, families_error=err, pool_getter=lambda: _checkpointer_cm,
                   redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
                   history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
-                  stale_after_sec=s.physiology_bid_stale_after_sec)
+                  stale_after_sec=s.physiology_bid_stale_after_sec,
+                  prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)))
 
 
 def _build_chronicle():

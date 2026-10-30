@@ -55,6 +55,15 @@ No ledger read yet (``funded_seeded`` false): no floor.
 
 Holdback stays the allocator's own; Choice does not randomize.
 
+Prime's regulate charge (Orion Prime step 3, orion/physiology/prime_charge.py). ``decide(..., prime=sig)``
+adds a temporary, bounded charge (slow) or credit (quicken) to the want's charge, listed in ``why`` as
+``prime:<direction>``: ``magnitude x family_weight``, magnitude <= 0.5, so a want ranked above the middle
+of its family's history still beats it. The exploration floor and the capacity line work as before. A
+quicken credit is never applied to a want ranked 0 (never a mandate). The decision's ``charge`` and ``net``
+include Prime's part; ``cost_frac`` and ``prices_seen`` do not (it is not a posted price).
+The caller passes only a signal in force for the want's family (the market process checks the family's
+receptors, the arm and the flag); ``decide`` itself applies whatever it is handed.
+
 Pure apart from the ``ReservationBook`` it is handed (in-memory; durable-runs owns one).
 """
 
@@ -75,6 +84,9 @@ from orion.physiology.appetite import (
     rank_value,
 )
 from orion.physiology.families import FamiliesConfig, FamilyConfig
+from orion.physiology.prime_charge import PrimeRegulationV1
+from orion.physiology.prime_charge import amount as prime_amount
+from orion.physiology.prime_charge import why_clause as prime_why_clause
 from orion.physiology.weights import FamilyWeight
 from orion.schemas.physiology import (
     ATTENTION_JUNIPER,
@@ -331,8 +343,10 @@ def unavailable(want: WantV1, now: datetime, *, why: str, state: Optional[Physio
 
 
 def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
-           now: datetime, *, reserve_at_open: bool = False) -> WantDecisionV1:
-    """One shadow bid. Never raises on market data: every unknown is a named deferral or warning."""
+           now: datetime, *, reserve_at_open: bool = False,
+           prime: Optional[PrimeRegulationV1] = None) -> WantDecisionV1:
+    """One shadow bid. Never raises on market data: every unknown is a named deferral or warning.
+    ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring)."""
     cfg: Optional[FamilyConfig] = ctx.families.get(want.family)
     if cfg is None:
         return _decision(want, now, tier=want.tier, outcome="deferred", reason="unknown_family",
@@ -538,6 +552,12 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             chosen = next(iter(cost.lane_slot_s))
     warnings += sorted(set(lane_warn))
     charge, parts = charge_of(items)
+    lane_charge = charge
+    prime_part = 0.0
+    if prime is not None:
+        prime_part = prime_amount(prime, weight, value_rank=rank)
+        parts[f"prime:{prime.direction}"] = prime_part
+        charge += prime_part
     net = value - charge
     cost_frac = {k: round(v[0], 6) for k, v in items.items()}
     common = dict(intensity=round(inten, 6), value_rank=round(rank, 6), graded=app.graded, value_basis=vbasis,
@@ -547,6 +567,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     hunger_s = f"hunger {h.unfunded_sec or 0:.0f} s ({h.basis}, tau {app.tau_sec:.0f} s {app.tau_basis})"
     head = (f"{want.family}: weight {weight:.2f} ({wbasis}) x rank {rank:.2f} ({vbasis}; intensity {inten:.2f}, "
             f"{hunger_s}) - charge {charge:.3f} = net {net:+.3f}")
+    if prime is not None:
+        head += "; " + prime_why_clause(prime, value=value, lane_charge=lane_charge, prime=prime_part, net=net)
 
     over = capacity_overflow(items)
     if over is None and chosen in unloaded and cfg.placement == "one_of" and len(lanes) > 1:
@@ -613,7 +635,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             book.note_funded(decision.decision_id, want.family, tier, now)
         return decision
 
-    if charge <= 0.0:
+    if lane_charge <= 0.0 and prime_part <= 0.0:
         # Nothing to pay and nothing wanted: the family just acted (hunger ~0), so its value is 0.
         book.note_deferred(now, want.want_id, chosen, net)
         return _decision(want, now, tier=tier, outcome="deferred", reason="sated", binding_constraint=None,
@@ -622,7 +644,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     # Deferred on price: the constraint with the largest price x cost binds.
     k = max(parts, key=lambda x: parts[x]) if parts else None
     retry = None
-    if k is not None and items[k][0] > 0:
+    # A Prime charge binding has no price to decay: the default re-bid re-tests the want's growing hunger.
+    if k is not None and k in items and items[k][0] > 0:
         r = readings[k]
         p = r.price
         rest = charge - parts[k]

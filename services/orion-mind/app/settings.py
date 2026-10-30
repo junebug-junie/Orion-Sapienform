@@ -145,6 +145,13 @@ class Settings(BaseSettings):
     PRIME_DURABLE_RUNS_URL: str = Field(default="http://orion-athena-durable-runs:8121", alias="PRIME_DURABLE_RUNS_URL")
     # Hub (host network on athena): curiosity's runs and pending focus (/curiosity/api/runs).
     PRIME_HUB_URL: str = Field(default="http://100.92.216.81:8080", alias="PRIME_HUB_URL")
+    # Orion Prime step 3: Prime may send "slow" / "quicken" signals to a want family that declares the
+    # receptor (config/physiology/families.yaml; today curiosity investigate), as bounded, temporary
+    # charges in the body economy (orion/physiology/prime_charge.py). false: the move is not offered and a
+    # regulate answer is refused; signals already sent are still graded.
+    PRIME_REGULATE_ENABLED: bool = Field(default=True, alias="PRIME_REGULATE_ENABLED")
+    # Where Prime reads the receptors: the read-only repo mount (docker-compose volumes).
+    PRIME_FAMILIES_PATH: str = Field(default="/repo/config/physiology/families.yaml", alias="PRIME_FAMILIES_PATH")
 
     # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
     ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")

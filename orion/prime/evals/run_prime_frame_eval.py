@@ -16,6 +16,9 @@ would send to the model and checks it is something a mind could act on honestly:
                ``refs`` passes, and the run's focus section prints the dig command that opens it;
 * record    -- the frame shows Prime's concern track record, counted the way state.track_record says
                (settled / dropped within an hour / faded), from records shaped like the live concerns.
+* regulate  -- with the receptors read from the real config/physiology/families.yaml, the frame lists only
+               curiosity investigate as signalable; a slow signal to it goes; the same signal to self-inquiry
+               (no receptors) is refused with a reason Prime can read; the frame stays under the cap.
 
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_frame_eval.py`` (exit 1 on any failed check).
 """
@@ -125,6 +128,27 @@ def run() -> list[tuple[str, bool, str]]:
     results.append(("record", want in rec_frame and "1 dropped (1 of them within an hour of opening)" in rec_frame
                     and "1 faded" in rec_frame and len(rec_frame) <= FRAME_CHAR_CAP,
                     "track record line shown and counted"))
+    # regulate (step 3): receptors from the real families config, on the live frame.
+    from orion.physiology.families import load_families
+
+    fams, err = load_families(Path(__file__).resolve().parents[3] / "config" / "physiology" / "families.yaml")
+    receptors = {f: c.receptors for f, c in (fams.families.items() if fams else []) if c.receptors}
+    reg_inputs = _inputs(data)
+    reg_inputs.receptors = receptors
+    reg_frame = build_frame(PrimeStateV1(), reg_inputs)
+
+    def regulate(family):
+        return apply_answer(PrimeStateV1(), PrimeAnswerV1.model_validate(
+            {"move": {"kind": "regulate", "family": family, "direction": "slow",
+                      "why": "curiosity took the agent lane all morning", "hours": 3}}),
+            now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False, receptors=receptors)
+
+    ok_move, refused = regulate("durable.curiosity_investigate"), regulate("durable.self_inquiry")
+    results.append(("regulate", err is None and list(receptors) == ["durable.curiosity_investigate"]
+                    and "- durable.curiosity_investigate: slow" in reg_frame
+                    and ok_move.move is not None and refused.move is None
+                    and "declares no receptors" in (refused.move_refusal or "") and len(reg_frame) <= FRAME_CHAR_CAP,
+                    f"receptors {receptors}; self_inquiry: {refused.move_refusal!r}"))
     return results
 
 

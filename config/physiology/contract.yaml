@@ -164,7 +164,7 @@ readers:
     reason: act energy cost (2026-10-29; whole machine 2026-10-30); reads the heat fit and the pinned rest (rest_body.yaml) to price an act's wh_by_host / heat_c_by_host in grammar_acts.cost_json and the hourly attribution rows. Records a cost, gates nothing.
   - module: services/orion-mind/app/prime_loop.py
     role: bidder
-    reason: Orion Prime bids (family prime, Tier 1) for each thought and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. No arousal/thermal veto of its own.
+    reason: Orion Prime bids (family prime, Tier 1) for each thought and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. No arousal/thermal veto of its own. Step 3 (2026-10-30) also writes regulate signals (a bounded charge on another family's bids) and reads back the market's record; it vetoes nothing.
     note: 2026-10-30, Orion Prime 2A; the first binding bid (already the Patch D shape), so nothing left to cut over
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
@@ -333,4 +333,10 @@ sources:
   - module: orion/physiology/choice.py
     reason: pure Choice; prices a want against the posted prices with reservations and returns a SHADOW decision. Nobody obeys it yet.
   - module: services/orion-durable-runs/app/physiology_market.py
-    reason: producer; POST /physiology/bid reads act history + the latest physiology state, decides (shadow) and publishes the decision. Gates nothing.
+    reason: producer; POST /physiology/bid reads act history + the latest physiology state, decides (shadow) and publishes the decision. Gates nothing. Also reads Prime's regulate signal for a family with receptors and passes it to decide (Orion Prime step 3).
+  - module: orion/physiology/prime_charge.py
+    reason: pure contract for Prime's regulate signals (Orion Prime step 3, 2026-10-30) -- the Redis record, the bounded charge (<= 0.5 x family weight), and the effect classes. Defines a price input; gates nothing itself (Choice applies it, and a want can always outbid it).
+  - module: orion/prime/acts.py
+    reason: Prime's acts; grades a regulate act from the market's per-bid record (prime_charge). Produces a signal, gates no organ's work.
+  - module: orion/prime/thought.py
+    reason: Prime's thought; offers the regulate move and refuses one no family receives (receptors from families.yaml). Produces a signal, gates no organ's work.

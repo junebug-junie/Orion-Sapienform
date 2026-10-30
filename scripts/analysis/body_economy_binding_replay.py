@@ -97,8 +97,13 @@ def without_own_use(states: list[dict], acts: list[dict], binding: frozenset[str
 
 
 def replay(ex: dict, fams, binding: frozenset[str], *, subtract_own_use: bool = False,
-           capacity_queues_at_pool: bool = True) -> list[dict]:
-    """One row per run of a ``binding`` family: its bids, verdict, hold and extra delay."""
+           capacity_queues_at_pool: bool = True, prime: Optional[Any] = None) -> list[dict]:
+    """One row per run of a ``binding`` family: its bids, verdict, hold and extra delay.
+
+    ``prime``: optional ``(family, t) -> PrimeRegulationV1 | None`` -- a Prime regulate charge in force at
+    ``t`` (Orion Prime step 3), applied to the binding family's bids exactly as the market applies it.
+    Each bid then also records the charge's effect (``orion.physiology.prime_charge.effect_between``: the
+    same bid decided without the charge on a throwaway copy of the book, exactly as the market does)."""
     from app.run_acts import run_act_family
     from app.run_bids import bind_verdict, hold_end, want_for_run
 
@@ -183,15 +188,26 @@ def replay(ex: dict, fams, binding: frozenset[str], *, subtract_own_use: bool = 
             # decided, so the book is not touched.
             runs[want.want_id]["verdict"] = "censored_at_data_end"
             continue
-        d = decide(want, current, ctx_cache[key], book, t, reserve_at_open=True)
+        sig = prime(want.family, t) if (prime is not None and p["bound"]) else None
+        without = None
+        if sig is not None:
+            import copy
+
+            without = decide(want, current, ctx_cache[key], copy.deepcopy(book), t, reserve_at_open=True)
+        d = decide(want, current, ctx_cache[key], book, t, reserve_at_open=True, prime=sig)
         if not p["bound"]:
             continue
         run = runs[want.want_id]
+        effect = None
+        if without is not None and d.net is not None and without.net is not None:
+            from orion.physiology.prime_charge import effect_between
+
+            effect = effect_between(sig.direction, d, without)
         v = bind_verdict(d, t, hold_end(want, cfg.deferrable_window_s if cfg is not None else 0.0),
                          capacity_queues_at_pool=capacity_queues_at_pool)
         run["bids"].append({"at": t.isoformat(), "outcome": d.outcome, "reason": d.reason,
                             "binding": d.binding_constraint, "net": d.net, "retry_after_sec": d.retry_after_sec,
-                            "verdict": v.why})
+                            "verdict": v.why, "prime_effect": effect})
         if v.admit:
             run["verdict"], run["released_at"] = v.why, t
             if d.outcome != "funded":

@@ -109,6 +109,29 @@ class PrimeNominationV1(BaseModel):
     gone_reads: int = 0
 
 
+class PrimeRegulationOpenV1(BaseModel):
+    """One regulate signal Prime sent (or held back), until its act closes (Orion Prime step 3).
+
+    The signal itself lives in Redis (orion/physiology/prime_charge.py) where the market reads it; this is
+    Prime's own record of it: the act, the arm, and whether the write reached Redis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    act_id: str
+    signal_id: str
+    thought_id: str
+    family: str
+    direction: Literal["slow", "quicken"]
+    why: str
+    arm: Arm
+    magnitude: float
+    opened_at: AwareDatetime
+    expires_at: AwareDatetime
+    # None until the write was tried; False with write_error when it failed (the act then closes 0 at once).
+    written: Optional[bool] = None
+    write_error: Optional[str] = None
+
+
 class PrimeStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -118,6 +141,11 @@ class PrimeStateV1(BaseModel):
     pending_changes: list[str] = Field(default_factory=list)
     recent_outcomes: list[str] = Field(default_factory=list)
     concern_record: list[PrimeConcernRecordV1] = Field(default_factory=list)
+    # Regulate signals not yet graded (step 3). Default keeps older persisted state loading.
+    open_regulations: list[PrimeRegulationOpenV1] = Field(default_factory=list)
+    # family -> no new signal to it before this time: one rest as long as the last signal, counted from its
+    # end. Caps Prime's charge on one organ at half of any stretch of time (the loop guard, design section 11).
+    regulation_rest_until: dict[str, AwareDatetime] = Field(default_factory=dict)
     last_thought_at: Optional[AwareDatetime] = None
     last_reading: str = ""
     thoughts_total: int = 0
@@ -235,6 +263,7 @@ __all__ = [
     "PrimeConcernRecordV1",
     "PrimeConcernV1",
     "PrimeNominationV1",
+    "PrimeRegulationOpenV1",
     "PrimeSnapshotV1",
     "PrimeStateV1",
     "close_concern",

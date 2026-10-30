@@ -26,6 +26,19 @@ prices its next bid):
   orion/physiology/appetite.py) and Prime's later "lapsed" close is ignored; run_prime_report.py counts
   those apart as ``expired``.
 
+* **regulate** -- verb ``regulate`` (Orion Prime step 3, design section 4: hormones are this existing
+  verb, no new ones). One "slow down" or "quicken" signal to one want family that declares the receptor
+  (config/physiology/families.yaml; today only curiosity investigate). It is a bounded, temporary charge
+  on that family's bids in the body economy (orion/physiology/prime_charge.py), never a command.
+  ``test_before = "holdback:<arm>"``: a ``control`` signal is written but the market does not apply it; it
+  records what the charge WOULD have done. ``artifact_produced`` = the charge changed at least one of the
+  organ's decisions while it was in force (slow: a want that would have gone ahead was held; quicken: one
+  that would have waited went ahead), read from the MARKET's record of each bid (Prime never judges it).
+  Same rule both arms. 0 when every bid outbid the charge, when no bid came while it was in force, or when
+  the signal could not be written. Horizon: the signal's length + the record's grace (GRACE_SEC).
+  ``target_moved`` (the design's proposed signal: the organ's own rate moved) was NOT shipped: it failed
+  the metric quality gate on live data (docs/superpowers/pr-reports/2026-10-30-prime-regulate-curiosity-pr.md).
+
 How a nomination closes (both arms on the same rule, so the arms are comparable):
 
 * the run it is graded on is, for ``treated``, the investigate run that took the focus; for
@@ -56,7 +69,8 @@ from orion.curiosity.run_story import (
     OUTCOME_SENT,
 )
 from orion.grammar.acts import build_act
-from orion.prime.state import Arm, PrimeStateV1, close_concern, note_change
+from orion.physiology import prime_charge as pc
+from orion.prime.state import Arm, PrimeRegulationOpenV1, PrimeStateV1, close_concern, note_change
 from orion.schemas.grammar import ActV1
 
 ACTOR = "prime"
@@ -91,6 +105,14 @@ THOUGHT_MARGIN_SEC = 120.0
 THOUGHT_BASIS = (
     "artifact_produced = the model returned a Prime answer that parsed; horizon = the LLM call timeout "
     "+ 120s, the runtime closes the act in the same coroutine"
+)
+
+REGULATE_COMPONENT = "prime.regulate"
+REGULATE_BASIS = (
+    "artifact_produced = the charge changed at least one of the family's bid verdicts while in force (slow: a "
+    "want that would have gone ahead was held; quicken: one that would have waited went ahead), from the "
+    "market's own per-bid record (orion/physiology/prime_charge.py); control arm: what it would have done, "
+    "not applied. horizon = the signal's length + 3600s record grace"
 )
 
 PRODUCED_OUTCOMES = frozenset({OUTCOME_FINISHED, OUTCOME_SENT, OUTCOME_REACH_BLOCKED})
@@ -132,6 +154,66 @@ def nomination_act(
         object_ref=f"curiosity_focus:{focus_id}", test_before=f"holdback:{arm}",
         parent_act_id=thought_act_id, goal_ref=f"prime_concern:{concern_id}" if concern_id else None,
     )
+
+
+def regulate_act(signal_id: str, *, family: str, arm: Arm, hours: float, thought_act_id: Optional[str]) -> ActV1:
+    """Stable per signal (keyed on signal_id), so a restart closes the same act."""
+    return build_act(
+        actor=ACTOR, verb="regulate", key=signal_id, signal_id="artifact_produced",
+        horizon_sec=float(hours) * 3600.0 + pc.GRACE_SEC, basis=REGULATE_BASIS,
+        object_ref=f"physiology_family:{family}", test_before=f"holdback:{arm}", parent_act_id=thought_act_id,
+    )
+
+
+def regulation_hours(reg: PrimeRegulationOpenV1) -> float:
+    return (reg.expires_at - reg.opened_at).total_seconds() / 3600.0
+
+
+def clamp_hours(hours: Optional[float]) -> float:
+    if hours is None:
+        return pc.DEFAULT_HOURS
+    try:
+        h = float(hours)
+    except (TypeError, ValueError):
+        return pc.DEFAULT_HOURS
+    if h != h:
+        return pc.DEFAULT_HOURS
+    return min(pc.MAX_HOURS, max(pc.MIN_HOURS, h))
+
+
+def describe_effects(reg: PrimeRegulationOpenV1, effects: list[pc.PrimeChargeEffectV1]) -> str:
+    """One plain line: what the organ's bids did with the charge (Prime reads this in its frame)."""
+    t = pc.tally(effects)
+    if not t["wants"]:
+        return "no bid from it came while the signal was in force"
+    verb_held = "would have been held" if reg.arm == "control" else "held by my charge"
+    verb_rel = "would have been released" if reg.arm == "control" else "released by my credit"
+    parts = [f"{t['wants']} of its runs bid"]
+    if reg.direction == "slow":
+        parts.append(f"{t['held']} {verb_held}")
+        parts.append(f"{t['outbid']} {'would have outbid' if reg.arm == 'control' else 'outbid'} it")
+    else:
+        parts.append(f"{t['released']} {verb_rel}")
+    if t["unchanged"]:
+        parts.append(f"{t['unchanged']} unchanged")
+    if t["floor"]:
+        parts.append(f"{t['floor']} funded by the exploration floor anyway")
+    last = effects[-1]
+    return ", ".join(parts) + f"; latest: {last.why[:220]!r}"
+
+
+def settle_regulation(reg: PrimeRegulationOpenV1, effects: list[pc.PrimeChargeEffectV1], *,
+                      market_on: Optional[bool] = None) -> tuple[bool, str]:
+    """(produced, note) for a regulate act once its signal has ended. Same rule both arms.
+    ``market_on`` False: the market's Prime regulation is switched off (its /health says so), so an empty
+    record means nobody read the signal, not that no bid came."""
+    if reg.written is False:
+        return False, f"{reg.arm}: not delivered ({reg.write_error or 'write failed'})"
+    produced = pc.changed_any(effects)
+    if not effects and market_on is False:
+        return False, (f"{reg.arm} {reg.direction} {reg.family}: the body economy has Prime's signals switched off, "
+                       "so no bid read it")
+    return produced, f"{reg.arm} {reg.direction} {reg.family}: {describe_effects(reg, effects)}"
 
 
 def concern_act(concern_id: str) -> ActV1:

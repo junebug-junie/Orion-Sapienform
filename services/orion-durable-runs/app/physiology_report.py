@@ -26,11 +26,16 @@ Sources (all read-only):
                  per host, card -> roles from ``config/gpu_pool.yaml``
 * value_per_cost -- the market's own family weights evidence (``Market.family_weights``)
 * services    -- mesh-guardian ``stopped_container`` cards in ``notify_requests``
+* hosts       -- per machine: newest fresh ``orion_biometrics_summary`` row (chassis, GPU, CPU, fans,
+                 per card, per container) against its PINNED rest (``config/physiology/rest_body.yaml``,
+                 else dated defaults), card -> lease holders from ``gpu_pool_events.cards``, daily
+                 chassis average; container ids -> names from circe's container census
 """
 
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import re
@@ -366,6 +371,149 @@ CROSS JOIN LATERAL (
   SELECT s."timestamp" AS ts, s.measurements FROM orion_biometrics_summary s
   WHERE s.node = n.node ORDER BY s."timestamp" DESC LIMIT 1
 ) b
+"""
+
+#: "Rest" is PINNED and dated, not rolling: a rolling low percentile would quietly count new always-on
+#: work as rest (the Zelda dojo lifted athena's floor ~350 W from 2026-10-27). Source of truth:
+#: config/physiology/rest_body.yaml (allowance proposal, PR #2989); until it exists, these defaults,
+#: measured as the 5th percentile of chassis_watts over 2026-10-01..2026-10-13.
+REST_BODY_FILE = "rest_body.yaml"
+DEFAULT_REST_BODY = {
+    "hosts": {
+        "circe": {"rest_w": 541, "measured": "2026-10-01..2026-10-13", "method": "p05 chassis_watts"},
+        "athena": {"rest_w": 340, "measured": "2026-10-01..2026-10-13", "method": "p05 chassis_watts"},
+        "hecate": {"rest_w": 96, "measured": "standby", "method": "p50 chassis_watts when asleep"},
+    },
+    "sponsored": [{"name": "zelda_dojo", "containers": "zelda-dojo-live-*", "host": "athena", "until": None,
+                   "note": "Juniper runs it until she kills it (pending her decision)"}],
+}
+#: The parts (GPUs, CPU, other) and each card are measured against the same dated window as the
+#: pinned rest, so the split is comparable. This low percentile, not the minimum: one odd sample is not rest.
+HOST_REST_PERCENTILE = 0.05
+DEFAULT_REST_WINDOW = ("2026-10-01", "2026-10-13")
+#: The recent floor (same percentile, trailing 7 days) shows drift: recent floor above pinned rest is
+#: new always-on draw.
+HOST_FLOOR_WINDOW = timedelta(days=7)
+HOST_MAX_CARDS = 8
+#: A 730-hour month (8,760 h / 12), so $/month figures do not change with the calendar month.
+HOURS_PER_MONTH = 730.0
+HOST_TOP_HOLDERS = 4
+HOST_TOP_CONTAINERS = 5
+#: The per-act meter fix that will publish "above-rest energy no act is charged for".
+UNATTRIBUTED_NOT_YET = ("above-rest watts no act is charged for (unattributed_above_rest_w): unknown until the "
+                        "whole-machine per-act meter (branch fix/act-energy-whole-machine) merges")
+
+
+def _bio_ts(d: datetime) -> str:
+    """``orion_biometrics_summary."timestamp"`` is varchar ('2026-10-30 03:09:37.46+00'). Comparing it to
+    a string in the same shape keeps the (node, timestamp) index usable; a ::timestamptz cast does not."""
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+_PARTS = (("chassis", "(measurements->>'chassis_watts')::float"),
+          ("gpu", "(measurements->>'gpu_watts_total')::float"),
+          ("cpu", "(measurements->>'cpu_watts_total')::float"),
+          ("other", "(measurements->>'chassis_watts')::float - (measurements->>'gpu_watts_total')::float"
+                    " - (measurements->>'cpu_watts_total')::float"),
+          *((f"gpu{i}", f"(measurements->>'gpu{i}_watts')::float") for i in range(HOST_MAX_CARDS)))
+#: Per host: each part's low percentile over the pinned rest window (``<part>_rest``). The window is
+#: in the past, so the answer never changes: it is cached per window (PINNED_PARTS_CACHE).
+HOSTS_REST_SQL = """
+SELECT node,
+""" + ",\n".join(f"       percentile_cont(%(p)s) WITHIN GROUP (ORDER BY {expr}) AS {name}_rest" for name, expr in _PARTS) + """
+FROM orion_biometrics_summary
+WHERE node = ANY(%(hosts)s) AND "timestamp" >= %(rest_since)s AND "timestamp" < %(rest_until)s
+GROUP BY node
+"""
+#: Per host: the same low percentile over the trailing 7 days, for the chassis (``recent_floor``:
+#: above the pinned rest = new always-on draw) and each card (its idle when the pinned window
+#: predates per-card watts, which began 2026-10-29).
+HOSTS_FLOOR_SQL = """
+SELECT node,
+""" + ",\n".join(f"       percentile_cont(%(p)s) WITHIN GROUP (ORDER BY {expr}) AS {name}_floor"
+                 for name, expr in _PARTS if name == "chassis" or name.startswith("gpu") and name != "gpu") + """
+FROM orion_biometrics_summary
+WHERE node = ANY(%(hosts)s) AND "timestamp" >= %(floor_since)s AND "timestamp" < %(until_ts)s
+GROUP BY node
+"""
+PINNED_PARTS_TTL = timedelta(hours=6)
+_PINNED_PARTS_CACHE: dict[tuple, tuple[datetime, list[dict]]] = {}
+
+
+async def pinned_parts_rows(pool: Any, params: Mapping[str, Any], now: datetime) -> list[dict]:
+    key = (id(pool), params["p"], params["rest_since"], params["rest_until"], tuple(params["hosts"]))
+    hit = _PINNED_PARTS_CACHE.get(key)
+    if hit and now - hit[0] < PINNED_PARTS_TTL:
+        return hit[1]
+    rows = await _rows(pool, HOSTS_REST_SQL, params)
+    _PINNED_PARTS_CACHE.clear()
+    _PINNED_PARTS_CACHE[key] = (now, rows)
+    return rows
+
+
+def load_rest_body(path: str) -> tuple[dict, str, Optional[str]]:
+    """(rest body doc, source words, error). Missing file -> the dated defaults (said, never silent)."""
+    doc, err = _load_yaml(path)
+    if not isinstance(doc, dict) or not isinstance(doc.get("hosts"), dict):
+        why = err or "no hosts in it"
+        return DEFAULT_REST_BODY, "pinned default (config/physiology/rest_body.yaml not present yet)", (
+            None if (err or "").startswith("missing:") else f"rest_body.yaml unreadable ({why}): using the pinned defaults")
+    return doc, "pinned in config/physiology/rest_body.yaml", None
+
+
+def rest_window(doc: Mapping) -> tuple[str, str]:
+    """The dated window the pinned rest was measured over ('2026-10-01..2026-10-13', end inclusive),
+    as [since, until) biometrics timestamps. A host with no dated window (hecate 'standby') uses the default."""
+    for spec in (doc.get("hosts") or {}).values():
+        if not isinstance(spec, Mapping):
+            continue
+        m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})", str(spec.get("measured") or ""))
+        if m:
+            try:
+                datetime.fromisoformat(m.group(1))
+                end = (datetime.fromisoformat(m.group(2)) + timedelta(days=1)).date().isoformat()
+            except ValueError:
+                continue  # not a real date: the defaults below, never a 500
+            return m.group(1), end
+    end = (datetime.fromisoformat(DEFAULT_REST_WINDOW[1]) + timedelta(days=1)).date().isoformat()
+    return DEFAULT_REST_WINDOW[0], end
+
+
+HOSTS_DAILY_SQL = """
+SELECT node, to_char("timestamp"::timestamptz AT TIME ZONE %(tz)s, 'YYYY-MM-DD') AS d,
+       AVG((measurements->>'chassis_watts')::float) AS w
+FROM orion_biometrics_summary
+WHERE node = ANY(%(hosts)s) AND "timestamp" >= %(since_ts)s AND "timestamp" < %(until_ts)s
+  AND measurements ? 'chassis_watts'
+GROUP BY 1, 2
+ORDER BY 1, 2
+"""
+
+#: Lease-seconds per (card, holder) over the window, top HOST_TOP_HOLDERS per card. A durable run's
+#: holder (``durable-runs:<run_id>``) becomes its workflow from ``durable_run_workflow``
+#: (``durable-runs:curiosity.investigate``); a run id with no workflow row is folded by shape
+#: (durable-runs:reading-<uuid> -> durable-runs:reading; a bare id -> durable-runs:run), so one kind
+#: of run is one row. Lease time is time HELD (a run's calls attach to its hold), not time computing.
+HOSTS_HOLDERS_SQL = """
+WITH l AS (
+  SELECT c AS card,
+         CASE WHEN e.holder LIKE 'durable-runs:%%'
+              THEN 'durable-runs:' || COALESCE(w.workflow,
+                   substring(e.holder from '^durable-runs:([a-z_]+(?:[-:][a-z_]+)*)(?=[-:]|$)'), 'run')
+              ELSE COALESCE(e.holder, '?') END AS holder,
+         e.held_ms
+  FROM gpu_pool_events e
+  LEFT JOIN durable_run_workflow w ON e.holder LIKE 'durable-runs:%%' AND w.run_id = substr(e.holder, 14),
+       json_array_elements_text(COALESCE(e.cards, '[]'::json)) AS c
+  WHERE e.generated_at >= %(since)s AND e.generated_at < %(until)s
+    AND e.event = ANY(%(events)s) AND e.held_ms > 0
+    AND NOT (e.event = 'released' AND (e.reason LIKE 'expire:%%' OR e.reason LIKE 'abort:%%'))
+), g AS (
+  SELECT card, holder, SUM(held_ms) / 1000.0 AS lease_s FROM l GROUP BY 1, 2
+), r AS (
+  SELECT card, holder, lease_s, row_number() OVER (PARTITION BY card ORDER BY lease_s DESC) AS rk FROM g
+)
+SELECT card, holder, lease_s FROM r WHERE rk <= %(top)s ORDER BY card, rk
 """
 
 SERVICES_SQL = """
@@ -792,7 +940,40 @@ CONTAINER_CPU_PREFIX = "container_cpu_watts."
 PROCESSES_TOP_N = 12
 
 
-def shape_processes(bio_rows: Sequence[Mapping], now: datetime) -> tuple[list[dict], list[dict]]:
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def container_label(name: str, names: Optional[Mapping[str, str]]) -> str:
+    """orion-biometrics publishes a container by name when it can read the docker root, else by its
+    12-char id (circe, 2026-10-30: ``container_cpu_watts.d590a9d48af2``). An id the census knows is
+    shown as its name; an unknown id stays an id (never guessed)."""
+    if names and _CONTAINER_ID_RE.match(name):
+        return names.get(name, name)
+    return name
+
+
+def container_names_from_census(raw_states: Mapping[Any, Any]) -> dict[str, str]:
+    """id12 -> container name, from every heartbeat that carries a container census
+    (``SystemHealthV1.details["container_restarts"].counts`` keys are ``<name>@<id12>``; circe's comes
+    from orion-gpu-lane-controller). ``raw_states`` is the equilibrium service's per-service state
+    hash (field -> JSON). Anything unreadable is skipped: an id without a name stays an id."""
+    out: dict[str, str] = {}
+    for v in raw_states.values():
+        if isinstance(v, bytes):
+            v = v.decode("utf-8", "replace")
+        if not isinstance(v, str) or "container_restarts" not in v:
+            continue
+        doc = _json(v)
+        census = ((doc or {}).get("details") or {}).get("container_restarts") if isinstance(doc, dict) else None
+        for key in ((census or {}).get("counts") or {}) if isinstance(census, dict) else ():
+            name, _, cid = str(key).rpartition("@")
+            if name and _CONTAINER_ID_RE.match(cid):
+                out[cid] = name
+    return out
+
+
+def shape_processes(bio_rows: Sequence[Mapping], now: datetime,
+                    names: Optional[Mapping[str, str]] = None) -> tuple[list[dict], list[dict]]:
     """Top containers by CPU watts above idle, per host, from the newest fresh biometrics row
     (orion-biometrics container_cpu_measurements, PR #2977). Absent keys are a reason, never 0 W."""
     rows: list[dict] = []
@@ -810,7 +991,7 @@ def shape_processes(bio_rows: Sequence[Mapping], now: datetime) -> tuple[list[di
                 notes.append(f"{host}: CPU below the fitted idle floor this sample, so no honest split")
             continue
         for name, w in named.items():
-            rows.append({"host": host, "name": name, "watts": round(w, 1), "cores": None})
+            rows.append({"host": host, "name": container_label(name, names), "watts": round(w, 1), "cores": None})
         for key, label in (("container_cpu_watts_small", "(small containers)"),
                            ("cpu_watts_host_other", "(host, not in a container)")):
             w = _f(m.get(key))
@@ -828,6 +1009,191 @@ def shape_processes(bio_rows: Sequence[Mapping], now: datetime) -> tuple[list[di
         missing.append({"section": "processes", "reason": f"top {PROCESSES_TOP_N} of {len(rows)} shown"})
         rows = rows[:PROCESSES_TOP_N]
     return rows, missing
+
+
+def fold_holder(holder: Optional[str], workflow: Optional[str] = None) -> str:
+    """Python twin of the SQL fold in HOSTS_HOLDERS_SQL (tests check the two agree on examples)."""
+    h = str(holder or "?")
+    if not h.startswith("durable-runs:"):
+        return h
+    if workflow:
+        return "durable-runs:" + workflow
+    m = re.match(r"^durable-runs:([a-z_]+(?:[-:][a-z_]+)*)(?=[-:]|$)", h)
+    return "durable-runs:" + (m.group(1) if m else "run")
+
+
+#: Plain words for the two gateway HTTP holders (same map as orion/physiology/heat_archaeology.py
+#: HOLDER_LABELS; orion-llm-gateway pool_placement.py names them).
+HOLDER_WORDS = {"http:anthropic": "harness turns", "http:openai": "AI Town"}
+
+
+def holder_label(holder: str) -> str:
+    if holder in HOLDER_WORDS:
+        return HOLDER_WORDS[holder]
+    if holder.startswith("durable-runs:"):
+        return holder[len("durable-runs:"):] + " runs"
+    return holder
+
+
+def merge_by_node(*row_sets: Sequence[Mapping]) -> list[dict]:
+    out: dict[str, dict] = {}
+    for rows in row_sets:
+        for r in rows:
+            out.setdefault(str(r.get("node")), {}).update(dict(r))
+    return list(out.values())
+
+
+def _pinned_rest(spec: Any) -> tuple[Optional[float], Optional[str]]:
+    """(rest in use, refusal note). ``rest_w`` is the value in use; ``approved_rest_w`` is Juniper's
+    ceiling (allowance proposal PR #2989: lowering rest is always allowed, raising it needs her
+    sign-off). A rest_w above the approved number is refused: the approved number is used."""
+    if not isinstance(spec, Mapping):
+        return _f(spec), None   # a bare number: the rest itself, no ceiling
+    rest, ceiling = _f(spec.get("rest_w")), _f(spec.get("approved_rest_w"))
+    if rest is None:
+        return ceiling, None
+    if ceiling is not None and rest > ceiling:
+        return ceiling, f"rest_w {rest:.0f} W is above Juniper's approved {ceiling:.0f} W: the approved number is used"
+    return rest, None
+
+
+def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily_rows: Sequence[Mapping],
+                holder_rows: Sequence[Mapping], gpu_pool_doc: Optional[Mapping], pool_err: Optional[str],
+                rate_usd_per_kwh: Optional[float], now: datetime,
+                names: Optional[Mapping[str, str]] = None,
+                rest_body: Optional[Mapping] = None, rest_source: str = "", rest_err: Optional[str] = None,
+                hosts: Sequence[str] = VRAM_HOSTS) -> tuple[list[dict], list[dict]]:
+    """What is spinning each machine: whole-machine watts now vs its PINNED rest, split into GPU /
+    CPU / other (each against its own rest over the same dated window), each card with the lease
+    holders that held it in the window, the top containers by CPU watts, sponsored work apart.
+
+    The split never sums parts with the whole: gpu_w and cpu_w are INSIDE chassis_w_now, so
+    other_w = chassis - gpu - cpu (fans, PSU loss, memory, disks). A part that is not measured is
+    None and other_w is then None too (a remainder of an unmeasured part would be a guess)."""
+    missing: list[dict] = []
+    body = rest_body or DEFAULT_REST_BODY
+    pinned = body.get("hosts") or {}
+    since_d, until_d = rest_window(body)
+    window_words = f"{since_d}..{(datetime.fromisoformat(until_d) - timedelta(days=1)).date().isoformat()}"
+    if rest_err:
+        missing.append({"section": "hosts", "reason": rest_err})
+    meas: dict[str, tuple[datetime, dict]] = {}
+    for r in bio_rows:
+        ts = _utc(r.get("ts"))
+        m = _json(r.get("measurements"))
+        if isinstance(m, dict) and ts is not None and now - ts <= BIOMETRICS_FRESH:
+            meas[str(r.get("node"))] = (ts, m)
+    rest = {str(r.get("node")): r for r in rest_rows}
+    daily: dict[str, list[dict]] = {}
+    for r in daily_rows:
+        w = _f(r.get("w"))
+        if w is not None:
+            daily.setdefault(str(r.get("node")), []).append({"d": str(r.get("d")), "chassis_w_avg": round(w, 1)})
+    holders: dict[str, list[dict]] = {}
+    for r in holder_rows:
+        holders.setdefault(str(r.get("card")), []).append(
+            {"holder": str(r.get("holder") or "?"), "label": holder_label(str(r.get("holder") or "?")),
+             "lease_s": round(float(r.get("lease_s") or 0.0), 1)})
+    cards = _card_map(gpu_pool_doc) if gpu_pool_doc else []
+    if pool_err:
+        missing.append({"section": "hosts", "reason": f"card -> role map unavailable ({pool_err}): cards show no roles"})
+    sponsored_raw = body.get("sponsored")
+    sponsors = [sp for sp in (sponsored_raw if isinstance(sponsored_raw, list) else []) if isinstance(sp, Mapping)]
+    asleep: list[str] = []
+    recent_idle_hosts: list[str] = []
+    out: list[dict] = []
+    for host in hosts:
+        if host not in meas:
+            asleep.append(host)
+            continue
+        ts, m = meas[host]
+        chassis = _f(m.get("chassis_watts"))
+        gpu = _f(m.get("gpu_watts_total"))
+        cpu = _f(m.get("cpu_watts_total"))
+        rr = rest.get(host) or {}
+        raw_spec = pinned.get(host)
+        spec = raw_spec if isinstance(raw_spec, Mapping) else {}
+        rest_w, refused = _pinned_rest(raw_spec)
+        if refused:
+            missing.append({"section": "hosts", "reason": f"{host}: {refused}"})
+        above = (chassis - rest_w) if (chassis is not None and rest_w is not None) else None
+        per_month = lambda w: (_r(w * HOURS_PER_MONTH / 1000.0 * rate_usd_per_kwh, 2)  # noqa: E731
+                               if (w is not None and rate_usd_per_kwh is not None) else None)
+        host_cards = [(name, idx, roles) for h, name, idx, roles in cards if h == host]
+        pooled = {idx for _, idx, _ in host_cards}
+        for i in range(min(int(_f(m.get("gpu_count")) or 0), HOST_MAX_CARDS)):
+            if i not in pooled:
+                host_cards.append((f"{host}-gpu{i}" if host != "circe" else f"gpu{i}", i, []))
+        card_rows, recent_idle = [], False
+        for name, idx, roles in sorted(host_cards, key=lambda c: c[1]):
+            watts = _f(m.get(f"gpu{idx}_watts"))
+            if watts is None and _f(m.get(f"gpu{idx}_mem_used_mb")) is None:
+                continue  # a pooled card this host does not report (asleep twin): not a 0 W card
+            idle = _f(rr.get(f"gpu{idx}_rest"))
+            if idle is None:
+                idle = _f(rr.get(f"gpu{idx}_floor"))
+                recent_idle |= idle is not None
+            card_rows.append({"card": name, "watts": _r(watts, 1), "idle_w": _r(idle, 1),
+                              "temp_c": _f(m.get(f"gpu{idx}_temp_c")), "mem_used_mb": _f(m.get(f"gpu{idx}_mem_used_mb")),
+                              "roles": roles, "top_holders": holders.get(name, [])})
+        containers, all_named = [], []
+        for k, v in m.items():
+            w = _f(v)
+            if w is None:
+                continue
+            if k.startswith(CONTAINER_CPU_PREFIX):
+                c = {"name": container_label(k[len(CONTAINER_CPU_PREFIX):], names), "cpu_w": round(w, 1)}
+                containers.append(c)
+                all_named.append(c)
+            elif k == "cpu_watts_host_other":
+                containers.append({"name": "(host, not in a container)", "cpu_w": round(w, 1)})
+        sponsored, sponsored_names = [], set()
+        for sp in sponsors:
+            if str(sp.get("host") or host) != host:
+                continue
+            pat = str(sp.get("containers") or "")
+            hit = [c for c in all_named if pat and fnmatch.fnmatchcase(c["name"], pat)]
+            sponsored_names |= {c["name"] for c in hit}
+            sponsored.append({"name": str(sp.get("name") or pat), "note": str(sp.get("note") or ""),
+                              "containers": len(hit), "cpu_w": round(sum(c["cpu_w"] for c in hit), 1) if hit else None})
+        containers = [c for c in containers if c["name"] not in sponsored_names]
+        containers.sort(key=lambda c: -c["cpu_w"])
+        floor = _f(rr.get("chassis_floor"))
+        recent_idle_hosts += [host] if recent_idle else []
+        out.append({
+            "host": host, "at": ts, "chassis_w_now": _r(chassis, 1), "chassis_w_rest": _r(rest_w, 1),
+            "rest_basis": (f"{rest_source}: {spec.get('method') or 'p05 chassis_watts'} over {spec.get('measured') or '?'}"
+                           if rest_w is not None else ""),
+            "recent_floor_w": _r(floor, 1),
+            "above_rest_w": _r(above, 1), "usd_per_month_at_this_rate": per_month(above),
+            "rest_usd_per_month": per_month(rest_w), "gpu_w": _r(gpu, 1), "cpu_w": _r(cpu, 1),
+            "other_w": _r(chassis - gpu - cpu, 1) if None not in (chassis, gpu, cpu) else None,
+            "gpu_w_rest": _r(_f(rr.get("gpu_rest")), 1), "cpu_w_rest": _r(_f(rr.get("cpu_rest")), 1),
+            "other_w_rest": _r(_f(rr.get("other_rest")), 1), "parts_rest_window": window_words,
+            "fan_pct": _r(_f(m.get("fan_pct_max")), 1), "unattributed_above_rest_w": None,
+            "cards": card_rows, "top_containers": containers[:HOST_TOP_CONTAINERS], "sponsored": sponsored,
+            "daily": daily.get(host, []),
+        })
+        if chassis is None:
+            missing.append({"section": "hosts", "reason": f"{host}: no chassis_watts on its newest row (no BMC or "
+                            "PDU reading): its draw now and above-rest are unknown"})
+        if rest_w is None:
+            missing.append({"section": "hosts", "reason": f"{host}: no pinned rest in rest_body.yaml, so above-rest is unknown"})
+        if any(_CONTAINER_ID_RE.match(c["name"]) for c in containers[:HOST_TOP_CONTAINERS]):
+            missing.append({"section": "hosts", "reason": f"{host}: some containers show as 12-char ids (orion-biometrics "
+                            "could not read their names, and the container census did not list them)"})
+    out.sort(key=lambda h: -(h["chassis_w_now"] or 0.0))
+    if recent_idle_hosts:
+        missing.append({"section": "hosts", "reason": f"card rests on {', '.join(recent_idle_hosts)} are the last 7 days' "
+                        f"5th percentile (per-card watts began 2026-10-29, after the pinned window {window_words})"})
+    if asleep:
+        missing.append({"section": "hosts", "reason": f"no biometrics row in the last 15 min for {', '.join(asleep)} "
+                        "(asleep or its reporter is down): not shown"})
+    if out:
+        missing.append({"section": "hosts", "reason": UNATTRIBUTED_NOT_YET})
+    if out and rate_usd_per_kwh is None:
+        missing.append({"section": "hosts", "reason": "no electricity rate on the newest physiology tick: $/month unknown"})
+    return out, missing
 
 
 def shape_value_per_cost(weights: Optional[Mapping[str, Any]], weights_err: Optional[str],
@@ -924,6 +1290,8 @@ class ReportDeps:
     tiers: Mapping[str, int] = field(default_factory=dict)
     #: async () -> mapping family -> FamilyWeight, or raises. None: the market is off.
     family_weights: Optional[Callable[[], Awaitable[Mapping[str, Any]]]] = None
+    #: async () -> {id12: container name} (circe's container census). None: ids stay ids.
+    container_names: Optional[Callable[[], Awaitable[Mapping[str, str]]]] = None
     concurrency: int = 3
 
 
@@ -1001,8 +1369,8 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         return act_costs_by_family(await _rows(pool, ACT_COST_SQL, {**base, "family": q.family}))
 
     tasks: dict[str, Awaitable[Any]] = {}
-    if wanted & {"limits", "money", "unit_costs", "claude"}:
-        tasks["latest"] = timed("latest", latest, ("limits", "money", "unit_costs", "claude"))
+    if wanted & {"limits", "money", "unit_costs", "claude", "hosts"}:
+        tasks["latest"] = timed("latest", latest, ("limits", "money", "unit_costs", "claude", "hosts"))
     if "limits" in wanted:
         tasks["limits"] = timed("limits", limits, ("limits",))
     if wanted & {"wants", "decisions"}:
@@ -1039,9 +1407,30 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             **base, "synthetic": syn, "family": q.family, "outcome": q.outcome, "limit": q.limit}), ("decisions",))
     if "claude" in wanted:
         tasks["claude"] = timed("claude", lambda: _rows(pool, CLAUDE_TOKENS_SQL, base), ("claude",))
-    if wanted & {"vram", "processes"}:
+    if wanted & {"vram", "processes", "hosts"}:
         tasks["vram"] = timed("biometrics", lambda: _rows(pool, VRAM_SQL, {"hosts": list(VRAM_HOSTS)}),
-                              ("vram", "processes"))
+                              ("vram", "processes", "hosts"))
+    if wanted & {"processes", "hosts"} and deps.container_names is not None:
+        async def names():
+            try:
+                return dict(await deps.container_names())
+            except Exception:  # noqa: BLE001 -- names are a nicety: an id is still a true label
+                logger.warning("physiology_report_container_names_failed", exc_info=True)
+                return {}
+        tasks["names"] = names()
+    if "hosts" in wanted:
+        # Three reads, run side by side (30 d: ~0.5 s, ~1 s, ~0.9 s on 2026-10-30).
+        hp = {"hosts": list(VRAM_HOSTS), "until_ts": _bio_ts(now)}
+        rest_body, rest_source, rest_err = load_rest_body(str(Path(deps.heat_sensitivity_path).with_name(REST_BODY_FILE)))
+        rs, ru = rest_window(rest_body)
+        tasks["hosts_rest"] = timed("hosts_rest", lambda: pinned_parts_rows(pool, {
+            "hosts": list(VRAM_HOSTS), "p": HOST_REST_PERCENTILE, "rest_since": rs, "rest_until": ru}, now), ("hosts",))
+        tasks["hosts_floor"] = timed("hosts_floor", lambda: _rows(pool, HOSTS_FLOOR_SQL, {
+            **hp, "p": HOST_REST_PERCENTILE, "floor_since": _bio_ts(now - HOST_FLOOR_WINDOW)}), ("hosts",))
+        tasks["hosts_daily"] = timed("hosts_daily", lambda: _rows(pool, HOSTS_DAILY_SQL, {
+            **hp, "tz": deps.tz, "since_ts": _bio_ts(since)}), ("hosts",))
+        tasks["hosts_holders"] = timed("hosts_holders", lambda: _rows(pool, HOSTS_HOLDERS_SQL, {
+            **base, "events": list(RHYTHM_CLOSE_EVENTS), "top": HOST_TOP_HOLDERS}), ("hosts",))
     if "services" in wanted:
         tasks["services"] = timed("services", lambda: _rows(pool, SERVICES_SQL, {
             "since_naive": (now - SERVICES_LOOKBACK).replace(tzinfo=None)}), ("services",))
@@ -1104,8 +1493,20 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             doc, perr = _load_yaml(deps.gpu_pool_path)
             return shape_vram(doc, perr, results["vram"], now)
         add("vram", _vram)
+    names_map = results.get("names") or {}
     if "processes" in wanted and results.get("vram") is not None:
-        add("processes", lambda: shape_processes(results["vram"], now))
+        add("processes", lambda: shape_processes(results["vram"], now, names_map))
+    if "hosts" in wanted and results.get("vram") is not None and results.get("hosts_rest") is not None:
+        def _hosts():
+            doc, perr = _load_yaml(deps.gpu_pool_path)
+            rate = shape_money(latest_row, [])[0]["rate_usd_per_kwh"] if latest_row else None
+            # The daily and holder reads are extras: a failure there is already a "read failed"
+            # note, and the machines still show their draw now and rest.
+            rest_rows = merge_by_node(results["hosts_rest"], results.get("hosts_floor") or [])
+            return shape_hosts(results["vram"], rest_rows, results.get("hosts_daily") or [],
+                               results.get("hosts_holders") or [], doc, perr, rate, now, names_map,
+                               rest_body=rest_body, rest_source=rest_source, rest_err=rest_err)
+        add("hosts", _hosts)
     if "value_per_cost" in wanted:
         if deps.family_weights is None:
             add("value_per_cost", lambda: shape_value_per_cost(

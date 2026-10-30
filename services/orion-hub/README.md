@@ -3092,8 +3092,10 @@ sql-writer (Hub's `DATABASE_URL`). Spec:
 `#body-economy` (iframe: `static/body-economy.html` + `static/js/body-economy.js`) is Phase 3 of
 `docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`: how Orion's body is doing.
 It shows "right now" tiles (the four most pressed limits, plus services that should run but are
-stopped), each limit hour by hour (level line against its dashed line; amber = binding; hatching =
-over the line for reasons Orion does not control; idle GPU lanes folded away), funded wants by
+stopped), a Machines panel (what is spinning each machine: whole-machine watts now against Orion's
+body at rest, a GPU / CPU / other stacked bar with a tick at rest, per-card watts with who held
+each card, top CPU containers, Juniper's sponsored work such as the Zelda dojo apart), each limit hour by hour (level line against its dashed line; amber = binding; hatching =
+over the line from the outside, or for energy: Orion's body at rest alone reaches the envelope; idle GPU lanes folded away), funded wants by
 family with deferred wants as a dashed ghost bar, the heavy-work rhythm heatmap, money this month,
 wasted GPU time, queue wait per lane, GPU memory headroom, Claude spend, unit costs, value per
 dollar per family, and the verbatim `why` line per limit. Below that, single decisions: an outcome

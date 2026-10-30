@@ -79,6 +79,14 @@
     .hbar-track > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; }
     .hbar-text { flex: 0 0 120px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
     ul.plain { margin: 0; padding-left: 18px; font-size: 13px; color: #d1d5db; }
+    /* hosts: one stacked bar per machine (GPUs / CPU / other) with a tick at its rest */
+    .host { padding: 10px 0; border-top: 1px solid #1f2937; } .host:first-of-type { border-top: 0; }
+    .host-head { font-size: 14px; margin-bottom: 6px; }
+    .stack { position: relative; display: flex; overflow: hidden; height: 14px; border-radius: 5px; background: #1f2937; margin-bottom: 10px; }
+    .stack > span:not(.rest-tick) { height: 100%; } .stack > span:first-child { border-radius: 5px 0 0 5px; }
+    .stack .rest-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #f3f4f6; }
+    .sw.rest-key { width: 2px; background: #f3f4f6; border-radius: 0; }
+    .holders { margin: -4px 0 8px 240px; }
     /* tables */
     .scroll { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 640px; }
@@ -124,6 +132,12 @@
 
     <section aria-label="Right now">
       <div id="beTiles" class="tiles"></div>
+    </section>
+
+    <section class="card" aria-labelledby="beHostsH">
+      <h2 id="beHostsH">Machines: what is spinning them now</h2>
+      <p class="muted small" style="margin:0">Whole-machine watts now, split into GPUs, CPU and other (the machine minus GPUs minus CPU). The white tick is Orion's body at rest on that machine: a pinned, dated number (rest_basis in the tooltip). Per card: watts now, its rest, and who held it in this window (time held, not time computing).</p>
+      <div id="beHosts"></div>
     </section>
 
     <section class="card" aria-labelledby="beLimitsH">

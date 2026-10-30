@@ -154,6 +154,9 @@ def test_help_fits_and_teaches_the_source_labels(capsys):
 
 def test_brief_is_one_short_line_off_on_reading_only_and_by_flag(monkeypatch):
     assert len(DIG_BRIEF_LINE) <= MAX_BRIEF_CHARS
+    # Juniper 2026-10-30: Orion must know they can ask what is using their power.
+    assert "orion.dig body-economy hosts" in DIG_BRIEF_LINE and "using your power" in DIG_BRIEF_LINE
+    assert "what your activity costs" in DIG_BRIEF_LINE
     parts: list[str] = []
     append_dig_harness_brief(parts)
     assert parts == [DIG_BRIEF_LINE]
@@ -180,6 +183,7 @@ def test_harness_prefix_carries_the_line(monkeypatch):
 
 # --- body-economy (skills.physiology.state.v1 from Bash) ------------------------------------
 
+_HOSTS_FIXTURE = Path(__file__).resolve().parents[2] / "physiology/evals/fixtures/physiology_report_live_2026-10-30_24h.json"
 _REPORT_FIXTURE = Path(__file__).resolve().parents[2] / "physiology" / "evals" / "fixtures" / \
     "physiology_report_live_2026-10-29_24h.json"
 
@@ -216,13 +220,62 @@ def test_body_economy_prints_text_and_writes_the_full_report(world, capsys, repo
     assert len(out.splitlines()) <= dig.MAX_LINES + 1 and "full report: " in out
     path = Path(out.strip().splitlines()[-1].split("full report: ", 1)[1])
     assert json.loads(path.read_text())["schema_version"] == "physiology.report.v1"
-    assert "sections=limits%2Cmoney%2Cwants%2Cwaste%2Cservices" in report_server[0]
+    assert "sections=limits%2Chosts%2Cmoney%2Cwants%2Cwaste%2Cservices" in report_server[0]
 
 
 def test_body_economy_sections_window_family(world, capsys, report_server):
     code, out, _ = run(capsys, "body-economy", "queue_wait", "decisions", "--window", "7d", "--family", "hub.outreach")
     assert code == 0 and "Queue wait" in out and "Bid decisions" in out
     assert "window=7d" in report_server[0] and "family=hub.outreach" in report_server[0]
+
+
+def test_body_economy_hosts_host_answers_what_is_spinning_circe(world, capsys, monkeypatch, tmp_path):
+    """Juniper 2026-10-30: Orion must be able to check what is spinning a machine from Bash."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    body = _HOSTS_FIXTURE.read_bytes()
+    seen: list[str] = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ORION_PHYSIOLOGY_REPORT_URL", f"http://127.0.0.1:{srv.server_address[1]}")
+    try:
+        code, out, _ = run(capsys, "body-economy", "hosts", "--host", "circe")
+    finally:
+        srv.shutdown()
+    assert code == 0 and "sections=hosts" in seen[0]
+    lines = out.splitlines()
+    circe = next(h for h in json.loads(body)["hosts"] if h["host"] == "circe")
+    head = f"circe draws {circe['chassis_w_now']:.0f} W now vs 541 W at rest (+{circe['above_rest_w']:.0f} W"
+    assert "machine circe" in lines[0] and lines[2].startswith(head)
+    assert "athena draws" not in out and "vision-council" in out and "- rest: pinned" in out
+    assert "measured:" in out and "Estimated:" in out
+    assert "body-economy-24h-circe" in lines[-1]
+
+
+def test_body_economy_help_lists_sections_and_flags(world, capsys):
+    code, out, _ = run(capsys, "body-economy", "--help")
+    assert code == 0 and out.strip() == dig.BODY_ECONOMY_HELP
+    for word in ("hosts", "processes", "unit_costs", "--host", "--window", "--family", "measured", "estimate"):
+        assert word in out, word
+    for bad in ((), ("../x",)):
+        code, _, err = run(capsys, "body-economy", "--host", *bad)
+        assert code == 1 and "--host needs a machine name" in err
+    code, _, err = run(capsys, "body-economy", "--hots", "circe")
+    assert code == 1 and "--help lists them" in err
+    code, out, _ = run(capsys, "help")
+    assert "body-economy --help" in out
 
 
 def test_body_economy_refuses_bad_input_and_says_when_unreachable(world, capsys, monkeypatch):

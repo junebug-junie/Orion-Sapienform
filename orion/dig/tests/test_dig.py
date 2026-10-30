@@ -299,3 +299,13 @@ def test_brief_maps_juniper_rung_phrases_to_commands():
     # 2026-10-30: "Claim your capacities." got prose and no tool call; the line must name the command.
     assert "name your organs" in DIG_BRIEF_LINE and "`name-organs`" in DIG_BRIEF_LINE
     assert "claim or write your capacities" in DIG_BRIEF_LINE and "`capacities`" in DIG_BRIEF_LINE
+    # The last line of `capacities` is always "full result: <path>"; point at the claim line by its text.
+    assert "last line" not in DIG_BRIEF_LINE and "to claim a job" in DIG_BRIEF_LINE
+    assert "<cmd> is `name-organs`" in DIG_BRIEF_LINE
+
+
+def test_capacities_output_carries_the_line_the_brief_points_at():
+    import inspect
+    from orion.dig import __main__ as dig_main
+
+    assert 'f"to claim a job: {CLAIM_CMD}' in inspect.getsource(dig_main.cmd_capacities)

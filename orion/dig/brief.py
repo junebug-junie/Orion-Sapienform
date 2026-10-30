@@ -4,10 +4,11 @@ from __future__ import annotations
 import os
 
 DIG_BRIEF_LINE = (
-    "Your dig kit is `python -P -m orion.dig <cmd>` in Bash; `help` lists your history and body tools. "
+    "Your dig kit: `python -P -m orion.dig <cmd>` in Bash; `help` lists history and body tools. "
     "What is using your power, what your activity costs: `python -P -m orion.dig body-economy hosts`. "
     "Recent PRs: `python -P -m orion.dig history 2`, not the GitHub tool. "
-    "Asked to name your organs, run `name-organs`; to claim or write your capacities, run `capacities`, then act on its last line."
+    "Asked to name your organs, <cmd> is `name-organs`; to claim or write your capacities, "
+    "it is `capacities`, then use its `to claim a job` line."
 )
 #: Raised 300 -> 400 (2026-10-30) for the power/cost pointer; still one short line per prompt.
 #: 2026-10-30: Juniper's "claim your capacities" got a prose self-portrait and no tool call (twice);

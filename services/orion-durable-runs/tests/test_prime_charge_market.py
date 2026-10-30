@@ -187,3 +187,28 @@ def test_real_redis_client_semantics_with_fakeredis():
     assert d.binding_constraint == "prime:slow"
     [e] = pc.parse_effects(fields, signal_id="sig1")
     assert e.effect == "held" and 0 < ttl <= int(2 * 3600 + pc.GRACE_SEC) + 1
+
+
+def test_the_market_charges_a_dream_bid_once_dream_declares_slow_and_refuses_quicken():
+    """Orion Prime step 4: dream.cycle declares `slow` in families.yaml, so the market reads Prime's signal for its
+    bids (sent over HTTP by orion-dream) like curiosity's; a quicken signal to dream is not received."""
+    from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R
+
+    D = "dream.cycle"
+    base = _state()
+    st = base.model_copy(update={"constraints": list(base.constraints) + [
+        R(constraint="lane:metacog", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
+          detail={"slots": 1, "window_sec": 3600.0},
+          price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""})]})
+    r = Redis(st.model_dump_json())
+    put(r, signal(family=D))
+    m = market(r)
+    want = WantV1(want_id="sleep1", family=D, producer="orion-dream.dream_cycle.binding", verb="make", tier=1,
+                  intensity=0.25)
+    d = asyncio.run(m.bid(want, NOW))
+    assert "Prime's slow charge" in d.why and d.charge is not None and d.charge >= 0.5 - 1e-9
+    assert effects(r, D)["sleep1"].signal_id == "sig1"
+    r2 = Redis(st.model_dump_json())
+    put(r2, signal(direction="quicken", family=D))
+    d2 = asyncio.run(market(r2).bid(want.model_copy(update={"want_id": "sleep2"}), NOW))
+    assert "Prime" not in d2.why and effects(r2, D) == {}

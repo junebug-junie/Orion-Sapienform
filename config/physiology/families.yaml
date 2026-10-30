@@ -53,6 +53,14 @@ families:
     deferrable_window_s: 21600
     lanes: [metacog]
     placement: one_of
+    # Its bids bind (Patch D for dream, ORION_PHYSIOLOGY_BID_DREAM_CYCLE=on, services/orion-dream/app/
+    # physiology_bind.py). Slow only. Live 7 days to 2026-10-30: of the 7 sleeps priced on dream's own
+    # rhythm, 4 bid at a value under 0.5 (the ~6 h-gap sleeps), so a slow charge really changes when Orion
+    # sleeps; a held sleep loses no replay material (the window reaches back to the last good sleep), is
+    # held at most this family's 6 h window, and an overdue sleep (48 h, DREAM_LOOKBACK_HOURS) never bids.
+    # No quicken: dream had no price deferrals, and its only holds ("no hunger yet", a cold-start
+    # artifact) are exactly what a credit never touches. services/orion-dream/evals/dream_binding_replay.py.
+    receptors: [slow]
   durable.journal_compose:
     tier: 1
     deferrable_window_s: 86400
@@ -75,7 +83,7 @@ families:
     deferrable_window_s: 21600
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
-    # The only family whose bids bind (Patch D, ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on). Slow only:
+    # Its bids bind (Patch D, ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on). Slow only:
     # a quicken credit is never applied to a want the market values at zero, and over the 7 days to
     # 2026-10-30 curiosity's only holds were exactly those ("no hunger yet") with lane prices ~0, so on
     # curiosity a credit could change nothing. Declare quicken when an organ has real price deferrals.

@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     # -> durable-runs POST /physiology/bid) and logs it beside the real outcome (held, empty, ran).
     # Never obeyed; off = no bid, no log line. app/physiology_shadow.py.
     DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True)
+    # Body economy Patch D (2026-10-30): the sleep OBEYS its bid. on: a check that clears every gate of
+    # the dream's own asks the market just before the sleep's act opens; funded (or the metacog lane full
+    # but worth its price) -> sleep; price (Prime's slow charge included), no hunger or net <= 0 -> held,
+    # bid again at a later check, never past the family's 6 h window or the overdue line
+    # (DREAM_LOOKBACK_HOURS since the last good sleep; an overdue sleep never bids). No market answer ->
+    # sleep as before. shadow (or anything else) -> the C3b shadow bid above, exactly as before.
+    # app/physiology_bind.py.
+    ORION_PHYSIOLOGY_BID_DREAM_CYCLE: str = Field(default="on")
 
     # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
     DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)

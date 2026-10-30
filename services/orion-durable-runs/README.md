@@ -933,6 +933,12 @@ exploration floor and the capacity line count the same in both arms. A signal Pr
 would have done to the last 7 days of real curiosity runs:
 `services/orion-durable-runs/evals/prime_charge_replay.py --live --days 7`.
 
+Since Orion Prime step 4 (2026-10-30) the dream cycle (`dream.cycle`) also declares `slow`. Its bids
+come over HTTP from orion-dream, and this market reads Prime's signal for them the same way. The rule
+that turns a decision into "go now" or "hold" is shared by both bid sites: `orion/physiology/binding.py`
+(`app/run_bids.py` re-exports it). Dream's own bounds and replay: `services/orion-dream/app/physiology_bind.py`,
+`services/orion-dream/evals/dream_binding_replay.py`.
+
 ### Admission bids (2026-10-27, body economy Patch C3a, SHADOW)
 
 `app/run_bids.py`: a run in a want family (curiosity investigate, self-inquiry, self-sense eval,

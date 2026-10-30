@@ -38,14 +38,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from app.run_acts import run_act_family
+# The pure rule is shared with orion-dream (the dream cycle's binding bid): one rule, two bid sites.
+from orion.physiology.binding import (  # noqa: F401 -- re-exported: tests, replays and evals import them here
+    NO_ANSWER_REASONS,
+    REBID_DEFAULT_SEC,
+    REBID_MAX_SEC,
+    REBID_MIN_SEC,
+    BindVerdict,
+    bind_verdict,
+    decision_detail,
+)
 from orion.schemas.physiology_want import WantV1, WantWindowV1
 
 logger = logging.getLogger(__name__)
@@ -69,12 +77,7 @@ SEEN_MAX = 5000
 # the pool's queue and the heat reflex still apply), so "no answer" falls back to the old gates, never
 # to "funded by the economy" and never to "held forever".
 BINDING_FAMILIES = frozenset({"durable.curiosity_investigate"})
-REBID_MIN_SEC = 120.0           # one physiology tick: a sooner re-bid reads the same prices
-REBID_MAX_SEC = 3600.0          # one lane window: a lane's measured use is a trailing hour
-REBID_DEFAULT_SEC = 600.0       # the market named no relief time (a stuck price, sated)
 HOLD_DEADLINE_MARGIN_SEC = 1800.0   # a run with its own deadline is released this long before it
-# The market could not decide: these are "no answer", not deferrals.
-NO_ANSWER_REASONS = frozenset({"physiology_unavailable", "unknown_family", "family_never_bids"})
 HOLD_EVENT = "run.economy_held"
 RELEASE_EVENT = "run.economy_admitted"
 
@@ -120,70 +123,6 @@ def hold_end(want: WantV1, deferrable_window_s: float) -> Optional[datetime]:
     if want.window.latest is not None:
         ends.append(want.window.latest - timedelta(seconds=HOLD_DEADLINE_MARGIN_SEC))
     return min(ends) if ends else None
-
-
-@dataclass(frozen=True)
-class BindVerdict:
-    """What a binding bid tells admission. ``admit``: ask the pool now. Otherwise hold until ``retry_at``."""
-    admit: bool
-    why: str                         # funded | no_answer:<reason> | window_end | deferred:<reason>
-    retry_at: Optional[datetime] = None
-    detail: dict = field(default_factory=dict)
-
-
-def decision_detail(decision: Any) -> dict:
-    """The market's own reason, as a run event / log carries it: a refusal must be readable."""
-    if decision is None:
-        return {}
-    keys = ("decision_id", "outcome", "reason", "binding_constraint", "lane", "net", "charge", "cost_frac",
-            "retry_after_sec", "why", "state_tick_id")
-    out = {}
-    for k in keys:
-        v = getattr(decision, k, None)
-        if v is not None:
-            out[k] = v
-    return out
-
-
-def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
-                 capacity_queues_at_pool: bool = True) -> BindVerdict:
-    """Pure: a binding family's decision -> admit now (ask the GPU pool), or hold until the next bid.
-
-    * no decision, or a NO_ANSWER reason -> admit (today's path; no other gate is removed);
-    * funded -> admit;
-    * ``capacity_reserved`` with a POSITIVE net -> admit (``queued_at_pool``). The lane is full, but
-      the want is worth its price: the GPU pool's own queue is the queue (it holds the run until a
-      real slot frees). A second queue in front of it, judged on a trailing hour of lane use, held
-      43 of 46 real curiosity runs for hours in the 7-day replay (scripts/analysis/
-      body_economy_binding_replay.py, ``capacity_queues_at_pool=False``). A capacity deferral is
-      queueing, never refusal;
-    * any other deferral -- ``price`` (charge beats value), ``sated`` (no hunger), ``capacity_reserved``
-      with net <= 0 (the price says no as well), ``no_acceptable_lane`` -> HOLD: the next bid is at
-      ``retry_after_sec`` clamped to [REBID_MIN_SEC, REBID_MAX_SEC] (REBID_DEFAULT_SEC when the
-      market named none), never later than ``end``; at ``end`` the run is admitted anyway
-      (``window_end``: held, never dropped);
-    * no ``end`` (nothing bounds the hold) -> admit: an unbounded hold could silence the run.
-    """
-    detail = decision_detail(decision)
-    if decision is None:
-        return BindVerdict(True, "no_answer:no_decision", detail=detail)
-    reason = str(getattr(decision, "reason", "") or "")
-    if getattr(decision, "outcome", None) == "funded":
-        return BindVerdict(True, "funded", detail=detail)
-    if reason in NO_ANSWER_REASONS:
-        return BindVerdict(True, f"no_answer:{reason}", detail=detail)
-    net = getattr(decision, "net", None)
-    worth_it = isinstance(net, (int, float)) and math.isfinite(net) and net > 0
-    if capacity_queues_at_pool and reason == "capacity_reserved" and worth_it:
-        return BindVerdict(True, "queued_at_pool", detail=detail)
-    if end is None:
-        return BindVerdict(True, "no_answer:unbounded_hold", detail=detail)
-    if now >= end:
-        return BindVerdict(True, "window_end", detail=detail)
-    ra = getattr(decision, "retry_after_sec", None)
-    wait = float(ra) if isinstance(ra, (int, float)) and math.isfinite(ra) else REBID_DEFAULT_SEC
-    wait = min(REBID_MAX_SEC, max(REBID_MIN_SEC, wait))
-    return BindVerdict(False, f"deferred:{reason}", retry_at=min(end, now + timedelta(seconds=wait)), detail=detail)
 
 
 def binding_family(request: dict[str, Any], enabled: bool) -> Optional[str]:
@@ -378,5 +317,6 @@ class RunBidder:
         return n
 
 
-__all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "PRODUCER", "RELEASE_EVENT", "RunBidder", "bind_verdict",
+__all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "NO_ANSWER_REASONS", "PRODUCER",
+           "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC", "RELEASE_EVENT", "RunBidder", "bind_verdict",
            "binding_family", "decision_detail", "hold_end", "want_for_run"]

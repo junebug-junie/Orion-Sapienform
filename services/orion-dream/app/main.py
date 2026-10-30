@@ -117,6 +117,12 @@ def _latest(*values):
     return max((_aware(v) for v in values if v is not None), default=None)
 
 
+def _economy():
+    from app.physiology_bind import BINDER, bind_mode
+
+    return BINDER if bind_mode() == "on" else None
+
+
 def build_cycle_deps():
     """Real IO for the dream cycle. Tests build CycleDeps with fakes instead."""
     from app import cycle_store, llm, rem_store
@@ -309,6 +315,9 @@ def build_cycle_deps():
         load_walkway_rows=cycle_store.load_walkway_rows if settings.DREAM_REPLAY_WALKWAY_ENABLED else None,
         walkway_timezone=settings.DREAM_WALKWAY_TIMEZONE,
         publish_act=_publish_act if settings.DREAM_ACT_EMIT_ENABLED else None,
+        # Body economy Patch D: the sleep obeys its bid (app/physiology_bind.py). One binder per process,
+        # shared by the loop and the manual endpoint. shadow -> None: the C3b shadow bid as before.
+        economy=_economy(),
     )
 
 

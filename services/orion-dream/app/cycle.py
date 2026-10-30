@@ -85,8 +85,12 @@ class CycleDeps:
     # event (app/act_emit.py). None (DREAM_ACT_EMIT_ENABLED off) = no act, and recombination
     # calls keep their own per-call correlation ids, exactly as before.
     publish_act: Optional[Callable[[Any], Awaitable[None]]] = None
-    # Set by run_cycle_once when arousal held a sleep this check (e.g. "arousal_strained"),
-    # else None, so a manual run can say "held" instead of "not due".
+    # Body economy Patch D (app/physiology_bind.py): the dream's BINDING bid. Set (the process's
+    # DreamBinder) when ORION_PHYSIOLOGY_BID_DREAM_CYCLE=on: a sleep that clears every gate of the
+    # dream's own asks the market first and obeys it. None = the C3b shadow bid, exactly as before.
+    economy: Optional[Any] = None
+    # Set by run_cycle_once when arousal or the body economy held a sleep this check (e.g.
+    # "arousal_strained", "economy_price"), else None, so a manual run can say "held" instead of "not due".
     hold_reason: Optional[str] = None
     # One deps instance per loop/request. The real clock loaders append failures;
     # each serialized check clears it before reading. Scheduling still sees None.
@@ -317,6 +321,16 @@ def _cycle_shadow(cycle_id: str):
         return _NoShadow()
 
 
+def held_note_for(want, now: datetime, verdict: str) -> str:
+    """The cycle note's body-economy line: how the bid let this sleep go, and any hold before it."""
+    try:
+        from app.physiology_bind import held_note
+
+        return held_note(want, now) + ("" if verdict == "funded" else f" | body economy: {verdict}")
+    except Exception:  # noqa: BLE001 -- a note, never a failed sleep
+        return ""
+
+
 def drive_reading_for(
     pressure: SleepPressureV1, *, now: datetime, check_id: str, last_start: Optional[datetime],
     last_end: Optional[datetime], has_candidates: bool, source_errors,
@@ -424,12 +438,20 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             )
             return None
 
-    # The check would sleep (due, overdue backstop, or forced): that is the want. Body economy
-    # Patch C3b places a SHADOW bid here, logged beside the real outcome and never obeyed
+    # The check would sleep (due, overdue backstop, or forced): that is the want.
+    # Binding (Patch D, deps.economy set, not forced): the want is the open one of this stretch since
+    # the last sleep attempt (app/physiology_bind.py), so every re-bid and the eventual act share one
+    # cycle id; its bid comes after the dream's own gates, just before the act opens (below).
+    # Shadow (Patch C3b): a SHADOW bid here, logged beside the real outcome and never obeyed
     # (app/physiology_shadow.py). The cycle id is minted here instead of after the arousal gate
     # so the bid carries the sleep act's correlation id; a held check simply never uses it.
-    cycle_id = f"dc-{uuid4().hex[:12]}"
-    shadow = _cycle_shadow(cycle_id)
+    want = deps.economy.current(started, last_end) if (deps.economy is not None and not force) else None
+    if want is not None:
+        cycle_id = want.cycle_id
+        shadow = _NoShadow()
+    else:
+        cycle_id = f"dc-{uuid4().hex[:12]}"
+        shadow = _cycle_shadow(cycle_id)
     if not force:
         # Read only when the dream would otherwise sleep: one Redis GET per would-be
         # sleep, and the log names exactly the sleeps arousal held. Forced runs skip it.
@@ -449,8 +471,10 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             return None
 
     if not candidates:
-        # Nothing to replay: the cycle is recorded `empty` and opens no act.
+        # Nothing to replay: the cycle is recorded `empty` and opens no act (and never bids).
         shadow.settle("blocked:nothing_to_replay")
+        if want is not None:
+            deps.economy.close()
         cycle = DreamCycleV1(
             cycle_id=cycle_id, trigger=trigger, status="empty",  # type: ignore[arg-type]
             started_at=started, ended_at=datetime.now(timezone.utc), pressure=pressure,
@@ -459,6 +483,25 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         await asyncio.to_thread(deps.persist_cycle, cycle)
         await _publish_after_sleep(deps, cycle, last_start)
         return cycle
+
+    economy_note = ""
+    if want is not None:
+        # The binding bid: every gate of the dream's own has passed, the act would open now.
+        verdict = await deps.economy.bind(
+            want, started, last_window_start=last_start, lookback_hours=settings.DREAM_LOOKBACK_HOURS,
+            check_interval_sec=settings.DREAM_CYCLE_CHECK_INTERVAL_SEC, overdue=overdue(started, last_start),
+        )
+        if not verdict.admit:
+            reason = str(verdict.detail.get("reason") or verdict.why.split(":", 1)[-1])
+            deps.hold_reason = f"economy_{reason}"
+            logger.info(
+                "dream_cycle held reason=economy_%s cycle_id=%s retry_at=%s pressure=%.2f/%.2f why=%r",
+                reason, cycle_id, want.retry_at.isoformat() if want.retry_at else None,
+                pressure.pressure, pressure.threshold, str(verdict.detail.get("why") or "")[:300],
+            )
+            return None
+        economy_note = held_note_for(want, started, verdict.why)
+        deps.economy.close()
 
     act = CycleActTrace(deps, cycle_id)
     shadow.settle("ran")
@@ -524,7 +567,8 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
             + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
             + (f" | walkway candidates={len(walkway)}" if deps.load_walkway_rows is not None else "")
-            + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
+            + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else "")
+            + economy_note,
         )
         persisted = await asyncio.to_thread(deps.persist_cycle, cycle)
         if not persisted:
@@ -543,6 +587,9 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
     finally:
         act.unbind_leases(lease_token)
     await act.close(*act_emit.cycle_outcome(cycle, persisted=persisted))
+    if want is not None:
+        # The act closed: free the sleep's funded reservation now instead of at expiry.
+        await deps.economy.release_after_sleep(want)
     # No story for an unsaved sleep: its audit would point at a cycle that doesn't exist.
     if deps.start_story is not None and persisted:
         story = story_trigger(

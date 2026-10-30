@@ -293,3 +293,20 @@ def test_body_economy_refuses_bad_input_and_says_when_unreachable(world, capsys,
     monkeypatch.setenv("ORION_PHYSIOLOGY_REPORT_URL", "http://127.0.0.1:9")
     code, _, err = run(capsys, "body-economy")
     assert code == 1 and "unreachable" in err
+
+
+def test_brief_routes_any_self_request_to_help_not_to_exact_phrases():
+    # 2026-10-30: "Claim your capabilities/capacities" got prose and no tool call. Juniper ships ~30
+    # PRs a day and won't remember command words, so the line must route by topic, in any words.
+    assert "in any words" in DIG_BRIEF_LINE and "help first" in DIG_BRIEF_LINE
+    for topic in ("body", "organs", "capacities", "name, claim or write"):
+        assert topic in DIG_BRIEF_LINE
+    # The last line of `capacities` is always "full result: <path>"; never point Orion at it.
+    assert "last line" not in DIG_BRIEF_LINE
+
+
+def test_capacities_output_carries_the_line_the_brief_points_at():
+    import inspect
+    from orion.dig import __main__ as dig_main
+
+    assert 'f"to claim a job: {CLAIM_CMD}' in inspect.getsource(dig_main.cmd_capacities)

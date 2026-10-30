@@ -871,6 +871,10 @@ class Settings(BaseSettings):
     # Hourly kWh per Orion power source (app/orion_energy_rollup.py), kept after raw watts are
     # pruned. 0 disables, and months of Orion energy history are then lost after 30 days.
     orion_energy_rollup_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ROLLUP_INTERVAL_SEC")
+    # Hourly attribution of each host's chassis energy above its pinned rest (config/physiology/
+    # rest_body.yaml) into rest / sponsored / metered (acts) / unattributed:
+    # orion_energy_attribution_hourly (app/orion_energy_attribution.py). 0 disables.
+    orion_energy_attribution_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ATTRIBUTION_INTERVAL_SEC")
     # Act downstream use (app/act_downstream_use.py, body economy weight source (a)): per act,
     # was its output cited by a later decision within 72 h. 0 disables (no rows, no weights).
     act_downstream_use_interval_sec: float = Field(900.0, alias="ACT_DOWNSTREAM_USE_INTERVAL_SEC")
@@ -879,8 +883,9 @@ class Settings(BaseSettings):
     # at close, write Orion's own non-final `acted` verdict on that loop (attention_loop_outcome,
     # actor='orion'). Off: no stamping, no Orion loop verdicts; the ledger itself is unchanged.
     sql_writer_act_workspace_binding_enabled: bool = Field(True, alias="SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED")
-    # Act energy cost: fill grammar_acts.cost_json wh_by_host / usd / heat_c_by_host / basis on close
-    # from the act's GPU leases and per-card watts (orion/grammar/act_energy_fill.py).
+    # Act energy cost: fill grammar_acts.cost_json wh_by_host (whole machine above the pinned rest),
+    # wh_gpu_by_host / usd / heat_c_by_host / basis on close from the act's GPU leases, per-card watts
+    # and the host's chassis watts (orion/grammar/act_energy_fill.py).
     sql_writer_act_energy_cost_enabled: bool = Field(True, alias="SQL_WRITER_ACT_ENERGY_COST_ENABLED")
 
     @property

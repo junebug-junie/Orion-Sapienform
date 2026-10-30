@@ -158,7 +158,7 @@ readers:
     reason: loads cabinet temperature points for the cabinet-heat tick.
   - module: orion/grammar/act_energy_fill.py
     role: display
-    reason: act energy cost (2026-10-29); reads the heat fit to price an act's heat_c_by_host in grammar_acts.cost_json. Records a cost, gates nothing.
+    reason: act energy cost (2026-10-29; whole machine 2026-10-30); reads the heat fit and the pinned rest (rest_body.yaml) to price an act's wh_by_host / heat_c_by_host in grammar_acts.cost_json and the hourly attribution rows. Records a cost, gates nothing.
   - module: services/orion-dream/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (a dream check that would sleep) logged beside the real gate; never obeyed.

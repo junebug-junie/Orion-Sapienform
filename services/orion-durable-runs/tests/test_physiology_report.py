@@ -98,6 +98,16 @@ def full_rows() -> dict:
                                         "container_cpu_watts.orion-circe-atlas-agent": 18.5,
                                         "container_cpu_watts.orion-circe-vision-host": 4.25,
                                         "container_cpu_watts_small": 1.0, "cpu_watts_host_other": 2.0}}],
+        pr.ATTRIBUTION_PRESENT_SQL: [{"present": True}],
+        # circe, 2026-10-30 00-03Z replayed live (evals/act_energy_closure.py): 0.8% coverage.
+        pr.ATTRIBUTION_DAILY_SQL: [
+            {"host": "circe", "day": "2026-10-30", "hours": 3, "rest_wh": 1623.0, "above_rest_wh": 1748.35,
+             "sponsored_wh": 0.0, "metered_wh": 13.91, "leased_unmetered_wh": 1495.07, "unattributed_wh": 1734.44,
+             "min_hour_unattributed_wh": 500.0, "covered_h": 3.0, "split_unknown_h": 0.0},
+            {"host": "athena", "day": "2026-10-30", "hours": 3, "rest_wh": 1020.0, "above_rest_wh": 1228.95,
+             "sponsored_wh": 549.37, "metered_wh": 0.0, "leased_unmetered_wh": 0.0, "unattributed_wh": 679.57,
+             "min_hour_unattributed_wh": 200.0, "covered_h": 3.0, "split_unknown_h": 0.0}],
+        pr.ATTRIBUTION_CHARGED_SQL: [{"host": "circe", "day": "2026-10-30", "charged_wh": 13.97, "acts": 58}],
         pr.HOSTS_REST_SQL: [{"node": "circe", "chassis_rest": 541.0, "gpu_rest": 190.0, "cpu_rest": 45.0,
                               "other_rest": 280.0, "gpu1_rest": None}],
         pr.HOSTS_FLOOR_SQL: [{"node": "circe", "chassis_floor": 578.0, "gpu1_floor": 42.0}],
@@ -186,6 +196,11 @@ def test_full_report_fills_every_section_from_rows():
     assert units["one reverie_diffusion run"].status == "measured"
     assert units["one hub.outreach act (estimate: family mean)"].wh == 2.0 and units["one hub.outreach act (estimate: family mean)"].usd == 0.0003
     assert units["per 1k tokens"].status == "not_measured" and "token" in units["per 1k tokens"].source
+    circe = units["work not yet metered on circe, 2026-10-30 UTC"]
+    assert circe.status == "measured" and circe.wh == 1734.4 and circe.usd == pytest.approx(1734.44 / 1000 * 0.1255, abs=1e-4)
+    assert "coverage 0.8% of activity" in circe.source and "GPU leases whose turn has no act 1495" in circe.source
+    assert "acts actually charged 14 (58 acts)" in circe.source and "OVER" not in circe.source
+    assert "sponsored 549" in units["work not yet metered on athena, 2026-10-30 UTC"].source
     assert rep.waste.failed_lease_s_by_lane["agent"] == 8858.2 and rep.waste.top[0].reason == "attempt_failed"
     assert rep.queue_wait[0].p90_s == 5275.0
     assert rep.decisions[0].prices_seen == {"heat": 0.5, "lane:agent": 0.3}
@@ -326,6 +341,12 @@ def test_report_sql_on_postgres():
            priority varchar, role varchar, cards json, turn_correlation_id varchar, attempt integer,
            waited_ms double precision, held_ms double precision, reason varchar, detail json)""",
         "CREATE TABLE orion_energy_hourly (hour_start timestamptz, source varchar, kwh double precision, PRIMARY KEY (hour_start, source))",
+        # services/orion-sql-writer/app/models/orion_energy_attribution_hourly.py
+        """CREATE TABLE orion_energy_attribution_hourly (hour_start timestamptz, host varchar, rest_w double precision,
+           rest_wh double precision, above_rest_wh double precision, sponsored_wh double precision,
+           metered_wh double precision, leased_unmetered_wh double precision, unattributed_wh double precision,
+           covered_sec double precision, split_unknown_sec double precision, rest_source varchar,
+           updated_at timestamptz, PRIMARY KEY (hour_start, host))""",
         """CREATE TABLE energy_run_cost (id bigserial PRIMARY KEY, intent_id varchar, workload_kind varchar,
            window_start timestamptz, energy_kwh double precision, estimated_run_cost_usd double precision)""",
         "CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, opened_at timestamptz, cost_json jsonb, correlation_id varchar)",
@@ -373,8 +394,15 @@ def test_report_sql_on_postgres():
                                            "waited_ms, held_ms, reason) VALUES (%s, %s, %s, %s, 'background', 'agent', %s, %s, %s)",
                                            (f"e{i}", now - timedelta(minutes=30 - i), ev, holder, waited, held, reason))
                     await conn.execute("INSERT INTO orion_energy_hourly VALUES (%s, 'athena', 1.5)", (now - timedelta(hours=3),))
+                    for h in (2, 3):
+                        await conn.execute("INSERT INTO orion_energy_attribution_hourly VALUES (%s, 'circe', 541, 541, "
+                                           "600, 0, 10, 500, 590, 3600, 0, 'fixture', now())",
+                                           (now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h),))
                     await conn.execute("INSERT INTO energy_run_cost (workload_kind, window_start, energy_kwh, estimated_run_cost_usd) "
                                        "VALUES ('reverie_diffusion', %s, 0.0004, 0.00005)", (now - timedelta(hours=1),))
+                    await conn.execute("INSERT INTO grammar_acts VALUES ('a2', 'hub.chat_reply', %s, %s, 'corr-2')",
+                                       (now - timedelta(hours=2), json.dumps({"wh_by_host": {"circe": 7.0},
+                                                                              "wh_gpu_by_host": {"circe": 3.0}})))
                     await conn.execute("INSERT INTO grammar_acts VALUES ('a1', 'hub.outreach', %s, %s, 'corr-1')",
                                        (now - timedelta(hours=1), json.dumps({"wh_by_host": {"athena": 1.5, "circe": 0.5}, "usd": 0.001})))
                     for cid, rec, corr, p_, c_ in (("c1", "gateway", "corr-1", 900, 100), ("c2", "harness_relay", "corr-1", 400, 100),
@@ -432,6 +460,9 @@ def test_report_sql_on_postgres():
                 # would double the act's tokens. Totals: gateway only (2 calls, 1,100).
                 assert tok.status == "measured" and tok.wh == pytest.approx(2.0 * 1000 / 1000, abs=1e-3)
                 assert "2 gateway calls, 1,100 tokens" in tok.source
+                met = [u for u in rep.unit_costs if u.unit.startswith("work not yet metered on circe")]
+                assert met and sum(u.wh for u in met) == pytest.approx(1180.0) and "coverage 1.7%" in met[0].source
+                assert any("acts actually charged 7 (1 acts)" in u.source for u in met)
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
                 await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
@@ -540,6 +571,24 @@ def test_processes_below_idle_floor_is_a_reason_not_zero():
     assert any("below the fitted idle floor" in r for r in _reasons(rep, "processes"))
 
 
+def test_attribution_says_absent_table_and_flags_over_attribution():
+    rows = full_rows()
+    rows[pr.ATTRIBUTION_PRESENT_SQL] = [{"present": False}]
+    units = {u.unit: u for u in _build(rows).unit_costs}
+    assert "does not exist yet" in units["work not yet metered (per host per day)"].source
+    rows[pr.ATTRIBUTION_PRESENT_SQL] = [{"present": True}]
+    rows[pr.ATTRIBUTION_DAILY_SQL] = [dict(rows[pr.ATTRIBUTION_DAILY_SQL][0], min_hour_unattributed_wh=-3.5)]
+    units = {u.unit: u for u in _build(rows).unit_costs}
+    assert "OVER-ATTRIBUTED: an hour reads -3.50" in units["work not yet metered on circe, 2026-10-30 UTC"].source
+    rows[pr.ATTRIBUTION_DAILY_SQL] = [dict(rows[pr.ATTRIBUTION_DAILY_SQL][0], split_unknown_h=2.0)]
+    rows[pr.ATTRIBUTION_CHARGED_SQL] = [{"host": "circe", "day": "2026-10-30", "charged_wh": 5000.0, "acts": 3}]
+    src = {u.unit: u for u in _build(rows).unit_costs}["work not yet metered on circe, 2026-10-30 UTC"].source
+    assert "OVER-CHARGED: acts were charged 5000" in src and "PARTIAL: for 2.0 h" in src
+    rows[pr.ATTRIBUTION_DAILY_SQL] = []
+    units = {u.unit: u for u in _build(rows).unit_costs}
+    assert units["work not yet metered (per host per day)"].status == "not_measured"
+
+
 # --- hosts: what is spinning each machine ------------------------------------------------------
 
 
@@ -607,7 +656,8 @@ def test_hosts_say_what_spins_each_machine():
     c = rep.hosts[0]
     # pinned rest (no rest_body.yaml in the repo yet): the dated default, never the rolling floor
     assert c.chassis_w_rest == 541.0 and c.recent_floor_w == 578.0 and "2026-10-01..2026-10-13" in c.rest_basis
-    assert "pinned default" in c.rest_basis
+    # rest_body.yaml now exists (#2992), so the basis names the file; without it, "pinned default".
+    assert "pinned in config/physiology/rest_body.yaml" in c.rest_basis or "pinned default" in c.rest_basis
     assert c.above_rest_w == 609.0 and c.usd_per_month_at_this_rate == round(609 * 730 / 1000 * 0.1255, 2)
     assert c.rest_usd_per_month == round(541 * 730 / 1000 * 0.1255, 2)
     assert (c.gpu_w, c.cpu_w, c.other_w) == (450.0, 120.0, 580.0)       # other = chassis - gpu - cpu

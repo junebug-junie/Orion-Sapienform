@@ -17,7 +17,9 @@ Sources (all read-only):
 * rhythm      -- ``gpu_pool_events`` lease closes: background (deferrable) vs all lease-seconds
 * money       -- the newest ``energy`` constraint reading + ``orion_energy_hourly`` per local day
 * unit_costs  -- the energy rate, ``config/physiology/heat_sensitivity.yaml``, ``energy_run_cost``,
-                 ``grammar_acts.cost_json`` (``wh_by_host``/``usd``/``heat_c_by_host`` when filled)
+                 ``grammar_acts.cost_json`` (``wh_by_host``/``usd``/``heat_c_by_host`` when filled),
+                 ``orion_energy_attribution_hourly`` (per host per UTC day: energy above the pinned rest
+                 that no act was charged, "work not yet metered", and coverage)
 * waste       -- lease closes whose reason is not a success
 * queue_wait  -- ``waited_ms`` on granted leases, family joined from ``want_ledger`` for durable runs
 * decisions   -- ``want_ledger`` rows, newest first
@@ -260,6 +262,31 @@ FROM grammar_acts
 WHERE opened_at >= %(since)s AND opened_at < %(until)s AND cost_json IS NOT NULL
   AND (%(family)s::text IS NULL OR actor = %(family)s)
 """
+
+# Hourly attribution (sql-writer app/orion_energy_attribution.py): per host per UTC day, the energy
+# above the pinned rest split into sponsored / metered (acts) / unattributed. Newest days first.
+ATTRIBUTION_PRESENT_SQL = "SELECT to_regclass('orion_energy_attribution_hourly') IS NOT NULL AS present"
+ATTRIBUTION_DAILY_SQL = """
+SELECT host, to_char(hour_start AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, COUNT(*) AS hours,
+       SUM(rest_wh) AS rest_wh, SUM(above_rest_wh) AS above_rest_wh, SUM(sponsored_wh) AS sponsored_wh,
+       SUM(metered_wh) AS metered_wh, SUM(leased_unmetered_wh) AS leased_unmetered_wh,
+       SUM(unattributed_wh) AS unattributed_wh, MIN(unattributed_wh) AS min_hour_unattributed_wh,
+       SUM(covered_sec) / 3600.0 AS covered_h, SUM(split_unknown_sec) / 3600.0 AS split_unknown_h
+FROM orion_energy_attribution_hourly
+WHERE hour_start >= %(since)s AND hour_start < %(until)s
+GROUP BY 1, 2 ORDER BY 2 DESC, 1
+"""
+# What acts were actually CHARGED per host per UTC day (whole-machine meter only: acts whose cost_json
+# carries wh_gpu_by_host), to set beside the attributable ``metered_wh``.
+ATTRIBUTION_CHARGED_SQL = """
+SELECT e.key AS host, to_char(a.opened_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+       SUM(e.value::float) AS charged_wh, COUNT(*) AS acts
+FROM grammar_acts a, jsonb_each_text(a.cost_json->'wh_by_host') AS e(key, value)
+WHERE a.opened_at >= %(since)s AND a.opened_at < %(until)s AND a.cost_json ? 'wh_gpu_by_host'
+GROUP BY 1, 2
+"""
+#: Days of "work not yet metered" rows in unit_costs (newest first); the table holds every day.
+ATTRIBUTION_DAYS_SHOWN = 3
 
 # Per-call token ledger (llm_call_usage, PR #2974; services/orion-sql-db/manual_migration_llm_call_usage_v1.sql).
 # Count recorder='gateway' only, for totals AND per act. The warm relay's harness_relay recorder is retired
@@ -698,7 +725,8 @@ def load_heat_hosts(path: str) -> tuple[list[HeatHost], Optional[str]]:
 
 def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat_err: Optional[str],
                      run_costs: Sequence[Mapping], act_costs: Optional[Mapping[str, dict]],
-                     tokens: Optional[Mapping] = None) -> tuple[list[dict], list[dict]]:
+                     tokens: Optional[Mapping] = None,
+                     attribution: Optional[Mapping] = None) -> tuple[list[dict], list[dict]]:
     """``act_costs`` None: the act-cost read failed (its reason is already in ``missing``)."""
     rows: list[dict] = []
     missing: list[dict] = []
@@ -731,18 +759,73 @@ def shape_unit_costs(rate: Optional[float], heat_hosts: Sequence[HeatHost], heat
             else f"{a['n']} acts"
         rows.append({"unit": f"one {actor} act (estimate: family mean)", "usd": _r(a["usd"], 6), "wh": _r(a["wh"], 3),
                      "heat_c": _r(a["heat_c"], 4), "status": "measured",
-                     "source": f"grammar_acts.cost_json, GPU watts above idle only; {total} in the window. The "
-                               "family total is the honest number; one act is an estimate"})
+                     "source": f"grammar_acts.cost_json, whole machine above rest (chassis) from 2026-10-30, GPU "
+                               f"above idle only before; {total} in the window. The family total is the honest "
+                               "number; one act is an estimate"})
     if act_costs is not None and not act_costs:
         rows.append({"unit": "one act (any family)", "usd": None, "wh": None, "heat_c": None,
                      "status": "not_measured",
                      "source": "no act in the window carries cost_json wh_by_host / usd / heat_c_by_host yet "
                                "(the per-act energy fill is being added)"})
     rows.append(token_cost_row(tokens))
+    if attribution is not None:
+        if not attribution.get("present"):
+            rows.append({"unit": "work not yet metered (per host per day)", "usd": None, "wh": None, "heat_c": None,
+                         "status": "not_measured", "source": "orion_energy_attribution_hourly does not exist yet "
+                         "(the sql-writer that creates it is not deployed)"})
+        else:
+            rows.extend(attribution_rows(attribution.get("rows"), rate, attribution.get("charged")))
     if not any(r["status"] == "measured" for r in rows):
         missing.append({"section": "unit_costs", "reason": "nothing measured in the window: every row is derived "
                         "from the tariff and the heat fit, or not measured yet"})
     return rows, missing
+
+
+def attribution_rows(rows: Optional[Sequence[Mapping]], rate: Optional[float],
+                     charged: Optional[Sequence[Mapping]] = None) -> list[dict]:
+    """Per host per UTC day: the energy above the pinned rest that no act was charged ("work not yet
+    metered"), with the split it closes on. ``rows`` None: the read failed (reason in ``missing``);
+    {"present": False} sentinel handled by the caller."""
+    if rows is None:
+        return [{"unit": "work not yet metered (per host per day)", "usd": None, "wh": None, "heat_c": None,
+                 "status": "not_measured", "source": "orion_energy_attribution_hourly read failed (see missing)"}]
+    if not rows:
+        return [{"unit": "work not yet metered (per host per day)", "usd": None, "wh": None, "heat_c": None,
+                 "status": "not_measured",
+                 "source": "orion_energy_attribution_hourly has no row in the window (the sql-writer hourly "
+                           "attribution has not run, or no host had a chassis reading)"}]
+    days = sorted({str(r["day"]) for r in rows}, reverse=True)[:ATTRIBUTION_DAYS_SHOWN]
+    paid = {(str(c["host"]), str(c["day"])): c for c in (charged or [])}
+    out = []
+    for r in rows:
+        if str(r["day"]) not in days:
+            continue
+        above, sponsored = _f(r.get("above_rest_wh")) or 0.0, _f(r.get("sponsored_wh")) or 0.0
+        metered, un = _f(r.get("metered_wh")) or 0.0, _f(r.get("unattributed_wh")) or 0.0
+        leased_un = _f(r.get("leased_unmetered_wh")) or 0.0
+        activity = above - sponsored
+        cov = f"{metered / activity:.1%}" if activity > 0 else "n/a"
+        neg = _f(r.get("min_hour_unattributed_wh"))
+        warn = (f" OVER-ATTRIBUTED: an hour reads {neg:.2f} W·h unattributed"
+                if neg is not None and neg < -0.01 else "")
+        c = paid.get((str(r["host"]), str(r["day"])))
+        charged_wh = _f(c.get("charged_wh")) if c else None
+        if charged_wh is not None and charged_wh > activity + 0.5:
+            warn += (f" OVER-CHARGED: acts were charged {charged_wh:.0f} W·h, more than the "
+                     f"{activity:.0f} W·h of activity above rest (double counting)")
+        paid_txt = (f"acts actually charged {charged_wh:.0f} ({int(c.get('acts') or 0)} acts)"
+                    if charged_wh is not None else "no act charged by the whole-machine meter")
+        unknown = _f(r.get("split_unknown_h")) or 0.0
+        partial = (f" PARTIAL: for {unknown:.1f} h a CPU or card reading was missing, so their above-rest "
+                   "energy could not be split and is all in unattributed") if unknown > 0.05 else ""
+        out.append({
+            "unit": f"work not yet metered on {r['host']}, {r['day']} UTC", "wh": round(un, 1),
+            "usd": _r(un / 1000.0 * rate, 4) if rate is not None else None, "heat_c": None, "status": "measured",
+            "source": (f"chassis above the pinned rest {above:.0f} W·h over {_f(r.get('covered_h')) or 0:.1f} h "
+                       f"(rest {_f(r.get('rest_wh')) or 0:.0f} W·h); sponsored {sponsored:.0f}; attributable to "
+                       f"acts {metered:.0f} (coverage {cov} of activity); {paid_txt}; GPU leases whose turn has "
+                       f"no act {leased_un:.0f} of the unmetered; orion_energy_attribution_hourly{partial}{warn}")})
+    return out
 
 
 def token_cost_row(tokens: Optional[Mapping]) -> dict:
@@ -1393,6 +1476,14 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             join = ((await _rows(pool, TOKENS_ACT_JOIN_SQL, base)) or [{}])[0]
             return {"present": True, **total, "join": join}
         tasks["tokens"] = timed("tokens", tokens, ("unit_costs",))
+
+        async def attribution():
+            present = bool(((await _rows(pool, ATTRIBUTION_PRESENT_SQL, {})) or [{}])[0].get("present"))
+            if not present:
+                return {"present": False}
+            return {"present": True, "rows": await _rows(pool, ATTRIBUTION_DAILY_SQL, base),
+                    "charged": await _rows(pool, ATTRIBUTION_CHARGED_SQL, base)}
+        tasks["attribution"] = timed("attribution", attribution, ("unit_costs",))
     if "waste" in wanted:
         wp = {**base, "events": list(WASTE_CLOSE_EVENTS), "ok": list(OK_CLOSE_REASONS), "top": WASTE_TOP_N}
 
@@ -1477,7 +1568,10 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         def _unit():
             rate = shape_money(latest_row, [])[0]["rate_usd_per_kwh"] if latest_row else None
             hosts, herr = load_heat_hosts(deps.heat_sensitivity_path)
-            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac, results.get("tokens"))
+            att = results.get("attribution") if "attribution" in results else None
+            if "attribution" in results and att is None:
+                att = {"present": True, "rows": None}  # the read failed; its reason is in missing
+            return shape_unit_costs(rate, hosts, herr, results["run_costs"], ac, results.get("tokens"), att)
         add("unit_costs", _unit)
     if "waste" in wanted and results.get("waste") is not None:
         add("waste", lambda: shape_waste(*results["waste"]))

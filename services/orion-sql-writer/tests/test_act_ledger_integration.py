@@ -553,16 +553,17 @@ def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypa
     act_energy_fill._REST_CACHE.clear()
     rest_cfg = parse_rest_body({"version": 1, "hosts": {"circe": {"rest_w": 600, "approved_rest_w": 600}}})
     monkeypatch.setattr(act_energy_fill, "rest_body_config", lambda: (rest_cfg, None))
-    # The day before t0's UTC day: the cards at idle (card floors are day-keyed): gpu2 40 W, gpu1 30 W.
+    # The day before t0's UTC day: the cards at idle (card floors are day-keyed). Every pool card on
+    # circe (config/gpu_pool.yaml gpu0-3) reports: a silent pool card would force the GPU-only fallback.
     day_start = t0.replace(hour=0, minute=0, second=0)
     for i in range(120):
         _summary(session, "circe", day_start - timedelta(hours=2) + timedelta(seconds=30 * i),
-                 {"gpu2_watts": 40.0, "gpu1_watts": 30.0})
+                 {"gpu0_watts": 30.0, "gpu1_watts": 30.0, "gpu2_watts": 40.0, "gpu3_watts": 30.0})
     # Then 140 W on gpu2 while the act's lease holds it; chassis 200 W above rest, CPU at its fitted
     # idle: the act's card is the host's whole load, so the whole machine is 2x its GPU part.
     for i in range(-4, 8):
         _summary(session, "circe", t0 + timedelta(seconds=30 * i), {
-            "gpu2_watts": 140.0, "gpu1_watts": 30.0, "chassis_watts": 800.0, "cpu_watts_total": 50.0,
+            "gpu2_watts": 140.0, "gpu0_watts": 30.0, "gpu1_watts": 30.0, "gpu3_watts": 30.0, "chassis_watts": 800.0, "cpu_watts_total": 50.0,
             "cpu_idle_watts": 50.0})
     session.execute(text("INSERT INTO energy_cost_accrued (interval_start, marginal_usd_per_kwh, tariff_version) "
                          "VALUES (:t, 0.1254564295292, 'rmp-test')"), {"t": t0 - timedelta(days=1)})

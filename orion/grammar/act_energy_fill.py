@@ -263,7 +263,7 @@ def read_host_series(conn: Any, host: str, ws: datetime, we: datetime, *,
                 continue
             if w >= 0:
                 cards.setdefault(idx, []).append((t, w))
-        if sponsored_globs is not None:
+        if sponsored_globs is not None and row[5] is not None:
             cont = row[5]
             cont = json.loads(cont) if isinstance(cont, str) else (cont or {})
             total = 0.0
@@ -405,11 +405,14 @@ def act_energy_cost(conn: Any, *, correlation_id: str, since: datetime, until: d
         ws, we = min(m[1] for m in all_windows), max(m[2] for m in all_windows)
         series = read_host_series(conn, host, ws, we)
         days = _days(ws, we)
-        idle, floors, why = host_floors(conn, host, days, set(series.cards) | set(cards))
+        # Every pool card on the host is in the split's denominator (same as attribute_host_hour): a
+        # card that stops reporting is a hole (GPU-only fallback), never dropped from the load.
+        pool_cards = {i for (h, i) in locations.values() if h == host}
+        idle, floors, why = host_floors(conn, host, days, set(series.cards) | set(cards) | pool_cards)
         if why is None and not series.chassis:
             why = "no chassis_watts reading in the window"
         notes: list[str] = []
-        gpu_wh = machine_wh = 0.0
+        gpu_wh = machine_wh = machine_gpu_wh = 0.0
         for index, (card, mine) in cards.items():
             if failed:
                 break
@@ -437,12 +440,17 @@ def act_energy_cost(conn: Any, *, correlation_id: str, since: datetime, until: d
                                "card reading within 90 s")
                     else:
                         machine_wh += whole.wh
+                        machine_gpu_wh += whole.wh_gpu
                 quality = "" if got.samples_in_window else " (interpolated: no sample inside the lease)"
                 notes.append(f"{card}: {got.wh:.4f} Wh GPU, {got.samples_in_window} samples in "
                              f"{(end - start).total_seconds():.0f} s{quality}, share {got.mean_share:.2f}, "
                              f"idle {idle[_days(start, start)[0]][index]:.1f} W")
         if failed:
             break
+        # The machine path's own GPU part when it ran (per-day card floors across midnight), so
+        # wh_gpu_by_host and the GPU inside wh_by_host use the same floors.
+        if why is None:
+            gpu_wh = machine_gpu_wh
         wh_gpu_by_host[host] = gpu_wh
         if why is None:
             wh_by_host[host] = machine_wh

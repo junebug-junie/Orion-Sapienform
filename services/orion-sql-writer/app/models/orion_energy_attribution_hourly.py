@@ -14,7 +14,10 @@ class OrionEnergyAttributionHourlySQL(Base):
     * ``rest_wh``: the pinned rest (``rest_w``, config/physiology/rest_body.yaml) x covered time.
     * ``above_rest_wh``: chassis watts (at the wall) above ``rest_w``, clamped at 0 per second.
     * ``sponsored_wh``: the sponsored containers' CPU share of it (Juniper's work, e.g. the dojo).
-    * ``metered_wh``: the share of GPU leases whose turn has an act (what acts are charged).
+    * ``metered_wh``: the share of GPU leases whose turn has an act: ATTRIBUTABLE to acts. What acts
+      were actually charged is sum(grammar_acts.cost_json.wh_by_host); the physiology report sets the
+      two side by side per day (an act fill that failed, fell back to GPU-only, or double counted a
+      shared correlation_id makes them differ).
     * ``leased_unmetered_wh``: the share of GPU leases whose turn has NO act (part of unattributed).
     * ``unattributed_wh`` = above_rest - sponsored - metered: work not yet metered (CPU of
       non-sponsored processes, unleased cards, leases with no act, above-rest watts with no load).

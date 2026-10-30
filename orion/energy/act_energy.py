@@ -146,6 +146,13 @@ def card_energy(points: Sequence[tuple[datetime, float]], *, idle_w: float, star
     return CardEnergy(wh=joules / JOULES_PER_WH, samples_in_window=inside, mean_share=share_sum / steps)
 
 
+# Cap on chassis_above_rest / load_above_rest. Near-zero load makes the per-sample ratio explode
+# (live circe 10-29 23Z..10-30 03Z: median 2.3-2.8, hourly max up to 78), so a card a few watts
+# above idle would take the whole surplus. 8 is ~3x the fitted slope (2.69) and the old p99 (8.4).
+# Watts over the cap are charged to nobody: they land in unattributed in both paths.
+RATIO_CAP = 8.0
+
+
 @dataclass(frozen=True)
 class HostFloors:
     """One host's floors for one UTC day: pinned chassis rest, each card's idle floor (by index)."""
@@ -209,7 +216,8 @@ def _split(at: _At, floors: HostFloors, t: datetime) -> Optional[_Split]:
     cpu = max(0.0, cpu)
     load = cpu + sum(cards.values())
     above = max(0.0, ch - floors.chassis_w)
-    return _Split(above=above, ratio=above / load if load > 0.0 else 0.0, card_above=cards, cpu_above=cpu)
+    ratio = min(above / load, RATIO_CAP) if load > 0.0 else 0.0
+    return _Split(above=above, ratio=ratio, card_above=cards, cpu_above=cpu)
 
 
 @dataclass(frozen=True)
@@ -358,6 +366,7 @@ __all__ = [
     "HostSeries",
     "LeaseSpan",
     "MachineEnergy",
+    "RATIO_CAP",
     "attribute_host_window",
     "machine_energy",
     "JOULES_PER_KWH",

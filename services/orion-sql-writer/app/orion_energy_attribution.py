@@ -8,6 +8,10 @@ that opened after their leases ran.
 
 Closure, per row: above_rest = sponsored + metered + unattributed. Unattributed is stored as
 computed; a negative value is over-attribution and is logged as a warning, never clipped.
+
+``metered_wh`` is what is ATTRIBUTABLE to acts: the share of leases whose turn has an act. What acts
+were actually CHARGED is the sum of ``grammar_acts.cost_json.wh_by_host``; the physiology report
+compares the two per day (double counting shows there, e.g. two acts on one correlation_id).
 """
 
 from __future__ import annotations
@@ -28,6 +32,13 @@ BACKFILL_HOURS = 48
 SETTLE = timedelta(minutes=3)
 # Over-attribution beyond float noise.
 NEGATIVE_TOLERANCE_WH = 0.01
+
+# Cheap pre-check: a host with no chassis reading in the span (hecate asleep, any host offline) is
+# skipped instead of recomputing its whole backfill every tick.
+_HAS_CHASSIS_SQL = text(
+    "SELECT 1 FROM orion_biometrics_summary WHERE node = :node AND timestamp >= :since AND timestamp < :until "
+    "AND measurements ? 'chassis_watts' LIMIT 1"
+)
 
 _LATEST_SQL = text("SELECT MAX(hour_start) FROM orion_energy_attribution_hourly WHERE host = :host")
 
@@ -60,7 +71,7 @@ def hours_to_compute(latest: datetime | None, now: datetime) -> list[datetime]:
 
 
 def run_one_attribution(engine=None, now: datetime | None = None) -> int:
-    from orion.grammar.act_energy_fill import attribute_host_hour, rest_body_config
+    from orion.grammar.act_energy_fill import rest_body_config
 
     if engine is None:
         from app.db import engine
@@ -73,26 +84,44 @@ def run_one_attribution(engine=None, now: datetime | None = None) -> int:
         logger.warning("orion_energy_attribution_host_refused host=%s reason=%s", host, why)
     written = 0
     for host in sorted(cfg.hosts):
-        with engine.connect() as conn:
-            latest = conn.execute(_LATEST_SQL, {"host": host}).scalar()
+        try:
+            written += _run_host(engine, host, now)
+        except Exception as exc:  # noqa: BLE001 -- one host failing must not stop the others
+            logger.warning("orion_energy_attribution_host_failed host=%s error=%s", host, exc, exc_info=True)
+    return written
+
+
+def _run_host(engine, host: str, now: datetime) -> int:
+    from orion.grammar.act_energy_fill import attribute_host_hour
+
+    with engine.connect() as conn:
+        latest = conn.execute(_LATEST_SQL, {"host": host}).scalar()
         latest = latest.astimezone(timezone.utc) if latest is not None else None
-        for hour in hours_to_compute(latest, now):
-            with engine.begin() as conn:
-                got, rest_w, source = attribute_host_hour(conn, host, hour, hour + timedelta(hours=1), now=now)
-                if got is None or got.covered_s <= 0:
-                    continue  # no chassis reading this hour: unknown, no row (never 0)
-                un = got.unattributed_wh
-                if un < -NEGATIVE_TOLERANCE_WH:
-                    logger.warning("orion_energy_attribution_negative host=%s hour=%s unattributed_wh=%.3f "
-                                   "above_rest_wh=%.3f sponsored_wh=%.3f metered_wh=%.3f (over-attribution)",
-                                   host, hour.isoformat(), un, got.above_rest_wh, got.sponsored_wh, got.metered_wh)
-                conn.execute(UPSERT_SQL, {
-                    "hour_start": hour, "host": host, "rest_w": rest_w, "rest_wh": got.rest_wh,
-                    "above_rest_wh": got.above_rest_wh, "sponsored_wh": got.sponsored_wh,
-                    "metered_wh": got.metered_wh, "leased_unmetered_wh": got.leased_unmetered_wh,
-                    "unattributed_wh": un, "covered_sec": got.covered_s, "split_unknown_sec": got.split_unknown_s,
-                    "rest_source": source})
-                written += 1
+        hours = hours_to_compute(latest, now)
+        if not hours:
+            return 0
+        fmt = "%Y-%m-%d %H:%M:%S"
+        if conn.execute(_HAS_CHASSIS_SQL, {"node": host, "since": hours[0].strftime(fmt),
+                                           "until": (hours[-1] + timedelta(hours=1)).strftime(fmt)}).first() is None:
+            return 0
+    written = 0
+    for hour in hours:
+        with engine.begin() as conn:
+            got, rest_w, source = attribute_host_hour(conn, host, hour, hour + timedelta(hours=1), now=now)
+            if got is None or got.covered_s <= 0:
+                continue  # no chassis reading this hour: unknown, no row (never 0)
+            un = got.unattributed_wh
+            if un < -NEGATIVE_TOLERANCE_WH:
+                logger.warning("orion_energy_attribution_negative host=%s hour=%s unattributed_wh=%.3f "
+                               "above_rest_wh=%.3f sponsored_wh=%.3f metered_wh=%.3f (over-attribution)",
+                               host, hour.isoformat(), un, got.above_rest_wh, got.sponsored_wh, got.metered_wh)
+            conn.execute(UPSERT_SQL, {
+                "hour_start": hour, "host": host, "rest_w": rest_w, "rest_wh": got.rest_wh,
+                "above_rest_wh": got.above_rest_wh, "sponsored_wh": got.sponsored_wh,
+                "metered_wh": got.metered_wh, "leased_unmetered_wh": got.leased_unmetered_wh,
+                "unattributed_wh": un, "covered_sec": got.covered_s, "split_unknown_sec": got.split_unknown_s,
+                "rest_source": source})
+            written += 1
     return written
 
 

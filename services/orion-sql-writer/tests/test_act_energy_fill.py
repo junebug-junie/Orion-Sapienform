@@ -134,7 +134,7 @@ def test_cpu_load_takes_its_share_of_the_overhead_and_is_not_charged():
 
 
 def test_a_shared_card_charges_this_lease_its_share():
-    """max_holds: 2 -- another lease held gpu2 the whole time: this act pays a third (3 holders)."""
+    """Two other leases overlap this one on gpu2 the whole time: this act pays a third."""
     _, out = _cost(card_leases=[("L1", _at(10), _at(70), "c"), ("L2", _at(0), _at(120), "x"),
                                 ("L3", _at(100), _at(150), "y"),  # after this lease: not overlapping
                                 ("L4", _at(5), None, None)])      # still held at close: runs to now
@@ -176,6 +176,16 @@ def test_no_whole_machine_split_falls_back_to_gpu_and_says_why(kwargs, why, monk
     assert out["wh_by_host"]["circe"] == pytest.approx(gpu_wh, rel=1e-4)
     assert out["wh_gpu_by_host"]["circe"] == pytest.approx(gpu_wh, rel=1e-4)
     assert f"circe: {fill.GPU_ONLY}, not whole machine (" in out["basis"]["wh"] and why in out["basis"]["wh"]
+
+
+def test_a_pool_card_that_stops_reporting_is_a_hole_not_a_smaller_load():
+    """Review finding: gpu1 is a pool card on circe with an idle floor but no reading in the window.
+    Dropping it from the load would overcharge the act; the split falls back to GPU-only instead,
+    the same way the hourly attribution marks those seconds split-unknown."""
+    rows = [(_at(t), 800.0, 50.0, 50.0, {"gpu2_watts": 140.0}) for t in range(0, 181, 30)]
+    _, out = _cost(rows=rows)
+    assert out["wh_by_host"]["circe"] == pytest.approx(100.0 * 60.0 / 3600.0, rel=1e-4)
+    assert f"circe: {fill.GPU_ONLY}" in out["basis"]["wh"]
 
 
 def test_a_card_missing_from_the_pool_config_is_named():
@@ -227,8 +237,9 @@ def test_one_host_is_read_once_for_many_leases_and_floors_are_cached():
     assert sum(1 for s, _ in conn.calls if s is fill._CARD_LEASES_SQL) == 2  # once per card
     keys = [p["key"] for s, p in conn.calls if s is fill._QUANTILE_SQL]
     assert sorted(keys) == sorted(set(keys))  # each floor read once
-    _, again = _cost()
-    assert again["wh_by_host"]  # second act, same day: floors from cache
+    conn2, again = _cost()
+    assert again["wh_by_host"]  # second act, same day: floors from cache, not re-read
+    assert not [p for s, p in conn2.calls if s is fill._QUANTILE_SQL]
     # card idle floors are day-keyed: the 24 h before the UTC day, not before the lease. Chassis
     # rest is never a quantile: it is pinned in rest_body.yaml.
     q = {p["key"]: p for s, p in conn.calls if s is fill._QUANTILE_SQL}

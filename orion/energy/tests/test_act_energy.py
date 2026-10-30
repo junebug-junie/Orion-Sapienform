@@ -228,3 +228,17 @@ def test_many_leases_sweep_matches_brute_force():
             expect_u += w * (1 - sum(held) / len(held))
     assert hour.metered_wh == pytest.approx(expect_m, rel=1e-9)
     assert hour.leased_unmetered_wh == pytest.approx(expect_u, rel=1e-9)
+
+
+def test_near_zero_load_cannot_take_more_than_the_ratio_cap():
+    """Review finding: rest sits under calm chassis, so a card 1 W above idle at near-zero load took
+    the whole surplus (live per-sample ratio up to 78). The cap leaves the excess unattributed."""
+    from orion.energy.act_energy import RATIO_CAP
+
+    series = HostSeries(chassis=_flat(700.0), cpu_above=_flat(0.0), cards={2: _flat(53.5)})
+    floors = {T0.date(): HostFloors(600.0, {2: 52.5})}
+    got = machine_energy(series, floors, card=2, start=_at(0), end=_at(60))
+    assert got.wh == pytest.approx(1.0 * RATIO_CAP * 60.0 / 3600.0)
+    hour = attribute_host_window(series, floors, {2: [LeaseSpan(_at(0), _at(60), True)]}, start=_at(0), end=_at(60))
+    assert hour.metered_wh == pytest.approx(got.wh)
+    assert hour.unattributed_wh == pytest.approx((100.0 - RATIO_CAP) * 60.0 / 3600.0)

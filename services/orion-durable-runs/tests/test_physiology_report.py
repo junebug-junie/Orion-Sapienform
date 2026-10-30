@@ -105,6 +105,7 @@ def full_rows() -> dict:
             {"host": "athena", "day": "2026-10-30", "hours": 3, "rest_wh": 1020.0, "above_rest_wh": 1228.95,
              "sponsored_wh": 549.37, "metered_wh": 0.0, "leased_unmetered_wh": 0.0, "unattributed_wh": 679.57,
              "min_hour_unattributed_wh": 200.0, "covered_h": 3.0, "split_unknown_h": 0.0}],
+        pr.ATTRIBUTION_CHARGED_SQL: [{"host": "circe", "day": "2026-10-30", "charged_wh": 13.97, "acts": 58}],
         pr.SERVICES_SQL: [{"created_at": (NOW - timedelta(hours=2)).replace(tzinfo=None),
                            "context": {"event": "stopped_container", "service_id": "orion-kev/kev",
                                        "containers": ["orion-athena-kev"], "states": ["exited"],
@@ -190,6 +191,7 @@ def test_full_report_fills_every_section_from_rows():
     circe = units["work not yet metered on circe, 2026-10-30 UTC"]
     assert circe.status == "measured" and circe.wh == 1734.4 and circe.usd == pytest.approx(1734.44 / 1000 * 0.1255, abs=1e-4)
     assert "coverage 0.8% of activity" in circe.source and "GPU leases whose turn has no act 1495" in circe.source
+    assert "acts actually charged 14 (58 acts)" in circe.source and "OVER" not in circe.source
     assert "sponsored 549" in units["work not yet metered on athena, 2026-10-30 UTC"].source
     assert rep.waste.failed_lease_s_by_lane["agent"] == 8858.2 and rep.waste.top[0].reason == "attempt_failed"
     assert rep.queue_wait[0].p90_s == 5275.0
@@ -386,6 +388,9 @@ def test_report_sql_on_postgres():
                                            (now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h),))
                     await conn.execute("INSERT INTO energy_run_cost (workload_kind, window_start, energy_kwh, estimated_run_cost_usd) "
                                        "VALUES ('reverie_diffusion', %s, 0.0004, 0.00005)", (now - timedelta(hours=1),))
+                    await conn.execute("INSERT INTO grammar_acts VALUES ('a2', 'hub.chat_reply', %s, %s, 'corr-2')",
+                                       (now - timedelta(hours=2), json.dumps({"wh_by_host": {"circe": 7.0},
+                                                                              "wh_gpu_by_host": {"circe": 3.0}})))
                     await conn.execute("INSERT INTO grammar_acts VALUES ('a1', 'hub.outreach', %s, %s, 'corr-1')",
                                        (now - timedelta(hours=1), json.dumps({"wh_by_host": {"athena": 1.5, "circe": 0.5}, "usd": 0.001})))
                     for cid, rec, corr, p_, c_ in (("c1", "gateway", "corr-1", 900, 100), ("c2", "harness_relay", "corr-1", 400, 100),
@@ -425,6 +430,7 @@ def test_report_sql_on_postgres():
                 assert "2 gateway calls, 1,100 tokens" in tok.source
                 met = [u for u in rep.unit_costs if u.unit.startswith("work not yet metered on circe")]
                 assert met and sum(u.wh for u in met) == pytest.approx(1180.0) and "coverage 1.7%" in met[0].source
+                assert any("acts actually charged 7 (1 acts)" in u.source for u in met)
         finally:
             async with await AsyncConnection.connect(DSN, autocommit=True) as conn:
                 await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
@@ -542,6 +548,10 @@ def test_attribution_says_absent_table_and_flags_over_attribution():
     rows[pr.ATTRIBUTION_DAILY_SQL] = [dict(rows[pr.ATTRIBUTION_DAILY_SQL][0], min_hour_unattributed_wh=-3.5)]
     units = {u.unit: u for u in _build(rows).unit_costs}
     assert "OVER-ATTRIBUTED: an hour reads -3.50" in units["work not yet metered on circe, 2026-10-30 UTC"].source
+    rows[pr.ATTRIBUTION_DAILY_SQL] = [dict(rows[pr.ATTRIBUTION_DAILY_SQL][0], split_unknown_h=2.0)]
+    rows[pr.ATTRIBUTION_CHARGED_SQL] = [{"host": "circe", "day": "2026-10-30", "charged_wh": 5000.0, "acts": 3}]
+    src = {u.unit: u for u in _build(rows).unit_costs}["work not yet metered on circe, 2026-10-30 UTC"].source
+    assert "OVER-CHARGED: acts were charged 5000" in src and "PARTIAL: for 2.0 h" in src
     rows[pr.ATTRIBUTION_DAILY_SQL] = []
     units = {u.unit: u for u in _build(rows).unit_costs}
     assert units["work not yet metered (per host per day)"].status == "not_measured"

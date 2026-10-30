@@ -142,6 +142,7 @@ def test_negative_unattributed_is_logged_and_stored_unclipped(pg, monkeypatch, c
 
     over = HostAttribution(rest_wh=600.0, above_rest_wh=100.0, sponsored_wh=0.0, metered_wh=130.0,
                            leased_unmetered_wh=0.0, covered_s=3600.0, split_unknown_s=0.0)
+    _seed(pg)  # hosts with no chassis reading are skipped before any hour is computed
     monkeypatch.setattr(fill, "attribute_host_hour", lambda conn, host, s, e, now=None: (over, 600.0, "fixture"))
     with caplog.at_level(logging.WARNING, logger="sql-writer.orion_energy_attribution"):
         job.run_one_attribution(pg, now=NOW)
@@ -149,3 +150,33 @@ def test_negative_unattributed_is_logged_and_stored_unclipped(pg, monkeypatch, c
         vals = [r[0] for r in conn.execute(text("SELECT unattributed_wh FROM orion_energy_attribution_hourly"))]
     assert vals and all(v == pytest.approx(-30.0) for v in vals)
     assert "orion_energy_attribution_negative" in caplog.text and "over-attribution" in caplog.text
+
+
+def test_a_host_with_no_chassis_reading_is_skipped_and_one_failing_host_does_not_stop_others(pg, monkeypatch, caplog):
+    from sqlalchemy import text
+
+    from app import orion_energy_attribution as job
+    from orion.grammar import act_energy_fill as fill
+
+    _seed(pg)
+    real = fill.attribute_host_hour
+    seen = []
+
+    def flaky(conn, host, s, e, now=None):
+        seen.append(host)
+        if host == "athena":
+            raise RuntimeError("boom")
+        return real(conn, host, s, e, now=now)
+    monkeypatch.setattr(fill, "attribute_host_hour", flaky)
+    with caplog.at_level(logging.WARNING, logger="sql-writer.orion_energy_attribution"):
+        job.run_one_attribution(pg, now=NOW)
+    assert "orion_energy_attribution_host_failed host=athena" in caplog.text
+    with pg.connect() as conn:
+        assert {r[0] for r in conn.execute(text("SELECT host FROM orion_energy_attribution_hourly"))} == {"circe"}
+    # hecate is not in this fixture's rest; a host with rest but no rows never reaches the hour loop
+    with pg.begin() as conn:
+        conn.execute(text("DELETE FROM orion_biometrics_summary WHERE node = 'circe'"))
+        conn.execute(text("DELETE FROM orion_energy_attribution_hourly"))
+    seen.clear()
+    job.run_one_attribution(pg, now=NOW)
+    assert "circe" not in seen

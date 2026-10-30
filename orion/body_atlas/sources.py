@@ -17,6 +17,8 @@ Declared (read from the checkout, so a past export works too):
 * table writers: orion-sql-writer's ``DEFAULT_ROUTE_MAP`` (message kind -> model -> table, read
   by AST, never imported) joined with ``orion/bus/channels.yaml`` producers of that kind.
 * durable workflows: the ``DurableWorkflowV1`` Literal in ``orion/schemas/durable_run.py``.
+* reducer sources: orion-substrate-runtime's ``REDUCER_SPECS`` (cursor -> the one service whose
+  grammar events that reducer reads), by AST with its imported constants resolved.
 
 Live (only with ``live=True``):
 
@@ -24,6 +26,10 @@ Live (only with ``live=True``):
 * Postgres as ``orion_readonly`` in a READ ONLY transaction (the model-replay sandbox's
   ``ReadOnlyPsql``): table row counts, biometrics last-seen per host, durable run activity,
   reducer cursors, camera activity.
+* Who does a durable run's work, from the run's own record (``substrate_durable_run_state``): its
+  ``correlation_id`` and its ``detail.turn_correlation_id`` joined to trace tables whose rows name
+  the service that wrote them (``TRACE_SOURCES``), the turn record table's declared writers
+  (``TURN_RECORD_TABLES``), and ``detail.child_run_ids`` (a run that starts other runs).
 * Chroma collections and counts; FalkorDB graphs (minus test/scratch graphs) and node counts.
 """
 from __future__ import annotations
@@ -60,6 +66,18 @@ DEFAULT_CHROMA_URL = "http://orion-athena-vector-db:8000"
 # substrate_reduction_cursor (its REDUCER_SPECS), so it is the runner, labeled assumed_runner.
 REDUCER_RUNNER = "orion-substrate-runtime"
 PROCESS_WINDOW_DAYS = 30
+REDUCER_SPECS_FILE = Path("services/orion-substrate-runtime/app/worker.py")
+# Where to look for who did a run's work, not who does what: (table, column naming the service
+# that wrote the row). A row whose correlation_id is the run's own correlation id, or the turn it
+# started (detail.turn_correlation_id), means that service worked on that run.
+TRACE_SOURCES: tuple[tuple[str, str], ...] = (
+    ("grammar_events", "source_service"),
+    ("cognition_traces", "source_service"),
+    ("cockpit_turn_sighting", "producer"),
+)
+# A turn record with no service column: a row for the run's turn means the table's declared
+# writers (sql-writer's route map joined with the catalog producers) did that turn.
+TURN_RECORD_TABLES: tuple[str, ...] = ("harness_turn_trace",)
 
 # What no machine-readable source covers yet. Printed with every whole-body atlas.
 KNOWN_GAPS = [
@@ -68,6 +86,8 @@ KNOWN_GAPS = [
     "AI Town's bus identity: runs on circe, traces only (aitown_chat_history_log, falkor:orion_substrate_aitown)",
     "graphify: its graph lives on the host only, not visible from the harness",
     "Postgres reads: who reads a table is not recorded anywhere machine-readable",
+    "durable run products (entry_id, dream_id, episode_id in a run's detail): no declared source "
+    "says which table holds each id, so a process has no writes flow yet",
     "docker on other hosts: only this host's containers are observed; circe/hecate placement is declared",
 ]
 
@@ -124,6 +144,13 @@ class ProcessIn(BaseModel):
     declared: bool
     runs: int | None = None
     last_run_epoch: float | None = None
+    # (raw service, evidence, runs): services seen doing this process's work, and in how many of
+    # its runs. evidence: observed_trace (a trace row keyed by the run's correlation id names the
+    # service), observed_turn (same, keyed by the turn the run started), declared_turn_writer (a
+    # turn record row exists; its table's declared writers), declared_reducer_source (REDUCER_SPECS).
+    doers: list[tuple[str, str, int]] = Field(default_factory=list)
+    # (child workflow, runs of this process that started one): detail.child_run_ids
+    children: list[tuple[str, int]] = Field(default_factory=list)
 
 
 class BodyInputs(BaseModel):
@@ -372,6 +399,69 @@ def parse_durable_workflows(schema_text: str) -> list[str]:
     raise ValueError("DurableWorkflowV1 Literal not found")
 
 
+def _module_path(root: Path, module: str) -> Path | None:
+    base = root / Path(*module.split("."))
+    for cand in (base.with_suffix(".py"), base / "__init__.py"):
+        if cand.exists():
+            return cand
+    return None
+
+
+_IMPORT_HOPS = 3
+
+
+def parse_reducer_sources(root: Path) -> dict[str, str]:
+    """cursor name -> the service whose grammar events the reducer reads, from
+    orion-substrate-runtime's ``REDUCER_SPECS`` (``ReducerSpec(cursor_name=..., source_service=...)``).
+    By AST, never imported; a name argument is resolved through module constants, following
+    ``from x import NAME`` re-exports up to ``_IMPORT_HOPS`` modules deep. Raises PartialRead
+    (with what resolved) when some spec does not."""
+    tree = ast.parse(_read_text(root, REDUCER_SPECS_FILE))
+    parsed: dict[str, ast.Module | None] = {}
+
+    def module_tree(module: str) -> ast.Module | None:
+        if module not in parsed:
+            path = _module_path(root, module)
+            parsed[module] = ast.parse(path.read_text(encoding="utf-8")) if path else None
+        return parsed[module]
+
+    def resolve(name: str, where: ast.Module, hops: int) -> str | None:
+        local = _constant(where, name)
+        if local is not None or hops <= 0:
+            return local
+        for n in where.body:
+            if isinstance(n, ast.ImportFrom) and n.module and not n.level:
+                for a in n.names:
+                    if (a.asname or a.name) == name and (sub := module_tree(n.module)) is not None:
+                        return resolve(a.name, sub, hops - 1)
+        return None
+
+    def value(expr: ast.AST) -> str | None:
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return expr.value
+        return resolve(expr.id, tree, _IMPORT_HOPS) if isinstance(expr, ast.Name) else None
+
+    specs = None
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if getattr(target, "id", None) == "REDUCER_SPECS" and isinstance(node.value, (ast.Tuple, ast.List)):
+            specs = node.value.elts
+    if specs is None:
+        raise ValueError("REDUCER_SPECS tuple not found")
+    out: dict[str, str] = {}
+    missed = 0
+    for call in specs:
+        kw = {k.arg: k.value for k in getattr(call, "keywords", [])}
+        cursor, source = (value(kw[k]) if k in kw else None for k in ("cursor_name", "source_service"))
+        if cursor and source:
+            out[cursor] = source
+        else:
+            missed += 1
+    if missed:
+        raise PartialRead(out, f"{missed} REDUCER_SPECS entries did not resolve to constants")
+    return out
+
+
 _SCRATCH_TOKEN = re.compile(r"^(tmp|tests?\d*|livetest\d*|smoke\d*|scratch\d*)$")
 
 
@@ -418,7 +508,12 @@ _PSQL_STDERR = re.compile(r"^(psql:|WARNING:|NOTICE:|HINT:|DETAIL:|INFO:)")
 def psql_rows(runner: SqlRunner, sql: str) -> list[dict[str, str]]:
     out, code = runner.run(sql, ["--csv", "-q"])
     if code != 0:
-        raise RuntimeError(" ".join(out.split())[:240] or f"psql exit {code}")
+        msg = " ".join(out.split())[:240] or f"psql exit {code}"
+        denied = re.search(r"permission denied for (?:table|relation) (\w+)", out)
+        if denied:  # say exactly what would fix it; never granted from here
+            role = getattr(runner, "role", "orion_readonly")
+            msg = f"needs GRANT SELECT ON {denied.group(1)} TO {role}; {msg}"
+        raise RuntimeError(msg)
     # ReadOnlyPsql returns stdout and stderr joined: a NOTICE/WARNING on success is not a row
     lines = [ln for ln in out.splitlines() if ln.strip() and not _PSQL_STDERR.match(ln)]
     return list(csv.DictReader(io.StringIO("\n".join(lines))))
@@ -446,6 +541,31 @@ SQL_DURABLE = (f"SELECT workflow, count(DISTINCT run_id) AS runs, max(created_at
                f"FROM substrate_durable_run_state WHERE created_at > now() - interval '{PROCESS_WINDOW_DAYS} days' "
                "GROUP BY workflow")
 SQL_REDUCERS = "SELECT cursor_name, updated_at FROM substrate_reduction_cursor"
+_WINDOW = f"created_at > now() - interval '{PROCESS_WINDOW_DAYS} days'"
+# Each run's keys: its own correlation id ('run') and the turn it started ('turn').
+_RUN_KEYS = (
+    f"SELECT run_id, workflow, correlation_id AS cid, 'run' AS via FROM substrate_durable_run_state "
+    f"WHERE {_WINDOW} AND correlation_id IS NOT NULL AND correlation_id <> '' "
+    f"UNION SELECT run_id, workflow, detail->>'turn_correlation_id', 'turn' FROM substrate_durable_run_state "
+    f"WHERE {_WINDOW} AND coalesce(detail->>'turn_correlation_id', '') <> ''"
+)
+
+
+def sql_trace_doers(table: str, column: str | None) -> str:
+    """workflow, via, [service,] runs: in how many runs a row of ``table`` shares a run key."""
+    svc = f"t.{column} AS service, " if column else ""
+    group = "1, 2, 3" if column else "1, 2"
+    return (f"WITH k AS ({_RUN_KEYS}) SELECT k.workflow, k.via, {svc}count(DISTINCT k.run_id) AS runs "
+            f"FROM k JOIN {table} t ON t.correlation_id = k.cid GROUP BY {group}")
+
+
+SQL_CHILD_RUNS = (
+    "SELECT p.workflow AS parent, c.workflow AS child, count(DISTINCT p.run_id) AS runs "
+    "FROM substrate_durable_run_state p CROSS JOIN LATERAL json_array_elements_text("
+    "CASE WHEN json_typeof(p.detail->'child_run_ids') = 'array' THEN p.detail->'child_run_ids' "
+    "ELSE '[]'::json END) AS k(cid) JOIN substrate_durable_run_state c ON c.run_id = k.cid "
+    f"WHERE p.{_WINDOW} GROUP BY 1, 2"
+)
 SQL_CAMERAS = (f"SELECT stream_id, count(*) AS events, max(created_at) AS last_seen FROM vision_events "
                f"WHERE stream_id IS NOT NULL AND created_at > now() - interval '{PROCESS_WINDOW_DAYS} days' "
                "GROUP BY stream_id")
@@ -492,6 +612,45 @@ def _require(value: Any, what: str) -> Any:
 
 
 # --- gather -----------------------------------------------------------------------------------
+
+def _gather_doers(reads: _Reads, sql: Any, procs: dict[str, ProcessIn], runner: str | None,
+                  writers: dict[str, list[tuple[str, str]]]) -> None:
+    """Fill each workflow's ``doers`` and ``children`` from the runs' own records. Each source is
+    one read: a table the role cannot read is UNREAD with the GRANT it needs, and the rest still
+    count."""
+    def proc(w: str) -> ProcessIn:
+        return procs.setdefault(w, ProcessIn(name=w, family="durable_workflow", runner=runner, declared=False))
+
+    def rows(query: str, *cols: str) -> list[tuple]:
+        # parsed inside the read, so a malformed reply is UNREAD too, never an exception
+        return [tuple(r[c] for c in cols) + (int(float(r["runs"] or 0)),)
+                for r in psql_rows(_require(sql, "postgres"), query)]
+
+    for table, column in TRACE_SOURCES:
+        got = reads.run(f"live:postgres {table} (run + turn correlation ids)", "live",
+                        lambda t=table, c=column: rows(sql_trace_doers(t, c), "workflow", "via", "service"),
+                        lambda v: f"{len(v)} workflow/service pairs")
+        for workflow, via, service, runs in got or []:
+            if service:
+                proc(workflow).doers.append((service, "observed_turn" if via == "turn" else "observed_trace", runs))
+    for table in TURN_RECORD_TABLES:
+        producers = sorted({p for p, _ in writers.get(table, [])})
+        if not producers:
+            reads.add(f"live:postgres {table} (turn records)", "live", "unread",
+                      f"no declared writer for {table} in the route map; its rows name no service")
+            continue
+        got = reads.run(f"live:postgres {table} (turn records)", "live",
+                        lambda t=table: rows(sql_trace_doers(t, None), "workflow", "via"),
+                        lambda v, ps=producers: f"{len(v)} workflow/via pairs; writers {', '.join(ps)}")
+        for workflow, _via, runs in got or []:
+            for producer in producers:
+                proc(workflow).doers.append((producer, "declared_turn_writer", runs))
+    kids = reads.run("live:postgres substrate_durable_run_state (child_run_ids)", "live",
+                     lambda: rows(SQL_CHILD_RUNS, "parent", "child"),
+                     lambda v: f"{len(v)} parent -> child workflow pairs")
+    for parent, child, runs in kids or []:
+        proc(parent).children.append((child, runs))
+
 
 def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) -> BodyInputs:
     """Every declared source from ``root``; every live source when ``live`` is given."""
@@ -586,15 +745,24 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
             w = r["workflow"]
             p = procs.setdefault(w, ProcessIn(name=w, family="durable_workflow", runner=runner, declared=False))
             p.runs, p.last_run_epoch = int(float(r["runs"] or 0)), parse_ts(r.get("last_run"))
+        if durable is not None:
+            _gather_doers(reads, sql, procs, runner, writers)
 
         cursors = reads.run("live:postgres substrate_reduction_cursor", "live",
                             lambda: psql_rows(_require(sql, "postgres"), SQL_REDUCERS),
                             lambda v: f"{len(v)} reducer cursors")
+        sources = None
+        if cursors:
+            sources = reads.run(f"declared:{REDUCER_SPECS_FILE} REDUCER_SPECS", "declared",
+                                lambda: parse_reducer_sources(root),
+                                lambda v: f"{len(v)} reducers with a named source service") or {}
         for r in cursors or []:
             name = f"reducer:{r['cursor_name']}"
+            src = (sources or {}).get(r["cursor_name"])
             procs[name] = ProcessIn(name=r["cursor_name"], family="substrate_reducer", runner=REDUCER_RUNNER,
                                     runner_evidence="assumed_runner", declared=False,
-                                    last_run_epoch=parse_ts(r.get("updated_at")))
+                                    last_run_epoch=parse_ts(r.get("updated_at")),
+                                    doers=[(src, "declared_reducer_source", 1)] if src else [])
 
         cams = reads.run("live:postgres vision_events", "live",
                          lambda: psql_rows(_require(sql, "postgres"), SQL_CAMERAS),

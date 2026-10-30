@@ -7,6 +7,7 @@ on:
       - "config/biometrics/node_catalog.yaml"
       - "config/vision_frame_router.yaml"
       - "orion/evals/model_replay/sandbox.py"
+      - "services/orion-substrate-runtime/app/worker.py"
       - ".github/workflows/body-atlas-tests.yml"
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - "config/biometrics/node_catalog.yaml"
       - "config/vision_frame_router.yaml"
       - "orion/evals/model_replay/sandbox.py"
+      - "services/orion-substrate-runtime/app/worker.py"
       - ".github/workflows/body-atlas-tests.yml"
 
 jobs:
@@ -31,5 +33,5 @@ jobs:
         run: python -m pip install "pydantic>=2,<3" pyyaml pytest
       - name: Tests
         run: PYTHONPATH=. python -m pytest -q orion/body_atlas/tests
-      - name: Organ structure eval (frozen bus graph + frozen whole body)
+      - name: Organ structure eval (frozen bus graph + frozen whole bodies)
         run: python orion/body_atlas/evals/run_organ_structure_eval.py

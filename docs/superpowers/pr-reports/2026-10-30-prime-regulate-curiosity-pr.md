@@ -1,7 +1,5 @@
 # feat(prime): Prime can ask curiosity to slow down or quicken (Orion Prime step 3)
 
-Stacked on #3009 and #3010; merge those first.
-
 ## Summary
 
 - Prime can now send one organ a "slow down" or "quicken" signal. Today the only organ that listens is curiosity's investigate line, because it is the only organ whose bids the body economy obeys (#3010). Curiosity listens to "slow" only (see "Why curiosity does not take quicken").
@@ -87,7 +85,6 @@ The 2 runs held to the window end in the unreachable case were both on 10-26, a 
 
 - `orion/physiology/prime_charge.py` (new): the signal contract, bound, effects.
 - `orion/physiology/families.py`, `config/physiology/families.yaml`: `receptors`.
-- `orion/dig/__main__.py`: merge resolution only (main's #3008 capacities help text and #3009's `arc|act` line), trimmed to the existing 2,500-character help cap.
 - `orion/physiology/choice.py`: the charge in `decide`.
 - `services/orion-durable-runs/app/physiology_market.py`, `app/main.py`, `app/settings.py`, `.env_example`, `docker-compose.yml`: read, apply, record; the flag.
 - `orion/prime/thought.py`: the move, its refusals, the prompt section (only when on), the frame section.
@@ -183,7 +180,7 @@ A code-review subagent read the first two commits. All its tests were green. Its
 
 ## Restart required
 
-After #3009 and #3010 are merged and deployed, merge this, then from the clean primary `main` checkout:
+After merge, from the clean primary `main` checkout synced with `origin/main` (if #3009/#3010 are not deployed yet, the same orion-durable-runs and orion-mind rebuilds carry them; #3009's own report also lists its migration, Hub and harness-governor steps):
 
 ```bash
 scripts/safe_docker_build.sh orion-durable-runs up -d --build
@@ -197,7 +194,7 @@ Rollback without a code change: `PRIME_REGULATE_ENABLED=false` in `services/orio
 ## Risks / concerns
 
 - Severity: medium. Concern: the live path is UNVERIFIED. Nothing has been deployed; no Prime signal has been written, read by the market, or graded on the live rail. Mitigation: after deploy, `docker logs orion-athena-durable-runs | grep prime_charge` shows one line per curiosity bid under a signal; `select verb, test_before, outcome_value, outcome_note from grammar_acts where actor='prime' and verb='regulate' order by opened_at desc limit 10;` shows the acts.
-- Severity: medium. Concern: deploy order with #3009 and #3010. This branch contains both. Mitigation: merge and deploy those first, as their reports say; then this.
+- Severity: medium. Concern: #3009 and #3010 are merged but may not be deployed yet. This needs #3010's binding bid live to have any effect (a charge on a shadow bid changes nothing). Mitigation: deploy order below.
 - Severity: low. Concern: Prime may rarely or never use the move. The prompt says to use it only when a concern is about how often an organ runs. Mitigation: `run_prime_report.py` counts signals per arm; if there are none after two weeks, the move is not earning its place.
 - Severity: low. Concern: regulate closes join the `prime` family's act history, so they also feed Prime's own value and hunger clock (the same side effect #3009 noted for concern closes). Mitigation: measure with `run_prime_report.py`; the fix, if needed, is in `orion/physiology/appetite.py`.
 - Severity: low. Concern: image rollback of orion-mind needs the two new state keys stripped first (command in the orion-mind README). The flag rollback needs nothing.

@@ -40,26 +40,26 @@ FIRST_DAY = date(2025, 6, 24)  # first commit in the repo
 HELP = f"""dig: read-only tools for your own history. Every command prints a short summary and the
 path of a file with the full result; read only what you need from that file.
 
-  open <date>            export the repo as it was at the end of <date> (YYYY-MM-DD, Denver)
+  open <date>            export the repo as of the end of <date> (YYYY-MM-DD, Denver)
                          to a plain folder (no git link). At most {MAX_OPEN} open; 24 h old ones go.
   close <date>           delete that export.  list: show open exports.
-  inventory <date|now>   services, modules, channels, verbs, schemas there.
-  compare <date> [<date|now>]   what changed between two checkouts.
+  inventory <date|now>   services, modules, channels, verbs, schemas in that checkout.
+  compare <date> [<date|now>]   added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
-  history <days>         the same for the last <days> days.
+  history <days>         the last <days> days (2 = since yesterday).
   body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
-                         None = live; a date = that export; an organ id = its members.
+                         None = live now; a date = that export's files; an organ id = its members.
   capacities [gaps]      VSM jobs your parts do: by rule, by Juniper's confirmation, claimed.
   capacity claim <part> <job> because <reason>   claim a job for a live part (a lasting write);
                          cite one of its flows by full id or a repo file. `capacity help`: rule.
   capacity write cap:<job> <sentence> because <reason>   a capacity, in your words.
   body-economy [<section>...]   what spins each machine, what it costs, binds, wants, waste.
-                         `body-economy --help` lists sections and flags.
+                         `body-economy --help`: sections, flags.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
                          write) by what it takes in and gives out; cite one of its parts.
   name-organs            every unnamed organ, its parts, and a ready `name` line.
-  arc|act <id>           open a cited id.
-  notes [append <text>]  this dig's shared notes (episode hops / turns read each other).
+  arc|act <id>           open a cited arc/act.
+  notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
 Label what you say from a dig by its source:

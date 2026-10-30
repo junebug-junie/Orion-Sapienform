@@ -380,16 +380,17 @@ Each call writes one `simEvents` row with `source: "juniper"`. A refused event w
 
 `scripts/rebuild_services_from_git_diff.sh` runs `scripts/pre_rebuild.sh` before every post-pull rebuild of this stack. It runs `scripts/post_rebuild.sh` only after every compose step passed. If either fails, the stack is marked failed. Before 2026-10-23 nothing did this. The frontend image builds from `upstream/`, and the Convex functions live outside compose, so a pull rebuilt only an unpatched frontend. The live town ran 2026-08-30 code for almost two months.
 
-`pre_rebuild.sh` does three things:
+`pre_rebuild.sh` does four things:
 1. It saves `upstream/`'s changes to `~/.orion/aitown-upstream-backup-<time>/`: the diff against HEAD, and the contents of untracked files. It keeps the last 10.
 2. It resets tracked files to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create. It also deletes the files `overlay/` copies, and any overlay directory the pin does not have (`convex/sim/`) as a whole, so a file dropped from `overlay/` does not stay behind and deploy.
 3. It applies the chain from scratch, then copies `overlay/` over `upstream/` and renders `convex/sim/seed.ts` from the cards in use.
+4. It runs `npx convex codegen --typecheck disable`, which rewrites `convex/_generated/` for the patched tree. The image build type-checks against those files, and the pin's copy lacks every module the patches add: on 2026-10-29 the build failed because `crons.ts` called `internal.sim.tick.run`. Codegen does not change the deployment, but it needs the Convex backend running.
 
 It refuses in two cases:
 - `cards/town_cards.local.yaml` is missing, because the Juniper join text would render from the redacted example. Copy that file from the operator host with owner-only permissions.
 - Upstream's HEAD isn't the pin. A pin bump also needs `npm ci`, so do it by hand.
 
-`post_rebuild.sh` pushes the functions with `npx convex dev --once`. On a host without Node (circe), it runs that in `node:20-alpine`. It runs after `up`, so the backend is running, and `safe_docker_build.sh`'s main-checkout and migration gates have already passed.
+`post_rebuild.sh` pushes the functions with `npx convex dev --once`. Both hooks run Convex through `scripts/run_convex.sh`: on a host without Node (circe), it runs `npx convex` in `node:20-alpine`. It runs after `up`, so the backend is running, and `safe_docker_build.sh`'s main-checkout and migration gates have already passed.
 
 To deploy by hand: `bash scripts/pre_rebuild.sh`, rebuild the frontend, then `bash scripts/post_rebuild.sh`.
 

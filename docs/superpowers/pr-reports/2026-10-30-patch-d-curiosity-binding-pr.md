@@ -193,6 +193,6 @@ Rollback without a code change: set `ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3010
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

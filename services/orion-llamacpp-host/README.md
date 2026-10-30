@@ -323,31 +323,45 @@ The first boot downloads the 27B GGUF into `LLM_CACHE_DIR`.
 ## Chat lane on Strata (circe gpu0, 2026-10-30)
 
 The `chat` role runs [Strata](https://github.com/Niko1221/Strata) serving Qwen3.8-Flash-Next IQ3_S on one V100,
-not llama.cpp. Bench: `docs/bench/2026-10-30-strata-hecate/` (hard set 20/20, 94 tok/s average output).
+not llama.cpp. Bench: `docs/bench/2026-10-30-strata-hecate/` (PR #3015; hard set 20/20, 94 tok/s average output
+at 128K on hecate's single V100). 256K on circe is not benched yet.
 
 - `atlas-chat` is the Strata engine (`ghcr.io/niko1221/strata:0.2.7-cuda12`, `strata launch --no-api-key`), port 8011,
   pinned to the CPUs of gpu0's socket. Model data: `ATLAS_CHAT_STRATA_DATA_DIR` (NVMe).
 - `atlas-chat-announce` is this image with a `backend: strata` profile: it heartbeats and announces, and launches nothing.
 - `config/gpu_pool.yaml` gives `chat` `backend: strata`. The pool confirms it through Strata's `/props` (same shape as
   llama.cpp's). The gateway sends OpenAI/Anthropic calls but never llama.cpp's `/apply-template` + `/completion`.
-- One request at a time (`--parallel 1`), as the llama.cpp chat lane was. Concurrency is untested.
+- One request at a time (`--parallel 1`) with a 262,144-token window, up from 65,536 on the llama.cpp lane.
+  The FCC harness (`HARNESS_FCC_MAX_CONTEXT_TOKENS`) moves with it.
 
-First start, from the clean primary checkout on circe (model files copied to the data dir beforehand):
+Env (`services/orion-llamacpp-host/.env` on circe): `ATLAS_CHAT_STRATA_PROFILE_NAME` names the strata profile the
+announcer uses (it refuses any other backend, `LLM_REQUIRE_BACKEND=strata`). `ATLAS_CHAT_PROFILE_NAME` keeps naming
+the llama.cpp profile, now used only by the rollback service.
+
+First start, from the clean primary `main` checkout on circe. Copy the model files into
+`$ATLAS_CHAT_STRATA_DATA_DIR` first, and merge the defaults into the run config before the server first answers, so no
+request is served with Strata's own defaults (thinking on). If there is no run config yet, start once, merge, restart.
 
 ```bash
-docker compose --env-file services/orion-llamacpp-host/.env -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml up -d atlas-chat atlas-chat-announce
-docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v /mnt/telemetry/strata:/data \
-  -v "$PWD/services/orion-llamacpp-host:/svc:ro" ghcr.io/niko1221/strata:0.2.7-cuda12 \
+set -a; . services/orion-llamacpp-host/.env; set +a
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_CHAT_STRATA_DATA_DIR:/data" \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
   /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/chat-defaults.json
-docker restart orion-circe-atlas-strata-chat
+docker stop orion-circe-atlas-llamacpp-chat
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml up -d atlas-chat atlas-chat-announce
 ```
 
 The merge puts the old lane's defaults into Strata's run config: thinking off unless a request asks, temperature 0.48,
-presence penalty 1.10. Setup keeps these keys on later starts. Check: `curl -s localhost:8011/props | jq .model_path`.
+presence penalty 1.10. Setup keeps these keys on later starts. Check: `curl -s localhost:8011/props | jq .model_path`
+and the pool's `chat` role `confirmed`. The engine's container stays up only while `strata launch --status` reads
+ready (its compose wrapper); `docker stop` stops the server cleanly.
+
+Structured output: Strata checks JSON after generating it (no grammar), and takes only `json_object` or OpenAI's named
+`json_schema`. The gateway rewrites every schema shape to the named one for this lane (`response_format_for_backend`).
 
 Rollback to llama.cpp (same port and role): stop `atlas-chat` and `atlas-chat-announce`, then
-`... --profile chat-llamacpp up -d atlas-chat-llamacpp`, and set `chat` back to `backend: llamacpp` in
-`config/gpu_pool.yaml` for the pool and gateway.
+`scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile chat-llamacpp up -d atlas-chat-llamacpp`,
+and set `chat` back to `backend: llamacpp` in `config/gpu_pool.yaml` for the pool and gateway.
 
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 

@@ -88,33 +88,51 @@ def test_heartbeat_loop_survives_bus_down_then_hung_then_recovers(monkeypatch):
     assert calls["n"] >= 3
 
 
-def test_strata_profile_announces_only_and_launches_no_server(monkeypatch):
-    """The chat lane's engine is Strata in its own container: this host must heartbeat, never spawn llama-server."""
+PROFILES_YAML = str(__import__("pathlib").Path(__file__).resolve().parents[3] / "config" / "llm_profiles.yaml")
+STRATA_PROFILE = "qwen38-flash-next-iq3s-strata-1xv100-circe-chat"
+
+
+def _real_settings(monkeypatch, profile, **env):
+    from app.settings import Settings
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", profile)
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", PROFILES_YAML)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return Settings()
+
+
+def _run_main(monkeypatch, settings):
+    """host_main._main_async with this settings object, recording heartbeats; spawning llama-server fails the test."""
     beats = []
 
-    async def heartbeat(settings):
-        beats.append(settings.llm_profile_name)
+    async def heartbeat(s):
+        beats.append(s.llm_profile_name)
 
     async def no_spawn(*a, **k):
-        raise AssertionError("a strata profile must not launch llama-server")
+        raise AssertionError("must not launch llama-server")
 
-    profile = SimpleNamespace(name="qwen38-flash-next-iq3s-strata-1xv100-circe-chat", backend="strata")
-    monkeypatch.setattr(type(host_main.settings), "resolve_profile", lambda self: profile)
-    monkeypatch.setattr(host_main.settings, "cuda_visible_devices_override", None)
+    monkeypatch.setattr(host_main, "settings", settings)
     monkeypatch.setattr(host_main, "heartbeat_loop", heartbeat)
-    monkeypatch.setattr(host_main, "build_llama_server_cmd_and_env", no_spawn)
     monkeypatch.setattr(host_main.asyncio, "create_subprocess_exec", no_spawn)
     asyncio.run(host_main._main_async())
-    assert beats == [host_main.settings.llm_profile_name]
+    return beats
 
 
-def test_the_strata_chat_profile_loads_in_this_host():
-    from pathlib import Path
+def test_strata_profile_resolves_through_the_real_loader(monkeypatch):
+    assert _real_settings(monkeypatch, STRATA_PROFILE).resolve_profile().backend == "strata"
 
-    import yaml
 
-    from app.profiles import LLMProfile
+def test_strata_profile_announces_only_and_launches_no_server(monkeypatch):
+    settings = _real_settings(monkeypatch, STRATA_PROFILE, LLM_REQUIRE_BACKEND="strata")
+    assert _run_main(monkeypatch, settings) == [STRATA_PROFILE]
 
-    name = "qwen38-flash-next-iq3s-strata-1xv100-circe-chat"
-    raw = yaml.safe_load((Path(__file__).resolve().parents[3] / "config" / "llm_profiles.yaml").read_text())
-    assert LLMProfile(name=name, **raw["profiles"][name]).backend == "strata"
+
+def test_announcer_refuses_a_llamacpp_profile(monkeypatch):
+    """circe's ATLAS_CHAT_PROFILE_NAME still names the llama.cpp profile: the announcer must not run it."""
+    import pytest
+
+    settings = _real_settings(monkeypatch, "qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition",
+                              LLM_REQUIRE_BACKEND="strata")
+    with pytest.raises(SystemExit, match="backend=llamacpp"):
+        _run_main(monkeypatch, settings)

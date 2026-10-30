@@ -85,6 +85,22 @@ def build_response_format(
     return None
 
 
+def response_format_for_backend(
+    response_format: Dict[str, Any], backend_name: str, *, schema_name: str = "StructuredOutput",
+) -> Dict[str, Any]:
+    """Strata takes only json_object (no schema) or OpenAI's named json_schema, and checks the answer
+    after generating it: a llama.cpp schema shape would lose its schema or be refused (HTTP 400).
+    Every schema-bearing shape goes to Strata as the OpenAI wrapper; other backends get it unchanged."""
+    if backend_name != "strata" or not isinstance(response_format, dict):
+        return response_format
+    inner = response_format.get("json_schema")
+    schema = (inner.get("schema") if isinstance(inner, dict) else None) or response_format.get("schema")
+    if not isinstance(schema, dict):
+        return response_format
+    name = inner.get("name") if isinstance(inner, dict) and inner.get("name") else schema_name
+    return build_response_format(METHOD_OPENAI_JSON_SCHEMA_WRAPPER, schema, schema_name=name)
+
+
 def response_format_shape_label(response_format: Optional[Dict[str, Any]]) -> Optional[str]:
     if not isinstance(response_format, dict):
         return None

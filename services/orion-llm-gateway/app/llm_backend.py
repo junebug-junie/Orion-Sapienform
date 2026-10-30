@@ -23,7 +23,7 @@ from .models import ChatBody, ChatMessage
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
-from .structured_output import apply_structured_output_to_payload
+from .structured_output import apply_structured_output_to_payload, response_format_for_backend
 from .llm_uncertainty import (
     extract_llm_uncertainty_from_native_completion,
     extract_llm_uncertainty_from_openai_response,
@@ -1253,7 +1253,9 @@ def _execute_openai_chat(
     }
     response_format = opts.get("response_format")
     if response_format and backend_name in OPENAI_COMPAT_BACKENDS:
-        payload["response_format"] = response_format
+        payload["response_format"] = response_format_for_backend(
+            response_format, backend_name,
+            schema_name=str(opts.get("structured_output_schema_name") or "StructuredOutput"))
     elif opts.get("return_json") and backend_name in OPENAI_COMPAT_BACKENDS:
         payload["response_format"] = {"type": "json_object"}
     # llama.cpp OpenAI server: per-request template kwargs (Qwen3 enable_thinking, etc.) — no worker restart.

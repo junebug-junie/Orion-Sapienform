@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     llm_role: Optional[str] = Field(None, alias="LLM_ROLE")
     llm_announce_port: Optional[int] = Field(None, alias="LLM_ANNOUNCE_PORT")
     llm_announce_host: str = Field("circe", alias="LLM_ANNOUNCE_HOST")
+    # The profile's backend must be this one, or the worker refuses to start. The Strata chat
+    # announcer sets "strata" so a llama.cpp profile name never makes it launch llama-server.
+    llm_require_backend: Optional[str] = Field(None, alias="LLM_REQUIRE_BACKEND")
 
     # Token (optional; only needed for gated/private repos)
     hf_token: Optional[str] = Field(
@@ -89,7 +92,8 @@ class Settings(BaseSettings):
             cfg = dict(cfg)
             cfg.setdefault("name", name)
             backend = str(cfg.get("backend") or "").strip()
-            if backend and backend != "llamacpp":
+            # strata: the chat lane's announcer (main.py announces only, launches nothing)
+            if backend and backend not in ("llamacpp", "strata"):
                 logger.info("Skipping non-llamacpp profile '%s' (backend=%s)", name, backend)
                 continue
             profiles[name] = LLMProfile(**cfg)

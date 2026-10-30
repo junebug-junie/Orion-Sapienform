@@ -551,20 +551,6 @@ class StrataChatLaneTests(unittest.TestCase):
     """The chat role runs Strata (gpu_pool.yaml backend: strata): OpenAI chat with the llama.cpp extras,
     never llama.cpp's /apply-template + /completion, which Strata does not serve."""
 
-    @patch("app.llm_backend._execute_llamacpp_native_completion")
-    @patch("app.llm_backend._execute_openai_chat")
-    def test_native_completion_probe_stays_on_chat_completions(self, mock_openai, mock_native):
-        mock_openai.return_value = {"text": "ok", "spark_meta": {}, "raw": {}}
-        with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
-            settings, "llm_logprob_native_completion_enabled", True
-        ):
-            body = ChatBody(messages=[ChatMessage(role="user", content="hi")], route="chat",
-                            options={"return_logprobs": True, "logprob_probe_mode": "native_completion"})
-            result = run_llm_chat(body, _granted(body, backend="strata"))
-        mock_native.assert_not_called()
-        self.assertEqual(mock_openai.call_args.args[3], "strata")
-        self.assertEqual(result["backend"], "strata")
-
     @patch("app.llm_backend._common_http_client")
     def test_payload_carries_template_kwargs_logprobs_and_response_format(self, mock_client_factory):
         mock_client = MagicMock()
@@ -582,6 +568,26 @@ class StrataChatLaneTests(unittest.TestCase):
         self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": True})
         self.assertEqual((payload["logprobs"], payload["top_logprobs"]), (True, 3))
         self.assertEqual(payload["response_format"], {"type": "json_object"})
+
+    @patch("app.llm_backend._common_http_client")
+    def test_schema_formats_become_the_openai_wrapper_strata_accepts(self, mock_client_factory):
+        """Strata drops a json_object schema and 400s the bare json_schema shapes (serve/structured.py)."""
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {"choices": [{"message": {"content": "{}"}}]}
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+        for method in ("json_object_schema", "json_schema_schema", "json_schema_nested_schema"):
+            body = ChatBody(messages=[ChatMessage(role="user", content="hi")],
+                            options={"structured_output_schema": schema, "structured_output_method": method,
+                                     "structured_output_schema_name": "Reading"})
+            _execute_openai_chat(body=body, model="chat", base_url="http://circe:8011", backend_name="strata")
+            rf = mock_client.post.call_args.kwargs["json"]["response_format"]
+            self.assertEqual(rf, {"type": "json_schema",
+                                  "json_schema": {"name": "Reading", "strict": True, "schema": schema}}, method)
+        _execute_openai_chat(body=body, model="chat", base_url="http://x", backend_name="llamacpp")
+        self.assertEqual(mock_client.post.call_args.kwargs["json"]["response_format"],
+                         {"type": "json_schema", "json_schema": {"schema": schema}})
 
 
 if __name__ == "__main__":

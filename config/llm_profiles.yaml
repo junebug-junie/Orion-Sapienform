@@ -342,7 +342,7 @@ profiles:
       num_gpus: 1
       tensor_parallel_size: 1
       device_ids: [0]
-      max_model_len: 131072
+      max_model_len: 262144
       max_concurrent_requests: 1
 
     # Read by the GPU pool's discovery: the file Strata's /props reports as model_path (its --native
@@ -351,9 +351,12 @@ profiles:
       family: qwen
       model: IQ3_S
       model_file: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+      # One request at a time, the whole window for it (the engine's --context; HARNESS_FCC_MAX_CONTEXT_TOKENS
+      # stays equal to this, scripts/check_fcc_context_parity.py).
+      ctx_size: 262144
       defaults: services/orion-llamacpp-host/strata/chat-defaults.json
     notes: >-
-      ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S (54.8 GB) on Strata 0.2.7 (engine 0.1.52), 128K context,
+      ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S (54.8 GB) on Strata 0.2.7 (engine 0.1.52), 256K context,
       one request at a time, int8 KV, vision on. Benched on hecate 2026-10-30 (docs/bench/2026-10-30-strata-hecate):
       hard set 20/20, 94 tok/s average output. Replaces qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition
       on the chat role; thinking off by default and the same sampling, via strata/chat-defaults.json.

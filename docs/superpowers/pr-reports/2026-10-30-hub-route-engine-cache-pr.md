@@ -122,6 +122,6 @@ Run from the clean primary `main` checkout after merge. The headroom script is r
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2993
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

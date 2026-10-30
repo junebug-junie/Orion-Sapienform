@@ -532,7 +532,7 @@ def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypa
     from orion.physiology.heat_config import parse_heat_sensitivity
     from orion.physiology.prices import usable_sensitivity
 
-    act_energy_fill._IDLE_CACHE.clear()
+    act_energy_fill._FLOOR_CACHE.clear()
     # A fit dated by the test clock: the committed file goes stale after 30 days and is rewritten by
     # every refit, neither of which is this test's business.
     fitted = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
@@ -544,11 +544,26 @@ def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypa
         if stmt.strip():
             session.execute(text(stmt))
     t0 = (datetime.now(timezone.utc) - timedelta(minutes=10)).replace(microsecond=0)
-    # circe gpu2: idle at 40 W for the trailing 24 h, then 140 W while the act's lease holds it.
+    if (t0 - timedelta(minutes=5)).date() != t0.date():
+        t0 += timedelta(minutes=6)  # keep the lease window inside one UTC day (floors are day-keyed)
+    # Chassis rest is pinned (rest_body.yaml); this test pins its own 600 W so a re-measure of the
+    # committed file does not move it.
+    from orion.physiology.rest_body import parse_rest_body
+
+    act_energy_fill._REST_CACHE.clear()
+    rest_cfg = parse_rest_body({"version": 1, "hosts": {"circe": {"rest_w": 600, "approved_rest_w": 600}}})
+    monkeypatch.setattr(act_energy_fill, "rest_body_config", lambda: (rest_cfg, None))
+    # The day before t0's UTC day: the cards at idle (card floors are day-keyed): gpu2 40 W, gpu1 30 W.
+    day_start = t0.replace(hour=0, minute=0, second=0)
     for i in range(120):
-        _summary(session, "circe", t0 - timedelta(hours=2) + timedelta(seconds=30 * i), {"gpu2_watts": 40.0})
+        _summary(session, "circe", day_start - timedelta(hours=2) + timedelta(seconds=30 * i),
+                 {"gpu2_watts": 40.0, "gpu1_watts": 30.0})
+    # Then 140 W on gpu2 while the act's lease holds it; chassis 200 W above rest, CPU at its fitted
+    # idle: the act's card is the host's whole load, so the whole machine is 2x its GPU part.
     for i in range(-4, 8):
-        _summary(session, "circe", t0 + timedelta(seconds=30 * i), {"gpu2_watts": 140.0, "gpu1_watts": 300.0})
+        _summary(session, "circe", t0 + timedelta(seconds=30 * i), {
+            "gpu2_watts": 140.0, "gpu1_watts": 30.0, "chassis_watts": 800.0, "cpu_watts_total": 50.0,
+            "cpu_idle_watts": 50.0})
     session.execute(text("INSERT INTO energy_cost_accrued (interval_start, marginal_usd_per_kwh, tariff_version) "
                          "VALUES (:t, 0.1254564295292, 'rmp-test')"), {"t": t0 - timedelta(days=1)})
     corr = "corr-energy"
@@ -573,9 +588,13 @@ def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypa
         act, produced=True, source_service="orion-thought", source_component="t", correlation_id=corr,
         at=t0 + timedelta(seconds=90))])
     cost = _row(session, act.act_id)["cost_json"]
-    wh = 100.0 * (30.0 + 30.0 / 2) / 3600.0  # 100 W above idle; alone 30 s, shared 30 s
+    gpu_wh = 100.0 * (30.0 + 30.0 / 2) / 3600.0  # 100 W above idle; alone 30 s, shared 30 s
+    wh = 2.0 * gpu_wh  # chassis 200 W above rest over a 100 W load
     assert cost["wh_by_host"] == {"circe": pytest.approx(wh, rel=1e-3)}
+    assert cost["wh_gpu_by_host"] == {"circe": pytest.approx(gpu_wh, rel=1e-3)}
     assert cost["usd"] == pytest.approx(wh / 1000.0 * 0.1254564295292, rel=1e-3)
-    assert cost["heat_c_by_host"]["circe"] == pytest.approx(usable_sensitivity(0.5, 0.2, 0.8) * wh / 100.0, rel=1e-3)
-    assert "share 0.75" in cost["basis"]["wh"] and cost["basis"]["cpu"].startswith("not charged")
+    assert cost["heat_c_by_host"]["circe"] == pytest.approx(usable_sensitivity(0.5, 0.2, 0.8) * gpu_wh / 100.0,
+                                                            rel=1e-3)
+    assert "share 0.75" in cost["basis"]["wh"] and cost["basis"]["wh"].startswith("whole machine above rest (chassis)")
+    assert cost["basis"]["cpu"].startswith("CPU above its fitted idle")
     assert cost["gpu_slot_s_by_lane"] == {"diffusion": pytest.approx(60.0)}

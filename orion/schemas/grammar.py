@@ -266,15 +266,22 @@ class ActCostV2(BaseModel):
       act spent: left None.
     * ``gpu_slot_s_by_lane``: GPU pool slot-seconds held, per lane (pool role). Filled on close
       from ``gpu_pool_events`` leases whose ``turn_correlation_id`` is the act's correlation_id.
-    * ``wh_by_host``: watt-hours drawn ABOVE IDLE, per host. Filled on close from the act's GPU
-      pool leases: each card's watts above its own idle floor, split by lease share while the act
-      held it (orion/energy/act_energy.py, orion/grammar/act_energy_fill.py). GPU only: CPU is
-      measured per container (orion_biometrics_summary.measurements ``container_cpu_watts.*``),
-      not per act. An act with no GPU lease, or a card with no reading, leaves it None.
+    * ``wh_by_host``: watt-hours of the WHOLE MACHINE above rest, per host: the host's chassis watts
+      (at the wall) above its rest, split over the act's GPU pool leases by each card's above-idle
+      share of the host's load (cards + CPU), then by lease share (orion/energy/act_energy.py,
+      orion/grammar/act_energy_fill.py). A host with no chassis meter or no rest falls back to GPU
+      above idle and ``basis["wh"]`` says so for that host. CPU above rest is in the split but not
+      charged to an act (an act does not name its containers). An act with no GPU lease, or a card
+      with no reading, leaves it None.
+    * ``wh_gpu_by_host``: the GPU-above-idle part alone (the act's card watts above each card's idle
+      floor, by lease share). ``wh_by_host - wh_gpu_by_host`` is the overhead (fans, PSU loss,
+      memory) the act caused; it can read below 0 on a short act, because the chassis meter and the
+      cards are not read at the same instant.
     * ``usd``: dollars for ``wh_by_host`` at the house tariff's marginal $/kWh. None without Wh or
       without a recent rate.
     * ``heat_c_by_host``: cabinet degC the act adds, per host: the fitted heat sensitivity
-      (config/physiology/heat_sensitivity.yaml) x Wh / 100. A host with no usable fit is absent.
+      (config/physiology/heat_sensitivity.yaml) x ``wh_gpu_by_host`` / 100. The fit's regressor is
+      compute watts, so the GPU part is its input. A host with no usable fit is absent.
     * ``basis``: per field, in words, how it was measured (cards, samples, share, rate, fit), or
       why it was not.
     * ``juniper_msgs``: messages that reached Juniper. Not measured yet.
@@ -295,6 +302,7 @@ class ActCostV2(BaseModel):
     watts: float | None = Field(default=None, ge=0.0)
     gpu_slot_s_by_lane: dict[str, float] | None = None
     wh_by_host: dict[str, float] | None = None
+    wh_gpu_by_host: dict[str, float] | None = None
     juniper_msgs: int | None = Field(default=None, ge=0)
     claude_limit_events: int | None = Field(default=None, ge=0)
     usd: float | None = Field(default=None, ge=0.0)
@@ -303,7 +311,7 @@ class ActCostV2(BaseModel):
 
     @model_validator(mode="after")
     def _non_negative_maps(self) -> "ActCostV2":
-        for name in ("gpu_slot_s_by_lane", "wh_by_host", "heat_c_by_host"):
+        for name in ("gpu_slot_s_by_lane", "wh_by_host", "wh_gpu_by_host", "heat_c_by_host"):
             for key, value in (getattr(self, name) or {}).items():
                 if value < 0:
                     raise ValueError(f"{name}[{key!r}] must be >= 0, got {value!r}")

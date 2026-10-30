@@ -61,6 +61,7 @@ from .want_ledger import WantLedgerSQL
 from .llm_call_usage import LlmCallUsageSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
 from .orion_energy_hourly import OrionEnergyHourlySQL
+from .orion_energy_attribution_hourly import OrionEnergyAttributionHourlySQL
 from .act_downstream_use import ActDownstreamUseSQL
 from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociationSQL
 from .field_channel_anomaly_score import FieldChannelAnomalyScoreSQL
@@ -170,6 +171,7 @@ __all__ = [
     "LlmCallUsageSQL",
     "TransportBaselineHourlySQL",
     "OrionEnergyHourlySQL",
+    "OrionEnergyAttributionHourlySQL",
     "ActDownstreamUseSQL",
     "SelfSignalHourSQL",
     "SelfSignalOutcomeAssociationSQL",

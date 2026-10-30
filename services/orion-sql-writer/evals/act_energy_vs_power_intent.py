@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Eval: per-act energy from 30 s card samples vs the 1 Hz power-intent meter, same windows.
+"""Eval: the GPU part of per-act energy from 30 s card samples vs the 1 Hz power-intent meter.
 
-The act ledger charges an act the card's watts above its idle floor from the ~30 s biometrics
-samples (orion/energy/act_energy.py). The power-intent loop measures the same reverie images at
-~1 Hz (power_intent_settled). This replays the act estimator over each settled power-intent
-window and compares:
+WHAT THIS CHECKS (2026-10-30). The act ledger's ``wh_by_host`` is now the act's share of the WHOLE
+MACHINE above rest (chassis watts at the wall). The power-intent meter is GPU-only (one card's
+nvidia-smi watts above a pre-window sample), so it can only check the act meter's GPU step:
+``wh_gpu_by_host``, the card's watts above its idle floor (orion/energy/act_energy.card_energy).
+That is what this replays. The whole-machine number is checked by a different test, closure:
+services/orion-sql-writer/evals/act_energy_closure.py (acts + unmetered == measured above rest).
+
+The act ledger's GPU step charges an act the card's watts above its idle floor from the ~30 s
+biometrics samples. The power-intent loop measures the same reverie images at ~1 Hz
+(power_intent_settled). This replays the GPU step over each settled power-intent window and
+compares:
 
 * per run: the ratio estimator / meter. A 30 s sample can land on a peak or miss it, so single
   runs scatter widely. That is expected and is why `basis` names the sample count.
@@ -53,8 +60,10 @@ select coalesce(json_agg(json_build_object(
   'history', (select json_agg(trim(g->>'power_draw_watts'))
                 from orion_biometrics b, jsonb_array_elements(b.gpu->'gpus') g
                where b.node = r.node and trim(g->>'gpu_index') = r.gpu_index::text
-                 and b.timestamp >= to_char(r.window_start - interval '24 hours', 'YYYY-MM-DD"T"HH24:MI:SS')
-                 and b.timestamp < to_char(r.window_start, 'YYYY-MM-DD"T"HH24:MI:SS'))
+                 -- the card's idle floor is day-keyed: the 24 h before the window's UTC day
+                 and b.timestamp >= to_char(date_trunc('day', r.window_start at time zone 'UTC') - interval '24 hours',
+                                            'YYYY-MM-DD"T"HH24:MI:SS')
+                 and b.timestamp < to_char(date_trunc('day', r.window_start at time zone 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS'))
 )), '[]') from runs r;
 """
 

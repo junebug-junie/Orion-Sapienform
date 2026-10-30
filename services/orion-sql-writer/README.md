@@ -1172,19 +1172,38 @@ sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V
 (`orion/grammar/act_energy_fill.py`, arithmetic in `orion/energy/act_energy.py`). Fields the
 physiology report reads from `grammar_acts.cost_json`:
 
-- `wh_by_host`: GPU watt-hours ABOVE IDLE per host. Each leased card's `gpu{index}_watts`
-  (`orion_biometrics_summary`, ~30 s) is interpolated per second, minus the card's idle floor
-  (p05 of its own trailing 24 h), and split equally among the leases holding the card at that
-  second. Card -> host and nvidia-smi index come from `config/gpu_pool.yaml` (baked into the image).
-- `usd`: Wh / 1000 x the latest `energy_cost_accrued.marginal_usd_per_kwh` (<= 7 days old).
-- `heat_c_by_host`: `config/physiology/heat_sensitivity.yaml` sensitivity x Wh / 100 (an act's Wh
-  is its share of that hour's mean watts, the fit's regressor). A host with no usable fit is absent.
-- `basis`: per field, in words: cards, samples in window, share, idle floor, rate, fit, or why
-  not. `basis.cpu` says CPU is not charged per act (it is measured per container in biometrics).
+- `wh_by_host`: watt-hours of the WHOLE MACHINE above rest, per host (2026-10-30). The host's
+  `chassis_watts` (at the wall) above its rest is split, second by second, over everything drawing
+  above its own floor: each card's watts above its idle floor plus the CPU packages' watts above their
+  fitted idle (the row's `cpu_idle_watts`, the same floor the per-container CPU split uses). The act
+  gets the part that follows its leased cards, split equally among the leases holding each card.
+  Rest is PINNED per host in `config/physiology/rest_body.yaml` (never a rolling percentile: the dojo
+  raised athena's rolling floor ~350 W); a host whose `rest_w` exceeds `approved_rest_w` is refused.
+  Card idle floor = p05 of the card's own watts over the 24 h before the UTC day (it only weights the
+  split). A host with no chassis meter or no rest (hecate today) falls back to GPU above idle, and
+  `basis.wh` says so for that host. Card -> host and nvidia-smi index come from `config/gpu_pool.yaml`.
+- `wh_gpu_by_host`: the GPU-above-idle part alone (what the old meter charged). The difference is
+  the overhead (fans, PSU loss, memory) the act caused. Live circe: whole machine is ~2x GPU.
+- `usd`: whole-machine Wh / 1000 x the latest `energy_cost_accrued.marginal_usd_per_kwh` (<= 7 days old).
+- `heat_c_by_host`: `config/physiology/heat_sensitivity.yaml` sensitivity x GPU Wh / 100. The fit's
+  regressor is compute watts, so its slope already carries the overhead. A host with no usable fit is absent.
+- `basis`: per field, in words: method per host, rest, cards, samples in window, share, idle floor,
+  rate, fit, or why not. `basis.cpu` says CPU above rest is in the split but charged to no act.
+
+**Hourly attribution (2026-10-30).** `app/orion_energy_attribution.py` writes
+`orion_energy_attribution_hourly` (one row per UTC hour per host in `rest_body.yaml`, recomputing the
+last 3 hours every `ORION_ENERGY_ATTRIBUTION_INTERVAL_SEC`, backfilling up to 48 h): `rest_wh`,
+`above_rest_wh`, `sponsored_wh` (Juniper's sponsored containers, e.g. `zelda-dojo-live-*`, their CPU
+share of the overhead), `metered_wh` (leases whose turn has an act: what acts are charged),
+`leased_unmetered_wh` (leases whose turn has no act), `unattributed_wh` = above - sponsored - metered,
+stored unclipped (a negative value logs `orion_energy_attribution_negative`). Daily coverage =
+sum(metered) / (sum(above_rest) - sum(sponsored)). `GET /physiology/report` shows it per host per day in
+`unit_costs` ("work not yet metered on <host>"). Eval: `python3 evals/act_energy_closure.py --day
+YYYY-MM-DD` replays both paths read-only and gates closure, no negative hour, and acts ~ metered.
 
 Absent, never 0: no lease -> nothing written; a card with no reading or no 30 min of history ->
 `basis.wh = "unmeasured: <reason>"` and no Wh. A 30 s sample can land on a peak, so one act scatters;
-a family's total tracks the 1 Hz power-intent meter (`python3 evals/act_energy_vs_power_intent.py`).
+a family's GPU part (`wh_gpu_by_host`) tracks the 1 Hz power-intent meter (`python3 evals/act_energy_vs_power_intent.py`).
 Kill switch: `SQL_WRITER_ACT_ENERGY_COST_ENABLED=false`.
 
 **Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a

@@ -1,0 +1,29 @@
+# Orion's resting body: each host's whole-machine (chassis, at the wall) watts at rest. PINNED, not
+# rolling: a rolling percentile calls sustained work "rest" (the Zelda dojo raised athena's daily p05
+# by ~350 W from 10-28). Spec: docs/superpowers/specs/2026-10-30-orion-energy-allowance-proposal.md.
+#
+# Read by orion/physiology/rest_body.py:
+#   * the per-act energy meter (orion/grammar/act_energy_fill.py): an act's wh_by_host is its share
+#     of chassis watts above rest_w;
+#   * the hourly attribution (services/orion-sql-writer/app/orion_energy_attribution.py):
+#     orion_energy_attribution_hourly rest/above-rest/sponsored/metered/unattributed per host.
+#
+# Rules (the loader enforces the first):
+#   * rest_w > approved_rest_w is REFUSED for that host (its acts fall back to GPU above idle, the
+#     reason is in basis). Raising rest hides Orion's activity, so it needs Juniper: change
+#     approved_rest_w in a PR she merges. Lowering rest_w is always allowed.
+#   * Values below are the proposal's defaults (p05 of chassis_watts over 2026-10-01..10-13, before
+#     the dojo and the 10-14 affectgpt crash loop). NOT YET APPROVED by Juniper: approved_at is unset.
+#
+# sponsored: workloads Juniper started and only Juniper stops. Their CPU share of the above-rest
+# chassis watts (container_cpu_watts.<name>, scaled by the same load overhead the acts pay) is
+# reported as sponsored_wh, never as Orion's activity. `containers` is an fnmatch glob over
+# container names; `until` (YYYY-MM-DD, UTC, exclusive) or null.
+version: 1
+hosts:
+  circe:  {rest_w: 541, approved_rest_w: 541, measured: "2026-10-01..2026-10-13", method: "p05 chassis_watts", approved_at: null}
+  athena: {rest_w: 340, approved_rest_w: 340, measured: "2026-10-01..2026-10-13", method: "p05 chassis_watts", approved_at: null}
+  hecate: {rest_w: 96,  approved_rest_w: 96,  measured: "standby", method: "p50 chassis_watts when asleep", approved_at: null}
+cooling: rest
+sponsored:
+  - {name: zelda_dojo, containers: "zelda-dojo-live-*", host: athena, until: null, note: "Juniper runs it until she kills it"}

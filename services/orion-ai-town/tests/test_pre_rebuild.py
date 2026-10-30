@@ -56,6 +56,7 @@ def _run(svc: Path, tmp_path: Path, script: str = "pre_rebuild.sh") -> subproces
         AITOWN_TEST_CONVEX=(
             f"echo \"$(pwd) sim=$(test -f convex/sim/tick.ts && echo yes || echo no) $*\" >> {tmp_path / 'convex_calls'}"
         ),
+        AITOWN_TEST_BACKEND_UP=f"echo backend-up >> {tmp_path / 'convex_calls'}",
     )
     return subprocess.run(["bash", str(svc / "scripts" / script)], env=env, capture_output=True, text=True)
 
@@ -100,7 +101,8 @@ def test_rebuilds_a_hand_edited_tree_to_the_fresh_chain(town, tmp_path):
     assert "// untracked hand edit" in (backup / "untracked" / "src" / "lib" / "hubEmbed.ts").read_text()
     # pre runs codegen on the patched tree each time and never pushes.
     up = town / "upstream"
-    assert _calls(tmp_path) == [f"{up} sim=yes codegen --typecheck disable"] * 2
+    # The backend is started before each codegen, so a stopped stack recovers.
+    assert _calls(tmp_path) == ["backend-up", f"{up} sim=yes codegen --typecheck disable"] * 2
 
 
 def test_refuses_without_local_cards(town, tmp_path):
@@ -142,7 +144,9 @@ def test_seed_render_failure_leaves_no_example_seed(town, tmp_path):
 
 def test_codegen_failure_fails_pre_rebuild(town, tmp_path):
     env = os.environ.copy()
-    env.update(AITOWN_BACKUP_ROOT=str(tmp_path / "backups"), AITOWN_TEST_CONVEX="exit 4")
+    env.update(
+        AITOWN_BACKUP_ROOT=str(tmp_path / "backups"), AITOWN_TEST_BACKEND_UP="true", AITOWN_TEST_CONVEX="exit 4"
+    )
     run = subprocess.run(["bash", str(town / "scripts" / "pre_rebuild.sh")], env=env, capture_output=True, text=True)
     assert run.returncode == 4
     assert "codegen done" not in run.stdout

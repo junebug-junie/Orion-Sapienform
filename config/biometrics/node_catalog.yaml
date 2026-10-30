@@ -91,7 +91,7 @@ nodes:
     role: gpu_server
     # Offline since 2026-10-15; from its last biometrics row (1 GPU, 80 CPU threads) and
     # config/gpu_pool.yaml hecate-gpu0. CPU model and RAM not recorded.
-    hardware: Inspur NF5288M5 (AGX-2, 8 SXM2 slots), 1x V100-SXM2-32GB installed, 80 CPU threads (deep inference and training node)
+    hardware: Inspur NF5288M5 (product NF5288M5-G3GPU01, AGX-2, 8 SXM2 slots), 2x Xeon Gold 6148 (2.4 GHz, 80 threads), 183 GB RAM, 1x V100-SXM2-32GB installed (deep inference and training node)
     expected_online: false
     capabilities:
       local_llm_heavy: false

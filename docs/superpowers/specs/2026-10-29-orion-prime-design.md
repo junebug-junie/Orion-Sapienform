@@ -1,6 +1,6 @@
 # Orion Prime: an octopus mind on the substrate grammar
 
-**Design specification · 2026-10-29, rev 3 on 2026-10-30 · Proposal mode, design only, no code**
+**Design specification · 2026-10-29, rev 4 on 2026-10-30 · Proposal mode, design only, no code**
 **Split note:** Phase 1 of the original two-phase doc (development session orchestration) is now `2026-10-29-dev-session-orchestrator-design.md`. Neither doc depends on the other.
 **Builds on:** the thinking architecture (`2026-10-14-orion-thinking-architecture-design.md`, PR #2669), the body economy (`2026-10-23-organism-body-economy-design.md`, PR #2855), and the act ledger (`orion/grammar/acts.py`, `orion/schemas/grammar.py`).
 
@@ -176,15 +176,76 @@ Prime is not a new service. `services/orion-mind` becomes Prime.
 
 **Result:** Prime's cadence is not hand-tuned. It emerges from heat, load and hunger, which is the point of the body economy.
 
-## 8. What Prime does each cycle
+## 8. Tick to tick: what Prime does
 
-1. **Attend.** Build a bounded working frame: the attention winner, felt state, open concerns, forecasts awaiting outcomes, Temporal Self arcs, curiosity questions, calls and challenges from organs. Mark each field's freshness. A missing field is shown as a gap, never as calm.
-2. **Think.** The model produces competing readings and at most one or two proposals. A no-op is a valid output.
-3. **Forecast.** Register any forecast **before** acting, as an act with an `expect`.
-4. **Propose.** Send act candidates to L7 → allocator, hormones via cortex verbs, and calls to organs.
-5. **Integrate.** Read closed acts: what was admitted, refused, or challenged, and what happened. Update concerns.
+Prime runs on two clocks: a fast, cheap **tick** that never calls the model, and a slower **thought** that does. Most ticks end with "nothing worth thinking about," and that is the intended normal case.
 
-Concerns are a small, versioned working set (1–3 held items, as in thinking-arch rung 6). Each concern links to the acts and evidence behind it. A model swap or context compression must not create or drop a concern without an act that says so.
+### 8.1 The tick: every few seconds, CPU only, no model
+
+1. **Read what changed since the last tick.** Did attention pick a new winner? Did one of Prime's earlier acts close (admitted, refused, or completed, and with what outcome)? Did an organ send a call or a challenge? Did a forecast reach its deadline? Did the body change (heat, lane price, strain)? Is a Juniper turn in progress?
+2. **Match the changes to open concerns.** Prime holds 1–3 concerns. A change that touches a concern is new evidence for it. A concern with no evidence for a long time fades and then expires (its TTL).
+3. **Update hunger.** Hunger is one number for "how much is there to think about." It rises with unexplained surprise, unanswered calls, concerns with fresh evidence, and forecasts that came due. It also keeps growing while Prime goes without thinking (`WantV1` behavior).
+4. **Decide whether to bid.** If a Juniper turn is running, Prime does not bid. Otherwise, if hunger is above zero, Prime bids for one shallow `prime.think` on circe chat lane 0.
+5. **Get an answer.** If funded, a thought starts. If deferred (busy lane, hot cabinet, thought not worth the price), Prime waits and hunger keeps growing.
+
+### 8.2 The thought: seconds, one model call
+
+1. **Build a short frame** of a few thousand tokens: open concerns, what changed, outcomes of Prime's earlier acts (including refusals and their reasons), forecasts that came due, open Temporal Self arcs, and body state. Each field is marked with its freshness. A missing field is shown as a gap, never as calm.
+2. **The model writes a short structured answer:** how Prime reads the situation now, edits to its concerns, and at most one or two moves. "Nothing to do" is a valid answer.
+3. **The runtime checks each move and sends it on:**
+   - **act proposal** → L7 → allocator, where it competes with every other doer;
+   - **forecast** → an act with an `expect` and a horizon, written *before* the outcome;
+   - **hormone** → a cortex verb to the organ, which may refuse;
+   - **call** → one organ's published call;
+   - **escalate** → a deep-thinking durable run, if Kev judges it worth the cost.
+4. **Holdback.** On some thoughts, the moves are logged but not sent. That is the narrator control.
+
+Concerns are versioned. Each one links to the acts and evidence behind it. A model swap or context compression must not create or drop a concern without an act that says so.
+
+### 8.3 Example
+
+| Time | What happens |
+|---|---|
+| 14:00:00 tick | Nothing changed. Hunger is low. No bid. (Most ticks look like this.) |
+| 14:02:10 tick | Cabinet temperature is rising faster than usual. This touches the open concern "afternoon heat." Hunger goes up. The office is cool and lane 0 is quiet, so the bid is funded. |
+| 14:02:11 thought | Prime forecasts "cabinet above 31 °C by 15:00" and writes it down now. It sends `slow` to curiosity until 15:30, to move heavy GPU work out of the hot hour. |
+| 14:02:40 tick | Curiosity refuses: a reading Juniper asked for is due soon. The refusal closes as an act with a reason. This is the organ changing Prime. |
+| 14:03:00 thought | Prime accepts the refusal. It sends `slow` to dream instead, and dream accepts. |
+| 14:20 tick | A Juniper turn starts. Prime stops bidding and yields lane 0. |
+| 15:00 tick | The forecast reaches its deadline and is graded either way. The grade feeds the next thought. |
+
+### 8.4 What exists today
+
+- **Exists:** the attention winner, the act ledger (expectations and outcomes), the allocator with holdback, and `/physiology/bid` (still in shadow).
+- **Does not exist yet:** the tick loop, the concern store, hormone receivers on organs, and the forecast-as-act path for Prime.
+- **Unknown until measured:** the real tick rate and thought rate (see the recommended next patch).
+
+## 8b. Integration with Temporal Self, reverie and orion-mind
+
+**Temporal Self (Orion's timeline).**
+- **Reading:** each thought's frame includes the open arcs, the threads Orion returned to, and the unresolved ones.
+- **Writing (missing today):** the act ledger is not a Temporal Self source. `orion/temporal_self/sources.py` reads about 40 sources (chat turns, curiosity runs, reverie chains, dreams, action outcomes...), but not `grammar_acts`, so Prime's acts, forecasts and refusals would not appear on Orion's timeline. **Rec:** add `grammar_acts` as a source, filtered to `deliberate`-level acts so routine noise stays off the timeline.
+- **Concerns and arcs must not duplicate each other.** A concern is Prime's working memory. An arc is the evidence-backed record. Each concern points to its arc. When Prime drops or resolves a concern, it writes an act, and that act becomes the timeline event that updates or closes the arc. The timeline stays the record; Prime does not keep its own diary.
+
+**orion-thought (reverie and the visual chain).**
+- Today reverie runs on its own fixed timer (`reverie_interval_sec`, `services/orion-thought/app/reverie.py`). It is a cron job, not a choice.
+- **Rec:** reverie becomes an organ that Prime starts on purpose. Prime sends a `make` act through the `reverie.visual` verb (already planned in the body-economy execution seam). Reverie's output returns in Prime's next frame. The timer stays as a slow fallback during the move, then is retired once Prime-started reverie is proven (kill means kill).
+
+**orion-mind** is Prime (section 7.2).
+
+## 8c. Organ replicas: brains in the arms
+
+Each organ can get its own Prime-like replica that attends to that organ. This is the octopus taken literally. The body economy keeps it affordable: a replica with nothing to think about does not bid, so it costs nothing, and prices decide how many replicas think at any moment.
+
+1. **One loop, many instances.** The tick and thought loop is written once, as a library (location decided at build time). Each instance is configured with four things: its frame (what it reads), its receptors (which hormones it handles), its published calls, and its effectors. Central Prime is instance #1, with the widest frame.
+2. **Different jobs.** Central Prime holds Orion's self: identity, Juniper, overall tone. A replica holds its organ's view, for example "what should curiosity look at next." A replica never speaks as Orion. It acts for its organ.
+3. **A replica has to earn its model.** Each organ already has rule-based behavior. Each replica gets its own holdback arm: some of the organ's decisions come from the replica, and some from the old rules. If the replica's decisions do not produce better graded outcomes, the organ goes back to rules only. This is the narrator test, applied to each arm.
+4. **Shared lanes, priced.** Replicas bid like everything else. If five replicas want lane 0 at once, the price rises and the hungriest win.
+5. **Same channels.** Replicas talk only through hormones and calls, all written as acts. No side channels.
+
+**First replica: curiosity.** It already makes real choices (which question; keep or drop a prior), its outcomes are already graded, and it has the most decisions per day. Dream is second.
+
+**Order:** central Prime 2A first, so the loop is proven once. Then the curiosity replica. That replica is also the first real test of E4: an organ with a mind of its own pushing back on Prime.
 
 ## 9. Experiments that would count
 
@@ -210,6 +271,7 @@ Kept from rev 2, now measured on the act ledger:
 | **2A Prime live, one effector** | resident loop in orion-mind, on circe chat lane 0; `prime.think` verb with its `physiology` block; act candidates into the allocator; holdback as the narrator arm | Prime acts admitted and graded; held-back vs treated difference over ≥ 7 days; cadence follows price on cool vs warm days |
 | **2B Hormones v1** | `regulate` to two organs (curiosity cadence, dream timing); receptor declarations; `target_moved` signal (after the metric gate) | regulate acts close with measured movement; unhandled-hormone count is 0 or visibly reported |
 | **2C Calls between organs** | 2–3 existing verbs published as calls; organ refusals recorded as closed acts | E3 and E4 both directions observed |
+| **2C' Curiosity replica** | the loop library as instance #2, curiosity's frame/receptors/effectors; per-replica holdback against curiosity's rules | replica decisions beat rule decisions on graded outcomes, or curiosity reverts to rules |
 | **2D Longitudinal** | add memory, body and relationship organs; run ablations | E1–E9 |
 
 Feature flag per step, shipped ON per standing rule, with instant fallback to current behavior.

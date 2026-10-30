@@ -12,7 +12,7 @@ const END = Date.parse(FIXTURE.window.end);
 
 test("fixture carries every top-level section the page reads", () => {
   for (const key of ["generated_at", "window", "limits", "wants", "rhythm", "money", "unit_costs", "waste",
-    "queue_wait", "decisions", "missing", "claude", "vram", "value_per_cost", "services"]) {
+    "queue_wait", "decisions", "missing", "claude", "vram", "value_per_cost", "services", "processes"]) {
     assert.ok(key in FIXTURE, key);
   }
 });
@@ -145,4 +145,41 @@ test("odd family values never throw", () => {
   assert.equal(tab.colorForFamily(null), "#6b7280");
   assert.equal(tab.colorForFamily(42), "#6b7280");
   assert.equal(tab.filterDecisions([{ family: null, outcome: "funded", decided_at: "2026-10-29T00:00:00Z" }], { query: "x" }).length, 0);
+});
+
+test("processes: one bar per process, longest first, labelled with name, host, watts and cores", () => {
+  const html = tab.processesHtml(FIXTURE, null, "UTC");
+  const order = [...html.matchAll(/data-process="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, ["athena:orion-athena-vector-host", "circe:orion-llamacpp-chat",
+    "athena:(host, not in a container)", "circe:d590a9d48af2"]);
+  assert.equal((html.match(/class="hbar"/g) || []).length, FIXTURE.processes.length);
+  // bar length is watts above idle, against the biggest process
+  assert.match(html, /orion-athena-vector-host <span class="muted">athena<\/span>.*?width:100\.0%/);
+  assert.match(html, /orion-llamacpp-chat <span class="muted">circe<\/span>.*?width:42\.3%/);
+  assert.ok(html.includes("50.6 W · cores ?"));                  // unknown cores say so, never 0
+  // the producer sends cores: null today; the fixture's 3.5 exercises the future path
+  assert.ok(html.includes("21.4 W · 3.5 cores"));
+  assert.ok(html.includes("busy cores not published per container"));
+  assert.ok(!html.includes("data-empty"));
+  // a non-empty section still shows its own missing notes
+  assert.ok(html.includes("data-process-notes") && html.includes("partial: circe: CPU below the fitted idle floor"));
+});
+
+test("processes empty state says why: the report's missing reason, unreachable, or a default", () => {
+  const reason = "per-container CPU watts are not reported yet: no fresh orion_biometrics_summary row";
+  const report = { processes: [], missing: [{ section: "vram", reason: "other" }, { section: "processes", reason }] };
+  const html = tab.processesHtml(report, null, "UTC");
+  assert.ok(html.includes('data-empty="1"') && html.includes(reason));
+  assert.ok(!html.includes('class="hbar"'));
+  assert.ok(tab.processesHtml({ missing: [] }, null).includes("No per-process CPU watts yet."));   // absent key
+  const err = { status: 502, unreachable_since: "2026-10-29T17:00:00Z" };
+  assert.match(tab.processesHtml(null, err, "UTC"), /durable-runs unreachable since 29\/10, 17:00/);
+  // every processes reason shows, not just the first
+  const two = { processes: [], missing: [{ section: "processes", reason: "a" }, { section: "processes", reason: "b" }] };
+  assert.ok(tab.processesHtml(two, null).includes("a; b"));
+  // same name and watts on two hosts: a stable order
+  const tie = { processes: [{ host: "b", name: "x", watts: 1 }, { host: "a", name: "x", watts: 1 }], missing: [] };
+  assert.deepEqual([...tab.processesHtml(tie, null).matchAll(/data-process="([^"]+)"/g)].map((m) => m[1]), ["a:x", "b:x"]);
+  // rows without a number are dropped, not drawn as 0 W
+  assert.ok(tab.processesHtml({ processes: [{ host: "a", name: "x", watts: null }], missing: [] }, null).includes("data-empty"));
 });

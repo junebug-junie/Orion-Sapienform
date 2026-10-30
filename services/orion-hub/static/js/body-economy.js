@@ -688,7 +688,13 @@
       var floor = num(h.recent_floor_w), rest = num(h.chassis_w_rest);
       var drift = floor !== null && rest !== null && floor - rest >= 20
         ? '<div class="small">This week\'s lowest draw is ' + esc(fmtW(floor)) + ", " + Math.round(floor - rest) + " W above the pinned rest: new always-on draw.</div>" : "";
-      var unattr = num(h.unattributed_above_rest_w) !== null ? '<div class="small">Above rest but charged to no act: ' + esc(fmtW(h.unattributed_above_rest_w)) + "</div>" : "";
+      var hourStart = ms(h.attribution_hour_start);
+      var hourWords = hourStart === null ? "" : " over " + new Date(hourStart).toISOString().slice(11, 16) + "–" +
+        new Date(hourStart + 3600000).toISOString().slice(11, 16) + " UTC (newest complete hour)";
+      var unattr = num(h.unattributed_above_rest_w) !== null ? '<div class="small" data-unattributed="' + esc(h.host) + '" data-tip="' +
+        esc(h.attribution_basis || "") + '">Above rest but charged to no act: ' + esc(fmtW(h.unattributed_above_rest_w)) + " average" +
+        esc(hourWords) + (num(h.leased_unmetered_above_rest_w) !== null ? ", of it " + esc(fmtW(h.leased_unmetered_above_rest_w)) +
+        " on GPU leases whose turn has no act" : "") + "</div>" : "";
       return '<div class="host" data-host="' + esc(h.host) + '"><div class="host-head">' + head + "</div>" + hostStackHtml(h, maxW) +
         overheadNote(h.host, h.overhead_factor, h.overhead_basis, h.overhead_fitted) + overheadLag(h) +
         hostCardsHtml(h) + (ctr.length ? '<div class="muted small">Top CPU users (watts above CPU idle, estimated): ' + esc(ctr.join(", ")) + "</div>" : "") +

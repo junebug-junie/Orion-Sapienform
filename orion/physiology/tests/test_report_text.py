@@ -275,11 +275,13 @@ def test_cards_containers_and_processes_show_both_numbers_and_say_estimate():
     p = rep["processes"][0]
     assert f"- {p['host']} {p['name']}: {p['watts']:.1f} W CPU (≈{p['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in text
     k = {h["host"]: h["overhead_factor"] for h in rep["hosts"]}
-    assert f"athena x {k['athena']:.2f} (fitted), circe x {k['circe']:.2f} (fitted)" in text
+    in_procs = sorted({p_["host"] for p_ in rep["processes"]})            # the top 12 can all be one machine
+    assert ", ".join(f"{h} x {k[h]:.2f} (fitted)" for h in in_procs) in text
     assert "every 'at the wall' figure" in text and "None" not in text and "nan" not in text
     overview = rt.render_report_text(rep)
     busiest = max(circe["cards"], key=lambda c: c.get("above_idle_w") or 0.0)   # the overview shows busy cards only
-    assert f"(≈{busiest['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in overview
+    if busiest["above_idle_w"] >= rt.CARD_BUSY_ABOVE_W:
+        assert f"(≈{busiest['watts_at_wall_est']:.0f} W at the wall above rest, est.)" in overview
     assert overview.count("at-the-wall figures are ESTIMATES") == 1
     assert rt.cap_text(overview) == overview
 
@@ -310,3 +312,13 @@ def test_old_reports_without_overhead_fields_render_as_before():
     rep = hosts_live()                        # 2026-10-30 fixture, before the overhead fields existed
     text = rt.render_report_text(rep, ("hosts", "processes"))
     assert "at the wall" not in text.replace("every 'at the wall' figure", "") and "ESTIMATES" not in text
+
+
+def test_charged_to_no_act_names_its_hour():
+    rep = overhead_live()
+    circe = next(h for h in rep["hosts"] if h["host"] == "circe")
+    text = rt.render_report_text(rep, ("hosts",), host="circe")
+    line = next(l for l in text.splitlines() if l.startswith("- above rest but charged to no act:"))
+    assert f"{circe['unattributed_above_rest_w']:.0f} W" in line and "on GPU leases whose turn has no act" in line
+    assert f"average over {circe['attribution_hour_start'][11:16]}-" in line and "newest complete hour" in line
+    assert "until the whole-machine per-act meter" not in text

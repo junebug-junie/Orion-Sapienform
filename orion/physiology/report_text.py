@@ -543,7 +543,10 @@ def render_hosts(report: Mapping, *, full: bool) -> list[str]:
                        + ", ".join(f"{c['name']} {float(c['cpu_w']):.1f} W{_at_wall(c.get('watts_at_wall_est'))}"
                                    for c in ctr))
         if h.get("unattributed_above_rest_w") is not None:
-            out.append(f"- above rest but charged to no act: {_w(h['unattributed_above_rest_w'])}")
+            leased = (f", of it {_w(h['leased_unmetered_above_rest_w'])} on GPU leases whose turn has no act"
+                      if h.get("leased_unmetered_above_rest_w") is not None else "")
+            out.append(f"- above rest but charged to no act: {_w(h['unattributed_above_rest_w'])}{leased} "
+                       f"({h.get('attribution_basis') or 'hourly attribution'})")
         days = h.get("daily") or []
         if days:
             out.append("- daily average (first and last day partial): "

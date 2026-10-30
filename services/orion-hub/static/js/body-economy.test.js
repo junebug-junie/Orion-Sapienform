@@ -251,6 +251,10 @@ test("every component watt is shown beside the whole machine at the wall it driv
   assert.match(tab.hostsHtml(lag, null, "UTC"), /data-overhead-lag="c">Right now the parts' at-the-wall estimates add to 1210 W against 637 W measured above rest/);
   lag.hosts[0].wall_est_parts_w = 700;
   assert.ok(!tab.hostsHtml(lag, null, "UTC").includes("data-overhead-lag"));
+  // charged to no act: the newest complete attribution hour, labelled
+  const un = { hosts: [{ host: "c", chassis_w_now: 600, cards: [], unattributed_above_rest_w: 543.7, leased_unmetered_above_rest_w: 482.8,
+    attribution_hour_start: "2026-10-30T03:00:00Z", attribution_basis: "average over 03:00-04:00 UTC" }] };
+  assert.match(tab.hostsHtml(un, null, "UTC"), /data-unattributed="c"[^>]*>Above rest but charged to no act: 544 W average over 03:00–04:00 UTC \(newest complete hour\), of it 483 W on GPU leases whose turn has no act/);
   // the fallback factor says it was not fitted here
   const fb = { hosts: [{ host: "h", chassis_w_now: 100, cards: [], overhead_factor: 2.69, overhead_basis: "PR #2992 fit on circe; not fitted on h" }] };
   assert.ok(tab.hostsHtml(fb, null, "UTC").includes("fallback: not fitted on h"));

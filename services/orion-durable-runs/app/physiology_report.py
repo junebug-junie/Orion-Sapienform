@@ -294,7 +294,9 @@ GROUP BY 1, 2 ORDER BY 2 DESC, 1
 ATTRIBUTION_CHARGED_SQL = """
 SELECT e.key AS host, to_char(a.opened_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
        SUM(e.value::float) AS charged_wh, COUNT(*) AS acts
-FROM grammar_acts a, jsonb_each_text(a.cost_json->'wh_by_host') AS e(key, value)
+FROM grammar_acts a,
+     jsonb_each_text(CASE WHEN jsonb_typeof(a.cost_json->'wh_by_host') = 'object'
+                          THEN a.cost_json->'wh_by_host' ELSE '{}'::jsonb END) AS e(key, value)
 WHERE a.opened_at >= %(since)s AND a.opened_at < %(until)s AND a.cost_json ? 'wh_gpu_by_host'
 GROUP BY 1, 2
 """
@@ -439,10 +441,19 @@ HOST_MAX_CARDS = 8
 HOURS_PER_MONTH = 730.0
 HOST_TOP_HOLDERS = 4
 HOST_TOP_CONTAINERS = 5
-#: Above-rest energy no act is charged for is hourly (orion_energy_attribution_hourly, PR #2992), not per instant.
-UNATTRIBUTED_NOT_YET = ("above-rest watts no act is charged for: not split per instant here (unattributed_above_rest_w "
-                        "stays empty); per host per day it is unit_costs 'work not yet metered' "
-                        "(orion_energy_attribution_hourly)")
+#: Above-rest watts no act is charged for: the newest COMPLETE hour per host in orion_energy_attribution_hourly
+#: (sql-writer, PR #2992). By design that row lags: an hour is written once it has ended and settled 3 min,
+#: on a 10-min tick (ORION_ENERGY_ATTRIBUTION_INTERVAL_SEC), so the newest hour_start is 1 h 3 min to about
+#: 2 h 13 min before now (live 2026-10-30 05:09Z: 03:00, written 05:00:54 just before 04:00's settle).
+ATTRIBUTION_LATEST_SQL = """
+SELECT DISTINCT ON (host) host, hour_start, unattributed_wh, leased_unmetered_wh, above_rest_wh, sponsored_wh,
+       metered_wh, covered_sec, split_unknown_sec
+FROM orion_energy_attribution_hourly
+WHERE hour_start >= %(since)s AND hour_start < %(until)s
+ORDER BY host, hour_start DESC
+"""
+#: Newest attribution hour older than this (by its start) is said as stale, not shown as "now".
+ATTRIBUTION_LATEST_MAX_AGE = timedelta(hours=3)
 
 
 def _bio_ts(d: datetime) -> str:
@@ -1261,13 +1272,48 @@ def _pinned_rest(spec: Any) -> tuple[Optional[float], Optional[str]]:
     return rest, None
 
 
+def host_attribution(att: Optional[Mapping], now: datetime) -> tuple[dict[str, dict], list[str]]:
+    """host -> the newest complete attribution hour as average watts, plus notes for ``missing``.
+    ``att`` None: not read (a failed read is already in ``missing``); {"present": False}: no table."""
+    if att is None:
+        return {}, []
+    if not att.get("present"):
+        return {}, ["above-rest watts no act is charged for: orion_energy_attribution_hourly does not exist yet"]
+    out: dict[str, dict] = {}
+    notes: list[str] = []
+    for r in att.get("rows") or []:
+        host, start = str(r.get("host")), _utc(r.get("hour_start"))
+        covered_h = (_f(r.get("covered_sec")) or 0.0) / 3600.0
+        if start is None or covered_h <= 0.0:
+            continue
+        if now - start > ATTRIBUTION_LATEST_MAX_AGE:
+            notes.append(f"{host}: the newest attribution hour starts {start:%H:%M} UTC, over "
+                         f"{ATTRIBUTION_LATEST_MAX_AGE.total_seconds() / 3600:.0f} h ago: the sql-writer hourly "
+                         "attribution is behind, so 'charged to no act' is not shown")
+            continue
+        end = start + timedelta(hours=1)
+        unknown_h = (_f(r.get("split_unknown_sec")) or 0.0) / 3600.0
+        partial = f"; for {unknown_h:.1f} h a reading was missing, so all its above-rest energy is in it" \
+            if unknown_h > 0.05 else ""
+        out[host] = {
+            "unattributed_above_rest_w": _r((_f(r.get("unattributed_wh")) or 0.0) / covered_h, 1),
+            "leased_unmetered_above_rest_w": _r((_f(r.get("leased_unmetered_wh")) or 0.0) / covered_h, 1),
+            "attribution_hour_start": start,
+            "attribution_basis": (f"average over {start:%H:%M}-{end:%H:%M} UTC, the newest complete hour in "
+                                  f"orion_energy_attribution_hourly ({covered_h * 60:.0f} min covered{partial}); "
+                                  "an hour is written once it has ended, on a 10-min tick, so it lags now by 1-2 h"),
+        }
+    return out, notes
+
+
 def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily_rows: Sequence[Mapping],
                 holder_rows: Sequence[Mapping], gpu_pool_doc: Optional[Mapping], pool_err: Optional[str],
                 rate_usd_per_kwh: Optional[float], now: datetime,
                 names: Optional[Mapping[str, str]] = None,
                 rest_body: Optional[Mapping] = None, rest_source: str = "", rest_err: Optional[str] = None,
                 hosts: Sequence[str] = VRAM_HOSTS,
-                overheads: Optional[Mapping[str, Overhead]] = None) -> tuple[list[dict], list[dict]]:
+                overheads: Optional[Mapping[str, Overhead]] = None,
+                attribution: Optional[Mapping] = None) -> tuple[list[dict], list[dict]]:
     """What is spinning each machine: whole-machine watts now vs its PINNED rest, split into GPU /
     CPU / other (each against its own rest over the same dated window), each card with the lease
     holders that held it in the window, the top containers by CPU watts, sponsored work apart.
@@ -1310,6 +1356,7 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
     sponsors = [sp for sp in (sponsored_raw if isinstance(sponsored_raw, list) else []) if isinstance(sp, Mapping)]
     asleep: list[str] = []
     recent_idle_hosts: list[str] = []
+    att_by_host, att_notes = host_attribution(attribution, now)
     out: list[dict] = []
     for host in hosts:
         if host not in meas:
@@ -1394,6 +1441,7 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
             "gpu_w_rest": _r(_f(rr.get("gpu_rest")), 1), "cpu_w_rest": _r(_f(rr.get("cpu_rest")), 1),
             "other_w_rest": _r(_f(rr.get("other_rest")), 1), "parts_rest_window": window_words,
             "fan_pct": _r(_f(m.get("fan_pct_max")), 1), "unattributed_above_rest_w": None,
+            **att_by_host.get(host, {}),
             "cards": card_rows, "top_containers": containers[:HOST_TOP_CONTAINERS], "sponsored": sponsored,
             "daily": daily.get(host, []), **_overhead_fields(o),
             "load_above_idle_w": _r(load_now, 1), "wall_est_parts_w": parts_wall, "overhead_now_ratio": now_ratio,
@@ -1413,8 +1461,12 @@ def shape_hosts(bio_rows: Sequence[Mapping], rest_rows: Sequence[Mapping], daily
     if asleep:
         missing.append({"section": "hosts", "reason": f"no biometrics row in the last 15 min for {', '.join(asleep)} "
                         "(asleep or its reporter is down): not shown"})
-    if out:
-        missing.append({"section": "hosts", "reason": UNATTRIBUTED_NOT_YET})
+    for note in att_notes:
+        missing.append({"section": "hosts", "reason": note})
+    no_att = [h["host"] for h in out if h.get("unattributed_above_rest_w") is None]
+    if attribution is not None and attribution.get("present") and no_att:
+        missing.append({"section": "hosts", "reason": f"above-rest watts no act is charged for: no recent "
+                        f"orion_energy_attribution_hourly row for {', '.join(no_att)}"})
     if out and rate_usd_per_kwh is None:
         missing.append({"section": "hosts", "reason": "no electricity rate on the newest physiology tick: $/month unknown"})
     return out, missing
@@ -1667,6 +1719,13 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             **hp, "p": HOST_REST_PERCENTILE, "floor_since": _bio_ts(now - HOST_FLOOR_WINDOW)}), ("hosts",))
         tasks["hosts_daily"] = timed("hosts_daily", lambda: _rows(pool, HOSTS_DAILY_SQL, {
             **hp, "tz": deps.tz, "since_ts": _bio_ts(since)}), ("hosts",))
+        async def host_att():
+            present = bool(((await _rows(pool, ATTRIBUTION_PRESENT_SQL, {})) or [{}])[0].get("present"))
+            if not present:
+                return {"present": False}
+            return {"present": True, "rows": await _rows(pool, ATTRIBUTION_LATEST_SQL, {
+                "since": now - timedelta(hours=6), "until": now})}
+        tasks["hosts_attribution"] = timed("hosts_attribution", host_att, ("hosts",))
         tasks["hosts_holders"] = timed("hosts_holders", lambda: _rows(pool, HOSTS_HOLDERS_SQL, {
             **base, "events": list(RHYTHM_CLOSE_EVENTS), "top": HOST_TOP_HOLDERS}), ("hosts",))
     if "services" in wanted:
@@ -1752,7 +1811,8 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
             rest_rows = merge_by_node(results["hosts_rest"], results.get("hosts_floor") or [])
             return shape_hosts(results["vram"], rest_rows, results.get("hosts_daily") or [],
                                results.get("hosts_holders") or [], doc, perr, rate, now, names_map,
-                               rest_body=rest_body, rest_source=rest_source, rest_err=rest_err, overheads=overheads)
+                               rest_body=rest_body, rest_source=rest_source, rest_err=rest_err, overheads=overheads,
+                               attribution=results.get("hosts_attribution"))
         add("hosts", _hosts)
     if "value_per_cost" in wanted:
         if deps.family_weights is None:

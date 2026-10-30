@@ -1,6 +1,6 @@
 # Cost views include the whole machine's overhead
 
-Follows #2992, #2991 and #2987 (all three merged into main before this branch was pushed; it is rebased on that main).
+Not stacked. #2992, #2991, #2987, #2988 and #2998 are merged and deployed; this branch is rebased on that main and can merge on its own.
 
 ## Summary
 
@@ -8,7 +8,8 @@ Follows #2992, #2991 and #2987 (all three merged into main before this branch wa
 - A card's watts, a container's CPU watts, Juniper's sponsored work and the painting run cost are parts. Each now shows its own watts and, beside it, an estimate of the whole-machine watts it drives: "gpu1 199 W, rest 42 W (≈368 W at the wall above rest)".
 - The factor is fitted per machine on its own last 14 days, from the same readings and the same pinned rest the per-act meter uses. Live today: circe 2.34, athena 1.27. When a fit is not usable, #2992's circe fit (2.69) is used and the text says so.
 - The dig text, the Hub Machines and Processes panels, the unit-cost table and the report fields all say the wall figures are ESTIMATES and say how the factor was found.
-- The durable-runs image now contains `config/physiology/rest_body.yaml`. Before, the report in the container could not see it and fell back to its built-in defaults.
+- The machines view now says how much of the draw above rest no act was charged for, from the hourly attribution (#2992), labelled with the hour it covers. The stale note "unknown until ... fix/act-energy-whole-machine merges" is gone.
+- Fixes a live crash: since #2992, the per-day "charged to acts" read failed in production (`jsonb_each_text` on a null `wh_by_host`; 5 acts in the last day have `wh_gpu_by_host` but no `wh_by_host`), so unit costs lost every "work not yet metered" row.
 
 ## Outcome moved
 
@@ -35,7 +36,6 @@ The painting unit cost moves from 0.27 W·h (GPU only) to about 0.63 W·h at the
 - `orion/energy/act_energy.py`: docstring points at the view-side fit.
 - `services/orion-durable-runs/app/physiology_report.py`: overhead read, cache, `overheads_by_host`, wall fields in hosts, processes and unit costs; `energy_run_cost` grouped by node.
 - `services/orion-durable-runs/tests/test_physiology_report.py`: report fields, fallback, failed read, real-Postgres path (hourly fit on inserted history, run-cost node column).
-- `services/orion-durable-runs/Dockerfile`: copies `rest_body.yaml`.
 - `services/orion-durable-runs/README.md`, `services/orion-hub/README.md`: the method and fields.
 - `orion/schemas/physiology_report.py`: optional fields.
 - `orion/physiology/report_text.py`, `orion/dig/__main__.py`: dig text and help.
@@ -44,11 +44,13 @@ The painting unit cost moves from 0.27 W·h (GPU only) to about 0.63 W·h at the
 - `orion/physiology/evals/physiology_state_skill_eval.py`: new `overhead` check and scenario.
 - `services/orion-hub/static/js/body-economy.js`, `body-economy.test.js`, `tests/fixtures/body_economy_report.json`, `tests/test_body_economy_browser_smoke.py`: Hub panels, fixture, unit and browser tests.
 - `.github/workflows/orion-durable-runs-tests.yml`: runs on changes to `orion/energy/overhead.py`.
+- (`rest_body.yaml` in the durable-runs image: dropped from this branch on rebase; #2998 shipped the same line.)
 
 ## Schema / bus / API changes
 
 - Added (all optional, default None/0):
-  - `HostPowerV1`: `overhead_factor`, `overhead_basis`, `overhead_fitted`, `overhead_r2`, `overhead_hours`, `load_above_idle_w`, `wall_est_parts_w`, `overhead_now_ratio`.
+  - `HostPowerV1`: `overhead_factor`, `overhead_basis`, `overhead_fitted`, `overhead_r2`, `overhead_hours`, `load_above_idle_w`, `wall_est_parts_w`, `overhead_now_ratio`, `leased_unmetered_above_rest_w`, `attribution_hour_start`, `attribution_basis`.
+  - `unattributed_above_rest_w` is now filled (newest complete attribution hour, average W) instead of always None.
   - `HostCardV1`: `above_idle_w`, `watts_at_wall_est`.
   - `HostContainerV1`, `HostSponsoredV1`: `watts_at_wall_est`.
   - `ProcessV1`: `watts_at_wall_est`, `overhead_factor`, `overhead_basis`.

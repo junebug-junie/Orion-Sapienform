@@ -424,6 +424,10 @@ def test_report_sql_on_postgres():
                     await conn.execute("INSERT INTO grammar_acts VALUES ('a2', 'hub.chat_reply', %s, %s, 'corr-2')",
                                        (now - timedelta(hours=2), json.dumps({"wh_by_host": {"circe": 7.0},
                                                                               "wh_gpu_by_host": {"circe": 3.0}})))
+                    # live 2026-10-30: 5 acts carried wh_gpu_by_host with wh_by_host null, and the charged-per-day
+                    # read crashed (jsonb_each_text on a non-object), emptying unit_costs' attribution rows
+                    await conn.execute("INSERT INTO grammar_acts VALUES ('a3', 'hub.chat_reply', %s, %s, 'corr-3')",
+                                       (now - timedelta(hours=2), json.dumps({"wh_by_host": None, "wh_gpu_by_host": {"circe": 1.0}})))
                     await conn.execute("INSERT INTO grammar_acts VALUES ('a1', 'hub.outreach', %s, %s, 'corr-1')",
                                        (now - timedelta(hours=1), json.dumps({"wh_by_host": {"athena": 1.5, "circe": 0.5}, "usd": 0.001})))
                     for cid, rec, corr, p_, c_ in (("c1", "gateway", "corr-1", 900, 100), ("c2", "harness_relay", "corr-1", 400, 100),
@@ -478,6 +482,9 @@ def test_report_sql_on_postgres():
                 assert (circe.chassis_w_now, circe.chassis_w_rest, circe.other_w) == (1150.0, 541.0, 580.0)
                 assert (circe.gpu_w_rest, circe.cpu_w_rest, circe.other_w_rest) == (190.0, 45.0, 306.0)
                 assert circe.recent_floor_w == 1150.0 and circe.daily
+                # the newest fixture attribution hour (now - 2 h, floored): 590 W·h unattributed, 500 leased, over 1 h
+                assert circe.unattributed_above_rest_w == 590.0 and circe.leased_unmetered_above_rest_w == 500.0
+                assert circe.attribution_hour_start == now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
                 # 60 fit hours + the "now" hour (1150 W; its CPU idle is the host's own median, 100 W)
                 assert circe.overhead_fitted is True and circe.overhead_factor == pytest.approx(2.0, abs=0.05)
                 assert circe.overhead_hours == 61 and circe.overhead_r2 > 0.99
@@ -687,6 +694,28 @@ def test_hosts_put_every_part_on_the_whole_machine_footing():
     assert p.watts_at_wall_est == pytest.approx(13.8 * a.overhead_factor, abs=0.1) and p.overhead_factor == a.overhead_factor
 
 
+def test_hosts_show_last_complete_hour_charged_to_no_act_and_label_it():
+    rows = _hosts_rows()
+    h3 = NOW.replace(minute=0) - timedelta(hours=2)          # 18:00, the newest complete hour at 20:00 + lag
+    rows[pr.ATTRIBUTION_LATEST_SQL] = [
+        {"host": "circe", "hour_start": h3, "unattributed_wh": 540.0, "leased_unmetered_wh": 450.0,
+         "above_rest_wh": 600.0, "sponsored_wh": 0.0, "metered_wh": 60.0, "covered_sec": 3600.0, "split_unknown_sec": 0.0},
+        {"host": "athena", "hour_start": NOW - timedelta(hours=5), "unattributed_wh": 100.0, "leased_unmetered_wh": 0.0,
+         "above_rest_wh": 300.0, "sponsored_wh": 200.0, "metered_wh": 0.0, "covered_sec": 1800.0, "split_unknown_sec": 0.0}]
+    rep = _build(rows, q=pr.parse_query("24h", "hosts", None, None, None))
+    c, a = rep.hosts[0], rep.hosts[1]
+    assert c.unattributed_above_rest_w == 540.0 and c.leased_unmetered_above_rest_w == 450.0
+    assert c.attribution_hour_start == h3 and "average over 18:00-19:00 UTC, the newest complete hour" in c.attribution_basis
+    assert "lags now by 1-2 h" in c.attribution_basis
+    assert a.unattributed_above_rest_w is None                       # 5 h old: stale, said, not shown as now
+    reasons = " | ".join(_reasons(rep, "hosts"))
+    assert "athena: the newest attribution hour starts 15:00 UTC, over 3 h ago" in reasons
+    # the table absent: one plain reason
+    rows[pr.ATTRIBUTION_PRESENT_SQL] = [{"present": False}]
+    rep = _build(rows, q=pr.parse_query("24h", "hosts", None, None, None))
+    assert any("orion_energy_attribution_hourly does not exist yet" in r for r in _reasons(rep, "hosts"))
+
+
 def test_a_run_cost_with_no_factor_is_not_passed_off_as_whole_machine():
     rows = full_rows()
     rows[pr.RUN_COST_SQL] = [{"workload_kind": "reverie_diffusion", "node": "janus", "n": 3, "kwh": 0.0003, "usd": 4e-05}]
@@ -781,7 +810,10 @@ def test_hosts_say_what_spins_each_machine():
     assert c.sponsored == []
     reasons = " | ".join(_reasons(rep, "hosts"))
     assert "hecate (asleep or its reporter is down)" in reasons
-    assert "work not yet metered" in reasons and all(h.unattributed_above_rest_w is None for h in rep.hosts)
+    # no attribution row in this fixture: said per host, never a 0
+    assert "no recent orion_energy_attribution_hourly row for circe, athena" in reasons
+    assert all(h.unattributed_above_rest_w is None for h in rep.hosts)
+    assert "until the whole-machine per-act meter" not in reasons
     assert "per-card watts began 2026-10-29" in reasons
 
 

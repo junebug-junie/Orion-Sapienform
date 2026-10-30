@@ -132,7 +132,7 @@ def fit_overhead(host: str, hourly: Iterable[Mapping], *, rest_w: Optional[float
              if slope_i is not None and intercept is not None else "")
     return Overhead(host=host, factor=round(k, 3), fitted=True, r2=round(r2, 3), hours=len(xs), loaded_hours=loaded,
                     intercept_w=round(intercept, 1) if intercept is not None else None,
-                    basis=(f"fitted on {host}{span}: chassis above pinned rest {rest_w:g} W = {k:.2f} x (GPU above "
+                    basis=(f"fitted on {host}{span}: chassis above pinned rest {rest_w:g} W = {round(k, 3):.2f} x (GPU above "
                            f"{gpu_idle_w:.0f} W + CPU above {cpu_idle_host:.0f} W idle), {len(xs)} hourly means "
                            f"({loaded} with load), R^2 {r2:.2f}{drift}; same readings and rest as the per-act "
                            "meter (PR #2992)"))

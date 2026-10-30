@@ -291,8 +291,13 @@ class HostPowerV1(BaseModel):
     parts_rest_window: str = Field(default="", description="the dated window the part and card rests come from")
     fan_pct: Optional[float] = None
     unattributed_above_rest_w: Optional[float] = Field(
-        default=None, description="above-rest draw no act is charged for, per instant (not published: the meter is "
-                                  "hourly, see unit_costs 'work not yet metered')")
+        default=None, description="average whole-machine watts above rest no act was charged for over "
+                                  "attribution_hour_start..+1 h (orion_energy_attribution_hourly, the newest complete "
+                                  "hour: it lags now by 1-2 h by design); None: no recent row")
+    leased_unmetered_above_rest_w: Optional[float] = Field(
+        default=None, description="part of unattributed_above_rest_w: GPU leases whose turn has no act, same hour")
+    attribution_hour_start: Optional[AwareDatetime] = Field(default=None, description="UTC start of that hour")
+    attribution_basis: str = Field(default="", description="the hour shown and how it was measured, in words")
     cards: List[HostCardV1] = Field(default_factory=list)
     top_containers: List[HostContainerV1] = Field(default_factory=list,
                                                   description="largest CPU users, sponsored work left out")

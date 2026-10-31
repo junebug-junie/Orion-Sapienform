@@ -30,6 +30,39 @@ from app.storage.pg import pg_conn
 logger = logging.getLogger("orion-topic-foundry.repository")
 
 
+# Columns added after their tables shipped. ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes an
+# ACCESS EXCLUSIVE lock even when the column is already there, so running them on every start
+# queued behind any reader: live 2026-10-31 a 27-minute pg_dump held startup at the first ALTER for
+# 11+ minutes (and queued every later reader of topic_foundry_runs behind it). Only missing ones run.
+ADDED_COLUMNS = (
+    ("topic_foundry_runs", "spec_hash", "VARCHAR"),
+    ("topic_foundry_runs", "stage", "VARCHAR"),
+    ("topic_foundry_segments", "title", "TEXT"),
+    ("topic_foundry_segments", "aspects", "JSONB"),
+    ("topic_foundry_segments", "sentiment", "JSONB"),
+    ("topic_foundry_segments", "meaning", "JSONB"),
+    ("topic_foundry_segments", "enrichment", "JSONB"),
+    ("topic_foundry_segments", "enriched_at", "TIMESTAMPTZ"),
+    ("topic_foundry_segments", "enrichment_version", "TEXT"),
+    ("topic_foundry_segments", "snippet", "TEXT"),
+    ("topic_foundry_segments", "chars", "INTEGER"),
+    ("topic_foundry_segments", "row_ids_count", "INTEGER"),
+    ("topic_foundry_segments", "start_at", "TIMESTAMPTZ"),
+    ("topic_foundry_segments", "end_at", "TIMESTAMPTZ"),
+    ("topic_foundry_models", "enrichment_spec", "JSONB"),
+)
+
+
+def missing_columns(cur) -> list[tuple[str, str, str]]:
+    cur.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ANY(%s)",
+        (sorted({table for table, _, _ in ADDED_COLUMNS}),),
+    )
+    present = {(row[0], row[1]) for row in cur.fetchall()}
+    return [col for col in ADDED_COLUMNS if (col[0], col[1]) not in present]
+
+
 def ensure_tables() -> None:
     with pg_conn() as conn:
         with conn.cursor() as cur:
@@ -46,23 +79,12 @@ def ensure_tables() -> None:
             cur.execute(CONVERSATION_BLOCKS_DDL)
             cur.execute(CONVERSATION_OVERRIDES_DDL)
             cur.execute(ENRICHMENT_CACHE_DDL)
-            cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS spec_hash VARCHAR")
-            cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS stage VARCHAR")
+            for table, column, sql_type in missing_columns(cur):
+                logger.info("topic_foundry_schema_add_column table=%s column=%s", table, column)
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS ix_topic_foundry_runs_spec_hash ON topic_foundry_runs (spec_hash)"
             )
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS title TEXT")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS aspects JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS sentiment JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS meaning JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS enrichment JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS enrichment_version TEXT")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS snippet TEXT")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS chars INTEGER")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS row_ids_count INTEGER")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS start_at TIMESTAMPTZ")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS end_at TIMESTAMPTZ")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_aspects ON topic_foundry_segments USING GIN (aspects)"
             )
@@ -70,7 +92,6 @@ def ensure_tables() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_created_at "
                 "ON topic_foundry_segments (run_id, created_at)"
             )
-            cur.execute("ALTER TABLE topic_foundry_models ADD COLUMN IF NOT EXISTS enrichment_spec JSONB")
 
 
 def create_dataset(dataset: DatasetSpec) -> None:

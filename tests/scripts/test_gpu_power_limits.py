@@ -78,9 +78,11 @@ def _main(*argv: str) -> int:
     return gpl.main(list(argv))
 
 
-def test_the_checked_in_config_is_valid_and_only_caps_gpu2(monkeypatch):
+def test_the_checked_in_config_is_valid_and_caps_the_agent_cards_only(monkeypatch):
     monkeypatch.setattr(socket, "gethostname", lambda: "circe")
-    assert gpl.load_config(_REPO / "config" / "gpu_power_limits.json") == {2: 150}
+    limits = gpl.load_config(_REPO / "config" / "gpu_power_limits.json")
+    assert limits == {1: 150, 2: 150}      # agent lanes; Juniper 2026-10-29 (gpu2), 2026-10-31 (gpu1)
+    assert 0 not in limits                 # the chat card keeps its full power
 
 
 def test_apply_sets_the_target_and_logs_it(rig, capsys):

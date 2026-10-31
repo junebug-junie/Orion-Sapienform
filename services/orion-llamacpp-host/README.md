@@ -388,6 +388,8 @@ docker run --rm -v "$ATLAS_CHAT_STRATA_DATA_DIR:/src:ro" -v "$ATLAS_AGENT_STRATA
 docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_AGENT_STRATA_DATA_DIR:/data" \
   -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
   /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/agent-defaults.json --context 131072
+# the announcer image bakes in config/llm_profiles.yaml: rebuild it when a profile was added
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split build atlas-agent-announce
 docker stop orion-circe-atlas-llamacpp-agent
 scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split up -d atlas-agent atlas-agent-announce
 ```

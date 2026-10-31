@@ -63,6 +63,6 @@ Live check after merge: ssh circe@circe nvidia-smi -i 1 --query-gpu=power.limit 
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3018
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

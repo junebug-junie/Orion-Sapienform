@@ -13,7 +13,9 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
      `hardware:` is Juniper's words; an unknown model stays "not recorded".
    - `sensor` (`camera:walkway`): a camera stream from `config/vision_frame_router.yaml`
      `streams:` (its stale `cameras:` section is ignored). Live activity from `vision_events`.
-   - `store`: `pg:<table>`, `chroma:<collection>`, `falkor:<graph>`. A Postgres table is a part
+   - `store`: `pg:<table>`, `chroma:<collection>`, `falkor:<graph>`, `redis:<key>` (a bus Redis key
+     two or more services touch; `redis:<PREFIX>*` is a family of keys built from one shared
+     prefix constant). A Postgres table is a part
      only when something links to it (a known writer); Chroma collections and FalkorDB graphs
      are the ones that exist live (test/scratch graphs dropped by rule). A store has no
      last-write time: `live` means it holds rows, `dormant` means it is empty.
@@ -35,6 +37,8 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    | `does` | service → durable run | `observed_trace` (a `grammar_events` / `cognition_traces` / `cockpit_turn_sighting` row with the run's `correlation_id` names the service), `observed_turn` (same, keyed by the turn the run started, `detail.turn_correlation_id`), `declared_turn_writer` (a `harness_turn_trace` row exists for the run; that table's declared writers) |
    | `spawns` | run → run | `observed_child_run` (`detail.child_run_ids`, e.g. dream.carry → reverie.visual) |
    | `feeds` | service → reducer | `declared_reducer_source` (orion-substrate-runtime's `REDUCER_SPECS`: the one service whose grammar events the reducer reads) |
+   | `calls` | service → service | `declared_url`: the caller's code names the callee's URL (`wire_code.py`, below). A pair that already signals keeps relation `signals` and gains `declared_url` in its evidence |
+   | `writes` / `reads` | service → `redis:` key | `declared_code`: a call on a Redis handle names the key; the verb says which way (`wire_code.py`) |
 
    A channel is one hyperedge: it contributes one unit, split over the pairs it joins, so a
    broadcast heartbeat cannot glue the body together. The new kinds follow the same rule: one
@@ -100,11 +104,13 @@ writes to any DB, graph or bus.
 Gates:
 
 - `pytest orion/body_atlas/tests`
-- `python orion/body_atlas/evals/run_organ_structure_eval.py`: four frozen fixtures, the real bus
+- `python orion/body_atlas/evals/run_organ_structure_eval.py`: six frozen fixtures, the real bus
   graph from 2026-10-23 and the whole body from 2026-10-29 and 2026-10-30 (with process doers,
-  then with stores named in code). Each must have Q ≥ 0.3, 5–25 organs, no organ above 35% of
+  then with stores named in code), then 2026-10-29 and 2026-10-31 with HTTP calls and shared
+  Redis keys. Each must have Q ≥ 0.3, 5–25 organs, no organ above 35% of
   parts, every non-host part in exactly one organ, no host in any, no store with a writer or
   reader left alone, and obvious pairs together.
+- `python orion/body_atlas/evals/run_wire_eval.py`: HTTP calls and Redis keys (see below).
 - `python orion/body_atlas/evals/run_store_direction_eval.py`: the `writes` / `reads` labels on
   this checkout against hand-checked facts (true ones, and false ones an earlier version
   claimed). Precision must be 1.0 and no false claim may come back. `--live` runs it on the live whole body; `--export F`
@@ -163,6 +169,58 @@ say" line, and a sentence whose holder later loses the role prints STALE. Ledger
 `$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only, partitioned from
 recall (`tests/test_organ_names_partition.py`). The capacity eval also runs the claims floor on
 the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must fail.
+
+**HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
+*HTTP:* a service calls another when its code names that service's URL: a string constant that is
+exactly a URL, a settings field the code reads (`settings.notify_url` or `getattr(settings,
+"notify_url")`; the `.env_example`/compose value wins and the overridden code default does not
+count), or an env key the code reads (`os.getenv`, `os.environ[...]`). Most hub URLs are
+`127.0.0.1:<port>` in its env (host networking), so they are unmatched, not guessed. A URL that is a class field's default (`thought_url: str = "http://..."`
+on a shared model) counts only for a service whose code reads that field: importing the model is
+not calling it. The host is matched to a part like any container name (`orion-athena-notify`,
+`notify` are orion-notify). A host that matches no part (`127.0.0.1`, a tailscale address, an
+outside site, an RDF namespace) is listed under `unmatched["declared_url"]`, never guessed. Each
+callee adds one unit, split over its callers by `log(1 + N / df)` (df = callees the same module
+names), so a service a dozen call (orion-notify) cannot glue them into one organ.
+*Redis:* a call `<handle>.<verb>(KEY, ...)`. A handle is bound from a Redis constructor
+(`redis.Redis.from_url`, `aioredis.from_url`), a `pipeline()` of one, a parameter annotated
+`Redis`, or an attribute named for Redis (`self.redis`, `bus.redis`; not `redis_url`). A plain
+name is a handle only in the function that binds it, and not when the same scope also binds it to
+another call (`client = httpx.Client()`); a request path or URL is never a key. A reply
+(`info = await redis.info()`) or a pub/sub message is not a handle. The verb gives the direction
+(`set`/`setex`/`hset`/`incr`/`delete`... write; `get`/`hgetall`/`exists`/pops... read). Streams
+and pub/sub (`xadd`, `publish`) are the bus and are skipped. KEY must resolve to an exact string
+(a literal, a constant here or imported, a settings field, an env key; a name that is also a
+parameter, a loop target or `+=`-ed is not one constant); `f"{PREFIX}:latest"` is that exact key,
+`f"{PREFIX}{id}"` with a
+named PREFIX is the family `PREFIX*`; anything else is *dynamic*, counted per service
+(`redis_dynamic`), never a part. A key is a part only when two or more services touch it (a
+wire); a key one service alone uses is its own state, counted in `redis_private`. Shared `orion/`
+code is attributed through imports, symbol by symbol, and through the shared symbols those use.
+Live (read-only, `ORION_BUS_URL`): `TYPE`, `OBJECT IDLETIME`, `TTL` per key, a bounded `SCAN
+MATCH` per family; the reader refuses any other command. A present key is `live`, an absent one
+`dormant`; facts say type, idle and ttl seconds. Gate: `python orion/body_atlas/evals/run_wire_eval.py`
+(hand-checked calls and keys on this checkout with false shapes an earlier draft claimed, the v2
+gap rules on two frozen bodies, three mutations that must fail).
+
+Live 2026-10-31 (harness container, branch code): 54 caller → callee pairs to 20 parts, 8 shared
+keys (6 present), 27 private keys, 12 services with dynamic keys beyond code more than half of them
+share (the bus's own rate buckets are counted out). Q 0.3447 → 0.3426, largest
+organ 31.5% → 31.2%, 10 organs both ways, all 10 of Orion's names carry (Jaccard 0.75–1.00). Three
+services moved organ (notify-digest cortex → memory, orion-proposal-runtime cortex → substrate,
+orion-vllm-host substrate → memory); the 8 keys sit with their writers' or readers' organs.
+Made all 35 keys parts instead, the hub's 17 private keys pushed its organ to 36% (the 35% gate
+fails): that is why a key one service alone touches is not a part.
+
+**Capacities rules v2 (patch 3).** Three rules decide gap lines from the new wires; none gives a
+role. R-wire-seen: a bus-silent live service with an HTTP call either way or a shared key is
+seen; `gap:s3-unseen` lists only what is left. R-broadcast-key: a key with a live writer and >= 3
+live readers in >= 2 organs, printed on the algedonic line (the rule cannot tell pain from news).
+With keys in the atlas, `gap:algedonic-unseen` becomes `gap:algedonic-none`, which only Juniper's
+confirmation of an algedonic part covers. `gap:s4-to-s3` checks confirmed S4 and S3 parts for a
+link each way (a non-census channel, an HTTP call, or a key one writes and the other reads); with
+no confirmed pair it says the link cannot be checked yet. A name given before Redis keys existed
+is compared without them (`names._overlap`, `LATER_PART_PREFIXES`).
 
 Known gaps (also in every whole-body atlas as `known_gaps`):
 

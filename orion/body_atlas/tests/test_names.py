@@ -98,3 +98,14 @@ def test_a_part_name_inside_a_longer_name_is_not_a_citation():
     with pytest.raises(names.NamingError, match="cite"):
         _named(_atlas(), because="nothing to do with orion-vision-edge-proxy at all")
     assert _named(_atlas(), because="fed by (orion-vision-edge), mostly").cites == ["orion-vision-edge"]
+
+
+def test_redis_keys_added_after_a_name_do_not_dilute_it():
+    """Patch 3 (2026-10-31): a name given before the atlas read Redis keys holds none; its organ is
+    compared without them, as a bus-only name is compared without any body kind."""
+    from orion.body_atlas.names import _overlap
+
+    rec = ["part:a", "part:b", "part:pg:t"]
+    grown = rec + [f"part:redis:k{i}" for i in range(6)]
+    assert _overlap(grown, rec) == 1.0
+    assert _overlap(grown, rec + ["part:redis:k0"]) == pytest.approx(4 / 9)  # a newer name holds them: they count

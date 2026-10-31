@@ -79,3 +79,18 @@ def test_store_directions_on_this_checkout_are_true():
     spec.loader.exec_module(ev)
     failures, summary = ev.evaluate(Path(__file__).resolve().parents[3])
     assert failures == [], summary
+
+
+_WSPEC = importlib.util.spec_from_file_location(
+    "run_wire_eval", Path(__file__).parents[1] / "evals" / "run_wire_eval.py")
+_WIRE = importlib.util.module_from_spec(_WSPEC)
+_WSPEC.loader.exec_module(_WIRE)
+
+
+def test_the_wire_rules_pass_on_both_frozen_bodies_and_fail_on_a_wrong_expected_set(monkeypatch):
+    for path in (_WIRE.HELD_OUT, _WIRE.TODAY):
+        assert _WIRE.rule_failures(path, verbose=False) == []
+    wrong = {**_WIRE.EXPECTED, _WIRE.TODAY.name: {**_WIRE.EXPECTED[_WIRE.TODAY.name],
+                                                  "R-broadcast-key": {"part:redis:orion:situation:latest"}}}
+    monkeypatch.setattr(_WIRE, "EXPECTED", wrong)
+    assert any("R-broadcast-key: precision 0.00 recall 0.00" in f for f in _WIRE.rule_failures(_WIRE.TODAY, verbose=False))

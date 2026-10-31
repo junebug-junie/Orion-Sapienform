@@ -1,8 +1,9 @@
 """Does Orion's circulation converge into organs, or into mush?
 
 Runs the atlas over the frozen exports in ``fixtures/`` (the real bus graph of 2026-10-23, the
-whole body of 2026-10-29: hosts, cameras, stores and processes on top of the bus, and the whole
-body of 2026-10-30 with each process linked to the services doing its work) or, with
+whole body of 2026-10-29: hosts, cameras, stores and processes on top of the bus, the whole
+body of 2026-10-30 with each process linked to the services doing its work, and the bodies of
+10-29 and 10-31 with HTTP calls and shared Redis keys) or, with
 ``--live``, the live whole body, and checks the structure:
 
 * modularity Q >= 0.3 (Newman: below that, community structure is weak);
@@ -43,7 +44,11 @@ DOERS_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-30.json
 # 2026-10-30, later: Chroma/FalkorDB stores linked to the services whose code names them
 # (store_code.py), so a store named only in code is no longer a lone organ.
 STORES_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-30_stores.json"
-FIXTURES = (FIXTURE, WHOLE_BODY_FIXTURE, DOERS_FIXTURE, STORES_FIXTURE)
+# Patch 3: HTTP calls between services and Redis keys two or more services share (wire_code.py).
+# The 10-29 body with the wires main's code named that day (held out), and the live 10-31 body.
+WIRES_HELD_OUT_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-29_wires.json"
+WIRES_FIXTURE = Path(__file__).parent / "fixtures" / "whole_body_2026-10-31_wires.json"
+FIXTURES = (FIXTURE, WHOLE_BODY_FIXTURE, DOERS_FIXTURE, STORES_FIXTURE, WIRES_HELD_OUT_FIXTURE, WIRES_FIXTURE)
 MIN_Q = 0.3
 ORGAN_RANGE = (5, 25)
 MAX_ORGAN_SHARE = 0.35

@@ -16,8 +16,9 @@ PartStatus = Literal["live", "dormant", "declared_only", "transient"]
 # service: a declared or observed service name. endpoint: a source id with a ':' in it
 # (``http:anthropic``, ``operator:...``), i.e. a non-service publisher.
 # host: a physical machine (``host:athena``); never an organ member (placement is not function).
-# sensor: a camera stream (``camera:walkway``). store: a Postgres table, Chroma collection or
-# FalkorDB graph (``pg:``, ``chroma:``, ``falkor:``). process: a durable workflow or a substrate
+# sensor: a camera stream (``camera:walkway``). store: a Postgres table, Chroma collection,
+# FalkorDB graph or bus Redis key (``pg:``, ``chroma:``, ``falkor:``, ``redis:``; ``redis:P*`` is a
+# family of keys built from one shared prefix constant). process: a durable workflow or a substrate
 # reducer (``run:``, ``reducer:``). See sources.py for where each comes from.
 PartKind = Literal["service", "endpoint", "host", "sensor", "store", "process"]
 FlowEvidence = Literal[
@@ -44,13 +45,17 @@ FlowEvidence = Literal[
     "observed_child_run",
     # feeds: orion-substrate-runtime's REDUCER_SPECS names the one service a reducer reads
     "declared_reducer_source",
+    # calls: the caller's code, or a settings field / env key its code reads, names the callee's
+    # URL (wire_code.py)
+    "declared_url",
 ]
 # signals: bus circulation (the v1 relation). runs_on: service -> host. sees_through: camera ->
 # service. writes: producer -> store. reads: service -> store it reads. uses: service -> store
 # (direction unknown). runs: runner -> process.
 # does: service -> process it works for. spawns: process -> process it starts. feeds: service ->
-# reducer that reads its events.
-FlowRelation = Literal["signals", "runs_on", "sees_through", "writes", "reads", "uses", "runs", "does", "spawns", "feeds"]
+# reducer that reads its events. calls: service -> service whose HTTP API it calls.
+FlowRelation = Literal["signals", "runs_on", "sees_through", "writes", "reads", "uses", "runs", "does", "spawns", "feeds",
+                       "calls"]
 
 
 class PartV1(BaseModel):
@@ -165,3 +170,7 @@ class BodyAtlasV1(BaseModel):
     unmatched: dict[str, list[str]] = Field(default_factory=dict)
     # stores a service's env expects that do not exist live (reported, never parts)
     missing_declared_stores: list[str] = Field(default_factory=list)
+    # service -> modules with a Redis act whose key is not an exact string (never a part)
+    redis_dynamic: dict[str, int] = Field(default_factory=dict)
+    # service -> Redis keys only that service touches (its own state, not a wire; never a part)
+    redis_private: dict[str, int] = Field(default_factory=dict)

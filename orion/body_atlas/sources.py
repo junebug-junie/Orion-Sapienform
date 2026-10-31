@@ -33,6 +33,12 @@ Live (only with ``live=True``):
 * Chroma collections and counts; FalkorDB graphs (minus test/scratch graphs) and node counts.
   Who writes or reads each: a service's ``.env_example`` naming it (``declared_env``) and the
   code naming it (``declared_code``, ``store_code.py``: writer vs reader where the call says).
+* Redis keys on the bus Redis (``ORION_BUS_URL``), read-only: ``OBJECT IDLETIME``, ``TYPE``,
+  ``TTL`` per exact key, a bounded ``SCAN MATCH`` per key family. Never a write.
+
+Declared from code (``wire_code.py``), so a past checkout gives them too: HTTP calls (a service's
+code or settings names another service's URL) and Redis keys (a call on a Redis handle names the
+key; the verb says writes or reads).
 """
 from __future__ import annotations
 
@@ -40,9 +46,11 @@ import ast
 import csv
 import io
 import json
+import os
 import re
 import subprocess
 import urllib.request
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Protocol
@@ -52,6 +60,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.body_atlas.model import SourceReadV1
 from orion.body_atlas.store_code import code_store_refs
+from orion.body_atlas.wire_code import WireRefs, code_wire_refs, url_host
 # The one Postgres read path for Orion's own tools: orion_readonly, READ ONLY transaction, no
 # secrets on argv, psql meta-commands refused. Stdlib only, so importing it here is cheap.
 from orion.evals.model_replay.sandbox import ReadOnlyPsql
@@ -131,13 +140,28 @@ class StoreIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    store: Literal["postgres", "chroma", "falkordb"]
+    # redis: a key on the bus Redis (``PREFIX*`` = a family of keys built from one shared prefix)
+    store: Literal["postgres", "chroma", "falkordb", "redis"]
     rows: int | None = None  # rows / items / nodes; None = not read
     # (raw service, relation, evidence, via). via: the persisted channel (declared_route), the
     # env file (declared_env) or the module that names the store (declared_code)
     links: list[tuple[str, str, str, str]] = Field(default_factory=list)
     # shared orion/ modules that name this store but that no service imports directly
     named_in_unimported: list[str] = Field(default_factory=list)
+    # live facts a store kind has beyond its row count (a Redis key's type, idle and ttl seconds)
+    facts: dict[str, str] = Field(default_factory=dict)
+
+
+class CallIn(BaseModel):
+    """A service's code (or a settings field / env key its code reads) names another part's URL:
+    the namer calls it (``wire_code.py``). ``host`` is matched to a part in build."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    caller: str  # service directory name
+    url: str
+    host: str
+    via: str  # module (shared: "orion/x.py:sym (imported by svc)")
 
 
 class ProcessIn(BaseModel):
@@ -167,6 +191,11 @@ class BodyInputs(BaseModel):
     sensors: list[SensorIn] = Field(default_factory=list)
     stores: list[StoreIn] = Field(default_factory=list)
     processes: list[ProcessIn] = Field(default_factory=list)
+    calls: list[CallIn] = Field(default_factory=list)
+    # service -> modules with a Redis act whose key is not an exact string (dynamic: never a part)
+    redis_dynamic: dict[str, int] = Field(default_factory=dict)
+    # service -> Redis keys only that service touches (its own state, not a wire: never a part)
+    redis_private: dict[str, int] = Field(default_factory=dict)
     reads: list[SourceReadV1] = Field(default_factory=list)
     # channel -> the store writer (orion-sql-writer) that persists it into a table. With the body,
     # that producer -> writer bus flow is replaced by the producer -> table ``writes`` flow: the
@@ -602,17 +631,65 @@ class LiveReaders(BaseModel):
     docker: Callable[[list[str]], str] | None = None
     http_json: Callable[[str], Any] | None = None
     graph: Any = None  # callable(cmd, *args) -> reply; the FalkorDB connection's execute_command
+    # callable(cmd, *args) -> reply on the bus Redis; only REDIS_READ_COMMANDS are ever sent
+    redis: Any = None
     chroma_url: str = DEFAULT_CHROMA_URL
 
 
-def default_live_readers(falkor_uri: str | None) -> LiveReaders:
-    graph = None
-    if falkor_uri:
-        import redis
+# The only commands the atlas sends to the bus Redis. None writes, and none updates a key's
+# idle time (Redis looks these up with LOOKUP_NOTOUCH).
+REDIS_READ_COMMANDS = frozenset({"OBJECT", "TYPE", "TTL", "SCAN"})
+REDIS_FAMILY_SCAN_COUNT = 1000
+REDIS_FAMILY_SCAN_STEPS = 20
 
+
+def _read_only_redis(execute: Callable[..., Any]) -> Callable[..., Any]:
+    def cmd(name: str, *args: Any) -> Any:
+        if name.upper() not in REDIS_READ_COMMANDS:
+            raise RuntimeError(f"refused: {name} is not a read-only atlas command")
+        return execute(name, *args)
+    return cmd
+
+
+def default_live_readers(falkor_uri: str | None, bus_url: str | None = None) -> LiveReaders:
+    """``bus_url``: the bus Redis (``ORION_BUS_URL`` when not given)."""
+    graph = bus = None
+    if falkor_uri or bus_url or os.environ.get("ORION_BUS_URL"):
+        import redis
+    if falkor_uri:
         conn = redis.Redis.from_url(falkor_uri, decode_responses=True, socket_timeout=10.0, socket_connect_timeout=3.0)
         graph = conn.execute_command
-    return LiveReaders(sql=ReadOnlyPsql(timeout_sec=60.0), docker=_docker, http_json=_http_json, graph=graph)
+    bus_url = bus_url or os.environ.get("ORION_BUS_URL")
+    if bus_url:
+        rconn = redis.Redis.from_url(bus_url, decode_responses=True, socket_timeout=5.0, socket_connect_timeout=3.0)
+        bus = _read_only_redis(rconn.execute_command)
+    return LiveReaders(sql=ReadOnlyPsql(timeout_sec=60.0), docker=_docker, http_json=_http_json, graph=graph,
+                       redis=bus)
+
+
+def read_redis_keys(cmd: Callable[..., Any], names: Iterable[str]) -> dict[str, tuple[int, dict[str, str]]]:
+    """key -> (rows, facts): 1 present / 0 absent with its type, idle and ttl seconds; a family
+    (``PREFIX*``): keys found by a bounded ``SCAN MATCH``. All or nothing: the caller applies it
+    only when every key read."""
+    out: dict[str, tuple[int, dict[str, str]]] = {}
+    for name in names:
+        if name.endswith("*"):
+            cursor, n, steps = "0", 0, 0
+            while True:
+                cursor, keys = cmd("SCAN", cursor, "MATCH", name, "COUNT", REDIS_FAMILY_SCAN_COUNT)
+                n += len(keys or [])
+                steps += 1
+                if str(cursor) == "0" or steps >= REDIS_FAMILY_SCAN_STEPS:
+                    break
+            out[name] = (n, {"keys_found": str(n) + ("" if str(cursor) == "0" else "+ (scan stopped)")})
+            continue
+        kind = str(cmd("TYPE", name))
+        if kind == "none":
+            out[name] = (0, {"value": "absent"})
+            continue
+        out[name] = (1, {"value": "present", "type": kind, "idle_s": str(cmd("OBJECT", "IDLETIME", name)),
+                         "ttl_s": str(cmd("TTL", name))})
+    return out
 
 
 def _require(value: Any, what: str) -> Any:
@@ -661,6 +738,33 @@ def _gather_doers(reads: _Reads, sql: Any, procs: dict[str, ProcessIn], runner: 
                      lambda v: f"{len(v)} parent -> child workflow pairs")
     for parent, child, runs in kids or []:
         proc(parent).children.append((child, runs))
+
+
+def apply_wire(body: BodyInputs, wire: WireRefs) -> list[StoreIn]:
+    """Put ``wire_code`` results on the body: HTTP calls, and the Redis keys that become parts
+    (returned, not yet on ``body.stores``). A key is a part only when two or more services touch
+    it: a wire between parts. A key one service alone writes and reads is that service's own
+    state, counted in ``redis_private`` (on 2026-10-30, 27 of 35 keys; as parts they put 17 hub
+    keys in one organ and add no circulation)."""
+    body.calls = [CallIn(caller=r.service, url=r.value, host=url_host(r.value) or "", via=r.via) for r in wire.http]
+    # a dynamic key in shared code more than half of these services run (the bus's own rate
+    # buckets) says nothing about any one service: counted out, so the number can move
+    def sym(via: str) -> str:
+        return via.split(" (imported by ", 1)[0]
+
+    seen_in = Counter(s for vias in wire.dynamic.values() for s in {sym(v) for v in vias if " (imported by " in v})
+    common = {s for s, n in seen_in.items() if n > len(wire.dynamic) / 2}
+    body.redis_dynamic = {svc: n for svc, mods in wire.dynamic.items()
+                          if (n := sum(1 for m in mods if sym(m) not in common))}
+    keys, private = [], defaultdict(int)
+    for k, refs in wire.redis.items():
+        svcs = {r.service for r in refs}
+        if len(svcs) > 1:
+            keys.append(StoreIn(name=k, store="redis", links=[(r.service, r.relation, "declared_code", r.via) for r in refs]))
+        else:
+            private[next(iter(svcs))] += 1
+    body.redis_private = dict(sorted(private.items()))
+    return keys
 
 
 def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) -> BodyInputs:
@@ -845,6 +949,26 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
             for s in named:
                 s.links.extend((r.service, r.relation, "declared_code", r.via) for r in code.refs.get(s.name, []))
                 s.named_in_unimported = code.unattributed.get(s.name, [])
+
+    # HTTP calls and Redis keys named in code (wire_code.py), then the keys' live state
+    def _wire():
+        if not (root / "services").is_dir() and not (root / "orion").is_dir():
+            raise _Absent("no services/ or orion/ code in this checkout")
+        return code_wire_refs(root)
+
+    wire = reads.run("declared:services/*, orion/* python (HTTP URLs, Redis keys)", "declared", _wire,
+                     lambda v: f"{len(v.http)} service->URL references, {len(v.redis)} Redis keys, "
+                               f"{len(v.dynamic)} services with dynamic keys "
+                               f"in {v.modules_scanned} modules" + (f"; {len(v.skipped)} did not parse" if v.skipped else ""))
+    if wire is not None:
+        keys = apply_wire(body, wire)
+        if live is not None and keys:
+            got = reads.run("live:redis bus keys (OBJECT IDLETIME, TYPE, TTL, SCAN)", "live",
+                            lambda: read_redis_keys(_require(live.redis, "bus redis"), [k.name for k in keys]),
+                            lambda v: f"{sum(1 for r, _ in v.values() if r)} of {len(v)} keys or key families present")
+            for k in keys if got else ():
+                k.rows, k.facts = got[k.name][0], got[k.name][1]
+        body.stores.extend(keys)
 
     # Postgres stores: a table is a part only when something links to it (a known writer).
     kept_channels: set[str] = set()

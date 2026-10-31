@@ -363,6 +363,39 @@ Rollback to llama.cpp (same port and role): stop `atlas-chat` and `atlas-chat-an
 `scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile chat-llamacpp up -d atlas-chat-llamacpp`,
 and set `chat` back to `backend: llamacpp` in `config/gpu_pool.yaml` for the pool and gateway.
 
+### Agent lane on Strata (circe gpu1, 2026-10-31)
+
+The `agent` role (gpu1; also `memory_distill`) runs the same engine and model as the chat lane, at **131,072**
+tokens like `agent-gpu2`, so a curiosity run recalled on one lane can resume on the other. Thinking stays on at
+high effort, with the 27B lane's sampling (`strata/agent-defaults.json`).
+
+- Compose: `atlas-agent` (engine, profile `agent-split` as before) and `atlas-agent-announce`; both lanes share the
+  `x-strata-engine` / `x-strata-announce` blocks and differ by preset, context, CPUs, data folder, port and card.
+- CPUs: the other socket (`ATLAS_AGENT_STRATA_CPUS=18-35,54-71`), so the two engines do not compete.
+- Data: its own `ATLAS_AGENT_STRATA_DATA_DIR` for config, state and run config, plus the chat lane's model files
+  mounted at `/data/Strata-data`. Strata writes nothing there at run time, so the two engines share the ~28 GB of
+  mapped model pages; each holds ~57 GB of its own (circe 2026-10-31: ~118 GB available before this lane).
+- `ATLAS_AGENT_PROFILE_NAME` keeps naming the llama.cpp 27B profile (rollback, and the gpu2 burst worker's fallback).
+
+First start (clean primary `main` on circe), seeding the run config from the chat lane's so it never serves with
+Strata's defaults. `--context 131072` matters: Strata compares the config's `--max-context` with the launch's
+`--context` and runs setup again when they differ, which downloads llama.cpp and touches the shared model folder.
+
+```bash
+set -a; . services/orion-llamacpp-host/.env; set +a
+docker run --rm -v "$ATLAS_CHAT_STRATA_DATA_DIR:/src:ro" -v "$ATLAS_AGENT_STRATA_DATA_DIR:/dst" alpine \
+  sh -c 'mkdir -p /dst/install && cp /src/install/strata-iq3_s.json /dst/install/'
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_AGENT_STRATA_DATA_DIR:/data" \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/agent-defaults.json --context 131072
+docker stop orion-circe-atlas-llamacpp-agent
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split up -d atlas-agent atlas-agent-announce
+```
+
+Rollback: stop `atlas-agent` and `atlas-agent-announce`, then
+`scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-llamacpp up -d atlas-agent-llamacpp`,
+and drop `backend: strata` from `agent` in `config/gpu_pool.yaml`.
+
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 
 `atlas-agent-burst` (pool role `agent-gpu2`, gpu2, port 8016) runs its own image,

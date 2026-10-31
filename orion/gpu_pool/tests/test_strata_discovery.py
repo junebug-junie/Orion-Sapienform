@@ -38,3 +38,14 @@ def test_wrong_model_file_is_mismatch():
     d, _, _ = resolve_roles(CFG, PROFILES, {"chat": ann("chat", STRATA_PROFILE, 8011)},
                             {"chat": Probe(True, strata_props("Other.gguf"), backend="strata")}, cards(), NOW)
     assert by_role(d)["chat"].status == "mismatch"
+
+
+def test_agent_role_is_strata_at_the_burst_seat_window():
+    """gpu1's agent lane runs the same engine at 131072, agent-gpu2's window, so a recalled run can move."""
+    agent = "qwen38-flash-next-iq3s-strata-1xv100-circe-agent"
+    assert CFG.roles["agent"].backend == "strata"
+    assert PROFILES[agent]["strata"]["ctx_size"] == 131072
+    d, live, _ = resolve_roles(CFG, PROFILES, {"agent": ann("agent", agent, 8015)},
+                               {"agent": Probe(True, {**strata_props(), "default_generation_settings": {"n_ctx": 131072}},
+                                               backend="strata")}, cards(), NOW)
+    assert by_role(d)["agent"].status == "confirmed" and live["agent"].healthy

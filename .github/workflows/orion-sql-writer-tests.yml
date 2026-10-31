@@ -93,6 +93,7 @@ jobs:
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
             orion/grammar/tests/test_ledger.py \
             orion/core/bus/tests/test_hunter_intake_log_quiet.py \
+            orion/db/tests \
             services/orion-sql-writer/tests \
             orion/vision/tests \
             services/orion-sql-writer/evals/test_vision_handoff_replay_eval.py \

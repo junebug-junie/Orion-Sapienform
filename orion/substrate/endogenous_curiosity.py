@@ -371,9 +371,10 @@ def _attention_loop_candidates(
                 if strength < min_salience:
                     continue
                 refs = [str(r) for r in (getattr(loop, "source_refs", None) or [])][:8]
-                if not any(r.startswith("node:") for r in refs):
+                concept_refs = [r for r in refs if r.startswith(("node:", "sub-concept-"))]
+                if not concept_refs:
                     # A world-first external loop (e.g. "world:chat") names no
-                    # graph node: a concept_expand over it would match nothing.
+                    # graph node; reading loops carry actual concept endpoints.
                     continue
                 candidates.append(
                     FrontierInvocationSignalV1(
@@ -382,7 +383,7 @@ def _attention_loop_candidates(
                         subject_ref=subject_ref,
                         target_zone="concept_graph",
                         task_type_candidate="concept_expand",
-                        focal_node_refs=refs,
+                        focal_node_refs=concept_refs,
                         signal_strength=strength,
                         evidence_summary=f"unresolved attention open-loop: {loop.description}",
                         confidence=_clamp01(getattr(loop, "confidence", 0.6)),

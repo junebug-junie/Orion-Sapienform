@@ -16,6 +16,10 @@ script must reproduce the stored winner; it reports how often it does.
 
 Variants (each replayed alone, so their effects do not mix):
 
+  reading          -- accepted reading-link materializations from
+                     ``reading_link_accepted`` events. Uses the production
+                     world:reading candidate and yields to Juniper's chat.
+
   curiosity_phil_novel -- THE PROPOSAL (revision 2, 2026-10-20). One reading per finished
                      curiosity run whose finding the register judge labelled
                      ``philosophical``: its novelty (1 - max cosine to everything Orion wrote
@@ -74,6 +78,7 @@ from orion.attention.world_first import (  # noqa: E402
     chat_rate_reading,
     judge_candidate,
     midrank_percentile,
+    reading_candidate,
 )
 from orion.schemas.attention_candidate import AttentionCandidateV1  # noqa: E402
 from orion.substrate.prediction_error_magnitude import (  # noqa: E402
@@ -83,6 +88,7 @@ from orion.substrate.prediction_error_magnitude import (  # noqa: E402
 
 CURIOSITY_SOURCE_ID = "world:curiosity"
 RATE_WORKFLOWS = ("curiosity.investigate", "reading.turn", "reverie.visual")
+READING_EVENT_SOURCE = "reading_link_accepted"
 
 
 def _ts(s: str) -> datetime:
@@ -132,8 +138,13 @@ def load_events(path: str) -> dict[str, list[tuple[datetime, float, str, str]]]:
             continue
         row = json.loads(line)
         src = row["source"]
+        detail = (
+            json.dumps(row.get("detail") or {})
+            if src == READING_EVENT_SOURCE
+            else _excerpt(src, row.get("detail"))
+        )
         series[src].append(
-            (_ts(row["t"]), float(row["value"]), str(row.get("ref") or ""), _excerpt(src, row.get("detail")))
+            (_ts(row["t"]), float(row["value"]), str(row.get("ref") or ""), detail)
         )
     for v in series.values():
         v.sort(key=lambda r: r[0])
@@ -204,6 +215,30 @@ def rate_candidate(events, t: datetime, source_id: str):
     return cand, (ref, text, mag.value)
 
 
+def reading_link_candidate(events, t: datetime):
+    """Replay accepted reading links using the production candidate builder."""
+    since = t - WINDOW_7D - timedelta(minutes=15)
+    links = []
+    for event_t, _value, ref, detail in events:
+        if since <= event_t <= t:
+            try:
+                payload = json.loads(detail) if detail else {}
+            except (TypeError, ValueError):
+                payload = {}
+            subject = str(payload.get("subject_node_id") or "")
+            obj = str(payload.get("object_node_id") or "")
+            if not subject or not obj or subject == obj:
+                continue
+            links.append((
+                event_t,
+                subject,
+                obj,
+            ))
+    cand = reading_candidate(links, now=t)
+    info = (links[-1][0].isoformat(), "accepted reading link", cand.unusualness.value) if links else None
+    return cand, info
+
+
 def verdict_dict(cand: AttentionCandidateV1) -> dict:
     v = judge_candidate(cand)
     return {
@@ -236,6 +271,8 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
         elif variant == "curiosity_phil_novel":
             cand, info = curiosity_candidate(series.get("curiosity_finding", []), t,
                                              min_readings=min_readings, label_kind="novelty")
+        elif variant == "reading":
+            cand, info = reading_link_candidate(series.get(READING_EVENT_SOURCE, []), t)
         else:
             wfname = variant.split(":", 1)[1]
             cand, info = rate_candidate(series.get(wfname, []), t, f"world:activity.{wfname}")
@@ -246,7 +283,7 @@ def replay(frames, series, variant: str, *, min_readings: int, examples: int):
             if vd["eligible"]:
                 eligible_before_yield += 1
             # Both curiosity variants carry the yield rule (revision 1 proposed it too, unmodelled).
-            if vd["eligible"] and chat_eligible and variant.startswith("curiosity"):
+            if vd["eligible"] and chat_eligible and (variant.startswith("curiosity") or variant == "reading"):
                 vd = {**vd, "eligible": False, "reason": "yields to Juniper (world:chat eligible)"}
                 yielded += 1
             if vd["eligible"]:
@@ -293,7 +330,8 @@ def main() -> int:
     if not frames:
         print("no frames", file=sys.stderr)
         return 1
-    results = [replay(frames, series, "curiosity_phil_novel", min_readings=args.min_readings, examples=args.examples),
+    results = [replay(frames, series, "reading", min_readings=args.min_readings, examples=args.examples),
+               replay(frames, series, "curiosity_phil_novel", min_readings=args.min_readings, examples=args.examples),
                replay(frames, series, "curiosity_nats", min_readings=args.min_readings, examples=args.examples)]
     for wfname in RATE_WORKFLOWS:
         results.append(replay(frames, series, f"rate:{wfname}", min_readings=args.min_readings, examples=5))

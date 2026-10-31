@@ -652,6 +652,8 @@ class BiometricsSubstrateWorker:
         # Rung 6: Orion's self-tuned expectation per domain, cached
         # (monotonic fetch time, value) so the hot tick doesn't hit Postgres.
         self._prediction_expectation_cache: dict[str, tuple[float, Expectation | None]] = {}
+        self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
+        self._world_reading_link_events_cache_at: datetime | None = None
         self._control_surface_store: RuntimeControlSurfaceStore | None = None
         self._last_raw_reading_prune_monotonic = 0.0
         self._last_route_prediction_error: float | None = None
@@ -3524,7 +3526,12 @@ class BiometricsSubstrateWorker:
         count over her last 7 days. A failed read is an ABSENT candidate,
         never a calm one. (Camera surprise competes as the
         ``node:substrate.perception`` graph node.)"""
-        from orion.attention.world_first import CHAT_RATE_WINDOW, chat_candidate
+        from orion.attention.world_first import (
+            CHAT_RATE_WINDOW,
+            READING_RATE_WINDOW,
+            chat_candidate,
+            reading_candidate,
+        )
         from orion.substrate.prediction_error_magnitude import WINDOW_7D
 
         try:
@@ -3532,7 +3539,29 @@ class BiometricsSubstrateWorker:
         except Exception as exc:  # noqa: BLE001 -- absent, not calm
             logger.warning("substrate_world_first_chat_read_failed err=%s", exc)
             turns = None
-        return [chat_candidate(turns, now=now)]
+        candidates = [chat_candidate(turns, now=now)]
+        if not bool(getattr(self._settings, "attention_world_reading_enabled", False)):
+            return candidates
+
+        cache_at = getattr(self, "_world_reading_link_events_cache_at", None)
+        cached = getattr(self, "_world_reading_link_events_cache", None)
+        if cache_at is not None and now - cache_at < timedelta(minutes=1):
+            events = cached
+        else:
+            try:
+                events = self._store.fetch_accepted_reading_link_events(
+                    since=now - WINDOW_7D - READING_RATE_WINDOW
+                )
+                events = list(events)
+                self._world_reading_link_events_cache = events
+                self._world_reading_link_events_cache_at = now
+            except Exception as exc:  # noqa: BLE001 -- absent, not calm
+                logger.warning("substrate_world_first_reading_read_failed err=%s", exc)
+                events = None
+                self._world_reading_link_events_cache = None
+                self._world_reading_link_events_cache_at = now
+        candidates.append(reading_candidate(events, now=now))
+        return candidates
 
     # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
     # per-node window seeded once from Postgres, so the 7-day percentiles do

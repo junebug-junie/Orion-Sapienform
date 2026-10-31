@@ -201,6 +201,19 @@ def test_world_only_attention_loop_seeds_no_concept_expand() -> None:
     assert endogenous_curiosity_candidates(attention_frame=frame, config=_enabled()) == []
 
 
+def test_reading_attention_loop_seeds_concept_expand() -> None:
+    reading = SimpleNamespace(
+        id="open-loop-reading", description="Orion is reading", already_known=False,
+        novelty=0.9, confidence=0.9,
+        source_refs=["sub-concept-wp-read-a", "sub-concept-wp-read-b"],
+    )
+    frame = SimpleNamespace(open_loops=[reading], deferred_items=[])
+    candidates = endogenous_curiosity_candidates(attention_frame=frame, config=_enabled())
+    assert len(candidates) == 1
+    assert candidates[0].task_type_candidate == "concept_expand"
+    assert candidates[0].focal_node_refs == reading.source_refs
+
+
 def test_candidates_never_target_strict_or_autonomy_zones() -> None:
     nodes = [_node(f"node:{i}", 0.9) for i in range(5)]
     appraisal = SimpleNamespace(dimensions={"level": 0.9}, causal_molecule_ids=[], summary="s", confidence=0.9)

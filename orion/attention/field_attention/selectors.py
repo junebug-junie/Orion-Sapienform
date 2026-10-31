@@ -529,9 +529,10 @@ def world_first_targets(
         SOURCE_KIND_REF_PREFIX,
         WORLD_CHAT_SOURCE_ID,
         rank_candidates,
+        yield_reading_to_chat,
     )
 
-    ranking = rank_candidates(candidates)
+    ranking = yield_reading_to_chat(rank_candidates(candidates))
     attended: list[FieldAttentionTargetV1] = []
     observed: list[FieldAttentionTargetV1] = []
     for verdict in (*ranking.eligible, *ranking.ineligible):

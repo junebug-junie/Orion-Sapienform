@@ -72,6 +72,27 @@ def test_flag_on_chat_read_failure_is_absent_and_no_winner(monkeypatch) -> None:
     assert chat["absent"] is True
 
 
+def test_reading_is_cached_and_can_win_when_chat_is_calm(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    w._store.fetch_chat_turn_times.return_value = []
+    now = datetime.now(timezone.utc)
+    w._store.fetch_accepted_reading_link_events.return_value = [
+        (now - timedelta(days=d), f"sub-concept-old-{d}", f"sub-concept-old-{d}-obj")
+        for d in range(1, 7)
+    ] + [
+        (now - timedelta(minutes=i), f"sub-concept-wp-read-{i}", f"sub-concept-wp-read-{i}-obj")
+        for i in range(6)
+    ]
+    first = w._world_first_external_candidates(now)
+    second = w._world_first_external_candidates(now + timedelta(seconds=30))
+    assert [candidate.source_id for candidate in first] == ["world:chat", "world:reading"]
+    assert second[1].evidence_refs == first[1].evidence_refs
+    w._store.fetch_accepted_reading_link_events.assert_called_once()
+    proj = _tick(w)
+    assert proj.attended_node_ids[0] == "world:reading"
+    assert any(ref.startswith("sub-concept-wp-read-") for ref in proj.attended_node_ids)
+
+
 def test_flag_off_never_reads_chat_and_keeps_the_pressure_winner(monkeypatch) -> None:
     w = _worker(monkeypatch, world_first=False)
     proj = _tick(w)

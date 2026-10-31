@@ -140,6 +140,6 @@ Or per service, from the clean primary main checkout after merge: `scripts/safe_
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3030
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

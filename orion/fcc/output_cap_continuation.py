@@ -27,7 +27,12 @@ top, not a continuation, and replaces the head (the model often ignores
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Optional
+
+from orion.core.redact import redact_secrets
+from orion.fcc.context_budget import is_provider_error_envelope
 
 #: Fixed opening of the CLI's output-cap recovery message (Claude Code 2.1.x).
 OUTPUT_CAP_RESUME_PREFIX = "Output token limit hit."
@@ -68,12 +73,31 @@ def is_output_cap_resume_event(event: Any) -> bool:
 #: A continuation that opens with the same characters the answer opened with is a
 #: rewrite from the top, not a continuation (a real cut lands mid-answer).
 RESTART_PREFIX_CHARS = 32
+#: How far into the new piece the head's opening may sit (a lead-in line or fence).
+RESTART_SEARCH_CHARS = 200
+_FENCE_OPEN = re.compile(r"^\s*```[a-zA-Z]*\s*")
+
+
+def _opening(text: str) -> str:
+    return _FENCE_OPEN.sub("", text, count=1).lstrip()
+
+
+def _is_complete_json_object(text: str) -> bool:
+    body = _opening(text)
+    body = re.sub(r"\s*```\s*$", "", body)
+    try:
+        return isinstance(json.loads(body), dict)
+    except ValueError:
+        return False
 
 
 def _is_restart(head: str, tail: str) -> bool:
-    a, b = head.lstrip(), tail.lstrip()
-    k = min(RESTART_PREFIX_CHARS, len(a), len(b))
-    return k >= 8 and a[:k] == b[:k]
+    """True when ``tail`` is the whole answer written again, not its continuation."""
+    if _is_complete_json_object(tail):
+        return True
+    a, b = _opening(head), _opening(tail)
+    k = min(RESTART_PREFIX_CHARS, len(a))
+    return k >= 8 and a[:k] in b[: RESTART_SEARCH_CHARS + k]
 
 
 class OutputCapStitcher:
@@ -128,7 +152,14 @@ class OutputCapStitcher:
         head = self._head.strip()
         if not head or not text or text.lstrip().startswith(head):
             return text
-        tail = self._cur_text if self._cur_text.strip() == text.strip() else text
+        raw_tail = self._cur_text
+        # The raw piece keeps the leading space a mid-word cut needs. It is the
+        # piece when ``text`` (stripped, redacted) is its end: a response with two
+        # text blocks hands the caller only the last block.
+        if raw_tail.strip() and redact_secrets(raw_tail).strip().endswith(text.strip()):
+            tail = raw_tail
+        else:
+            tail = text
         if _is_restart(head, tail):
             # The model ignored "resume directly" and wrote the whole answer again
             # (9 of 23 cut JSON answers in the governor's transcripts, 2026-10-20..31).
@@ -137,22 +168,30 @@ class OutputCapStitcher:
             return text
         return (self._head + tail).strip()
 
-    def draft_for(self, event: Any, text: str) -> str:
+    def draft_for(self, event: Any, text: str, previous: str = "") -> str:
         """The turn's draft after ``event``, whose extracted text is ``text``.
 
-        Only a result event, or an assistant event with its own text block,
-        carries new answer text. The resume message yields the pieces cut off
-        so far. Any other event hands back ``text`` unchanged.
+        ``previous`` is the caller's draft before this event. Only a result
+        event, or an assistant event with its own text block, carries new
+        answer text. The resume message is the CLI's instruction to the model,
+        never Orion's answer (the extractor reads user text blocks too): it
+        yields the pieces cut off so far, or ``previous`` when the cut response
+        was all thinking. A provider error is returned bare, so the caller's
+        error-envelope check still sees it first.
         """
         raw = _raw(event)
         if raw is None:
             return text
         if is_output_cap_resume_event(raw):
-            # The CLI's own instruction to the model, never Orion's answer: the
-            # extractor reads text blocks from user events too. The draft so far
-            # is every piece cut off until now.
-            return self._head.strip() or text
+            return self._head.strip() or previous
         etype = raw.get("type")
+        if etype == "result" and (raw.get("is_error") is True
+                                  or raw.get("subtype") not in (None, "success")):
+            self._head = ""
+            return text
+        if is_provider_error_envelope(text):
+            self._head = ""
+            return text
         if etype == "result" or (etype == "assistant" and _text_of(_message(raw)).strip()):
             return self.stitch(text)
         return text

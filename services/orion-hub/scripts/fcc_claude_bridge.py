@@ -476,7 +476,7 @@ async def run_turn(
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             if text and summary_text is None and not is_compact_summary_draft(text):
                 # Same output-cap stitch as orion/harness/fcc_motor.py.
-                stitched = output_cap.draft_for(parsed, text)
+                stitched = output_cap.draft_for(parsed, text, accumulated)
                 accumulated = redact_secrets(stitched) if stitched is not text else text
             if sid:
                 claude_session_id = sid

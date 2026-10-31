@@ -67,7 +67,7 @@ def _replay(events: list[dict]) -> tuple[str, OutputCapStitcher]:
         st.observe(ev)
         text, _sid, _dur = motor.extract_final_from_stream_event(ev, accumulated=acc)
         if text:
-            acc = st.draft_for(ev, text)
+            acc = st.draft_for(ev, text, acc)
     return acc, st
 
 
@@ -166,3 +166,65 @@ def test_rewrite_from_the_top_replaces_the_head() -> None:
     draft, _ = _replay(events)
     assert draft == full
     assert parse_json_object(draft)["n"] == 2
+
+
+def test_provider_error_after_a_cut_stays_bare_so_the_error_check_sees_it() -> None:
+    """Review: head + "Upstream provider ... HTTP 500" would hide the envelope from
+    is_provider_error_envelope and ship the error as an answer."""
+    from orion.fcc.context_budget import is_provider_error_envelope
+
+    envelope = "Upstream provider llamacpp returned HTTP 500: boom"
+    assert is_provider_error_envelope(envelope)
+    events = [_assistant("m1", _text('{"a": "hello world')), _user_text(RESUME),
+              _assistant("m2", _text(envelope)),
+              {"type": "result", "subtype": "success", "result": envelope, "session_id": "s"}]
+    draft, _ = _replay(events)
+    assert draft == envelope
+
+
+def test_error_result_is_never_stitched() -> None:
+    events = [_assistant("m1", _text('{"a": "x')), _user_text(RESUME),
+              {"type": "result", "subtype": "error_during_execution", "is_error": True,
+               "result": "API Error: 500", "session_id": "s"}]
+    draft, _ = _replay(events)
+    assert draft == "API Error: 500"
+
+
+def test_resume_instruction_never_becomes_the_draft_after_a_thinking_only_cut() -> None:
+    events = [_assistant("m0", _text("Reading the page now.")),
+              _assistant("m1", {"type": "thinking", "thinking": "a whole budget of thinking"}),
+              _user_text(RESUME),
+              _assistant("m2", {"type": "thinking", "thinking": "more"})]
+    draft, _ = _replay(events)
+    assert not draft.startswith("Output token limit hit")
+    assert draft == "Reading the page now."
+
+
+@pytest.mark.parametrize("lead", ["```json\n", "Here is the full answer again:\n\n"])
+def test_rewrite_with_a_different_opening_replaces_the_head(lead: str) -> None:
+    body = '{\n  "summary": "Stage 2 read of the story", "n": 2\n}'
+    rewrite = lead + body + ("\n```" if lead.startswith("```") else "")
+    events = [_assistant("m1", _text('{\n  "summary": "Stage 2 read of the sto')), _user_text(RESUME),
+              _assistant("m2", _text(rewrite)),
+              {"type": "result", "result": rewrite, "session_id": "s"}]
+    draft, _ = _replay(events)
+    assert parse_json_object(draft)["n"] == 2
+
+
+def test_two_text_blocks_in_the_continuation_are_both_kept() -> None:
+    events = [_assistant("m1", _text("HEAD ")), _user_text(RESUME),
+              _assistant("m2", _text("part one, ")), _assistant("m2", _text("part two")),
+              {"type": "result", "result": "part two", "session_id": "s"}]
+    draft, _ = _replay(events)
+    assert draft == "HEAD part one, part two"
+
+
+def test_compaction_between_pieces_drops_the_head_on_purpose() -> None:
+    """The model lost its own head too once the CLI compacted; the next piece cannot be a
+    continuation of text the model no longer sees, so it stands alone."""
+    events = [_assistant("m1", _text('{"a": "x')), _user_text(RESUME),
+              _user_text("This session is being continued from a previous conversation. Summary: ..."),
+              _assistant("m2", _text('{"a": "fresh"}')),
+              {"type": "result", "result": '{"a": "fresh"}', "session_id": "s"}]
+    draft, _ = _replay(events)
+    assert draft == '{"a": "fresh"}'

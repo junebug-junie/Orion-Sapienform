@@ -75,7 +75,7 @@ Stance (`llm_call_usage` + gateway log): 2 of 164 Strata stance calls since 08:0
 
 ```text
 orion/harness/tests (warm pool, motor cancel/served-model/write-stamp/output-cap/repeat-breaker,
-  context ceiling, chat memory, undeclared tool, call usage) + orion/llm/tests/test_call_usage.py -> 135 passed
+  context ceiling, chat memory, undeclared tool, call usage) + orion/llm/tests/test_call_usage.py -> 142 passed (after review fixes)
 orion/fcc/tests -> all pass except test_claude_spawn::test_no_undiscovered_root_callers_of_claude_permission_argv,
   which also fails on main (it names files this PR does not touch)
 services/orion-hub: test_fcc_claude_bridge_{run,parse,mcp}.py, test_agent_claude_chat_history.py -> 21 passed
@@ -105,7 +105,23 @@ Not run. Deploy is out of scope for this task. Live effect is UNVERIFIED until t
 
 ## Review findings fixed
 
-(filled in after review)
+- Finding (must-fix): if the continuation failed with a provider error, the head was glued in front of the error. `is_provider_error_envelope` then missed it, and the error went out as the answer.
+  - Fix: `draft_for` returns a provider error envelope bare, and also an error `result` (`is_error`, or a subtype other than success). It clears the head first.
+  - Evidence: `test_provider_error_after_a_cut_stays_bare_so_the_error_check_sees_it`, `test_error_result_is_never_stitched`.
+- Finding (must-fix): when the cut response was all thinking, the CLI's resume instruction became the draft.
+  - Fix: on the resume event, the draft is the head, or the caller's previous draft when there is no head.
+  - Evidence: `test_resume_instruction_never_becomes_the_draft_after_a_thinking_only_cut`.
+- Finding (should-fix): a rewrite that opened with a code fence or a lead-in line was not seen as a rewrite, so the head was glued on.
+  - Fix: `_is_restart` strips a leading fence, looks for the head's opening in the first 200 characters of the new piece, and treats a new piece that is a complete JSON object on its own as the answer.
+  - Evidence: `test_rewrite_with_a_different_opening_replaces_the_head` (2 cases). The 83-transcript replay is unchanged: 14 fixed, 0 broken.
+- Finding (should-fix): a compaction between the pieces drops the head.
+  - Fix: kept on purpose, because after compaction the model no longer sees its own head. The behaviour is now pinned by a test.
+  - Evidence: `test_compaction_between_pieces_drops_the_head_on_purpose`.
+- Finding (nit): a continuation with two text blocks lost the first block. A redacted tail lost its leading space.
+  - Fix: use the raw response text when its redacted form ends with the extracted text.
+  - Evidence: `test_two_text_blocks_in_the_continuation_are_both_kept`.
+- Finding (follow-up, not fixed): a distill attempt cut at the budget is retried with the same budget.
+  - Fix: none in this PR. With 8192 the observed answer fits with about 2x headroom. Proposed follow-up: skip the retry or raise the budget on a `distill_truncated_at_max_tokens` attempt.
 
 ## Restart required
 

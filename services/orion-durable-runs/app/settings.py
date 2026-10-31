@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     memory_episode_closed_channel: str = Field("orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED")
     memory_episode_distill_route: str = Field("memory_distill", alias="MEMORY_EPISODE_DISTILL_ROUTE")
     memory_episode_distill_timeout_sec: float = Field(600.0, gt=0.0, le=900.0, alias="MEMORY_EPISODE_DISTILL_TIMEOUT_SEC")
-    memory_episode_distill_max_tokens: int = Field(4096, gt=0, alias="MEMORY_EPISODE_DISTILL_MAX_TOKENS")
+    memory_episode_distill_max_tokens: int = Field(8192, gt=0, alias="MEMORY_EPISODE_DISTILL_MAX_TOKENS")
     memory_episode_distill_deadline_hours: float = Field(20.0, gt=0.0, lt=24.0,
                                                          alias="MEMORY_EPISODE_DISTILL_DEADLINE_HOURS")
     llm_intake_channel: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")

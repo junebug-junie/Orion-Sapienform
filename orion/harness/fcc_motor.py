@@ -20,6 +20,7 @@ from orion.fcc.turn_lock import turn_in_progress
 from orion.curiosity.write_stamp import WriteStamper, completed_tool_use_ids, graph_write_tool_use_ids
 from orion.core.redact import redact_secrets, redact_secrets_deep, remember_secret_env
 from orion.fcc import mcp_names
+from orion.fcc.output_cap_continuation import OutputCapStitcher
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -1716,6 +1717,7 @@ async def _drive_fcc_turn(
     first_event_ms: Optional[int] = None
 
     context_nudge_sent = False
+    output_cap = OutputCapStitcher()
     # `written_at` on the run nodes Orion writes into its own graph is enforced
     # here, not by the prompt: see orion/curiosity/write_stamp.py. Baseline is
     # taken BEFORE the subprocess exists, so nothing this turn writes can be
@@ -1897,12 +1899,16 @@ async def _drive_fcc_turn(
                 }
                 return
 
+            output_cap.observe(parsed)
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             # The CLI's compaction summary is context, never Orion's answer: stored
             # drafts began "This session is being continued..." (harness_turn_trace,
             # 2026-09-15..10-11) when a turn died after compacting.
             if text and summary_text is None and not is_compact_summary_draft(text):
-                accumulated = text
+                # An answer the output cap split across responses keeps its head:
+                # the CLI's `result` holds only the last piece (orion/fcc/output_cap_continuation.py).
+                stitched = output_cap.draft_for(parsed, text, accumulated)
+                accumulated = redact_secrets(stitched) if stitched is not text else text
             if sid:
                 claude_session_id = sid
             if ptype == "result":
@@ -1972,6 +1978,8 @@ async def _drive_fcc_turn(
         "fcc_compactions": compactions,
         # Of those, how many kept no summary of the task (the reply after it is ungrounded).
         "fcc_degenerate_compactions": degenerate_compactions,
+        # Answer pieces the CLI's output cap split off and the draft stitched back on.
+        "fcc_output_cap_continuations": output_cap.continuations,
         # Whether the turn carried a task anchor (0 = none). Read next to fcc_compactions.
         "task_anchor_chars": task_anchor_chars,
         # Spec L5 start-up telemetry: "warm" (pooled process) or "spawn".

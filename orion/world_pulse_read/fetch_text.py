@@ -32,7 +32,7 @@ from .fetch_provenance import fetch_http_error_status
 # "characters 100000 to 200000" of a 222 KB file, five times, 54 min, no draft).
 # Used by both stage prompts. The saved-file sentence: live 2026-10-31 Flash-Next read WebFetch's
 # "also saved to /root/..." note and called Bash, which a reading turn does not have (fcc_motor.py
-# resumes such a turn once, UNDECLARED_TOOL_NOTE; this keeps the model from planning on it). The harness also blocks a repeat fetch and late tool calls on reading turns
+# resumes such a turn once, UNDECLARED_TOOL_NOTE). The harness also blocks a repeat fetch and late tool calls on reading turns
 # (orion/fcc/repeat_failure_breaker.py); this line keeps the model from planning on it.
 WEBFETCH_LIMIT_NOTE = (
     "WebFetch only ever reads the first ~100,000 characters of a page and cannot read a "
@@ -40,8 +40,7 @@ WEBFETCH_LIMIT_NOTE = (
     "same characters, and each fetch of a large page holds the shared model for minutes. "
     "Fetch a URL once and ask everything you need in that one prompt. If the source is too "
     "large to read whole, work from what came back and say what you could not read. "
-    "WebFetch may say it also saved a PDF or other file to a local path: this reading cannot open "
-    "it (WebFetch and WebSearch are its only tools; there is no shell or file access)."
+    "Files WebFetch says it saved locally cannot be opened here."
 )
 
 logger = logging.getLogger(__name__)

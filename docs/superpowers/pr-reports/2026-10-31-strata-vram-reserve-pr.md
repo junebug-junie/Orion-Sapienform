@@ -124,6 +124,6 @@ scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.a
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3026
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

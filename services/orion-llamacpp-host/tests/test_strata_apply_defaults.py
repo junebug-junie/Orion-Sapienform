@@ -60,3 +60,10 @@ def test_each_strata_lane_launches_with_its_profiles_context():
         env = dict(e.split("=", 1) for e in compose[service]["environment"])
         assert int(env["STRATA_CONTEXT"]) == profiles[profile]["strata"]["ctx_size"] \
             == profiles[profile]["gpu"]["max_model_len"], service
+
+
+def test_both_lanes_turn_on_tool_call_recovery():
+    """Strata 0.2.7 leaves a <function=NAME> tool call as text unless this is on (serve/server.py OutputParser
+    recover); live 2026-10-31 a chat-lane reading run failed parsing '<tool_call><function=Bash>' as its answer."""
+    for name in ("chat-defaults.json", "agent-defaults.json"):
+        assert json.loads((SERVICE / "strata" / name).read_text())["tool_call_recovery"] is True, name

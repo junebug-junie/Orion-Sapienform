@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -71,6 +71,8 @@ class AttentionRuntimeWorker:
         # no magnitudes of its own, so it keeps a 7-day window of the
         # substrate's stored prediction-error readings.
         self._pe_history = NodePeHistoryCache()
+        self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
+        self._world_reading_link_events_cache_at: datetime | None = None
         self._bus = None
         self._poll_task: asyncio.Task[None] | None = None
 
@@ -246,10 +248,12 @@ class AttentionRuntimeWorker:
         from orion.attention.world_first import (
             CHAT_RATE_WINDOW,
             PERCEPTION_NODE_ID,
+            READING_RATE_WINDOW,
             SUBSTRATE_NODE_PREFIX,
             chat_candidate,
             node_candidate,
             node_prediction_error_continuous,
+            reading_candidate,
         )
         from orion.substrate.prediction_error_magnitude import WINDOW_7D
 
@@ -307,6 +311,26 @@ class AttentionRuntimeWorker:
             logger.warning("attention_world_first_chat_read_failed err=%s", exc)
             turns = None
         candidates.append(chat_candidate(turns, now=now))
+        if not bool(getattr(self._settings, "attention_world_reading_enabled", False)):
+            return candidates
+
+        cache_at = getattr(self, "_world_reading_link_events_cache_at", None)
+        cached = getattr(self, "_world_reading_link_events_cache", None)
+        if cache_at is not None and now - cache_at < timedelta(minutes=1):
+            events = cached
+        else:
+            try:
+                events = list(self._store.fetch_accepted_reading_link_events(
+                    now - WINDOW_7D - READING_RATE_WINDOW
+                ))
+                self._world_reading_link_events_cache = events
+                self._world_reading_link_events_cache_at = now
+            except Exception as exc:  # noqa: BLE001 -- absent, not calm
+                logger.warning("attention_world_first_reading_read_failed err=%s", exc)
+                events = None
+                self._world_reading_link_events_cache = None
+                self._world_reading_link_events_cache_at = now
+        candidates.append(reading_candidate(events, now=now))
         return candidates
 
     def _maybe_build_goal(

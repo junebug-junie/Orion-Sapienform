@@ -109,6 +109,40 @@ ORDER BY m.recorded_at, l.target_id
 LIMIT :limit
 """
 
+# Same journal definition as ACCEPTED_UNSEEDED_LINKS_SQL, deliberately without
+# the candidate-set idempotency filter. Attention needs the accepted event rate,
+# including links that have already minted an unscored curiosity seed.
+ACCEPTED_READING_LINK_TIMES_SQL = """
+WITH recent AS (
+    SELECT m.decision_id, m.target_id, m.recorded_at
+    FROM substrate_graph_journal m
+    WHERE m.event_kind = 'materialization' AND m.outcome = 'applied'
+      AND m.recorded_at >= now() - ((:lookback_hours + :window_minutes / 60.0) * interval '1 hour')
+      AND m.recorded_at <= now()
+),
+latest AS (
+    SELECT DISTINCT ON (d.target_id)
+           d.target_id, d.revision, d.decision_id, d.proposal_id,
+           d.payload->>'resulting_state' AS state
+    FROM substrate_graph_journal d
+    WHERE d.event_kind = 'decision' AND d.proposal_kind = 'relationship_assertion'
+      AND d.target_id IN (SELECT target_id FROM recent)
+    ORDER BY d.target_id, d.revision DESC, d.recorded_at DESC
+)
+SELECT m.target_id AS assertion_id,
+       m.payload->'edge_ids' AS edge_ids,
+       m.recorded_at AS materialized_at,
+       p.payload->>'subject_node_id' AS subject_node_id,
+       p.payload->>'object_node_id' AS object_node_id
+FROM latest l
+JOIN recent m ON m.decision_id = l.decision_id
+JOIN substrate_graph_journal p
+  ON p.event_kind = 'proposal' AND p.proposal_id = l.proposal_id
+WHERE p.actor = ANY(:actors)
+  AND l.state = ANY(:accepted_states)
+ORDER BY m.recorded_at
+"""
+
 
 def accepted_links_params(*, lookback_hours: float, limit: int) -> dict[str, Any]:
     return {
@@ -118,6 +152,16 @@ def accepted_links_params(*, lookback_hours: float, limit: int) -> dict[str, Any
         "skew_hours": CLOCK_SKEW_SLACK_HOURS,
         "seed_marker": json.dumps([{"notes": [SOURCE_NOTE]}]),
         "limit": int(limit),
+    }
+
+
+def accepted_reading_link_events_params(*, lookback_hours: float) -> dict[str, Any]:
+    """Parameters shared with the accepted-link seed query's journal scope."""
+    return {
+        "actors": list(READING_PROPOSAL_ACTORS),
+        "accepted_states": list(ACCEPTED_ASSERTION_STATES),
+        "lookback_hours": float(lookback_hours),
+        "window_minutes": 15.0,
     }
 
 

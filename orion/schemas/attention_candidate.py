@@ -31,6 +31,7 @@ AttentionSourceKindV1 = Literal["internal", "external"]
 # World sources. Kept in this light schema module so thin consumers (reverie
 # proposals) can recognise a world target without importing the ranking code.
 WORLD_CHAT_SOURCE_ID = "world:chat"
+WORLD_READING_SOURCE_ID = "world:reading"
 PERCEPTION_NODE_ID = "node:substrate.perception"
 WORLD_SOURCE_PREFIX = "world:"
 

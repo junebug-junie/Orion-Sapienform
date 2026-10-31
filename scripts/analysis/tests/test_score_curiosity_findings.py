@@ -1,6 +1,7 @@
 """Fast checks for the curiosity-finding scorer and the replay's yield rule. No DB, no network."""
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +64,35 @@ def test_curiosity_yields_to_eligible_chat():
     assert with_chat["yielded_to_chat"] == 1 and with_chat["new_candidate_won"] == 0
     without = replay.replay([(t, _frame(False))], series, "curiosity_phil_novel", min_readings=20, examples=1)
     assert without["new_candidate_won"] == 1
+
+
+def test_reading_replay_uses_endpoint_events_and_yields_to_chat():
+    events = []
+    for i in range(6):
+        event_t = T0 + timedelta(days=i + 1)
+        events.append((event_t, 1.0, f"old-{i}", json.dumps({
+            "subject_node_id": f"sub-concept-old-{i}",
+            "object_node_id": f"sub-concept-old-{i}-obj",
+        })))
+    for i in range(6):
+        event_t = T0 + timedelta(days=7, minutes=i)
+        events.append((event_t, 1.0, f"burst-{i}", json.dumps({
+            "subject_node_id": f"sub-concept-wp-read-{i}",
+            "object_node_id": f"sub-concept-wp-read-{i}-obj",
+        })))
+    t = T0 + timedelta(days=7, minutes=6)
+    series = {"reading_link_accepted": events}
+    base = {"winner": None, "candidates": [
+        {"source_id": "world:chat", "eligible": False, "rank_score": 0.0, "score": 0.0}
+    ]}
+    result = replay.replay([(t, base)], series, "reading", min_readings=20, examples=1)
+    assert result["new_candidate_won"] == 1
+
+    chat = {"winner": "world:chat", "candidates": [
+        {"source_id": "world:chat", "eligible": True, "rank_score": 0.95, "score": 0.95}
+    ]}
+    yielded = replay.replay([(t, chat)], series, "reading", min_readings=20, examples=1)
+    assert yielded["yielded_to_chat"] == 1 and yielded["new_candidate_won"] == 0
 
 
 def test_table_redactor_leaves_ordinary_words_alone():

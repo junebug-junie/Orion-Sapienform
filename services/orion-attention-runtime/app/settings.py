@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # calm tick has no winner. false = the previous five-node min-max ranking
     # exactly. Ships on (Juniper's rule).
     attention_world_first_enabled: bool = Field(True, alias="ATTENTION_WORLD_FIRST_ENABLED")
+    # Accepted world-pulse reading links are one bounded external candidate in
+    # the world-first contest. Chat always yields reading on the same tick.
+    attention_world_reading_enabled: bool = Field(True, alias="ATTENTION_WORLD_READING_ENABLED")
     # Event-written body nodes (glossary semantics: one reading per event,
     # carried forward) compete only for 300 s after the event that wrote
     # them, fading in rank (orion.attention.world_first.

@@ -34,6 +34,7 @@ from orion.schemas.attention_frame import (
 from orion.schemas.attention_candidate import (
     NO_ATTENTION_CONSUMER_NODE_IDS,
     PERCEPTION_WALKWAY_NODE_ID,
+    WORLD_READING_SOURCE_ID,
     world_first_fenced,
 )
 from orion.substrate.prediction_error_freshness import missing_input_reason
@@ -353,6 +354,7 @@ def world_first_signals(
         node_candidate,
         perception_absent_reason,
         rank_candidates,
+        yield_reading_to_chat,
     )
 
     ranks = rank_percentile_by_node_id or {}
@@ -411,7 +413,7 @@ def world_first_signals(
         except Exception:
             continue
     candidates.extend(external_candidates)
-    ranking = rank_candidates(candidates)
+    ranking = yield_reading_to_chat(rank_candidates(candidates))
 
     signals: list[AttentionSignalV1] = []
     scores: dict[str, float] = {}
@@ -442,6 +444,11 @@ def world_first_signals(
                 confidence=confidence,
                 evidence_refs=(
                     [cand.source_id]
+                    + (
+                        [str(ref) for ref in cand.evidence_refs if str(ref) != cand.source_id]
+                        if cand.source_id == WORLD_READING_SOURCE_ID
+                        else []
+                    )
                     + [str(t) for t in metadata.get("contributing_turn_ids") or []]
                 ),
                 provenance={

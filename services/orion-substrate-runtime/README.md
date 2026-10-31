@@ -1253,6 +1253,15 @@ failed the metric gate (the 1.0 ceiling made the window max saturate in 10% of w
 delivering for 15 min is carded by the ladder watch (`camera_input:cam0` / `camera_input:walkway`
 rungs in `orion/substrate_ladder_liveness.py`, host cron every 10 min).
 
+**Reading is one world-first candidate (2026-10-31).** When
+`ATTENTION_WORLD_READING_ENABLED=true`, accepted `world_pulse_read_stage2` relationship-link
+materializations from `substrate_graph_journal` are counted in a trailing 15-minute window against
+their own seven-day minute grid. The candidate carries up to eight endpoint concept ids as evidence;
+it does not score or rewrite the existing unscored link seeds. `world:chat` yields over it whenever
+Juniper is busy, and the candidate is absent (not calm) if the journal query fails. A one-minute
+in-memory cache bounds the read path. Set the flag to `false` and restart substrate-runtime to
+disable it.
+
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
 in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).

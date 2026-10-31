@@ -73,7 +73,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Protocol, Sequence
 
@@ -88,6 +88,7 @@ from orion.schemas.attention_candidate import (
     ATTENTION_MIN_BAND_BY_NODE_ID,
     PERCEPTION_NODE_ID,
     WORLD_CHAT_SOURCE_ID,
+    WORLD_READING_SOURCE_ID,
     AttentionCandidateV1,
     is_world_source_id,
 )
@@ -123,6 +124,13 @@ CHAT_RATE_GRID_STEP = timedelta(minutes=1)
 # Fewer real turns than this in 7 days and "busier than usual" has nothing
 # to stand on: band says insufficient_history instead of guessing.
 CHAT_MIN_TURNS_7D = 5
+
+# Accepted reading links use the same trailing-rate model as chat, but keep a
+# distinct name and source-specific history floor so the two event streams
+# cannot silently drift apart.
+READING_RATE_WINDOW = CHAT_RATE_WINDOW
+READING_RATE_GRID_STEP = CHAT_RATE_GRID_STEP
+READING_MIN_LINKS_7D = 5
 
 # Perception's tick writes every ~10 s; a reading older than this is stale.
 PERCEPTION_MAX_AGE_SEC: float = 180.0
@@ -569,6 +577,36 @@ def rank_candidates(
     return ranking
 
 
+def yield_reading_to_chat(ranking: WorldFirstRanking) -> WorldFirstRanking:
+    """Make Juniper's eligible chat source outrank Orion's own reading.
+
+    Both background attention contests use this same post-ranking rule so a
+    reading candidate cannot win one contest while chat wins the other.
+    """
+    if not any(
+        verdict.candidate.source_id == WORLD_CHAT_SOURCE_ID
+        for verdict in ranking.eligible
+    ):
+        return ranking
+    yielded = [
+        replace(
+            verdict,
+            eligible=False,
+            reason="yields to Juniper (world:chat eligible)",
+        )
+        for verdict in ranking.eligible
+        if verdict.candidate.source_id == WORLD_READING_SOURCE_ID
+    ]
+    if yielded:
+        ranking.eligible[:] = [
+            verdict
+            for verdict in ranking.eligible
+            if verdict.candidate.source_id != WORLD_READING_SOURCE_ID
+        ]
+        ranking.ineligible.extend(yielded)
+    return ranking
+
+
 # ---------------------------------------------------------------------------
 # Candidate builders (pure). Callers do the I/O.
 # ---------------------------------------------------------------------------
@@ -996,6 +1034,91 @@ def chat_candidate(
         value_kind="count",
         polarity=None,
         evidence_refs=[WORLD_CHAT_SOURCE_ID, "chat_history_log"],
+    )
+
+
+def reading_candidate(
+    link_events: Sequence[tuple[datetime, str, str]] | None,
+    *,
+    now: datetime,
+    absent_reason: str | None = None,
+) -> AttentionCandidateV1:
+    """Build the external reading candidate from accepted link events.
+
+    ``link_events`` is ``(materialized_at, subject_node_id, object_node_id)``.
+    ``None`` means the journal read failed and is absent, never calm. Endpoint
+    ids are evidence only and are carried to the winning open loop so curiosity
+    can expand the concepts that were actually read.
+    """
+    now = _aware(now)
+    if link_events is None:
+        return AttentionCandidateV1(
+            candidate_id=f"attention-candidate:{WORLD_READING_SOURCE_ID}",
+            source_id=WORLD_READING_SOURCE_ID,
+            source_kind="external",
+            label="reading activity unavailable",
+            unusualness=_missing_magnitude(),
+            rank_percentile=None,
+            observed_at=None,
+            absent=True,
+            absent_reason=absent_reason or "reading journal unreadable",
+            value_kind="count",
+            polarity=None,
+            evidence_refs=[WORLD_READING_SOURCE_ID],
+        )
+
+    events = []
+    for ts, subject, obj in link_events:
+        subject = str(subject or "")
+        obj = str(obj or "")
+        if (
+            not isinstance(ts, datetime)
+            or _aware(ts) > now
+            or not subject
+            or not obj
+            or subject == obj
+        ):
+            continue
+        events.append((_aware(ts), subject, obj))
+    times = [ts for ts, _, _ in events]
+    mag, mid = chat_rate_reading(
+        times,
+        now=now,
+        window=READING_RATE_WINDOW,
+        grid_step=READING_RATE_GRID_STEP,
+        min_turns=READING_MIN_LINKS_7D,
+    )
+    endpoint_refs: list[str] = []
+    recent_since = now - READING_RATE_WINDOW
+    for ts, subject, obj in reversed(events):
+        if ts < recent_since or ts > now:
+            continue
+        for endpoint in (subject, obj):
+            if endpoint and endpoint not in endpoint_refs:
+                endpoint_refs.append(endpoint)
+            if len(endpoint_refs) >= 8:
+                break
+        if len(endpoint_refs) >= 8:
+            break
+    n = int(mag.value)
+    return AttentionCandidateV1(
+        candidate_id=f"attention-candidate:{WORLD_READING_SOURCE_ID}",
+        source_id=WORLD_READING_SOURCE_ID,
+        source_kind="external",
+        label=(
+            f"Orion is reading ({n} accepted link{'s' if n != 1 else ''} in the last "
+            f"{int(READING_RATE_WINDOW.total_seconds() // 60)} min)"
+            if n
+            else "reading is quiet"
+        ),
+        unusualness=mag,
+        rank_percentile=mid,
+        observed_at=max(times, default=None),
+        absent=absent_reason is not None,
+        absent_reason=absent_reason,
+        value_kind="count",
+        polarity=None,
+        evidence_refs=[WORLD_READING_SOURCE_ID, *endpoint_refs],
     )
 
 

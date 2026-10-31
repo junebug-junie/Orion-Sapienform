@@ -68,6 +68,6 @@ docker restart orion-circe-atlas-strata-agent orion-circe-atlas-strata-chat
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3021
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

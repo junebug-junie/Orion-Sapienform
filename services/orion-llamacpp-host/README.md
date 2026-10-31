@@ -398,6 +398,20 @@ Rollback: stop `atlas-agent` and `atlas-agent-announce`, then
 `scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-llamacpp up -d atlas-agent-llamacpp`,
 and drop `backend: strata` from `agent` in `config/gpu_pool.yaml`.
 
+### VRAM reserve (both Strata lanes, 2026-10-31)
+
+Strata's setup writes `--vram-reserve-mib 700` into the run config. On circe that left only 300-500 MiB of VRAM free
+on each V100, and the engine warned at each such request (under 512 MiB the driver can page VRAM to system RAM and
+decode falls to a few tok/s). Each launch now passes `--set vram-reserve-mib=$STRATA_VRAM_RESERVE_MIB`
+(`ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB` / `ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB`, default 1200). `strata launch` puts
+it over the run config's args for that launch only, so the installed run config and setup are not touched.
+
+The reserve comes out of the expert cache (`expert cache auto: ... MiB reserved` in the engine log): 500 MiB more
+is about 2% of the ~23 GiB cache. Context does not change: the KV cells kept in VRAM are fixed by `--kv-resident`, and
+Strata's setup-rerun check (`desc_matches`) compares only context, KV format and pictures. A changed reserve needs a
+container recreate (`up -d`), not a plain restart. Check: `strata serve: N MiB of VRAM free with everything loaded`
+in `state/strata/launch/<preset>.engine.log` should read about 1000.
+
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 
 `atlas-agent-burst` (pool role `agent-gpu2`, gpu2, port 8016) runs its own image,

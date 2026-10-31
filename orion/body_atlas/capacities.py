@@ -160,7 +160,7 @@ class WiresV1(BaseModel):
     callees: int = 0
     keys: int = 0  # shared Redis key parts
     private_keys: int = 0  # keys only one service touches (not parts)
-    dynamic_modules: int = 0  # modules with a Redis key that is not an exact string
+    dynamic_services: int = 0  # services with a Redis key that is not an exact string (e.g. the bus's rate buckets)
     seen_by_wire: list[str] = Field(default_factory=list)  # R-wire-seen: bus-silent, seen by HTTP / Redis
     broadcast: list[BroadcastKeyV1] = Field(default_factory=list)  # R-broadcast-key
     s4_s3: list[str] = Field(default_factory=list)  # confirmed S4 <-> S3 links found, one line each
@@ -576,7 +576,7 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
         calls=sum(1 for f in atlas.flows if _is_call(f)),
         callees=len({f.target for f in atlas.flows if _is_call(f)}),
         keys=len(keys), private_keys=sum(atlas.redis_private.values()),
-        dynamic_modules=sum(atlas.redis_dynamic.values()),
+        dynamic_services=len(atlas.redis_dynamic),
         seen_by_wire=rule_wire_seen(bus_silent, links),
         broadcast=rule_broadcast_keys(atlas, idx))
     silent = [p for p in bus_silent if p not in set(wires.seen_by_wire)]
@@ -792,7 +792,7 @@ def render(reading: CapacityReadingV1) -> list[str]:
     w = reading.wires
     if w is not None:
         lines.append(f"past the bus: {w.calls} HTTP calls to {w.callees} parts · {w.keys} shared Redis keys "
-                     f"({w.private_keys} private, {w.dynamic_modules} modules with keys I cannot read exactly)")
+                     f"({w.private_keys} private; {w.dynamic_services} services also build keys I cannot read exactly)")
     lines += [f"declared: {d}" for d in reading.declared]
     disputes = [c for c in reading.claims if c.kind == "dispute"]
     by_status: dict[str, list[str]] = defaultdict(list)

@@ -532,7 +532,7 @@ class _Scan:
         read from the text with no parse (the same answer ``imports`` + attributes give)."""
         out: list[tuple[str, str]] = []
         for mod, names in _FROM_RE.findall(text):
-            for item in names.strip("()").split(","):
+            for item in re.sub(r"#[^\n]*", "", names).strip("()").split(","):
                 item = item.split("#", 1)[0].strip()
                 if not item or item == "*":
                     continue
@@ -652,7 +652,7 @@ class _Scan:
             base = self._resolve_module(mod, len(dots), here, None)
             if base:
                 out.add(base)
-            for item in names.strip("()").split(","):
+            for item in re.sub(r"#[^\n]*", "", names).strip("()").split(","):
                 name = item.split("#", 1)[0].split(" as ")[0].strip()
                 if name and name != "*":
                     sub = self._resolve_module(f"{mod}.{name}" if mod else name, len(dots), here, None)

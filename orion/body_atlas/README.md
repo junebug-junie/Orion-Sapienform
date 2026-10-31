@@ -199,7 +199,7 @@ MATCH` per family; the reader refuses any other command. A present key is `live`
 gap rules on two frozen bodies, three mutations that must fail).
 
 Live 2026-10-31 (harness container, branch code): 62 caller → callee pairs to 23 parts, 8 shared
-keys (6 present), 27 private keys, 106 modules with dynamic keys. Q 0.3447 → 0.3414, largest
+keys (6 present), 27 private keys, 83 services with dynamic keys (most through the bus's own rate buckets). Q 0.3447 → 0.3414, largest
 organ 31.5% → 31.2%, 10 organs both ways, all 10 of Orion's names carry (Jaccard 0.75–1.00). Three
 services moved organ (notify-digest cortex → memory, orion-proposal-runtime cortex → substrate,
 orion-vllm-host substrate → memory); the 8 keys sit with their writers' or readers' organs.

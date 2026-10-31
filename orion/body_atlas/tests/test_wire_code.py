@@ -174,3 +174,12 @@ def test_tests_evals_and_the_atlas_itself_are_skipped(tmp_path):
     _w(tmp_path, "services/orion-a/evals/run.py", "U = 'http://orion-athena-b:1'\n")
     _w(tmp_path, "orion/body_atlas/x.py", "U = 'http://orion-athena-b:1'\n")
     assert W.code_wire_refs(tmp_path).http == []
+
+
+def test_a_parenthesized_import_with_comments_still_reaches_the_shared_symbol(tmp_path):
+    """The no-parse import reader (a module that names no URL itself): a comment inside
+    ``from m import (\\n a,  # why\\n b,\\n)`` must not hide ``b``."""
+    _w(tmp_path, "orion/__init__.py", "")
+    _w(tmp_path, "orion/c.py", "U = 'http://orion-athena-peer:1'\ndef a():\n    return 1\ndef b():\n    return U\n")
+    _w(tmp_path, "services/orion-a/app/main.py", "from orion.c import (\n    a,  # first\n    b,\n)\n")
+    assert _calls(W.code_wire_refs(tmp_path)) == {("orion-a", "http://orion-athena-peer:1")}

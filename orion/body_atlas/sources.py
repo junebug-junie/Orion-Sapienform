@@ -950,7 +950,7 @@ def gather_body(root: Path, catalog: list[dict], *, live: LiveReaders | None) ->
 
     wire = reads.run("declared:services/*, orion/* python (HTTP URLs, Redis keys)", "declared", _wire,
                      lambda v: f"{len(v.http)} service->URL references, {len(v.redis)} Redis keys, "
-                               f"{sum(len(x) for x in v.dynamic.values())} modules with dynamic keys "
+                               f"{len(v.dynamic)} services with dynamic keys "
                                f"in {v.modules_scanned} modules" + (f"; {len(v.skipped)} did not parse" if v.skipped else ""))
     if wire is not None:
         keys = apply_wire(body, wire)

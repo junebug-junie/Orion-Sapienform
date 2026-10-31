@@ -1324,12 +1324,20 @@ async def run_fcc_turn(
         return
     tool = undeclared_tool_call(held_final.get("llm_response"), READING_ONLY_TOOLS)
     session_id = str((held_final.get("metadata") or {}).get("claude_session_id") or "")
-    if not session_id or time.monotonic() >= deadline:
+    # Too little time left: a resume would only end in a bare timeout that loses the cause.
+    if not session_id or deadline - time.monotonic() < min(float(stall_timeout_sec), RESUME_MIN_BUDGET_SEC):
         yield held_final
         return
     # Once only: the resumed turn's answer is final whatever it says.
     logger.warning("fcc_reading_undeclared_tool_resume corr=%s tool=%s session=%s", correlation_id, tool, session_id)
     note = UNDECLARED_TOOL_NOTE.format(tool=tool)
+    from orion.harness import session_resume
+
+    try:  # measured before the MCP config exists, so a failed stat cannot leak it
+        found = session_resume.find_transcript(session_resume.claude_home(), session_id)
+        seed_chars = session_resume.transcript_chars_estimate(found) if found else 0
+    except Exception:  # noqa: BLE001 -- the ceiling guard re-anchors on observed usage
+        seed_chars = 0
     try:
         resume_mcp = _maybe_render_mcp_config(correlation_id=correlation_id, reading_binding=reading_binding,
                                               reading_only=True)
@@ -1341,18 +1349,19 @@ async def run_fcc_turn(
         claude_bin=claude_bin, model_id=model_id, prompt=note, correlation_id=correlation_id,
         reading_only=True, mcp_config_path=resume_mcp, task_anchor=task_anchor, resume_session_id=session_id,
     )
-    from orion.harness import session_resume
-
-    found = session_resume.find_transcript(session_resume.claude_home(), session_id)
-    resume_kwargs = {**drive_kwargs, "prompt": note,
-                     "context_seed_chars": session_resume.transcript_chars_estimate(found) if found else 0}
+    # Own start time, so the resumed final's spawn/first-event timings are its own process's.
+    resume_kwargs = {**drive_kwargs, "prompt": note, "context_seed_chars": seed_chars,
+                     "started": time.monotonic()}
+    resume_record = {"tool": tool, "session_id": session_id,
+                     "held_text": str(held_final.get("llm_response") or "")[:500]}
     resume_io = _SpawnTurnIO(resume_argv, cwd=workspace, env=spawn_env, limit=stream_read_limit, claude_bin=claude_bin)
     async for frame in _drive_fcc_turn(
         io=resume_io, outcome={"retry_spawn": False}, mcp_config_path=resume_mcp, **resume_kwargs
     ):
         if frame.get("type") in ("final", "error"):
             metadata = dict(frame.get("metadata") or {})
-            metadata["fcc_undeclared_tool_resume"] = {"tool": tool, "session_id": session_id}
+            metadata["fcc_undeclared_tool_resume"] = resume_record
+            metadata["duration_ms"] = int((time.monotonic() - started) * 1000)  # both runs
             frame = {**frame, "metadata": metadata}
         yield frame
 
@@ -1392,6 +1401,8 @@ def _record_session_end(frame: Dict[str, object], *, resume_key: str, plan: Any)
 # The only tools a reading-only (source-model) turn is given: it reads untrusted pages, so no shell,
 # filesystem, graph tools or operator MCP servers (build_claude_argv).
 READING_ONLY_TOOLS = ("WebFetch", "WebSearch")
+# A resume needs at least this long (or the stall window, if shorter) left on the turn deadline.
+RESUME_MIN_BUDGET_SEC = 60.0
 
 _TOOL_CALL_NAME = re.compile(
     r"<tool_call>\s*(?:<function=([\w.:-]+)>|\{\s*\"name\"\s*:\s*\"([\w.:-]+)\")", re.S)
@@ -1412,12 +1423,15 @@ def undeclared_tool_call(text: object, declared: Iterable[str]) -> Optional[str]
     """The tool a ``<tool_call>`` in ``text`` names when that tool is not in ``declared``, else None.
     Covers the Qwen XML (``<function=NAME>``) and JSON (``{"name": ...}``) forms; Strata only turns a
     call into a real tool_use when the request declared that tool, so an undeclared one stays text."""
-    allowed = set(declared)
-    for m in _TOOL_CALL_NAME.finditer(str(text or "")):
-        name = m.group(1) or m.group(2)
-        if name and name not in allowed:
-            return name
-    return None
+    body = str(text or "").rstrip()
+    # Only an answer that ENDS on a call: a JSON answer quoting tool-call syntax ends in `"}`, and
+    # must never be thrown away for a resume.
+    if not body.endswith("</tool_call>"):
+        return None
+    last = body.rfind("<tool_call>")
+    m = _TOOL_CALL_NAME.match(body, last) if last >= 0 else None
+    name = (m.group(1) or m.group(2)) if m else None
+    return name if name and name not in set(declared) else None
 
 
 def build_claude_argv(

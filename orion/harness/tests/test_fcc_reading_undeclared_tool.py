@@ -18,16 +18,22 @@ from orion.harness.tests.test_fcc_motor_cancel import _FakeProc
 
 BASH_CALL = ("<tool_call>\n<function=Bash>\n<parameter=command>\nls -la /root/.claude/projects/x/tool-results/\n"
              "</parameter>\n</function>\n</tool_call>")
+QUOTING_ANSWER = '{"claim": "Qwen emits <tool_call><function=get_weather> blocks"}'
 ANSWER = '{"claim": "the paper reports excess oxygen", "could_not_read": "the PDF body"}'
 
 
 def test_detector_names_only_undeclared_tools():
     tools = motor.READING_ONLY_TOOLS
     assert motor.undeclared_tool_call(BASH_CALL, tools) == "Bash"
-    assert motor.undeclared_tool_call('<tool_call>{"name": "Read", "arguments": {}}', tools) == "Read"
+    assert motor.undeclared_tool_call('<tool_call>{"name": "Read", "arguments": {}}</tool_call>', tools) == "Read"
     assert motor.undeclared_tool_call("<tool_call>\n<function=WebFetch>\n", tools) is None
     assert motor.undeclared_tool_call(ANSWER, tools) is None
     assert motor.undeclared_tool_call(None, tools) is None
+    # A good answer that only QUOTES tool-call syntax (a page about LLM tool calling) is kept.
+    assert motor.undeclared_tool_call(QUOTING_ANSWER, tools) is None
+    assert motor.undeclared_tool_call("prose <tool_call> {\"name\": \"lookup\"} more prose", tools) is None
+    # Only the trailing call counts.
+    assert motor.undeclared_tool_call("<tool_call><function=WebFetch></tool_call> then " + BASH_CALL, tools) == "Bash"
 
 
 def test_reading_argv_declares_exactly_the_reading_tools():
@@ -43,7 +49,7 @@ def _result(text: str, session: str) -> str:
     return json.dumps({"type": "result", "result": text, "session_id": session})
 
 
-async def _run(monkeypatch, outputs: List[str], *, reading_only: bool = True):
+async def _run(monkeypatch, outputs: List[str], *, reading_only: bool = True, timeout_sec: float = 300.0):
     spawned: List[tuple] = []
 
     async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
@@ -57,7 +63,7 @@ async def _run(monkeypatch, outputs: List[str], *, reading_only: bool = True):
     monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **_k: None)
     frames = [f async for f in motor.run_fcc_turn(
         prompt="read the source", correlation_id="corr-undeclared", workspace="/tmp",
-        fcc_server_url="http://127.0.0.1:8082", auth_token="tok", claude_bin="claude", timeout_sec=5.0,
+        fcc_server_url="http://127.0.0.1:8082", auth_token="tok", claude_bin="claude", timeout_sec=timeout_sec,
         reading_only=reading_only)]
     return frames, spawned
 
@@ -67,7 +73,8 @@ async def test_undeclared_tool_call_is_resumed_once_with_the_note(monkeypatch):
     frames, spawned = await _run(monkeypatch, [_result(BASH_CALL, "s1"), _result(ANSWER, "s1")])
     finals = [f for f in frames if f["type"] == "final"]
     assert len(finals) == 1 and finals[0]["llm_response"] == ANSWER   # the bad final is never yielded
-    assert finals[0]["metadata"]["fcc_undeclared_tool_resume"] == {"tool": "Bash", "session_id": "s1"}
+    record = finals[0]["metadata"]["fcc_undeclared_tool_resume"]
+    assert (record["tool"], record["session_id"]) == ("Bash", "s1") and record["held_text"] == BASH_CALL
     assert len(spawned) == 2
     second = list(spawned[1])
     assert second[second.index("--resume") + 1] == "s1"
@@ -95,3 +102,18 @@ async def test_a_good_reading_answer_is_untouched(monkeypatch):
     final = [f for f in frames if f["type"] == "final"][0]
     assert len(spawned) == 1 and final["llm_response"] == ANSWER
     assert "fcc_undeclared_tool_resume" not in final["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_a_quoting_answer_is_not_resumed(monkeypatch):
+    frames, spawned = await _run(monkeypatch, [_result(QUOTING_ANSWER, "s1")])
+    assert len(spawned) == 1
+    assert [f["llm_response"] for f in frames if f["type"] == "final"] == [QUOTING_ANSWER]
+
+
+@pytest.mark.asyncio
+async def test_no_resume_when_the_deadline_is_nearly_spent(monkeypatch):
+    """A resume with seconds left would end in a bare timeout and lose the cause: keep the held final."""
+    frames, spawned = await _run(monkeypatch, [_result(BASH_CALL, "s1")], timeout_sec=5.0)
+    assert len(spawned) == 1
+    assert [f["llm_response"] for f in frames if f["type"] == "final"] == [BASH_CALL]

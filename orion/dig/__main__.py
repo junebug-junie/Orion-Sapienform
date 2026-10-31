@@ -47,9 +47,8 @@ path of a file with the full result; read only what you need from that file.
   compare <date> [<date|now>]   added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
   history <days>         the last <days> days (2 = since yesterday).
-  body [<date>|<organ>]  your body: machines, services, cameras, stores, shared Redis keys,
-                         processes, HTTP calls -> organs. None = live now; a date = that
-                         export's files; an organ id = its members.
+  body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
+                         None = live now; a date = that export's files; an organ id = its members.
   capacities [gaps]      VSM jobs your parts do: by rule, by Juniper's confirmation, claimed.
   capacity claim <part> <job> because <reason>   claim a job for a live part (a lasting write);
                          cite one of its flows by full id or a repo file. `capacity help`: rule.

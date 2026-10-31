@@ -36,6 +36,18 @@ requires_memory: false
 # model/load before just re-raising a third time; see PR #2108 for the full
 # incident writeup (the matching precedent, a self-study reflect timeout, was
 # retired with that verb on 2026-10-30).
+#
+# ROOT CAUSE 2026-10-31 (do NOT raise this a third time): the slow stances were
+# the agent lanes THINKING. Agent profiles default thinking on (Strata
+# agent-defaults.json reasoning_effort=high; Bonsai agent-gpu2 xhigh); the chat
+# lane does not. Same prompt (~10k tokens), median completion tokens: chat 342
+# (14 s), agent 2,918 (96 s), agent-gpu2 3,652 (158 s, max 6,285). 108 reading
+# turns since 10-14 died at this 240 s ceiling on agent-gpu2 (cortex-exec gives
+# the gateway this ceiling minus 5 s, so the logs show ~235 s). orion-thought now
+# sends chat_template_kwargs.enable_thinking=False on every stance
+# (services/orion-thought/app/bus_listener.py build_stance_react_context). If
+# stance gets slow again, check llm_call_usage.completion_tokens for
+# verb='stance_react' by pool_role before touching this number.
 timeout_ms: 240000
 
 services:

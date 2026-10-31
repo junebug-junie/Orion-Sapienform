@@ -213,6 +213,16 @@ def build_stance_react_context(
         # executor.py's existing `ctx.get("response_format")` forwarding
         # (executor.py:4365-4367); no executor.py change is needed.
         "response_format": {"type": "json_object"},
+        # Thinking OFF on every lane. The agent lanes think by default (Strata
+        # agent-defaults.json reasoning_effort=high; Bonsai agent-gpu2
+        # reasoning_effort=xhigh); the chat lane does not. Live 2026-10-29..31
+        # (llm_call_usage): stance_react wrote a median 342 completion tokens on
+        # chat (14 s) but 2,918 on agent and 3,652 on agent-gpu2 (158 s at
+        # ~29 tok/s), and 42 of 113 agent-gpu2 calls ran into cortex-exec's 235 s
+        # cutoff (`timeout:caller_budget_exhausted`; 108 failed reading turns
+        # since 10-14). The answer is a short JSON object and the reasoning is
+        # never read. cortex-exec's executor.py forwards this key to the gateway.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     if isinstance(surface_context, dict) and surface_context:
         context["surface_context"] = surface_context

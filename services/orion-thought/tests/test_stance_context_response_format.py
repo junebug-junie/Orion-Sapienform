@@ -37,3 +37,22 @@ def test_context_always_forces_json_object_mode() -> None:
 def test_context_with_agent_llm_route_still_forces_json_object_mode() -> None:
     ctx = build_stance_react_context(_request(llm_route="agent"))
     assert ctx["response_format"] == {"type": "json_object"}
+
+
+def test_context_turns_thinking_off_on_every_route() -> None:
+    """Regression for reading-turn stance timeouts (live 2026-10-14..31): the agent
+    lanes think by default, so stance_react there wrote ~3-6k completion tokens
+    (chat lane: ~340) and 108 reading turns failed at cortex-exec's 235 s cutoff as
+    `turn_deferred:stance_react_failed: timeout:caller_budget_exhausted`. Thinking
+    must be off whatever route or hold the request carries."""
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+    lease = GpuLeaseRefV1(lease_id="lease-1", generation=1, role="agent-gpu2", holder="reading")
+    for request in (
+        _request(),
+        _request(llm_route="agent"),
+        _request(llm_route="chat"),
+        _request(gpu_lease=lease),
+    ):
+        ctx = build_stance_react_context(request)
+        assert ctx["chat_template_kwargs"] == {"enable_thinking": False}

@@ -27,7 +27,9 @@ INDEXES_SQL = "SELECT indexname FROM pg_indexes WHERE schemaname = current_schem
 
 
 def _name(raw: str) -> str:
-    return raw.strip().rstrip(";(").split(".")[-1].strip('"').lower()
+    """Postgres folds unquoted identifiers to lower case and keeps quoted ones as written."""
+    last = raw.strip().rstrip(";(").split(".")[-1]
+    return last[1:-1] if len(last) > 1 and last.startswith('"') and last.endswith('"') else last.lower()
 
 
 def _clauses(body: str) -> list[str]:
@@ -53,9 +55,10 @@ class GuardedDDL:
 
     def __init__(self, execute: Callable[..., Any], query: Callable[[str], Iterable[tuple]]):
         self._execute = execute
-        self.tables = {_name(r[0]) for r in query(TABLES_SQL)}
-        self.columns = {(_name(r[0]), _name(r[1])) for r in query(COLUMNS_SQL)}
-        self.indexes = {_name(r[0]) for r in query(INDEXES_SQL)}
+        # catalog names as stored (unquoted ones are already lower case there)
+        self.tables = {r[0] for r in query(TABLES_SQL)}
+        self.columns = {(r[0], r[1]) for r in query(COLUMNS_SQL)}
+        self.indexes = {r[0] for r in query(INDEXES_SQL)}
         self._created: set[str] = set()   # tables made in this run: their columns were never read
         self.ran = 0
         self.skipped = 0
@@ -72,12 +75,12 @@ class GuardedDDL:
         m = _ALTER.match(sql)
         if not m:
             return False
-        if_exists, table = bool(m.group(1)), _name(m.group(2))
+        table = _name(m.group(2))
         added = [_ADD_COLUMN.match(c + " ") for c in _clauses(m.group(3))]
-        if not added or not all(added) or table in self._created:
+        if not added or not all(added) or table in self._created or table not in self.tables:
+            # A table missing from this snapshot is left to Postgres: ALTER TABLE IF EXISTS on it
+            # takes no lock anyway, and the snapshot's schema might not be the one search_path finds.
             return False
-        if table not in self.tables:
-            return if_exists          # ALTER TABLE IF EXISTS on a missing table is a no-op
         return all((table, _name(a.group(1))) in self.columns for a in added)
 
     def __call__(self, sql: str, *args: Any) -> bool:

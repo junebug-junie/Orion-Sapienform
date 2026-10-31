@@ -52,10 +52,18 @@ def test_other_alter_shapes_always_run():
     assert ddl("-- why\nCREATE INDEX IF NOT EXISTS idx_chat_message_corr_id ON chat_message (correlation_id);")
 
 
-def test_alter_if_exists_on_a_missing_table_is_a_no_op_but_a_table_made_this_run_is_not():
+def test_a_table_missing_from_the_snapshot_or_made_this_run_is_left_to_postgres():
     ddl, ran = guard()
-    assert not ddl("ALTER TABLE IF EXISTS gone ADD COLUMN IF NOT EXISTS x TEXT;")
-    assert ddl("ALTER TABLE gone ADD COLUMN IF NOT EXISTS x TEXT;")   # without IF EXISTS: run, let it error
+    assert ddl("ALTER TABLE IF EXISTS gone ADD COLUMN IF NOT EXISTS x TEXT;")   # lock-free in Postgres anyway
+    assert ddl("ALTER TABLE gone ADD COLUMN IF NOT EXISTS x TEXT;")
     ddl("CREATE TABLE IF NOT EXISTS fresh (id TEXT);")
     assert ddl("ALTER TABLE IF EXISTS fresh ADD COLUMN IF NOT EXISTS x TEXT;")
     assert ddl("CREATE INDEX IF NOT EXISTS ix_fresh ON fresh (id);") and not ddl("CREATE INDEX IF NOT EXISTS ix_fresh ON fresh (id);")
+
+
+def test_quoted_names_keep_their_case():
+    catalog = {TABLES_SQL: [("Foo",), ("foo",)], COLUMNS_SQL: [("Foo", "Bar")], INDEXES_SQL: [("Ix",)]}
+    ddl = GuardedDDL(lambda *a: None, lambda q: catalog[q])
+    assert not ddl('ALTER TABLE "Foo" ADD COLUMN IF NOT EXISTS "Bar" TEXT;')
+    assert ddl("ALTER TABLE foo ADD COLUMN IF NOT EXISTS bar TEXT;")      # unquoted folds to foo/bar: missing
+    assert not ddl('CREATE INDEX IF NOT EXISTS "Ix" ON "Foo" ("Bar");') and ddl("CREATE INDEX IF NOT EXISTS ix ON foo (id);")

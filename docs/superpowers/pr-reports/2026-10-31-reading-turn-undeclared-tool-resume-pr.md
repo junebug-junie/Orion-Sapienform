@@ -76,3 +76,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull   # post-pull hook rebuilds the har
 - Severity: low
 - Concern: a reading whose genuine final text ends with a quoted undeclared `</tool_call>` block gets one resume.
 - Mitigation: once only; the resumed answer is final; tool name and held text logged.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/3025

@@ -67,3 +67,24 @@ def test_both_lanes_turn_on_tool_call_recovery():
     recover); live 2026-10-31 a chat-lane reading run failed parsing '<tool_call><function=Bash>' as its answer."""
     for name in ("chat-defaults.json", "agent-defaults.json"):
         assert json.loads((SERVICE / "strata" / name).read_text())["tool_call_recovery"] is True, name
+
+
+def test_both_lanes_keep_more_vram_free_than_setups_700():
+    """Setup writes --vram-reserve-mib 700; live 2026-10-31 that left 300-500 MiB free on both V100s and the engine
+    warned (under 512 MiB the driver can page VRAM to RAM, decode falls to a few tok/s). Each launch passes the
+    lane's reserve with --set, which strata launch puts over the run config's args (runner.py derive_config)."""
+    import re
+
+    import yaml
+
+    raw = yaml.safe_load((SERVICE / "docker-compose.atlas-workers.yml").read_text())
+    script = raw["x-strata-engine"]["command"][0]
+    assert '--set "vram-reserve-mib=$$STRATA_VRAM_RESERVE_MIB"' in script
+    example = (SERVICE / ".env_example").read_text()
+    for service, key in (("atlas-chat", "ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB"),
+                         ("atlas-agent", "ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB")):
+        env = dict(e.split("=", 1) for e in raw["services"][service]["environment"])
+        m = re.fullmatch(r"\$\{(\w+):-(\d+)\}", env["STRATA_VRAM_RESERVE_MIB"])
+        assert m and m.group(1) == key, service      # ":-" also covers an empty value, never a bare --vram-reserve-mib
+        assert int(m.group(2)) >= 1200, service
+        assert re.search(rf"^{key}={m.group(2)}$", example, re.M), key

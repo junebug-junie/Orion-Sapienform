@@ -6,6 +6,9 @@
 # `strata launch --no-tui` returns once the server is up (it runs on in its own session), so the wrapper
 # stays up while it is ready, leaves after 3 failed checks (restart policy acts), and stops it on
 # `docker stop` -- the image entrypoint's own loop, without the API key it always sets.
+# STRATA_VRAM_RESERVE_MIB: VRAM the engine keeps free (`--set` puts --vram-reserve-mib into this launch's args;
+# the expert cache takes that much less, context does not change). Setup's 700 left 300-500 MiB free on circe
+# 2026-10-31 and the engine warned under 512 MiB (driver paging, decode falls to a few tok/s).
 x-strata-engine: &strata-engine
   logging:
     driver: journald
@@ -20,7 +23,7 @@ x-strata-engine: &strata-engine
       trap '$$S launch --stop --preset "$$STRATA_PRESET"; exit 0' TERM INT
       $$S launch --no-tui --access lan --no-api-key --port 8080 --data-dir /data/Strata-data \
         --family qwen --model IQ3_S --context "$$STRATA_CONTEXT" --parallel 1 --kv int8 --vision on \
-        --save-preset "$$STRATA_PRESET" &
+        --set "vram-reserve-mib=$$STRATA_VRAM_RESERVE_MIB" --save-preset "$$STRATA_PRESET" &
       wait $$! || exit 1
       bad=0
       while :; do
@@ -68,6 +71,7 @@ services:
     environment:
       - STRATA_PRESET=chat
       - STRATA_CONTEXT=262144
+      - STRATA_VRAM_RESERVE_MIB=${ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB:-1200}
     cpuset: "${ATLAS_CHAT_STRATA_CPUS:-0-17,36-53}"
     volumes:
       - "${ATLAS_CHAT_STRATA_DATA_DIR:-/mnt/telemetry/strata}:/data"
@@ -253,6 +257,7 @@ services:
     environment:
       - STRATA_PRESET=agent
       - STRATA_CONTEXT=131072
+      - STRATA_VRAM_RESERVE_MIB=${ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB:-1200}
     cpuset: "${ATLAS_AGENT_STRATA_CPUS:-18-35,54-71}"
     volumes:
       - "${ATLAS_AGENT_STRATA_DATA_DIR:-/mnt/telemetry/strata-agent}:/data"

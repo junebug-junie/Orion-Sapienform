@@ -33,17 +33,13 @@ the shared symbols those use in turn (closure over imports and same-module calls
 from __future__ import annotations
 
 import ast
-import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlsplit
 
-import yaml
-
-from orion.body_atlas.store_code import _SKIP_DIRS, _SKIP_PREFIXES, _YAML_LOADER, _symbols, _tokens
+from orion.body_atlas.store_code import _compose_pairs, _path, _py_files, _service_of, _symbols, _tokens
 
 # Redis verbs by direction (redis-py method names). A pop takes a value out: a read for flow
 # direction (the popper consumes what another wrote).
@@ -60,7 +56,6 @@ _NOT_HANDLE = {"url", "uri", "key", "keys", "prefix", "channel", "channels", "st
                "port", "db", "ttl", "timeout", "enabled", "settings", "config", "dsn", "password", "name"}
 _URL_RE = re.compile(r"^https?://[^\s/'\"]+(?:[/?#][^\s'\"]*)?$")
 _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*['\"]?([^'\"#\s]*)['\"]?\s*(#.*)?$")
-_COMPOSE_DEFAULT = re.compile(r"\$\{([A-Z][A-Z0-9_]*):?-([^}]*)\}")
 _RESOLVE_DEPTH = 4
 
 
@@ -100,12 +95,8 @@ def url_host(url: str) -> str | None:
     is ``vector-host``); None when the value is not a URL."""
     if not _URL_RE.match(url):
         return None
-    try:
-        host = urlsplit(url).hostname or ""
-    except ValueError:
-        return None
-    host = re.sub(r"^\$\{[^}]*\}-?", "", url.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]) \
-        if "${" in url else host
+    netloc = url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    host = re.sub(r"^\$\{[^}]*\}-?", "", netloc.rsplit("@", 1)[-1].split(":", 1)[0])
     return host.lower() or None
 
 
@@ -114,22 +105,6 @@ def is_url(value: str) -> bool:
 
 
 # --- service env --------------------------------------------------------------------------------
-
-def _compose_pairs(text: str) -> Iterable[tuple[str, str]]:
-    for key, default in _COMPOSE_DEFAULT.findall(text):
-        yield key, default.strip().strip("'\"")
-    try:
-        data = yaml.load(text, Loader=_YAML_LOADER) or {}
-    except yaml.YAMLError:
-        return
-    for spec in (data.get("services") or {}).values() if isinstance(data, dict) else ():
-        env = (spec or {}).get("environment") if isinstance(spec, dict) else None
-        items = env.items() if isinstance(env, dict) else (
-            (i.split("=", 1) for i in env if isinstance(i, str) and "=" in i) if isinstance(env, list) else ())
-        for k, v in items:
-            if isinstance(v, str):
-                yield str(k).strip(), v.strip()
-
 
 def service_env(root: Path) -> dict[str, dict[str, str]]:
     """service -> {env key: value}: its ``.env_example``, then its compose files (a key the
@@ -150,15 +125,6 @@ def service_env(root: Path) -> dict[str, dict[str, str]]:
 
 
 # --- one module ---------------------------------------------------------------------------------
-
-def _path(node: ast.AST) -> str | None:
-    if isinstance(node, (ast.Name, ast.Attribute)):
-        try:
-            return ast.unparse(node)
-        except Exception:  # noqa: BLE001
-            return None
-    return None
-
 
 def _last(path: str) -> str:
     return path.rsplit(".", 1)[-1]
@@ -436,24 +402,6 @@ def _short(node: ast.AST) -> str:
 
 
 # --- repo scan ----------------------------------------------------------------------------------
-
-def _py_files(root: Path) -> Iterable[Path]:
-    for base in (root / "services", root / "orion"):
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS and not d.startswith("."))
-            rel_dir = Path(dirpath).relative_to(root).as_posix() + "/"
-            if rel_dir.startswith(_SKIP_PREFIXES):
-                dirnames[:] = []
-                continue
-            for f in sorted(filenames):
-                if f.endswith(".py") and not f.startswith("test_") and f != "conftest.py":
-                    yield Path(dirpath) / f
-
-
-def _service_of(rel: str) -> str | None:
-    parts = rel.split("/")
-    return parts[1] if parts[0] == "services" and len(parts) > 2 else None
-
 
 def _settings_fields(tree: ast.AST) -> dict[str, tuple[str | None, str | None]]:
     """Field name (lower case) -> (env alias, default string) for every class whose base name

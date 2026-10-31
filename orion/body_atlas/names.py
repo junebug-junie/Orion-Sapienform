@@ -73,10 +73,14 @@ def _overlap(organ_members: list[str], rec_members: list[str]) -> float:
     """Jaccard over what both could hold. A name given to a bus-only organ (before 2026-10-29,
     or by ``--bus-only``) never held cameras, stores or processes; counting them would dilute
     every old name below the carry floor (real fixture: 4 of 6 organs fell to 0.14-0.32)."""
-    from orion.body_atlas.build import BODY_PART_PREFIXES
+    from orion.body_atlas.build import BODY_PART_PREFIXES, LATER_PART_PREFIXES
 
     if not any(m.startswith(BODY_PART_PREFIXES) for m in rec_members):
         organ_members = [m for m in organ_members if not m.startswith(BODY_PART_PREFIXES)]
+    # the same for a kind added after the name was given (Redis keys, 2026-10-31)
+    for prefix in LATER_PART_PREFIXES:
+        if not any(m.startswith(prefix) for m in rec_members):
+            organ_members = [m for m in organ_members if not m.startswith(prefix)]
     return _jaccard(organ_members, rec_members)
 
 

@@ -121,6 +121,9 @@ _STORE_PREFIX = {"postgres": "pg", "chroma": "chroma", "falkordb": "falkor", "re
 _PROCESS_PREFIX = {"durable_workflow": "run", "substrate_reducer": "reducer"}
 # part ids of the non-bus kinds (hosts, cameras, stores, processes) all start with one of these
 BODY_PART_PREFIXES = tuple(f"part:{x}:" for x in ("host", "camera", *_STORE_PREFIX.values(), *_PROCESS_PREFIX.values()))
+# body kinds added after Orion named organs (2026-10-30): a name record holding none of a kind is
+# compared without it (names.py), as bus-only names are compared without any body kind
+LATER_PART_PREFIXES = ("part:redis:",)
 
 
 def match_part(raw: str, known: set[str], host_names: Iterable[str]) -> str | None:

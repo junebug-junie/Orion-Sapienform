@@ -3,6 +3,8 @@
 Status: ACCEPTED 2026-10-30 (Juniper: "hit it", all five defaults below). Patch 1 built: PR
 `feat/dig-capacities` (rules, read-only `dig capacities`, rule eval). Patch 2 built: PR
 `feat/capacity-claims` (claims, disputes, confirmations, capacity sentences; see "Patch 2 notes").
+Patch 3 built: PR `feat/atlas-http-redis` (HTTP calls and shared Redis keys in the atlas, rules v2;
+see "Patch 3 notes").
 Date: 2026-10-30. Ladder: `docs/superpowers/specs/2026-10-23-repo-chronicle-design.md` (PR #2888),
 rung 4 of 5 (parts → circulation → organs → **capacities** → portrait).
 
@@ -322,3 +324,32 @@ The S3* candidate is not a capacity holder until confirmed. Decision 3 lives in 
 (`s5_shared_with`: Juniper, citing `config/physiology/families.yaml` and `contract.yaml`, whose own
 comments say a change needs her sign-off); `confirmed` and `rejected` ship empty. `metabolism` is a
 job line (NO RULE, claims only). `capacities <organ>` is not built (the role mix is in the JSON).
+
+**Patch 3 notes (as built).** `orion/body_atlas/wire_code.py`, rules v2 in `capacities.py`. The
+atlas now holds `calls` flows (a service's code, a settings field it reads, or an env key it
+reads names another part's URL) and `redis:<key>` store parts (a call on a Redis handle names the
+key; the verb gives writes or reads), read-only live state from the bus Redis. Details and the
+false shapes the scan refuses: `orion/body_atlas/README.md`. Choices made while building:
+
+- **A Redis key is a part only when two or more services touch it.** On 2026-10-30 that was 8 of
+  35 keys. All 35 as parts put the hub's 17 private keys in one organ and broke the 35% gate
+  (36%); a key one service alone uses carries no circulation, so it is counted on that service
+  (`redis_private`) instead. Stated plainly: the gate made the problem visible; the reason is
+  that a private key is not a wire.
+- **No new role rule.** HTTP and Redis decide gap lines, not jobs. R-wire-seen shrinks
+  `gap:s3-unseen` to the services with no bus, HTTP or shared-key traffic (live 10-31: 16 → 11;
+  seen: notify-digest, orion-graphiti-adapter, orion-pageindex, orion-proposal-runtime,
+  orion-self-experiments). The 11 left (orion-policy-runtime, power-guard,
+  orion-consolidation-runtime, ...) have no URL, key or bus channel in their code: they are truly
+  unseen, so the gap stays. R-broadcast-key finds `redis:orion:regulation:latest` (orion-durable-runs
+  writes it; orion-dream, orion-hub, orion-proposal-runtime, orion-substrate-runtime, orion-thought
+  read it, in 2 organs). It is printed on the algedonic line, never a role: the same shape fits a
+  news key. `gap:algedonic-unseen` is cleared by rule (the key is in the atlas) and replaced by
+  `gap:algedonic-none`, which Juniper's confirmation of an algedonic part covers.
+- **S4 → S3 is a check, not a role.** `gap:s4-to-s3` clears only when a Juniper-confirmed S4 part
+  and a confirmed S3 part are linked both ways (bus, HTTP or a shared key). No confirmed pair
+  exists, so it now says the link cannot be checked yet.
+- **Metabolism stays claims only** (decision 2). Its line now says the HTTP calls are in the atlas,
+  so a claim can cite them (e.g. the callers of orion-durable-runs).
+- **Organs:** Q 0.3447 → 0.3414, largest 31.5% → 31.2%, 10 organs, all 10 names carry (Jaccard
+  0.75–1.00; a name given before Redis keys existed is compared without them).

@@ -45,6 +45,9 @@ import run_organ_structure_eval as _structure  # noqa: E402
 
 HELD_OUT = _HERE / "fixtures" / "whole_body_2026-10-29.json"
 TODAY = _HERE / "fixtures" / "whole_body_2026-10-30_stores.json"
+# patch 3: the live body with HTTP calls and shared Redis keys. The v1 rules read only the bus,
+# so the wires must not move them (camera:doorbell is new and live since 10-30)
+WIRES = _HERE / "fixtures" / "whole_body_2026-10-31_wires.json"
 
 
 def _p(*names: str) -> set[str]:
@@ -63,6 +66,11 @@ EXPECTED = {
         "R-matchmaker": _p("orion-gpu-pool"),
         "R-census-reader": _p("orion-equilibrium-service"),
         "R-boundary-in": _p("camera:cam0", "camera:walkway", "http:anthropic", "http:openai"),
+    },
+    WIRES.name: {
+        "R-matchmaker": _p("orion-gpu-pool"),
+        "R-census-reader": _p("orion-equilibrium-service"),
+        "R-boundary-in": _p("camera:cam0", "camera:doorbell", "camera:walkway", "http:anthropic", "http:openai"),
     },
 }
 NOT_S2 = _p("orion-llm-gateway", "orion-cortex-orch", "orion-vector-host", "orion-heartbeat",
@@ -223,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="also print the live reading (no expected set)")
     args = ap.parse_args(argv)
-    fixtures = [HELD_OUT, TODAY]
+    fixtures = [HELD_OUT, TODAY, WIRES]
     failed = run(fixtures)
     mutant_failed = run(fixtures, second_set=False, verbose=False)
     print(f"mutation (drop the disjoint second crowd): {mutant_failed} of {len(fixtures)} fixtures fail -> "

@@ -31,7 +31,7 @@ on:
 
 jobs:
   body-atlas:
-    name: Body atlas — tests + organ structure + capacity roles evals
+    name: Body atlas — tests + organ structure + capacity roles + wire evals
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -47,3 +47,5 @@ jobs:
         run: python orion/body_atlas/evals/run_organ_structure_eval.py
       - name: Capacity roles eval (rules vs reviewed sets, held-out 10-29, mutation must fail)
         run: python orion/body_atlas/evals/run_capacity_roles_eval.py
+      - name: Wire eval (HTTP calls + Redis keys vs hand-checked facts, v2 gap rules, mutations must fail)
+        run: python orion/body_atlas/evals/run_wire_eval.py

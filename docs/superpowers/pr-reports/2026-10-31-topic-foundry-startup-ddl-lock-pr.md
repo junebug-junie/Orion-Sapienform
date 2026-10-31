@@ -1,7 +1,7 @@
 ## Summary
 
 - topic-foundry's startup schema step (`ensure_tables`) ran 15 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on every start. Each takes an ACCESS EXCLUSIVE lock even when the column already exists.
-- It now reads `information_schema.columns` and only ALTERs columns that are missing. With a current schema, startup takes no exclusive lock.
+- It now reads `information_schema.columns` and `pg_indexes` and only runs DDL for what is missing, under a 10 s `lock_timeout`. With a current schema, startup takes no table lock beyond plain reads.
 
 ## Outcome moved
 
@@ -37,7 +37,7 @@
 ## Tests run
 
 ```text
-tests/test_startup_ddl_lock.py   2 passed
+tests/test_startup_ddl_lock.py   3 passed
 tests (--continue-on-collection-errors): 117 passed, 1 failed, 7 collection errors
 main, same command:                      115 passed, 1 failed, 7 collection errors
   (same pre-existing failure; collection errors are a missing local sklearn)
@@ -59,7 +59,23 @@ Deploy: orion-topic-foundry post-pull rebuild on athena.
 
 ## Review findings fixed
 
-- See the review summary added after the subagent review.
+- Finding: `CREATE INDEX IF NOT EXISTS` still takes a SHARE lock on every start, which queues behind long writers.
+  - Fix: check `pg_indexes`; only missing indexes are created.
+  - Evidence: `test_a_missing_index_is_created_under_a_lock_timeout`.
+- Finding: a genuinely missing column could still hang startup behind a dump with no bound.
+  - Fix: `SET LOCAL lock_timeout = '10s'` before any DDL that has to run. Startup then fails and the container restarts, instead of hanging (gpu-pool `store.py` does the same).
+  - Evidence: on a real Postgres with a held read lock, the missing column raised after 10.0 s with "canceling statement due to lock timeout", then was added in 0.04 s once the lock was gone.
+- Finding: the fake cursor ignored the `information_schema` query.
+  - Fix: the test asserts both reads use `current_schema()` and pass a list (psycopg2 ARRAY for `ANY`).
+- Checked fine:
+  - the 15 columns match exactly
+  - `current_schema()` is `public` live, with every `topic_foundry_%` column there
+  - list adaptation works
+  - the superuser sees every column
+- Same every-start ALTER pattern elsewhere (follow-ups, not in this PR):
+  - `services/orion-sql-writer/app/main.py`: 39 `ADD COLUMN IF NOT EXISTS` every boot, the biggest one
+  - `orion/world_pulse_read/queue.py`: ALTERs and DROP/ADD CONSTRAINT
+  - `orion/world_pulse_read/pull.py`
 
 ## Restart required
 

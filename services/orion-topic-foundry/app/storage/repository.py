@@ -53,6 +53,30 @@ ADDED_COLUMNS = (
 )
 
 
+# CREATE INDEX IF NOT EXISTS takes a SHARE lock on the table before it checks the name, which
+# queues behind any long write transaction; existing ones are skipped the same way.
+INDEXES = (
+    ("ix_topic_foundry_runs_spec_hash",
+     "CREATE INDEX IF NOT EXISTS ix_topic_foundry_runs_spec_hash ON topic_foundry_runs (spec_hash)"),
+    ("ix_topic_foundry_segments_aspects",
+     "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_aspects ON topic_foundry_segments USING GIN (aspects)"),
+    ("ix_topic_foundry_segments_run_id_created_at",
+     "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_created_at ON topic_foundry_segments (run_id, created_at)"),
+)
+# A schema change that does have to run waits at most this long for its lock; startup then fails and
+# the container restarts, instead of hanging silently behind a backup (gpu-pool store.py does the same).
+SCHEMA_LOCK_TIMEOUT = "10s"
+
+
+def missing_indexes(cur) -> list[str]:
+    cur.execute(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ANY(%s)",
+        ([name for name, _ in INDEXES],),
+    )
+    present = {row[0] for row in cur.fetchall()}
+    return [sql for name, sql in INDEXES if name not in present]
+
+
 def missing_columns(cur) -> list[tuple[str, str, str]]:
     cur.execute(
         "SELECT table_name, column_name FROM information_schema.columns "
@@ -79,19 +103,18 @@ def ensure_tables() -> None:
             cur.execute(CONVERSATION_BLOCKS_DDL)
             cur.execute(CONVERSATION_OVERRIDES_DDL)
             cur.execute(ENRICHMENT_CACHE_DDL)
-            for table, column, sql_type in missing_columns(cur):
+            columns = missing_columns(cur)
+            if columns:
+                cur.execute(f"SET LOCAL lock_timeout = '{SCHEMA_LOCK_TIMEOUT}'")
+            for table, column, sql_type in columns:
                 logger.info("topic_foundry_schema_add_column table=%s column=%s", table, column)
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS ix_topic_foundry_runs_spec_hash ON topic_foundry_runs (spec_hash)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_aspects ON topic_foundry_segments USING GIN (aspects)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_created_at "
-                "ON topic_foundry_segments (run_id, created_at)"
-            )
+            indexes = missing_indexes(cur)
+            if indexes and not columns:
+                cur.execute(f"SET LOCAL lock_timeout = '{SCHEMA_LOCK_TIMEOUT}'")
+            for sql in indexes:
+                logger.info("topic_foundry_schema_create_index %s", sql.split(" ON ")[0].rsplit(" ", 1)[-1])
+                cur.execute(sql)
 
 
 def create_dataset(dataset: DatasetSpec) -> None:

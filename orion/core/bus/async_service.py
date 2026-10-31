@@ -25,6 +25,15 @@ from .velocity_keys import DEFAULT_BUCKET_TTL_SEC, velocity_key
 logger = logging.getLogger("orion.bus.async")
 
 
+class RpcNoListener(ConnectionError):
+    """An RPC request with nobody subscribed to hear it, at publish or while its reply is awaited.
+
+    Pub/sub keeps nothing: a request published with no subscriber is gone, and waiting out a long
+    timeout for its reply only keeps whatever the caller holds. Live 2026-10-31: durable-runs
+    published two curiosity turns at 00:52:26, the restarted Hub subscribed at 00:53:38, and one run
+    held a GPU lane for 35 minutes waiting on a 2.5 h RPC timeout before it was cancelled by hand."""
+
+
 class OrionBusAsync:
     """
     Async Redis bus client.
@@ -472,6 +481,84 @@ class OrionBusAsync:
         if self.track_velocity:
             await self._record_velocity(channel)
 
+    async def _publish_counting_listeners(self, channel: str, msg: BaseEnvelope | Dict[str, Any]) -> int | None:
+        """Publish and read the channel's plain subscribers in one transaction; None when disabled.
+
+        PUBLISH's own receiver count includes pattern subscribers, and orion-bus-mirror (and bus-tap)
+        PSUBSCRIBE ``orion:*``, so it is never 0 on an orion channel. PUBSUB NUMSUB counts only plain
+        SUBSCRIBE listeners -- the workers that answer RPCs -- as of the same instant as the publish."""
+        if not self.enabled:
+            return None
+        enforcer.validate(channel)
+        self._validate_payload(channel, msg)
+        data = self.codec.encode(msg)
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.publish(channel, data)
+        pipe.pubsub_numsub(channel)
+        _, numsub = await pipe.execute()
+        if self.track_velocity:
+            await self._record_velocity(channel)
+        return int(numsub[0][1]) if numsub else 0
+
+    async def _listener_count(self, channel: str) -> int:
+        """Plain subscribers on ``channel`` now (PUBSUB NUMSUB). A failed check counts as one
+        listener: a Redis hiccup must not fail an RPC whose worker is fine."""
+        try:
+            rows = await self.redis.pubsub_numsub(channel)
+            return int(rows[0][1]) if rows else 0
+        except Exception:  # noqa: BLE001
+            return 1
+
+    async def _await_reply(self, waitable, *, timeout_sec: float, request_channel: str,
+                           require_listener: bool, check_sec: float):
+        """Await the reply within ``timeout_sec``. With ``require_listener``, every ``check_sec``
+        the request channel must still have a subscriber: a restarted worker loses its in-flight
+        request. A listener that is only resubscribing (orion.core.bus.resilience backs off 1-60 s)
+        is still running the request, so it must read 0 twice, a few seconds apart."""
+        if not require_listener:
+            return await asyncio.wait_for(waitable, timeout=timeout_sec)
+        loop = asyncio.get_running_loop()
+        task = asyncio.ensure_future(waitable)
+        deadline = loop.time() + timeout_sec
+        recheck_sec = min(5.0, check_sec)
+        zero_seen = False
+        try:
+            while True:
+                left = deadline - loop.time()
+                if left <= 0:
+                    raise asyncio.TimeoutError()
+                done, _ = await asyncio.wait({task}, timeout=min(left, recheck_sec if zero_seen else check_sec))
+                if done:
+                    return task.result()
+                if await self._listener_count(request_channel):
+                    zero_seen = False
+                elif zero_seen:
+                    logger.error("[rpc] listener gone request_channel=%s while awaiting its reply", request_channel)
+                    raise RpcNoListener(f"no listener on {request_channel} while awaiting its reply")
+                else:
+                    zero_seen = True
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.wait({task})   # never raises the inner cancel; an outer cancel still propagates
+
+    async def _publish_rpc_request(self, request_channel: str, envelope: BaseEnvelope, require_listener: bool) -> None:
+        if not require_listener:
+            await self.publish(request_channel, envelope)
+            return
+        if await self._publish_counting_listeners(request_channel, envelope) == 0:
+            logger.error("[rpc] no listener request_channel=%s: request published to nobody", request_channel)
+            raise RpcNoListener(f"no listener on {request_channel}: request published to nobody")
+
+    async def _record_rpc_unheard(self, *, request_channel: str, reply_channel: str, corr: str, timeout_sec: float,
+                                  started: float, health_label: str | None) -> None:
+        """A lost listener ends the wait without a reply, as a timeout would have later: counted and
+        marked the same way, so it stays visible to RPC health and the transport grammar."""
+        elapsed_ms = (perf_counter() - started) * 1000.0
+        self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=elapsed_ms, health_label=health_label)
+        await self._emit_rpc_timeout_grammar(request_channel=request_channel, reply_channel=reply_channel, corr=corr,
+                                             timeout_sec=timeout_sec, timeout_elapsed_ms=elapsed_ms)
+
     async def _record_velocity(self, channel: str) -> None:
         """Best-effort per-channel publish counter (see orion.bus.velocity).
 
@@ -667,6 +754,8 @@ class OrionBusAsync:
         reply_channel: str,
         timeout_sec: float = 60.0,
         health_label: str | None = None,
+        require_listener: bool = False,
+        listener_check_sec: float = 30.0,
     ) -> dict:
         """
         Publish `envelope` to request_channel and await first message on reply_channel.
@@ -676,6 +765,10 @@ class OrionBusAsync:
         ``f"{request_channel}#{health_label}"`` in ``channel_latency`` (pooled fields
         are unaffected). Used e.g. by cortex-orch's metacog dispatch
         (``log_orion_metacognition``) so a transport gate can exclude metacog's own load.
+
+        ``require_listener``: raise RpcNoListener when the request reached no subscriber, or when
+        the request channel loses every subscriber while the reply is awaited (checked every
+        ``listener_check_sec``). For long RPCs whose caller holds something while it waits.
         """
         started = perf_counter()
         corr = str(envelope.correlation_id)
@@ -694,7 +787,7 @@ class OrionBusAsync:
                     reply_channel,
                     (perf_counter() - started) * 1000.0,
                 )
-                await self.publish(request_channel, envelope)
+                await self._publish_rpc_request(request_channel, envelope, require_listener)
                 logger.info(
                     "[rpc] publish success corr_id=%s request_channel=%s reply_channel=%s path=worker elapsed_ms=%.1f",
                     corr,
@@ -708,7 +801,8 @@ class OrionBusAsync:
                     reply_channel,
                     timeout_sec,
                 )
-                result = await asyncio.wait_for(fut, timeout=timeout_sec)
+                result = await self._await_reply(fut, timeout_sec=timeout_sec, request_channel=request_channel,
+                                                 require_listener=require_listener, check_sec=listener_check_sec)
                 # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md:
                 # the worker path previously had no completion log at all on success --
                 # only the inline path (below) logged "reply received". Confirmed live
@@ -739,6 +833,10 @@ class OrionBusAsync:
                     corr=corr,
                 )
                 return result
+            except RpcNoListener:
+                await self._record_rpc_unheard(request_channel=request_channel, reply_channel=reply_channel, corr=corr,
+                                               timeout_sec=timeout_sec, started=started, health_label=health_label)
+                raise
             except asyncio.TimeoutError:
                 timeout_elapsed_ms = (perf_counter() - started) * 1000.0
                 logger.error(
@@ -777,7 +875,7 @@ class OrionBusAsync:
                     reply_channel,
                     (perf_counter() - started) * 1000.0,
                 )
-                await self.publish(request_channel, envelope)
+                await self._publish_rpc_request(request_channel, envelope, require_listener)
                 logger.info(
                     "[rpc] publish success corr_id=%s request_channel=%s reply_channel=%s path=inline elapsed_ms=%.1f",
                     corr,
@@ -816,8 +914,13 @@ class OrionBusAsync:
                     reply_channel,
                     timeout_sec,
                 )
-                msg = await asyncio.wait_for(_wait_one(), timeout=timeout_sec)
+                msg = await self._await_reply(_wait_one(), timeout_sec=timeout_sec, request_channel=request_channel,
+                                              require_listener=require_listener, check_sec=listener_check_sec)
                 return msg
+            except RpcNoListener:
+                await self._record_rpc_unheard(request_channel=request_channel, reply_channel=reply_channel, corr=corr,
+                                               timeout_sec=timeout_sec, started=started, health_label=health_label)
+                raise
             except asyncio.TimeoutError:
                 timeout_elapsed_ms = (perf_counter() - started) * 1000.0
                 logger.error(

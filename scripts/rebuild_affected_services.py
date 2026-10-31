@@ -123,6 +123,48 @@ def resolve_base_ref(repo_root: Path, explicit: str | None) -> str:
     raise ValueError("Could not resolve a base ref (try --base ORIG_HEAD)")
 
 
+def _base_and_head_blobs(repo_root: Path, base_ref: str, path: str) -> list[bytes] | None:
+    blobs = []
+    for rev in (base_ref, "HEAD"):
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{path}"], cwd=repo_root, capture_output=True, check=False
+        )
+        if proc.returncode != 0:
+            return None
+        blobs.append(proc.stdout)
+    return blobs
+
+
+def _same_yaml_data(repo_root: Path, base_ref: str, path: str) -> bool:
+    """True when a .yaml/.yml file holds the same documents at base and HEAD (comments,
+    whitespace, quoting only). Compared as ordered, typed JSON, not with ``==``: Python
+    calls ``1 == True == 1.0`` and ignores key order, and both are real changes to a
+    consumer. A duplicate key (which compose rejects) or any other doubt answers False."""
+    blobs = _base_and_head_blobs(repo_root, base_ref, path)
+    if blobs is None:
+        return False
+    try:
+        import yaml  # type: ignore
+
+        class _NoDupLoader(yaml.SafeLoader):
+            pass
+
+        def _mapping(loader, node, deep=False):  # type: ignore[no-untyped-def]
+            keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+            if len(keys) != len({json.dumps(k, default=repr) for k in keys}):
+                raise yaml.constructor.ConstructorError(None, None, "duplicate key", node.start_mark)
+            return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+        _NoDupLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+        canon = [
+            json.dumps(list(yaml.load_all(b, Loader=_NoDupLoader)), sort_keys=False, default=repr)
+            for b in blobs
+        ]
+    except Exception:  # noqa: BLE001 -- ImportError, YAMLError, UnicodeDecodeError: keep the file
+        return False
+    return canon[0] == canon[1]
+
+
 def _same_python_ast(repo_root: Path, base_ref: str, path: str) -> bool:
     """True when a .py file differs between base and HEAD only in comments/whitespace.
 
@@ -158,7 +200,12 @@ def changed_files(repo_root: Path, base_ref: str) -> list[str]:
         # A comment-only edit to a widely imported module must not rebuild its
         # importers (2026-10-16: a 4-line comment in orion/schemas/grammar.py
         # planned 68 services).
-        if fields[0] == "M" and path.endswith(".py") and _same_python_ast(repo_root, base_ref, path):
+        # Same for YAML (2026-10-31: a comment in orion/cognition/verbs/stance_react.yaml
+        # rebuilt 13 services).
+        if fields[0] == "M" and (
+            (path.endswith(".py") and _same_python_ast(repo_root, base_ref, path))
+            or (path.endswith((".yaml", ".yml")) and _same_yaml_data(repo_root, base_ref, path))
+        ):
             print(
                 f"rebuild_affected_services: skip {path}: comment/whitespace-only change",
                 file=sys.stderr,

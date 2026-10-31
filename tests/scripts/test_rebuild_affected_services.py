@@ -1049,15 +1049,53 @@ def _commit_pair(tmp_path: Path, before: str, after: str, name: str = "orion/mod
     return repo, first
 
 
-def _changed(tmp_path: Path, before: str, after: str) -> list[str]:
+def _changed(tmp_path: Path, before: str, after: str, name: str = "orion/mod.py") -> list[str]:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("rebuild_affected_services_under_test", MODULE)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    repo, first = _commit_pair(tmp_path, before, after)
+    repo, first = _commit_pair(tmp_path, before, after, name)
     return mod.changed_files(repo, first)
+
+
+VERB = "orion/cognition/verbs/v.yaml"
+
+
+def test_comment_only_yaml_change_is_not_a_change(tmp_path: Path) -> None:
+    """2026-10-31: a comment in stance_react.yaml rebuilt 13 services."""
+    assert _changed(tmp_path, "name: v\ntimeout: 240\n", "# why\nname: v\ntimeout: 240  # note\n", VERB) == []
+
+
+def test_real_yaml_change_is_still_a_change(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "timeout: 240\n", "timeout: 300\n", VERB) == [VERB]
+    assert _changed(tmp_path / "s", "x: '1'\n", "x: 1\n", VERB) == [VERB]  # str -> int is real
+    assert _changed(tmp_path / "m", "a: 1\n", "a: 1\n---\nb: 2\n", VERB) == [VERB]  # new document
+
+
+def test_yaml_type_and_order_changes_are_real(tmp_path: Path) -> None:
+    """Python's == calls 1 == True == 1.0 and ignores key order; a consumer does not."""
+    assert _changed(tmp_path / "b", "a: 1\n", "a: true\n", VERB) == [VERB]
+    assert _changed(tmp_path / "f", "a: 1\n", "a: 1.0\n", VERB) == [VERB]
+    assert _changed(tmp_path / "o", "a: 1\nb: 2\n", "b: 2\na: 1\n", VERB) == [VERB]
+    assert _changed(tmp_path / "k", "1: x\n", "true: x\n", VERB) == [VERB]
+
+
+def test_yml_suffix_and_duplicate_keys(tmp_path: Path) -> None:
+    yml = "services/x/docker-compose.yml"
+    assert _changed(tmp_path / "c", "a: 1\n", "a: 1  # c\n", yml) == []
+    # compose rejects a duplicate key: adding one is a change even with the same last value
+    assert _changed(tmp_path / "d", "a: 1\n", "a: 0\na: 1\n", yml) == [yml]
+
+
+def test_missing_yaml_package_keeps_the_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    assert _changed(tmp_path, "a: 1\n", "a: 1  # c\n", VERB) == [VERB]
+
+
+def test_unparseable_yaml_is_kept(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "a: [1\n", "a: [1  # c\n", VERB) == [VERB]
 
 
 def test_comment_only_python_change_is_not_a_change(tmp_path: Path) -> None:

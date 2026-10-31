@@ -141,6 +141,10 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         text = str(answer.get("text") or "")
         if not text.strip():
             raise ValueError("empty_generation")
+        if answer.get("finish_reason") == "length":
+            # Cut at max_tokens: the JSON is unfinished, and parsing it would report a misleading
+            # "distill_json_invalid:Expecting ',' delimiter" (12 of 12 calls on one episode, 2026-10-31).
+            raise ValueError(f"distill_truncated_at_max_tokens:{brief.max_tokens}")
         parse_distillation(text)  # raises -> a bounded attempt; the text is re-parsed in persist
         return {"answer_text": text, "rendered_prompt_version": rendered_version,
                 "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),

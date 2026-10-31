@@ -65,7 +65,9 @@ on:
       - "services/orion-field-digester/tests/test_queue_contention_digestion.py"
       - "services/orion-field-digester/tests/test_durable_waiting_sql_postgres.py"
       - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_stance_context_response_format.py"
       - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/tests/test_stance_react_thinking_forwarding.py"
       - "services/orion-cortex-exec/tests/test_gpu_lease_forwarding.py"
       - "services/orion-cortex-exec/tests/test_orion_day_verbs.py"
       - "services/orion-harness-governor/app/bus_listener.py"
@@ -127,7 +129,9 @@ on:
       - "services/orion-field-digester/tests/test_queue_contention_digestion.py"
       - "services/orion-field-digester/tests/test_durable_waiting_sql_postgres.py"
       - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_stance_context_response_format.py"
       - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/tests/test_stance_react_thinking_forwarding.py"
       - "services/orion-cortex-exec/tests/test_gpu_lease_forwarding.py"
       - "services/orion-cortex-exec/tests/test_orion_day_verbs.py"
       - "services/orion-harness-governor/app/bus_listener.py"
@@ -262,10 +266,10 @@ jobs:
         run: python -m pytest orion/gpu_pool/tests/test_client_attach.py orion/harness/tests/test_gpu_lease_transport.py -q -p no:cacheprovider
       - name: field-digester durable_demand_pending from pool holds (real Postgres)
         run: cd services/orion-field-digester && python -m pytest tests/test_queue_contention_digestion.py tests/test_durable_waiting_sql_postgres.py -q -p no:cacheprovider
-      - name: orion-thought stance carries the ref
-        run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py -q -p no:cacheprovider
-      - name: cortex-exec forwards options.gpu_lease; Orion's Day verb budgets and lane
-        run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_orion_day_verbs.py -q -p no:cacheprovider
+      - name: orion-thought stance carries the ref; JSON mode and thinking off on every lane
+        run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py tests/test_stance_context_response_format.py -q -p no:cacheprovider
+      - name: cortex-exec forwards options.gpu_lease and stance thinking-off; Orion's Day verb budgets and lane
+        run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_orion_day_verbs.py tests/test_stance_react_thinking_forwarding.py -q -p no:cacheprovider
       - name: harness-governor admits hold-carrying turns
         run: cd services/orion-harness-governor && python -m pytest tests/test_lane_dispatch_channels.py -q -p no:cacheprovider
       - name: Hub fences the ref with pool status and runs the turn under it

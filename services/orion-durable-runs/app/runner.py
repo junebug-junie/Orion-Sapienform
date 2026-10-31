@@ -307,7 +307,8 @@ class DurableRunner:
         envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
                                 reply_to=reply_channel, payload=request.model_dump(mode="json"))
         msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
-                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec))
+                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec),
+                                          require_listener=True)
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
@@ -346,7 +347,8 @@ class DurableRunner:
         envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
                                 reply_to=reply_channel, payload=request.model_dump(mode="json"))
         msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
-                                          reply_channel=reply_channel, timeout_sec=float(brief.timeout_sec))
+                                          reply_channel=reply_channel, timeout_sec=float(brief.timeout_sec),
+                                          require_listener=True)
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
@@ -397,7 +399,8 @@ class DurableRunner:
                                 reply_to=reply_channel, payload=payload.model_dump(mode="json"))
         started = time.monotonic()
         msg = await self._bus.rpc_request(self._settings.llm_intake_channel, envelope,
-                                          reply_channel=reply_channel, timeout_sec=timeout + 30.0)
+                                          reply_channel=reply_channel, timeout_sec=timeout + 30.0,
+                                          require_listener=True)
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"gateway_decode_failed:{decoded.error}")
@@ -449,6 +452,9 @@ class DurableRunner:
                 envelope,
                 reply_channel=reply_channel,
                 timeout_sec=rpc_timeout,
+                # A turn published to nobody, or whose Hub restarted mid-turn, fails now instead of
+                # holding the GPU lane until rpc_timeout (2.5 h); the failed node releases and retries.
+                require_listener=True,
             )
         except Exception as exc:  # noqa: BLE001 -- surfaced as a failed node, retried by the sweep
             logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=%s", request.run_id, request.attempt, exc)
@@ -477,7 +483,8 @@ class DurableRunner:
             correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
             payload=request.model_dump(mode="json"))
         raw = await self._bus.rpc_request(READING_TURN_CHANNEL, envelope,
-            reply_channel=reply, timeout_sec=max(self._settings.turn_rpc_timeout_sec, request.brief.timeout_sec))
+            reply_channel=reply, timeout_sec=max(self._settings.turn_rpc_timeout_sec, request.brief.timeout_sec),
+            require_listener=True)
         decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         if not decoded.ok or decoded.envelope is None:
             raise ValueError("invalid reading turn reply envelope")
@@ -508,7 +515,8 @@ class DurableRunner:
             timeout = max(timeout, float(budget_sec))
         elif request.step == "abandon":
             timeout = min(timeout, 30.0)
-        raw = await self._bus.rpc_request(REVERIE_VISUAL_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        raw = await self._bus.rpc_request(REVERIE_VISUAL_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout,
+                                          require_listener=True)
         decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         if not decoded.ok or decoded.envelope is None:
             raise ValueError("invalid reverie visual step reply envelope")
@@ -534,7 +542,8 @@ class DurableRunner:
             correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
             payload=request.model_dump(mode="json"))
         timeout = float(budget_sec or request.brief.timeout_sec)
-        raw = await self._bus.rpc_request(DREAM_CARRY_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        raw = await self._bus.rpc_request(DREAM_CARRY_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout,
+                                          require_listener=True)
         decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         if not decoded.ok or decoded.envelope is None:
             raise ValueError("invalid dream carry step reply envelope")

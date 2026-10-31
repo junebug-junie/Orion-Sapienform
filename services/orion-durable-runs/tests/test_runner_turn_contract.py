@@ -72,3 +72,19 @@ def test_admitted_turn_on_the_wire_carries_the_hold_and_no_route_label():
     assert envelope.payload["gpu_lease"] == HOLD.model_dump(mode="json")
     assert "assigned_lane" not in envelope.payload and "lease" not in envelope.payload
     assert "fcc_model_label" not in envelope.payload
+
+
+def test_turn_rpc_requires_a_listener_and_a_lost_one_is_a_failed_turn():
+    """2026-10-31: a turn published before the restarted Hub subscribed was never heard, and the
+    run held its GPU lane on a 2.5 h RPC timeout. The turn RPC asks the bus to fail fast instead;
+    the failure is an ordinary failed turn (the node raises, the hold is released and retried)."""
+    from orion.core.bus.async_service import RpcNoListener
+
+    request = turn_request()
+    runner, bus = runner_for(request)
+    asyncio.run(runner._run_turn(request))
+    assert bus.rpc_request.await_args.kwargs["require_listener"] is True
+
+    bus.rpc_request = AsyncMock(side_effect=RpcNoListener("no listener on orion:curiosity:turn:request"))
+    result = asyncio.run(runner._run_turn(request))
+    assert not result.ok and result.error == "rpc:RpcNoListener"

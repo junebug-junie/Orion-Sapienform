@@ -233,7 +233,7 @@ class PoolBus:
         self.pool, self.codec = pool, OrionCodec()
         self.fail_next: int = 0   # simulate an unreachable pool for the next N RPCs
 
-    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None):
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None, require_listener=False):
         assert channel == GPU_POOL_LEASE_REQUEST_CHANNEL and envelope.reply_to == reply_channel
         if self.fail_next:
             self.fail_next -= 1

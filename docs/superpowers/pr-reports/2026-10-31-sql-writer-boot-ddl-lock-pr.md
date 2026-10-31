@@ -98,6 +98,6 @@ Deploy: orion-sql-writer post-pull rebuild. Live check: its log line "boot DDL r
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3024
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

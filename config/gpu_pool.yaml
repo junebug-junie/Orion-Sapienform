@@ -194,7 +194,7 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}
   chat-burst: {class: agent, priority: system}
-  # Memory episode distiller (2026-10-02): durable-runs holds the 27B on gpu1 at system priority
+  # Memory episode distiller (2026-10-02): durable-runs holds gpu1 (Strata since 2026-10-31) at system priority
   # (ahead of curiosity's background holds) and calls the gateway on this route.
   memory_distill: {class: memory_distill, priority: system}
   # hecate's 27B (2026-10-08): its own card, always this route's; others borrow it only while lent.

@@ -719,7 +719,7 @@ class Settings(BaseSettings):
     # a single-source gate, and the comment on TIMEOUT_SEC above already
     # records that copies of it have drifted once).
     #
-    # `agent` is circe-worker-agent-1 on :8015 (Qwen3.8-27B), a physically
+    # `agent` is circe-worker-agent-1 on :8015 (Qwen3.8-Flash-Next on Strata since 2026-10-31), a physically
     # separate worker, and as of 2026-09-03 it reports n_ctx=131072 -- the same
     # window as chat/harness, so moving here costs no context. That was NOT
     # true when the COMPUTE lane first started resolving (PR #2062 measured

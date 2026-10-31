@@ -378,7 +378,8 @@ high effort, with the 27B lane's sampling (`strata/agent-defaults.json`).
 - `ATLAS_AGENT_PROFILE_NAME` keeps naming the llama.cpp 27B profile (rollback, and the gpu2 burst worker's fallback).
 
 First start (clean primary `main` on circe), seeding the run config from the chat lane's so it never serves with
-Strata's defaults:
+Strata's defaults. `--context 131072` matters: Strata compares the config's `--max-context` with the launch's
+`--context` and runs setup again when they differ, which downloads llama.cpp and touches the shared model folder.
 
 ```bash
 set -a; . services/orion-llamacpp-host/.env; set +a
@@ -386,7 +387,7 @@ docker run --rm -v "$ATLAS_CHAT_STRATA_DATA_DIR:/src:ro" -v "$ATLAS_AGENT_STRATA
   sh -c 'mkdir -p /dst/install && cp /src/install/strata-iq3_s.json /dst/install/'
 docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_AGENT_STRATA_DATA_DIR:/data" \
   -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
-  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/agent-defaults.json
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/agent-defaults.json --context 131072
 docker stop orion-circe-atlas-llamacpp-agent
 scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split up -d atlas-agent atlas-agent-announce
 ```

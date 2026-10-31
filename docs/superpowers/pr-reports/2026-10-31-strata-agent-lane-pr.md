@@ -85,7 +85,27 @@ docker compose config (--profile agent-split --profile agent-llamacpp):
 
 ## Review findings fixed
 
-- Review in progress; findings will be added here.
+The review found no blockers.
+
+- Finding: seeding the agent's run config from chat's (`--max-context 262144`) made Strata rerun setup on first start: it downloaded llama.cpp from GitHub and touched the shared model folder (`desc_matches` compares context).
+  - Fix: `strata_apply_defaults.py --context N` sets `--max-context`, and the runbook seeds with `--context 131072`.
+  - Evidence: `test_context_sets_max_context_so_a_seeded_config_needs_no_new_setup`.
+- Finding: nothing tied the compose `STRATA_CONTEXT` to the profile's `ctx_size`. The discovery test proved nothing about context, because discovery never compares `n_ctx`.
+  - Fix: `test_each_strata_lane_launches_with_its_profiles_context` checks both lanes.
+- Finding: comments still said "27B on gpu1".
+  - Fix: `gpu_pool.yaml` routes comment, `services/orion-hub/.env_example`, `services/orion-hub/app/settings.py`.
+- Finding (not fixed, deliberately): the `orion/evals/model_replay` "q4" seat expects the 27B on `agent`.
+  - Why: that eval compares the 27B Q4 with Bonsai. It now refuses with "want agent/<Q4>" instead of silently measuring a different model. It runs again only on the 27B rollback.
+- Finding (checked at cutover): the agent engine runs on socket-1 CPUs while gpu1 hangs off socket 0, so pinned host-to-GPU copies cross the socket link.
+  - Plan: record decode tok/s and node-1 free memory at cutover. Socket-0 pinning, shared with chat, is the alternative.
+- Checked fine:
+  - The compose anchors merge as intended; atlas-chat's effective config is unchanged.
+  - `$$` variables reach the shell.
+  - Sharing `/data/Strata-data` is safe: the server writes nothing there, and setup skips files marked done.
+  - `high` maps to the old `xhigh`.
+  - Structured-output rewrite applies.
+  - memory_distill prompt is unchanged.
+  - The gpu2 burst fallback still names the 27B.
 
 ## Restart required
 

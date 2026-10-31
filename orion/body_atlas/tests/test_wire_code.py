@@ -183,3 +183,60 @@ def test_a_parenthesized_import_with_comments_still_reaches_the_shared_symbol(tm
     _w(tmp_path, "orion/c.py", "U = 'http://orion-athena-peer:1'\ndef a():\n    return 1\ndef b():\n    return U\n")
     _w(tmp_path, "services/orion-a/app/main.py", "from orion.c import (\n    a,  # first\n    b,\n)\n")
     assert _calls(W.code_wire_refs(tmp_path)) == {("orion-a", "http://orion-athena-peer:1")}
+
+
+# --- review findings (2026-10-31) --------------------------------------------------------------
+
+def test_a_settings_default_the_env_overrides_is_not_counted(tmp_path):
+    _w(tmp_path, "services/orion-a/app/settings.py",
+       "from pydantic_settings import BaseSettings\nfrom pydantic import Field\n"
+       "class Settings(BaseSettings):\n"
+       '    notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")\n')
+    _w(tmp_path, "services/orion-a/app/main.py", "def go(settings):\n    return settings.notify_url\n")
+    _w(tmp_path, "services/orion-a/.env_example", "NOTIFY_URL=http://orion-athena-recall:8090\n")
+    assert _calls(W.code_wire_refs(tmp_path)) == {("orion-a", "http://orion-athena-recall:8090")}
+
+
+def test_augmented_parameter_and_loop_names_are_not_one_constant(tmp_path):
+    _w(tmp_path, "services/orion-a/app/main.py",
+       "import redis\nr = redis.Redis()\n"
+       "def f():\n    key = 'orion:base'\n    key += ':suffix'\n    r.set(key, 1)\n"
+       "def g(name):\n    r.get(name)\n"
+       "def h():\n    name = 'orion:x'\n    return name\n")
+    refs = W.code_wire_refs(tmp_path)
+    assert refs.redis == {} and refs.dynamic == {"orion-a": ["services/orion-a/app/main.py"]}
+
+
+def test_a_name_bound_to_redis_and_to_an_http_client_is_not_a_handle(tmp_path):
+    _w(tmp_path, "services/orion-a/app/main.py",
+       "import redis, httpx\n"
+       "def f():\n    client = redis.Redis()\n    return client\n"
+       "def g():\n    client = httpx.Client()\n    client.get('/health')\n    client.delete('orion:thing')\n")
+    assert W.code_wire_refs(tmp_path).redis == {}
+
+
+def test_a_request_path_on_a_redis_named_object_is_not_a_key(tmp_path):
+    _w(tmp_path, "services/orion-a/app/main.py", "def f(redis):\n    redis.get('/health')\n")
+    assert W.code_wire_refs(tmp_path).redis == {}
+
+
+def test_a_name_re_exported_by_a_package_init_still_reaches_its_act(tmp_path):
+    _w(tmp_path, "orion/__init__.py", "")
+    _w(tmp_path, "orion/pkg/__init__.py", "from .impl import write\n")
+    _w(tmp_path, "orion/pkg/impl.py", "import redis\ndef write():\n    redis.Redis().set('orion:k', 1)\n")
+    _w(tmp_path, "services/orion-a/app/main.py", "from orion.pkg import write\n")
+    assert _keys(W.code_wire_refs(tmp_path)) == {("orion-a", "orion:k", "writes")}
+
+
+def test_a_shared_prefix_with_a_literal_suffix_is_the_exact_key(tmp_path):
+    _w(tmp_path, "services/orion-a/app/main.py",
+       "PREFIX = 'orion:fam'\nasync def f(redis):\n    await redis.set(f'{PREFIX}:latest', 1)\n"
+       "    await redis.set(PREFIX + ':other', 1)\n")
+    assert _keys(W.code_wire_refs(tmp_path)) == {("orion-a", "orion:fam:latest", "writes"),
+                                                 ("orion-a", "orion:fam:other", "writes")}
+
+
+def test_os_environ_subscript_is_an_env_read(tmp_path):
+    _w(tmp_path, "services/orion-a/app/main.py", "import os\nURL = os.environ['PEER_URL']\n")
+    _w(tmp_path, "services/orion-a/.env_example", "PEER_URL=http://orion-athena-peer:1\n")
+    assert _calls(W.code_wire_refs(tmp_path)) == {("orion-a", "http://orion-athena-peer:1")}

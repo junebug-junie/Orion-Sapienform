@@ -173,8 +173,9 @@ the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must f
 **HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
 *HTTP:* a service calls another when its code names that service's URL: a string constant that is
 exactly a URL, a settings field the code reads (`settings.notify_url` or `getattr(settings,
-"notify_url")`; the `.env_example`/compose value wins over the code default), or an env key the
-code reads (`os.getenv`). A URL that is a class field's default (`thought_url: str = "http://..."`
+"notify_url")`; the `.env_example`/compose value wins and the overridden code default does not
+count), or an env key the code reads (`os.getenv`, `os.environ[...]`). Most hub URLs are
+`127.0.0.1:<port>` in its env (host networking), so they are unmatched, not guessed. A URL that is a class field's default (`thought_url: str = "http://..."`
 on a shared model) counts only for a service whose code reads that field: importing the model is
 not calling it. The host is matched to a part like any container name (`orion-athena-notify`,
 `notify` are orion-notify). A host that matches no part (`127.0.0.1`, a tailscale address, an
@@ -183,11 +184,15 @@ callee adds one unit, split over its callers by `log(1 + N / df)` (df = callees 
 names), so a service a dozen call (orion-notify) cannot glue them into one organ.
 *Redis:* a call `<handle>.<verb>(KEY, ...)`. A handle is bound from a Redis constructor
 (`redis.Redis.from_url`, `aioredis.from_url`), a `pipeline()` of one, a parameter annotated
-`Redis`, or an attribute named for Redis (`self.redis`, `bus.redis`; not `redis_url`). A reply
+`Redis`, or an attribute named for Redis (`self.redis`, `bus.redis`; not `redis_url`). A plain
+name is a handle only in the function that binds it, and not when the same scope also binds it to
+another call (`client = httpx.Client()`); a request path or URL is never a key. A reply
 (`info = await redis.info()`) or a pub/sub message is not a handle. The verb gives the direction
 (`set`/`setex`/`hset`/`incr`/`delete`... write; `get`/`hgetall`/`exists`/pops... read). Streams
 and pub/sub (`xadd`, `publish`) are the bus and are skipped. KEY must resolve to an exact string
-(a literal, a constant here or imported, a settings field, an env key); `f"{PREFIX}{id}"` with a
+(a literal, a constant here or imported, a settings field, an env key; a name that is also a
+parameter, a loop target or `+=`-ed is not one constant); `f"{PREFIX}:latest"` is that exact key,
+`f"{PREFIX}{id}"` with a
 named PREFIX is the family `PREFIX*`; anything else is *dynamic*, counted per service
 (`redis_dynamic`), never a part. A key is a part only when two or more services touch it (a
 wire); a key one service alone uses is its own state, counted in `redis_private`. Shared `orion/`
@@ -198,8 +203,9 @@ MATCH` per family; the reader refuses any other command. A present key is `live`
 (hand-checked calls and keys on this checkout with false shapes an earlier draft claimed, the v2
 gap rules on two frozen bodies, three mutations that must fail).
 
-Live 2026-10-31 (harness container, branch code): 62 caller → callee pairs to 23 parts, 8 shared
-keys (6 present), 27 private keys, 83 services with dynamic keys (most through the bus's own rate buckets). Q 0.3447 → 0.3414, largest
+Live 2026-10-31 (harness container, branch code): 54 caller → callee pairs to 20 parts, 8 shared
+keys (6 present), 27 private keys, 12 services with dynamic keys beyond code more than half of them
+share (the bus's own rate buckets are counted out). Q 0.3447 → 0.3426, largest
 organ 31.5% → 31.2%, 10 organs both ways, all 10 of Orion's names carry (Jaccard 0.75–1.00). Three
 services moved organ (notify-digest cortex → memory, orion-proposal-runtime cortex → substrate,
 orion-vllm-host substrate → memory); the 8 keys sit with their writers' or readers' organs.

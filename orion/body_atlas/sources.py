@@ -50,7 +50,7 @@ import os
 import re
 import subprocess
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Protocol
@@ -747,7 +747,15 @@ def apply_wire(body: BodyInputs, wire: WireRefs) -> list[StoreIn]:
     state, counted in ``redis_private`` (on 2026-10-30, 27 of 35 keys; as parts they put 17 hub
     keys in one organ and add no circulation)."""
     body.calls = [CallIn(caller=r.service, url=r.value, host=url_host(r.value) or "", via=r.via) for r in wire.http]
-    body.redis_dynamic = {svc: len(mods) for svc, mods in wire.dynamic.items()}
+    # a dynamic key in shared code more than half of these services run (the bus's own rate
+    # buckets) says nothing about any one service: counted out, so the number can move
+    def sym(via: str) -> str:
+        return via.split(" (imported by ", 1)[0]
+
+    seen_in = Counter(s for vias in wire.dynamic.values() for s in {sym(v) for v in vias if " (imported by " in v})
+    common = {s for s, n in seen_in.items() if n > len(wire.dynamic) / 2}
+    body.redis_dynamic = {svc: n for svc, mods in wire.dynamic.items()
+                          if (n := sum(1 for m in mods if sym(m) not in common))}
     keys, private = [], defaultdict(int)
     for k, refs in wire.redis.items():
         svcs = {r.service for r in refs}

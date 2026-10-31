@@ -170,6 +170,14 @@ class Resolver:
             local: dict[str, ast.AST] = {}
             bad: set[str] = set()
             for node in self.nodes:
+                # a name that is also a parameter, a loop target or augmented (``key += ...``)
+                # anywhere in the module is not one constant
+                if isinstance(node, ast.arg):
+                    bad.add(node.arg)
+                elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                    bad.add(node.target.id)
+                elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                    bad.update(n.id for n in ast.walk(node.target) if isinstance(n, ast.Name))
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                     for t in targets:
@@ -208,7 +216,7 @@ class Resolver:
                 if v is not None:
                     return ("str", v)
             return None
-        if isinstance(expr, ast.Call):
+        if isinstance(expr, (ast.Call, ast.Subscript)):
             key = _env_key(expr)
             if key is not None:
                 return ("env", key)
@@ -218,11 +226,16 @@ class Resolver:
             if isinstance(first, ast.FormattedValue) and not isinstance(first.value, ast.Constant):
                 v = self.value(first.value, depth + 1)
                 if v and v[0] == "str":
+                    rest = expr.values[1:]
+                    if all(isinstance(x, ast.Constant) and isinstance(x.value, str) for x in rest):
+                        return ("str", v[1] + "".join(x.value for x in rest))  # f"{PREFIX}:latest"
                     return ("family", v[1])
             return None
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add) and not isinstance(expr.left, ast.Constant):
             v = self.value(expr.left, depth + 1)
             if v and v[0] == "str":
+                if isinstance(expr.right, ast.Constant) and isinstance(expr.right.value, str):
+                    return ("str", v[1] + expr.right.value)  # PREFIX + ":latest"
                 return ("family", v[1])
         return None
 
@@ -237,8 +250,15 @@ def _attr_read(node: ast.AST) -> str | None:
     return None
 
 
-def _env_key(call: ast.Call) -> str | None:
-    """``os.getenv("K")`` / ``os.environ.get("K")`` / ``getenv("K")`` -> ``K``."""
+def _env_key(call: ast.AST) -> str | None:
+    """``os.getenv("K")`` / ``os.environ.get("K")`` / ``os.environ["K"]`` / ``getenv("K")`` -> ``K``."""
+    if isinstance(call, ast.Subscript):
+        sl = call.slice
+        if _path(call.value) == "os.environ" and isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+            return sl.value
+        return None
+    if not isinstance(call, ast.Call):
+        return None
     f = call.func
     name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
     is_env = name == "getenv" or (name == "get" and isinstance(f, ast.Attribute) and _path(f.value) == "os.environ")
@@ -258,7 +278,7 @@ def _redis_ctor(call: ast.Call) -> bool:
     ``Redis(...)``, ``redis.asyncio.Redis(...)``."""
     fp = _path(call.func) or ""
     segs = fp.split(".")
-    if "Redis" in segs[-1]:  # a class: Redis, StrictRedis, FakeRedis
+    if segs[-1].endswith("Redis"):  # a class: Redis, StrictRedis, FakeRedis (not RedisGraphQueryClient)
         return True
     return segs[-1] in _CTOR_METHODS and any(seg.lower().endswith("redis") for seg in segs[:-1])
 
@@ -305,7 +325,44 @@ def _handles(nodes: list[ast.AST]) -> set[str]:
                     grew = True
         if not grew:
             break
-    return out
+    # scope-blind, so a name also bound to some other call (``client = httpx.Client()`` in
+    # another function) is ambiguous and not a handle, unless its own name says Redis
+    other = set()
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            value = node.value.value if isinstance(node.value, ast.Await) else node.value
+            if isinstance(value, ast.Call) and not is_handle(value):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                other.update(p for t in targets if (p := _path(t)))
+    return {p for p in out if p not in other or _named_redis(_last(p))}
+
+
+def _calls_with_handles(nodes: list[ast.AST]):
+    """(method call with arguments, the Redis handles in its scope). A plain name is a handle in
+    the function that binds it (or at module level); an attribute (``self._redis``) in the whole
+    module. So ``client = redis.Redis()`` in one function and ``client = httpx.Client()`` in
+    another are two different names."""
+    funcs = [n for n in nodes if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))]
+    in_func: set[int] = set()
+    scopes: list[tuple[list[ast.AST], list[ast.AST]]] = []  # (binding nodes, call nodes)
+    for fn in funcs:
+        body = [n for st in (fn.body if isinstance(fn.body, list) else [fn.body]) for n in ast.walk(st)]
+        args = list(ast.walk(fn.args))
+        scopes.append((args + body, body))
+        in_func.update(id(n) for n in body)
+    top = [n for n in nodes if id(n) not in in_func]
+    attrs = {h for h in _handles(nodes) if "." in h}
+    top_names = {h for h in _handles(top) if "." not in h}
+    seen: set[int] = set()
+    for binding, calls in [(top, top)] + scopes[::-1]:  # innermost function first
+        local = top_names | {h for h in _handles(binding) if "." not in h} if binding is not top else top_names
+        handles = attrs | local
+        for call in calls:
+            if id(call) in seen or not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                                        and call.args):
+                continue
+            seen.add(id(call))
+            yield call, handles
 
 
 def _is_handle_expr(expr: ast.AST, handles: set[str]) -> bool:
@@ -325,14 +382,21 @@ def module_acts(nodes: list[ast.AST], res: Resolver, *, redis_text: bool = True)
     ``redis_text=False``: the source never says "redis", so no Redis act is looked for."""
     acts: set[Act] = set()
     docs = _docstrings(nodes)
-    fields = _class_field_urls(nodes)
+    # shared code has no service env to resolve a settings field: there, a settings field's default
+    # counts like a model field's (only for a service whose code reads the field)
+    fields = _class_field_urls(nodes, in_service=res.svc is not None)
     for node in nodes:
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs \
                 and is_url(node.value):
             if id(node) in fields:  # a class field's default: a call only where code reads the field
-                acts.add(Act("field-http", node.value, fields[id(node)]))
+                if fields[id(node)]:  # "" = a settings field: settings_value reads it, env first
+                    acts.add(Act("field-http", node.value, fields[id(node)]))
             else:
                 acts.add(Act("http", node.value))
+        elif isinstance(node, ast.Subscript):
+            key = _env_key(node)
+            if key is not None:
+                acts.add(Act("env-http", key))
         elif isinstance(node, ast.Call):
             key = _env_key(node)
             if key is not None:
@@ -347,10 +411,7 @@ def module_acts(nodes: list[ast.AST], res: Resolver, *, redis_text: bool = True)
                 acts.add(Act("http", v))
     if not redis_text:
         return acts
-    handles = _handles(nodes)
-    for call in nodes:
-        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.args):
-            continue
+    for call, handles in _calls_with_handles(nodes):
         verb = call.func.attr
         rel = "writes" if verb in REDIS_WRITE else ("reads" if verb in REDIS_READ else None)
         if rel is None or not _is_handle_expr(call.func.value, handles):
@@ -361,6 +422,8 @@ def module_acts(nodes: list[ast.AST], res: Resolver, *, redis_text: bool = True)
                 continue
             arg = call.args[1]
         v = res.value(arg)
+        if v is not None and v[0] == "str" and (v[1].startswith("/") or is_url(v[1])):
+            continue  # a request path or URL: an HTTP client, not Redis
         if v is None:
             acts.add(Act("dynamic", _short(arg), rel))
         elif v[0] == "str":
@@ -372,7 +435,7 @@ def module_acts(nodes: list[ast.AST], res: Resolver, *, redis_text: bool = True)
     return acts
 
 
-def _class_field_urls(nodes: list[ast.AST]) -> dict[int, str]:
+def _class_field_urls(nodes: list[ast.AST], *, in_service: bool = True) -> dict[int, str]:
     """id(URL constant) -> field name, for a URL that is a class field's default
     (``thought_url: str = "http://..."``, ``Field("http://...", alias=...)``). A model or settings
     class holding a URL is config: whoever imports the class does not call it; whoever reads the
@@ -380,6 +443,13 @@ def _class_field_urls(nodes: list[ast.AST]) -> dict[int, str]:
     out: dict[int, str] = {}
     for cls in nodes:
         if not isinstance(cls, ast.ClassDef):
+            continue
+        if in_service and any((_path(b) or "").endswith("Settings") for b in cls.bases):
+            # a settings class: its field is read through ``settings_value`` (the env value
+            # first), so its code default must not count on its own
+            for c in ast.walk(cls):
+                if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                    out[id(c)] = ""
             continue
         for stmt in cls.body:
             if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
@@ -637,6 +707,13 @@ class _Scan:
                 deps.add((rel, "*"))
             attrs = {a.lower() for n in nodes if (a := _attr_read(n))}
             out[sym] = (acts, deps, attrs)
+        # a name the module imports at top level (a package ``__init__`` re-exporting ``write``
+        # from ``.impl``) leads on to the module that defines it
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                for mrel, name, alias in self.imports(rel, list(ast.walk(stmt))):
+                    if alias not in out:
+                        out[alias] = (set(), {(mrel, name or "*")}, set())
         self._shared_cache[rel] = out
         return out
 

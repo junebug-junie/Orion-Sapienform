@@ -97,7 +97,7 @@ def test_v2_gaps_read_the_wires():
     assert "part:orion-notify" in r.wires.seen_by_wire
     assert "part:orion-quiet" in r.silent_services and "part:orion-notify" not in r.silent_services
     gaps = {g.gap_id: g.text for g in r.gaps}
-    assert "no bus, HTTP or shared-Redis traffic" in gaps["gap:s3-unseen"]
+    assert "names no HTTP call and no shared Redis key" in gaps["gap:s3-unseen"]
     assert "gap:algedonic-unseen" not in gaps and "gap:algedonic-none" in gaps
     assert "no part holds S4 and S3" in gaps["gap:s4-to-s3"]
 
@@ -195,3 +195,37 @@ def test_gather_applies_redis_facts_all_or_nothing(tmp_path, monkeypatch):
     ok = S.gather_body(tmp_path, [], live=S.LiveReaders(redis=lambda *a: {"TYPE": "string", "OBJECT": 3, "TTL": -1}[a[0]]))
     key = next(s for s in ok.stores if s.store == "redis")
     assert key.rows == 1 and key.facts["type"] == "string"
+
+
+# --- review findings (2026-10-31) ---------------------------------------------------------------
+
+def test_with_http_but_no_shared_key_the_algedonic_line_does_not_say_redis_is_unread():
+    w = _wire()
+    w.redis = {"orion:private:k": w.redis["orion:private:k"]}
+    r = K.read_capacities(_built(w))
+    alg = next(j for j in r.jobs if j.job == "algedonic")
+    assert "not in the atlas" not in alg.text and "no Redis key is shared" in alg.text
+    assert {g.gap_id for g in r.gaps} >= {"gap:algedonic-none"} and "gap:algedonic-unseen" not in {g.gap_id for g in r.gaps}
+
+
+def test_a_writer_that_also_reads_still_links_both_ways():
+    w = _wire()
+    # orion-w writes and reads orion:back; its one flow says writes. orion-r1 writes it too.
+    w.redis["orion:back"] = [WireRef("orion-r1", "orion:back", "writes", "a.py"),
+                             WireRef("orion-w", "orion:back", "writes", "b.py"), WireRef("orion-w", "orion:back", "reads", "b.py")]
+    atlas = _built(w)
+    key = next(p for p in atlas.parts if p.name == "redis:orion:back")
+    assert key.facts["writers_that_read"] == "orion-w"
+    assert {f.relation for f in atlas.flows if f.source == "part:orion-w" and f.target == key.part_id} == {"writes"}
+    yes = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="orion-w", role="S4", date="2026-10-31"),
+                                      K.ConfirmationV1(part="orion-r1", role="S3", date="2026-10-31")])
+    r = K.read_capacities(atlas, vsm=yes)
+    assert not any(g.gap_id == "gap:s4-to-s3" for g in r.gaps), r.wires.s4_s3
+
+
+def test_dynamic_keys_in_code_most_services_share_are_counted_out():
+    w = WireRefs(dynamic={f"orion-{i}": [f"orion/core/bus.py:Bus (imported by orion-{i})"] for i in range(4)})
+    w.dynamic["orion-0"] = w.dynamic["orion-0"] + ["services/orion-0/app/main.py"]
+    body = S.BodyInputs()
+    S.apply_wire(body, w)
+    assert body.redis_dynamic == {"orion-0": 1}

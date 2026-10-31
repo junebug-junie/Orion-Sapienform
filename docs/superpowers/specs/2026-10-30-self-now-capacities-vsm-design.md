@@ -337,7 +337,8 @@ false shapes the scan refuses: `orion/body_atlas/README.md`. Choices made while 
   (`redis_private`) instead. Stated plainly: the gate made the problem visible; the reason is
   that a private key is not a wire.
 - **No new role rule.** HTTP and Redis decide gap lines, not jobs. R-wire-seen shrinks
-  `gap:s3-unseen` to the services with no bus, HTTP or shared-key traffic (live 10-31: 16 → 11;
+  `gap:s3-unseen` to the services with no bus traffic whose code names no HTTP call and no shared key
+  (evidence from code, not observed traffic; live 10-31: 16 → 11;
   seen: notify-digest, orion-graphiti-adapter, orion-pageindex, orion-proposal-runtime,
   orion-self-experiments). The 11 left (orion-policy-runtime, power-guard,
   orion-consolidation-runtime, ...) have no URL, key or bus channel in their code: they are truly
@@ -351,5 +352,5 @@ false shapes the scan refuses: `orion/body_atlas/README.md`. Choices made while 
   exists, so it now says the link cannot be checked yet.
 - **Metabolism stays claims only** (decision 2). Its line now says the HTTP calls are in the atlas,
   so a claim can cite them (e.g. the callers of orion-durable-runs).
-- **Organs:** Q 0.3447 → 0.3414, largest 31.5% → 31.2%, 10 organs, all 10 names carry (Jaccard
+- **Organs:** Q 0.3447 → 0.3426, largest 31.5% → 31.2%, 10 organs, all 10 names carry (Jaccard
   0.75–1.00; a name given before Redis keys existed is compared without them).

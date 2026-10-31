@@ -5,14 +5,16 @@ expects? (patch 3, ``orion/body_atlas/wire_code.py`` and ``capacities.py`` rules
    2026-10-31). ``TRUE_*``: what the code really does; every one the scan still finds must carry
    that direction, and recall is printed. ``FALSE_*``: what an earlier draft claimed and is wrong
    (a reply or a dict read as a Redis key, a model's URL default read as a call by everyone who
-   imports the model). None may come back. Gate: precision 1.0 on the judged set.
+   imports the model). Gate: no false shape comes back, and every true fact is found (a scanner
+   that finds nothing fails).
 2. **Rules on two frozen bodies.** ``whole_body_2026-10-29_wires.json`` (held out: the 10-29 body
    with the HTTP calls and Redis keys of main at its export time, no live Redis read; no knob was
    set on it) and ``whole_body_2026-10-31_wires.json`` (live, with Redis key liveness). For each:
    R-wire-seen and R-broadcast-key hit exactly the reviewed sets below (precision and recall 1.0),
    and the organ gate holds (``run_organ_structure_eval.evaluate``).
 3. **Mutations that must fail:** the scan with no Redis-handle check (any ``.get("x")`` is a key);
-   R-broadcast-key with no reader floor; R-wire-seen counting any flow (placement, the census).
+   the scan with no Redis constructor (finds too little); R-broadcast-key with no reader floor;
+   R-wire-seen counting any flow (placement, the census).
 
 The expected sets are the only hand-written truth here; the rules never read them.
 
@@ -114,18 +116,13 @@ def scanner_failures(root: Path, *, verbose: bool = True) -> list[str]:
     back = sorted(set(FALSE_CALLS) & calls) + sorted(set(FALSE_KEYS) & keys)
     if back:
         f.append(f"false claims came back: {back}")
-    judged_calls = calls & (set(TRUE_CALLS) | set(FALSE_CALLS))
-    judged_keys = keys & (set(TRUE_KEYS) | set(FALSE_KEYS))
-    judged = len(judged_calls) + len(judged_keys)
-    right = len(judged_calls & set(TRUE_CALLS)) + len(judged_keys & set(TRUE_KEYS))
-    precision = right / judged if judged else 1.0
-    if precision < 1.0:
-        f.append(f"precision {precision:.2f} on {judged} judged claims")
     missed = sorted(set(TRUE_CALLS) - calls) + sorted(set(TRUE_KEYS) - keys)
+    if missed:
+        f.append(f"true facts missed: {missed}")
+    total = len(TRUE_CALLS) + len(TRUE_KEYS)
     if verbose:
-        print(f"scanner on {root}: {len(calls)} service->URL, {len(refs.redis)} keys; precision {precision:.2f} "
-              f"over {judged} judged; recall {(len(TRUE_CALLS) + len(TRUE_KEYS) - len(missed))}/"
-              f"{len(TRUE_CALLS) + len(TRUE_KEYS)}" + (f" (missed {missed})" if missed else ""))
+        print(f"scanner on {root}: {len(calls)} service->URL, {len(refs.redis)} keys; false shapes returned "
+              f"{len(back)} of {len(FALSE_CALLS) + len(FALSE_KEYS)}; true facts found {total - len(missed)}/{total}")
     return f
 
 
@@ -172,6 +169,12 @@ def mutations(root: Path) -> dict[str, bool]:
         caught["scan with no Redis-handle check"] = bool(scanner_failures(root, verbose=False))
     finally:
         W._is_handle_expr = real
+    ctor = W._redis_ctor
+    W._redis_ctor = lambda call: False
+    try:
+        caught["scan with no Redis constructor"] = bool(scanner_failures(root, verbose=False))
+    finally:
+        W._redis_ctor = ctor
     floor = K.BROADCAST_MIN_READERS
     K.BROADCAST_MIN_READERS = 1
     try:

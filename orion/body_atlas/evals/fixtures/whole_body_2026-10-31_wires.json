@@ -21,12 +21,6 @@
    },
    {
     "caller": "orion-actions",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-actions/app/settings.py"
-   },
-   {
-    "caller": "orion-actions",
     "host": "orion-self-experiments",
     "url": "http://orion-self-experiments:7172",
     "via": "services/orion-actions/app/main.py"
@@ -89,13 +83,13 @@
     "caller": "orion-cortex-exec",
     "host": "orion-athena-biometrics",
     "url": "http://orion-athena-biometrics:8100",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
     "host": "orion-athena-durable-runs",
     "url": "http://orion-athena-durable-runs:8121",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
@@ -125,25 +119,19 @@
     "caller": "orion-cortex-exec",
     "host": "orion-athena-thought",
     "url": "http://orion-athena-thought:7155",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
     "host": "orion-athena-vision-host",
     "url": "http://orion-athena-vision-host:6600",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
     "host": "orion-athena-vision-window",
     "url": "http://orion-athena-vision-window:8000",
-    "via": "services/orion-cortex-exec/app/settings.py"
-   },
-   {
-    "caller": "orion-cortex-exec",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
@@ -161,7 +149,7 @@
     "caller": "orion-cortex-exec",
     "host": "api.github.com",
     "url": "https://api.github.com",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
@@ -179,7 +167,7 @@
     "caller": "orion-cortex-orch",
     "host": "conjourney.net",
     "url": "http://conjourney.net/graph/spark/concept-profile",
-    "via": "services/orion-cortex-orch/app/concept_profile_config.py"
+    "via": "orion/spark/concept_induction/graph_query.py:SPARK_PROFILE_GRAPH (imported by orion-cortex-orch)"
    },
    {
     "caller": "orion-cortex-orch",
@@ -215,7 +203,7 @@
     "caller": "orion-cortex-orch",
     "host": "orion-athena-notify",
     "url": "http://orion-athena-notify:7140",
-    "via": "services/orion-cortex-orch/app/settings.py"
+    "via": "services/orion-cortex-orch/app/workflow_runtime.py"
    },
    {
     "caller": "orion-cortex-orch",
@@ -254,16 +242,10 @@
     "via": "services/orion-durable-runs/scripts/harness_echo_smoke.py"
    },
    {
-    "caller": "orion-durable-runs",
-    "host": "orion-athena-vector-host",
-    "url": "http://orion-athena-vector-host:8320/embedding",
-    "via": "services/orion-durable-runs/app/settings.py"
-   },
-   {
     "caller": "orion-embodiment",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8765",
-    "via": "services/orion-embodiment/app/settings.py"
+    "via": "services/orion-embodiment/app/worker.py"
    },
    {
     "caller": "orion-embodiment",
@@ -281,7 +263,7 @@
     "caller": "orion-execution-dispatch-runtime",
     "host": "notify",
     "url": "http://notify:7140",
-    "via": "services/orion-execution-dispatch-runtime/app/settings.py"
+    "via": "services/orion-execution-dispatch-runtime/app/worker.py"
    },
    {
     "caller": "orion-exo-exploration",
@@ -299,7 +281,7 @@
     "caller": "orion-exo-exploration",
     "host": "classifieds.ksl.com",
     "url": "https://classifieds.ksl.com/search/cat/Electronics,https://classifieds.ksl.com/search/cat/Computers,https://classifieds.ksl.com/search/cat/FREE",
-    "via": "services/orion-exo-exploration/app/settings.py"
+    "via": "services/orion-exo-exploration/app/crawl/daemon.py"
    },
    {
     "caller": "orion-exo-exploration",
@@ -312,12 +294,6 @@
     "host": "orion-athena-notify",
     "url": "http://orion-athena-notify:7140",
     "via": "services/orion-field-digester/app/health_monitor.py"
-   },
-   {
-    "caller": "orion-gpu-cluster-power",
-    "host": "192.168.0.221",
-    "url": "http://192.168.0.221",
-    "via": "services/orion-gpu-cluster-power/app/settings.py"
    },
    {
     "caller": "orion-gpu-cluster-power",
@@ -401,13 +377,13 @@
     "caller": "orion-graph-compression",
     "host": "orion-athena-fuseki",
     "url": "http://orion-athena-fuseki:3030/orion/query",
-    "via": "services/orion-graph-compression/app/settings.py"
+    "via": "services/orion-graph-compression/app/worker.py"
    },
    {
     "caller": "orion-graph-compression",
     "host": "orion-athena-fuseki",
     "url": "http://orion-athena-fuseki:3030/orion/update",
-    "via": "services/orion-graph-compression/app/settings.py"
+    "via": "services/orion-graph-compression/app/worker.py"
    },
    {
     "caller": "orion-graph-compression",
@@ -473,13 +449,13 @@
     "caller": "orion-hub",
     "host": "100.112.254.99",
     "url": "http://100.112.254.99:8100",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/biometrics_node_client.py"
    },
    {
     "caller": "orion-hub",
     "host": "100.87.202.68",
     "url": "http://100.87.202.68:8100",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/biometrics_node_client.py"
    },
    {
     "caller": "orion-hub",
@@ -491,7 +467,7 @@
     "caller": "orion-hub",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8080",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/chat_attachments.py"
    },
    {
     "caller": "orion-hub",
@@ -504,12 +480,6 @@
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:3030/orion/query",
     "via": "orion/substrate/graphdb_store.py:_resolve_substrate_sparql_http_urls (imported by orion-hub)"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "127.0.0.1",
-    "url": "http://127.0.0.1:5173",
-    "via": "services/orion-hub/app/settings.py"
    },
    {
     "caller": "orion-hub",
@@ -533,7 +503,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8082",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/api_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -551,7 +521,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8124",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/body_economy_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -569,7 +539,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8132",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/retro_experience.py"
    },
    {
     "caller": "orion-hub",
@@ -581,13 +551,13 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8320/embedding",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/crystallization_routes.py"
    },
    {
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8500",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/main.py"
    },
    {
     "caller": "orion-hub",
@@ -599,7 +569,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8620",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/dream_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -647,13 +617,13 @@
     "caller": "orion-hub",
     "host": "host.docker.internal",
     "url": "http://host.docker.internal:8080",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/main.py"
    },
    {
     "caller": "orion-hub",
     "host": "localhost",
     "url": "http://localhost:7251",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/attention_organ_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -665,55 +635,7 @@
     "caller": "orion-hub",
     "host": "orion-athena-vector-host",
     "url": "http://orion-athena-vector-host:8320/embedding",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-exo-exploration",
-    "url": "http://orion-exo-exploration:8622",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-field-digester",
-    "url": "http://orion-field-digester:8116",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-recall",
-    "url": "http://orion-recall:8090",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-self-experiments",
-    "url": "http://orion-self-experiments:7172",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-social-memory",
-    "url": "http://orion-social-memory:8765",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-topic-foundry",
-    "url": "http://orion-topic-foundry:8615",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-world-pulse",
-    "url": "http://orion-world-pulse:8628",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/concept_atlas_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -872,12 +794,6 @@
     "via": "services/orion-mesh-guardian/app/attention.py"
    },
    {
-    "caller": "orion-mesh-guardian",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-mesh-guardian/app/settings.py"
-   },
-   {
     "caller": "orion-mind",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8080",
@@ -947,7 +863,7 @@
     "caller": "orion-proposal-runtime",
     "host": "hardware-watch",
     "url": "http://hardware-watch:8131/health",
-    "via": "services/orion-proposal-runtime/app/settings.py"
+    "via": "services/orion-proposal-runtime/app/worker.py"
    },
    {
     "caller": "orion-proposal-runtime",
@@ -1074,18 +990,6 @@
     "host": "172.18.0.1",
     "url": "http://172.18.0.1:8080",
     "via": "services/orion-social-room-bridge/app/service.py"
-   },
-   {
-    "caller": "orion-social-room-bridge",
-    "host": "orion-hub",
-    "url": "http://orion-hub:8080",
-    "via": "services/orion-social-room-bridge/app/settings.py"
-   },
-   {
-    "caller": "orion-social-room-bridge",
-    "host": "orion-social-memory",
-    "url": "http://orion-social-memory:8765",
-    "via": "services/orion-social-room-bridge/app/settings.py"
    },
    {
     "caller": "orion-social-room-bridge",
@@ -1223,13 +1127,13 @@
     "caller": "orion-thought",
     "host": "100.112.254.99",
     "url": "http://100.112.254.99:8014",
-    "via": "services/orion-thought/app/settings.py"
+    "via": "services/orion-thought/app/visual_chain.py"
    },
    {
     "caller": "orion-thought",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8080",
-    "via": "services/orion-thought/app/settings.py"
+    "via": "services/orion-thought/app/visual_chain.py"
    },
    {
     "caller": "orion-thought",
@@ -1259,7 +1163,7 @@
     "caller": "orion-thought",
     "host": "orion-athena-percept-store",
     "url": "http://orion-athena-percept-store:8000/percepts",
-    "via": "services/orion-thought/app/settings.py"
+    "via": "services/orion-thought/app/visual_chain.py"
    },
    {
     "caller": "orion-topic-foundry",
@@ -1272,12 +1176,6 @@
     "host": "orion-athena-vector-host",
     "url": "http://orion-athena-vector-host:8320/embedding",
     "via": "services/orion-topic-foundry/app/topic_engine.py"
-   },
-   {
-    "caller": "orion-topic-foundry",
-    "host": "orion-vector-host",
-    "url": "http://orion-vector-host:8320/embedding",
-    "via": "services/orion-topic-foundry/app/settings.py"
    },
    {
     "caller": "orion-vector-host",
@@ -1331,7 +1229,7 @@
     "cameras": [],
     "expected_online": true,
     "hardware": "HPE ProLiant DL380 Gen10, 2x Xeon Platinum 8168 (2.7 GHz), 377 GB RAM, Tesla P4 8GB + Tesla T10 16GB (orchestration + vision/audio node)",
-    "last_seen_epoch": 1793405522.484494,
+    "last_seen_epoch": 1793407113.936511,
     "monitored": true,
     "name": "athena",
     "role": "orchestration"
@@ -1344,7 +1242,7 @@
     "cameras": [],
     "expected_online": true,
     "hardware": "Gigabyte G481-HA0 (board MG61-G40), 2x Xeon Gold 6150 (2.7 GHz), 251 GB RAM, 2x V100-PCIE-32GB + PG500-216 + V100-SXM2-32GB (daily inference node)",
-    "last_seen_epoch": 1793405531.988478,
+    "last_seen_epoch": 1793407095.130166,
     "monitored": true,
     "name": "circe",
     "role": "primary_cognition_gpu"
@@ -1558,7 +1456,7 @@
    {
     "evidence": "observed_placement",
     "host": "athena",
-    "service": "vigorous_lumiere"
+    "service": "laughing_booth"
    },
    {
     "evidence": "observed_placement",
@@ -2098,12 +1996,12 @@
      [
       "orion-durable-runs",
       "observed_trace",
-      30
+      31
      ],
      [
       "orion-gpu-pool",
       "observed_trace",
-      13
+      14
      ],
      [
       "orion-bus",
@@ -2113,7 +2011,7 @@
      [
       "orion-cortex-exec",
       "observed_turn",
-      30
+      31
      ],
      [
       "orion-gpu-pool",
@@ -2123,30 +2021,30 @@
      [
       "orion-harness-governor",
       "observed_turn",
-      26
+      27
      ],
      [
       "cortex-exec",
       "observed_turn",
-      351
+      352
      ],
      [
       "orion-hub",
       "observed_turn",
-      351
+      352
      ],
      [
       "orion-harness-governor",
       "declared_turn_writer",
-      331
+      332
      ]
     ],
     "family": "durable_workflow",
-    "last_run_epoch": 1793385533.871183,
+    "last_run_epoch": 1793405830.22841,
     "name": "curiosity.investigate",
     "runner": "orion-durable-runs",
     "runner_evidence": "declared_runner",
-    "runs": 352
+    "runs": 353
    },
    {
     "children": [
@@ -2218,7 +2116,7 @@
     "name": "orion_day.letter",
     "runner": "orion-durable-runs",
     "runner_evidence": "declared_runner",
-    "runs": 33
+    "runs": 32
    },
    {
     "children": [],
@@ -2227,7 +2125,7 @@
      [
       "orion-gpu-pool",
       "observed_trace",
-      51
+      53
      ],
      [
       "orion-bus",
@@ -2237,7 +2135,7 @@
      [
       "orion-cortex-exec",
       "observed_turn",
-      346
+      342
      ],
      [
       "orion-gpu-pool",
@@ -2247,30 +2145,30 @@
      [
       "orion-harness-governor",
       "observed_turn",
-      296
+      293
      ],
      [
       "cortex-exec",
       "observed_turn",
-      1382
+      1384
      ],
      [
       "orion-hub",
       "observed_turn",
-      1385
+      1387
      ],
      [
       "orion-harness-governor",
       "declared_turn_writer",
-      1222
+      1224
      ]
     ],
     "family": "durable_workflow",
-    "last_run_epoch": 1793397433.712697,
+    "last_run_epoch": 1793406752.15828,
     "name": "reading.turn",
     "runner": "orion-durable-runs",
     "runner_evidence": "declared_runner",
-    "runs": 1391
+    "runs": 1394
    },
    {
     "children": [],
@@ -2306,7 +2204,7 @@
      [
       "orion-durable-runs",
       "observed_trace",
-      19
+      18
      ],
      [
       "orion-gpu-pool",
@@ -2319,7 +2217,7 @@
     "name": "self_sense_eval",
     "runner": "orion-durable-runs",
     "runner_evidence": "declared_runner",
-    "runs": 207
+    "runs": 206
    },
    {
     "children": [],
@@ -2357,7 +2255,7 @@
      ]
     ],
     "family": "durable_workflow",
-    "last_run_epoch": 1793405067.973153,
+    "last_run_epoch": 1793405892.395525,
     "name": "situation.update",
     "runner": "orion-durable-runs",
     "runner_evidence": "declared_runner",
@@ -2374,7 +2272,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405538.816341,
+    "last_run_epoch": 1793407120.647891,
     "name": "biometrics_grammar_consumer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2391,7 +2289,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405192.452915,
+    "last_run_epoch": 1793406879.037385,
     "name": "chat_grammar_consumer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2408,7 +2306,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405463.34086,
+    "last_run_epoch": 1793406979.240608,
     "name": "execution_grammar_reducer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2425,7 +2323,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405502.059557,
+    "last_run_epoch": 1793407122.200981,
     "name": "llm_inference_grammar_reducer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2459,7 +2357,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405526.811936,
+    "last_run_epoch": 1793407086.482982,
     "name": "storage_write_grammar_reducer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2476,7 +2374,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405536.233873,
+    "last_run_epoch": 1793407113.15645,
     "name": "transport_grammar_reducer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2493,7 +2391,7 @@
      ]
     ],
     "family": "substrate_reducer",
-    "last_run_epoch": 1793405528.952421,
+    "last_run_epoch": 1793407087.482998,
     "name": "vision_organ_grammar_reducer",
     "runner": "orion-substrate-runtime",
     "runner_evidence": "assumed_runner",
@@ -2634,7 +2532,7 @@
     "status": "read"
    },
    {
-    "detail": "220 service->URL references, 35 Redis keys, 106 modules with dynamic keys in 936 modules",
+    "detail": "203 service->URL references, 35 Redis keys, 83 services with dynamic keys in 941 modules",
     "name": "declared:services/*, orion/* python (HTTP URLs, Redis keys)",
     "origin": "declared",
     "status": "read"
@@ -2647,89 +2545,18 @@
    }
   ],
   "redis_dynamic": {
-   "orion-actions": 1,
-   "orion-affectgpt-worker": 1,
-   "orion-agent-council": 1,
-   "orion-attention-runtime": 1,
-   "orion-biometrics": 1,
-   "orion-bus": 2,
-   "orion-bus-mirror": 1,
-   "orion-bus-tap": 1,
-   "orion-chat-memory": 1,
-   "orion-cocreation-signals": 2,
-   "orion-collapse-mirror": 1,
-   "orion-consolidation-runtime": 1,
-   "orion-cortex-exec": 4,
-   "orion-cortex-gateway": 1,
-   "orion-cortex-orch": 1,
-   "orion-curiosity-peer": 1,
-   "orion-diffusion-host": 1,
-   "orion-dream": 1,
-   "orion-durable-runs": 2,
-   "orion-embodiment": 1,
-   "orion-energy": 1,
-   "orion-equilibrium-service": 2,
-   "orion-execution-dispatch-runtime": 1,
-   "orion-feedback-runtime": 1,
-   "orion-field-digester": 1,
-   "orion-gpu-cluster-power": 1,
-   "orion-gpu-lane-controller": 1,
-   "orion-gpu-pool": 1,
-   "orion-graph-compression": 1,
-   "orion-graphiti-adapter": 1,
-   "orion-hardware-watch": 1,
-   "orion-harness-governor": 1,
-   "orion-heartbeat": 1,
-   "orion-hub": 12,
-   "orion-juniper-affective-state": 1,
-   "orion-llama-cola-host": 1,
-   "orion-llamacpp-host": 1,
-   "orion-llamacpp-neural-host": 1,
-   "orion-llm-gateway": 1,
-   "orion-memory-consolidation": 1,
-   "orion-memory-crystallizer": 1,
-   "orion-mesh-guardian": 1,
-   "orion-meta-tags": 1,
-   "orion-mind": 2,
-   "orion-notify": 1,
-   "orion-notify-digest": 1,
-   "orion-office-env": 1,
-   "orion-ollama-host": 1,
-   "orion-pageindex": 1,
-   "orion-policy-runtime": 1,
-   "orion-power-guard": 1,
-   "orion-prediction": 2,
-   "orion-proposal-runtime": 1,
-   "orion-rag": 1,
-   "orion-recall": 1,
-   "orion-room-companion": 1,
-   "orion-self-experiments": 1,
-   "orion-signal-gateway": 1,
-   "orion-social-memory": 1,
-   "orion-social-room-bridge": 1,
-   "orion-spark-concept-induction": 1,
+   "orion-bus": 1,
+   "orion-cocreation-signals": 1,
+   "orion-cortex-exec": 3,
+   "orion-durable-runs": 1,
+   "orion-equilibrium-service": 1,
+   "orion-hub": 11,
+   "orion-mind": 1,
+   "orion-prediction": 1,
    "orion-sql-writer": 1,
-   "orion-state-journaler": 1,
-   "orion-state-service": 2,
-   "orion-substrate-runtime": 1,
-   "orion-substrate-telemetry": 1,
-   "orion-thought": 1,
-   "orion-topic-foundry": 1,
-   "orion-vector-host": 1,
-   "orion-vector-writer": 1,
-   "orion-vision-council": 1,
-   "orion-vision-edge": 1,
-   "orion-vision-frame-router": 2,
-   "orion-vision-host": 1,
-   "orion-vision-retina": 1,
-   "orion-vision-scribe": 1,
-   "orion-vision-window": 2,
-   "orion-vllm-host": 1,
-   "orion-voip-endpoint": 1,
-   "orion-whisper-tts": 1,
-   "orion-world-model": 1,
-   "orion-world-pulse": 1,
-   "orion-zwave": 1
+   "orion-state-service": 1,
+   "orion-vision-frame-router": 1,
+   "orion-vision-window": 1
   },
   "redis_private": {
    "orion-cortex-exec": 1,
@@ -2744,8 +2571,8 @@
   },
   "sensors": [
    {
-    "events": 13479,
-    "last_seen_epoch": 1793405498.552288,
+    "events": 13486,
+    "last_seen_epoch": 1793407033.176268,
     "name": "cam0",
     "readers": [
      [
@@ -2801,8 +2628,8 @@
     ]
    },
    {
-    "events": 23223,
-    "last_seen_epoch": 1793405448.098775,
+    "events": 23228,
+    "last_seen_epoch": 1793407109.191326,
     "name": "walkway",
     "readers": [
      [
@@ -2908,7 +2735,7 @@
     ],
     "name": "orion_curiosity",
     "named_in_unimported": [],
-    "rows": 586,
+    "rows": 587,
     "store": "chroma"
    },
    {
@@ -2929,7 +2756,7 @@
     ],
     "name": "orion_reading_results",
     "named_in_unimported": [],
-    "rows": 515,
+    "rows": 516,
     "store": "chroma"
    },
    {
@@ -3001,7 +2828,7 @@
     ],
     "name": "orion_main_store",
     "named_in_unimported": [],
-    "rows": 121054,
+    "rows": 121764,
     "store": "chroma"
    },
    {
@@ -3334,7 +3161,7 @@
     ],
     "name": "orion_substrate",
     "named_in_unimported": [],
-    "rows": 9911,
+    "rows": 9916,
     "store": "falkordb"
    },
    {
@@ -3421,12 +3248,12 @@
     ],
     "name": "orion_worldview",
     "named_in_unimported": [],
-    "rows": 3466,
+    "rows": 3473,
     "store": "falkordb"
    },
    {
     "facts": {
-     "idle_s": "1",
+     "idle_s": "0",
      "ttl_s": "-1",
      "type": "hash",
      "value": "present"
@@ -3458,7 +3285,7 @@
    },
    {
     "facts": {
-     "idle_s": "11834",
+     "idle_s": "13417",
      "ttl_s": "-1",
      "type": "hash",
      "value": "present"
@@ -3490,7 +3317,7 @@
    },
    {
     "facts": {
-     "idle_s": "11834",
+     "idle_s": "13417",
      "ttl_s": "-1",
      "type": "string",
      "value": "present"
@@ -3516,8 +3343,8 @@
    },
    {
     "facts": {
-     "idle_s": "8",
-     "ttl_s": "1759",
+     "idle_s": "16",
+     "ttl_s": "1377",
      "type": "string",
      "value": "present"
     },
@@ -3577,8 +3404,8 @@
    },
    {
     "facts": {
-     "idle_s": "3",
-     "ttl_s": "270",
+     "idle_s": "13",
+     "ttl_s": "266",
      "type": "string",
      "value": "present"
     },
@@ -3627,8 +3454,8 @@
    },
    {
     "facts": {
-     "idle_s": "494",
-     "ttl_s": "604306",
+     "idle_s": "1252",
+     "ttl_s": "603548",
      "type": "string",
      "value": "present"
     },
@@ -3698,7 +3525,7 @@
     ],
     "name": "action_outcomes",
     "named_in_unimported": [],
-    "rows": 692,
+    "rows": 695,
     "store": "postgres"
    },
    {
@@ -3839,7 +3666,7 @@
     ],
     "name": "chat_stance_belief_log",
     "named_in_unimported": [],
-    "rows": 66875,
+    "rows": 66891,
     "store": "postgres"
    },
    {
@@ -3854,7 +3681,7 @@
     ],
     "name": "cockpit_turn_sighting",
     "named_in_unimported": [],
-    "rows": 69889,
+    "rows": 69971,
     "store": "postgres"
    },
    {
@@ -3890,7 +3717,7 @@
     ],
     "name": "dev_economics_ledger_log",
     "named_in_unimported": [],
-    "rows": 7260,
+    "rows": 7262,
     "store": "postgres"
    },
    {
@@ -3965,7 +3792,7 @@
     ],
     "name": "energy_importer_status",
     "named_in_unimported": [],
-    "rows": 9672,
+    "rows": 9678,
     "store": "postgres"
    },
    {
@@ -4010,7 +3837,7 @@
     ],
     "name": "energy_stakes_snapshot",
     "named_in_unimported": [],
-    "rows": 9672,
+    "rows": 9678,
     "store": "postgres"
    },
    {
@@ -4040,7 +3867,7 @@
     ],
     "name": "evidence_units",
     "named_in_unimported": [],
-    "rows": 5595,
+    "rows": 5603,
     "store": "postgres"
    },
    {
@@ -4097,7 +3924,7 @@
     ],
     "name": "gpu_pool_events",
     "named_in_unimported": [],
-    "rows": 828796,
+    "rows": 830929,
     "store": "postgres"
    },
    {
@@ -4112,7 +3939,7 @@
     ],
     "name": "gpu_pool_state_history",
     "named_in_unimported": [],
-    "rows": 310964,
+    "rows": 311222,
     "store": "postgres"
    },
    {
@@ -4235,7 +4062,7 @@
     ],
     "name": "grammar_events",
     "named_in_unimported": [],
-    "rows": 1377254,
+    "rows": 1376223,
     "store": "postgres"
    },
    {
@@ -4250,7 +4077,7 @@
     ],
     "name": "harness_turn_trace",
     "named_in_unimported": [],
-    "rows": 4739,
+    "rows": 4744,
     "store": "postgres"
    },
    {
@@ -4265,7 +4092,7 @@
     ],
     "name": "home_cooling_sample",
     "named_in_unimported": [],
-    "rows": 594586,
+    "rows": 594898,
     "store": "postgres"
    },
    {
@@ -4304,7 +4131,7 @@
     ],
     "name": "journal_entries",
     "named_in_unimported": [],
-    "rows": 2243,
+    "rows": 2247,
     "store": "postgres"
    },
    {
@@ -4319,7 +4146,7 @@
     ],
     "name": "juniper_affective_state_log",
     "named_in_unimported": [],
-    "rows": 7192,
+    "rows": 7194,
     "store": "postgres"
    },
    {
@@ -4349,7 +4176,7 @@
     ],
     "name": "llm_call_usage",
     "named_in_unimported": [],
-    "rows": 15347,
+    "rows": 16116,
     "store": "postgres"
    },
    {
@@ -4370,7 +4197,7 @@
     ],
     "name": "mind_runs",
     "named_in_unimported": [],
-    "rows": 6027,
+    "rows": 6033,
     "store": "postgres"
    },
    {
@@ -4430,7 +4257,7 @@
     ],
     "name": "notify_requests",
     "named_in_unimported": [],
-    "rows": 17080,
+    "rows": 17084,
     "store": "postgres"
    },
    {
@@ -4445,7 +4272,7 @@
     ],
     "name": "office_env_sample",
     "named_in_unimported": [],
-    "rows": 5900,
+    "rows": 5953,
     "store": "postgres"
    },
    {
@@ -4475,7 +4302,7 @@
     ],
     "name": "physiology_state",
     "named_in_unimported": [],
-    "rows": 5433,
+    "rows": 5445,
     "store": "postgres"
    },
    {
@@ -4505,7 +4332,7 @@
     ],
     "name": "self_concept_history",
     "named_in_unimported": [],
-    "rows": 7745,
+    "rows": 7746,
     "store": "postgres"
    },
    {
@@ -4640,7 +4467,7 @@
     ],
     "name": "substrate_attention_schema",
     "named_in_unimported": [],
-    "rows": 191640,
+    "rows": 191678,
     "store": "postgres"
    },
    {
@@ -4655,7 +4482,7 @@
     ],
     "name": "substrate_durable_run_state",
     "named_in_unimported": [],
-    "rows": 3856,
+    "rows": 3861,
     "store": "postgres"
    },
    {
@@ -4685,7 +4512,7 @@
     ],
     "name": "vision_events",
     "named_in_unimported": [],
-    "rows": 58022,
+    "rows": 58039,
     "store": "postgres"
    },
    {
@@ -4700,7 +4527,7 @@
     ],
     "name": "want_ledger",
     "named_in_unimported": [],
-    "rows": 3029,
+    "rows": 3036,
     "store": "postgres"
    },
    {
@@ -8430,20 +8257,20 @@
    ]
   }
  ],
- "exported_at": "2026-10-31T00:12:41.967500+00:00",
+ "exported_at": "2026-10-31T00:39:04.385824+00:00",
  "observed": {
   "causal": [
    [
     "vision-edge",
     "vision-frame-router",
-    1401280,
-    1793405537.729
+    1401588,
+    1793407114.88161
    ],
    [
     "vision-edge",
     "vision-host",
-    1387707,
-    1793405532.98557
+    1388015,
+    1793407115.3967
    ],
    [
     "orion-signal-gateway",
@@ -8454,8 +8281,8 @@
    [
     "recall",
     "cortex-exec",
-    454248,
-    1793405187.67283
+    454276,
+    1793406875.79853
    ],
    [
     "recall",
@@ -8472,8 +8299,8 @@
    [
     "recall",
     "llm-gateway",
-    886,
-    1793389124.97008
+    887,
+    1793406820.23171
    ],
    [
     "recall",
@@ -8526,32 +8353,32 @@
    [
     "cortex-exec",
     "recall",
-    444198,
-    1793405108.17896
+    444215,
+    1793406757.65374
    ],
    [
     "cortex-exec",
     "sql-writer",
-    86151,
-    1793399052.89028
+    86152,
+    1793406123.84788
    ],
    [
     "cortex-exec",
     "cortex-orch",
-    167673,
-    1793400834.51031
+    167674,
+    1793406535.47123
    ],
    [
     "cortex-exec",
     "spark-concept-induction",
-    1020615,
-    1793405462.52269
+    1020675,
+    1793406977.72571
    ],
    [
     "cortex-exec",
     "llm-gateway",
-    527987,
-    1793405462.13821
+    528031,
+    1793406977.31161
    ],
    [
     "cortex-exec",
@@ -8574,14 +8401,14 @@
    [
     "cortex-exec",
     "orion-thought",
-    56991,
-    1793405187.74558
+    57015,
+    1793406875.857
    ],
    [
     "cortex-exec",
     "orion-vector-host",
-    369955,
-    1793405462.64369
+    369978,
+    1793406978.12075
    ],
    [
     "cortex-exec",
@@ -8592,8 +8419,8 @@
    [
     "cortex-exec",
     "state-service",
-    57970,
-    1793405459.8516
+    57978,
+    1793406975.41757
    ],
    [
     "cortex-exec",
@@ -8610,14 +8437,14 @@
    [
     "cortex-exec",
     "orion-gpu-pool",
-    162986,
-    1793405462.41695
+    163101,
+    1793406977.66187
    ],
    [
     "cortex-exec",
     "hub",
-    7884,
-    1793405152.05932
+    7891,
+    1793406787.387
    ],
    [
     "cortex-exec",
@@ -8634,14 +8461,14 @@
    [
     "cortex-exec",
     "orion-hub",
-    12136,
-    1793405187.79546
+    12151,
+    1793406875.88906
    ],
    [
     "cortex-exec",
     "orion-harness-governor",
-    27404,
-    1793405076.01916
+    27442,
+    1793406752.39475
    ],
    [
     "cortex-exec",
@@ -8652,8 +8479,8 @@
    [
     "cortex-exec",
     "orion-durable-runs",
-    566,
-    1793400895.99177
+    567,
+    1793406535.6424
    ],
    [
     "cortex-exec",
@@ -8760,8 +8587,8 @@
    [
     "cortex-orch",
     "cortex-exec",
-    210618,
-    1793405459.84478
+    210627,
+    1793406975.40974
    ],
    [
     "cortex-orch",
@@ -8862,8 +8689,8 @@
    [
     "cortex-orch",
     "orion-durable-runs",
-    1567,
-    1793405076.41685
+    1568,
+    1793406535.47873
    ],
    [
     "cortex-orch",
@@ -8874,8 +8701,8 @@
    [
     "orion-feedback-runtime",
     "spark-concept-induction",
-    2854834,
-    1793405536.68725
+    2855596,
+    1793407115.44871
    ],
    [
     "spark-concept-induction",
@@ -8886,8 +8713,8 @@
    [
     "spark-concept-induction",
     "cortex-exec",
-    965825,
-    1793405462.52935
+    965885,
+    1793406977.73274
    ],
    [
     "spark-concept-induction",
@@ -9018,14 +8845,14 @@
    [
     "llm-gateway",
     "recall",
-    458,
-    1793405187.60659
+    462,
+    1793406875.77606
    ],
    [
     "llm-gateway",
     "cortex-exec",
-    592717,
-    1793405462.46191
+    592756,
+    1793406977.68612
    ],
    [
     "llm-gateway",
@@ -9066,14 +8893,14 @@
    [
     "llm-gateway",
     "orion-thought",
-    4843,
-    1793405169.34357
+    4852,
+    1793406800.07571
    ],
    [
     "llm-gateway",
     "orion-vector-host",
-    327073,
-    1793405537.30784
+    327765,
+    1793406916.32037
    ],
    [
     "llm-gateway",
@@ -9102,8 +8929,8 @@
    [
     "llm-gateway",
     "orion-bus",
-    6050,
-    1793405378.39609
+    6053,
+    1793406891.38946
    ],
    [
     "llm-gateway",
@@ -9114,8 +8941,8 @@
    [
     "llm-gateway",
     "vision-council",
-    47783,
-    1793405498.88393
+    47796,
+    1793407109.24536
    ],
    [
     "llm-gateway",
@@ -9126,14 +8953,14 @@
    [
     "llm-gateway",
     "orion-cortex-exec",
-    185,
-    1793404981.53621
+    189,
+    1793406790.6043
    ],
    [
     "llm-gateway",
     "orion-gpu-pool",
-    52538,
-    1793405500.88972
+    52563,
+    1793407061.37012
    ],
    [
     "llm-gateway",
@@ -9144,20 +8971,20 @@
    [
     "llm-gateway",
     "orion-mind",
-    5800,
-    1793405001.66837
+    5806,
+    1793406479.97612
    ],
    [
     "llm-gateway",
     "orion-hub",
-    33,
-    1793405076.35753
+    34,
+    1793405906.37755
    ],
    [
     "llm-gateway",
     "orion-harness-governor",
-    1488,
-    1793405482.76247
+    1510,
+    1793407036.69639
    ],
    [
     "llm-gateway",
@@ -9438,8 +9265,8 @@
    [
     "orion-thought",
     "cortex-exec",
-    100917,
-    1793405187.75077
+    100948,
+    1793406875.86006
    ],
    [
     "orion-thought",
@@ -9450,8 +9277,8 @@
    [
     "orion-thought",
     "llm-gateway",
-    252,
-    1793405108.36682
+    253,
+    1793406778.41502
    ],
    [
     "orion-thought",
@@ -9468,8 +9295,8 @@
    [
     "orion-thought",
     "orion-vector-host",
-    15279,
-    1793405113.58767
+    15285,
+    1793405692.94775
    ],
    [
     "orion-thought",
@@ -9480,8 +9307,8 @@
    [
     "orion-thought",
     "orion-cortex-exec",
-    1231,
-    1793402162.73671
+    1237,
+    1793405761.12616
    ],
    [
     "orion-thought",
@@ -9498,8 +9325,8 @@
    [
     "orion-thought",
     "orion-mind",
-    2524,
-    1793405152.95858
+    2530,
+    1793406788.34395
    ],
    [
     "orion-thought",
@@ -9540,8 +9367,8 @@
    [
     "orion-vector-host",
     "recall",
-    9585,
-    1793405186.60688
+    9593,
+    1793406873.93591
    ],
    [
     "orion-vector-host",
@@ -9570,8 +9397,8 @@
    [
     "orion-vector-host",
     "llm-gateway",
-    155294,
-    1793405536.78987
+    155967,
+    1793407110.44928
    ],
    [
     "orion-vector-host",
@@ -9612,8 +9439,8 @@
    [
     "orion-vector-host",
     "orion-cortex-exec",
-    3855,
-    1793388460.88628
+    3856,
+    1793406477.76277
    ],
    [
     "orion-vector-host",
@@ -9642,8 +9469,8 @@
    [
     "orion-vector-host",
     "orion-hub",
-    1123,
-    1793405152.22946
+    1128,
+    1793406787.53918
    ],
    [
     "orion-vector-host",
@@ -9672,20 +9499,20 @@
    [
     "vision-frame-router",
     "vision-edge",
-    1388201,
-    1793405532.49085
+    1388509,
+    1793407114.89964
    ],
    [
     "vision-frame-router",
     "vision-host",
-    425335,
-    1793405536.80251
+    425968,
+    1793407116.10496
    ],
    [
     "vision-frame-router",
     "orion-vision-host-qwen",
-    3107,
-    1793405447.41089
+    3115,
+    1793407024.81657
    ],
    [
     "vision-host",
@@ -9696,14 +9523,14 @@
    [
     "vision-host",
     "security-watcher",
-    1150760,
-    1793405533.01169
+    1150989,
+    1793407115.4143
    ],
    [
     "vision-host",
     "vision-window",
-    95988,
-    1793405536.84188
+    96551,
+    1793407116.13872
    ],
    [
     "vision-host",
@@ -9726,8 +9553,8 @@
    [
     "security-watcher",
     "vision-window",
-    15740,
-    1793405487.9966
+    15791,
+    1793407073.61161
    ],
    [
     "vision-window",
@@ -9744,8 +9571,8 @@
    [
     "vision-window",
     "security-watcher",
-    26414,
-    1793405488.00506
+    26514,
+    1793407078.62529
    ],
    [
     "vision-window",
@@ -9756,14 +9583,14 @@
    [
     "vision-window",
     "vision-council",
-    110573,
-    1793405477.21397
+    110586,
+    1793407098.90894
    ],
    [
     "vision-window",
     "vision-scribe",
-    2277,
-    1793405448.10386
+    2278,
+    1793405555.7931
    ],
    [
     "vision-window",
@@ -9780,14 +9607,14 @@
    [
     "orion-equilibrium-service",
     "cortex-orch",
-    28007,
-    1793405459.83487
+    28015,
+    1793406975.40332
    ],
    [
     "orion-equilibrium-service",
     "spark-concept-induction",
-    660058,
-    1793405531.46373
+    660216,
+    1793407112.33747
    ],
    [
     "orion-equilibrium-service",
@@ -9810,8 +9637,8 @@
    [
     "orion-substrate-runtime",
     "orion-harness-governor",
-    3706,
-    1793405057.33963
+    3711,
+    1793406739.36649
    ],
    [
     "orion-memory-consolidation",
@@ -9906,8 +9733,8 @@
    [
     "state-service",
     "cortex-exec",
-    56238,
-    1793405459.90032
+    56246,
+    1793406975.46551
    ],
    [
     "state-service",
@@ -9990,8 +9817,8 @@
    [
     "orion-bus",
     "llm-gateway",
-    38698,
-    1793404983.26333
+    38700,
+    1793405982.2281
    ],
    [
     "orion-bus",
@@ -10116,8 +9943,8 @@
    [
     "vision-council",
     "llm-gateway",
-    106743,
-    1793405498.51044
+    106756,
+    1793407106.54828
    ],
    [
     "vision-council",
@@ -10158,20 +9985,20 @@
    [
     "vision-council",
     "vision-scribe",
-    48812,
-    1793405498.89224
+    48825,
+    1793407109.25258
    ],
    [
     "vision-council",
     "orion-gpu-pool",
-    176782,
-    1793405498.86701
+    176814,
+    1793407109.22996
    ],
    [
     "vision-scribe",
     "llm-gateway",
-    963,
-    1793405262.06606
+    966,
+    1793406916.22763
    ],
    [
     "vision-scribe",
@@ -10188,8 +10015,8 @@
    [
     "vision-scribe",
     "orion-vector-host",
-    45648,
-    1793405499.12569
+    45658,
+    1793407110.044
    ],
    [
     "vision-scribe",
@@ -10218,8 +10045,8 @@
    [
     "orion-cortex-exec",
     "cortex-exec",
-    343420,
-    1793405155.6397
+    343436,
+    1793406790.77356
    ],
    [
     "orion-cortex-exec",
@@ -10248,8 +10075,8 @@
    [
     "orion-cortex-exec",
     "orion-vector-host",
-    133,
-    1793380004.82602
+    134,
+    1793406477.75387
    ],
    [
     "orion-cortex-exec",
@@ -10380,8 +10207,8 @@
    [
     "http:anthropic",
     "orion-gpu-pool",
-    236557,
-    1793405536.67671
+    236749,
+    1793407109.2927
    ],
    [
     "orion-world-pulse",
@@ -10410,14 +10237,14 @@
    [
     "hub",
     "cortex-exec",
-    5951,
-    1793405142.29004
+    5957,
+    1793406782.11273
    ],
    [
     "hub",
     "sql-writer",
-    1065,
-    1793393462.48065
+    1067,
+    1793406908.65177
    ],
    [
     "hub",
@@ -10434,8 +10261,8 @@
    [
     "hub",
     "llm-gateway",
-    572,
-    1793404812.30389
+    574,
+    1793406752.5254
    ],
    [
     "hub",
@@ -10446,14 +10273,14 @@
    [
     "hub",
     "orion-thought",
-    2673,
-    1793405152.93532
+    2678,
+    1793406788.33635
    ],
    [
     "hub",
     "orion-vector-host",
-    2114,
-    1793404979.66307
+    2117,
+    1793406473.37544
    ],
    [
     "hub",
@@ -10488,8 +10315,8 @@
    [
     "hub",
     "orion-gpu-pool",
-    95436,
-    1793405525.18167
+    95491,
+    1793407105.37799
    ],
    [
     "hub",
@@ -10506,14 +10333,14 @@
    [
     "hub",
     "orion-hub",
-    5644,
-    1793405152.06688
+    5652,
+    1793406908.30819
    ],
    [
     "hub",
     "orion-harness-governor",
-    4189,
-    1793405187.93929
+    4195,
+    1793406875.97611
    ],
    [
     "hub",
@@ -10584,8 +10411,8 @@
    [
     "orion-mind",
     "llm-gateway",
-    2271,
-    1793405378.3874
+    2281,
+    1793406891.38327
    ],
    [
     "orion-mind",
@@ -10602,26 +10429,26 @@
    [
     "orion-mind",
     "orion-vector-host",
-    5479,
-    1793404828.9975
+    5482,
+    1793406007.48786
    ],
    [
     "orion-mind",
     "orion-bus",
-    190,
-    1793402273.81467
+    192,
+    1793405982.2004
    ],
    [
     "orion-mind",
     "orion-cortex-exec",
-    2336,
-    1793405155.48579
+    2338,
+    1793406477.73921
    ],
    [
     "orion-mind",
     "orion-gpu-pool",
-    18264,
-    1793405378.37834
+    18301,
+    1793406891.37794
    ],
    [
     "orion-mind",
@@ -10638,8 +10465,8 @@
    [
     "orion-hub",
     "cortex-exec",
-    7490,
-    1793404856.14003
+    7496,
+    1793406820.6192
    ],
    [
     "orion-hub",
@@ -10662,8 +10489,8 @@
    [
     "orion-hub",
     "llm-gateway",
-    138,
-    1793405152.07477
+    139,
+    1793405906.01219
    ],
    [
     "orion-hub",
@@ -10674,8 +10501,8 @@
    [
     "orion-hub",
     "orion-vector-host",
-    1155,
-    1793404811.82747
+    1161,
+    1793406787.45915
    ],
    [
     "orion-hub",
@@ -10698,14 +10525,14 @@
    [
     "orion-hub",
     "orion-gpu-pool",
-    3049,
-    1793405142.26068
+    3054,
+    1793406782.08585
    ],
    [
     "orion-hub",
     "hub",
-    14886,
-    1793405187.91959
+    14908,
+    1793406959.78178
    ],
    [
     "orion-hub",
@@ -10728,8 +10555,8 @@
    [
     "orion-harness-governor",
     "cortex-exec",
-    28883,
-    1793405076.03307
+    28925,
+    1793406752.40343
    ],
    [
     "orion-harness-governor",
@@ -10740,8 +10567,8 @@
    [
     "orion-harness-governor",
     "llm-gateway",
-    1500,
-    1793405482.4721
+    1522,
+    1793407036.28721
    ],
    [
     "orion-harness-governor",
@@ -10770,8 +10597,8 @@
    [
     "orion-harness-governor",
     "orion-substrate-runtime",
-    3698,
-    1793405057.3239
+    3703,
+    1793406739.36083
    ],
    [
     "orion-harness-governor",
@@ -10788,8 +10615,8 @@
    [
     "orion-harness-governor",
     "orion-gpu-pool",
-    3056,
-    1793405187.9283
+    3062,
+    1793406875.97014
    ],
    [
     "orion-harness-governor",
@@ -10800,8 +10627,8 @@
    [
     "orion-harness-governor",
     "orion-hub",
-    4269,
-    1793405057.15234
+    4270,
+    1793405827.02171
    ],
    [
     "orion-harness-governor",
@@ -10872,8 +10699,8 @@
    [
     "orion-execution-dispatch-runtime",
     "spark-concept-induction",
-    262246,
-    1793401750.29767
+    262249,
+    1793406512.04476
    ],
    [
     "orion-execution-dispatch-runtime",
@@ -10896,8 +10723,8 @@
    [
     "orion-execution-dispatch-runtime",
     "orion-cortex-exec",
-    214705,
-    1793400834.06955
+    214709,
+    1793406535.03092
    ],
    [
     "orion-execution-dispatch-runtime",
@@ -10908,8 +10735,8 @@
    [
     "orion-execution-dispatch-runtime",
     "hub",
-    2356,
-    1793405512.01235
+    2358,
+    1793406877.15533
    ],
    [
     "llm-gateway-route-smoke",
@@ -10974,8 +10801,8 @@
    [
     "orion-topic-foundry",
     "llm-gateway",
-    172961,
-    1793405535.83466
+    173643,
+    1793405992.52531
    ],
    [
     "orion-topic-foundry",
@@ -10986,8 +10813,8 @@
    [
     "orion-topic-foundry",
     "orion-gpu-pool",
-    217269,
-    1793405537.35373
+    218634,
+    1793405992.55533
    ],
    [
     "tts-timing-probe",
@@ -11034,14 +10861,14 @@
    [
     "orion-durable-runs",
     "sql-writer",
-    529,
-    1793405076.44984
+    530,
+    1793405831.05269
    ],
    [
     "orion-durable-runs",
     "cortex-orch",
-    1311,
-    1793400834.53173
+    1312,
+    1793406535.49051
    ],
    [
     "orion-durable-runs",
@@ -11058,8 +10885,8 @@
    [
     "orion-durable-runs",
     "orion-thought",
-    2304,
-    1793401464.50091
+    2305,
+    1793406759.24306
    ],
    [
     "orion-durable-runs",
@@ -11094,8 +10921,8 @@
    [
     "orion-durable-runs",
     "orion-gpu-pool",
-    740437,
-    1793405536.94296
+    741602,
+    1793407114.42563
    ],
    [
     "orion-durable-runs",
@@ -11106,8 +10933,8 @@
    [
     "orion-durable-runs",
     "orion-hub",
-    3414,
-    1793405142.26869
+    3419,
+    1793406782.0925
    ],
    [
     "orion-durable-runs",
@@ -11226,8 +11053,8 @@
    [
     "orion-mesh-guardian:gpu-watch",
     "gpu-lane-controller",
-    10501,
-    1793405328.759
+    10511,
+    1793406827.58695
    ],
    [
     "orion-dream",
@@ -11286,8 +11113,8 @@
    [
     "vision-retina-walkway",
     "vision-frame-router",
-    326449,
-    1793405537.44164
+    327080,
+    1793407115.47579
    ],
    [
     "operator:hecate-vllm-validation",
@@ -11384,32 +11211,32 @@
    [
     "vision-edge",
     "orion:vision:frames",
-    89932703,
-    1793405537.4619
+    89954289,
+    1793407116.76677
    ],
    [
     "vision-edge",
     "orion:vision:edge:health",
-    89932517,
-    1793405537.42442
+    89954104,
+    1793407116.77486
    ],
    [
     "vision-edge",
     "orion:system:health",
-    912504,
-    1793405526.63779
+    912557,
+    1793407116.7541
    ],
    [
     "vision-edge",
     "orion:vision:edge:activity",
-    1919079,
-    1793405537.36842
+    1920586,
+    1793407116.50404
    ],
    [
     "orion-signal-gateway",
     "orion:system:health",
-    660538,
-    1793405537.2809
+    660695,
+    1793407107.14542
    ],
    [
     "orion-signal-gateway",
@@ -11420,26 +11247,26 @@
    [
     "orion-signal-gateway",
     "orion:signals:*",
-    197839493,
-    1793405537.46557
+    197893730,
+    1793407116.77858
    ],
    [
     "recall",
     "orion:system:health",
-    660166,
-    1793405537.37524
+    660323,
+    1793407107.50983
    ],
    [
     "recall",
     "orion:recall:telemetry",
-    455009,
-    1793405187.60659
+    455038,
+    1793406875.77606
    ],
    [
     "recall",
     "orion:exec:result:RecallService:*",
-    454382,
-    1793405187.65642
+    454411,
+    1793406875.79354
    ],
    [
     "smoke3:claude",
@@ -11450,62 +11277,62 @@
    [
     "cortex-exec",
     "orion:system:health",
-    12502397,
-    1793405535.58176
+    12505873,
+    1793407115.74039
    ],
    [
     "cortex-exec",
     "orion:exec:request:LLMGatewayService",
-    696158,
-    1793405459.90032
+    696195,
+    1793406975.46551
    ],
    [
     "cortex-exec",
     "orion:cognition:reasoning_call",
-    573255,
-    1793405462.47067
+    573288,
+    1793406977.69415
    ],
    [
     "cortex-exec",
     "orion:cognition:trace",
-    573403,
-    1793405462.47411
+    573436,
+    1793406977.69733
    ],
    [
     "cortex-exec",
     "orion:metacog:trace",
-    437651,
-    1793405187.69402
+    437676,
+    1793406875.80974
    ],
    [
     "cortex-exec",
     "orion:grammar:event",
-    11313176,
-    1793405462.60295
+    11313823,
+    1793406977.82442
    ],
    [
     "cortex-exec",
     "orion:rpc_health:snapshot",
-    878439,
-    1793405523.19393
+    878651,
+    1793407113.34877
    ],
    [
     "cortex-exec",
     "orion:exec:request:RecallService",
-    455236,
-    1793405186.69663
+    455265,
+    1793406874.26076
    ],
    [
     "cortex-exec",
     "orion:cortex:request",
-    425,
-    1793400834.50403
+    426,
+    1793406535.46183
    ],
    [
     "cortex-exec",
     "orion:state:request",
-    120610,
-    1793405459.84478
+    120618,
+    1793406975.40974
    ],
    [
     "cortex-exec",
@@ -11516,20 +11343,20 @@
    [
     "cortex-exec",
     "orion:metacog:sql-write",
-    107885,
-    1793405462.46191
+    107893,
+    1793406977.68612
    ],
    [
     "cortex-exec",
     "orion:journal:write",
-    132,
-    1793399052.80085
+    133,
+    1793406123.43829
    ],
    [
     "cortex-exec",
     "orion:gpu_pool:lease:request",
-    157358,
-    1793405462.14487
+    157473,
+    1793406977.64009
    ],
    [
     "cortex-exec",
@@ -11576,38 +11403,38 @@
    [
     "cortex-exec",
     "orion:attention:schema",
-    56089,
-    1793405155.6397
+    56105,
+    1793406790.77356
    ],
    [
     "cortex-exec",
     "orion:exec:result:*",
-    1119524,
-    1793405462.61015
+    1119590,
+    1793406977.82768
    ],
    [
     "cortex-exec",
     "orion:cortex:pre_turn_appraisal:result:*",
-    5260,
-    1793405152.05245
+    5266,
+    1793406787.38108
    ],
    [
     "cortex-exec",
     "orion:cortex:exec:stance_prepare_result:*",
-    3089,
-    1793405155.64699
+    3101,
+    1793406790.7799
    ],
    [
     "sql-writer",
     "orion:system:health",
-    657552,
-    1793405536.60543
+    657710,
+    1793407116.37292
    ],
    [
     "sql-writer",
     "orion:journal:created",
-    95731,
-    1793399052.89028
+    95735,
+    1793406908.65177
    ],
    [
     "sql-writer",
@@ -11642,8 +11469,8 @@
    [
     "cortex-orch",
     "orion:system:health",
-    2641197,
-    1793405530.25608
+    2641829,
+    1793407110.59741
    ],
    [
     "cortex-orch",
@@ -11660,8 +11487,8 @@
    [
     "cortex-orch",
     "orion:rpc_health:snapshot",
-    219985,
-    1793405509.29007
+    220038,
+    1793407099.36005
    ],
    [
     "cortex-orch",
@@ -11684,8 +11511,8 @@
    [
     "cortex-orch",
     "orion:cortex:exec:request:background",
-    217394,
-    1793405459.83487
+    217402,
+    1793406975.40332
    ],
    [
     "cortex-orch",
@@ -11726,8 +11553,8 @@
    [
     "cortex-orch",
     "orion:durable:run:request",
-    1303,
-    1793400834.51031
+    1304,
+    1793406535.47123
    ],
    [
     "cortex-orch",
@@ -11738,8 +11565,8 @@
    [
     "cortex-orch",
     "orion:cortex:result*",
-    118024,
-    1793403425.39167
+    118025,
+    1793406535.49051
    ],
    [
     "cortex-orch",
@@ -11750,20 +11577,20 @@
    [
     "orion-feedback-runtime",
     "orion:system:health",
-    655819,
-    1793405529.91659
+    655977,
+    1793407110.08051
    ],
    [
     "orion-feedback-runtime",
     "orion:feedback:frame",
-    2855338,
-    1793405536.68375
+    2856100,
+    1793407115.44439
    ],
    [
     "spark-concept-induction",
     "orion:system:health",
-    655895,
-    1793405530.48886
+    656053,
+    1793407110.81906
    ],
    [
     "spark-concept-induction",
@@ -11786,14 +11613,14 @@
    [
     "spark-concept-induction",
     "orion:memory:identity:snapshot",
-    4393755,
-    1793405536.68725
+    4394711,
+    1793407115.44871
    ],
    [
     "spark-concept-induction",
     "orion:debug:turn:dossier",
-    4393731,
-    1793405536.69392
+    4394687,
+    1793407115.45451
    ],
    [
     "spark-concept-induction",
@@ -11810,44 +11637,44 @@
    [
     "biometrics",
     "orion:system:health",
-    3476868,
-    1793405534.53123
+    3477812,
+    1793407112.60553
    ],
    [
     "biometrics",
     "orion:grammar:event",
-    18818061,
-    1793405533.6022
+    18823022,
+    1793407115.35327
    ],
    [
     "biometrics",
     "orion:spark:signal",
-    378983,
-    1793405534.40721
+    379088,
+    1793407111.77043
    ],
    [
     "biometrics",
     "orion:telemetry:biometrics",
-    441815,
-    1793405533.44925
+    441916,
+    1793407115.10074
    ],
    [
     "biometrics",
     "orion:biometrics:sample",
-    441813,
-    1793405533.45256
+    441914,
+    1793407115.10678
    ],
    [
     "biometrics",
     "orion:biometrics:summary",
-    441812,
-    1793405533.45653
+    441913,
+    1793407115.1106
    ],
    [
     "biometrics",
     "orion:biometrics:induction",
-    441811,
-    1793405533.46024
+    441912,
+    1793407115.11446
    ],
    [
     "biometrics",
@@ -11864,68 +11691,68 @@
    [
     "biometrics",
     "orion:biometrics:cluster",
-    378983,
-    1793405534.40249
+    379088,
+    1793407111.76007
    ],
    [
     "llm-gateway",
     "orion:system:health",
-    660337,
-    1793405531.47342
+    660495,
+    1793407111.84885
    ],
    [
     "llm-gateway",
     "orion:spark:introspect:candidate",
-    730852,
-    1793405535.83466
+    731578,
+    1793407106.54828
    ],
    [
     "llm-gateway",
     "orion:embedding:generate",
-    909847,
-    1793405536.91655
+    910591,
+    1793407109.24117
    ],
    [
     "llm-gateway",
     "orion:gpu_pool:state:request",
-    42052,
-    1793405500.87047
+    42077,
+    1793407061.36661
    ],
    [
     "llm-gateway",
     "orion:exec:result:LLMGatewayService:*",
-    498440,
-    1793405186.29708
+    498469,
+    1793406873.21337
    ],
    [
     "llm-gateway",
     "orion:exec:result:*",
-    206717,
-    1793405462.43867
+    206725,
+    1793406977.6684
    ],
    [
     "llm-gateway",
     "orion:council:reply*",
-    109880,
-    1793405498.87359
+    109893,
+    1793407109.23583
    ],
    [
     "llm-gateway",
     "orion:mind:llm:reply:*",
-    11075,
-    1793405378.3874
+    11092,
+    1793406891.38327
    ],
    [
     "llm-gateway",
     "orion:llm:reply*",
-    212068,
-    1793405536.91204
+    212750,
+    1793405992.56216
    ],
    [
     "llm-gateway",
     "orion:llm:call:usage",
-    15382,
-    1793405536.78987
+    16151,
+    1793407110.44928
    ],
    [
     "landing-pad",
@@ -12008,14 +11835,14 @@
    [
     "actions",
     "orion:system:health",
-    220139,
-    1793405533.09278
+    220191,
+    1793407093.11005
    ],
    [
     "actions",
     "orion:rpc_health:snapshot",
-    92518,
-    1793405532.65421
+    92570,
+    1793407092.75477
    ],
    [
     "actions",
@@ -12056,8 +11883,8 @@
    [
     "orion-thought",
     "orion:system:health",
-    652819,
-    1793405527.83336
+    652977,
+    1793407108.29481
    ],
    [
     "orion-thought",
@@ -12068,8 +11895,8 @@
    [
     "orion-thought",
     "orion:reverie:chain",
-    30787,
-    1793405113.30469
+    30790,
+    1793405882.1459
    ],
    [
     "orion-thought",
@@ -12080,14 +11907,14 @@
    [
     "orion-thought",
     "orion:rpc_health:snapshot",
-    92495,
-    1793405536.88595
+    92547,
+    1793407096.97837
    ],
    [
     "orion-thought",
     "orion:cortex:exec:request",
-    61634,
-    1793405169.36548
+    61648,
+    1793406800.08398
    ],
    [
     "orion-thought",
@@ -12098,38 +11925,38 @@
    [
     "orion-thought",
     "orion:reverie:thought",
-    27353,
-    1793405113.1869
+    27359,
+    1793405692.63443
    ],
    [
     "orion-thought",
     "orion:attention:salience:trace",
-    21235,
-    1793405113.2996
+    21241,
+    1793405692.91866
    ],
    [
     "orion-thought",
     "orion:mind:artifact",
-    5147,
-    1793405169.34357
+    5153,
+    1793406800.07571
    ],
    [
     "orion-thought",
     "orion:thought:artifact",
-    4447,
-    1793405187.74558
+    4453,
+    1793406875.857
    ],
    [
     "orion-thought",
     "orion:dream:compaction-request",
-    5998,
-    1793405113.3154
+    6000,
+    1793405692.93591
    ],
    [
     "orion-thought",
     "orion:reverie:resonance-alert",
-    12924,
-    1793405113.52866
+    12927,
+    1793405882.21817
    ],
    [
     "orion-thought",
@@ -12140,32 +11967,32 @@
    [
     "orion-thought",
     "orion:attention:schema",
-    10259,
-    1793405113.3075
+    10262,
+    1793405882.21513
    ],
    [
     "orion-thought",
     "orion:thought:result:*",
-    5158,
-    1793405187.7322
+    5164,
+    1793406875.84321
    ],
    [
     "orion-thought",
     "orion:cortex:exec:stance_prepare",
-    3651,
-    1793405152.93532
+    3663,
+    1793406788.33635
    ],
    [
     "orion-thought",
     "orion:reverie:visual:step:reply:*",
-    2274,
-    1793401464.50091
+    2275,
+    1793406759.24306
    ],
    [
     "meta-tags",
     "orion:system:health",
-    1319641,
-    1793405534.91398
+    1319957,
+    1793407114.80265
    ],
    [
     "meta-tags",
@@ -12176,14 +12003,14 @@
    [
     "orion-vector-host",
     "orion:system:health",
-    660165,
-    1793405532.58825
+    660323,
+    1793407112.88904
    ],
    [
     "orion-vector-host",
     "orion:vector:semantic:upsert",
-    927470,
-    1793405537.30784
+    928214,
+    1793407110.044
    ],
    [
     "orion-vector-host",
@@ -12194,38 +12021,38 @@
    [
     "agent-council",
     "orion:system:health",
-    659859,
-    1793405530.63493
+    660017,
+    1793407112.36532
    ],
    [
     "vision-frame-router",
     "orion:system:health",
-    648707,
-    1793405537.45296
+    648864,
+    1793407107.91108
    ],
    [
     "vision-frame-router",
     "orion:exec:request:VisionHostService",
-    1813627,
-    1793405537.44164
+    1814567,
+    1793407115.47579
    ],
    [
     "vision-frame-router",
     "orion:exec:request:VisionHostService:circe-vl",
-    3108,
-    1793405446.90911
+    3116,
+    1793407023.95675
    ],
    [
     "vision-host",
     "orion:system:health",
-    661576,
-    1793405534.42911
+    661734,
+    1793407114.34443
    ],
    [
     "vision-host",
     "orion:vision:artifacts",
-    1740089,
-    1793405536.82217
+    1741030,
+    1793407116.12545
    ],
    [
     "vision-host",
@@ -12236,20 +12063,20 @@
    [
     "vision-host",
     "orion:vision:reply:*",
-    1806993,
-    1793405536.80251
+    1807934,
+    1793407116.10496
    ],
    [
     "security-watcher",
     "orion:system:health",
-    632605,
-    1793405536.1417
+    632763,
+    1793407115.66346
    ],
    [
     "security-watcher",
     "orion:vision:guard:signal",
-    1901813,
-    1793405533.02685
+    1902683,
+    1793407115.42194
    ],
    [
     "security-watcher",
@@ -12260,32 +12087,32 @@
    [
     "vision-window",
     "orion:system:health",
-    655841,
-    1793405532.94866
+    655999,
+    1793407113.05012
    ],
    [
     "vision-window",
     "orion:vision:windows",
-    989204,
-    1793405536.26184
+    989617,
+    1793407112.31874
    ],
    [
     "vision-window",
     "orion:vision:events",
-    1618,
-    1793405448.09578
+    1619,
+    1793405555.77837
    ],
    [
     "vision-window",
     "orion:vision:inventory:sql-write",
-    817992,
-    1793405536.26626
+    818405,
+    1793407112.32313
    ],
    [
     "vision-window",
     "orion:vision:crops:sql-write",
-    111728,
-    1793405536.84188
+    112342,
+    1793407116.13872
    ],
    [
     "vision-window",
@@ -12296,38 +12123,38 @@
    [
     "orion-equilibrium-service",
     "orion:system:health",
-    660412,
-    1793405537.39336
+    660569,
+    1793407107.89219
    ],
    [
     "orion-equilibrium-service",
     "orion:equilibrium:snapshot",
-    440141,
-    1793405532.55233
+    440246,
+    1793407108.72309
    ],
    [
     "orion-equilibrium-service",
     "orion:metacognition:tick",
-    660228,
-    1793405531.23507
+    660386,
+    1793407112.33401
    ],
    [
     "orion-equilibrium-service",
     "orion:spark:signal",
-    440145,
-    1793405532.56769
+    440250,
+    1793407108.73203
    ],
    [
     "orion-equilibrium-service",
     "orion:equilibrium:metacog:trigger",
-    109410,
-    1793405459.80035
+    109418,
+    1793406975.39944
    ],
    [
     "orion-equilibrium-service",
     "orion:equilibrium:transition",
-    13930,
-    1793405024.61003
+    13934,
+    1793406733.32091
    ],
    [
     "orion-equilibrium-service",
@@ -12350,56 +12177,56 @@
    [
     "substrate-telemetry",
     "orion:system:health",
-    660559,
-    1793405535.6631
+    660717,
+    1793407114.9821
    ],
    [
     "orion-substrate-runtime",
     "orion:system:health",
-    635355,
-    1793405533.07501
+    635510,
+    1793407111.69503
    ],
    [
     "orion-substrate-runtime",
     "orion:grammar:event",
-    244049,
-    1793405519.30009
+    244121,
+    1793407078.80756
    ],
    [
     "orion-substrate-runtime",
     "orion:substrate:brain_frame",
-    707857,
-    1793405519.32955
+    707879,
+    1793407114.89088
    ],
    [
     "orion-substrate-runtime",
     "orion:grammar:accepted-pressure",
-    57292,
-    1793405406.37481
+    57304,
+    1793406962.34806
    ],
    [
     "orion-substrate-runtime",
     "orion:attention:schema",
-    100009,
-    1793405519.23251
+    100027,
+    1793407078.79197
    ],
    [
     "orion-substrate-runtime",
     "orion:substrate:finalize_appraisal:result:*",
-    3707,
-    1793405057.3239
+    3712,
+    1793406739.36083
    ],
    [
     "orion-substrate-runtime",
     "orion:system_one:appraisal",
-    52157,
-    1793405519.30301
+    52175,
+    1793407078.81147
    ],
    [
     "orion-memory-consolidation",
     "orion:system:health",
-    660534,
-    1793405527.82557
+    660692,
+    1793407108.02891
    ],
    [
     "orion-memory-consolidation",
@@ -12464,8 +12291,8 @@
    [
     "orion-chat-memory",
     "orion:system:health",
-    660553,
-    1793405530.94343
+    660711,
+    1793407111.59416
    ],
    [
     "orion-chat-memory",
@@ -12482,8 +12309,8 @@
    [
     "collapse-mirror",
     "orion:system:health",
-    1314672,
-    1793405534.399
+    1314988,
+    1793407114.26106
    ],
    [
     "collapse-mirror",
@@ -12506,8 +12333,8 @@
    [
     "vision-retina",
     "orion:system:health",
-    413471,
-    1793405535.69163
+    413629,
+    1793407115.36198
    ],
    [
     "vision-retina",
@@ -12518,50 +12345,50 @@
    [
     "orion-memory-crystallizer",
     "orion:system:health",
-    660429,
-    1793405535.74239
+    660587,
+    1793407115.35531
    ],
    [
     "vector-writer",
     "orion:system:health",
-    660479,
-    1793405528.81612
+    660637,
+    1793407109.98992
    ],
    [
     "state-journaler",
     "orion:system:health",
-    660529,
-    1793405528.84498
+    660687,
+    1793407109.18574
    ],
    [
     "state-service",
     "orion:system:health",
-    1912034,
-    1793405532.95675
+    1912508,
+    1793407113.12168
    ],
    [
     "state-service",
     "orion:state:reply:*",
-    231463,
-    1793405459.8516
+    231471,
+    1793406975.41757
    ],
    [
     "orion-bus",
     "orion:system:health",
-    655141,
-    1793405532.59175
+    655299,
+    1793407114.1996
    ],
    [
     "orion-bus",
     "orion:grammar:event",
-    7239976,
-    1793405534.56385
+    7241358,
+    1793407112.0432
    ],
    [
     "orion-embodiment",
     "orion:system:health",
-    655958,
-    1793405529.76497
+    656116,
+    1793407110.00373
    ],
    [
     "orion-embodiment",
@@ -12578,14 +12405,14 @@
    [
     "orion-embodiment",
     "orion:rpc_health:snapshot",
-    92541,
-    1793405518.206
+    92594,
+    1793407108.32956
    ],
    [
     "orion-embodiment",
     "orion:embodiment:outcome",
-    242331,
-    1793405519.08147
+    242406,
+    1793407107.92863
    ],
    [
     "orion-embodiment",
@@ -12626,8 +12453,8 @@
    [
     "whisper-tts",
     "orion:system:health",
-    276925,
-    1793405533.14714
+    277083,
+    1793407113.42528
    ],
    [
     "whisper-tts",
@@ -12644,56 +12471,56 @@
    [
     "atlas-worker-1",
     "orion:system:health",
-    193840,
-    1793405525.1436
+    193893,
+    1793407116.72151
    ],
    [
     "atlas-worker-1",
     "orion:llm:worker:announce",
-    90457,
-    1793405525.14728
+    90510,
+    1793407116.72566
    ],
    [
     "atlas-worker-2",
     "orion:system:health",
-    197126,
-    1793405513.94932
+    197179,
+    1793407105.66508
    ],
    [
     "atlas-worker-2",
     "orion:llm:worker:announce",
-    90527,
-    1793405513.9526
+    90580,
+    1793407105.66734
    ],
    [
     "atlas-worker-fast-1",
     "orion:system:health",
-    197133,
-    1793405515.01216
+    197186,
+    1793407106.62633
    ],
    [
     "atlas-worker-fast-1",
     "orion:llm:worker:announce",
-    90531,
-    1793405515.01562
+    90584,
+    1793407106.62997
    ],
    [
     "orion-graph-compression",
     "orion:system:health",
-    212534,
-    1793405535.75606
+    212586,
+    1793407095.01511
    ],
    [
     "orion-field-digester",
     "orion:system:health",
-    653705,
-    1793405528.79904
+    653863,
+    1793407109.19555
    ],
    [
     "orion-field-digester",
     "orion:field_channel:anomaly_score",
-    93254,
-    1793405518.78505
+    93280,
+    1793407079.10065
    ],
    [
     "orion-field-digester",
@@ -12704,26 +12531,26 @@
    [
     "vision-council",
     "orion:system:health",
-    655954,
-    1793405537.22848
+    656111,
+    1793407107.17568
    ],
    [
     "vision-council",
     "orion:exec:request:LLMGatewayService",
-    109948,
-    1793405477.21397
+    109961,
+    1793407098.90894
    ],
    [
     "vision-council",
     "orion:vision:events",
-    48923,
-    1793405498.88393
+    48936,
+    1793407109.24536
    ],
    [
     "vision-council",
     "orion:gpu_pool:lease:request",
-    176652,
-    1793405498.52487
+    176684,
+    1793407106.55599
    ],
    [
     "vision-council",
@@ -12746,38 +12573,38 @@
    [
     "vision-scribe",
     "orion:system:health",
-    655976,
-    1793405535.75931
+    656134,
+    1793407115.39397
    ],
    [
     "vision-scribe",
     "orion:vision:events:sql-write",
-    56075,
-    1793405498.89224
+    56091,
+    1793407109.25258
    ],
    [
     "vision-scribe",
     "orion:vision:scribe:pub",
-    50917,
-    1793405498.89945
+    50931,
+    1793407109.26241
    ],
    [
     "notify",
     "orion:system:health",
-    632891,
-    1793405536.76967
+    633049,
+    1793407116.7416
    ],
    [
     "notify",
     "orion:notify:in_app",
-    14931,
-    1793405512.03518
+    14935,
+    1793406957.87213
    ],
    [
     "notify",
     "orion:notify:persistence:request",
-    14931,
-    1793405512.03168
+    14935,
+    1793406957.87581
    ],
    [
     "notify",
@@ -12800,8 +12627,8 @@
    [
     "orion-cortex-exec",
     "orion:substrate:tier_outcomes",
-    341942,
-    1793405155.48579
+    341947,
+    1793406790.6043
    ],
    [
     "orion-cortex-exec",
@@ -12812,8 +12639,8 @@
    [
     "orion-cortex-exec",
     "orion:chat_stance:belief:write",
-    57655,
-    1793405155.5265
+    57671,
+    1793406790.66147
    ],
    [
     "smoke2:claude",
@@ -12830,32 +12657,32 @@
    [
     "orion-gpu-pool",
     "orion:system:health",
-    2346556,
-    1793405537.33161
+    2347977,
+    1793407109.63006
    ],
    [
     "orion-gpu-pool",
     "orion:grammar:event",
-    42361,
-    1793405322.58611
+    42368,
+    1793406831.5519
    ],
    [
     "orion-gpu-pool",
     "orion:rpc_health:snapshot",
-    90937,
-    1793405507.99157
+    90990,
+    1793407098.07925
    ],
    [
     "orion-gpu-pool",
     "orion:gpu_pool:event",
-    863847,
-    1793405537.3462
+    866179,
+    1793407109.22608
    ],
    [
     "orion-gpu-pool",
     "orion:gpu_pool:state",
-    476316,
-    1793405535.55858
+    476575,
+    1793407114.01596
    ],
    [
     "orion-gpu-pool",
@@ -12884,26 +12711,26 @@
    [
     "orion-gpu-pool",
     "orion:gpu_pool:state:reply:*",
-    134490,
-    1793405525.18167
+    134588,
+    1793407105.37799
    ],
    [
     "orion-gpu-pool",
     "orion:gpu_pool:reply:*",
-    1463258,
-    1793405537.35373
+    1466157,
+    1793407114.42563
    ],
    [
     "http:anthropic",
     "orion:gpu_pool:lease:request",
-    236593,
-    1793405535.74549
+    236785,
+    1793407107.0885
    ],
    [
     "orion-world-pulse",
     "orion:system:health",
-    655370,
-    1793405531.13189
+    655528,
+    1793407111.66134
    ],
    [
     "orion-world-pulse",
@@ -13010,8 +12837,8 @@
    [
     "hub",
     "orion:system:health",
-    652119,
-    1793405534.11872
+    652276,
+    1793407108.33382
    ],
    [
     "hub",
@@ -13022,14 +12849,14 @@
    [
     "hub",
     "orion:vector:semantic:upsert",
-    7678,
-    1793394292.25435
+    7681,
+    1793406914.88502
    ],
    [
     "hub",
     "orion:rpc_health:snapshot",
-    91636,
-    1793405519.01159
+    91689,
+    1793407109.56849
    ],
    [
     "hub",
@@ -13040,8 +12867,8 @@
    [
     "hub",
     "orion:journal:write",
-    1055,
-    1793393462.14331
+    1057,
+    1793406908.29286
    ],
    [
     "hub",
@@ -13052,8 +12879,8 @@
    [
     "hub",
     "orion:gpu_pool:state:request",
-    95265,
-    1793405525.17489
+    95320,
+    1793407105.37294
    ],
    [
     "hub",
@@ -13076,20 +12903,20 @@
    [
     "hub",
     "orion:cortex:pre_turn_appraisal:request",
-    5273,
-    1793405142.28112
+    5279,
+    1793406782.10267
    ],
    [
     "hub",
     "orion:repair_pressure:appraisal",
-    4735,
-    1793405152.05932
+    4741,
+    1793406787.387
    ],
    [
     "hub",
     "orion:thought:request",
-    5150,
-    1793405152.49612
+    5156,
+    1793406787.78585
    ],
    [
     "hub",
@@ -13142,8 +12969,8 @@
    [
     "hub",
     "orion:self_concept:history:write",
-    6314,
-    1793382403.71137
+    6315,
+    1793405831.08274
    ],
    [
     "hub",
@@ -13178,8 +13005,8 @@
    [
     "hub",
     "orion:harness:run:request:agent",
-    3214,
-    1793405187.91959
+    3220,
+    1793406875.96409
    ],
    [
     "hub",
@@ -13202,8 +13029,8 @@
    [
     "hub",
     "orion:reading:lifecycle",
-    22688,
-    1793405401.82202
+    22722,
+    1793406959.78178
    ],
    [
     "hub",
@@ -13220,8 +13047,8 @@
    [
     "hub",
     "orion:curiosity:peer:brief:consumed",
-    319,
-    1793385534.50818
+    320,
+    1793405831.00763
    ],
    [
     "hub",
@@ -13250,8 +13077,8 @@
    [
     "hub",
     "orion:retro_leisure:start:reply:*",
-    1576,
-    1793405512.01235
+    1578,
+    1793406877.15533
    ],
    [
     "hub",
@@ -13412,20 +13239,20 @@
    [
     "hub",
     "orion:reading:turn:reply:*",
-    1421,
-    1793397433.87522
+    1423,
+    1793406752.43473
    ],
    [
     "hub",
     "orion:curiosity:turn:reply:*",
-    1324,
-    1793403154.48518
+    1326,
+    1793405951.80811
    ],
    [
     "cortex-gateway",
     "orion:system:health",
-    656406,
-    1793405532.98204
+    656564,
+    1793407113.09675
    ],
    [
     "cortex-gateway",
@@ -13448,26 +13275,26 @@
    [
     "orion-mind",
     "orion:system:health",
-    626956,
-    1793405537.2975
+    627106,
+    1793407110.09987
    ],
    [
     "orion-mind",
     "orion:exec:request:LLMGatewayService",
-    11090,
-    1793405322.31265
+    11107,
+    1793406831.30687
    ],
    [
     "orion-mind",
     "orion:grammar:event",
-    95,
-    1793405378.40373
+    105,
+    1793406891.39439
    ],
    [
     "orion-mind",
     "orion:rpc_health:snapshot",
-    91477,
-    1793405526.9883
+    91529,
+    1793407108.2872
    ],
    [
     "orion-mind",
@@ -13478,8 +13305,8 @@
    [
     "orion-mind",
     "orion:gpu_pool:lease:request",
-    17943,
-    1793405378.36191
+    17980,
+    1793406891.3123
    ],
    [
     "orion-mind",
@@ -13496,14 +13323,14 @@
    [
     "orion-hub",
     "orion:grammar:event",
-    41996,
-    1793405187.85739
+    42046,
+    1793406908.30819
    ],
    [
     "orion-hub",
     "orion:gpu_pool:lease:request",
-    3050,
-    1793405142.2574
+    3055,
+    1793406782.08278
    ],
    [
     "orion-hub",
@@ -13520,8 +13347,8 @@
    [
     "orion-hub",
     "orion:cockpit:hop",
-    62656,
-    1793405187.91609
+    62738,
+    1793406875.9617
    ],
    [
     "orion-hub",
@@ -13532,68 +13359,68 @@
    [
     "orion-harness-governor",
     "orion:system:health",
-    652370,
-    1793405537.41248
+    652527,
+    1793407107.64516
    ],
    [
     "orion-harness-governor",
     "orion:grammar:event",
-    764626,
-    1793405482.76247
+    765105,
+    1793407093.06901
    ],
    [
     "orion-harness-governor",
     "orion:rpc_health:snapshot",
-    91354,
-    1793405516.89101
+    91407,
+    1793407107.02058
    ],
    [
     "orion-harness-governor",
     "orion:cortex:exec:request:background",
-    4947,
-    1793405057.33963
+    4954,
+    1793406739.36649
    ],
    [
     "orion-harness-governor",
     "orion:gpu_pool:state:request",
-    3056,
-    1793405187.92571
+    3062,
+    1793406875.9685
    ],
    [
     "orion-harness-governor",
     "orion:harness:run:step",
-    158621,
-    1793405482.76949
+    158714,
+    1793407093.07268
    ],
    [
     "orion-harness-governor",
     "orion:substrate:finalize_appraisal:request",
-    3846,
-    1793405057.32016
+    3851,
+    1793406739.35595
    ],
    [
     "orion-harness-governor",
     "orion:harness:verdict:artifact",
-    3693,
-    1793405075.79635
+    3698,
+    1793406752.0301
    ],
    [
     "orion-harness-governor",
     "orion:substrate:turn_outcome",
-    3685,
-    1793405075.81527
+    3690,
+    1793406752.05515
    ],
    [
     "orion-harness-governor",
     "orion:harness:run:artifact",
-    4187,
-    1793405076.0017
+    4192,
+    1793406752.37603
    ],
    [
     "orion-harness-governor",
     "orion:substrate:post_turn_closure",
-    3684,
-    1793405076.01916
+    3689,
+    1793406752.39475
    ],
    [
     "orion-harness-governor",
@@ -13610,8 +13437,8 @@
    [
     "orion-harness-governor",
     "orion:harness:run:result:*",
-    4185,
-    1793405075.88361
+    4190,
+    1793406752.36416
    ],
    [
     "orion-harness-governor",
@@ -13688,44 +13515,44 @@
    [
     "orion-social-room-bridge",
     "orion:system:health",
-    655985,
-    1793405535.62677
+    656143,
+    1793407114.91369
    ],
    [
     "gpu-lane-controller",
     "orion:system:health",
-    440989,
-    1793405535.65909
+    441147,
+    1793407115.09692
    ],
    [
     "gpu-lane-controller",
     "orion:gpu_pool:actuate:result",
-    12552,
-    1793405328.759
+    12562,
+    1793406827.58695
    ],
    [
     "circe-worker-agent-burst-1",
     "orion:system:health",
-    40326,
-    1793405528.6106
+    40378,
+    1793407090.23863
    ],
    [
     "circe-worker-agent-burst-1",
     "orion:llm:worker:announce",
-    40262,
-    1793405528.61423
+    40314,
+    1793407090.24259
    ],
    [
     "atlas-worker-agent-1",
     "orion:system:health",
-    149385,
-    1793405515.20622
+    149438,
+    1793407106.55952
    ],
    [
     "atlas-worker-agent-1",
     "orion:llm:worker:announce",
-    90503,
-    1793405515.20985
+    90556,
+    1793407106.56286
    ],
    [
     "voice-check",
@@ -13736,14 +13563,14 @@
    [
     "orion-consolidation-runtime",
     "orion:system:health",
-    632976,
-    1793405528.59843
+    633134,
+    1793407108.8357
    ],
    [
     "orion-pageindex",
     "orion:system:health",
-    413895,
-    1793405527.73158
+    414053,
+    1793407108.06232
    ],
    [
     "curiosity-supervisor-readings",
@@ -13760,26 +13587,26 @@
    [
     "orion-execution-dispatch-runtime",
     "orion:system:health",
-    653095,
-    1793405533.14279
+    653253,
+    1793407113.30172
    ],
    [
     "orion-execution-dispatch-runtime",
     "orion:rpc_health:snapshot",
-    92536,
-    1793405532.07292
+    92588,
+    1793407092.19568
    ],
    [
     "orion-execution-dispatch-runtime",
     "orion:cortex:exec:request:background",
-    262690,
-    1793401749.72271
+    262694,
+    1793406532.8469
    ],
    [
     "orion-execution-dispatch-runtime",
     "orion:autonomy:action:outcome",
-    262299,
-    1793401750.28789
+    262302,
+    1793406512.04144
    ],
    [
     "orion-execution-dispatch-runtime",
@@ -13796,8 +13623,8 @@
    [
     "orion-execution-dispatch-runtime",
     "orion:retro_leisure:start:request",
-    1581,
-    1793405511.98491
+    1583,
+    1793406877.1517
    ],
    [
     "orion-execution-dispatch-runtime",
@@ -13826,8 +13653,8 @@
    [
     "cocreation-signals",
     "orion:system:health",
-    604477,
-    1793405535.41549
+    604635,
+    1793407114.78006
    ],
    [
     "cocreation-signals",
@@ -13844,20 +13671,20 @@
    [
     "cocreation-signals",
     "orion:substrate:dev_economics_ledger",
-    6425,
-    1793405086.85274
+    6427,
+    1793406929.7429
    ],
    [
     "cocreation-signals",
     "orion:substrate:juniper_affective_state",
-    6644,
-    1793405017.99241
+    6646,
+    1793406855.777
    ],
    [
     "cocreation-signals",
     "orion:substrate:codebase_delta",
-    7155,
-    1793405172.93946
+    7157,
+    1793406975.5352
    ],
    [
     "orion-vision-host-circe-qwen",
@@ -13898,20 +13725,20 @@
    [
     "orion-proposal-runtime",
     "orion:system:health",
-    632621,
-    1793405534.58163
+    632779,
+    1793407114.36066
    ],
    [
     "orion-self-experiments",
     "orion:system:health",
-    632659,
-    1793405531.49004
+    632817,
+    1793407111.77855
    ],
    [
     "gpu-cluster-power",
     "orion:system:health",
-    217762,
-    1793405527.72749
+    217920,
+    1793407107.98974
    ],
    [
     "affectgpt-worker",
@@ -13928,8 +13755,8 @@
    [
     "orion-bus-mirror",
     "orion:system:health",
-    654475,
-    1793405531.18417
+    654633,
+    1793407114.14137
    ],
    [
     "debug",
@@ -13940,8 +13767,8 @@
    [
     "world-model",
     "orion:system:health",
-    507664,
-    1793405535.62383
+    507822,
+    1793407114.91033
    ],
    [
     "service-probe",
@@ -13976,14 +13803,14 @@
    [
     "orion-llm-gateway",
     "orion:grammar:event",
-    84313,
-    1793405500.91296
+    84368,
+    1793407061.38092
    ],
    [
     "orion-graphiti-adapter",
     "orion:system:health",
-    655481,
-    1793405536.31419
+    655639,
+    1793407115.96576
    ],
    [
     "live-push-proof-script",
@@ -13994,38 +13821,38 @@
    [
     "orion-topic-foundry",
     "orion:system:health",
-    655051,
-    1793405529.37113
+    655209,
+    1793407109.70829
    ],
    [
     "orion-topic-foundry",
     "orion:exec:request:LLMGatewayService",
-    207045,
-    1793405536.95122
+    207725,
+    1793405992.01507
    ],
    [
     "orion-topic-foundry",
     "orion:grammar:event",
-    96,
-    1793403670.88343
+    97,
+    1793406026.55659
    ],
    [
     "orion-topic-foundry",
     "orion:gpu_pool:lease:request",
-    211869,
-    1793405536.96257
+    213234,
+    1793405992.53157
    ],
    [
     "orion-topic-foundry",
     "orion:topic:foundry:run:complete.v1",
-    466,
-    1793337663.60147
+    467,
+    1793406026.56189
    ],
    [
     "orion-topic-foundry",
     "orion:topic:foundry:enrich:complete.v1",
-    862,
-    1793403472.86291
+    864,
+    1793405722.88829
    ],
    [
     "idem-smoke",
@@ -14036,14 +13863,14 @@
    [
     "orion-attention-runtime",
     "orion:system:health",
-    655972,
-    1793405532.46876
+    656130,
+    1793407112.48648
    ],
    [
     "orion-attention-runtime",
     "orion:memory:goals:proposed",
-    1890478,
-    1793404434.30126
+    1890552,
+    1793405968.00104
    ],
    [
     "orion-attention-runtime",
@@ -14054,8 +13881,8 @@
    [
     "room-companion",
     "orion:system:health",
-    566963,
-    1793405530.48516
+    567121,
+    1793407110.8286
    ],
    [
     "room-companion",
@@ -14078,8 +13905,8 @@
    [
     "orion-social-memory",
     "orion:system:health",
-    655955,
-    1793405529.42567
+    656113,
+    1793407109.75789
    ],
    [
     "orion-social-memory",
@@ -14216,8 +14043,8 @@
    [
     "curiosity-peer",
     "orion:system:health",
-    338135,
-    1793405536.72252
+    338293,
+    1793407116.6092
    ],
    [
     "voice-clone-check",
@@ -14246,8 +14073,8 @@
    [
     "orion-durable-runs",
     "orion:system:health",
-    804494,
-    1793405536.23108
+    804806,
+    1793407109.75428
    ],
    [
     "orion-durable-runs",
@@ -14258,14 +14085,14 @@
    [
     "orion-durable-runs",
     "orion:grammar:event",
-    280,
-    1793402557.85517
+    283,
+    1793406743.13562
    ],
    [
     "orion-durable-runs",
     "orion:rpc_health:snapshot",
-    92442,
-    1793405535.80024
+    92494,
+    1793407099.75696
    ],
    [
     "orion-durable-runs",
@@ -14276,44 +14103,44 @@
    [
     "orion-durable-runs",
     "orion:journal:write",
-    533,
-    1793385534.1628
+    534,
+    1793405830.72873
    ],
    [
     "orion-durable-runs",
     "orion:gpu_pool:state:request",
-    5440,
-    1793405472.42661
+    5452,
+    1793407050.37425
    ],
    [
     "orion-durable-runs",
     "orion:gpu_pool:lease:request",
-    734997,
-    1793405536.12422
+    736150,
+    1793407114.17663
    ],
    [
     "orion-durable-runs",
     "orion:durable:resource:event",
-    89062,
-    1793405145.25964
+    89115,
+    1793406968.19649
    ],
    [
     "orion-durable-runs",
     "orion:harness:run:cancel",
-    750,
-    1793403192.82451
+    751,
+    1793406692.9516
    ],
    [
     "orion-durable-runs",
     "orion:curiosity:turn:request",
-    1969,
-    1793405142.25172
+    1971,
+    1793406745.68797
    ],
    [
     "orion-durable-runs",
     "orion:durable:run:state",
-    4467,
-    1793405076.41685
+    4472,
+    1793406752.536
    ],
    [
     "orion-durable-runs",
@@ -14324,20 +14151,20 @@
    [
     "orion-durable-runs",
     "orion:attention:schema",
-    1101,
-    1793385534.02166
+    1102,
+    1793405830.70984
    ],
    [
     "orion-durable-runs",
     "orion:reading:turn:request",
-    1535,
-    1793403193.28182
+    1538,
+    1793406782.07929
    ],
    [
     "orion-durable-runs",
     "orion:reverie:visual:step:request",
-    2318,
-    1793401464.48017
+    2319,
+    1793406757.22731
    ],
    [
     "orion-durable-runs",
@@ -14348,26 +14175,26 @@
    [
     "orion-durable-runs",
     "orion:situation:state",
-    169,
-    1793405076.38662
+    170,
+    1793405892.38476
    ],
    [
     "orion-durable-runs",
     "orion:physiology:want:decision",
-    3035,
-    1793405512.69956
+    3042,
+    1793406877.1844
    ],
    [
     "orion-durable-runs",
     "orion:physiology:state",
-    5440,
-    1793405472.69846
+    5452,
+    1793407050.43227
    ],
    [
     "orion-durable-runs",
     "orion:durable:run:reply:*",
-    1065,
-    1793400834.52463
+    1066,
+    1793406535.47873
    ],
    [
     "manual-self-study-trigger",
@@ -14384,8 +14211,8 @@
    [
     "orion-mesh-guardian",
     "orion:system:health",
-    655882,
-    1793405536.72618
+    656040,
+    1793407116.4775
    ],
    [
     "voice-refresh-smoke",
@@ -14396,26 +14223,26 @@
    [
     "orion-vision-host-qwen",
     "orion:system:health",
-    293863,
-    1793405533.1108
+    294021,
+    1793407113.25194
    ],
    [
     "orion-vision-host-qwen",
     "orion:vision:artifacts",
-    3101,
-    1793405447.41643
+    3109,
+    1793407024.82292
    ],
    [
     "orion-vision-host-qwen",
     "orion:vision:reply:*",
-    3455,
-    1793405447.41089
+    3463,
+    1793407024.81657
    ],
    [
     "juniper-affective-state",
     "orion:system:health",
-    528790,
-    1793405537.33937
+    528947,
+    1793407107.45858
    ],
    [
     "juniper-affective-state",
@@ -14450,8 +14277,8 @@
    [
     "orion-policy-runtime",
     "orion:system:health",
-    632486,
-    1793405537.27771
+    632643,
+    1793407107.15793
    ],
    [
     "orion-spark-concept-induction",
@@ -14480,14 +14307,14 @@
    [
     "power-guard",
     "orion:system:health",
-    927759,
-    1793405536.20275
+    928075,
+    1793407116.36604
    ],
    [
     "notify-digest",
     "orion:system:health",
-    655237,
-    1793405532.53416
+    655395,
+    1793407112.61672
    ],
    [
     "stt-roundtrip-probe",
@@ -14504,14 +14331,14 @@
    [
     "orion-heartbeat",
     "orion:system:health",
-    652575,
-    1793405536.31061
+    652732,
+    1793407112.45814
    ],
    [
     "orion-heartbeat",
     "orion:grammar:event",
-    1360,
-    1793404780.6364
+    1362,
+    1793406255.32357
    ],
    [
     "dream",
@@ -14546,14 +14373,14 @@
    [
     "orion-zwave",
     "orion:system:health",
-    264952,
-    1793405527.72403
+    265110,
+    1793407108.36679
    ],
    [
     "orion-zwave",
     "orion:home:cooling:sample",
-    525388,
-    1793405535.60011
+    525701,
+    1793407113.29008
    ],
    [
     "http:openai",
@@ -14564,8 +14391,8 @@
    [
     "orion-energy",
     "orion:system:health",
-    86801,
-    1793405536.79742
+    86853,
+    1793407096.93685
    ],
    [
     "orion-energy",
@@ -14576,14 +14403,14 @@
    [
     "orion-energy",
     "orion:energy:importer:status",
-    8672,
-    1793405298.71692
+    8678,
+    1793407098.44739
    ],
    [
     "orion-energy",
     "orion:energy:stakes:snapshot",
-    8672,
-    1793405298.71924
+    8678,
+    1793407098.45862
    ],
    [
     "orion-energy",
@@ -14612,14 +14439,14 @@
    [
     "orion-hardware-watch",
     "orion:system:health",
-    381355,
-    1793405532.96376
+    381671,
+    1793407112.99485
    ],
    [
     "orion-hardware-watch",
     "orion:hardware:watch:incident",
-    8734,
-    1793405527.01412
+    8760,
+    1793407089.95705
    ],
    [
     "orion-hardware-watch",
@@ -14648,8 +14475,8 @@
    [
     "orion-mesh-guardian:gpu-watch",
     "orion:gpu_pool:actuate:request",
-    10502,
-    1793405328.74256
+    10512,
+    1793406827.55743
    ],
    [
     "hecate-worker-agent-deep",
@@ -14714,14 +14541,14 @@
    [
     "orion-vision-frame-router",
     "orion:grammar:event",
-    184649,
-    1793405526.85367
+    184779,
+    1793407087.20408
    ],
    [
     "orion-sql-writer",
     "orion:grammar:event",
-    651745,
-    1793405525.47999
+    652308,
+    1793407086.29132
    ],
    [
     "memory-distill-eval",
@@ -14738,26 +14565,26 @@
    [
     "orion-prediction",
     "orion:system:health",
-    128670,
-    1793405528.45009
+    128828,
+    1793407109.33593
    ],
    [
     "orion-prediction",
     "orion:prediction:forecast",
-    4272,
-    1793405483.22637
+    4277,
+    1793406993.67609
    ],
    [
     "vision-retina-walkway",
     "orion:vision:frames",
-    2505079,
-    1793405537.43858
+    2508236,
+    1793407116.43725
    ],
    [
     "vision-retina-walkway",
     "orion:system:health",
-    136479,
-    1793405528.35496
+    136637,
+    1793407108.81194
    ],
    [
     "orion-vllm-host",
@@ -14804,14 +14631,14 @@
    [
     "orion-office-env",
     "orion:system:health",
-    17778,
-    1793405528.56351
+    17936,
+    1793407111.64122
    ],
    [
     "orion-office-env",
     "orion:office:env:sample",
-    5933,
-    1793405522.64064
+    5986,
+    1793407113.58252
    ],
    [
     "orion-actions",
@@ -14852,8 +14679,8 @@
    [
     "vision-retina-doorbell",
     "orion:system:health",
-    93667,
-    1793405536.12883
+    93825,
+    1793407115.72863
    ],
    [
     "vision-retina-doorbell",

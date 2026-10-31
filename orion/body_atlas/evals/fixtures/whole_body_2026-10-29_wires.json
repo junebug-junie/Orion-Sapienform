@@ -21,12 +21,6 @@
    },
    {
     "caller": "orion-actions",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-actions/app/settings.py"
-   },
-   {
-    "caller": "orion-actions",
     "host": "orion-self-experiments",
     "url": "http://orion-self-experiments:7172",
     "via": "services/orion-actions/app/main.py"
@@ -113,13 +107,13 @@
     "caller": "orion-cortex-exec",
     "host": "orion-athena-biometrics",
     "url": "http://orion-athena-biometrics:8100",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
     "host": "orion-athena-durable-runs",
     "url": "http://orion-athena-durable-runs:8121",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
@@ -155,25 +149,19 @@
     "caller": "orion-cortex-exec",
     "host": "orion-athena-thought",
     "url": "http://orion-athena-thought:7155",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
     "host": "orion-athena-vision-host",
     "url": "http://orion-athena-vision-host:6600",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
     "host": "orion-athena-vision-window",
     "url": "http://orion-athena-vision-window:8000",
-    "via": "services/orion-cortex-exec/app/settings.py"
-   },
-   {
-    "caller": "orion-cortex-exec",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
@@ -191,7 +179,7 @@
     "caller": "orion-cortex-exec",
     "host": "api.github.com",
     "url": "https://api.github.com",
-    "via": "services/orion-cortex-exec/app/settings.py"
+    "via": "services/orion-cortex-exec/app/verb_adapters.py"
    },
    {
     "caller": "orion-cortex-exec",
@@ -209,7 +197,7 @@
     "caller": "orion-cortex-orch",
     "host": "conjourney.net",
     "url": "http://conjourney.net/graph/spark/concept-profile",
-    "via": "services/orion-cortex-orch/app/concept_profile_config.py"
+    "via": "orion/spark/concept_induction/graph_query.py:SPARK_PROFILE_GRAPH (imported by orion-cortex-orch)"
    },
    {
     "caller": "orion-cortex-orch",
@@ -245,7 +233,7 @@
     "caller": "orion-cortex-orch",
     "host": "orion-athena-notify",
     "url": "http://orion-athena-notify:7140",
-    "via": "services/orion-cortex-orch/app/settings.py"
+    "via": "services/orion-cortex-orch/app/workflow_runtime.py"
    },
    {
     "caller": "orion-cortex-orch",
@@ -284,16 +272,10 @@
     "via": "services/orion-durable-runs/scripts/harness_echo_smoke.py"
    },
    {
-    "caller": "orion-durable-runs",
-    "host": "orion-athena-vector-host",
-    "url": "http://orion-athena-vector-host:8320/embedding",
-    "via": "services/orion-durable-runs/app/settings.py"
-   },
-   {
     "caller": "orion-embodiment",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8765",
-    "via": "services/orion-embodiment/app/settings.py"
+    "via": "services/orion-embodiment/app/worker.py"
    },
    {
     "caller": "orion-energy",
@@ -305,7 +287,7 @@
     "caller": "orion-execution-dispatch-runtime",
     "host": "notify",
     "url": "http://notify:7140",
-    "via": "services/orion-execution-dispatch-runtime/app/settings.py"
+    "via": "services/orion-execution-dispatch-runtime/app/worker.py"
    },
    {
     "caller": "orion-exo-exploration",
@@ -323,7 +305,7 @@
     "caller": "orion-exo-exploration",
     "host": "classifieds.ksl.com",
     "url": "https://classifieds.ksl.com/search/cat/Electronics,https://classifieds.ksl.com/search/cat/Computers,https://classifieds.ksl.com/search/cat/FREE",
-    "via": "services/orion-exo-exploration/app/settings.py"
+    "via": "services/orion-exo-exploration/app/crawl/daemon.py"
    },
    {
     "caller": "orion-exo-exploration",
@@ -336,12 +318,6 @@
     "host": "orion-athena-notify",
     "url": "http://orion-athena-notify:7140",
     "via": "services/orion-field-digester/app/health_monitor.py"
-   },
-   {
-    "caller": "orion-gpu-cluster-power",
-    "host": "192.168.0.221",
-    "url": "http://192.168.0.221",
-    "via": "services/orion-gpu-cluster-power/app/settings.py"
    },
    {
     "caller": "orion-gpu-cluster-power",
@@ -425,13 +401,13 @@
     "caller": "orion-graph-compression",
     "host": "orion-athena-fuseki",
     "url": "http://orion-athena-fuseki:3030/orion/query",
-    "via": "services/orion-graph-compression/app/settings.py"
+    "via": "services/orion-graph-compression/app/worker.py"
    },
    {
     "caller": "orion-graph-compression",
     "host": "orion-athena-fuseki",
     "url": "http://orion-athena-fuseki:3030/orion/update",
-    "via": "services/orion-graph-compression/app/settings.py"
+    "via": "services/orion-graph-compression/app/worker.py"
    },
    {
     "caller": "orion-graph-compression",
@@ -497,13 +473,13 @@
     "caller": "orion-hub",
     "host": "100.112.254.99",
     "url": "http://100.112.254.99:8100",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/biometrics_node_client.py"
    },
    {
     "caller": "orion-hub",
     "host": "100.87.202.68",
     "url": "http://100.87.202.68:8100",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/biometrics_node_client.py"
    },
    {
     "caller": "orion-hub",
@@ -515,7 +491,7 @@
     "caller": "orion-hub",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8080",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/chat_attachments.py"
    },
    {
     "caller": "orion-hub",
@@ -528,12 +504,6 @@
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:3030/orion/query",
     "via": "orion/substrate/graphdb_store.py:_resolve_substrate_sparql_http_urls (imported by orion-hub)"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "127.0.0.1",
-    "url": "http://127.0.0.1:5173",
-    "via": "services/orion-hub/app/settings.py"
    },
    {
     "caller": "orion-hub",
@@ -557,7 +527,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8082",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/api_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -575,7 +545,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8124",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/curiosity_investigation.py"
    },
    {
     "caller": "orion-hub",
@@ -593,7 +563,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8132",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/retro_experience.py"
    },
    {
     "caller": "orion-hub",
@@ -605,13 +575,13 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8320/embedding",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/crystallization_routes.py"
    },
    {
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8500",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/main.py"
    },
    {
     "caller": "orion-hub",
@@ -623,7 +593,7 @@
     "caller": "orion-hub",
     "host": "127.0.0.1",
     "url": "http://127.0.0.1:8620",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/dream_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -671,13 +641,13 @@
     "caller": "orion-hub",
     "host": "host.docker.internal",
     "url": "http://host.docker.internal:8080",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/main.py"
    },
    {
     "caller": "orion-hub",
     "host": "localhost",
     "url": "http://localhost:7251",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/attention_organ_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -689,55 +659,7 @@
     "caller": "orion-hub",
     "host": "orion-athena-vector-host",
     "url": "http://orion-athena-vector-host:8320/embedding",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-exo-exploration",
-    "url": "http://orion-exo-exploration:8622",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-field-digester",
-    "url": "http://orion-field-digester:8116",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-recall",
-    "url": "http://orion-recall:8090",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-self-experiments",
-    "url": "http://orion-self-experiments:7172",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-social-memory",
-    "url": "http://orion-social-memory:8765",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-topic-foundry",
-    "url": "http://orion-topic-foundry:8615",
-    "via": "services/orion-hub/app/settings.py"
-   },
-   {
-    "caller": "orion-hub",
-    "host": "orion-world-pulse",
-    "url": "http://orion-world-pulse:8628",
-    "via": "services/orion-hub/app/settings.py"
+    "via": "services/orion-hub/scripts/concept_atlas_routes.py"
    },
    {
     "caller": "orion-hub",
@@ -896,12 +818,6 @@
     "via": "services/orion-mesh-guardian/app/attention.py"
    },
    {
-    "caller": "orion-mesh-guardian",
-    "host": "orion-notify",
-    "url": "http://orion-notify:7140",
-    "via": "services/orion-mesh-guardian/app/settings.py"
-   },
-   {
     "caller": "orion-notify",
     "host": "172.18.0.1",
     "url": "http://172.18.0.1:8080",
@@ -953,7 +869,7 @@
     "caller": "orion-proposal-runtime",
     "host": "hardware-watch",
     "url": "http://hardware-watch:8131/health",
-    "via": "services/orion-proposal-runtime/app/settings.py"
+    "via": "services/orion-proposal-runtime/app/worker.py"
    },
    {
     "caller": "orion-proposal-runtime",
@@ -1101,18 +1017,6 @@
    },
    {
     "caller": "orion-social-room-bridge",
-    "host": "orion-hub",
-    "url": "http://orion-hub:8080",
-    "via": "services/orion-social-room-bridge/app/settings.py"
-   },
-   {
-    "caller": "orion-social-room-bridge",
-    "host": "orion-social-memory",
-    "url": "http://orion-social-memory:8765",
-    "via": "services/orion-social-room-bridge/app/settings.py"
-   },
-   {
-    "caller": "orion-social-room-bridge",
     "host": "orion-social-memory",
     "url": "http://orion-social-memory:8910",
     "via": "services/orion-social-room-bridge/app/service.py"
@@ -1247,13 +1151,13 @@
     "caller": "orion-thought",
     "host": "100.112.254.99",
     "url": "http://100.112.254.99:8014",
-    "via": "services/orion-thought/app/settings.py"
+    "via": "services/orion-thought/app/visual_chain.py"
    },
    {
     "caller": "orion-thought",
     "host": "100.92.216.81",
     "url": "http://100.92.216.81:8080",
-    "via": "services/orion-thought/app/settings.py"
+    "via": "services/orion-thought/app/visual_chain.py"
    },
    {
     "caller": "orion-thought",
@@ -1283,7 +1187,7 @@
     "caller": "orion-thought",
     "host": "orion-athena-percept-store",
     "url": "http://orion-athena-percept-store:8000/percepts",
-    "via": "services/orion-thought/app/settings.py"
+    "via": "services/orion-thought/app/visual_chain.py"
    },
    {
     "caller": "orion-topic-foundry",
@@ -1296,12 +1200,6 @@
     "host": "orion-athena-vector-host",
     "url": "http://orion-athena-vector-host:8320/embedding",
     "via": "services/orion-topic-foundry/app/topic_engine.py"
-   },
-   {
-    "caller": "orion-topic-foundry",
-    "host": "orion-vector-host",
-    "url": "http://orion-vector-host:8320/embedding",
-    "via": "services/orion-topic-foundry/app/settings.py"
    },
    {
     "caller": "orion-vector-host",
@@ -2425,90 +2323,16 @@
    }
   ],
   "redis_dynamic": {
-   "orion-actions": 1,
-   "orion-affectgpt-worker": 1,
-   "orion-agent-council": 1,
-   "orion-attention-runtime": 1,
-   "orion-biometrics": 1,
-   "orion-bus": 2,
-   "orion-bus-mirror": 1,
-   "orion-bus-tap": 1,
-   "orion-chat-memory": 1,
-   "orion-cocreation-signals": 2,
-   "orion-collapse-mirror": 1,
-   "orion-consolidation-runtime": 1,
-   "orion-cortex-exec": 4,
-   "orion-cortex-gateway": 1,
-   "orion-cortex-orch": 1,
-   "orion-curiosity-peer": 1,
-   "orion-diffusion-host": 1,
-   "orion-dream": 1,
-   "orion-durable-runs": 1,
-   "orion-embodiment": 1,
-   "orion-energy": 1,
-   "orion-equilibrium-service": 2,
-   "orion-execution-dispatch-runtime": 1,
-   "orion-feedback-runtime": 1,
-   "orion-field-digester": 1,
-   "orion-gpu-cluster-power": 1,
-   "orion-gpu-lane-controller": 1,
-   "orion-gpu-pool": 1,
-   "orion-graph-compression": 1,
-   "orion-graphiti-adapter": 1,
-   "orion-hardware-watch": 1,
-   "orion-harness-governor": 1,
-   "orion-heartbeat": 1,
-   "orion-hub": 12,
-   "orion-juniper-affective-state": 1,
-   "orion-llama-cola-host": 1,
-   "orion-llamacpp-host": 1,
-   "orion-llamacpp-neural-host": 1,
-   "orion-llm-gateway": 1,
-   "orion-memory-consolidation": 1,
-   "orion-memory-crystallizer": 1,
-   "orion-mesh-guardian": 1,
-   "orion-meta-tags": 1,
-   "orion-mind": 1,
-   "orion-notify": 1,
-   "orion-notify-digest": 1,
-   "orion-office-env": 1,
-   "orion-ollama-host": 1,
-   "orion-pageindex": 1,
-   "orion-policy-runtime": 1,
-   "orion-power-guard": 1,
-   "orion-prediction": 2,
-   "orion-proposal-runtime": 1,
-   "orion-rag": 1,
-   "orion-recall": 1,
-   "orion-room-companion": 1,
-   "orion-self-experiments": 1,
-   "orion-self-study-enrichment": 1,
-   "orion-signal-gateway": 1,
-   "orion-social-memory": 1,
-   "orion-social-room-bridge": 1,
-   "orion-spark-concept-induction": 1,
+   "orion-bus": 1,
+   "orion-cocreation-signals": 1,
+   "orion-cortex-exec": 3,
+   "orion-equilibrium-service": 1,
+   "orion-hub": 11,
+   "orion-prediction": 1,
    "orion-sql-writer": 1,
-   "orion-state-journaler": 1,
-   "orion-state-service": 2,
-   "orion-substrate-runtime": 1,
-   "orion-substrate-telemetry": 1,
-   "orion-thought": 1,
-   "orion-topic-foundry": 1,
-   "orion-vector-host": 1,
-   "orion-vector-writer": 1,
-   "orion-vision-council": 1,
-   "orion-vision-edge": 1,
-   "orion-vision-frame-router": 2,
-   "orion-vision-host": 1,
-   "orion-vision-retina": 1,
-   "orion-vision-scribe": 1,
-   "orion-vision-window": 2,
-   "orion-vllm-host": 1,
-   "orion-voip-endpoint": 1,
-   "orion-whisper-tts": 1,
-   "orion-world-model": 1,
-   "orion-world-pulse": 1,
-   "orion-zwave": 1
+   "orion-state-service": 1,
+   "orion-vision-frame-router": 1,
+   "orion-vision-window": 1
   },
   "redis_private": {
    "orion-cortex-exec": 1,

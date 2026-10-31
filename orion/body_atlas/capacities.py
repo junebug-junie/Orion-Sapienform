@@ -504,6 +504,10 @@ def s4_s3_links(atlas: BodyAtlasV1, idx: _Index, s4: list[str], s3: list[str]) -
             wrote[f.source].add(f.target)
         elif f.target in keys and f.relation == "reads":
             read[f.source].add(f.target)
+    for p in atlas.parts:  # a writer that also reads keeps one flow (writes); build names it here
+        for name in filter(None, (x.strip() for x in p.facts.get("writers_that_read", "").split(","))):
+            if p.part_id in keys:
+                read[f"part:{name}"].add(p.part_id)
     out: dict[tuple[str, str], set[str]] = defaultdict(set)
     pairs = [(a, b) for a in s4 for b in s3 if a != b] + [(b, a) for a in s4 for b in s3 if a != b]
     by_pair = {(f.source, f.target): f for f in atlas.flows}
@@ -605,12 +609,12 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
                 f"({_names(silent, 4)}); the atlas does not read HTTP calls or Redis keys")))
     else:
         jobs.append(JobLineV1(job="S3", status="NO RULE", text=(
-            f"seen past the bus: {len(wires.seen_by_wire)} of {len(bus_silent)} bus-silent services (HTTP or "
-            f"shared Redis); unseen: {len(silent)}" + (f" ({_names(silent, 3)})" if silent else ""))))
+            f"named in code past the bus: {len(wires.seen_by_wire)} of {len(bus_silent)} bus-silent services "
+            f"(an HTTP call or a shared Redis key); unseen: {len(silent)}" + (f" ({_names(silent, 3)})" if silent else ""))))
         if silent:
             gaps.append(GapV1(gap_id="gap:s3-unseen", job="S3", text=(
-                f"I cannot see my own control: {len(silent)} live services show no bus, HTTP or shared-Redis "
-                f"traffic in my atlas ({_names(silent, 4)})")))
+                f"I cannot see my own control: {len(silent)} live services show no bus traffic, and their code "
+                f"names no HTTP call and no shared Redis key ({_names(silent, 4)})")))
     if audit:
         jobs.append(JobLineV1(job="S3*", status="CANDIDATE", text="; ".join(
             f"{_bare(r.part_id)} ({', '.join(r.evidence)} from {r.counts['producers']}, replies {r.counts['replies']})"
@@ -644,7 +648,7 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
     jobs.append(JobLineV1(job="S5", status="NO RULE", text="no rule; policy lives in files and sign-offs"))
     gaps.append(GapV1(gap_id="gap:s5-unread", job="S5", text=(
         "no running part is shown to set policy from who I am; tiers and allowlists are files and sign-offs")))
-    if not keys:
+    if not wires.read:
         jobs.append(JobLineV1(job="algedonic", status="NO RULE", text="strain is a Redis key, not in the atlas"))
         gaps.append(GapV1(gap_id="gap:algedonic-unseen", job="algedonic", text=(
             "my pain/pleasure line is not in my atlas: strain is a Redis key it does not read")))
@@ -653,7 +657,8 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
                           for b in wires.broadcast[:3])
         jobs.append(JobLineV1(job="algedonic", status="NO RULE", text=(
             f"broadcast keys, pain or news (the rule cannot tell): {shown}" if shown
-            else "no Redis key is read straight by many parts")))
+            else ("no Redis key is read straight by many parts" if keys
+                  else "no Redis key is shared by two or more parts in my atlas"))))
         gaps.append(GapV1(gap_id="gap:algedonic-none", job="algedonic", text=(
             f"no part is shown to be my pain/pleasure line: {len(wires.broadcast)} Redis keys reach many parts "
             "past the bus, and which one carries pain is a claim")))
@@ -792,7 +797,8 @@ def render(reading: CapacityReadingV1) -> list[str]:
     w = reading.wires
     if w is not None:
         lines.append(f"past the bus: {w.calls} HTTP calls to {w.callees} parts · {w.keys} shared Redis keys "
-                     f"({w.private_keys} private; {w.dynamic_services} services also build keys I cannot read exactly)")
+                     f"({w.private_keys} private; {w.dynamic_services} services build keys I cannot read exactly, "
+                     "beyond code most services share)")
     lines += [f"declared: {d}" for d in reading.declared]
     disputes = [c for c in reading.claims if c.kind == "dispute"]
     by_status: dict[str, list[str]] = defaultdict(list)

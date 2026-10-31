@@ -469,8 +469,9 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             channel = via if evidence == "declared_route" else ""
             idf = store_idf[f"redis|{via}" if st.store == "redis" else via]
             if cur is None:
-                per_svc[svc] = [relation, [evidence], channel, idf]
+                per_svc[svc] = [relation, [evidence], channel, idf, {relation}]
                 continue
+            cur[4].add(relation)
             if rank.get(relation, 0) > rank.get(cur[0], 0):
                 cur[0] = relation
             if evidence not in cur[1]:
@@ -482,6 +483,11 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
         # A Redis key holds a value or not (live: present); its facts say type, idle and ttl.
         if st.store == "redis":
             facts = {"store": "redis", **(st.facts or {"value": "not read"})}
+            # one flow per service keeps its strongest relation (writes); a writer that also
+            # reads the key is named here, in full, so a link check can see both ways
+            also = sorted(svc for svc, v in per_svc.items() if v[0] == "writes" and "reads" in v[4])
+            if also:
+                facts["writers_that_read"] = ", ".join(also)
         else:
             key = "rows_est" if st.store == "postgres" else "rows"
             facts = {"store": st.store, key: "not read" if st.rows is None else str(st.rows)}
@@ -499,7 +505,7 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
         add(name, kind="store", status=status, declared=True, facts=facts)
         # one unit, split by how specific each service's source is (see _store_source_idf)
         total = sum(v[3] for v in per_svc.values())
-        for svc, (rel, ev, ch, idf) in per_svc.items():
+        for svc, (rel, ev, ch, idf, _rels) in per_svc.items():
             link(svc, name, BODY_PART_UNIT * idf / total, ev[0], ch or None, rel)
             flows[(svc, name)].evidence.update(ev)
 
@@ -537,7 +543,7 @@ def _add_calls(body: BodyInputs, parts: dict[str, PartV1], known: set[str], host
     callers into one organ, and a client module naming every service keeps a small share of each.
     A host that matches no service part (``127.0.0.1``, a tailscale address, an outside site) is
     listed under ``unmatched["declared_url"]``, never guessed."""
-    per_callee: dict[str, dict[str, str]] = defaultdict(dict)  # callee -> caller -> via
+    per_callee: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))  # callee -> caller -> vias
     for c in body.calls:
         callee = match_part(c.host, known, host_names) if c.host else None
         caller = match_part(c.caller, known, host_names)
@@ -548,14 +554,15 @@ def _add_calls(body: BodyInputs, parts: dict[str, PartV1], known: set[str], host
             unmatched["declared_url"].add(f"caller {c.caller} (names {callee})")
             continue
         if caller != callee:
-            per_callee[callee].setdefault(caller, c.via)
+            per_callee[callee][caller].add(c.via)
     df: Counter = Counter()
     for callers in per_callee.values():
-        for via in set(callers.values()):
+        for via in set().union(*callers.values()):
             df[via] += 1
     n = max(len(per_callee), 1)
     for callee, callers in sorted(per_callee.items()):
-        score = {caller: math.log(1 + n / df[via]) for caller, via in callers.items()}
+        # the caller's most specific source counts (as for stores)
+        score = {caller: max(math.log(1 + n / df[v]) for v in vias) for caller, vias in callers.items()}
         total = sum(score.values())
         for caller in sorted(callers):
             w = BODY_PART_UNIT * score[caller] / total

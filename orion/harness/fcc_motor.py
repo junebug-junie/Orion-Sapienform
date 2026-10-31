@@ -6,12 +6,13 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
@@ -1308,11 +1309,60 @@ async def run_fcc_turn(
         turn_step_stall_sec=stall_timeout_sec,
     )
     io = _SpawnTurnIO(argv, cwd=workspace, env=spawn_env, limit=stream_read_limit, claude_bin=claude_bin)
+    held_final: Optional[Dict[str, object]] = None
     async for frame in _drive_fcc_turn(
         io=io, outcome={"retry_spawn": False}, mcp_config_path=mcp_config_path, **drive_kwargs
     ):
         if session_plan is not None and frame.get("type") in ("final", "error"):
             frame = _record_session_end(frame, resume_key=str(resume_key), plan=session_plan)
+        if reading_only and frame.get("type") == "final" and undeclared_tool_call(
+                frame.get("llm_response"), READING_ONLY_TOOLS):
+            held_final = frame
+            continue
+        yield frame
+    if held_final is None:
+        return
+    tool = undeclared_tool_call(held_final.get("llm_response"), READING_ONLY_TOOLS)
+    session_id = str((held_final.get("metadata") or {}).get("claude_session_id") or "")
+    # Too little time left: a resume would only end in a bare timeout that loses the cause.
+    if not session_id or deadline - time.monotonic() < min(float(stall_timeout_sec), RESUME_MIN_BUDGET_SEC):
+        yield held_final
+        return
+    # Once only: the resumed turn's answer is final whatever it says.
+    logger.warning("fcc_reading_undeclared_tool_resume corr=%s tool=%s session=%s", correlation_id, tool, session_id)
+    note = UNDECLARED_TOOL_NOTE.format(tool=tool)
+    from orion.harness import session_resume
+
+    try:  # measured before the MCP config exists, so a failed stat cannot leak it
+        found = session_resume.find_transcript(session_resume.claude_home(), session_id)
+        seed_chars = session_resume.transcript_chars_estimate(found) if found else 0
+    except Exception:  # noqa: BLE001 -- the ceiling guard re-anchors on observed usage
+        seed_chars = 0
+    try:
+        resume_mcp = _maybe_render_mcp_config(correlation_id=correlation_id, reading_binding=reading_binding,
+                                              reading_only=True)
+    except Exception:  # noqa: BLE001 -- McpPreflightError included: keep the original answer
+        logger.warning("fcc_reading_undeclared_tool_resume_mcp_failed corr=%s", correlation_id, exc_info=True)
+        yield held_final
+        return
+    resume_argv = build_claude_argv(
+        claude_bin=claude_bin, model_id=model_id, prompt=note, correlation_id=correlation_id,
+        reading_only=True, mcp_config_path=resume_mcp, task_anchor=task_anchor, resume_session_id=session_id,
+    )
+    # Own start time, so the resumed final's spawn/first-event timings are its own process's.
+    resume_kwargs = {**drive_kwargs, "prompt": note, "context_seed_chars": seed_chars,
+                     "started": time.monotonic()}
+    resume_record = {"tool": tool, "session_id": session_id,
+                     "held_text": str(held_final.get("llm_response") or "")[:500]}
+    resume_io = _SpawnTurnIO(resume_argv, cwd=workspace, env=spawn_env, limit=stream_read_limit, claude_bin=claude_bin)
+    async for frame in _drive_fcc_turn(
+        io=resume_io, outcome={"retry_spawn": False}, mcp_config_path=resume_mcp, **resume_kwargs
+    ):
+        if frame.get("type") in ("final", "error"):
+            metadata = dict(frame.get("metadata") or {})
+            metadata["fcc_undeclared_tool_resume"] = resume_record
+            metadata["duration_ms"] = int((time.monotonic() - started) * 1000)  # both runs
+            frame = {**frame, "metadata": metadata}
         yield frame
 
 
@@ -1348,6 +1398,42 @@ def _record_session_end(frame: Dict[str, object], *, resume_key: str, plan: Any)
     return {**frame, "metadata": metadata}
 
 
+# The only tools a reading-only (source-model) turn is given: it reads untrusted pages, so no shell,
+# filesystem, graph tools or operator MCP servers (build_claude_argv).
+READING_ONLY_TOOLS = ("WebFetch", "WebSearch")
+# A resume needs at least this long (or the stall window, if shorter) left on the turn deadline.
+RESUME_MIN_BUDGET_SEC = 60.0
+
+_TOOL_CALL_NAME = re.compile(
+    r"<tool_call>\s*(?:<function=([\w.:-]+)>|\{\s*\"name\"\s*:\s*\"([\w.:-]+)\")", re.S)
+
+# Sent once, on the resumed session, when a reading turn's answer was a call to a tool it was never
+# given. Live 2026-10-31 (Qwen3.8-Flash-Next on Strata): WebFetch said a PDF was "also saved to
+# /root/.claude/.../tool-results/...", the model planned to pdftotext it and wrote a Bash call; Bash
+# was not declared, so the call came back as the turn's final text and the reading failed (4 of 57).
+UNDECLARED_TOOL_NOTE = (
+    "You wrote a call to {tool}, which does not exist in this reading. Only WebFetch and WebSearch "
+    "exist here; there is no shell, and files the tools say they saved locally cannot be opened. "
+    "Do not call any other tool. Answer now from what you have already read, in the format the task "
+    "asked for, and say what you could not read."
+)
+
+
+def undeclared_tool_call(text: object, declared: Iterable[str]) -> Optional[str]:
+    """The tool a ``<tool_call>`` in ``text`` names when that tool is not in ``declared``, else None.
+    Covers the Qwen XML (``<function=NAME>``) and JSON (``{"name": ...}``) forms; Strata only turns a
+    call into a real tool_use when the request declared that tool, so an undeclared one stays text."""
+    body = str(text or "").rstrip()
+    # Only an answer that ENDS on a call: a JSON answer quoting tool-call syntax ends in `"}`, and
+    # must never be thrown away for a resume.
+    if not body.endswith("</tool_call>"):
+        return None
+    last = body.rfind("<tool_call>")
+    m = _TOOL_CALL_NAME.match(body, last) if last >= 0 else None
+    name = (m.group(1) or m.group(2)) if m else None
+    return name if name and name not in set(declared) else None
+
+
 def build_claude_argv(
     *,
     claude_bin: str,
@@ -1358,8 +1444,11 @@ def build_claude_argv(
     mcp_config_path: Optional[Path] = None,
     session_plan: Any = None,
     task_anchor: Optional[str] = None,
+    resume_session_id: Optional[str] = None,
 ) -> List[str]:
     """The ``claude`` argv for one FCC turn.
+
+    ``resume_session_id``: continue that CLI session with ``prompt`` as the next user message.
 
     ``prompt=None`` builds the warm pool's long-lived streaming-input process
     (``--input-format stream-json``; prompts arrive on stdin). Everything after
@@ -1369,6 +1458,8 @@ def build_claude_argv(
     """
     if prompt is None:
         argv = [claude_bin, "-p", "--input-format", "stream-json"]
+    elif resume_session_id:
+        argv = [claude_bin, "-p", prompt, "--resume", resume_session_id]
     elif session_plan is not None and session_plan.resume:
         # The task is already in the resumed transcript; say only what happened.
         from orion.harness.session_resume import continuation_prompt
@@ -1392,7 +1483,7 @@ def build_claude_argv(
     if reading_only:
         # Source models can fetch/search, but cannot reach shell, filesystem,
         # graph tools, memory writers or operator-installed MCP servers/plugins.
-        argv.extend(["--tools", "WebFetch,WebSearch", "--strict-mcp-config", "--setting-sources", ""])
+        argv.extend(["--tools", ",".join(READING_ONLY_TOOLS), "--strict-mcp-config", "--setting-sources", ""])
     else:
         argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
     argv.extend(repeat_failure_breaker_argv(correlation_id=correlation_id, reading_only=reading_only))

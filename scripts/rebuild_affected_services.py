@@ -136,18 +136,33 @@ def _base_and_head_blobs(repo_root: Path, base_ref: str, path: str) -> list[byte
 
 
 def _same_yaml_data(repo_root: Path, base_ref: str, path: str) -> bool:
-    """True when a .yaml/.yml file parses to the same data at base and HEAD (comments,
-    whitespace, quoting only). Any doubt (unreadable blob, parse error) answers False."""
+    """True when a .yaml/.yml file holds the same documents at base and HEAD (comments,
+    whitespace, quoting only). Compared as ordered, typed JSON, not with ``==``: Python
+    calls ``1 == True == 1.0`` and ignores key order, and both are real changes to a
+    consumer. A duplicate key (which compose rejects) or any other doubt answers False."""
     blobs = _base_and_head_blobs(repo_root, base_ref, path)
     if blobs is None:
         return False
-    import yaml  # type: ignore
-
     try:
-        docs = [list(yaml.safe_load_all(b)) for b in blobs]
-    except Exception:  # noqa: BLE001 -- yaml.YAMLError, UnicodeDecodeError: keep the file
+        import yaml  # type: ignore
+
+        class _NoDupLoader(yaml.SafeLoader):
+            pass
+
+        def _mapping(loader, node, deep=False):  # type: ignore[no-untyped-def]
+            keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+            if len(keys) != len({json.dumps(k, default=repr) for k in keys}):
+                raise yaml.constructor.ConstructorError(None, None, "duplicate key", node.start_mark)
+            return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+        _NoDupLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+        canon = [
+            json.dumps(list(yaml.load_all(b, Loader=_NoDupLoader)), sort_keys=False, default=repr)
+            for b in blobs
+        ]
+    except Exception:  # noqa: BLE001 -- ImportError, YAMLError, UnicodeDecodeError: keep the file
         return False
-    return docs[0] == docs[1]
+    return canon[0] == canon[1]
 
 
 def _same_python_ast(repo_root: Path, base_ref: str, path: str) -> bool:

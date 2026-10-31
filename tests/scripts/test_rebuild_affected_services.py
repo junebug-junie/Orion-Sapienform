@@ -1074,6 +1074,26 @@ def test_real_yaml_change_is_still_a_change(tmp_path: Path) -> None:
     assert _changed(tmp_path / "m", "a: 1\n", "a: 1\n---\nb: 2\n", VERB) == [VERB]  # new document
 
 
+def test_yaml_type_and_order_changes_are_real(tmp_path: Path) -> None:
+    """Python's == calls 1 == True == 1.0 and ignores key order; a consumer does not."""
+    assert _changed(tmp_path / "b", "a: 1\n", "a: true\n", VERB) == [VERB]
+    assert _changed(tmp_path / "f", "a: 1\n", "a: 1.0\n", VERB) == [VERB]
+    assert _changed(tmp_path / "o", "a: 1\nb: 2\n", "b: 2\na: 1\n", VERB) == [VERB]
+    assert _changed(tmp_path / "k", "1: x\n", "true: x\n", VERB) == [VERB]
+
+
+def test_yml_suffix_and_duplicate_keys(tmp_path: Path) -> None:
+    yml = "services/x/docker-compose.yml"
+    assert _changed(tmp_path / "c", "a: 1\n", "a: 1  # c\n", yml) == []
+    # compose rejects a duplicate key: adding one is a change even with the same last value
+    assert _changed(tmp_path / "d", "a: 1\n", "a: 0\na: 1\n", yml) == [yml]
+
+
+def test_missing_yaml_package_keeps_the_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    assert _changed(tmp_path, "a: 1\n", "a: 1  # c\n", VERB) == [VERB]
+
+
 def test_unparseable_yaml_is_kept(tmp_path: Path) -> None:
     assert _changed(tmp_path, "a: [1\n", "a: [1  # c\n", VERB) == [VERB]
 

@@ -70,7 +70,7 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "quick_embodied",      # Orion's town speech, 2026-10-23
                              "prime"}               # Orion Prime's thoughts, 2026-10-30 (pinned below)
 # Roles whose server type changed after the freeze report the current one wherever they serve.
-BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata"}   # Strata on the chat card, 2026-10-30
+BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata", "agent": "strata"}   # Strata on gpu0 10-30, gpu1 10-31
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 

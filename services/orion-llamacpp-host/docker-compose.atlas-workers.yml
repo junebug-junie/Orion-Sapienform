@@ -1,47 +1,78 @@
+# Strata engine (Qwen3.8-Flash-Next IQ3_S, one V100; docs/bench/2026-10-30-strata-hecate). Strata answers
+# llama.cpp's /props, so the GPU pool confirms it like a llama.cpp worker (gpu_pool.yaml backend: strata).
+# No API key: like every other lane, it is reached only on the tailnet. Each lane sets STRATA_PRESET and
+# STRATA_CONTEXT, its CPUs (the socket it runs on), its own /data (config, state, run config) and the shared
+# model files at /data/Strata-data (read-only at run time, so both engines share their mapped pages).
+# `strata launch --no-tui` returns once the server is up (it runs on in its own session), so the wrapper
+# stays up while it is ready, leaves after 3 failed checks (restart policy acts), and stops it on
+# `docker stop` -- the image entrypoint's own loop, without the API key it always sets.
+x-strata-engine: &strata-engine
+  logging:
+    driver: journald
+    options:
+      tag: "{{.Name}}"
+  image: ${ATLAS_CHAT_STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.7-cuda12}
+  restart: unless-stopped
+  entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
+  command:
+    - |
+      S=/opt/strata/terminal/bin/strata
+      trap '$$S launch --stop --preset "$$STRATA_PRESET"; exit 0' TERM INT
+      $$S launch --no-tui --access lan --no-api-key --port 8080 --data-dir /data/Strata-data \
+        --family qwen --model IQ3_S --context "$$STRATA_CONTEXT" --parallel 1 --kv int8 --vision on \
+        --save-preset "$$STRATA_PRESET" &
+      wait $$! || exit 1
+      bad=0
+      while :; do
+        sleep 10 & wait $$!
+        if $$S launch --status --output json 2>/dev/null | grep -q '"state": *"ready"'; then bad=0; else bad=$$((bad+1)); fi
+        [ "$$bad" -ge 3 ] && { echo "strata server is gone"; exit 1; }
+      done
+  ulimits:
+    memlock: -1
+  shm_size: 2g
+  stop_grace_period: 120s
+  networks:
+    - app-net
+
+# Announces a Strata engine to the GPU pool (orion:llm:worker:announce) and heartbeats for its lane. A
+# strata profile makes orion-llamacpp-host announce only (it launches no server); LLM_REQUIRE_BACKEND
+# refuses any other profile. Healthy when the engine it announces answers: Strata refuses unknown Host
+# names (403), so the request names itself as local.
+x-strata-announce: &strata-announce
+  logging:
+    driver: journald
+    options:
+      tag: "{{.Name}}"
+  build:
+    context: ../..
+    dockerfile: services/orion-llamacpp-host/Dockerfile
+    args:
+      - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
+  image: orion-llamacpp-host:0.1.0
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS -m 5 -H 'Host: 127.0.0.1:8080' http://$$STRATA_ENGINE:8080/health || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 30m
+  networks:
+    - app-net
+
 services:
-  # Chat lane engine: Strata serving Qwen3.8-Flash-Next IQ3_S on one V100 (docs/bench/2026-10-30-strata-hecate).
-  # Strata answers llama.cpp's /props, so the GPU pool confirms it like a llama.cpp worker (gpu_pool.yaml
-  # chat: backend strata). No API key: like every other lane, it is reached only on the tailnet.
-  # First start: setup reads the model files in ATLAS_CHAT_STRATA_DATA_DIR (a missing one is downloaded).
-  # Then merge strata/chat-defaults.json (README "Chat lane on Strata") so thinking stays off by default.
+  # Chat lane (gpu0): 262,144 tokens, thinking off by default (strata/chat-defaults.json).
   atlas-chat:
-    logging:
-      driver: journald
-      options:
-        tag: "{{.Name}}"
-    image: ${ATLAS_CHAT_STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.7-cuda12}
+    <<: *strata-engine
     container_name: ${PROJECT:-orion}-atlas-strata-chat
-    restart: unless-stopped
-    # `strata launch --no-tui` returns once the server is up (it runs on in its own session), so this
-    # wrapper stays up while it is ready, leaves after 3 failed checks (restart policy acts), and stops
-    # it on `docker stop` -- the image entrypoint's own loop, without the API key it always sets.
-    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
-    command:
-      - |
-        S=/opt/strata/terminal/bin/strata
-        trap '$$S launch --stop --preset chat; exit 0' TERM INT
-        $$S launch --no-tui --access lan --no-api-key --port 8080 --data-dir /data/Strata-data \
-          --family qwen --model IQ3_S --context 262144 --parallel 1 --kv int8 --vision on \
-          --save-preset chat &
-        wait $$! || exit 1
-        bad=0
-        while :; do
-          sleep 10 & wait $$!
-          if $$S launch --status --output json 2>/dev/null | grep -q '"state": *"ready"'; then bad=0; else bad=$$((bad+1)); fi
-          [ "$$bad" -ge 3 ] && { echo "strata server is gone"; exit 1; }
-        done
-    # The CPUs of the socket the card hangs off (`nvidia-smi topo -m`): Strata computes off-card experts there.
+    environment:
+      - STRATA_PRESET=chat
+      - STRATA_CONTEXT=262144
     cpuset: "${ATLAS_CHAT_STRATA_CPUS:-0-17,36-53}"
-    ulimits:
-      memlock: -1
-    shm_size: 2g
-    stop_grace_period: 120s
     volumes:
       - "${ATLAS_CHAT_STRATA_DATA_DIR:-/mnt/telemetry/strata}:/data"
     ports:
       - "${ATLAS_CHAT_HOST_PORT:-8011}:8080"
-    networks:
-      - app-net
     deploy:
       resources:
         reservations:
@@ -50,21 +81,9 @@ services:
               device_ids: ["${ATLAS_CHAT_CUDA_VISIBLE_DEVICES:-0}"]
               capabilities: [gpu]
 
-  # Announces the Strata chat engine to the GPU pool (orion:llm:worker:announce) and heartbeats as
-  # atlas-worker-1. A strata profile makes orion-llamacpp-host announce only; it launches no server.
   atlas-chat-announce:
-    logging:
-      driver: journald
-      options:
-        tag: "{{.Name}}"
-    build:
-      context: ../..
-      dockerfile: services/orion-llamacpp-host/Dockerfile
-      args:
-        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
-    image: orion-llamacpp-host:0.1.0
+    <<: *strata-announce
     container_name: ${PROJECT:-orion}-atlas-strata-chat-announce
-    restart: unless-stopped
     environment:
       - SERVICE_NAME=${ATLAS_CHAT_SERVICE_NAME:-atlas-worker-1}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
@@ -75,17 +94,7 @@ services:
       - LLM_ROLE=chat
       - LLM_ANNOUNCE_PORT=${ATLAS_CHAT_HOST_PORT:-8011}
       - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_CHAT_CUDA_VISIBLE_DEVICES}
-    # Healthy when the engine it announces answers. The base image's own check calls llama-server on
-    # localhost, which announce-only mode never starts. Strata refuses unknown Host names (403), so
-    # the request names itself as local.
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -m 5 -H 'Host: 127.0.0.1:8080' http://atlas-chat:8080/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30m
-    networks:
-      - app-net
+      - STRATA_ENGINE=atlas-chat
 
   # Rollback for the chat lane: the llama.cpp server it ran before Strata (2026-10-30). Stop atlas-chat and
   # atlas-chat-announce, then: --profile chat-llamacpp up -d atlas-chat-llamacpp. Same port and role.
@@ -234,12 +243,54 @@ services:
           devices:
             - capabilities: [gpu]
 
+  # Agent lane (gpu1; agent + memory_distill): 131,072 tokens like agent-gpu2, so a recalled run can move
+  # between the two; thinking on at high effort (strata/agent-defaults.json). Pinned to the other socket's
+  # CPUs so it does not compete with the chat engine. Same compose profile as the llama.cpp lane was.
   atlas-agent:
+    <<: *strata-engine
+    profiles: ["agent-split"]
+    container_name: ${PROJECT:-orion}-atlas-strata-agent
+    environment:
+      - STRATA_PRESET=agent
+      - STRATA_CONTEXT=131072
+    cpuset: "${ATLAS_AGENT_STRATA_CPUS:-18-35,54-71}"
+    volumes:
+      - "${ATLAS_AGENT_STRATA_DATA_DIR:-/mnt/telemetry/strata-agent}:/data"
+      - "${ATLAS_CHAT_STRATA_DATA_DIR:-/mnt/telemetry/strata}/Strata-data:/data/Strata-data"
+    ports:
+      - "${ATLAS_AGENT_HOST_PORT:-8015}:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${ATLAS_AGENT_CUDA_VISIBLE_DEVICES:-1}"]
+              capabilities: [gpu]
+
+  atlas-agent-announce:
+    <<: *strata-announce
+    profiles: ["agent-split"]
+    container_name: ${PROJECT:-orion}-atlas-strata-agent-announce
+    environment:
+      - SERVICE_NAME=${ATLAS_AGENT_SERVICE_NAME:-atlas-worker-agent-1}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_AGENT_STRATA_PROFILE_NAME:-qwen38-flash-next-iq3s-strata-1xv100-circe-agent}
+      - LLM_REQUIRE_BACKEND=strata
+      - LLM_ROLE=agent
+      - LLM_ANNOUNCE_PORT=${ATLAS_AGENT_HOST_PORT:-8015}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_AGENT_CUDA_VISIBLE_DEVICES}
+      - STRATA_ENGINE=atlas-agent
+
+  # Rollback for the agent lane: the llama.cpp 27B it ran before Strata (2026-10-31). Stop atlas-agent and
+  # atlas-agent-announce, then: --profile agent-llamacpp up -d atlas-agent-llamacpp. Same port and role.
+  atlas-agent-llamacpp:
     logging:
       driver: journald
       options:
         tag: "{{.Name}}"
-    profiles: ["agent-split"]
+    profiles: ["agent-llamacpp"]
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile

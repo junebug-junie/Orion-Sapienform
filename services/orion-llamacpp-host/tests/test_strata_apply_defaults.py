@@ -28,3 +28,11 @@ def test_merges_defaults_and_keeps_setup_keys(tmp_path):
 def test_missing_config_is_refused(tmp_path):
     result = run(tmp_path / "absent.json", DEFAULTS)
     assert result.returncode == 1 and "start Strata once" in result.stderr
+
+
+def test_agent_defaults_keep_the_27b_lanes_thinking_and_sampling(tmp_path):
+    cfg = tmp_path / "strata-iq3_s.json"
+    cfg.write_text(json.dumps({"args": []}))
+    assert run(cfg, SERVICE / "strata" / "agent-defaults.json").returncode == 0
+    got = json.loads(cfg.read_text())
+    assert got["reasoning_effort"] == "high" and got["sampling"]["temperature"] == 1.0

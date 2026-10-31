@@ -138,6 +138,7 @@ _DEFAULT_CONTAINERS = (
     "atlas-llamacpp-metacog", "atlas-llamacpp-fast", "atlas-llamacpp-agent", "atlas-llamacpp-agent-burst",
     "dsv41-flash", "bonsai-worker", "diffusion-host", "gpu-lane-controller",
     "atlas-chat-announce", "atlas-chat-llamacpp", "atlas-strata-chat", "atlas-strata-chat-announce",
+    "atlas-agent-announce", "atlas-agent-llamacpp", "atlas-strata-agent", "atlas-strata-agent-announce",
 )
 
 

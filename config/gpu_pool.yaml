@@ -64,7 +64,8 @@ roles:
   # included) gpu1 first and recalled a running distill hold owner_waiting (10-18 11:39), so two
   # system distill holds waited 10+ h behind background reading holds (10-20). As an owner, queue
   # order (priority, then age) decides. Rollback: owner: agent.
-  agent:      {kind: llm, cards: [gpu1], owner: [agent, memory_distill], port: 8015}
+  # agent runs Strata like chat (2026-10-31), at 131072 like agent-gpu2. Rollback: drop `backend: strata`.
+  agent:      {kind: llm, backend: strata, cards: [gpu1], owner: [agent, memory_distill], port: 8015}
   agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
                # How long gpu2 may stay borrowed from diffusion once the pool loaded it (was
                # DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC): then holds are recalled and the seat unloads.
@@ -146,7 +147,8 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   world:      {roles: [world], on_unavailable: wait}   # a world prediction replayed hours later is useless
   diffusion:  {roles: [diffusion], on_unavailable: backlog}
   experiment: {roles: [experiment], on_unavailable: fail}
-  # Memory episode distiller (2026-10-02, Juniper's choice): the 27B on gpu1 ONLY. Never the gpu2
+  # Memory episode distiller (2026-10-02, Juniper's choice): gpu1 ONLY -- the 27B until 2026-10-31,
+  # Qwen3.8-Flash-Next on Strata since (Juniper: "move distil over too"). Never the gpu2
   # seat (a different model may load there) and never the lent chat card. Backlog, not wait: a
   # distill run waits for the hold under durable-runs admission anyway.
   memory_distill: {roles: [agent], on_unavailable: backlog}

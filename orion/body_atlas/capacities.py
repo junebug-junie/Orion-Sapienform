@@ -34,6 +34,22 @@ matchmaker's first half alone; **R-collector**, a fan-in reader (sole reader or 
 replies. **R-source**: live, publishes non-census, receives none: an input candidate (the world
 or a clock; the rule cannot tell).
 
+Rules v2 (patch 3: the atlas reads HTTP calls and shared Redis keys, ``wire_code.py``). None of
+them gives a role; each decides a gap line by evidence:
+
+* **R-wire-seen**: a live service the bus shows silent (no non-census channel) that has a
+  ``calls`` flow either way, or writes or reads a shared Redis key part. It is seen; only the
+  services left are "unseen" (``gap:s3-unseen``; it clears when none is left).
+* **R-broadcast-key**: a Redis key part with >= 1 live writer and >= BROADCAST_MIN_READERS live
+  readers in >= FANIN_MIN_ORGANS organs: state read straight by many, past the bus. Printed on
+  the algedonic line; the rule cannot tell pain from news, so it is never a role. With the atlas
+  reading Redis, "strain is not in the atlas" (``gap:algedonic-unseen``) is replaced by
+  ``gap:algedonic-none``, which only Juniper's confirmation of an algedonic part covers.
+* **S4 <-> S3 link**: with a confirmed S4 part and a confirmed S3 part, the atlas checks for a
+  link each way (a non-census channel, an HTTP call, or a Redis key one writes and the other
+  reads). ``gap:s4-to-s3`` clears only when some pair has both. With no confirmed pair it says
+  the link cannot be checked yet.
+
 **Census**: channels sorted by the share of live parts that publish them; the census is every
 channel above the largest drop among the top CENSUS_TOP_N shares. No fixed percentage, no list.
 """
@@ -47,12 +63,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.body_atlas.model import BodyAtlasV1
 
-RULES_VERSION = "v1"
+RULES_VERSION = "v2"
 CENSUS_TOP_N = 10
 FANIN_MIN_PRODUCERS = 5
 FANIN_MIN_ORGANS = 2
 SECOND_MIN_PRODUCERS = 3
 CENSUS_REPLY_MAX = 0.10
+BROADCAST_MIN_READERS = 3
 OPERATOR_PREFIX = "operator:"
 
 Job = Literal["S1", "S2", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]
@@ -66,7 +83,8 @@ CAP_JOBS: dict[str, tuple[Job, ...]] = {
 # gap lines that say "no part is shown doing this job": a confirmed role covers them. The others
 # say what the atlas cannot see (HTTP, Redis, S4 -> S3); only a new atlas source clears those.
 COVERED_BY_CONFIRMATION = {"gap:s2-none": ("S2", None), "gap:s3star-none": ("S3*", None),
-                           "gap:s3star-unconfirmed": ("S3*", None), "gap:s5-unread": ("S5", "service")}
+                           "gap:s3star-unconfirmed": ("S3*", None), "gap:s5-unread": ("S5", "service"),
+                           "gap:algedonic-none": ("algedonic", None)}
 
 
 class RoleEvidenceV1(BaseModel):
@@ -119,6 +137,33 @@ class GapV1(BaseModel):
     gap_id: str
     job: Job
     text: str
+
+
+class BroadcastKeyV1(BaseModel):
+    """R-broadcast-key: a Redis key written by few and read straight by many (never a role)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    part_id: str
+    writers: list[str]
+    readers: list[str]
+    reader_organs: int
+
+
+class WiresV1(BaseModel):
+    """What the atlas reads past the bus: HTTP calls and shared Redis keys (patch 3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    read: bool  # the atlas holds any calls flow or Redis key part (a past or bus-only atlas: no)
+    calls: int = 0  # caller -> callee pairs (a pair that also signals counts once)
+    callees: int = 0
+    keys: int = 0  # shared Redis key parts
+    private_keys: int = 0  # keys only one service touches (not parts)
+    dynamic_modules: int = 0  # modules with a Redis key that is not an exact string
+    seen_by_wire: list[str] = Field(default_factory=list)  # R-wire-seen: bus-silent, seen by HTTP / Redis
+    broadcast: list[BroadcastKeyV1] = Field(default_factory=list)  # R-broadcast-key
+    s4_s3: list[str] = Field(default_factory=list)  # confirmed S4 <-> S3 links found, one line each
 
 
 class OrganMixV1(BaseModel):
@@ -219,7 +264,7 @@ class CapacityReadingV1(BaseModel):
     roles: list[RoleEvidenceV1]
     near_misses: list[NearMissV1]
     sources: list[str]  # R-source: input candidates
-    silent_services: list[str]  # live services with no bus traffic but the census
+    silent_services: list[str]  # live services with no bus, HTTP or shared-Redis traffic but the census
     declared: list[str]  # declared facts printed as facts, not rule results (e.g. the runner)
     jobs: list[JobLineV1]
     gaps: list[GapV1]
@@ -230,6 +275,7 @@ class CapacityReadingV1(BaseModel):
     claims: list[ClaimViewV1] = Field(default_factory=list)
     capacities: list[CapacityViewV1] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    wires: WiresV1 | None = None  # rules v2
 
 
 # --- the index the rules read -----------------------------------------------------------------
@@ -397,6 +443,82 @@ def silent_services(atlas: BodyAtlasV1, idx: _Index) -> list[str]:
                   if p.part_id in idx.live and p.kind == "service" and p.part_id not in busy)
 
 
+def _is_call(f) -> bool:
+    return f.relation == "calls" or "declared_url" in f.evidence
+
+
+def _redis_ids(atlas: BodyAtlasV1) -> set[str]:
+    return {p.part_id for p in atlas.parts if p.kind == "store" and p.name.startswith("redis:")}
+
+
+def wire_links(atlas: BodyAtlasV1) -> dict[str, set[str]]:
+    """part -> what the atlas reads of it past the bus: ``calls X``, ``called by X``, ``writes
+    redis:K``, ``reads redis:K``."""
+    keys = _redis_ids(atlas)
+    out: dict[str, set[str]] = defaultdict(set)
+    for f in atlas.flows:
+        if _is_call(f):
+            out[f.source].add(f"calls {_bare(f.target)}")
+            out[f.target].add(f"called by {_bare(f.source)}")
+        elif f.target in keys and f.relation in ("writes", "reads", "uses"):
+            out[f.source].add(f"{f.relation} {_bare(f.target)}")
+    return out
+
+
+def rule_wire_seen(silent: list[str], links: dict[str, set[str]]) -> list[str]:
+    """R-wire-seen: the bus-silent live services the atlas sees by an HTTP call or a shared key."""
+    return [p for p in silent if links.get(p)]
+
+
+def rule_broadcast_keys(atlas: BodyAtlasV1, idx: _Index, *, organs_clause: bool = True) -> list[BroadcastKeyV1]:
+    """R-broadcast-key. ``organs_clause=False`` drops the reader-organ floor: only the eval's
+    mutation check uses it."""
+    keys = _redis_ids(atlas)
+    writers: dict[str, set[str]] = defaultdict(set)
+    readers: dict[str, set[str]] = defaultdict(set)
+    for f in atlas.flows:
+        if f.target not in keys or f.source not in idx.live:
+            continue
+        if f.relation == "writes":
+            writers[f.target].add(f.source)
+        elif f.relation == "reads":
+            readers[f.target].add(f.source)
+    out = []
+    for k in sorted(keys):
+        rs = readers.get(k, set()) - writers.get(k, set())
+        organs = {idx.organ.get(r) for r in rs} - {None}
+        if writers.get(k) and len(rs) >= BROADCAST_MIN_READERS and (len(organs) >= FANIN_MIN_ORGANS or not organs_clause):
+            out.append(BroadcastKeyV1(part_id=k, writers=sorted(writers[k]), readers=sorted(rs), reader_organs=len(organs)))
+    out.sort(key=lambda b: (-len(b.readers), b.part_id))
+    return out
+
+
+def s4_s3_links(atlas: BodyAtlasV1, idx: _Index, s4: list[str], s3: list[str]) -> dict[tuple[str, str], set[str]]:
+    """(a, b) -> how a reaches b, for every confirmed S4/S3 pair, both ways: a non-census channel,
+    an HTTP call, or a Redis key a writes and b reads."""
+    wrote: dict[str, set[str]] = defaultdict(set)
+    read: dict[str, set[str]] = defaultdict(set)
+    keys = _redis_ids(atlas)
+    for f in atlas.flows:
+        if f.target in keys and f.relation == "writes":
+            wrote[f.source].add(f.target)
+        elif f.target in keys and f.relation == "reads":
+            read[f.source].add(f.target)
+    out: dict[tuple[str, str], set[str]] = defaultdict(set)
+    pairs = [(a, b) for a in s4 for b in s3 if a != b] + [(b, a) for a in s4 for b in s3 if a != b]
+    by_pair = {(f.source, f.target): f for f in atlas.flows}
+    for a, b in pairs:
+        chs = idx.pair_channels.get((a, b), set()) - idx.census
+        if chs:
+            out[(a, b)].add("bus " + sorted(chs)[0])
+        f = by_pair.get((a, b))
+        if f is not None and _is_call(f):
+            out[(a, b)].add("http")
+        for k in sorted(wrote.get(a, set()) & read.get(b, set())):
+            out[(a, b)].add(_bare(k))
+    return out
+
+
 def declared_runner(atlas: BodyAtlasV1) -> list[str]:
     procs = [p.part_id for p in atlas.parts if p.kind == "process"]  # any status: a declared count
     runs: dict[str, int] = defaultdict(int)
@@ -446,9 +568,21 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
     s2, servers = rule_matchmaker(idx, second_set=second_set)
     audit = rule_census_reader(idx)
     collectors = rule_collectors(idx)
-    silent = silent_services(atlas, idx)
+    bus_silent = silent_services(atlas, idx)
+    links = wire_links(atlas)
+    keys = _redis_ids(atlas)
+    wires = WiresV1(
+        read=bool(links) or bool(keys),
+        calls=sum(1 for f in atlas.flows if _is_call(f)),
+        callees=len({f.target for f in atlas.flows if _is_call(f)}),
+        keys=len(keys), private_keys=sum(atlas.redis_private.values()),
+        dynamic_modules=sum(atlas.redis_dynamic.values()),
+        seen_by_wire=rule_wire_seen(bus_silent, links),
+        broadcast=rule_broadcast_keys(atlas, idx))
+    silent = [p for p in bus_silent if p not in set(wires.seen_by_wire)]
     roles = boundary + s2 + audit
     organ_of = {m: o for o in atlas.organs for m in o.members}
+    confirmed, notes = _confirmed_roles(atlas, vsm)
 
     jobs, gaps = [], []
     jobs.append(JobLineV1(job="S1", status="BY RULE" if boundary else "NO PART FOUND",
@@ -462,12 +596,21 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
         jobs.append(JobLineV1(job="S2", status="NO PART FOUND", text="R-matchmaker found no part between two crowds"))
         gaps.append(GapV1(gap_id="gap:s2-none", job="S2",
                           text="no part is shown to keep the workers from fighting: R-matchmaker found none"))
-    jobs.append(JobLineV1(job="S3", status="NO RULE",
-                          text=f"unseen: {len(silent)} live services with no bus traffic but the census"))
-    if silent:
-        gaps.append(GapV1(gap_id="gap:s3-unseen", job="S3", text=(
-            f"I cannot see my own control: {len(silent)} live services show no bus traffic but the census "
-            f"({_names(silent, 4)}); the atlas does not read HTTP calls or Redis keys")))
+    if not wires.read:
+        jobs.append(JobLineV1(job="S3", status="NO RULE",
+                              text=f"unseen: {len(silent)} live services with no bus traffic but the census"))
+        if silent:
+            gaps.append(GapV1(gap_id="gap:s3-unseen", job="S3", text=(
+                f"I cannot see my own control: {len(silent)} live services show no bus traffic but the census "
+                f"({_names(silent, 4)}); the atlas does not read HTTP calls or Redis keys")))
+    else:
+        jobs.append(JobLineV1(job="S3", status="NO RULE", text=(
+            f"seen past the bus: {len(wires.seen_by_wire)} of {len(bus_silent)} bus-silent services (HTTP or "
+            f"shared Redis); unseen: {len(silent)}" + (f" ({_names(silent, 3)})" if silent else ""))))
+        if silent:
+            gaps.append(GapV1(gap_id="gap:s3-unseen", job="S3", text=(
+                f"I cannot see my own control: {len(silent)} live services show no bus, HTTP or shared-Redis "
+                f"traffic in my atlas ({_names(silent, 4)})")))
     if audit:
         jobs.append(JobLineV1(job="S3*", status="CANDIDATE", text="; ".join(
             f"{_bare(r.part_id)} ({', '.join(r.evidence)} from {r.counts['producers']}, replies {r.counts['replies']})"
@@ -479,16 +622,44 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
         jobs.append(JobLineV1(job="S3*", status="NO PART FOUND", text="R-census-reader found no quiet census reader"))
         gaps.append(GapV1(gap_id="gap:s3star-none", job="S3*", text="no part is shown to audit the work"))
     jobs.append(JobLineV1(job="S4", status="NO RULE", text="no rule reads the outside or the future"))
-    gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
-        "nothing on the bus is shown to steer the present by what I see of the outside or the future")))
+    if not wires.read:
+        gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
+            "nothing on the bus is shown to steer the present by what I see of the outside or the future")))
+    else:
+        s4 = [c.part_id for c in confirmed if c.role == "S4"]
+        s3 = [c.part_id for c in confirmed if c.role == "S3"]
+        found = s4_s3_links(atlas, idx, s4, s3) if s4 and s3 else {}
+        wires.s4_s3 = [f"{_bare(a)} -> {_bare(b)}: {', '.join(sorted(v))}" for (a, b), v in sorted(found.items())]
+        both = [(a, b) for (a, b) in found if a in s4 and (b, a) in found]
+        if not (s4 and s3):
+            gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
+                "I cannot check whether what I see ahead steers what I do now: no part holds S4 and S3 by "
+                "Juniper's confirmation, so the two-way link has nothing to check (the atlas reads bus, HTTP "
+                "and shared Redis keys)")))
+        elif not both:
+            gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
+                "what I see ahead and what I do now do not argue both ways: " + (
+                    "; ".join(wires.s4_s3[:3]) if found else
+                    f"no bus, HTTP or Redis link between {_names(s4, 2)} and {_names(s3, 2)}"))))
     jobs.append(JobLineV1(job="S5", status="NO RULE", text="no rule; policy lives in files and sign-offs"))
     gaps.append(GapV1(gap_id="gap:s5-unread", job="S5", text=(
         "no running part is shown to set policy from who I am; tiers and allowlists are files and sign-offs")))
-    jobs.append(JobLineV1(job="algedonic", status="NO RULE", text="strain is a Redis key, not in the atlas"))
-    gaps.append(GapV1(gap_id="gap:algedonic-unseen", job="algedonic", text=(
-        "my pain/pleasure line is not in my atlas: strain is a Redis key it does not read")))
-    jobs.append(JobLineV1(job="metabolism", status="NO RULE",
-                          text="claims only: the market and prices are HTTP, not in the atlas"))
+    if not keys:
+        jobs.append(JobLineV1(job="algedonic", status="NO RULE", text="strain is a Redis key, not in the atlas"))
+        gaps.append(GapV1(gap_id="gap:algedonic-unseen", job="algedonic", text=(
+            "my pain/pleasure line is not in my atlas: strain is a Redis key it does not read")))
+    else:
+        shown = ", ".join(f"{_bare(b.part_id)} ({len(b.writers)}->{len(b.readers)} in {b.reader_organs} organs)"
+                          for b in wires.broadcast[:3])
+        jobs.append(JobLineV1(job="algedonic", status="NO RULE", text=(
+            f"broadcast keys, pain or news (the rule cannot tell): {shown}" if shown
+            else "no Redis key is read straight by many parts")))
+        gaps.append(GapV1(gap_id="gap:algedonic-none", job="algedonic", text=(
+            f"no part is shown to be my pain/pleasure line: {len(wires.broadcast)} Redis keys reach many parts "
+            "past the bus, and which one carries pain is a claim")))
+    jobs.append(JobLineV1(job="metabolism", status="NO RULE", text=(
+        "claims only: HTTP calls and shared Redis keys are in the atlas now, so a claim can cite them"
+        if wires.read else "claims only: the market and prices are HTTP, not in the atlas")))
     for r in s2:
         o = organ_of.get(r.part_id)
         if o is not None and len(o.members) > 1:
@@ -496,7 +667,6 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
                 f"{_bare(r.part_id)} coordinates from inside organ {o.name or o.organ_id} ({len(o.members)} parts): "
                 "jobs do not follow organ lines")))
 
-    confirmed, notes = _confirmed_roles(atlas, vsm)
     kind = {p.part_id: p.kind for p in atlas.parts}
     by_job: dict[str, list[RoleEvidenceV1]] = defaultdict(list)
     for c in confirmed:
@@ -535,7 +705,7 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
         near_misses=servers + collectors, sources=rule_sources(idx), silent_services=silent,
         declared=declared_runner(atlas), jobs=jobs, gaps=gaps,
         organ_mixes=sorted(mixes.values(), key=lambda m: -m.size), confirmed=confirmed,
-        s5_shared_with=vsm.s5_shared_with if vsm else None, notes=notes)
+        s5_shared_with=vsm.s5_shared_with if vsm else None, notes=notes, wires=wires if wires.read else None)
 
 
 def holders(reading: CapacityReadingV1, cap_id: str) -> list[str]:
@@ -619,6 +789,10 @@ def render(reading: CapacityReadingV1) -> list[str]:
     lines.append(f"input candidates (world or clock; the rule cannot tell): {len(reading.sources)}")
     census = [c for c in reading.census if c.census]
     lines.append("census: " + (", ".join(f"{c.channel} {c.share:.0%}" for c in census) or "none"))
+    w = reading.wires
+    if w is not None:
+        lines.append(f"past the bus: {w.calls} HTTP calls to {w.callees} parts · {w.keys} shared Redis keys "
+                     f"({w.private_keys} private, {w.dynamic_modules} modules with keys I cannot read exactly)")
     lines += [f"declared: {d}" for d in reading.declared]
     disputes = [c for c in reading.claims if c.kind == "dispute"]
     by_status: dict[str, list[str]] = defaultdict(list)

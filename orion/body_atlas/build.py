@@ -117,7 +117,7 @@ class _FlowAcc:
         self.relation = "signals"
 
 
-_STORE_PREFIX = {"postgres": "pg", "chroma": "chroma", "falkordb": "falkor"}
+_STORE_PREFIX = {"postgres": "pg", "chroma": "chroma", "falkordb": "falkor", "redis": "redis"}
 _PROCESS_PREFIX = {"durable_workflow": "run", "substrate_reducer": "reducer"}
 # part ids of the non-bus kinds (hosts, cameras, stores, processes) all start with one of these
 BODY_PART_PREFIXES = tuple(f"part:{x}:" for x in ("host", "camera", *_STORE_PREFIX.values(), *_PROCESS_PREFIX.values()))
@@ -367,6 +367,8 @@ def build_atlas(
         known_gaps=list(body.known_gaps) if body is not None else [],
         unmatched=unmatched,
         missing_declared_stores=list(body.missing_declared_stores) if body is not None else [],
+        redis_dynamic=dict(body.redis_dynamic) if body is not None else {},
+        redis_private=dict(body.redis_private) if body is not None else {},
     )
 
 
@@ -448,7 +450,10 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
     # unknown). One edge per service: its strongest relation (writes > reads > uses), every
     # evidence kept. A route link's ``via`` is the persisted channel; a code link's is a module.
     rank = {"writes": 2, "reads": 1, "uses": 0}
-    store_idf = _store_source_idf(body.stores)
+    # Redis keys get their own rarity table: adding them must not move the shares of the stores
+    # that were already weighed (N and df are per table)
+    store_idf = {**_store_source_idf([s for s in body.stores if s.store != "redis"]),
+                 **{f"redis|{k}": v for k, v in _store_source_idf([s for s in body.stores if s.store == "redis"]).items()}}
     for st in body.stores:
         name = f"{_STORE_PREFIX[st.store]}:{st.name}"
         per_svc: dict[str, list] = {}
@@ -459,7 +464,7 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
                 continue
             cur = per_svc.get(svc)
             channel = via if evidence == "declared_route" else ""
-            idf = store_idf[via]
+            idf = store_idf[f"redis|{via}" if st.store == "redis" else via]
             if cur is None:
                 per_svc[svc] = [relation, [evidence], channel, idf]
                 continue
@@ -470,9 +475,13 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             cur[2] = cur[2] or channel
             cur[3] = max(cur[3], idf)  # the service's most specific source counts
         status = "declared_only" if st.rows is None else ("live" if st.rows > 0 else "dormant")
-        # Postgres rows are pg_stat_user_tables.n_live_tup: the statistics' estimate, not a count
-        key = "rows_est" if st.store == "postgres" else "rows"
-        facts = {"store": st.store, key: "not read" if st.rows is None else str(st.rows)}
+        # Postgres rows are pg_stat_user_tables.n_live_tup: the statistics' estimate, not a count.
+        # A Redis key holds a value or not (live: present); its facts say type, idle and ttl.
+        if st.store == "redis":
+            facts = {"store": "redis", **(st.facts or {"value": "not read"})}
+        else:
+            key = "rows_est" if st.store == "postgres" else "rows"
+            facts = {"store": st.store, key: "not read" if st.rows is None else str(st.rows)}
         for rel, label in (("writes", "written_by"), ("reads", "read_by"), ("uses", "used_by")):
             who = sorted(svc for svc, v in per_svc.items() if v[0] == rel)
             if who:
@@ -490,6 +499,8 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
         for svc, (rel, ev, ch, idf) in per_svc.items():
             link(svc, name, BODY_PART_UNIT * idf / total, ev[0], ch or None, rel)
             flows[(svc, name)].evidence.update(ev)
+
+    _add_calls(body, parts, known, host_names, link, flows, unmatched)
 
     # processes: parts first (a spawns flow needs its child to exist), then flows
     for pr in body.processes:
@@ -513,6 +524,46 @@ def _add_body(body: BodyInputs, parts: dict[str, PartV1], flows: dict, link, *, 
             parts[name].facts["work_split"] = ", ".join(
                 f"{t} {share:.0%}" for t, share in _shares(edges, name)[:3])
     return {k: sorted(v) for k, v in sorted(unmatched.items())}
+
+
+def _add_calls(body: BodyInputs, parts: dict[str, PartV1], known: set[str], host_names: list[str], link,
+               flows: dict, unmatched: dict[str, set[str]]) -> None:
+    """HTTP calls (caller -> callee, ``calls``). Each callee adds ONE unit, split over its callers
+    by how specific each caller's source is (``log(1 + N / df)``, df = how many of the N callees
+    that module names): a widely-called service (orion-notify, called by a dozen) cannot glue its
+    callers into one organ, and a client module naming every service keeps a small share of each.
+    A host that matches no service part (``127.0.0.1``, a tailscale address, an outside site) is
+    listed under ``unmatched["declared_url"]``, never guessed."""
+    per_callee: dict[str, dict[str, str]] = defaultdict(dict)  # callee -> caller -> via
+    for c in body.calls:
+        callee = match_part(c.host, known, host_names) if c.host else None
+        caller = match_part(c.caller, known, host_names)
+        if callee is None or parts[callee].kind not in ("service", "endpoint"):
+            unmatched["declared_url"].add(f"{c.host or c.url} (named by {c.caller})")
+            continue
+        if caller is None:
+            unmatched["declared_url"].add(f"caller {c.caller} (names {callee})")
+            continue
+        if caller != callee:
+            per_callee[callee].setdefault(caller, c.via)
+    df: Counter = Counter()
+    for callers in per_callee.values():
+        for via in set(callers.values()):
+            df[via] += 1
+    n = max(len(per_callee), 1)
+    for callee, callers in sorted(per_callee.items()):
+        score = {caller: math.log(1 + n / df[via]) for caller, via in callers.items()}
+        total = sum(score.values())
+        for caller in sorted(callers):
+            w = BODY_PART_UNIT * score[caller] / total
+            acc = flows.get((caller, callee))
+            if acc is not None and acc.relation != "calls":
+                # the pair already has a flow (it signals on the bus): one flow per pair, so it
+                # keeps its relation, and declared_url in its evidence says it also calls
+                acc.weight += w
+                acc.evidence.add("declared_url")
+                continue
+            link(caller, callee, w, "declared_url", None, "calls")
 
 
 def _store_source_idf(stores) -> dict[str, float]:

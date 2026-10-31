@@ -21,6 +21,7 @@ from orion.fcc.claude_spawn import (
 )
 from orion.core.redact import redact_secrets, redact_secrets_deep
 from orion.fcc.turn_lock import turn_in_progress
+from orion.fcc.output_cap_continuation import OutputCapStitcher
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -375,6 +376,7 @@ async def run_turn(
     compacted = False
     degenerate_flagged = False
     context_nudge_sent = False
+    output_cap = OutputCapStitcher()
 
     # Shared sandbox lock for the turn's duration -- the same lock the governor's
     # fcc_motor takes and the connect-time sandbox sync needs exclusively. The
@@ -470,9 +472,12 @@ async def run_turn(
                 }
                 context_nudge_sent = True
 
+            output_cap.observe(parsed)
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             if text and summary_text is None and not is_compact_summary_draft(text):
-                accumulated = text
+                # Same output-cap stitch as orion/harness/fcc_motor.py.
+                stitched = output_cap.draft_for(parsed, text)
+                accumulated = redact_secrets(stitched) if stitched is not text else text
             if sid:
                 claude_session_id = sid
 

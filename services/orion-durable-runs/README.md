@@ -108,7 +108,8 @@ contracts `orion/schemas/memory_episode.py`, spec `docs/superpowers/specs/2026-0
   event, `memdistill-<episode>-a<N>` for a failed one older than 1 h, at most `MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS`.
 - **Nothing live reads these tables.** The daily old-vs-new report (orion-memory-consolidation) does.
 - **Env:** `MEMORY_EPISODE_WRITER_ENABLED` (kill switch), `CHANNEL_MEMORY_EPISODE_CLOSED`,
-  `MEMORY_EPISODE_DISTILL_ROUTE`, `MEMORY_EPISODE_DISTILL_TIMEOUT_SEC` (<= 900), `MEMORY_EPISODE_DISTILL_MAX_TOKENS`,
+  `MEMORY_EPISODE_DISTILL_ROUTE`, `MEMORY_EPISODE_DISTILL_TIMEOUT_SEC` (<= 900), `MEMORY_EPISODE_DISTILL_MAX_TOKENS` (8192; an answer cut
+  there fails as `distill_truncated_at_max_tokens`, not as invalid JSON),
   `MEMORY_EPISODE_DISTILL_DEADLINE_HOURS` (< 24), `CHANNEL_LLM_INTAKE`.
 - **Deploy order:** apply `manual_migration_episode_memory_v1.sql`; deploy orion-sql-writer (parses
   `DurableRunStateV1` with the new workflow), orion-llm-gateway and orion-gpu-pool (they read the new

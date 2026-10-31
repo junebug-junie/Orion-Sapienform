@@ -69,7 +69,10 @@ class Distiller:
         assert gpu_lease.model_dump() == self.world.ref()        # attaches to the run's hold
         assert "Headed to Austin" in prompt and "COMMAND" in prompt
         self.calls.append(correlation_id)
-        return {"text": self.answers.pop(0), "usage": {"prompt_tokens": 900, "completion_tokens": 120},
+        answer = self.answers.pop(0)
+        text, finish = answer if isinstance(answer, tuple) else (answer, "stop")
+        return {"text": text, "finish_reason": finish,
+                "usage": {"prompt_tokens": 900, "completion_tokens": 120},
                 "model": "qwen-27b", "latency_ms": 4200}
 
     async def persist(self, **kw):
@@ -233,5 +236,24 @@ def test_candidate_referents_reach_validation_so_an_imported_name_is_asked_about
         await graph(world, saver, d).ainvoke(Command(resume={}), CFG)
         (m,) = d.persisted[0]["result"].memories
         assert (m.stakes, m.stakes_reason, m.confirmation_state) == ("high", "ungrounded_name", "pending_confirmation")
+
+    asyncio.run(run())
+
+
+def test_answer_cut_at_max_tokens_is_named_truncation_not_invalid_json():
+    """Live 2026-10-31: 12 of 12 calls on one episode stopped at 4096 tokens (finish_reason=length).
+    Each failed as ``distill_json_invalid:Expecting ',' delimiter``, which reads as a model that writes
+    broken JSON. The attempt must say what happened: the answer was cut at the budget."""
+    async def run():
+        world, saver = World(), InMemorySaver()
+        world.grant()
+        world.release = _regranting_release(world)
+        d = Distiller(world, [(GOOD[: len(GOOD) // 2], "length"), GOOD])
+        await graph(world, saver, d).ainvoke(initial(), CFG)
+        snap = await graph(world, saver, d).aget_state(CFG)
+        assert snap.next == ("retry_wait",)
+        assert "distill_truncated_at_max_tokens:" in snap.values["last_error"]
+        assert "distill_json_invalid" not in snap.values["last_error"]
+        assert d.persisted == []
 
     asyncio.run(run())

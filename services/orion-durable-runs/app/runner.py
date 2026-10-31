@@ -412,9 +412,13 @@ class DurableRunner:
         if not text.strip():
             raise RuntimeError("gateway_empty_text")
         usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-        logger.info("memory_episode_distilled run=%s episode=%s chars=%s usage=%s", run_id, brief.episode_id,
-                    len(text), usage)
-        return {"text": text, "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
+        choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
+        first = choices[0] if choices and isinstance(choices[0], dict) else {}
+        finish_reason = first.get("finish_reason") if isinstance(first.get("finish_reason"), str) else None
+        logger.info("memory_episode_distilled run=%s episode=%s chars=%s usage=%s finish_reason=%s", run_id,
+                    brief.episode_id, len(text), usage, finish_reason)
+        return {"text": text, "finish_reason": finish_reason,
+                "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
                 "model": raw.get("model") or result.get("model"),
                 "latency_ms": int((time.monotonic() - started) * 1000)}
 

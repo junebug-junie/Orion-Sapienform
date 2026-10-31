@@ -285,3 +285,34 @@ async def test_run_turn_flags_lost_task_compaction_and_keeps_summary_out_of_answ
     assert steps[0]["context_obs"]["fill_pct"] >= 60
     assert any(s.get("type") == "context_compaction_degenerate" for s in steps)
     assert not str(events[-1].get("llm_response") or "").startswith("This session is being continued")
+
+
+@pytest.mark.asyncio
+async def test_run_turn_stitches_an_answer_the_output_cap_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CLI's `result` holds only the piece after an output-cap cut; the draft keeps the head.
+
+    Stream shape from the real CLI 2.1.316 against a server that cut the first response at max_tokens.
+    """
+    lines = [
+        '{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"{\\"a\\": \\"he"}]}}',
+        '{"type":"user","message":{"role":"user","content":[{"type":"text","text":'
+        '"Output token limit hit. Resume directly \\u2014 no apology."}]}}',
+        '{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"ad\\", \\"b\\": 2}"}]}}',
+        '{"type":"result","result":"ad\\", \\"b\\": 2}","session_id":"s1","duration_ms":50}',
+    ]
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return _FakeProc(lines)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(bridge, "_preflight_fcc_server", lambda *a, **k: None)
+
+    events = []
+    async for ev in bridge.run_turn(
+        prompt="hello", fcc_model_label="MODEL_HAIKU", correlation_id="corr-cap", workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082", auth_token="tok", claude_bin="claude", timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["llm_response"] == '{"a": "head", "b": 2}'

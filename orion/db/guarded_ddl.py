@@ -61,6 +61,8 @@ class GuardedDDL:
         self.skipped = 0
 
     def satisfied(self, sql: str) -> bool:
+        if ";" in sql.strip().rstrip(";") or "--" in sql or "/*" in sql:
+            return False              # several statements or comments: only the first could be judged
         m = _CREATE_INDEX.match(sql)
         if m:
             return _name(m.group(1)) in self.indexes

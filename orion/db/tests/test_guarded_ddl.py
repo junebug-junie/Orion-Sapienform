@@ -47,6 +47,9 @@ def test_other_alter_shapes_always_run():
     assert ddl("ALTER TABLE world_pulse_read_seed ADD CONSTRAINT k CHECK (kind IN ('a', 'b'));")
     assert ddl("ALTER TABLE chat_message ADD COLUMN trace_id TEXT;")   # no IF NOT EXISTS: let it fail as before
     assert ddl("UPDATE chat_message SET trace_id = '' WHERE trace_id IS NULL;")
+    # a satisfied first statement must never hide a second one
+    assert ddl("ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS trace_id TEXT; UPDATE chat_message SET trace_id = '';")
+    assert ddl("-- why\nCREATE INDEX IF NOT EXISTS idx_chat_message_corr_id ON chat_message (correlation_id);")
 
 
 def test_alter_if_exists_on_a_missing_table_is_a_no_op_but_a_table_made_this_run_is_not():

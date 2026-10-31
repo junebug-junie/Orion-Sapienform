@@ -79,7 +79,10 @@ def test_both_lanes_keep_more_vram_free_than_setups_700():
 
     raw = yaml.safe_load((SERVICE / "docker-compose.atlas-workers.yml").read_text())
     script = raw["x-strata-engine"]["command"][0]
-    assert '--set "vram-reserve-mib=$$STRATA_VRAM_RESERVE_MIB"' in script
+    launch = next(line for line in script.splitlines() if "--save-preset" in line)   # the launch's own (continued) line
+    assert '--set "vram-reserve-mib=$${STRATA_VRAM_RESERVE_MIB:-1200}"' in launch   # the shell default: never empty
+    engines = [n for n, s in raw["services"].items() if s.get("command") == raw["x-strata-engine"]["command"]]
+    assert sorted(engines) == ["atlas-agent", "atlas-chat"]          # a new engine lane must be added below too
     example = (SERVICE / ".env_example").read_text()
     for service, key in (("atlas-chat", "ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB"),
                          ("atlas-agent", "ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB")):

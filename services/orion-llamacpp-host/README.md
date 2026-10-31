@@ -405,6 +405,7 @@ on each V100, and the engine warned at each such request (under 512 MiB the driv
 decode falls to a few tok/s). Each launch now passes `--set vram-reserve-mib=$STRATA_VRAM_RESERVE_MIB`
 (`ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB` / `ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB`, default 1200). `strata launch` puts
 it over the run config's args for that launch only, so the installed run config and setup are not touched.
+Editing `--vram-reserve-mib` in the run config therefore has no effect; change the env key and recreate.
 
 The reserve comes out of the expert cache (`expert cache auto: ... MiB reserved` in the engine log): 500 MiB more
 is about 2% of the ~23 GiB cache. Context does not change: the KV cells kept in VRAM are fixed by `--kv-resident`, and

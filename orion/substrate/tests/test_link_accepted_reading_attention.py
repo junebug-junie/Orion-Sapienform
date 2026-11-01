@@ -17,7 +17,8 @@ def test_reading_event_query_shares_accepted_link_scope() -> None:
     assert events["accepted_states"] == seed["accepted_states"] == list(ACCEPTED_ASSERTION_STATES)
     assert "event_kind = 'materialization'" in ACCEPTED_READING_LINK_TIMES_SQL
     assert "outcome = 'applied'" in ACCEPTED_READING_LINK_TIMES_SQL
-    assert "m.payload->'edge_ids'" in ACCEPTED_READING_LINK_TIMES_SQL
+    assert "m.payload->'edge_ids' AS edge_ids" in ACCEPTED_READING_LINK_TIMES_SQL
+    assert "m.edge_ids" in ACCEPTED_READING_LINK_TIMES_SQL
     assert "m.recorded_at <= now()" in ACCEPTED_READING_LINK_TIMES_SQL
     assert "p.actor = ANY(:actors)" in ACCEPTED_READING_LINK_TIMES_SQL
     assert "l.state = ANY(:accepted_states)" in ACCEPTED_READING_LINK_TIMES_SQL

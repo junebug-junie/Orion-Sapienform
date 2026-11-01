@@ -114,7 +114,7 @@ LIMIT :limit
 # including links that have already minted an unscored curiosity seed.
 ACCEPTED_READING_LINK_TIMES_SQL = """
 WITH recent AS (
-    SELECT m.decision_id, m.target_id, m.recorded_at
+    SELECT m.decision_id, m.target_id, m.payload->'edge_ids' AS edge_ids, m.recorded_at
     FROM substrate_graph_journal m
     WHERE m.event_kind = 'materialization' AND m.outcome = 'applied'
       AND m.recorded_at >= now() - ((:lookback_hours + :window_minutes / 60.0) * interval '1 hour')
@@ -130,7 +130,7 @@ latest AS (
     ORDER BY d.target_id, d.revision DESC, d.recorded_at DESC
 )
 SELECT m.target_id AS assertion_id,
-       m.payload->'edge_ids' AS edge_ids,
+       m.edge_ids,
        m.recorded_at AS materialized_at,
        p.payload->>'subject_node_id' AS subject_node_id,
        p.payload->>'object_node_id' AS object_node_id

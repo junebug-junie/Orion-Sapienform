@@ -52,6 +52,16 @@ caller's own rate scores exactly 0, so stance only scores by telling long turns 
    computed per row with strictly earlier references: curiosity 50%, world-pulse 48%, stage 58%,
    chat 30%, self 35%. Chat and self sit **at** the median 55–57% of the time, which is why their
    rates are low. Strict "greater than" is fine there, because the bar is the caller's own rate, not 50%.
+4b. **Stance already ranks its turns; only the scale is wrong.** Within each caller, the rank
+   correlation (Spearman) between stance's v1 range midpoint and the true size, 11-02 over all
+   settled rows, is:
+   - reply length: chat 0.29, curiosity 0.37, world-pulse 0.34, stage 0.18, self 0.69;
+   - steps: chat 0.15, curiosity 0.41, world-pulse 0.00, stage 0.15, self 0.26.
+
+   So the relative knowledge exists, buried under the wrong absolute scale. The relative bet asks for
+   exactly that knowledge. World-pulse steps (0.00) is the likely failure; expect that bet to be dropped
+   there. Independent check: on curiosity turns, the stance input's length alone has a correlation of
+   0.55 with "above usual steps".
 5. **Existing mechanism.** This reuses the settle loop, the table, `_grade_p` and the live endpoint
    from #2976. No new service and no new grader.
 6. **Reversibility.** The change is cheap to undo. Old v1 rows stay as they are, and the settler reads

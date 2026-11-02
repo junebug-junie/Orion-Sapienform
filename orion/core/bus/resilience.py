@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover - fallback when loguru is unavailable
     import logging
     logger = logging.getLogger("orion.bus")
 
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, PubSubWatchdog
 from orion.core.bus.bus_schemas import BaseEnvelope
 
 _sub_logger = _logging.getLogger("orion.bus.resilience")
@@ -113,7 +113,9 @@ async def run_subscription(
     accepts SUBSCRIBE and drops at once still backs off. ``get_message`` returns
     None on a quiet channel within its own 1 s timeout; ``stuck_reads`` reads in a
     row that overrun the outer 1.2 s guard mean a dead connection, so the session
-    is reopened instead of polled forever.
+    is reopened instead of polled forever. A silently dead connection never
+    overruns -- it answers "nothing yet" on time -- so a PubSubWatchdog PINGs
+    after quiet and reopens the session when no pong comes back.
     """
     channels = (channel,) if isinstance(channel, str) else tuple(channel)
     label = ",".join(channels)
@@ -137,6 +139,7 @@ async def run_subscription(
                     state.subscribed = True
                     state.last_subscribed_at = time.time()
                     overruns = 0
+                    watchdog = PubSubWatchdog()
                     while stop_event is None or not stop_event.is_set():
                         try:
                             msg = await asyncio.wait_for(
@@ -151,7 +154,12 @@ async def run_subscription(
                                 ) from None
                             continue
                         overruns = 0
-                        if not msg or msg.get("type") not in ("message", "pmessage"):
+                        if msg is None:
+                            msg = await watchdog.idle(pubsub)
+                            if msg is None:
+                                continue
+                        watchdog.heard()
+                        if msg.get("type") not in ("message", "pmessage"):
                             continue
                         backoff = min(1.0, max_backoff_sec)
                         state.messages_total += 1

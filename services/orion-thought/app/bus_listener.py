@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.cognition.recall_query import cap_retrieval_query
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, PubSubSilentError, PubSubWatchdog
 
 from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -794,6 +794,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
             logger.info("subscribed channels=%s", ",".join(channels))
             async with bus.subscribe(*channels) as pubsub:
                 backoff_sec = 1.0
+                watchdog = PubSubWatchdog()
                 while True:
                     if stop_event is not None and stop_event.is_set():
                         break
@@ -824,7 +825,19 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                         reconnect = True
                         break
 
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                    if msg is None:
+                        # A dead line answers "nothing yet" on time, so the overrun
+                        # check above never sees it; the PING does.
+                        try:
+                            msg = await watchdog.idle(pubsub)
+                        except PubSubSilentError as exc:
+                            logger.warning("pubsub silent channel=%s err=%s; reconnecting", channel, exc)
+                            reconnect = True
+                            break
+                        if msg is None:
+                            continue
+                    watchdog.heard()
+                    if msg.get("type") not in ("message", "pmessage"):
                         continue
                     idle_polls = 0
                     try:

@@ -46,7 +46,7 @@ None.
 
 ```text
 pytest orion/core/bus/tests tests/test_bus_async_rpc_worker.py      148 passed
-pytest services/orion-thought/tests                                  785 passed, 32 skipped
+pytest services/orion-thought/tests                                  787 passed, 32 skipped
 pytest orion/core/sql_router/tests/test_sql_router_worker_resubscribe.py tests/test_bus_async_rpc_worker.py   18 passed
 services: vision-frame-router 123, llm-gateway 470, actions 281, vision-scribe 12, bus-mirror 99, vision-edge 25 passed
 Mutation check: replacing the watchdog call with `msg = None` fails the 3 loop tests in
@@ -65,7 +65,12 @@ Not run. The live proof is a dead-line reconnect in a running service's log: `pu
 
 ## Review findings fixed
 
-See the follow-up commit on this branch.
+- Finding: the RPC worker took `_rpc_lock` after every quiet read. A caller that held the lock for a long time (for example `_rpc_subscribe` waiting on a 10 s connect) would stall reply reads for other pending RPCs.
+  - Fix: `PubSubWatchdog.io_due()`. The worker takes the lock only when a PING or drain is due.
+  - Evidence: bus test suites pass (below).
+- Finding: the orion-thought tests proved a dead line is left, but not that a quiet live line is kept.
+  - Fix: `test_worker_keeps_a_quiet_live_line` for both loops (one line, at least 2 pings).
+  - Evidence: 4 passed.
 
 ## Restart required
 

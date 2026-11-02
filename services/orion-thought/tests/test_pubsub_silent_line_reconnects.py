@@ -32,7 +32,7 @@ class _Line:
             self.queue.append({"type": "pong", "pattern": None, "channel": None, "data": b""})
 
 
-def _fake_bus_class(lines: list[_Line], stop: asyncio.Event):
+def _fake_bus_class(lines: list[_Line], stop: asyncio.Event, *, first_alive: bool = False):
     class _Bus:
         def __init__(self, url: str = "", **_kw) -> None:
             pass
@@ -46,7 +46,7 @@ def _fake_bus_class(lines: list[_Line], stop: asyncio.Event):
         def subscribe(self, *channels: str, patterns: bool = False):
             @contextlib.asynccontextmanager
             async def _cm():
-                line = _Line(alive=bool(lines))  # first line is dead, later ones live
+                line = _Line(alive=first_alive or bool(lines))  # first line dead unless first_alive
                 lines.append(line)
                 if len(lines) == 2:
                     stop.set()
@@ -83,3 +83,28 @@ async def test_worker_reconnects_off_a_silent_line(
 
     assert len(lines) == 2, "worker stayed on the dead line"
     assert lines[0].pings == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "module_name,worker_name",
+    [("app.bus_listener", "run_bus_worker"), ("app.reasoning_activity", "run_reasoning_worker")],
+)
+async def test_worker_keeps_a_quiet_live_line(
+    monkeypatch: pytest.MonkeyPatch, fast_watchdog, module_name: str, worker_name: str
+) -> None:
+    import importlib
+
+    module = importlib.import_module(module_name)
+    monkeypatch.setattr(module.settings, "orion_bus_enabled", True, raising=False)
+    stop = asyncio.Event()
+    lines: list[_Line] = []
+    monkeypatch.setattr(module, "OrionBusAsync", _fake_bus_class(lines, stop, first_alive=True))
+
+    task = asyncio.create_task(getattr(module, worker_name)(stop_event=stop))
+    await asyncio.sleep(0.5)
+    stop.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert len(lines) == 1, "worker reconnected off a live line"
+    assert lines[0].pings >= 2  # kept pinging across several quiet windows

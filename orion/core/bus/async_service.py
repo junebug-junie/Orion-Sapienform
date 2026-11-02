@@ -83,6 +83,13 @@ class PubSubWatchdog:
         self._last_rx = self._now()
         self._ping_sent_at = None
 
+    def io_due(self) -> bool:
+        """True when ``idle`` would PING or drain now (it does nothing otherwise)."""
+        now = self._now()
+        if self._ping_sent_at is None:
+            return now - self._last_rx >= self.idle_ping_sec
+        return now - self._ping_sent_at >= self.pong_deadline_sec
+
     async def idle(self, pubsub: Any) -> Optional[dict]:
         now = self._now()
         if self._ping_sent_at is None:
@@ -349,8 +356,10 @@ class OrionBusAsync:
                     continue
                 try:
                     msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                    if msg is None:
+                    if msg is None and watchdog.io_due():
                         # Same lock as _rpc_subscribe(): the PING shares this connection.
+                        # Only when I/O is due, so a slow lock holder does not stall
+                        # reply reads every quiet second.
                         async with self._rpc_lock:
                             msg = await watchdog.idle(self._rpc_pubsub)
                     if msg is not None:

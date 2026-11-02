@@ -7,7 +7,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any, AsyncIterator, Dict, Optional
 
 from pydantic import BaseModel, ValidationError
@@ -43,6 +43,65 @@ PUBSUB_POLL_SEC = 1.0
 
 class PubSubSilentError(aioredis.ConnectionError):
     """A pub/sub connection that stopped answering its idle PING (presumed half-open)."""
+
+
+class PubSubWatchdog:
+    """Notices a pub/sub connection the server already dropped.
+
+    A half-open socket returns "nothing yet" on every timed read, on time, forever
+    (2026-11-02: circe's gpu-lane controller sat deaf for 13 h). Read timeouts never
+    fire on it, so every pub/sub read loop needs this check:
+
+    - call ``heard()`` whenever a read returns anything (pongs included);
+    - call ``idle(pubsub)`` whenever a read returns nothing.
+
+    ``idle`` PINGs after ``idle_ping_sec`` of silence and raises PubSubSilentError
+    when nothing at all arrives within ``pong_deadline_sec`` of the PING. If a
+    buffered reply is found by one last zero-timeout drain at the deadline, ``idle``
+    returns it, and the caller handles it like any read result.
+    """
+
+    def __init__(
+        self,
+        *,
+        idle_ping_sec: Optional[float] = None,
+        pong_deadline_sec: Optional[float] = None,
+    ) -> None:
+        # Module constants are read here, not at def time, so tests can shorten them.
+        self.idle_ping_sec = PUBSUB_IDLE_PING_SEC if idle_ping_sec is None else idle_ping_sec
+        self.pong_deadline_sec = (
+            PUBSUB_PONG_DEADLINE_SEC if pong_deadline_sec is None else pong_deadline_sec
+        )
+        self._last_rx = self._now()
+        self._ping_sent_at: Optional[float] = None
+
+    @staticmethod
+    def _now() -> float:
+        return monotonic()
+
+    def heard(self) -> None:
+        self._last_rx = self._now()
+        self._ping_sent_at = None
+
+    async def idle(self, pubsub: Any) -> Optional[dict]:
+        now = self._now()
+        if self._ping_sent_at is None:
+            if now - self._last_rx >= self.idle_ping_sec:
+                await pubsub.ping()
+                self._ping_sent_at = now
+            return None
+        if now - self._ping_sent_at < self.pong_deadline_sec:
+            return None
+        # An event-loop stall can expire the read timeout before a buffered pong is
+        # consumed; drain once so a live line is never declared dead.
+        late = await pubsub.get_message(timeout=0)
+        if late is not None:
+            self.heard()
+            return late
+        raise PubSubSilentError(
+            f"pubsub silent: no pong {now - self._ping_sent_at:.0f}s after idle ping "
+            f"(last traffic {now - self._last_rx:.0f}s ago); connection presumed dead"
+        )
 
 
 class OrionBusAsync:
@@ -261,6 +320,9 @@ class OrionBusAsync:
             return
         rpc_redis = self._create_pubsub_redis()
         self._rpc_pubsub = rpc_redis.pubsub()
+        # A reply line that dies silently times out every RPC this process makes until
+        # restart; the watchdog turns that silence into the reconnect below.
+        watchdog = PubSubWatchdog()
         try:
             while self._rpc_worker_running:
                 # No reply-channel is subscribed yet (subscriptions happen lazily,
@@ -287,6 +349,12 @@ class OrionBusAsync:
                     continue
                 try:
                     msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if msg is None:
+                        # Same lock as _rpc_subscribe(): the PING shares this connection.
+                        async with self._rpc_lock:
+                            msg = await watchdog.idle(self._rpc_pubsub)
+                    if msg is not None:
+                        watchdog.heard()
                     if msg and msg.get("type") in ("message", "pmessage"):
                         # Handling (decode/dispatch) is inside the same try as the read:
                         # a bad payload must degrade to reconnect-and-retry like a
@@ -315,6 +383,7 @@ class OrionBusAsync:
                             await rpc_redis.close()
                         rpc_redis = self._create_pubsub_redis()
                         self._rpc_pubsub = rpc_redis.pubsub()
+                        watchdog = PubSubWatchdog()
                         # Anchor always rides along (see __init__).
                         try:
                             await self._rpc_pubsub.subscribe(
@@ -696,36 +765,16 @@ class OrionBusAsync:
         ConnectionError when nothing at all (pong included) arrives within
         ``pong_deadline_sec``. Callers already resubscribe on that error.
         """
-        loop = asyncio.get_running_loop()
-        last_rx = loop.time()
-        ping_sent_at: Optional[float] = None
+        watchdog = PubSubWatchdog(idle_ping_sec=idle_ping_sec, pong_deadline_sec=pong_deadline_sec)
         while pubsub.subscribed:
             msg = await pubsub.get_message(timeout=poll_sec)
-            now = loop.time()
-            if msg is not None:
-                last_rx = now
-                ping_sent_at = None
-                if msg.get("type") in ("message", "pmessage"):
-                    yield msg
-                continue
-            if ping_sent_at is not None:
-                if now - ping_sent_at >= pong_deadline_sec:
-                    # An event-loop stall can expire the read timeout before a buffered pong is
-                    # consumed; drain once so a live line is never declared dead.
-                    late = await pubsub.get_message(timeout=0)
-                    if late is not None:
-                        last_rx = loop.time()
-                        ping_sent_at = None
-                        if late.get("type") in ("message", "pmessage"):
-                            yield late
-                        continue
-                    raise PubSubSilentError(
-                        f"pubsub silent: no pong {now - ping_sent_at:.0f}s after idle ping "
-                        f"(last traffic {now - last_rx:.0f}s ago); connection presumed dead"
-                    )
-            elif now - last_rx >= idle_ping_sec:
-                await pubsub.ping()
-                ping_sent_at = now
+            if msg is None:
+                msg = await watchdog.idle(pubsub)
+                if msg is None:
+                    continue
+            watchdog.heard()
+            if msg.get("type") in ("message", "pmessage"):
+                yield msg
 
     async def _emit_rpc_timeout_grammar(
         self,

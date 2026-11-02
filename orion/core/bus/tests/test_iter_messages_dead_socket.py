@@ -93,3 +93,42 @@ async def test_stops_when_unsubscribed() -> None:
     pubsub.subscribed = False
     got = await _drain(_bus(), pubsub, seconds=0.5)
     assert got == []
+
+
+class StalledPongPubSub(FakePubSub):
+    """The pong is already buffered, but every timed read expires before consuming it (an
+    event-loop stall); only the zero-timeout drain sees it."""
+
+    async def get_message(self, ignore_subscribe_messages: bool = False, timeout: float | None = 0.0):
+        if timeout == 0 and self.queue:
+            return self.queue.pop(0)
+        await asyncio.sleep(timeout or 0)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_buffered_pong_after_stall_is_not_declared_dead() -> None:
+    pubsub = StalledPongPubSub(answers_ping=True)
+    got = await _drain(_bus(), pubsub, seconds=0.5)
+    assert got == []
+    assert pubsub.pings >= 2  # survived several ping/deadline rounds without raising
+
+
+def test_silent_error_is_a_redis_connection_error() -> None:
+    from orion.core.bus.async_service import PubSubSilentError
+
+    assert issubclass(PubSubSilentError, aioredis.ConnectionError)
+
+
+@pytest.mark.asyncio
+async def test_rpc_reply_wait_reports_dead_line_as_timeout() -> None:
+    bus = _bus()
+    original = bus.iter_messages
+
+    def fast(pubsub, **_kw):
+        return original(pubsub, **FAST)
+
+    bus.iter_messages = fast  # type: ignore[assignment]
+    with pytest.raises(asyncio.TimeoutError, match="went silent"):
+        async for _ in bus._iter_reply(FakePubSub(answers_ping=False), "orion:reply:x"):
+            pass

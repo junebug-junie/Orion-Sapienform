@@ -63,6 +63,10 @@ No eval harness covers bus transport. The live check is the one below.
 
 Not run. The live proof is a dead-line reconnect in a running service's log: `pubsub silent` followed by a resubscribe. UNVERIFIED until a line actually dies after deploy.
 
+## CI flake fixed
+
+- `services/orion-llm-gateway/tests/test_gateway_cancel_not_upstream_failure.py`: the fake "hangs up" server read the request with one `recv()` and closed. If the request arrived in two packets, closing with unread bytes sent a TCP reset, so the client saw `ReadError` instead of `RemoteProtocolError`. The fixture now reads the whole request (headers and body) before it closes. Unrelated to the bus change; it failed this PR's gateway job once.
+
 ## Review findings fixed
 
 - Finding: the RPC worker took `_rpc_lock` after every quiet read. A caller that held the lock for a long time (for example `_rpc_subscribe` waiting on a 10 s connect) would stall reply reads for other pending RPCs.

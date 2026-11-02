@@ -439,8 +439,8 @@ async def test_rpc_request_worker_path_records_timeout_in_health_aggregator() ->
 class _InlinePubSub:
     """Minimal, self-contained fake for the inline RPC path only -- deliberately
     separate from _FakePubSub above (which supports get_message(), used by the worker
-    path) since the inline path's iter_messages() calls listen(), an async generator
-    _FakePubSub doesn't implement. Kept isolated so extending it can't affect any
+    path) since the inline path's iter_messages() needs `subscribed` and `ping()`,
+    which _FakePubSub doesn't implement. Kept isolated so extending it can't affect any
     existing worker-path test's behavior."""
 
     def __init__(self) -> None:
@@ -452,10 +452,16 @@ class _InlinePubSub:
     async def unsubscribe(self, *channels: str) -> None:
         return None
 
-    async def listen(self):
-        while True:
-            msg = await self._queue.get()
-            yield msg
+    subscribed = True
+
+    async def get_message(self, ignore_subscribe_messages: bool = False, timeout: float | None = 0.0):
+        try:
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    async def ping(self) -> None:
+        self._queue.put_nowait({"type": "pong", "data": b""})
 
     async def close(self) -> None:
         return None

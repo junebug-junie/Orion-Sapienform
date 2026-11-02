@@ -34,6 +34,17 @@ class RpcNoListener(ConnectionError):
     held a GPU lane for 35 minutes waiting on a 2.5 h RPC timeout before it was cancelled by hand."""
 
 
+# Pub/sub liveness (see OrionBusAsync.iter_messages). A quiet channel costs one PING per
+# idle_ping_sec; a dead socket is detected within idle_ping_sec + pong_deadline_sec.
+PUBSUB_IDLE_PING_SEC = 30.0
+PUBSUB_PONG_DEADLINE_SEC = 15.0
+PUBSUB_POLL_SEC = 1.0
+
+
+class PubSubSilentError(aioredis.ConnectionError):
+    """A pub/sub connection that stopped answering its idle PING (presumed half-open)."""
+
+
 class OrionBusAsync:
     """
     Async Redis bus client.
@@ -91,7 +102,8 @@ class OrionBusAsync:
         self.track_velocity = bool(track_velocity)
 
     def _pubsub_redis_kwargs(self) -> dict[str, Any]:
-        """Pub/sub listen() blocks indefinitely; socket_timeout must be disabled."""
+        """Pub/sub reads wait indefinitely between messages; socket_timeout must be disabled
+        (iter_messages does its own idle-ping liveness check)."""
         return {
             "decode_responses": False,
             "socket_timeout": None,
@@ -657,15 +669,63 @@ class OrionBusAsync:
                 with suppress(Exception):
                     await pubsub_redis.close()
 
-    async def iter_messages(self, pubsub: aioredis.client.PubSub) -> AsyncIterator[dict]:
+    async def _iter_reply(self, pubsub: aioredis.client.PubSub, reply_channel: str) -> AsyncIterator[dict]:
+        """iter_messages for an RPC reply wait. A reply line that went silent can never deliver
+        the reply, so report it as the timeout every RPC caller already handles."""
+        try:
+            async for msg in self.iter_messages(pubsub):
+                yield msg
+        except PubSubSilentError as exc:
+            raise asyncio.TimeoutError(f"reply channel {reply_channel} went silent: {exc}") from exc
+
+    async def iter_messages(
+        self,
+        pubsub: aioredis.client.PubSub,
+        *,
+        idle_ping_sec: float = PUBSUB_IDLE_PING_SEC,
+        pong_deadline_sec: float = PUBSUB_PONG_DEADLINE_SEC,
+        poll_sec: float = PUBSUB_POLL_SEC,
+    ) -> AsyncIterator[dict]:
         """
         Unified async message iterator. Yields dicts with fields similar to redis-py's listen().
+
+        Detects a silently dead subscription. ``pubsub.listen()`` blocks forever on a socket
+        the server has already dropped (2026-11-02: circe's gpu-lane controller sat deaf for
+        13 h; its socket read ESTABLISHED, the bus had no subscriber for it). So poll in short
+        slices, PING the pub/sub connection after ``idle_ping_sec`` of silence, and raise
+        ConnectionError when nothing at all (pong included) arrives within
+        ``pong_deadline_sec``. Callers already resubscribe on that error.
         """
-        async for msg in pubsub.listen():
-            mtype = msg.get("type")
-            if mtype not in ("message", "pmessage"):
+        loop = asyncio.get_running_loop()
+        last_rx = loop.time()
+        ping_sent_at: Optional[float] = None
+        while pubsub.subscribed:
+            msg = await pubsub.get_message(timeout=poll_sec)
+            now = loop.time()
+            if msg is not None:
+                last_rx = now
+                ping_sent_at = None
+                if msg.get("type") in ("message", "pmessage"):
+                    yield msg
                 continue
-            yield msg
+            if ping_sent_at is not None:
+                if now - ping_sent_at >= pong_deadline_sec:
+                    # An event-loop stall can expire the read timeout before a buffered pong is
+                    # consumed; drain once so a live line is never declared dead.
+                    late = await pubsub.get_message(timeout=0)
+                    if late is not None:
+                        last_rx = loop.time()
+                        ping_sent_at = None
+                        if late.get("type") in ("message", "pmessage"):
+                            yield late
+                        continue
+                    raise PubSubSilentError(
+                        f"pubsub silent: no pong {now - ping_sent_at:.0f}s after idle ping "
+                        f"(last traffic {now - last_rx:.0f}s ago); connection presumed dead"
+                    )
+            elif now - last_rx >= idle_ping_sec:
+                await pubsub.ping()
+                ping_sent_at = now
 
     async def _emit_rpc_timeout_grammar(
         self,
@@ -885,7 +945,7 @@ class OrionBusAsync:
                 )
 
                 async def _wait_one():
-                    async for msg in self.iter_messages(pubsub):
+                    async for msg in self._iter_reply(pubsub, reply_channel):
                         success_elapsed_ms = (perf_counter() - started) * 1000.0
                         logger.info(
                             "[rpc] reply received corr_id=%s reply_channel=%s path=inline elapsed_ms=%.1f",
@@ -973,7 +1033,7 @@ class OrionBusAsync:
             await self.publish(request_channel, msg_payload)
             try:
                 async def _wait_one():
-                    async for msg in self.iter_messages(pubsub):
+                    async for msg in self._iter_reply(pubsub, reply_channel):
                         return msg
                 msg = await asyncio.wait_for(_wait_one(), timeout=timeout_sec)
             except asyncio.TimeoutError as te:

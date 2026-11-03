@@ -425,6 +425,16 @@ def apply_answer(
                    [] if refusal else refs)
 
 
+WOKE_NOTE_CAP = 160
+
+
+def woke_note(changes: list[str]) -> str:
+    """Why the thought woke, first on the act's close note so the 500-char note cap never cuts it.
+    Lets the wake mix be measured from the ledger instead of inferred (2026-11-04)."""
+    text = "; ".join(" ".join(c.split()) for c in changes) or "nothing pending"
+    return "woke: " + (text if len(text) <= WOKE_NOTE_CAP else text[:WOKE_NOTE_CAP - 3] + "...")
+
+
 def summary_note(applied: Applied) -> str:
     """The thought act's close note: what the thought changed (concerns are never edited silently)."""
     parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]

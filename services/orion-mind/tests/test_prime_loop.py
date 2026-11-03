@@ -659,3 +659,10 @@ def test_the_no_model_backoff_has_a_floor_even_with_no_refractory():
         rt.clock_box["now"] = T0 + timedelta(seconds=15 * i)
         asyncio.run(rt.tick())
     assert rt.state.retry_not_before == T0 + timedelta(seconds=45 + 60)
+
+
+def test_every_thought_records_why_it_woke():
+    rt = runtime(answer=MOVE)
+    asyncio.run(rt.tick())
+    closed = [a for k, a in rt.bus.acts() if k == "act_closed" and a["verb"] == "infer"][0]
+    assert closed["outcome"]["note"].startswith("woke: first wake")

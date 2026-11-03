@@ -204,12 +204,23 @@ def test_a_treated_focus_no_run_took_closes_after_the_focus_ttl():
     assert s.produced is False and "expired" in s.note
 
 
-def test_only_a_change_in_what_binds_is_body_news():
-    state = PrimeStateV1(seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
-    assert observe(state, _snap(binding=[]), T0).pending_changes == []
-    hot = observe(state, _snap(binding=["heat"]), T0)
-    assert hot.pending_changes == ["body: binding constraints now heat"] and hot.seen_binding == ["heat"]
-    assert observe(hot, _snap(binding=None, body_ok=False), T0).pending_changes == hot.pending_changes
+def test_what_binds_is_remembered_but_never_wakes_prime():
+    """Live 11-03: the binding set changed 25x/day; 21 of 26 thoughts it woke did nothing and all 4 drops
+    were "lane X is no longer binding". Shown in the frame, never a change."""
+    state = PrimeStateV1(seen_binding=[], last_thought_at=T0)
+    hot = observe(state, _snap(binding=["heat", "lane:chat"]), T0)
+    assert hot.pending_changes == [] and hot.seen_binding == ["heat", "lane:chat"]
+    assert not wants_to_think(hot, T0 + timedelta(hours=1), refractory=REFRACTORY)
+    assert observe(hot, _snap(binding=None, body_ok=False), T0).seen_binding == ["heat", "lane:chat"]
+
+
+def test_the_wake_note_records_why_and_never_overflows():
+    from orion.prime.thought import WOKE_NOTE_CAP, woke_note
+
+    assert woke_note(["quiet: nothing has woken me for 6 hours"]) == "woke: quiet: nothing has woken me for 6 hours"
+    assert woke_note([]) == "woke: nothing pending"
+    long = woke_note(["x" * 400, "y"])
+    assert len(long) <= len("woke: ") + WOKE_NOTE_CAP and long.endswith("...")
 
 
 def test_a_move_can_cite_the_concern_added_in_the_same_answer():

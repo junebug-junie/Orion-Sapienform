@@ -7,8 +7,6 @@ normal tick and costs nothing.
 
 What counts as a change (each one is a fact Prime can be shown, never a score):
 
-* the set of BINDING body constraints changed (``prices[*].bind_state == "binding"`` from GET
-  /physiology/state: the body's own label; slack and "out of my hands" (exogenous) are not news);
 * one of Prime's own acts settled (written by the runtime when a nomination closes);
 * a concern faded: Prime has not kept it for ``CONCERN_TTL`` (a thought keeps a concern by naming it
   under ``concerns.keep``; nothing outside a thought renews it -- 2026-10-30, Juniper: an arc the model
@@ -17,6 +15,12 @@ What counts as a change (each one is a fact Prime can be shown, never a score):
 * first wake: Prime has never thought;
 * quiet: nothing else woke Prime for ``QUIET_FLOOR`` (a quarter of ``CONCERN_TTL``), so a held concern
   gets several chances to be kept or dropped before it fades for lack of any thought at all.
+
+Which body constraints bind is NOT a change either (2026-11-04). Live 11-03 09:43..21:29, after
+attention was removed, Prime thought 26 times, almost every one at the 5-minute floor: 21 did nothing,
+4 dropped a concern "because lane X is no longer the binding constraint", 1 asked a question. Over 3
+days the binding set changed 25 times a day (median spell 12 min, 29 of 75 under 5 min): the market
+moving its prices, not news for a mind. It stays in every frame's BODY section.
 
 Attention moving is NOT a change (2026-11-03). Live 10-30..11-03 Prime's concerns churned with it:
 22 of the 38 concern drops gave "attention has moved ..." as the reason, and 1 of 37 graded concern
@@ -255,8 +259,7 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
         state = note_change(state, f"quiet: nothing has woken me for {hours:.0f} hours")
 
     if snap.body_ok and snap.binding is not None and snap.binding != state.seen_binding:
-        now_binding = ", ".join(snap.binding) or "nothing"
-        state = note_change(state, f"body: binding constraints now {now_binding}")
+        # Remembered for the frame, never a wake (see the module docstring, 2026-11-04).
         state = state.model_copy(update={"seen_binding": snap.binding})
 
     kept: list[PrimeConcernV1] = []

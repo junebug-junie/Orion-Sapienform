@@ -172,11 +172,11 @@ def run() -> list[tuple[str, bool, str]]:
 
     # starved_try: the line a no-seat try leaves (prime_loop._note_no_model) reaches the next frame.
     line = "a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again"
-    starved = note_no_model(PrimeStateV1(pending_changes=["body: binding constraints now heat"]), "no_seat",
+    starved = note_no_model(PrimeStateV1(pending_changes=["quiet: nothing has woken me for 6 hours"]), "no_seat",
                             inputs.now, base=timedelta(seconds=300))
     starved = starved.model_copy(update={"recent_outcomes": [line]})
     s_frame = build_frame(starved, _inputs(data))
-    results.append(("starved_try", line in s_frame and starved.pending_changes == ["body: binding constraints now heat"]
+    results.append(("starved_try", line in s_frame and starved.pending_changes == ["quiet: nothing has woken me for 6 hours"]
                     and len(s_frame) <= FRAME_CHAR_CAP, "the no-seat line is shown, and is not a change"))
     return results
 

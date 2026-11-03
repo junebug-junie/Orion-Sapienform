@@ -1,4 +1,6 @@
-"""Eval: how often Prime wakes once attention moves no longer count (2026-11-03), replayed on live data.
+"""Eval: how often Prime wakes once attention moves (2026-11-03) and binding-constraint changes (2026-11-04)
+no longer count, replayed on live data. The binding timeline is still fed in, so the replay proves it no
+longer wakes Prime: 2026-11-04 result 19 thoughts in 90.9 h = 5.0/day, 12 of them woken by the quiet floor.
 
 The fixture is the real trigger timeline for 2026-10-30 08:35 .. 2026-11-03 03:20 UTC: every change in the
 set of BINDING body constraints (physiology_state, one row per body tick) and every Prime act that settled

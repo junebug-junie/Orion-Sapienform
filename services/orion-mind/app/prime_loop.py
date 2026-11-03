@@ -144,6 +144,7 @@ from orion.prime.thought import (
     build_frame,
     parse_answer,
     summary_note,
+    woke_note,
     system_prompt,
 )
 from orion.refs import RefV1, resolve as resolve_ref
@@ -753,6 +754,7 @@ class PrimeRuntime:
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
+        woke = list(self.state.pending_changes)  # apply_answer clears them; the act keeps why it woke
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
                                receptors=receptors)
         self.state = applied.state
@@ -773,7 +775,7 @@ class PrimeRuntime:
         elif applied.move is not None:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
-        note = summary_note(applied)
+        note = f"{woke_note(woke)} | {summary_note(applied)}"
         logger.info("prime_thought thought=%s route=%s %s reading=%r", thought_id, reply.route, note,
                     answer.reading[:200])
         return True, note

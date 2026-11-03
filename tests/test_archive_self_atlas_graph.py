@@ -89,3 +89,21 @@ def test_delete_command_is_printed_not_run() -> None:
     assert mod.delete_command("redis://127.0.0.1:6380") == (
         "redis-cli -u redis://127.0.0.1:6380 GRAPH.DELETE orion_substrate_self"
     )
+
+
+def test_password_is_masked_in_printed_command() -> None:
+    assert mod.delete_command("redis://user:secret@h:6380") == "redis-cli -u redis://***@h:6380 GRAPH.DELETE orion_substrate_self"
+
+
+def test_copy_error_is_reported_not_raised() -> None:
+    class Boom(FakeFalkor):
+        def __call__(self, *args):
+            if args[0] == "GRAPH.COPY":
+                raise RuntimeError("unknown command")
+            return super().__call__(*args)
+
+    fake = Boom({mod.SOURCE_GRAPH: (5, 3)})
+    out: list[str] = []
+    assert mod.archive(fake, archive_graph="arch", apply=True, out=out.append) == 1
+    assert any("COPY FAILED" in line for line in out)
+    assert mod.SOURCE_GRAPH in fake.graphs

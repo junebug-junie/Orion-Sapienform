@@ -274,7 +274,7 @@ if [ "$LIST_ONLY" != "1" ] && [ -z "$ONLY_SERVICES" ]; then
 fi
 
 # cortex-exec and cortex-orch are coupled at runtime, not just by the
-# import-graph classifier above: cortex-exec's self_study.py round-trips
+# import-graph classifier above: cortex-exec's verb_adapters.py (via app/orch_paths.py) round-trips
 # CortexClientRequest calls through cortex-orch (verb resolution + verb
 # activation live there), so a cortex-exec change can require an orch
 # rebuild even when the affected-services classifier -- which walks .py

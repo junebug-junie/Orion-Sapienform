@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from typing import Any, Callable
 
@@ -56,8 +57,13 @@ def counts(execute: Execute, graph: str) -> tuple[int, int]:
     return nodes, edges
 
 
+def mask_uri(uri: str) -> str:
+    """Hide any user:password in the URI before printing it."""
+    return re.sub(r"//[^@/]*@", "//***@", uri)
+
+
 def delete_command(uri: str, graph: str = SOURCE_GRAPH) -> str:
-    return f"redis-cli -u {uri} GRAPH.DELETE {graph}"
+    return f"redis-cli -u {mask_uri(uri)} GRAPH.DELETE {graph}"
 
 
 def archive(execute: Execute, *, archive_graph: str, apply: bool, out=print) -> int:
@@ -78,16 +84,21 @@ def archive(execute: Execute, *, archive_graph: str, apply: bool, out=print) -> 
         out(f"DRY RUN: would run GRAPH.COPY {SOURCE_GRAPH} {archive_graph}, then compare counts.")
         out("Re-run with --apply to copy.")
         return 0
-    execute("GRAPH.COPY", SOURCE_GRAPH, archive_graph)
-    dst_nodes, dst_edges = counts(execute, archive_graph)
+    try:
+        execute("GRAPH.COPY", SOURCE_GRAPH, archive_graph)
+        dst_nodes, dst_edges = counts(execute, archive_graph)
+        # Re-read the source: if something wrote it during the copy, the counts drift.
+        src_nodes_after, src_edges_after = counts(execute, SOURCE_GRAPH)
+    except Exception as exc:  # noqa: BLE001 -- report, never a raw traceback
+        out(f"COPY FAILED: {exc}; source {SOURCE_GRAPH} untouched.")
+        return 1
     out(f"archive {archive_graph}: {dst_nodes} nodes, {dst_edges} edges")
-    # Re-read the source: if something wrote it during the copy, the counts drift.
-    src_nodes_after, src_edges_after = counts(execute, SOURCE_GRAPH)
     if (dst_nodes, dst_edges) != (src_nodes_after, src_edges_after):
         out("MISMATCH: archive counts differ from the source. The source was NOT deleted. "
             "Is Hub still writing it (Patch B not deployed yet)? Check before any delete.")
         return 1
     out("VERIFIED: archive matches the source. The source was NOT deleted.")
+    out("Note: the body atlas lists every FalkorDB graph, so the archive shows there as an unlinked store. That is expected.")
     return 0
 
 

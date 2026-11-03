@@ -1777,8 +1777,8 @@ readability-design.md`, "AI Town's own concept graph" / Non-goals).
   (`concept_atlas_ingest_topic_foundry_aitown()`), same operator-triggered,
   no-flag shape as the Orion route above.
 - **Reading it**: `GET /api/substrate/concepts/summary` and `.../network`
-  both take an optional `?graph=aitown` query param (default/unrecognized
-  values resolve to Orion's graph) — the "first cut" read path the design
+  both take an optional `?graph=aitown` query param (unset/empty resolves
+  to Orion's graph; any other unknown value is a 400 `unknown_graph`) — the "first cut" read path the design
   spec's own "Missing questions" named as sufficient before a dedicated AI
   Town Concept Atlas UI page is worth building. No such page exists yet;
   the Hub tab's Cytoscape view still only ever renders Orion's graph.

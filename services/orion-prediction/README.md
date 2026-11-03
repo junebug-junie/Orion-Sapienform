@@ -141,7 +141,10 @@ rhythm read as no effect (needs >= 7 days; the range is cut to whole days); `cir
 independent streams, ~5 % on rhythm-free ones). Too few A (< 5) or no B -> `422` with
 `detail.error = "refused"` and the counts. Each answer is stored in `prediction_effect_estimate`
 (`action = event_pair:<A>`, `series_id = <B>`, `effect` = rate ratio, details hold every count).
-Counts are rows, not visits.
+Counts are rows unless a selector sets `visit_gap_sec` (whole seconds 0-3600, default 0): then a row closer than that
+to the previous row of the same selector joins its visit, and only each visit's first row counts. Use it
+for bursty streams (cam0 `person_presence` logs one person as many rows). The stored label gains
+`~visit<gap>s`, e.g. `vision_events:person_presence@cam0~visit300s`, so row and visit answers stay apart.
 
 Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
 walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.

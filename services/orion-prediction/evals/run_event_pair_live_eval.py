@@ -10,6 +10,8 @@ Pairs:
 - doorbell person_presence -> walkway person_presence, 0-300 s   (same people, two cameras)
 - walkway person_presence -> walkway camera_caption, 0-60 s   (sanity: captions follow presence)
 - room cam0 person_presence -> walkway attention_worthy, 0-600 s   (placebo-ish: indoor vs street)
+- walkway person_presence -> room cam0 person_presence, 60-900 s, as rows and as 300 s visits
+  (cam0 logs one person as a burst: median row gap ~57 s; visits show whether the burst hid the answer)
 
 Each pair runs under both placebos. A pair significant only under ``circular`` shares the daily
 rhythm rather than following A.
@@ -28,14 +30,17 @@ import numpy as np
 SERVICE = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(SERVICE), str(SERVICE.parents[1])]
 
-from app.event_pair import EventPairRefused, event_pair_effect  # noqa: E402
+from app.event_pair import EventPairRefused, event_pair_effect, visits  # noqa: E402
 from app.store import PostgresStore  # noqa: E402
 
+# (a type, a stream, b type, b stream, lag min, lag max, b visit gap s; 0 = rows)
 PAIRS = [
-    ("doorbell_ring", None, "person_presence", "walkway", 0, 300),
-    ("person_presence", "doorbell", "person_presence", "walkway", 0, 300),
-    ("person_presence", "walkway", "camera_caption", "walkway", 0, 60),
-    ("person_presence", "cam0", "attention_worthy", "walkway", 0, 600),
+    ("doorbell_ring", None, "person_presence", "walkway", 0, 300, 0),
+    ("person_presence", "doorbell", "person_presence", "walkway", 0, 300, 0),
+    ("person_presence", "walkway", "camera_caption", "walkway", 0, 60, 0),
+    ("person_presence", "cam0", "attention_worthy", "walkway", 0, 600, 0),
+    ("person_presence", "walkway", "person_presence", "cam0", 60, 900, 0),
+    ("person_presence", "walkway", "person_presence", "cam0", 60, 900, 300),
 ]
 
 
@@ -48,12 +53,13 @@ def main() -> int:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=args.days)
     span = (end - start).total_seconds()
-    for a_type, a_stream, b_type, b_stream, lo, hi in PAIRS:
+    for a_type, a_stream, b_type, b_stream, lo, hi, b_gap in PAIRS:
         secs = []
         for et, st in ((a_type, a_stream), (b_type, b_stream)):
             rows = store.event_times("vision_events", et, st, start, end, 200_000)
             secs.append(np.array([(t - start).total_seconds() for t in rows]))
-        label = f"{a_type}@{a_stream or '*'} -> {b_type}@{b_stream or '*'} [{lo},{hi}]s"
+        secs[1] = visits(secs[1], b_gap)
+        label = f"{a_type}@{a_stream or '*'} -> {b_type}@{b_stream or '*'}{f'~visit{b_gap}s' if b_gap else ''} [{lo},{hi}]s"
         for placebo in ("circular", "same_time_of_day"):
             print(f"{label} placebo={placebo}", json.dumps(_one(secs, span, lo, hi, args.n_placebo, placebo)))
     store.close()

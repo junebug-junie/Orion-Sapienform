@@ -42,7 +42,8 @@ CURIOSITY_KINDS = ("self_inquiry", "curiosity_investigation")
 
 _CODE_PATH_RE = re.compile(r"(services/|orion/|docs/|\.py\b|\.ya?ml\b)")
 _READ_SHELL_RE = re.compile(r"\b(cat|sed|head|tail|grep|rg|find|ls|wc|awk|git)\b")
-_DIG_SUBCOMMAND_RE = re.compile(r"orion\.dig\s+(?:--dig\s+\S+\s+)?([a-z_]+)")
+# Hyphens included: `body-economy` and `name-organs` are their own subcommands, not `body`/`name`.
+_DIG_SUBCOMMAND_RE = re.compile(r"orion\.dig\s+(?:--dig\s+\S+\s+)?([a-z][a-z_-]*)")
 
 
 def _text(content) -> str:

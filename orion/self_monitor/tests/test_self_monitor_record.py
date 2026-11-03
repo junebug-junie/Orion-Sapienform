@@ -174,3 +174,22 @@ def test_render_lists_broken_first_and_names_source_errors() -> None:
     text = render(state).splitlines()
     assert text[2].startswith("broken") and "act.make.x" in text[2]
     assert text[-1].startswith("SOURCE ERROR vision_percept_expectation")
+
+
+# ---- reader contract ------------------------------------------------------------------------
+
+def test_view_is_unknown_when_absent_stale_future_or_garbage() -> None:
+    from orion.self_monitor.view import self_monitor_view
+
+    state = SelfMonitorStateV1(computed_at=NOW, window_days=7,
+                               faculties=reduce_bets([_bet(i, "upheld", stated=0.97) for i in range(40)], now=NOW))
+    raw = state.model_dump_json()
+    fresh = self_monitor_view(raw, now=NOW + timedelta(minutes=30))
+    assert fresh.known and fresh.status("act.make.thing") == "reliable"
+    assert fresh.status("act.never.seen") == "unknown"
+    assert self_monitor_view(None, now=NOW).reason == "absent"
+    assert self_monitor_view("{not json", now=NOW).reason == "unparseable"
+    stale = self_monitor_view(raw, now=NOW + timedelta(hours=4))
+    assert not stale.known and stale.faculty("act.make.thing") is None  # stale changes nothing
+    assert self_monitor_view(raw, now=NOW - timedelta(hours=1)).reason == "future_stamped"
+    assert self_monitor_view(raw.encode(), now=NOW).known

@@ -425,11 +425,21 @@ def apply_answer(
                    [] if refusal else refs)
 
 
+WOKE_NOTE_CAP = 160
+
+
+def woke_note(changes: list[str]) -> str:
+    """Why the thought woke, first on the act's close note so the 500-char note cap never cuts it.
+    Lets the wake mix be measured from the ledger instead of inferred (2026-11-04)."""
+    text = "; ".join(" ".join(c.split()) for c in changes) or "nothing pending"
+    return "woke: " + (text if len(text) <= WOKE_NOTE_CAP else text[:WOKE_NOTE_CAP - 3] + "...")
+
+
 def summary_note(applied: Applied) -> str:
     """The thought act's close note: what the thought changed (concerns are never edited silently)."""
+    # Most important first: the act note is cut at 500 chars (orion/grammar/acts.py) after a ~170-char
+    # "woke:" prefix, so the move goes before the unbounded drop reasons and warnings.
     parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]
-    if applied.dropped:
-        parts.append("dropped " + "; ".join(applied.dropped))
     if isinstance(applied.move, RegulateMoveV1):
         m = applied.move
         parts.append(f"move regulate {m.direction} {m.family} for {m.hours:g} h: {m.why[:120]!r}")
@@ -440,6 +450,8 @@ def summary_note(applied: Applied) -> str:
         parts.append(f"move refused: {applied.move_refusal}")
     else:
         parts.append("no move")
+    if applied.dropped:
+        parts.append("dropped " + "; ".join(applied.dropped))
     if applied.warnings:
         parts.append("warnings: " + "; ".join(applied.warnings))
     return " | ".join(parts)

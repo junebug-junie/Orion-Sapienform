@@ -144,6 +144,7 @@ from orion.prime.thought import (
     build_frame,
     parse_answer,
     summary_note,
+    woke_note,
     system_prompt,
 )
 from orion.refs import RefV1, resolve as resolve_ref
@@ -647,13 +648,15 @@ class PrimeRuntime:
         thought_id = new_id()
         # The act's horizon covers the whole try: the seat wait plus the generation budget.
         act = thought_act(thought_id, llm_timeout_sec=self._seat_wait_sec() + float(self.s.PRIME_LLM_TIMEOUT_SEC))
+        # Captured before anything can clear pending changes: every close of this act says why it woke.
+        woke = woke_note(list(self.state.pending_changes))
         try:
             reply = await self._ask(inputs, now)
         except Exception as exc:  # noqa: BLE001 -- a crash is a failed thought (refractory holds: no hot loop)
             logger.exception("prime_thought_crashed thought=%s", thought_id)
             await self._open_thought(act, now)
             await self._close(act, THOUGHT_COMPONENT, produced=False,
-                              note=f"failed: {type(exc).__name__}: {str(exc)[:160]}")
+                              note=f"{woke} | failed: {type(exc).__name__}: {str(exc)[:160]}")
             return
         if reply.kind != "model":
             self._note_no_model(reply, self.clock())   # the backoff counts from the end of the try
@@ -664,7 +667,7 @@ class PrimeRuntime:
         except Exception as exc:  # noqa: BLE001 -- the act always closes
             logger.exception("prime_thought_crashed thought=%s", thought_id)
             produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
-        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=note)
+        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=f"{woke} | {note}")
 
     async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
         """The model was reached: the thought happened. Opened stamped with the try's start; counts for

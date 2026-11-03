@@ -57,10 +57,12 @@ orion-mind keeps thinking between conversations. Design: `docs/superpowers/specs
 (PR #2980), rollout step 2A. Code: `app/prime_loop.py` (I/O) and `orion/prime/` (pure logic).
 
 **What it does.** Every `PRIME_TICK_SEC` a CPU-only tick reads the body (durable-runs `GET /physiology/state`)
-and attention (`GET /temporal-self/frame`) and records what changed: the set of *binding* body constraints changed,
-one of Prime's own questions settled, a concern faded, first wake, or nothing else woke Prime for 6 hours (the quiet
-floor). Attention moving to another arc is **not** a change since 2026-11-03: it is shown in every frame as
-background, but it does not wake Prime (it drove concern churn: 22 of 38 concern drops said "attention has moved").
+and attention (`GET /temporal-self/frame`) and records what changed: one of Prime's own questions settled, a concern
+faded, first wake, or nothing else woke Prime for 6 hours (the quiet floor). Attention moving (since 2026-11-03) and
+the set of binding body constraints changing (since 2026-11-04) are **not** changes: both are shown in every frame,
+but neither wakes Prime. Both drove concern churn (attention: 22 of 38 drops said "attention has moved"; binding, live
+11-03: 26 thoughts in 12 h, 21 did nothing, all 4 drops said "lane X is no longer binding"). Replayed on live data the
+rate is about 5 thoughts a day. Every thought's act note starts with `woke: <what woke it>`.
 If something changed, the refractory interval has passed and no Juniper turn is running, Prime bids in the body
 economy (family `prime`, Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits.
 A thought is one model call on route `prime` (circe chat lane 0 at pool priority `system`; Juniper's call always

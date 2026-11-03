@@ -34,6 +34,20 @@ she was not in those cameras that day, so this may be real absence. But the
 detector-rate watch cannot tell, because it counts any label (desks and chairs
 are always there). Patch 0 checks that first.
 
+Juniper also asked for a second stage: "look closer". Noticing that someone
+came in is cheap and runs all the time. Knowing WHO came in and WHAT they are
+doing is expensive, so it should run only when the arrival wins attention.
+When it wins, Orion takes one deliberate look and stores a named scene, for
+example "a person came into the room. It is probably Juniper. She is working
+at her desk, fidgeting with a toy." Today Orion only gets count sentences
+("Two tables, two desks, and two doors are detected"). See "Look closer: one
+deliberate look after an arrival wins" (Patches 3-4).
+
+The look needs a name, and the room camera's face check almost never gives
+one: 0 `probable` matches in 18 checks since 11-02, and 1 confirmed name in
+2,465 room transitions over 7 days. So Patch 0 now fixes room-camera face
+recognition first, together with the person-blind check.
+
 ## Current architecture
 
 ### How the room camera competes today
@@ -305,9 +319,163 @@ a dead street listener. Its 7-day history ages out on its own. No training
 default, manifest or migration depends on it. The new channel and schema stay
 registered but unused until removed.
 
+## Look closer: one deliberate look after an arrival wins
+
+Juniper asked for this stage. The arrival event says "someone came in". The
+look says who and what they are doing, in words, with names. Cheap detection
+keeps running all the time. Expensive recognition runs only when attention
+picks the arrival.
+
+### Theory anchor
+
+- Orienting response (Sokolov, 1963): a new stimulus first produces an
+  orienting reaction. The arrival event is that reaction.
+- Foveation after capture (Posner, 1980; Itti and Koch, 2001): cheap
+  peripheral vision finds where something happened. The eye then moves there
+  for one costly, high-detail look. The look act is the eye movement. It is
+  spent only on what won attention, not on every frame.
+
+### What the look path has today (read-only check, 2026-11-03)
+
+- **Detection.** The room camera (`cam0`) runs the fast tier about every 5 s
+  (`config/vision_frame_router.yaml`). A person moves it to the triggered
+  tier (at least 2 s, `want_caption`). The room camera has no track ids. The
+  vision council writes count sentences ("Two tables, two desks, and two doors
+  are detected"). The numbered people (`#hex`) come from walkway
+  `vision_individual` clusters, not from the room camera.
+- **How Orion reads the room.** `orion/situational/perception_reader.py`
+  `_room_percept_stmt` reads the newest `vision_events.narrative` and never
+  loads `entities` (a deliberate privacy note). Orion also gets the
+  `substrate_embodied_presence` row and the camera eyes path.
+- **Recognition.** On a person trigger the frame router fetches a high-res
+  still from vision-edge `POST /still`
+  (`services/orion-vision-frame-router/app/dispatcher.py`
+  `_identity_with_still`). It sends the still to the `identity_face` profile
+  (athena vision host, GPU0). The result goes to the vision-window identity
+  handler (`services/orion-vision-window/app/main.py`), which updates the
+  presence subject and publishes `IdentitySightingV1` on
+  `orion:vision:identity:sighting`.
+- **Recognition almost never names anyone in the room.** Since the 11-02
+  restart: 18 face checks, 10 `no_face`, 6 `unsure`, 2 `possible`,
+  0 `probable`. Over 7 days: 1 of 2,465 room transitions was
+  `identity_confirmed` (juniper). The name never reaches a caption.
+- **Captioning cannot take a hint.** The room camera uses BLIP-base. It takes
+  no prompt (it echoes a prompt back), so it cannot be told "this is probably
+  Juniper". Room captions are not stored at all
+  (`WINDOW_CAPTION_GATE_STREAMS=walkway,doorbell`). The Qwen2-VL-2B lane
+  serves walkway and doorbell with a fixed `CAPTION_PROMPT` and no hint field.
+- **One path can already answer a question about the current frame.** The
+  council's foveal probe (`services/orion-vision-council/app/foveal_probe.py`)
+  captions the current frame on the circe chat VLM lane through the LLM
+  gateway, and accepts a `question`. It is reachable only through
+  `POST /debug/foveal-probe` (`app/main.py:572`). Its setting says "not yet
+  wired" (`app/settings.py:59`). The 2026-10-08 design
+  (`docs/superpowers/specs/2026-10-08-vision-blank-captions-and-on-demand-look-design.md`)
+  planned an on-demand look. It was never built.
+- **No look act exists.** In 7 days the act ledger has 488 `look` acts, all
+  `hub.world_pulse_read` web URLs, and 0 camera looks. The allocator
+  (`orion/autonomy/allocator.py`) has no perception dispatch kind. Nothing
+  links an attention winner to a look. The router's person trigger is a
+  reflex: it runs the face check with no heat or price check.
+- **Cost.** One look uses the circe chat VLM (a busy GPU) and the athena GPU0
+  face model. It needs a price and a bid in the body economy (#2855). The
+  cabinet is often hot.
+
+### Order of patches
+
+1. **Patch 0: fix room-camera face recognition first.** A look that cannot
+   name anyone only produces "someone". The face check never reaches
+   `probable` on the room camera. The likely causes are the camera angle (top
+   of head, side face), still resolution, or enrollment photos taken from a
+   different angle. Patch 0 also keeps the person-blind check: the
+   `person_rate:cam0` ladder rung and the 5-minute sit test.
+2. **Patches 1-2: the arrival event** (contract, producer, runtime node), as
+   described in the rest of this doc.
+3. **Patch 3: the look act.** When the arrival node wins the broadcast, Orion
+   opens one `look` act and runs one look executor. Details below.
+4. **Patch 4: store the named scene and show it to Orion.** Waits for
+   decision 4 in "Missing questions".
+
+#### Patch 0 findings (pending)
+
+Findings pending. A separate read-only investigation is diagnosing why the
+room-camera face check never reaches `probable` (angle, top-of-head views,
+still size, enrollment set, thresholds). It will fill this subsection with
+evidence and a recommended fix. Patch 3 does not start until the face check
+reaches at least `possible` on a meaningful share of Juniper's sit-downs.
+
+### Patch 3: the look act
+
+- **Trigger.** The broadcast winner is `node:substrate.room_arrival`, and the
+  arrival has not been looked at yet (one look per `event_id`).
+- **Act.** Open an act-ledger act: verb `look`, `object_ref` `camera:cam0`,
+  parent = the arrival `event_id`. Its `expect` names the payoff:
+  "face verdict at least `possible`". `signal_id` is a closed list
+  (`PredictableSignal` in `orion/schemas/action_prediction.py`: "a claim about
+  a signal nothing measures is not a claim"), so Patch 3 adds one measured
+  value to it, for example `look_face_verdict_possible` (1.0 when the look's
+  face verdict is `possible` or `probable`, else 0.0). The act ledger then
+  grades whether looks pay off, the same way it grades other acts.
+- **Price and bid.** The look is a body-economy bid (#2855) with a price for
+  the circe VLM call and the GPU0 face call. When the price is too high (heat,
+  busy GPU), the bid loses and the act closes as `declined:priced_out`. No
+  look runs.
+- **Rate limit.** At most `ORION_LOOK_CAM0_MAX_PER_DAY` looks a day (proposed
+  6) and a cooldown of `ORION_LOOK_CAM0_COOLDOWN_SEC` (proposed 1800) between
+  looks. Both are hard caps for a new cost, to be re-checked after 14 days.
+- **One executor, one chain:**
+  1. Fetch a high-res still from vision-edge `POST /still` (the router's
+     existing call).
+  2. Run the face check on that still (`identity_face`).
+  3. Run the foveal probe on the same still with a question. The question
+     carries a HEDGED name hint taken from the face verdict, for example
+     "The person is probably Juniper (possible, 0.53). Describe what they are
+     doing." With `no_face` or `unsure`, the hint is "a person", with no name.
+     The hint is never stronger than the face verdict.
+  4. Close the act with the outcome: the face verdict, the scene text, the
+     evidence ids, and whether `expect` was met.
+- **Where it runs.** A new `look` dispatch kind for the allocator, and the
+  executor next to the foveal probe in orion-vision-council (it already has
+  the LLM gateway client). The `/debug/foveal-probe` route stays as is.
+
+### Patch 4: store the named scene and show it to Orion
+
+- **Store.** A new `vision_events` type `named_scene` for `cam0` (preferred
+  over turning on room `camera_caption`, which would store every BLIP count
+  sentence). Fields: scene text, the arrival `event_id`, the `act_id`, the
+  still id, the face verdict (label, strength, score), the model and lane, and
+  `observed_at` of the still.
+- **Grounding and slop rules.** The scene is stored only if it passes the
+  existing caption checks and a grounding check, reusing the council's
+  `app/evidence_grounding.py` (it already flags activity words such as
+  "watching" or "using"): every person and object the text names must be in
+  the detector's boxes for that still, or in the face verdict. An activity claim ("fidgeting with a toy") must name an
+  object the detector saw near the person; otherwise it is cut to "is at the
+  desk". A failed check stores a reason row, not the text.
+- **Name rule.** The stored name never reads stronger than the face verdict:
+  `probable` -> "probably Juniper", `possible` -> "possibly Juniper",
+  `unsure`/`no_face` -> "someone". Only people Juniper enrolled and named can
+  be named (decision 4).
+- **Show it.** `perception_reader.py` reads the newest `named_scene` for the
+  room, with its age ("3 min ago"). A scene older than
+  `ORION_NAMED_SCENE_MAX_AGE_SEC` (proposed 1800) is shown as past ("earlier,
+  at 14:12 ..."), never as now.
+
+### Failure modes
+
+- **False naming (the wrong person named).** Covered by the hedge, by "never
+  stronger than the face verdict", and by naming only enrolled people. Tracked
+  by the face verdict distribution in the acceptance checks.
+- **The caption invents an activity.** Covered by the grounding check against
+  the still's detector boxes. Tracked by the grounded rate.
+- **Cost spiral.** Covered by the daily cap, the cooldown, one look per
+  arrival, and the body-economy price. Tracked by looks per day.
+- **A stale scene shown as current.** Covered by the age stamp and the max
+  age rule in the reader.
+
 ## Missing questions
 
-Three decisions for Juniper. Everything else follows from the data above.
+Four decisions for Juniper. Everything else follows from the data above.
 
 1. **The two debounce numbers.** The room must be seen empty for 10 minutes,
    and the person must stay in view for 60 seconds. Both come from the replay
@@ -332,6 +500,16 @@ Three decisions for Juniper. Everything else follows from the data above.
    10 minutes), so we can count how often it happens. Alternative: the room
    event does not fire within 10 minutes of a street pass. That would hide the
    arrival you care about most (a guest coming in).
+
+4. **Should named scenes reach Orion, including other people?** The room
+   reader hides detection entities on purpose today
+   (`orion/situational/perception_reader.py` module note: "Privacy. Selects
+   the narrative column and nothing else"). The standing rule is "no privacy
+   boundary between Juniper and Orion". But household members and guests walk
+   into the room too, and a named scene would name them. Recommended: yes for
+   people Juniper enrolled and named, and only at the face check's own
+   verdict strength. Unknown people stay "someone". No picture, crop or
+   embedding goes into the scene text. Patch 4 waits for this answer.
 
 Also decided by precedent, not asked: the node starts fenced from endogenous
 curiosity, like the street node (`NO_CURIOSITY_CONSUMER_NODE_IDS`). Opening
@@ -401,6 +579,29 @@ curiosity is a later go-live decision with its own data.
 
 Picture-change surprise is unchanged and keeps competing as a second input.
 
+### Look act and named scene (Patches 3-4)
+
+- `orion/schemas/action_prediction.py`: add `look_face_verdict_possible` to
+  `PredictableSignal`, with its measurement (1.0 when the look's face verdict
+  is `possible` or `probable`, else 0.0).
+- Allocator: a new `look` dispatch kind with target `camera:cam0`, priced and
+  bid in the body economy (#2855). Act-ledger act: verb `look`,
+  `object_ref` `camera:cam0`, parent = arrival `event_id`, `expect` as above.
+- orion-vision-council: a look executor that chains `/still` -> face check ->
+  foveal probe with a hedged `question` -> act close. New settings
+  `ORION_LOOK_CAM0_ENABLED` (default on), `ORION_LOOK_CAM0_MAX_PER_DAY` (6),
+  `ORION_LOOK_CAM0_COOLDOWN_SEC` (1800).
+- `vision_events` row with `event_type = 'named_scene'`, `stream_id = 'cam0'`.
+  `narrative` = the scene text. `entities` holds `arrival_event_id`,
+  `act_id`, `still_id`, `face_label`, `face_strength`, `face_score`, `model`,
+  `lane`, `grounded` (bool), `grounding_reason`, `observed_at`.
+  `evidence_refs` = the still id, the face sighting id and the act id.
+  `perception_reader.py` reads only `narrative`, age and the name fields, not
+  boxes. If it is also published on the bus, it gets a registered
+  schema (`NamedSceneV1`) and a channel entry in the same patch.
+- `perception_reader.py`: read the newest `named_scene` with its age; setting
+  `ORION_NAMED_SCENE_MAX_AGE_SEC` (1800).
+
 ## Files likely to touch
 
 - `orion/schemas/vision.py`: `RoomArrivalEventV1`.
@@ -418,6 +619,16 @@ Picture-change surprise is unchanged and keeps competing as a second input.
 - `.github/workflows/street-attention-tests.yml` (or a sibling workflow).
 - `scripts/check_substrate_ladder_liveness.py` / `orion/vision_detection_rate_watch.py`
   (Patch 0 only).
+- Patch 0 face fix: depends on the pending findings. Likely
+  `services/orion-vision-frame-router/app/dispatcher.py` (still request),
+  `config/vision_profiles.yaml` (`identity_face`), and the enrollment set.
+- Patch 3: `orion/schemas/action_prediction.py`, `orion/autonomy/allocator.py`,
+  `orion/grammar/act_ledger.py` (look verb mapping),
+  `services/orion-vision-council/app/foveal_probe.py` and a new
+  `app/look_executor.py`, `app/settings.py`, `.env_example`, `README.md`,
+  `tests/`, `evals/`; the body-economy price table.
+- Patch 4: `services/orion-vision-council/app/evidence_grounding.py`, the
+  `vision_events` writer, `orion/situational/perception_reader.py`, tests.
 
 ### Collisions with in-flight work (checked 2026-11-03)
 
@@ -439,7 +650,16 @@ Picture-change surprise is unchanged and keeps competing as a second input.
 ## Non-goals
 
 - Not the street. No `known_person_arrived`, nothing from declined #2906.
-- No identity dependency. A name is an optional annotation only.
+- No identity dependency for the arrival event. A name is an optional
+  annotation only.
+- No look on every frame or every person trigger. Looks run only after an
+  arrival wins attention, capped and priced.
+- No name stronger than the face verdict, and no name for people Juniper has
+  not enrolled and named.
+- No picture, crop or embedding in the stored scene or in Orion's prompt.
+- No change to BLIP or the walkway/doorbell caption lane.
+- No retirement of the router's reflex face check in these patches. Whether
+  the look replaces it is a later question, decided with look data.
 - No change to the world-first ranking rule, band cuts, or the camera
   surprise score.
 - No greeting, outreach or chat behavior written by hand. Downstream changes
@@ -472,6 +692,15 @@ Picture-change surprise is unchanged and keeps competing as a second input.
     attention and crowds out the body. Covered by the 10 min / 60 s debounce;
     measured overnight arrivals after debounce: 0.
   - A name guessed onto a guest. Covered by "probable only, optional".
+- **Look stage (Patches 3-4).** Capability: Orion can look once at who came
+  in and remember a named scene. Data: one still per look (not stored by this
+  design beyond its id), one face check, one VLM call, one `vision_events`
+  row, one act-ledger row. Privacy: decision 4; names only for enrolled people
+  Juniper named, never above the face verdict. Trace: the `look` act row
+  linked to the arrival `event_id` and the `named_scene` row. Danger: a wrong
+  name, an invented activity, a cost spiral, a stale scene (see "Failure
+  modes"). Roll back: `ORION_LOOK_CAM0_ENABLED=false` stops new looks; the
+  reader ignores scenes older than the max age.
 - **Disable / roll back.** `VISION_ROOM_ARRIVAL_EVENTS_ENABLED=false`
   (producer) or `SUBSTRATE_ROOM_ATTENTION_ENABLED=false` (runtime). Either one
   makes the node stop being written; attention then reads it absent. Hard
@@ -514,6 +743,11 @@ Pass: with Juniper sitting at the desk for 5 minutes, `person_windows` moves
 above 0 and a `vision_presence_transition` row `absent -> present` appears.
 Then the ladder has a `person_rate:cam0` rung (same median rule as
 `detection_rate`, counting `person` only).
+
+Patch 0 face fix: the face verdicts on the room camera move off `no_face` /
+`unsure`. Pass: during Juniper's sit tests, at least half of face checks read
+`possible` or better, and some read `probable`. The exact query and baseline
+come from the pending findings (baseline since 11-02: 18 checks, 0 `probable`).
 
 Patches 1-2 (producer and runtime), after 7 live days:
 
@@ -580,6 +814,57 @@ from substrate_attention_broadcast_log
 where generated_at > now() - interval '7 days';
 ```
 
+Patches 3-4 (look and named scene), after 7 live days:
+
+```sql
+-- 8. Looks per day, and why looks did not run (expect <= cap; priced_out
+--    rises when the cabinet is hot).
+select (opened_at at time zone 'America/Denver')::date d,
+       count(*) looks,
+       count(*) filter (where outcome_note like 'declined:%') declined,
+       avg(outcome_value) expect_met_rate
+from grammar_acts
+where verb = 'look' and object_ref = 'camera:cam0'
+group by 1 order by 1;
+
+-- 9. Look -> named rate, and the face verdict distribution
+--    (expect named >= 50% of looks on Juniper's sit-downs after Patch 0).
+select entities->>'face_label' label, entities->>'face_strength' strength,
+       count(*)
+from vision_events
+where event_type = 'named_scene' and stream_id = 'cam0'
+  and created_at > now() - interval '7 days'
+group by 1, 2 order by 3 desc;
+
+-- 10. Caption grounded rate (expect >= 90%; failures keep a reason).
+select avg((entities->>'grounded')::boolean::int) grounded_rate,
+       count(*) filter (where not (entities->>'grounded')::boolean) failed
+from vision_events
+where event_type = 'named_scene' and created_at > now() - interval '7 days';
+
+-- 11. Orion cites the named scene (chat or reverie within 30 min of it).
+with n as (
+  select created_at t, narrative txt from vision_events
+  where event_type = 'named_scene' and (entities->>'grounded')::boolean
+    and created_at > now() - interval '7 days'
+)
+select count(*) scenes,
+       count(*) filter (where exists (
+         select 1 from substrate_reverie_thought r
+         where r.created_at between n.t and n.t + interval '30 minutes'
+           and r.thought_json::text ilike '%named_scene%')) in_reverie
+from n;
+```
+
+The act ledger's own posterior for (`look`, `look_face_verdict_possible`)
+is the payoff check: it says whether looks meet their `expect`. Chat citation
+is checked from the turn record (`cockpit_turn_sighting`): the situation block
+must contain the scene text, and the reply may mention it. Column names in
+checks 8-11 match `grammar_acts` (`opened_at`, `outcome_value`,
+`outcome_note`) and `vision_events` (`narrative`, `entities`, `stream_id`) as
+written by today's code. The `named_scene` keys inside `entities` are new in
+Patch 4; the eval script is the binding version.
+
 Column names in checks 5-6 were checked against the live tables on
 2026-11-03. The `kind = 'attention'` value is to be confirmed in Patch 2's
 eval; the eval script is the binding version.
@@ -588,7 +873,9 @@ PR: https://github.com/junebug-junie/Orion-Sapienform/pull/3043
 
 ## Recommended next patch
 
-Patch 0, before anything else: a `person_rate:cam0` ladder rung. It reuses
+Patch 0, before anything else, has two parts. First, fix room-camera face
+recognition, from the pending investigation's findings (see "Patch 0
+findings"). Second, a `person_rate:cam0` ladder rung. It reuses
 `orion/vision_detection_rate_watch.py`, counting only `person` windows instead
 of any detection, and its replay must go red on 2026-10-30..11-02 unless
 Juniper confirms she was away. Then a 5-minute sit test with Juniper. If the
@@ -599,3 +886,7 @@ Then Patch 1 (contract plus producer: `RoomArrivalEventV1`, channel, gate in
 orion-vision-window, replay eval over `vision_presence_transition`), then
 Patch 2 (runtime node, glossary, fence, world label). Patch 2 lands after
 `chore/rung6-retire-tuner`.
+
+Then Patch 3 (look act: allocator kind, price, cap, executor, closed
+`expect`), then Patch 4 (named scene stored with grounding, read by
+`perception_reader.py`). Patch 4 waits for decision 4.

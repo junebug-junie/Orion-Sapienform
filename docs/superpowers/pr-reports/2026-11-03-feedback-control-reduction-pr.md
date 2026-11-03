@@ -54,8 +54,8 @@ defense in depth. Consolidation then joins full feedback through
 - Consolidation policy adds `window.source_visibility_lag_sec=900`; a static test pins it above
   every configured execution route RPC timeout, while route/global/shed timeout models refuse
   operator overrides above the shared 720-second producer bound.
-- Migration declares `ORION-MIGRATION-REQUIRED-BY: orion-feedback-runtime` and passes the additive
-  DDL auto-apply classifier.
+- Migration declares `ORION-MIGRATION-REQUIRED-BY` for feedback, execution-dispatch, and
+  consolidation runtimes, and passes the additive DDL auto-apply classifier.
 
 ## Tests and evals
 
@@ -85,9 +85,9 @@ contracts. Neither service has a service-local `evals/` directory.
   full feedback path remains.
 - Pending-marker reconciliation treats either child as completion and requeues neither.
 - Batch is serial, FIFO, stops on no progress, and is capped at three.
-- An in-flight but not-yet-inserted dispatch is covered by the visibility lag; once visible, a
-  producer receipt; once replaced by the real row, a pending dispatch holds its hour open. After
-  completion, delayed feedback is selected through its source dispatch window.
+- A dispatch materialization first lands an exact in-flight producer receipt; once replaced by the
+  real row, a pending dispatch holds its hour open. The visibility lag remains defense in depth.
+  After completion, delayed feedback is selected through its source dispatch window.
 
 ## Risk and rollback
 
@@ -104,6 +104,7 @@ After merge, deploy only from clean synchronized primary `main`. The post-pull m
 apply the additive migration; otherwise use the exact command printed by the migration gate. Then:
 
 ```bash
+scripts/safe_docker_build.sh orion-execution-dispatch-runtime up -d --build
 scripts/safe_docker_build.sh orion-feedback-runtime up -d --build
 scripts/safe_docker_build.sh orion-consolidation-runtime up -d --build
 ```

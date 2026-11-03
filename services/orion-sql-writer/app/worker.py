@@ -1702,10 +1702,17 @@ def _normalize_office_env_sample_payload(write_data: dict) -> dict:
             value = measurements.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[key] = float(value)
+        for key in ("office_eco2_ppm", "office_tvoc_ppb"):
+            value = measurements.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                out[key] = value
 
     state = out.pop("state", None)
-    if isinstance(state, dict) and state.get("stale") is not None:
-        out["stale"] = bool(state["stale"])
+    if isinstance(state, dict):
+        if state.get("stale") is not None:
+            out["stale"] = bool(state["stale"])
+        if state.get("air_warming") is not None:
+            out["air_warming"] = bool(state["air_warming"])
 
     provenance = out.pop("provenance", None)
     if isinstance(provenance, dict):

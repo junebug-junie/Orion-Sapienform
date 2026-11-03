@@ -141,7 +141,10 @@ rhythm read as no effect (needs >= 7 days; the range is cut to whole days); `cir
 independent streams, ~5 % on rhythm-free ones). Too few A (< 5) or no B -> `422` with
 `detail.error = "refused"` and the counts. Each answer is stored in `prediction_effect_estimate`
 (`action = event_pair:<A>`, `series_id = <B>`, `effect` = rate ratio, details hold every count).
-Counts are rows, not visits.
+Counts are rows unless a selector sets `visit_gap_sec` (whole seconds 0-3600, default 0): then a row closer than that
+to the previous row of the same selector joins its visit, and only each visit's first row counts. Use it
+for bursty streams (cam0 `person_presence` logs one person as many rows). The stored label gains
+`~visit<gap>s`, e.g. `vision_events:person_presence@cam0~visit300s`, so row and visit answers stay apart.
 
 Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
 walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
@@ -209,7 +212,7 @@ baseline serves.
 session is its own unit), the paired test from `app/live.py`/`backtest.paired_win_p`: `pending` under
 20 sessions, then `better` / `worse` / `unclear` at p < 0.05. Global over every domain, cached 60 s.
 When the model is live-`worse`, quotes and new bets serve the baseline (`model` / `served_model` say
-`action_skill_rate`). Grading of served and baseline p uses `app/grading.py` `grade` (`enough` at
+`action_skill_rate`). Grading of served and baseline p uses `orion/prediction/grading.py` `grade` (`enough` at
 n >= 50; `reportable` false under 10 bets).
 
 **World-model shadow** `transition_mlp` (never served). A bet can carry body-level `features` and a `feature_version`, from `orion/embodiment/transition.py`; the Hub sends them for every Zelda bet. When the version matches the loaded weights, the service runs the trained TransitionModel in numpy and stores the result on the bet as `shadow` = `{model, tag, p, heads}`. `p` is the model's chance of the skill's success:

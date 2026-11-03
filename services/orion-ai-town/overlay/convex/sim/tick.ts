@@ -1,16 +1,14 @@
-// Cron entry (patches/orion-sim-core-hooks.patch): advance the default
-// world's simulation by SIM_TICK_MINUTES game-minutes every 5 wall-clock
-// minutes. The tick runs only while the world is running (embodiment's
-// heartbeat keeps it running while Orion's town body is up). Game time pauses
-// with the world and does not catch up afterwards, so after any pause game
-// hours drift from wall-clock hours: game 08:00 (breakfast) is not 08:00 on
-// the wall. `minutes` is capped at a game day (core.MAX_TICK_MINUTES).
+// Cron entry (patches/orion-sim-core-hooks.patch): every CLOCK_TICK_SECONDS,
+// advance the default world's game clock by core.advanceClock -- FAST_CLOCK_X
+// game minutes while the town needs no GPU, real time while a chat or an NPC
+// model call is open. The tick runs only while the world is running (Orion's
+// sessions, or Juniper's), so game time pauses with the world and does not
+// catch up afterwards: game hours do not follow wall-clock hours.
+// `minutes` (manual runs) skips the clock and is capped at a game day.
 import { internalMutation } from '../_generated/server';
 import { v } from 'convex/values';
-import { type State, tick } from './core';
+import { type State, advanceClock, tick, townNeedsGpu } from './core';
 import { defaultWorldId, ensureState, logEvent, saveState } from './store';
-
-export const SIM_TICK_MINUTES = 5;
 
 export const run = internalMutation({
   args: { minutes: v.optional(v.number()), force: v.optional(v.boolean()) },
@@ -25,9 +23,18 @@ export const run = internalMutation({
       return { ticked: false, reason: `world is ${status?.status ?? 'missing'}` };
     }
     const doc = await ensureState(ctx, worldId);
-    const out = tick(doc.state as State, args.minutes ?? SIM_TICK_MINUTES);
+    let minutes = args.minutes;
+    let busy: boolean | null = null;
+    if (minutes === undefined) {
+      busy = townNeedsGpu(await ctx.db.get(worldId));
+      const next = advanceClock(doc.clock, busy);
+      await ctx.db.patch(doc._id, { clock: next.clock });
+      minutes = next.minutes;
+      if (minutes === 0) return { ticked: false, reason: 'clock carry', busy };
+    }
+    const out = tick(doc.state as State, minutes);
     await saveState(ctx, doc._id, out.state);
     for (const e of out.events) await logEvent(ctx, worldId, e);
-    return { ticked: true, minute: out.state.minute, version: out.state.version, events: out.events.length };
+    return { ticked: true, busy, minute: out.state.minute, version: out.state.version, events: out.events.length };
   },
 });

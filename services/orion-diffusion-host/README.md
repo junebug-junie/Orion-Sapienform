@@ -294,6 +294,21 @@ curl -fsS -X POST http://localhost:8014/generate \
 file /tmp/orion-diffusion-smoke.png   # should say PNG image data
 ```
 
+## Power intent and its watt guess
+
+Before each generation the service tells the power settler "I am about to draw
+about this many watts" (`orion:power:intent`, `PowerIntentV1.expected_watts`).
+The guess is the median of the last `DIFFUSION_POWER_PRIOR_WINDOW` settled
+peaks it heard back on `orion:power:intent:settled` (`app/power_prior.py`).
+Below `DIFFUSION_POWER_PRIOR_MIN_SAMPLES` recent settlements it says `None`
+(unknown), never a made-up number.
+
+The window is saved to `DIFFUSION_POWER_PRIOR_STATE_PATH` (host directory
+`/mnt/storage-warm/orion-diffusion-host`, bind-mounted). The GPU pool relaunches
+this container for almost every generation; before 2026-11-03 the window lived
+only in memory and nearly every intent said `None`. A sample older than
+`DIFFUSION_POWER_PRIOR_MAX_AGE_SEC` (7 days) stops counting.
+
 ## Probes
 
 | Endpoint | Purpose |

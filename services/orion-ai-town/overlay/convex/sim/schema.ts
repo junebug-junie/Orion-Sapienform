@@ -18,6 +18,9 @@ export const simTables = {
     minute: v.number(),
     seed: v.number(),
     state: v.any(),
+    // Game clock bookkeeping (core.advanceClock): game minutes carried to the
+    // next tick, and how many ticks ran real time (busy) or fast.
+    clock: v.optional(v.object({ pending: v.number(), busy_ticks: v.number(), fast_ticks: v.number() })),
   }).index('worldId', ['worldId']),
   simEvents: defineTable({
     worldId: v.id('worlds'),

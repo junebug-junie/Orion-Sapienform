@@ -82,6 +82,15 @@ class EventPairResult:
     placebo: str = "same_time_of_day"
 
 
+def visits(times: np.ndarray, gap_sec: float) -> np.ndarray:
+    """Sorted event times -> the first time of each visit. A visit ends when the next row comes more than
+    ``gap_sec`` after the previous row, so one person logged as a burst of rows counts once. 0 keeps rows."""
+    t = np.sort(np.asarray(times, dtype=float))
+    if gap_sec <= 0 or len(t) == 0:
+        return t
+    return t[np.concatenate(([True], np.diff(t) > gap_sec))]
+
+
 def _offsets(rng: np.random.Generator, n: int, span: float, lag_max: float, placebo: str) -> np.ndarray:
     """Placebo shifts whose circular distance from the real alignment is > lag_max."""
     if placebo == "circular":

@@ -123,6 +123,45 @@ export const MAX_FLAGS_PER_PLACE = 16;
 export const MAX_OPEN_QUESTS = 10;
 export const MAX_RESOLVED_QUESTS = 20;
 export const MAX_TICK_MINUTES = 24 * 60;
+
+// Game clock (Juniper, 2026-11-02). The town is open at most 2 real hours a
+// day (Orion's sessions), so a real-time clock reached the first breakfast
+// after 3 real days. The clock runs FAST_CLOCK_X game minutes per real minute
+// while no model call is needed, and real time while one is: an open chat, or
+// an NPC with an operation in flight. Chats held the GPU 67-81% of the 10-31
+// sessions, so 45x averages about 12x: about one game day per 2 real hours.
+export const FAST_CLOCK_X = 45;
+export const CLOCK_TICK_SECONDS = 60;
+
+export type ClockCounts = { pending: number; busy_ticks: number; fast_ticks: number };
+
+// True while the town needs a GPU: any open conversation (each line is a model
+// call: NPC replies here, Orion's through embodiment) or any agent operation in
+// flight (reply generation, conversation memory).
+export function townNeedsGpu(world: {
+  conversations?: readonly unknown[];
+  agents?: readonly { inProgressOperation?: unknown }[];
+} | null): boolean {
+  if (!world) return false;
+  return (world.conversations?.length ?? 0) > 0 || (world.agents ?? []).some((a) => a.inProgressOperation != null);
+}
+
+// One CLOCK_TICK_SECONDS clock tick: whole STEP_MINUTES steps to run now, and
+// the remainder carried to the next tick (real time is 1 game minute a tick).
+export function advanceClock(clock: ClockCounts | null | undefined, busy: boolean):
+  { minutes: number; clock: ClockCounts } {
+  const c = clock ?? { pending: 0, busy_ticks: 0, fast_ticks: 0 };
+  const pending = c.pending + (busy ? CLOCK_TICK_SECONDS / 60 : FAST_CLOCK_X * CLOCK_TICK_SECONDS / 60);
+  const minutes = Math.floor(pending / STEP_MINUTES) * STEP_MINUTES;
+  return {
+    minutes,
+    clock: {
+      pending: pending - minutes,
+      busy_ticks: c.busy_ticks + (busy ? 1 : 0),
+      fast_ticks: c.fast_ticks + (busy ? 0 : 1),
+    },
+  };
+}
 // Money need follows cash: 0 at MONEY_COMFORT cash or more, 1 at no cash.
 export const MONEY_COMFORT = 40;
 export const COFFEE_PRICE = 2;

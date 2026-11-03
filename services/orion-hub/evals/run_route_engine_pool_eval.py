@@ -10,8 +10,11 @@ This eval calls each module's `_engine()` the way a route does
 backends Postgres holds under a unique `application_name` (libpq reads
 PGAPPNAME, so it is set before anything connects).
 
+It also loads the three shared substrate stores (review telemetry, review
+queue, policy profiles) REQUESTS_PER_MODULE times each, read-only.
+
 PASS: every module reused one engine, and the connections left open are at
-most one per module. Exit 0 PASS, 1 FAIL, 2 UNKNOWN (database unreachable).
+most one per module or store. Exit 0 PASS, 1 FAIL, 2 UNKNOWN (database unreachable).
 
 Run against the live database from the hub image (host network):
     python services/orion-hub/evals/run_route_engine_pool_eval.py
@@ -89,14 +92,59 @@ def main() -> int:
             asyncio.run(routes.consolidation_schema_candidates(limit=5))
             asyncio.run(routes.consolidation_tensor_slices_latest(limit=5))
             asyncio.run(routes.consolidation_expectations(trigger_motif_id="route-pool-eval"))
-        held = _held_connections(uri)
+        # Shared substrate stores the hub holds as singletons; its autonomy loop
+        # reads review telemetry every 30 s (149 connections held, 2026-11-02).
+        # Read-only calls only: their persist methods rewrite live tables.
+        from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+        from orion.substrate.policy_profiles import SubstratePolicyProfileStore
+        from orion.substrate.review_queue import GraphReviewQueue
+        from orion.substrate.review_telemetry import GraphReviewTelemetryRecorder
+
+        # The stores import create_engine lazily, so wrapping it counts every
+        # pool they build. Automatic GC is off during the loop: in the hub (a
+        # large, long-lived heap) full collections are rare, so an abandoned
+        # pool's connection stays open; a short script would hide that.
+        import gc
+
+        import sqlalchemy
+
+        real_create_engine = sqlalchemy.create_engine
+        built: list[object] = []
+
+        def counting_create_engine(*args, **kwargs):
+            built.append(real_create_engine(*args, **kwargs))
+            return built[-1]
+
+        sqlalchemy.create_engine = counting_create_engine
+        gc.disable()
+        try:
+            stores = {
+                "review_telemetry": (
+                    GraphReviewTelemetryRecorder,
+                    lambda s: s.query(GraphReviewTelemetryQueryV1(limit=1)),
+                ),
+                "review_queue": (GraphReviewQueue, lambda s: s._load_from_postgres()),
+                "policy_profiles": (SubstratePolicyProfileStore, lambda s: s._load_from_postgres()),
+            }
+            for name, (cls, read) in stores.items():
+                before = len(built)
+                store = cls(postgres_url=uri)
+                for _ in range(REQUESTS_PER_MODULE):
+                    read(store)
+                if store.source_kind() != "postgres":
+                    raise RuntimeError(f"{name} fell back to {store.source_kind()}: {store.last_error()}")
+                engines_per_module[name] = len(built) - before
+            held = _held_connections(uri)
+        finally:
+            gc.enable()
+            sqlalchemy.create_engine = real_create_engine
     except Exception as exc:  # noqa: BLE001
         print(f"UNKNOWN: database unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
     for name, count in engines_per_module.items():
         print(f"{name}: {count} distinct engine(s) over {REQUESTS_PER_MODULE} requests")
-    limit = len(MODULES)
+    limit = len(MODULES) + len(stores)
     print(f"connections held after {REQUESTS_PER_MODULE * (limit + 4)} requests: {held} (limit {limit})")
 
     reused = all(count == 1 for count in engines_per_module.values())

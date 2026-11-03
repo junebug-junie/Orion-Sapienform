@@ -44,6 +44,7 @@ from orion.fcc.context_budget import (
 )
 
 from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE
+from orion.harness.structured_output import is_structured_output
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -1316,22 +1317,35 @@ async def run_fcc_turn(
     ):
         if session_plan is not None and frame.get("type") in ("final", "error"):
             frame = _record_session_end(frame, resume_key=str(resume_key), plan=session_plan)
-        if reading_only and frame.get("type") == "final" and undeclared_tool_call(
-                frame.get("llm_response"), READING_ONLY_TOOLS):
+        if reading_only and frame.get("type") == "final" and reading_resume_need(
+                frame.get("llm_response")) is not None:
             held_final = frame
             continue
         yield frame
     if held_final is None:
         return
-    tool = undeclared_tool_call(held_final.get("llm_response"), READING_ONLY_TOOLS)
+    reason, tool = reading_resume_need(held_final.get("llm_response")) or (RESUME_NOT_JSON, None)
     session_id = str((held_final.get("metadata") or {}).get("claude_session_id") or "")
     # Too little time left: a resume would only end in a bare timeout that loses the cause.
     if not session_id or deadline - time.monotonic() < min(float(stall_timeout_sec), RESUME_MIN_BUDGET_SEC):
-        yield held_final
+        # Stamped, so "resume skipped" reads differently from "resume never needed".
+        skipped = {"reason": "no_session" if not session_id else "deadline", "need": reason}
+        logger.warning("fcc_reading_resume_skipped corr=%s reason=%s need=%s",
+                       correlation_id, skipped["reason"], reason)
+        yield {**held_final, "metadata": {**dict(held_final.get("metadata") or {}),
+                                          "fcc_reading_resume_skipped": skipped}}
         return
-    # Once only: the resumed turn's answer is final whatever it says.
-    logger.warning("fcc_reading_undeclared_tool_resume corr=%s tool=%s session=%s", correlation_id, tool, session_id)
-    note = UNDECLARED_TOOL_NOTE.format(tool=tool)
+    # Once only, for either reason: the resumed turn's answer is final whatever it says.
+    if reason == RESUME_UNDECLARED_TOOL:
+        logger.warning("fcc_reading_undeclared_tool_resume corr=%s tool=%s session=%s",
+                       correlation_id, tool, session_id)
+        note = UNDECLARED_TOOL_NOTE.format(tool=tool)
+        record_key = "fcc_undeclared_tool_resume"
+    else:
+        logger.warning("fcc_reading_json_resume corr=%s session=%s chars=%s", correlation_id, session_id,
+                       len(str(held_final.get("llm_response") or "")))
+        note = JSON_ONLY_NOTE
+        record_key = "fcc_reading_json_resume"
     from orion.harness import session_resume
 
     try:  # measured before the MCP config exists, so a failed stat cannot leak it
@@ -1343,7 +1357,7 @@ async def run_fcc_turn(
         resume_mcp = _maybe_render_mcp_config(correlation_id=correlation_id, reading_binding=reading_binding,
                                               reading_only=True)
     except Exception:  # noqa: BLE001 -- McpPreflightError included: keep the original answer
-        logger.warning("fcc_reading_undeclared_tool_resume_mcp_failed corr=%s", correlation_id, exc_info=True)
+        logger.warning("fcc_reading_resume_mcp_failed corr=%s reason=%s", correlation_id, reason, exc_info=True)
         yield held_final
         return
     resume_argv = build_claude_argv(
@@ -1353,15 +1367,16 @@ async def run_fcc_turn(
     # Own start time, so the resumed final's spawn/first-event timings are its own process's.
     resume_kwargs = {**drive_kwargs, "prompt": note, "context_seed_chars": seed_chars,
                      "started": time.monotonic()}
-    resume_record = {"tool": tool, "session_id": session_id,
-                     "held_text": str(held_final.get("llm_response") or "")[:500]}
+    resume_record = {"session_id": session_id, "held_text": str(held_final.get("llm_response") or "")[:500]}
+    if tool:
+        resume_record["tool"] = tool
     resume_io = _SpawnTurnIO(resume_argv, cwd=workspace, env=spawn_env, limit=stream_read_limit, claude_bin=claude_bin)
     async for frame in _drive_fcc_turn(
         io=resume_io, outcome={"retry_spawn": False}, mcp_config_path=resume_mcp, **resume_kwargs
     ):
         if frame.get("type") in ("final", "error"):
             metadata = dict(frame.get("metadata") or {})
-            metadata["fcc_undeclared_tool_resume"] = resume_record
+            metadata[record_key] = resume_record
             metadata["duration_ms"] = int((time.monotonic() - started) * 1000)  # both runs
             frame = {**frame, "metadata": metadata}
         yield frame
@@ -1418,6 +1433,36 @@ UNDECLARED_TOOL_NOTE = (
     "Do not call any other tool. Answer now from what you have already read, in the format the task "
     "asked for, and say what you could not read."
 )
+
+
+# Sent once, on the resumed session, when a reading turn's final answer is not the JSON object its
+# task asked for (orion/harness/structured_output.py, the same check finalize applies). Live
+# 2026-10-31..11-03 (Qwen3.8-Flash-Next on Strata): 19 readings failed "Could not parse JSON object
+# from LLM text" -- 10 answered in prose ("Stance pass -- ...", "Now writing the Stage 2 output."),
+# 5 wrote a JSON object with a syntax error (a single-quoted string, an unquoted key).
+JSON_ONLY_NOTE = (
+    "Your last message was not the JSON object this reading's task asked for, so nothing could use "
+    "it. Reply now with only that JSON object, nothing else: no prose before or after it, no code "
+    "fence, no tool calls. Use what you have already read. Every key and string in double quotes."
+)
+
+RESUME_UNDECLARED_TOOL = "undeclared_tool"
+RESUME_NOT_JSON = "not_json"
+
+
+def reading_resume_need(text: object) -> Optional[Tuple[str, Optional[str]]]:
+    """Why a reading turn's final answer needs its one resume, as ``(reason, tool)``, or None.
+
+    An undeclared tool call wins (its note names the tool). Otherwise a final that finalize's
+    structured-output check would reject is resumed for the JSON object. Every ``reading_only``
+    turn carries that contract: the governor finalizes it with ``preserve_structured_output``.
+    """
+    tool = undeclared_tool_call(text, READING_ONLY_TOOLS)
+    if tool:
+        return RESUME_UNDECLARED_TOOL, tool
+    if not is_structured_output(text):
+        return RESUME_NOT_JSON, None
+    return None
 
 
 def undeclared_tool_call(text: object, declared: Iterable[str]) -> Optional[str]:

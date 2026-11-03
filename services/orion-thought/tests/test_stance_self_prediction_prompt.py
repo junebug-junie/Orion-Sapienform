@@ -44,10 +44,12 @@ def test_block_absent_when_flag_off() -> None:
 def test_block_present_and_after_the_slice_when_flag_on() -> None:
     out = _render(self_prediction_enabled=True)
     assert "- self_prediction:" in out
-    for key in ("asks_question_p", "fetches_outside_p", "steps_lo, steps_hi", "reply_chars_lo, reply_chars_hi"):
+    for key in ("asks_question_p", "fetches_outside_p", "more_steps_than_usual_p", "longer_reply_than_usual_p"):
         assert key in out
     # A top-level field, not wedged inside the stance_harness_slice list.
     assert out.index("companion_closing_move:") < out.index("- self_prediction:")
+    # v1's size ranges are retired: the prompt must not ask for them, and must give no size number to copy.
+    assert "steps_lo" not in out and "reply_chars_lo" not in out
     assert "never sees it" in out
 
 

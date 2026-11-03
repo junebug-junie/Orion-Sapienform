@@ -18,7 +18,7 @@ export const snapshot = internalQuery({
       .withIndex('worldMinute', (q) => q.eq('worldId', worldId))
       .order('desc')
       .take(Math.max(0, Math.min(args.events ?? 20, 200)));
-    return { worldId, state: doc?.state ?? null, events };
+    return { worldId, state: doc?.state ?? null, clock: doc?.clock ?? null, events };
   },
 });
 

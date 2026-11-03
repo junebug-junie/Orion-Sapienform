@@ -721,6 +721,26 @@ would restart a level's age). The causes already recorded and the last row's tim
 checkpoint as `strain_causes_seen` / `strain_row_at` / `strain_causes_now`.
 Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
 
+**Binding arcs (2026-11-03, body economy design Organ 5 "Felt state").** Strain only fires at the 34 °C
+reflex; between the soft line and that, the heat price binds and the hot gate refuses GPU work, but
+nothing in Orion's day said so. After pricing, the `physiology` node now writes `body_binding` rows
+into `temporal_self_event` (`source_table='physiology'`, subject `orion:body:<constraint>`;
+`app/body_binding.py`, insert `regulation_store.record_binding`). Bound means the price's
+`bind_state` is `binding`, `exogenous_bind` or `stuck_at_ceiling` (what the body report calls
+BINDING). Rows: `onset` once bound for 240 s, `change` when the bound state changes (at most every
+600 s), `keepalive` every 30 min while bound, `release` once slack for 240 s (the arc ends at the first
+slack reading). `no_reading` writes nothing; the reducer's 4,500 s stale timeout closes the arc at its
+last row. An open episode that went unread (no_reading, or a reading gap over 3 x
+`TEMPORAL_SELF_TICK_SEC`) marks its next row `after_gap`, so the chronicle never counts the unread
+stretch as binding time. Event id `body_binding:<constraint>:<episode start>:<row>:<written at>`; the payload carries
+the level, line, price, ceiling, the price's `why` and `self_spent`. The per-constraint episode rides
+in the checkpoint as `binding_episodes`; a failed write keeps it, so the next tick retries. The
+chronicle folds the rows into one `binding` arc per constraint (several open at once). Awareness only:
+no price or gate reads it. Kill switch: `TEMPORAL_SELF_BINDING_ARCS_ENABLED=false` (no rows, no arcs).
+Replay: `python -P services/orion-durable-runs/evals/body_binding_replay.py [--live --days 7]`.
+Deploy order: orion-thought and orion-hub before this service (`binding` is new to `extra="forbid"`
+frame readers).
+
 **Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's
 `retro_play_sessions` (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`,
 REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc per finished Retro

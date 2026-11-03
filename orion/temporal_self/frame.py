@@ -37,6 +37,7 @@ def summarize(arc: TemporalSelfArcV1) -> ArcSummaryV1:
         attention_returns=arc.attention_returns, cumulative_dwell_sec=round(arc.cumulative_dwell_sec, 3),
         last_seen_at=arc.last_seen_at, episode_began_at=arc.episode_began_at,
         causes_now=None if arc.causes_now is None else list(arc.causes_now),
+        binding=None if arc.binding is None else arc.binding.model_copy(),
     )
 
 

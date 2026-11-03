@@ -78,6 +78,13 @@ ls /dev/serial/by-id/
 scripts/safe_docker_build.sh orion-office-env up -d --build
 ```
 
+**Deploy order for a schema change (e.g. the CCS811 fields, 2026-11-03):** the bus schema
+rejects unknown fields. Merge first, let `orion-sql-writer` and `orion-hub` rebuild from main,
+and check that sql-writer's boot DDL added the `office_env_sample` columns. Only then rebuild
+this service on pan-1. If you rebuild pan-1 first, every sample fails validation in the old
+sql-writer and **no office rows are stored, temperature included**. Flashing new firmware
+early is safe: the old service ignores frame keys it does not know.
+
 Order for a first bring-up: flash the Nano → serial smoke → start the service → check the bus.
 
 ```bash

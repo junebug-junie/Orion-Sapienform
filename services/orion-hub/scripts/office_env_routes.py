@@ -133,7 +133,23 @@ def downsample_points(points: Sequence[Mapping[str, Any]], max_points: int) -> l
         if index > 0 and chunk:
             chunk[0]["gap"] = True
         sampled.extend(chunk)
+    _mark_field_gaps(sampled)
     return sampled
+
+
+def _mark_field_gaps(points: list[dict[str, Any]]) -> None:
+    """Per-field outages that rows alone do not show: the CCS811 warm-up leaves eCO2 empty
+    while temperature keeps rows coming. A point that has a field after a point lacking it
+    gets that field in ``gap_fields``, so the chart breaks that one line there."""
+    for field in _FIELDS:
+        seen = missing = False
+        for point in points:
+            if point.get(field) is None:
+                missing = seen
+                continue
+            if missing:
+                point.setdefault("gap_fields", []).append(field)
+            seen, missing = True, False
 
 
 async def query_latest_row(*, node: str) -> Optional[Mapping[str, Any]]:

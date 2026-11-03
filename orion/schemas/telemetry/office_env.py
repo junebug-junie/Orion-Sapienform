@@ -67,8 +67,9 @@ class OfficeEnvSensorV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    model: str = "SHT40"
-    # True when the serial link produced a valid frame inside the stale window.
+    model: str = "SHT40"  # primary sensor; the same node also carries the CCS811
+    # True when the serial link produced a valid frame inside the stale window carrying
+    # a usable reading from either sensor (SHT40 or CCS811).
     online: bool
 
 

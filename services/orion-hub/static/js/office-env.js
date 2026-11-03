@@ -46,7 +46,9 @@
     for (var j = 1; j < pts.length; j++) {
       var point = { ms: times[j], v: pts[j][field] };
       // `gap` is set server-side where the raw series had an outage inside a wide bucket.
-      if (pts[j].gap === true || gaps[j - 1] > limit) runs.push([point]);
+      // `gap_fields`: this one field had an outage the row spacing does not show.
+      var fieldGap = Array.isArray(pts[j].gap_fields) && pts[j].gap_fields.indexOf(field) >= 0;
+      if (pts[j].gap === true || fieldGap || gaps[j - 1] > limit) runs.push([point]);
       else runs[runs.length - 1].push(point);
     }
     return runs;

@@ -30,6 +30,13 @@ static constexpr uint32_t FRAME_INTERVAL_MS = 1000;
 static constexpr uint32_t SHT_REINIT_INTERVAL_MS = 10000;
 // The CCS811 makes a new reading every 1 s; a reading older than this is not reported.
 static constexpr uint32_t CCS_MAX_READING_AGE_MS = 3000;
+// No new reading for this long means the sensor reset itself (boot mode, idle): re-init it.
+static constexpr uint32_t CCS_SILENT_REINIT_MS = 10000;
+// Datasheet conditioning period; past it the reported age is held at >= this value so a
+// millis() wrap (~49.7 days) cannot make a conditioned sensor look like it is warming again.
+static constexpr uint32_t CCS_CONDITIONING_MS = 20UL * 60UL * 1000UL;
+// The CCS811 updates once a second; polling faster only loads the bus.
+static constexpr uint32_t CCS_POLL_INTERVAL_MS = 250;
 
 // Both sensors sit behind a TCA9548A I2C multiplexer (STEMMA QT board) at 0x70.
 // Channels found with I2C scans: SHT40 2026-10-28, CCS811 2026-11-03. Set a channel
@@ -46,6 +53,8 @@ static bool ccs_ok = false;
 static uint32_t ccs_init_ms = 0;
 static uint32_t ccs_read_ms = 0;
 static bool ccs_have_reading = false;
+static bool ccs_conditioned = false;
+static uint32_t ccs_last_poll_ms = 0;
 static uint16_t ccs_eco2 = 0;
 static uint16_t ccs_tvoc = 0;
 static uint32_t seq = 0;
@@ -67,15 +76,24 @@ static bool init_ccs811() {
   }
   ccs_init_ms = millis();
   ccs_have_reading = false;
+  ccs_conditioned = false;
   return true;
 }
 
 // Pull a new reading if the sensor has one. A sensor error drops to the retry path.
 static void poll_ccs811(uint32_t now) {
-  if (!ccs_ok || !select_channel(CCS_MUX_CHANNEL)) {
+  if (!ccs_ok || now - ccs_last_poll_ms < CCS_POLL_INTERVAL_MS) {
     return;
   }
-  if (!ccs.available()) {
+  ccs_last_poll_ms = now;
+  // Silent stall watchdog: a CCS811 that reset on its own sits in boot mode with no
+  // error and no data. Drop it to the retry path so begin() runs again.
+  if (now - (ccs_have_reading ? ccs_read_ms : ccs_init_ms) > CCS_SILENT_REINIT_MS) {
+    ccs_ok = false;
+    ccs_have_reading = false;
+    return;
+  }
+  if (!select_channel(CCS_MUX_CHANNEL) || !ccs.available()) {
     return;
   }
   if (ccs.readData() != 0 || ccs.checkError()) {
@@ -151,7 +169,10 @@ void loop() {
     JsonObject air = doc.createNestedObject("air");
     air["eco2_ppm"] = ccs_eco2;
     air["tvoc_ppb"] = ccs_tvoc;
-    air["since_init_ms"] = now - ccs_init_ms;
+    uint32_t since_init = now - ccs_init_ms;
+    if (since_init >= CCS_CONDITIONING_MS) ccs_conditioned = true;
+    if (ccs_conditioned && since_init < CCS_CONDITIONING_MS) since_init = CCS_CONDITIONING_MS;
+    air["since_init_ms"] = since_init;
   }
 
   serializeJson(doc, Serial);

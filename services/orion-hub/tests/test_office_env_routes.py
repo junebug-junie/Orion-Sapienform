@@ -270,3 +270,17 @@ def test_history_includes_air_points_and_stats(client, monkeypatch):
     assert len(body["points"]) == 2
     assert body["stats"]["eco2_min"] == 500.0 and body["stats"]["eco2_max"] == 700.0
     assert body["stats"]["tvoc_min"] == 10.0 and body["stats"]["tvoc_max"] == 10.0
+
+
+def test_downsample_marks_a_per_field_gap_rows_do_not_show():
+    """CCS811 warm-up: temp keeps rows flowing, eCO2 has a hole. The chart must break eCO2."""
+    pts = []
+    for i in range(40):
+        p = {"t": (SAMPLE_TS + timedelta(seconds=30 * i)).isoformat().replace("+00:00", "Z"), "office_temp_c": 21.0}
+        if not 10 <= i < 30:
+            p["office_eco2_ppm"] = 600.0
+        pts.append(p)
+    out = office_env_routes.downsample_points(pts, 8)
+    marked = [p for p in out if "office_eco2_ppm" in (p.get("gap_fields") or [])]
+    assert len(marked) == 1
+    assert all("office_temp_c" not in (p.get("gap_fields") or []) for p in out)

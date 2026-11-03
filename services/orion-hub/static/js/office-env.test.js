@@ -49,3 +49,10 @@ test("airText shows warming instead of a number during CCS811 conditioning", () 
   assert.equal(airText({ ok: false, sample: { office_eco2_ppm: 612 } }, "office_eco2_ppm"), "stale");
   assert.equal(airText({ ok: true, sample: null }, "office_eco2_ppm"), "—");
 });
+
+test("splitRuns breaks only the field named in gap_fields", () => {
+  const p = (min, extra) => Object.assign({ t: new Date(Date.UTC(2026, 9, 27, 12, min)).toISOString(), office_temp_c: 21, office_eco2_ppm: 600 }, extra || {});
+  const pts = [p(0), p(1), p(2, { gap_fields: ["office_eco2_ppm"] }), p(3)];
+  assert.equal(splitRuns(pts, "office_eco2_ppm").length, 2);
+  assert.equal(splitRuns(pts, "office_temp_c").length, 1);
+});

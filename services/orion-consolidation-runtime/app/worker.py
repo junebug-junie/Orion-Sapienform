@@ -49,7 +49,11 @@ class ConsolidationRuntimeWorker:
         if not self._settings.enable_consolidation_runtime:
             return
 
+        completion_watermark = self._store.load_feedback_completion_watermark(
+            source_visibility_lag_sec=self._policy.window.source_visibility_lag_sec
+        )
         window_start, window_end = compute_consolidation_window(
+            now=completion_watermark,
             lookback_minutes=self._policy.window.lookback_minutes,
         )
         frame_id = stable_consolidation_frame_id(

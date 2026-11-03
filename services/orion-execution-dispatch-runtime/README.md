@@ -100,7 +100,15 @@ attributable to the layer that caused it — innermost fires first:
 `rpc_timeout_sec` is per-route (`CortexRouteTemplateV1`), not global, because the two needs are
 genuinely opposed: this consumer is single-threaded, so a global ceiling large enough for the prune
 would let one hung inspect stall all dispatch for that long. Only routes that need a longer budget
-get one.
+get one. Route, global-fallback, and GPU-shed RPC timeouts are all bounded to 720 seconds because
+the dispatch frame is timestamped before this concurrent batch and stored afterward; Layer 11's
+900-second source-visibility lag depends on that producer bound before it closes an hourly frame.
+
+Before any dispatch frame receives its final event time or enters the send path, the runtime writes
+`substrate_execution_dispatch_inflight`. The returned database timestamp becomes `generated_at`.
+`save_dispatch_frame()` inserts the durable frame and deletes the in-flight row in the same
+transaction, so Layer 11 never has to infer whether a pre-boundary frame is still only in process
+memory. A crash leaves the policy pending and the receipt visible; the retry reuses the timestamp.
 
 ### Slot arbitration and starvation (2026-08-12)
 

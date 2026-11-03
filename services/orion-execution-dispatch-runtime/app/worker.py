@@ -449,6 +449,13 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - frame_generated_at).total_seconds()
 
+    def _start_frame_materialization(
+        self, frame: ExecutionDispatchFrameV1
+    ) -> ExecutionDispatchFrameV1:
+        """Make producer intent visible, then assign that DB timestamp as event time."""
+        generated_at = self._store.start_dispatch_frame_materialization(frame.frame_id)
+        return frame.model_copy(update={"generated_at": generated_at})
+
     def _check_freshest_fallback(self) -> PolicyDecisionFrameV1 | None:
         """2026-07-30 follow-up (docs/superpowers/specs/2026-07-30-execution-
         dispatch-staleness-discard-design.md's own live-verified finding):
@@ -529,6 +536,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 age_sec=age_sec,
                 staleness_threshold_sec=threshold_sec,
             ).model_copy(update=baseline)
+            discard_frame = self._start_frame_materialization(discard_frame)
             self._store.save_dispatch_frame(discard_frame)
             last_discard_frame = discard_frame
             discarded += 1
@@ -636,6 +644,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 policy_id=self._policy.policy_id,
                 reason=f"proposal_frame {policy_frame.source_proposal_frame_id} unavailable",
             ).model_copy(update=carry_forward_baseline)
+            frame = self._start_frame_materialization(frame)
             self._store.save_dispatch_frame(frame)
             logger.info(
                 "execution_dispatch_frame_saved_unevaluable frame_id=%s policy_frame_id=%s",
@@ -669,6 +678,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             # model_copy would otherwise stamp the previous tick's map back
             # over it, freezing every counter at its first value.
         ).model_copy(update=updated_baseline)
+        frame = self._start_frame_materialization(frame)
 
         if (
             self._settings.execution_dispatch_mode == "dispatch_read_only"

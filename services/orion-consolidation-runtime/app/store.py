@@ -32,6 +32,42 @@ class ConsolidationRuntimeStore:
             json_deserializer=json.loads,
         )
 
+    def load_feedback_completion_watermark(self, *, source_visibility_lag_sec: int) -> datetime:
+        """Earliest pending dispatch, or database time when the queue is empty.
+
+        This is the earliest of (a) the oldest producer in-flight receipt, (b) the oldest visible
+        pending dispatch, and (c) database time minus a defense-in-depth lag. Execution dispatch
+        assigns event time from the in-flight insert, then atomically replaces that receipt with
+        the real frame; the pending marker covers it until feedback completes. Every dispatch
+        strictly before the result has therefore become visible and crossed one of feedback's
+        durable completion seams. Both minimum queries use small ordered indexes.
+        """
+        with self._engine.connect() as conn:
+            value = conn.execute(
+                text(
+                    """
+                    SELECT LEAST(
+                        COALESCE(
+                            (SELECT min(generated_at)
+                               FROM substrate_execution_dispatch_frames
+                              WHERE feedback_pending),
+                            now()
+                        ),
+                        COALESCE(
+                            (SELECT min(generated_at)
+                               FROM substrate_execution_dispatch_inflight),
+                            now()
+                        ),
+                        now() - make_interval(secs => :visibility_lag_sec)
+                    )
+                    """
+                ),
+                {"visibility_lag_sec": max(0, int(source_visibility_lag_sec))},
+            ).scalar_one()
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     def load_consolidation_frame_for_window(
         self, frame_id: str
     ) -> ConsolidationFrameV1 | None:
@@ -149,12 +185,25 @@ class ConsolidationRuntimeStore:
             ),
             feedback_frames=self._load_rows(
                 """
+                WITH window_dispatches AS (
+                    SELECT frame_id, generated_at
+                    FROM substrate_execution_dispatch_frames
+                    WHERE generated_at >= :window_start
+                      AND generated_at < :window_end
+                    ORDER BY generated_at DESC
+                    LIMIT :max_per_source
+                ), paired_feedback AS (
+                    SELECT DISTINCT ON (d.frame_id)
+                           f.feedback_frame_json,
+                           d.generated_at AS dispatch_generated_at
+                    FROM window_dispatches d
+                    JOIN substrate_feedback_frames f
+                      ON f.source_execution_dispatch_frame_id = d.frame_id
+                    ORDER BY d.frame_id, f.generated_at DESC
+                )
                 SELECT feedback_frame_json
-                FROM substrate_feedback_frames
-                WHERE generated_at >= :window_start
-                  AND generated_at < :window_end
-                ORDER BY generated_at DESC
-                LIMIT :max_per_source
+                FROM paired_feedback
+                ORDER BY dispatch_generated_at DESC
                 """,
                 window_start,
                 window_end,

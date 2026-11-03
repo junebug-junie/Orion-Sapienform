@@ -255,7 +255,7 @@ albums enough that a held-out visit beats the street.
 **Status update 2026-11-03, later (face bar, PR feat/person-model-face-bar).** Model
 `median-topk-street-v2-people-split-face90`. (1) alpha is split only across labels that
 are one real person: names whose `person` row is `not_a_person` (live: skeleton, UPS
-delivery, Addy and Esme) no longer count, and never get an accept bar. Live split 16 -> 13,
+delivery, a pair label) no longer count, and never get an accept bar. Live split 16 -> 13,
 so an accept bar needs 259 impostor clusters, not 319. "Mail carrier" is still `active`
 and still counts; mark it in the Hub People panel if it is a role, not one person. (2) Face
 bars calibrate on unnamed clusters from the last 90 days (`VISION_PERSON_FACE_CANDIDATE_DAYS`);

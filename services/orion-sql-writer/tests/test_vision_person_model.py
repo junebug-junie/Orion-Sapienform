@@ -849,11 +849,11 @@ def test_not_a_person_names_come_from_the_person_record(pg) -> None:
         _add_cluster(conn, "deco", "Skeleton", [_vec(1)], day=1)
         _add_cluster(conn, "jun", "Juniper", [_vec(0, 1)], day=1)
         _add_cluster(conn, "gone", "Old name", [_vec(0, 0, 1)], day=1)
-        _add_cluster(conn, "lag", "Teddy", [_vec(0, 0, 0, 1)], day=1)
+        _add_cluster(conn, "lag", "PersonT", [_vec(0, 0, 0, 1)], day=1)
         conn.execute(text(
             "INSERT INTO person (person_id, display_name, status) VALUES "
             "('p-deco', 'Halloween decor', 'not_a_person'), ('p-jun', 'Juniper', 'active'), "
-            "('p-ups', 'UPS delivery', 'not_a_person'), ('p-ted', 'Teddy', 'active')"))
+            "('p-ups', 'UPS delivery', 'not_a_person'), ('p-ted', 'PersonT', 'active')"))
         conn.execute(text(
             "INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by, revoked_at) VALUES "
             "('l1', 'p-deco', 'vision_individual', 'deco', 'camera_name', NULL), "

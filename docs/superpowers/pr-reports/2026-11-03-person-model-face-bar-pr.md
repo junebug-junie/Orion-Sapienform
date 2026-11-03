@@ -2,8 +2,8 @@
 
 ## Summary
 
-- Orion can say "probably X" only when a person clears an accept bar. A bar must be stricter for each extra name Orion could guess. That strictness was counting 16 names, but 3 of them are not one real person: a skeleton decoration, "UPS delivery", and the pair "Addy and Esme". It now counts only real people (13 live). The check reuses the existing person record (`person.status = 'not_a_person'`, set in the Hub People panel). It does not use a hand-kept list.
-- Non-person names keep their albums, their reject bound, and their "Is this X?" asks. Their clusters still count as strangers for everyone else. They never get an accept bar, because "probably Addy and Esme" would name known people outside the bound. (A review finding; see below.)
+- Orion can say "probably X" only when a person clears an accept bar. A bar must be stricter for each extra name Orion could guess. That strictness was counting 16 names, but 3 of them are not one real person: a skeleton decoration, "UPS delivery", and a pair of people named together. It now counts only real people (13 live). The check reuses the existing person record (`person.status = 'not_a_person'`, set in the Hub People panel). It does not use a hand-kept list.
+- Non-person names keep their albums, their reject bound, and their "Is this X?" asks. Their clusters still count as strangers for everyone else. They never get an accept bar, because "probably <the pair>" would name known people outside the bound. (A review finding; see below.)
 - Face bars are fitted against unnamed clusters from the last 90 days (`VISION_PERSON_FACE_CANDIDATE_DAYS`, shipped ON). Faces are rare, and a bar needs about 259 stranger clusters with faces. Body bars and every guess stay on the 30-day street.
 - `MODEL_VERSION` is now `median-topk-street-v2-people-split-face90`.
 
@@ -11,7 +11,7 @@
 
 The count of stranger face clusters that a face bar needs is now reachable. Today: **nothing visible changed** (eval identical to v1). Every face crop is under 19 days old (the first is 2026-10-15), so the 90-day window has no extra clusters to add yet. At the measured rate (~2.8 street face clusters a day, plus ~2.7 when the doorbell is back via #3085), the face street reaches the ~245 clusters needed in about 35 days (~2026-12-08). With the old 30-day window it would level off near 165 and never arm. With the old 16-name split it would need ~305, about 11 more days.
 
-This is not yet "probably X appears". Two more limits still bind after the count is met. Only 2 people (Juniper, Esme) have the 3 face clusters a bar needs. Face cross-day AUC is 0.614 (0.5 is chance).
+This is not yet "probably X appears". Two more limits still bind after the count is met. Only 2 people have the 3 face clusters a bar needs. Face cross-day AUC is 0.614 (0.5 is chance).
 
 ## Current architecture
 
@@ -79,7 +79,7 @@ Read-only, `evals/run_person_recognition_eval.py --live postgresql://...@localho
 | correct accepts | 0 | 0 |
 | unsure (right person top guess) | 103 (50) | 103 (50) |
 | street accepts | 0 | 0 |
-| split across | 16 | 13 (not_people: addy and esme, skeleton, ups delivery) |
+| split across | 16 | 13 (not_people: a pair label, skeleton, ups delivery) |
 | street / face street clusters | 1352 / 1352 | 1352 / 1352 |
 | face AUC (genuine / impostor clusters) | 0.6135 (11 / 764) | 0.6135 (11 / 764) |
 | body AUC | 0.8503 | 0.8503 |
@@ -106,7 +106,7 @@ No deploy and no live DB write (read-only eval only).
   - Evidence: the mutation check above fails without the join.
 - Finding (should): a lagging link or a merge could mark a real person's name as a thing.
   - Fix: any name an active person row carries is subtracted from the set.
-  - Evidence: the "Teddy" case in the same Postgres test.
+  - Evidence: the "active name also linked to a thing" case in the same Postgres test.
 - Finding (nit): there was no test for missing person tables.
   - Fix: `test_missing_person_tables_mean_everyone_counts_as_a_person`.
 - Finding (nit): there was no test that flag-off ignores `not_people`.
@@ -143,6 +143,8 @@ Juniper must review every `band='accept'` row by eye before any consumer reads "
 - Severity: low. Concern: "Mail carrier" is still `active`, so it still counts in the split and can get an accept bar. Mitigation: if it is a role and not one person, mark it "not a person" in the Hub People panel. The model picks that up on the next cycle.
 - Severity: low. Concern: the version bump revokes and rewrites every attribution once. Mitigation: the rewrite happens in the same cycle; open confirm asks are keyed by individual and name, not by version.
 - Severity: info. Concern: the eval is identical to v1 today, and `vs_previous.better` is false. The nightly `make eval-person-recognition --write` will record a v2 row with p = 1.0. Mitigation: expected; the change only bites once face data is older than 30 days.
+
+- Severity: low. Concern: early commits on this branch held real names, which the personal-terms gate later caught (the docs and the test were scrubbed in a later commit). Mitigation: **squash-merge this PR**, so the names never reach main history.
 
 ## PR link
 

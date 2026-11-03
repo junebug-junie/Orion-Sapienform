@@ -75,3 +75,35 @@ def test_stale_payload_stores_null_readings_not_zero() -> None:
     assert "office_temp_c" not in row and "office_humidity_pct" not in row
     assert row["stale"] is True
     assert row["sensor_online"] is False
+
+
+def test_air_quality_round_trips_to_columns() -> None:
+    sample = OfficeEnvSampleV1(
+        ts=NOW,
+        sensor=OfficeEnvSensorV1(id="sht40-office", online=True),
+        measurements=OfficeEnvMeasurementsV1(office_temp_c=21.5, office_eco2_ppm=640, office_tvoc_ppb=36),
+    )
+    row = _write_keys(sample.model_dump(mode="json", by_alias=True))
+    assert row["office_eco2_ppm"] == 640
+    assert row["office_tvoc_ppb"] == 36
+    assert row["air_warming"] is False
+
+
+def test_warming_air_stores_null_readings_and_the_flag() -> None:
+    sample = OfficeEnvSampleV1(
+        ts=NOW,
+        sensor=OfficeEnvSensorV1(id="sht40-office", online=True),
+        measurements=OfficeEnvMeasurementsV1(office_temp_c=21.5),
+        state=OfficeEnvStateV1(air_warming=True),
+    )
+    row = _write_keys(sample.model_dump(mode="json", by_alias=True))
+    assert "office_eco2_ppm" not in row and "office_tvoc_ppb" not in row
+    assert row["air_warming"] is True
+
+
+def test_boot_ddl_adds_every_air_column() -> None:
+    """The live table predates these columns; create_all will not add them."""
+    main_src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
+    for column in ("office_eco2_ppm", "office_tvoc_ppb", "air_warming"):
+        assert column in _columns()
+        assert f"office_env_sample ADD COLUMN IF NOT EXISTS {column}" in main_src

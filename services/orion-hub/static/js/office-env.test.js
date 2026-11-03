@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { splitRuns, num } = require("./office-env.js");
+const { splitRuns, num, airText } = require("./office-env.js");
 
 const pt = (min, v) => ({ t: new Date(Date.UTC(2026, 9, 27, 12, min)).toISOString(), office_temp_c: v });
 
@@ -38,4 +38,14 @@ test("splitRuns breaks at a server-flagged gap even when spacing looks normal", 
   const runs = splitRuns([a, b, c, d], "office_temp_c");
   assert.equal(runs.length, 2);
   assert.equal(runs[1][0].v, 30);
+});
+
+test("airText shows warming instead of a number during CCS811 conditioning", () => {
+  const sample = { air_warming: true };
+  assert.equal(airText({ ok: true, sample }, "office_eco2_ppm"), "warming up");
+  assert.equal(airText({ ok: true, sample: { office_eco2_ppm: 612 } }, "office_eco2_ppm"), "612");
+  assert.equal(airText({ ok: true, sample: { office_tvoc_ppb: 0 } }, "office_tvoc_ppb"), "0"); // real zero TVOC
+  assert.equal(airText({ ok: true, sample: {} }, "office_eco2_ppm"), "—");
+  assert.equal(airText({ ok: false, sample: { office_eco2_ppm: 612 } }, "office_eco2_ppm"), "stale");
+  assert.equal(airText({ ok: true, sample: null }, "office_eco2_ppm"), "—");
 });

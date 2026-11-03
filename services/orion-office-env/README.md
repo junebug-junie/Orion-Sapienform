@@ -1,6 +1,7 @@
 # orion-office-env
 
-Reads the **office** temperature/humidity node (Arduino Nano ESP32 + SHT40, plugged into
+Reads the **office** environment node (Arduino Nano ESP32 + SHT40 temperature/humidity +
+CCS811 air quality, plugged into
 **pan-1** by USB) and publishes it to the bus as `office.env.sample.v1`. It runs on pan-1 only.
 
 It is separate from `orion-biometrics` on purpose: biometrics is an NVIDIA/Athena host
@@ -12,9 +13,14 @@ service, and the cabinet `cabinet_*` names describe the cabinet, not the office.
 2. Every `OFFICE_PUBLISH_INTERVAL_SEC` (30 s, same as the cabinet's biometrics tick) it
    publishes the newest frame on `orion:office:env:sample`.
 3. A frame older than `OFFICE_STALE_AFTER_SEC` (10 s), no frame at all, or a frame with no
-   `environment` yields a sample with `state.stale=true` and **no measurements**. Absent is
-   never zero and an old value is never repeated.
-4. It always publishes a `SystemHealthV1` heartbeat on `orion:system:health`
+   usable reading from either sensor yields a sample with `state.stale=true` and **no
+   measurements**. Absent is never zero and an old value is never repeated. The two sensors
+   are independent: one failing does not drop the other's readings.
+4. CCS811 air quality (`office_eco2_ppm`, `office_tvoc_ppb`): for the first 20 minutes after
+   each sensor start (datasheet conditioning period) the readings are withheld and
+   `state.air_warming=true`. Values outside the datasheet ranges (eCO2 400..29206 ppm, TVOC
+   0..32768 ppb) are dropped, not clamped. eCO2 is estimated from VOCs, not measured CO2.
+5. It always publishes a `SystemHealthV1` heartbeat on `orion:system:health`
    (details: `office_sensor`, `serial_open`, `frames_ok`, `lines_rejected`).
 
 ```text
@@ -29,6 +35,9 @@ Nano ESP32 + SHT40 (USB on pan-1)
 
 - Pressures, baselines, or any substrate / cognition wiring. Raw samples only. A pressure
   needs the metric quality gate (CLAUDE.md 0A) first.
+- Any pressure, alert, or cognition reading of eCO2/TVOC. The CCS811 has no baseline
+  save/restore and a 48-hour first-use burn-in (started 2026-11-03); its values need the
+  metric quality gate on real data first.
 - The sound meter (planned): it will get its own optional frame key and sample fields.
 - Flash the Nano. See `firmware/pan-1-office-nano/README.md`.
 
@@ -72,7 +81,8 @@ scripts/safe_docker_build.sh orion-office-env up -d --build
 Order for a first bring-up: flash the Nano → serial smoke → start the service → check the bus.
 
 ```bash
-# 1. serial smoke (exit 0 = real SHT40 frames; 1 = silence/junk; 2 = port; 3 = frames but no reading)
+# 1. serial smoke (exit 0 = real SHT40 + CCS811 frames; 1 = silence/junk; 2 = port;
+#    3 = frames but no SHT40 reading; 4 = SHT40 fine but no CCS811 reading)
 docker compose --env-file .env --env-file services/orion-office-env/.env \
   -f services/orion-office-env/docker-compose.yml run --rm orion-office-env python -m app.smoke
 # 2. heartbeat + publish log lines

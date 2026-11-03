@@ -219,3 +219,54 @@ def test_downsample_never_averages_across_an_outage():
     assert [p.get("gap") for p in out].count(True) == 1
     first_after = next(p for p in out if p.get("gap"))
     assert first_after["office_temp_c"] == 30.0
+
+
+def test_latest_carries_air_readings(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(office_eco2_ppm=612, office_tvoc_ppb=31, air_warming=False)
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    sample = client.get("/api/office/env/latest").json()["sample"]
+    assert sample["office_eco2_ppm"] == 612.0
+    assert sample["office_tvoc_ppb"] == 31.0
+    assert sample["air_warming"] is False
+
+
+def test_latest_warming_row_has_flag_and_no_air_numbers(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(office_eco2_ppm=None, office_tvoc_ppb=None, air_warming=True)
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    body = client.get("/api/office/env/latest").json()
+    assert body["ok"] is True
+    assert body["sample"]["air_warming"] is True
+    assert "office_eco2_ppm" not in body["sample"]
+
+
+def test_latest_publisher_dead_hides_old_air_reading(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(
+            ts=datetime(2026, 10, 27, 19, 0, 0, tzinfo=timezone.utc),
+            office_eco2_ppm=612, office_tvoc_ppb=31, air_warming=False,
+        )
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    sample = client.get("/api/office/env/latest").json()["sample"]
+    assert "office_eco2_ppm" not in sample and "office_tvoc_ppb" not in sample
+    assert "air_warming" not in sample
+
+
+def test_history_includes_air_points_and_stats(client, monkeypatch):
+    async def rows(*, node: str, hours: int):
+        return [
+            {"t": SAMPLE_TS, "office_temp_c": None, "office_humidity_pct": None,
+             "office_eco2_ppm": 500, "office_tvoc_ppb": 10},
+            {"t": SAMPLE_TS + timedelta(seconds=30), "office_temp_c": 21.0, "office_humidity_pct": None,
+             "office_eco2_ppm": 700, "office_tvoc_ppb": None},
+        ]
+
+    monkeypatch.setattr(office_env_routes, "_history_query", rows)
+    body = client.get("/api/office/env/history?window=24h").json()
+    assert len(body["points"]) == 2
+    assert body["stats"]["eco2_min"] == 500.0 and body["stats"]["eco2_max"] == 700.0
+    assert body["stats"]["tvoc_min"] == 10.0 and body["stats"]["tvoc_max"] == 10.0

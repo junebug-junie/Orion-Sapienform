@@ -1,4 +1,4 @@
-"""Hub read APIs for the office environment (pan-1 SHT40): latest state and history.
+"""Hub read APIs for the office environment (pan-1 SHT40 + CCS811): latest state and history.
 
 Reads Postgres ``office_env_sample`` (written by orion-sql-writer from
 ``orion:office:env:sample``). Absent is not zero: stale samples carry NULL readings,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/office/env", tags=["office-env"])
 
-_FIELDS = ("office_temp_c", "office_humidity_pct")
+_FIELDS = ("office_temp_c", "office_humidity_pct", "office_eco2_ppm", "office_tvoc_ppb")
 
 
 def _now_utc() -> datetime:
@@ -49,6 +49,9 @@ def row_to_sample(row: Mapping[str, Any]) -> dict[str, Any]:
     for field in _FIELDS:
         if row.get(field) is not None:
             sample[field] = float(row[field])
+    # NULL on rows written before the CCS811 existed: no claim either way, so omitted.
+    if row.get("air_warming") is not None:
+        sample["air_warming"] = bool(row["air_warming"])
     return sample
 
 
@@ -145,8 +148,8 @@ async def query_latest_row(*, node: str) -> Optional[Mapping[str, Any]]:
     try:
         return await connection.fetchrow(
             """
-            SELECT ts, office_temp_c, office_humidity_pct, sensor_online,
-                   stale, sample_age_sec, payload_json
+            SELECT ts, office_temp_c, office_humidity_pct, office_eco2_ppm, office_tvoc_ppb,
+                   air_warming, sensor_online, stale, sample_age_sec, payload_json
             FROM office_env_sample
             WHERE node = $1
             ORDER BY ts DESC
@@ -170,11 +173,12 @@ async def query_history_rows(*, node: str, hours: int) -> Sequence[Mapping[str, 
     try:
         return await connection.fetch(
             """
-            SELECT ts AS t, office_temp_c, office_humidity_pct
+            SELECT ts AS t, office_temp_c, office_humidity_pct, office_eco2_ppm, office_tvoc_ppb
             FROM office_env_sample
             WHERE node = $1
               AND ts >= $2
-              AND (office_temp_c IS NOT NULL OR office_humidity_pct IS NOT NULL)
+              AND (office_temp_c IS NOT NULL OR office_humidity_pct IS NOT NULL
+                   OR office_eco2_ppm IS NOT NULL OR office_tvoc_ppb IS NOT NULL)
             ORDER BY ts ASC
             """,
             node,
@@ -192,7 +196,12 @@ _history_query: HistoryQuery = query_history_rows
 
 def _stats(raw_points: Sequence[Mapping[str, Any]], n: int) -> dict[str, Any]:
     out: dict[str, Any] = {"n_raw": len(raw_points), "n": n}
-    for field, key in (("office_temp_c", "temp"), ("office_humidity_pct", "humidity")):
+    for field, key in (
+        ("office_temp_c", "temp"),
+        ("office_humidity_pct", "humidity"),
+        ("office_eco2_ppm", "eco2"),
+        ("office_tvoc_ppb", "tvoc"),
+    ):
         values = [float(p[field]) for p in raw_points if p.get(field) is not None]
         out[f"{key}_min"] = min(values) if values else None
         out[f"{key}_max"] = max(values) if values else None
@@ -216,6 +225,7 @@ def _load_latest(
         # hand the UI a number it could show as live.
         for field in _FIELDS:
             sample.pop(field, None)
+        sample.pop("air_warming", None)
         sample["sensor_online"] = False
     out: dict[str, Any] = {
         "ok": not publisher_stale and not sensor_stale,

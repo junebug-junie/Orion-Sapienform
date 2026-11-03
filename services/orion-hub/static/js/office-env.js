@@ -1,7 +1,7 @@
 // Office environment strip (Biometrics -> Cabinet / Office subview).
 //
 // Read-only view of GET /api/office/env/latest and /history (office_env_routes.py),
-// fed by orion-office-env (pan-1 SHT40) via Postgres office_env_sample.
+// fed by orion-office-env (pan-1 SHT40 + CCS811) via Postgres office_env_sample.
 //
 // Absent-is-not-zero: a missing reading renders "—"/"stale", and a chart breaks its
 // line across a gap instead of drawing through it or dropping to 0.
@@ -110,10 +110,22 @@
 
   function setText(node, text) { if (node) node.textContent = text; }
 
+  // Air tile text. Pure, so it is unit-tested without a DOM. A warming sensor has a
+  // register value but no valid reading: it says so instead of showing a number.
+  function airText(payload, field) {
+    var sample = payload && payload.sample;
+    if (!sample) return "—";
+    if (!payload.ok) return "stale";
+    var v = num(sample[field], 0);
+    if (v !== null) return v;
+    return sample.air_warming === true ? "warming up" : "—";
+  }
+
   function renderLatest(payload) {
     var sample = payload && payload.sample;
     if (!sample) {
       setText(els.temp, "—"); setText(els.humidity, "—"); setText(els.age, "—");
+      setText(els.eco2, "—"); setText(els.tvoc, "—");
       setText(els.live, "no samples yet");
       return;
     }
@@ -122,6 +134,8 @@
     var h = payload.ok ? num(sample.office_humidity_pct, 1) : null;
     setText(els.temp, t === null ? "stale" : t);
     setText(els.humidity, h === null ? "stale" : h);
+    setText(els.eco2, airText(payload, "office_eco2_ppm"));
+    setText(els.tvoc, airText(payload, "office_tvoc_ppb"));
     setText(els.age, typeof payload.age_sec === "number" ? Math.round(payload.age_sec) + "s" : "—");
     setText(els.live, payload.ok ? "fresh" : (payload.publisher_stale ? "no recent publish" : "sensor stale"));
   }
@@ -153,6 +167,8 @@
       if (id !== state.historyRequest) return;
       renderChart(els.tempChart, payload.points, "office_temp_c", 2, "temp °C");
       renderChart(els.humidityChart, payload.points, "office_humidity_pct", 1, "humidity %");
+      renderChart(els.eco2Chart, payload.points, "office_eco2_ppm", 0, "eCO2 ppm");
+      renderChart(els.tvocChart, payload.points, "office_tvoc_ppb", 0, "TVOC ppb");
     } catch (err) {
       if (id !== state.historyRequest) return;
       setText(els.status, "history error (" + (err.message || err) + ")");
@@ -193,6 +209,10 @@
     els.live = document.getElementById("officeEnvLiveStatus");
     els.tempChart = document.getElementById("officeEnvTempChart");
     els.humidityChart = document.getElementById("officeEnvHumidityChart");
+    els.eco2 = document.getElementById("officeEnvEco2");
+    els.tvoc = document.getElementById("officeEnvTvoc");
+    els.eco2Chart = document.getElementById("officeEnvEco2Chart");
+    els.tvocChart = document.getElementById("officeEnvTvocChart");
     els.windowButtons = document.querySelectorAll("[data-office-env-window]");
     if (!document.getElementById("officeEnvStrip")) return;
     els.windowButtons.forEach(function (b) {
@@ -208,7 +228,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { splitRuns: splitRuns, num: num };
+    module.exports = { splitRuns: splitRuns, num: num, airText: airText };
   }
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

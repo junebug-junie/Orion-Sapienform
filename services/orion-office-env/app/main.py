@@ -88,9 +88,13 @@ async def publish_sample(bus: OrionBusAsync, settings: Settings, sample: OfficeE
     try:
         await bus.publish(settings.OFFICE_ENV_SAMPLE_CHANNEL, envelope)
         logger.info(
-            "Published office sample temp_c=%s humidity_pct=%s stale=%s channel=%s",
+            "Published office sample temp_c=%s humidity_pct=%s eco2_ppm=%s tvoc_ppb=%s "
+            "air_warming=%s stale=%s channel=%s",
             sample.measurements.office_temp_c,
             sample.measurements.office_humidity_pct,
+            sample.measurements.office_eco2_ppm,
+            sample.measurements.office_tvoc_ppb,
+            sample.state.air_warming,
             sample.state.stale,
             settings.OFFICE_ENV_SAMPLE_CHANNEL,
         )

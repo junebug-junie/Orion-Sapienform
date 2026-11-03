@@ -45,6 +45,7 @@ class HarnessSmokeState(TypedDict, total=False):
     requested_at: str
     attempt: int            # failed attempts of the current step; reset when the step lands
     hold_takebacks: int
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict[str, Any] | None
     hold: dict[str, Any] | None
     hold_seq: int

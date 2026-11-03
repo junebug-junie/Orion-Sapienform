@@ -133,8 +133,14 @@ class Settings(BaseSettings):
     PRIME_REFRACTORY_SEC: float = Field(default=300.0, ge=0.0, alias="PRIME_REFRACTORY_SEC")
     # How often open questions are checked against curiosity's runs (one Hub read).
     PRIME_SETTLE_INTERVAL_SEC: float = Field(default=300.0, gt=0.0, alias="PRIME_SETTLE_INTERVAL_SEC")
-    # circe chat lane 0 at background priority (config/gpu_pool.yaml route `prime`).
+    # circe chat lane 0 at pool priority system (config/gpu_pool.yaml route `prime`).
     PRIME_LLM_ROUTE: str = Field(default="prime", alias="PRIME_LLM_ROUTE")
+    # The same call at pool priority `starved`, used only after a try that got no pool seat
+    # (config/gpu_pool.yaml route `prime_starved`; orion/prime/state.py wants_starved_route).
+    PRIME_STARVED_LLM_ROUTE: str = Field(default="prime_starved", alias="PRIME_STARVED_LLM_ROUTE")
+    # How long one try may wait for a pool seat BEFORE its PRIME_LLM_TIMEOUT_SEC of generation
+    # (llm-gateway option gateway_pool_wait_sec). 0 = no separate seat wait (the old single budget).
+    PRIME_SEAT_WAIT_SEC: float = Field(default=600.0, ge=0.0, le=900.0, alias="PRIME_SEAT_WAIT_SEC")
     # The pool role the bid names (config/physiology/families.yaml family `prime`).
     PRIME_BID_LANE: str = Field(default="chat", alias="PRIME_BID_LANE")
     PRIME_MAX_TOKENS: int = Field(default=700, gt=0, alias="PRIME_MAX_TOKENS")

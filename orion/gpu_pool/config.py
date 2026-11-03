@@ -23,8 +23,13 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 # the validator inserts it just below ``interactive``. That is what lets this code ship to every
 # loader -- including circe's lane controller, which reads the live checkout's YAML -- before any
 # YAML names it.
-PRIORITIES = ("urgent", "interactive", "perception", "system", "background")
-Priority = Literal["urgent", "interactive", "perception", "system", "background"]
+# ``starved`` (2026-11-03, Orion Prime reliability): Orion's own work whose last try already lost
+# its whole seat wait to the queue. Below perception, above system, so it goes ahead of other
+# system work by priority instead of by arrival; shed by heat like system (shed.py SHEDDABLE).
+# The word is the scheduling one: work that keeps losing to higher-priority work is starved.
+# A config file that predates it still loads: the validator inserts it just above ``system``.
+PRIORITIES = ("urgent", "interactive", "perception", "starved", "system", "background")
+Priority = Literal["urgent", "interactive", "perception", "starved", "system", "background"]
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
 SwapGuard = Literal["thermal"]   # visual_baseline deleted in stage 5.4
@@ -298,11 +303,13 @@ class PoolConfig(BaseModel):
     @field_validator("priorities", mode="after")
     @classmethod
     def _insert_perception(cls, value: list[str]) -> list[str]:
-        """Pre-perception configs list four priorities; slot ``perception`` in below ``interactive``."""
-        if "perception" in value or "interactive" not in value:
-            return value
+        """Pre-perception configs list four priorities; slot ``perception`` in below ``interactive``.
+        Pre-starved configs lack ``starved``; slot it in just above ``system``."""
         out = list(value)
-        out.insert(out.index("interactive") + 1, "perception")
+        if "perception" not in out and "interactive" in out:
+            out.insert(out.index("interactive") + 1, "perception")
+        if "starved" not in out and "system" in out:
+            out.insert(out.index("system"), "starved")
         return out
 
     @model_validator(mode="after")

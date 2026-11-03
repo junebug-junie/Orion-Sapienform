@@ -34,6 +34,13 @@ class RpcNoListener(ConnectionError):
     held a GPU lane for 35 minutes waiting on a 2.5 h RPC timeout before it was cancelled by hand."""
 
 
+class RpcPublishedToNobody(RpcNoListener):
+    """The RpcNoListener raised at publish: PUBSUB NUMSUB read 0 plain subscribers in the same
+    MULTI as the PUBLISH, so no worker received the request and none can have acted on it.
+    Re-sending it cannot duplicate work. The other RpcNoListener ("while awaiting its reply") was
+    delivered: its listener may have started the work before it went away."""
+
+
 # Pub/sub liveness (see OrionBusAsync.iter_messages). A quiet channel costs one PING per
 # idle_ping_sec; a dead socket is detected within idle_ping_sec + pong_deadline_sec.
 PUBSUB_IDLE_PING_SEC = 30.0
@@ -638,7 +645,7 @@ class OrionBusAsync:
             return
         if await self._publish_counting_listeners(request_channel, envelope) == 0:
             logger.error("[rpc] no listener request_channel=%s: request published to nobody", request_channel)
-            raise RpcNoListener(f"no listener on {request_channel}: request published to nobody")
+            raise RpcPublishedToNobody(f"no listener on {request_channel}: request published to nobody")
 
     async def _record_rpc_unheard(self, *, request_channel: str, reply_channel: str, corr: str, timeout_sec: float,
                                   started: float, health_label: str | None) -> None:

@@ -107,6 +107,9 @@ RefusalReason = Literal[
     # Rung 3: an act-backed candidate whose earlier act/dispatch is still open. Decided outside
     # allocate() (orion.autonomy.act_candidates.refuse_in_flight), recorded here so it is a reason.
     "act_in_flight",
+    # Self-monitor E1: the act's faculty is held broken/unreliable and this window's re-test probe is
+    # spent. Decided outside allocate() (orion.self_monitor.gate), recorded via refuse_held.
+    "track_record_failing",
 ]
 
 # How many standard deviations of the measured contrast must sit on the wrong

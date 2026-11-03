@@ -24,7 +24,7 @@ RAW = yaml.safe_load(DEFAULT_PATH.read_text())
 
 
 def test_priority_order_puts_perception_between_turn_and_orions_own_work():
-    assert PRIORITIES == ("urgent", "interactive", "perception", "system", "background")
+    assert PRIORITIES == ("urgent", "interactive", "perception", "starved", "system", "background")
 
 
 def test_config_without_perception_still_loads_and_ranks_it_below_interactive():

@@ -91,6 +91,16 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    "orion.schemas.self_monitor:SelfMonitorStateV1": (
+        "orion-durable-runs",
+        "the self_monitor node (rung 6 patch 2) writes it to Redis orion:self_monitor:latest; Hub's E2 minter, orion-thought's "
+        "track-record cue (and the dispatch-runtime / orion-actions act gates) read it via orion.self_monitor.view",
+    ),
+    "orion.schemas.self_monitor:FacultyRecordV1": (
+        "orion-durable-runs",
+        "the self_monitor node (rung 6 patch 2) writes SelfMonitorStateV1 to Redis orion:self_monitor:latest; "
+        "Hub's E2 minter, orion-thought's cue, dispatch-runtime and orion-actions read it via orion.self_monitor.view",
+    ),
     "orion.schemas.prediction:ActionBetCountsV1": (
         "orion-prediction",
         "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "
@@ -105,19 +115,6 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-prediction",
         "app/main.py _bet_out validates each stored prediction_action_bet row before returning it from "
         "place / settle / list; the Hub reads only plain JSON from it",
-    ),
-    # Self-monitor state: orion-thought's track-record cue reads Redis orion:self_monitor:latest
-    # (orion/self_monitor/view.py). Its writer is the durable-runs self_monitor node (self-monitor
-    # patch 2, a parallel PR); once that lands, code can see the writer and these two go stale --
-    # remove them in that merge (test_declared_writers_are_not_stale says so).
-    "orion.schemas.self_monitor:FacultyRecordV1": (
-        "orion-durable-runs",
-        "nested in SelfMonitorStateV1, published to Redis orion:self_monitor:latest by the self_monitor node",
-    ),
-    "orion.schemas.self_monitor:SelfMonitorStateV1": (
-        "orion-durable-runs",
-        "self_monitor node publishes it to Redis orion:self_monitor:latest hourly; orion-thought reads it "
-        "back (app/self_track_record_cue.py via orion.self_monitor.view.parse_state)",
     ),
     "orion.schemas.regulation:ArousalInputsV1": (
         "orion-durable-runs",

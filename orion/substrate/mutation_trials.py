@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 import re
-from typing import Any, Callable
+from typing import Any
 
 from orion.core.schemas.substrate_mutation import MutationProposalV1, MutationTrialV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
@@ -260,10 +259,6 @@ class SubstrateTrialRunner:
     scorer: ClassSpecificScorer
     corpus_registry: ReplayCorpusRegistry
     routing_replay_evaluator: RoutingReplayEvaluator = RoutingReplayEvaluator()
-    # Rung 6: proposal -> holdout metrics for prediction_expectation_patch
-    # (PredictionExpectationTuner.trial_metrics). None = no evaluator wired,
-    # which reads as inconclusive, never as passed.
-    prediction_expectation_evaluator: Callable[[MutationProposalV1], dict[str, float] | None] | None = None
 
     def run_trial(
         self,
@@ -367,19 +362,6 @@ class SubstrateTrialRunner:
     ) -> dict[str, float] | None:
         if measured_metrics:
             return None
-        if proposal.mutation_class == "prediction_expectation_patch":
-            if self.prediction_expectation_evaluator is None:
-                return None
-            try:
-                return self.prediction_expectation_evaluator(proposal)
-            except Exception:
-                # A failed corpus read is "no evidence" (inconclusive), never
-                # an exception that kills the whole cycle -- monitoring and
-                # rollbacks run later in the same cycle.
-                logging.getLogger(__name__).warning(
-                    "prediction_expectation_trial_read_failed proposal=%s", proposal.proposal_id, exc_info=True
-                )
-                return None
         if proposal.mutation_class != "routing_threshold_patch":
             return None
         cases = self.routing_replay_evaluator.build_cases(replay_records)

@@ -320,6 +320,34 @@ def _material_section(material: StudyMaterial) -> list[str]:
     return lines
 
 
+def kickoff_material_ids(material: StudyMaterial) -> list[str]:
+    """Ids of the study material `_material_section` puts into the kickoff prompt.
+
+    Recorded with the run (`curiosity_offer_decisions.material_ids`) so a query
+    can show which investigations saw which material. Reads the same lists the
+    sections render, with the same gates: a card listed here is a card that was
+    in the prompt, and nothing fetched-but-not-shown is listed. Street ids
+    (2026-11-03): `street_caption:<vision_events.event_id>` per caption shown,
+    and `street_day:<stream_id>:<day label>@<computed_at>` for the day card --
+    the label is the local date, which with stream_id and grain='day' names one
+    `vision_rollup` row; computed_at says which version of that all-day-upserted
+    row was read (omitted when the row had none).
+
+    Known gaps: a caption with an empty event_id is shown but not recorded
+    (vision_events always sets one); unresolved percepts are not recorded yet.
+    Street ids come last, so a downstream cap (personality situation_refs, 50)
+    would drop them first -- unreachable at today's sample sizes (~22 ids).
+    """
+    ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
+    ids += [f"relation:{r.decision_id}" for r in material.relations]
+    ids += [f"street_caption:{c.event_id}" for c in material.street_captions if c.event_id]
+    card = material.street_day
+    if card is not None:
+        version = f"@{card.computed_at}" if card.computed_at else ""
+        ids.append(f"street_day:{card.stream_id or 'walkway'}:{card.day}{version}")
+    return ids
+
+
 def _street_day_section(material: StudyMaterial) -> list[str]:
     """The walkway over its newest day, as code counted it (2026-10-18). Nothing when absent."""
     card = material.street_day

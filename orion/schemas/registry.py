@@ -735,6 +735,7 @@ from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.field_dominance_run import FieldDominanceRunV1
 from orion.schemas.temporal_self import (
     ArcAttentionSummaryV1,
+    ArcBindingV1,
     ArcBodySummaryV1,
     ArcSummaryV1,
     DayCitationCheckV1,
@@ -1464,6 +1465,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ArcSummaryV1": ArcSummaryV1,
     "ArcAttentionSummaryV1": ArcAttentionSummaryV1,
     "ArcBodySummaryV1": ArcBodySummaryV1,
+    "ArcBindingV1": ArcBindingV1,
     "OpenThreadV1": OpenThreadV1,
     "ExpectationRefV1": ExpectationRefV1,
     # Patch 4 (Orion uses its own day): the two readers' rendered views and the citation gate's

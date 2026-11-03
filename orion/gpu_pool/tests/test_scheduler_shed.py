@@ -12,7 +12,7 @@ from orion.gpu_pool.shed import SHED_REASONS, ShedBoard, ShedReasonSpec, ShedSig
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of
 from orion.gpu_pool.tests.test_scheduler_urgent import CLEAR, hold, urgent, with_cap
 
-COOLING = {"background": "cooling_incident", "system": "cooling_incident"}
+COOLING = {"background": "cooling_incident", "system": "cooling_incident", "starved": "cooling_incident"}
 
 
 def run(leases, roles=None, crds=None, now=T0, shed=COOLING, cfg=CFG, guards=None):
@@ -207,7 +207,7 @@ def test_cabinet_hot_blocks_background_and_system_cabinet_unknown_background_onl
     b.set(sig(reason="cabinet_unknown", source="hw"))
     assert b.view(T0, True).blocked == {"background": "cabinet_unknown"}
     b.set(sig(reason="cabinet_hot", source="hw"))
-    assert b.view(T0, True).blocked == {"background": "cabinet_hot", "system": "cabinet_hot"}
+    assert b.view(T0, True).blocked == {"background": "cabinet_hot", "system": "cabinet_hot", "starved": "cabinet_hot"}
 
 
 def test_reflex_signal_lapses_after_valid_until_when_the_watcher_stops_sending():

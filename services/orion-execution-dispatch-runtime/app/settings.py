@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
+from orion.execution_dispatch.policy import MAX_DISPATCH_RPC_TIMEOUT_SEC
+
 
 class Settings(BaseSettings):
     project: str = Field("orion-athena", alias="PROJECT")
@@ -48,7 +50,10 @@ class Settings(BaseSettings):
     rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
     rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
     execution_dispatch_rpc_timeout_sec: float = Field(
-        120.0, alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC"
+        120.0,
+        gt=0.0,
+        le=MAX_DISPATCH_RPC_TIMEOUT_SEC,
+        alias="EXECUTION_DISPATCH_RPC_TIMEOUT_SEC",
     )
     # 2026-07-30 (docs/superpowers/specs/2026-07-30-execution-dispatch-
     # staleness-discard-design.md): a real dispatch is a synchronous
@@ -248,6 +253,12 @@ class Settings(BaseSettings):
     # ORION_DISPATCH_HOLDBACK_FRACTION into substrate_act_episodes (control vs treated). false -> the
     # path is off; the information path is untouched either way. Shipped ON.
     orion_dispatch_proven_effect_enabled: bool = Field(True, alias="ORION_DISPATCH_PROVEN_EFFECT_ENABLED")
+    # Self-monitor E1 (orion/self_monitor/gate.py): an act-backed candidate whose faculty is held
+    # broken/unreliable in a fresh orion:self_monitor:latest is refused `track_record_failing`, except
+    # one re-test probe per faculty per SELF_MONITOR_PROBE_INTERVAL_SEC. Unknown/stale/absent state
+    # changes nothing. false -> no Redis read, decisions exactly as before.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
     orion_dispatch_act_cost_lookback_hours: int = Field(
         720, ge=24, le=2160, alias="ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS"
     )
@@ -291,7 +302,12 @@ class Settings(BaseSettings):
         120.0, gt=0, alias="ORION_WORLD_ACTION_ELIGIBILITY_MAX_AGE_SEC"
     )
     # The shed RPC (orion:gpu_pool:shed:request) and the TTL it asks for (the pool caps it anyway).
-    orion_gpu_pool_shed_rpc_timeout_sec: float = Field(5.0, gt=0, alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC")
+    orion_gpu_pool_shed_rpc_timeout_sec: float = Field(
+        5.0,
+        gt=0,
+        le=MAX_DISPATCH_RPC_TIMEOUT_SEC,
+        alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC",
+    )
     orion_shed_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="ORION_SHED_TTL_SEC")
     # Mirrors of the pool's caps (GPU_POOL_ORION_SHED_MIN_GAP_SEC / _MAX_SEC_PER_DAY), applied BEFORE the
     # randomized draw so both arms come from the same population: a decision the pool would refuse is

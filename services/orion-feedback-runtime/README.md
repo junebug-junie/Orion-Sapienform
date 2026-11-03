@@ -21,6 +21,9 @@ Layer 10 of the Orion cognition substrate: observes `ExecutionDispatchFrameV1` o
 ## Outputs
 
 - `substrate_feedback_frames`
+- `substrate_feedback_control_reductions` — payload-free completion receipts for structurally
+  empty dispatches whose untreated observation was folded directly into
+  `substrate_signal_control_cells`
 - Bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
   `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection, separate
   from the worker's own `FEEDBACK_BUS_CHANNEL` publish connection
@@ -58,13 +61,15 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_substrate_frames_created_at_index.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_substrate_pending_markers.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_feedback_control_reduction.sql
 ```
 
 ## Pending-marker reconciler (bounded, 2026-09-25)
 
-`feedback_pending` is cleared in the same transaction as the feedback frame insert. A safety-net sweep sets it
-back to `true` for any of the dispatch frames whose marker is `false` but whose feedback frame does not
-exist -- it can only add work, never remove it. Shared implementation:
+`feedback_pending` is cleared in the same transaction as either the feedback frame insert or a
+compact control-reduction receipt. A safety-net sweep sets it back to `true` for any dispatch
+whose marker is `false` but neither durable child exists -- it can only add work, never remove it. Shared implementation:
 `orion/substrate/pending_marker_reconcile.py`.
 
 - Every `FEEDBACK_RECONCILE_INTERVAL_SEC` (900): one short UPDATE over rows generated in the last
@@ -78,6 +83,20 @@ exist -- it can only add work, never remove it. Shared implementation:
 
 Before this, the sweep was an unbounded anti-join UPDATE every 15 min and was one of the three
 top I/O statements on athena's Postgres while never finding anything.
+
+## Empty-dispatch control reduction (2026-11-03)
+
+A dispatch with no candidates, no blocked/dispatched candidates, no attempted send, and zero
+counts has one live consequence: its untreated field delta. Once the normal scoring window
+closes, feedback-runtime folds that delta into the existing control cells and writes a compact
+receipt instead of manufacturing a full `FeedbackFrameV1` and bus event. Receipt insert, cell
+updates, and marker clear are one transaction; the receipt key prevents a replay from folding
+the observation twice. If the field window is missing, the frame is not called reduced and stays
+on the full inspectable path.
+
+Any candidate evidence fails this classification closed. In particular, randomized holdback is
+a blocked candidate with causal value and still receives a full feedback frame. The worker drains
+at most three items serially per poll, stopping immediately on a defer or empty queue.
 
 ## Durable render settlement (2026-09-28)
 

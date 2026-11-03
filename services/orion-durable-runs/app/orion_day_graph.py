@@ -38,7 +38,8 @@ from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypedDict
 
 from app.admitted_graph import (
-    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes, taken_back,
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, listener_wait, resource_nodes,
+    taken_back,
 )
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.orion_day.budget import extract_refs
@@ -83,6 +84,7 @@ class OrionDayState(TypedDict, total=False):
     attempt: int
     llm_attempts: dict[str, int]
     hold_takebacks: int
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict[str, Any] | None
     hold: dict[str, Any] | None
     hold_seq: int
@@ -297,6 +299,11 @@ def build_orion_day_graph(deps: OrionDayDeps, admission: AdmissionDeps, checkpoi
                 return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
                                         {"status": "waiting_resource"})
             except Exception as exc:  # noqa: BLE001 -- transport failure or unusable completion: one attempt
+                # cortex-orch restarting: the call reached nobody. Wait it out, replay, no attempt.
+                parked = await listener_wait(admission, dict(state), exc,
+                                             waiting={"status": "retrying", "retry_node": name})
+                if parked is not None:
+                    return parked
                 attempts[name] = attempts.get(name, 0) + 1
                 error = f"{type(exc).__name__}: {exc}"[:500]
                 if attempts[name] >= admission.max_attempts:

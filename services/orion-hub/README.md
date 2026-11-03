@@ -2794,87 +2794,28 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
 
-## Self Atlas (2026-09-05, self-model rebuild arc, Patch 3)
+## Self Atlas (2026-09-05 to 2026-11, retired)
 
-Topic-foundry's real clustering pipeline (the same UMAP+HDBSCAN + LLM-tagging
-one Orion's chat Concept Atlas already uses), pointed at Orion's own
-self-facts (`self_knowledge_items`, produced by `orion-cortex-exec`'s
-`self_study.py` Layer 1) instead of chat. A third dataset/model pair
-alongside the existing Orion/AI Town ones, following their exact established
-shape:
+Self Atlas pointed topic-foundry's clustering pipeline at `self_knowledge_items` (the daily
+self-knowledge scan in `orion-cortex-exec`), ingested the clusters into a FalkorDB graph
+(`orion_substrate_self`), served it through `?graph=self`, and wrote one
+`self_concept_history` row per cluster (`produced_by="self_atlas_cluster"`).
 
-- Constants: `_TOPIC_FOUNDRY_SELF_*` in `scripts/concept_atlas_routes.py`
-  (dataset `orion-self-atlas-dataset-v1`, model `orion-self-atlas-v1-*`,
-  `source_table="self_knowledge_items"`). Different id/time/text columns
-  than the chat datasets (`item_id`/`created_at`/`name,symbol_name,
-  metadata_text`) -- `_ensure_topic_foundry_dataset_and_model()` and
-  `trigger_topic_foundry_training_run()` were extended to accept these as
-  parameters (previously hardcoded globals, since both prior datasets
-  happened to share the same chat-shaped columns).
-- Scheduler: `trigger_topic_foundry_self_training_run()` /
-  `trigger_topic_foundry_self_enrichment()` / `concept_atlas_ingest_topic_
-  foundry_self()`, wired into `main.py`'s existing topic-foundry scheduler
-  tick, gated by its own `SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED`
-  (default **true** since 2026-09-05, PR #2115; was off while unverified).
-- **Freshness guard (2026-09-19):** the training step refuses to re-cluster
-  an unchanged table. `self_atlas_source_unchanged_since_last_run()` compares
-  the newest `self_knowledge_items.created_at` against the latest completed
-  self run's `created_at` and returns `reason=source_unchanged_since_last_run`
-  when nothing newer exists. Why: the generic trigger's spec-hash dedup is on a
-  UTC-day window, so it queued a brand-new HDBSCAN run every day; with the
-  source table frozen at one 2026-09-05 snapshot for two weeks (the
-  self-study verbs are in no autonomous chooser's priority table, so Orion
-  never re-ran inspect), fourteen runs re-labelled identical input and wrote
-  391 "new" `self_concept_history` versions Orion then read back as fresh
-  self-knowledge. The rows themselves now arrive from `orion-cortex-exec`'s
-  daily Layer 1 inspect timer (`SELF_STUDY_INSPECT_INTERVAL_SEC`; since 2026-10-30 the only self-study part left, kept just for Self Atlas), not
-  from anything in this service. The guard only skips on positive evidence:
-  unreachable topic-foundry, no completed run yet, or an unreadable table all
-  fall through to the normal trigger.
-- Storage: its own FalkorDB graph (`FALKORDB_SELF_SUBSTRATE_GRAPH`, default
-  `orion_substrate_self`) via `build_self_falkor_substrate_store_from_env()`
-  and `api_routes.py`'s `SUBSTRATE_SEMANTIC_STORE_SELF` singleton -- never
-  mixed with Orion's chat-facing concept graph.
-- Reachable via `?graph=self` on the existing `/api/substrate/concepts/*`
-  GET routes (same mechanism as `?graph=aitown`), and a dedicated
-  `POST /api/substrate/concepts/ingest-topic-foundry-self` route. No
-  dedicated UI page yet, same as AI Town's graph today -- reachable by
-  query param, not a Concept Atlas page toggle.
-- The enrichment LLM prompt (`services/orion-topic-foundry/app/services/
-  enrichment.py::_llm_prompt`) was confirmed generic over segment text, no
-  chat/speaker framing -- this needed no changes to run against self-facts
-  text.
-- **Self Atlas cluster-description writer (2026-09-05 follow-up):**
-  `scripts/self_atlas_cluster_history.py`'s `publish_self_atlas_cluster_
-  history()` is the second `self_concept_history` producer named above --
-  a 4th step in this same scheduler tick (same gate, no separate flag),
-  right after `concept_atlas_ingest_topic_foundry_self`. Per completed run:
-  fetches the run's topics/keywords/segments, builds one candidate row per
-  real cluster (`concept_id` from the cluster's LLM label, slugified --
-  falls back to `self-atlas-cluster-topic-{id}` when unlabeled, mirroring
-  `orion/substrate/adapters/topic_foundry.py`'s own missing-label
-  convention; `content` is the label plus up to 10 keywords; `evidence_refs`
-  are the cluster's `self_knowledge_items.item_id` values via each
-  segment's `provenance.row_ids`, capped at 50). Two clusters that
-  slugify to the same `concept_id` in the same run (e.g. differently
-  punctuated near-duplicate labels) are disambiguated by topic_id rather
-  than silently colliding onto one identity -- caught by code review, see
-  `test_build_events_disambiguates_concept_id_collision_within_a_batch`.
-  Skips any cluster whose content AND evidence_refs are both unchanged
-  since its last published version (a real diff against
-  `self_concept_history` itself, not an in-process flag -- stays correct
-  across a service restart, and correctly still bumps the version when
-  only the evidence trail grew, not just when the label/keywords changed)
-  and publishes the rest as `produced_by="self_atlas_cluster"` over
-  `orion:self_concept:history:write` (now a two-producer channel:
-  `orion-cortex-exec` for Layer 3 reflection, `orion-hub` for this).
-  **Known, disclosed limitation:** topic-foundry has no stable cross-run
-  cluster identity -- a retrain that meaningfully relabels a cluster starts
-  a new `concept_id` lineage under this label-slug scheme. Not solved here;
-  would need real cross-run cluster matching that doesn't exist anywhere in
-  topic-foundry today.
-  **Still not built:** wiring any of this (Layer 3 reflection or Self Atlas
-  clusters) into live chat -- a deliberately separate, later decision.
+It was retired in 2026-11 (`docs/superpowers/specs/2026-10-30-self-atlas-replacement-proposal.md`,
+Patch B). Nothing in code read its output, Orion stopped citing it after 2026-10-05, and it used
+about 80% of topic-foundry's embedding time. The dig kit (`python -P -m orion.dig body`,
+`inventory`, `compare`) and the body atlas answer "what am I made of" on demand instead, and
+self-inquiry's records section points there first.
+
+What is gone: the Hub scheduler step, the topic-foundry dataset/model calls, the ingest route,
+the cluster-history writer, the self store holder, `?graph=self` (an unknown `graph=` value is
+now a 400, never a silent fall back to Orion's graph), and the env keys
+`SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED` and `FALKORDB_SELF_SUBSTRATE_GRAPH`.
+
+What stays: the old `orion-self-atlas-*` rows in the topic-foundry tables, the
+`self_concept_history` rows, and the `self_knowledge_items` rows (history; no row deletes). The
+FalkorDB graph `orion_substrate_self` is not deleted. `scripts/archive_self_atlas_graph.py`
+copies it to an archive graph; deleting the original needs Juniper's yes.
 
 ## Self-sense eval (2026-09-09, Patch A; lived question 2026-09-18, Patch B)
 

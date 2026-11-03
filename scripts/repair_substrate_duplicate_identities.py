@@ -6,7 +6,8 @@ in-process cache only. Any incomplete cache (FalkorDB's 10k RESULTSET_SIZE cap
 before the 2026-10-06 paged hydrate, then a hydrate that failed on the first
 duplicate) made the topic-foundry ingest mint a fresh run-scoped node for an
 identity that already existed. orion_substrate_aitown and orion_substrate_self
-accumulated thousands of duplicate concept/entity nodes.
+(the Self Atlas graph, retired 2026-11) accumulated thousands of duplicate
+concept/entity nodes.
 
 Merge rule (one rule everywhere -- hydrate and get_node_id_by_identity use it):
   * keeper = the lexically smallest node_id in the identity group
@@ -31,7 +32,7 @@ existing snapshot for the graph, and logs progress to /tmp/<job>/progress.log.
 
 Usage:
   python scripts/repair_substrate_duplicate_identities.py \\
-      --graph orion_substrate_self --graph orion_substrate_aitown
+      --graph orion_substrate_aitown
 """
 
 from __future__ import annotations

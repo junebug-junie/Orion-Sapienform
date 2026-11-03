@@ -1000,7 +1000,7 @@ def test_mesh_up_all_services_runs_allowlisted_script(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     script.chmod(0o755)
-    monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verb_adapters.orch_paths, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", True)
     monkeypatch.setattr(verb_adapters.settings, "skills_mesh_service_script_timeout_sec", 15.0)
     req = _plan_request("skills.mesh.up_all_services.v1")
@@ -1023,7 +1023,7 @@ def test_mesh_refresh_service_envs_runs_allowlisted_script(monkeypatch, tmp_path
         encoding="utf-8",
     )
     script.chmod(0o755)
-    monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verb_adapters.orch_paths, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", True)
     monkeypatch.setattr(verb_adapters.settings, "skills_mesh_service_script_timeout_sec", 15.0)
     req = _plan_request("skills.mesh.refresh_service_envs.v1")

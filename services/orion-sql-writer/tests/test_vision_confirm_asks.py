@@ -75,6 +75,9 @@ def test_face_cosine_from_refs_reads_the_guess_stored_on_the_ask() -> None:
     assert vi.face_cosine_from_refs(json.dumps(refs)) == 0.488  # jsonb read back as text
     # A handoff ask stores body_cosine only: no face guess, never a body number in its place.
     assert vi.face_cosine_from_refs(["individual:a", "rule:handoff", "body_cosine:0.943"]) is None
+    # A face-channel handoff ask compares two stories' crops, not the two individuals: not the guess.
+    assert vi.face_cosine_from_refs(["individual:a", "individual:b", "handoff:x", "rule:handoff",
+                                     "face_cosine:0.71"]) is None
     for bad in (None, "", "not json", [], ["face_cosine:"], ["face_cosine:nan"], ["face_cosine:1.5"], 7):
         assert vi.face_cosine_from_refs(bad) is None
 
@@ -321,6 +324,27 @@ def test_pair_verdict_keeps_the_cosine_stored_on_the_ask_when_a_centroid_is_gone
             "WHERE individual_a='aaa' AND individual_b='bbb'")).one()
     assert got[0] == "same"
     assert got[1] is not None and abs(got[1] - stored) < 1e-6
+
+
+@needs_pg
+def test_handoff_pair_answer_still_recomputes_the_individuals_cosine(pg) -> None:
+    """A face-channel handoff ask stores face_cosine for the two STORIES; the verdict must keep
+    the individuals' own similarity (recomputed), not the story number (review of 2026-11-03)."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 12, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 19, FACE("b"))
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, status, created_at, source_kind, "
+            "source_ref) VALUES ('ask-h', 'juniper', 'same?', CAST(:r AS jsonb), 'open', :t, :k, 'aaa|bbb')"),
+            {"r": json.dumps(["individual:aaa", "individual:bbb", "handoff:h1", "rule:handoff", "face_cosine:0.111"]),
+             "t": NOW, "k": vi.SOURCE_KIND_SAME})
+        _answer(conn, "ask-h", "yes")
+        assert vi._apply_answers(conn, NOW) == 1
+        got = conn.execute(text(
+            "SELECT face_cosine FROM vision_individual_pair_verdict WHERE individual_a='aaa'")).scalar()
+    assert got == pytest.approx(vi.cosine(_vec(1, 0.0), _vec(1, 0.5)), abs=1e-3)
 
 
 @needs_pg

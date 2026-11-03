@@ -936,16 +936,23 @@ FACE_COSINE_REF_PREFIX = "face_cosine:"
 
 
 def face_cosine_from_refs(refs: Any) -> Optional[float]:
-    """The face similarity Orion stored on a "same person?" ask when it opened it
-    (``face_cosine:<sim>`` in ``orion_ask.evidence_refs``): Orion's guess, made
-    before Juniper answered. None when the ask carries none (a handoff ask
-    stores ``body_cosine`` only) or the value is unreadable or out of range."""
+    """The face similarity Orion stored on a walkway "same person?" face-pair ask
+    when it opened it (``face_cosine:<sim>`` in ``orion_ask.evidence_refs``, from
+    ``_open_asks``): the similarity of the two individuals' face centroids, Orion's
+    guess made before Juniper answered.
+
+    None for a handoff ask (``rule:handoff``): its ``<channel>_cosine`` compares the
+    two STORIES' crops, a different quantity, even when the channel is ``face``.
+    Also None when the ask stores no face cosine or the value is unreadable or out
+    of range."""
+    from app.vision_handoff import HANDOFF_RULE_REF
+
     if isinstance(refs, str):
         try:
             refs = json.loads(refs)
         except ValueError:
             return None
-    if not isinstance(refs, (list, tuple)):
+    if not isinstance(refs, (list, tuple)) or HANDOFF_RULE_REF in refs:
         return None
     for ref in refs:
         if isinstance(ref, str) and ref.startswith(FACE_COSINE_REF_PREFIX):
@@ -2068,10 +2075,11 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
         "SELECT individual_id, face_centroid, label FROM vision_individual WHERE individual_id = ANY(:ids)"),
         {"ids": [a, b]}).fetchall()}
     # The similarity Orion stored when it opened the ask is the calibration point: the guess made
-    # BEFORE the answer. Recomputing from today's centroids was the only source until 2026-11-03,
-    # and it came back empty whenever a face centroid was missing at answer time (8 of 30 live
-    # verdicts on asks that carried a cosine). The recompute stays as the fallback for asks that
-    # stored none (handoff asks carry body_cosine only).
+    # BEFORE the answer. Until 2026-11-03 the verdict recomputed it from the centroids at answer
+    # time; centroids keep moving as sightings arrive, so 3 of 22 live verdicts no longer matched
+    # the guess (up to 0.056 off), and a centroid missing at answer time gave NULL.
+    # The recompute stays as the fallback for asks that stored none, and for handoff asks, whose
+    # stored cosine compares two stories' crops rather than the two individuals.
     sim = face_cosine_from_refs(conn.execute(text(
         "SELECT evidence_refs FROM orion_ask WHERE ask_id=:a"), {"a": ask_id}).scalar())
     sim_source = "ask"

@@ -282,6 +282,45 @@ history exists.
 6. **Window and hysteresis.** [7-day decayed window; a status change must hold 3
    consecutive hourly windows]
 
+## Decisions (Juniper, 2026-11-03: "I will take all your recs")
+
+Every default above is now the decision:
+1. **E1:** hard refusal, with a re-test probe every 6 h, at most 1 probe per faculty per window.
+2. **E3:** only `broken`, `recovered`, and a reliable-to-unreliable change message Juniper.
+3. **The tuner's raw-reading table:** stop writing and keep the table. No DROP.
+4. **Source fixes:** in parallel. The organ ships with those faculties marked ungradeable and
+   flips them as the fixes land.
+5. **Reverie expectations:** excluded in v1, as `ungradeable:never_settled`.
+6. **Window:** 7 days with a 3.5-day half-life decay. A status change must hold 3 consecutive
+   evaluations.
+
+## Refresh before build (2026-11-03)
+
+These things changed since 10-20 and are folded into the build:
+
+- **Predictions live in orion-prediction** (Juniper, 10-23). Turn self-bets
+  (`prediction_turn_self_bet`) and body action bets (`prediction_action_bet`) are now stored and
+  graded there, and they already use this spec's outcome words. The organ **reads** the
+  prediction service's bet tables. It never keeps a second bet ledger. New Orion bets go into
+  orion-prediction as models, not into the organ.
+- **The grader moved** from `services/orion-prediction/app/grading.py` to `orion/prediction/grading.py`
+  (patch 1). The service and the organ now share one implementation.
+- **Painting no longer appears in the act ledger.** The live first findings from patch 1's report
+  (7 days to 11-03):
+  - `act.make.journal_trigger.walkway_grade` is **broken**: 22 of 28 runs never executed. The 6
+    that ran all worked.
+  - The turn self-bets on steps and reply length cover the outcome **6% and 8%** of the time,
+    against a stated 80%.
+  - Several act cells are **underconfident**. `town_episode` is predicted at 0.52 and works
+    395 of 395 times, which suggests its act posterior is not learning (UNVERIFIED cause).
+  - Forecasts: the cabinet range is reliable at 84% coverage against a stated 80%. The new
+    `office.temp_c` series covers only 67%.
+- **A faculty now reads as `broken` even when it has few graded bets.** Execution failure is
+  judged on attempts, not on graded bets, so a faculty that mostly fails to run is not hidden
+  as `too_few`.
+- **Effective sample size is Kish's** `sum(w)^2/sum(w^2)`, not `sum(w)`. With `sum(w)` the decay
+  halved the evidence and hid the walkway-grade streak.
+
 ## Proposed schema / API changes
 
 - **Added**, in `orion/schemas/self_monitor.py`, registered in `orion/schemas/registry.py`:

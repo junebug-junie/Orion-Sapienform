@@ -1011,6 +1011,10 @@ class AdmissionRuntime:
         lease_id = hold.get("lease_id")
         retry_at = hold.get("retry_at")
         backing_off = bool(retry_at) and self.now() < datetime.fromisoformat(retry_at)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and backing_off:
+            # Parked by listener_wait: the only pool event for it is its own released hold. Wait.
+            self._hints.discard(run_id)
+            return False
         if run_id in self._hints:
             # The pool only publishes events for a hold it created, so a hint means the pool is
             # answering -- even mid-backoff (e.g. an acquire that timed out but landed and was

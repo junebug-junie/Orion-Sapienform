@@ -15,10 +15,10 @@ SVC = str(Path(__file__).resolve().parents[1])
 WT = str(Path(SVC).parents[1])
 PY = sys.executable
 MUTANTS = [
- ("listener_wait never parks", "app/admitted_graph.py", "    if found is None or admission.listener_wait_max_tries <= 0:\n        return None", "    if True:\n        return None"),
- ("cap off by one", "app/admitted_graph.py", "    if count > admission.listener_wait_max_tries:", "    if count >= admission.listener_wait_max_tries:"),
- ("backoff exponent", "app/admitted_graph.py", "admission.listener_wait_base_seconds * 2 ** (count - 1))", "admission.listener_wait_base_seconds * 2 ** count)"),
- ("no cause chain", "app/admitted_graph.py", "        exc = exc.__cause__ or exc.__context__", "        exc = None"),
+ ("listener_wait never parks", "app/admitted_graph.py", "    if found is None or max_tries <= 0:\n        return None", "    if True:\n        return None"),
+ ("cap off by one", "app/admitted_graph.py", "    if count > max_tries:", "    if count >= max_tries:"),
+ ("backoff exponent", "app/admitted_graph.py", "    delay = min(cap, base * 2 ** (count - 1))", "    delay = min(cap, base * 2 ** count)"),
+ ("no cause chain", "app/admitted_graph.py", "        exc = exc.__cause__ if exc.__cause__ is not None else (None if exc.__suppress_context__ else exc.__context__)", "        exc = None"),
  ("no deadline check", "app/admitted_graph.py", "    if retry_cannot_finish(state, retry_at, attempt_sec):\n        return None\n    released = await admission.release(state, \"listener_absent\")", "    released = await admission.release(state, \"listener_absent\")"),
  ("no hold park", "app/admitted_graph.py", "\"hold\": {\"retry_at\": at, LISTENER_WAIT_HOLD_KEY: count}, **(extra or {})}", "**(extra or {})}"),
  ("failed_attempt skips wait", "app/admitted_graph.py", "    parked = await listener_wait(admission, state, exc, waiting=waiting, extra=extra, attempt_sec=attempt_sec)\n    if parked is not None:\n        return parked\n", ""),
@@ -31,6 +31,9 @@ MUTANTS = [
  ("orion_day skips wait", "app/orion_day_graph.py", "                if parked is not None:\n                    return parked\n", ""),
  ("runner swallows admitted", "app/runner.py", "            if admitted:\n                # Nobody received it", "            if False:\n                # Nobody received it"),
  ("bus raises base class", "../../orion/core/bus/async_service.py", "raise RpcPublishedToNobody(f\"no listener on {request_channel}: request published to nobody\")", "raise RpcNoListener(f\"no listener on {request_channel}: request published to nobody\")"),
+ ("urgent budget ignored", "app/admitted_graph.py", "    if is_urgent(state):\n        # Urgent runs end", "    if False:\n        # Urgent runs end"),
+ ("orphan chained to unheard replayed", "app/admitted_graph.py", "            return None   # a delivered request", "            pass   # a delivered request"),
+ ("self-sense state drops counter", "app/self_sense_graph.py", "    listener_waits: int", "    _unused_listener_waits: int"),
  ("awaiting also replayed", "app/admitted_graph.py", "        if isinstance(exc, RpcPublishedToNobody):", "        if isinstance(exc, RpcNoListener):"),
 ]
 if not os.environ.get("ORION_ADMISSION_TEST_DSN"):
@@ -54,7 +57,7 @@ for name, rel, old, new in MUTANTS:
             cmd = [PY, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "-W", "ignore",
                    f"{WT}/orion/core/bus/tests/test_rpc_no_listener.py"]
         r = subprocess.run(cmd, cwd=SVC, env=env, capture_output=True, text=True, timeout=600)
-        killed = r.returncode != 0
+        killed = r.returncode == 1   # test failures only: an import/collection crash is not a kill
     finally:
         open(path, "w").write(src)
     print(("KILLED  " if killed else "SURVIVED") + "  " + name, flush=True)

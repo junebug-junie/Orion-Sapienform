@@ -24,7 +24,7 @@ from typing import Any, Awaitable, Callable
 from app.graph import CuriosityRunState, Deps, failed_turn_meta, is_urgent, make_nodes
 from app.pool_hold import URGENT_PREEMPT
 from orion.cognition.model_output import ModelOutputRejected
-from orion.core.bus.async_service import RpcPublishedToNobody
+from orion.core.bus.async_service import RpcNoListener, RpcPublishedToNobody
 from orion.schemas.durable_run import CURIOSITY_NODES
 
 logger = logging.getLogger(__name__)
@@ -185,8 +185,10 @@ def published_to_nobody(exc: BaseException | None) -> RpcPublishedToNobody | Non
     while exc is not None and id(exc) not in seen:
         if isinstance(exc, RpcPublishedToNobody):
             return exc
+        if isinstance(exc, RpcNoListener):
+            return None   # a delivered request orphaned later: never replay-safe, whatever it chains to
         seen.add(id(exc))
-        exc = exc.__cause__ or exc.__context__
+        exc = exc.__cause__ if exc.__cause__ is not None else (None if exc.__suppress_context__ else exc.__context__)
     return None
 
 
@@ -205,18 +207,24 @@ async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseExceptio
     anything else, the feature is off, ``listener_waits`` is spent, or the wait would leave no
     whole attempt before the run's deadline."""
     found = published_to_nobody(exc)
-    if found is None or admission.listener_wait_max_tries <= 0:
+    max_tries, base, cap = (admission.listener_wait_max_tries, admission.listener_wait_base_seconds,
+                            admission.listener_wait_max_seconds)
+    if is_urgent(state):
+        # Urgent runs end in a report within minutes: the urgent retry budget bounds the wait too.
+        max_tries, base = min(max_tries, URGENT_MAX_ATTEMPTS), min(base, URGENT_RETRY_BASE_SECONDS)
+        cap = min(cap, base * 2 ** max(max_tries - 1, 0))
+    if found is None or max_tries <= 0:
         return None
     count = int(state.get("listener_waits") or 0) + 1
-    if count > admission.listener_wait_max_tries:
+    if count > max_tries:
         return None
-    delay = min(admission.listener_wait_max_seconds, admission.listener_wait_base_seconds * 2 ** (count - 1))
+    delay = min(cap, base * 2 ** (count - 1))
     retry_at = admission.now() + timedelta(seconds=delay)
     if retry_cannot_finish(state, retry_at, attempt_sec):
         return None
     released = await admission.release(state, "listener_absent")
     at = retry_at.isoformat()
-    error = f"listener_wait:{count}/{admission.listener_wait_max_tries}: {found}"[:500]
+    error = f"listener_wait:{count}/{max_tries}: {found}"[:500]
     logger.warning("durable_listener_wait run=%s waits=%s retry_in=%.0fs err=%s", state.get("run_id"), count,
                    delay, found)
     await admission.event(state, "run.listener_wait", {"waits": count, "retry_at": at, "error": str(found)[:300]})

@@ -353,3 +353,101 @@ def test_settings_default_the_wait_on():
 
     s = Settings(_env_file=None, POSTGRES_URI="postgresql://unused", ORION_BUS_ENABLED=False)
     assert (s.listener_wait_max_tries, s.listener_wait_base_sec, s.listener_wait_max_sec) == (6, 60.0, 300.0)
+
+
+# --- review follow-ups (2026-11-03) -------------------------------------------------------------
+def test_a_delivered_request_chained_to_an_earlier_unheard_one_is_not_replay_safe():
+    # A step that caught a publish-time failure and sent a second request from inside the except:
+    # that second one was delivered, then orphaned. Its implicit __context__ must not make it safe.
+    try:
+        try:
+            raise RpcPublishedToNobody(NOBODY)
+        except RpcPublishedToNobody:
+            raise RpcNoListener(AWAITING)
+    except RpcNoListener as delivered:
+        assert delivered.__context__ is not None
+        assert published_to_nobody(delivered) is None
+    # A suppressed context (raise ... from None) is not followed either.
+    try:
+        try:
+            raise RpcPublishedToNobody(NOBODY)
+        except RpcPublishedToNobody:
+            raise RuntimeError("unrelated") from None
+    except RuntimeError as unrelated:
+        assert published_to_nobody(unrelated) is None
+
+
+def test_urgent_runs_wait_within_the_urgent_budget():
+    async def run():
+        world = World()
+        urgent = {**reading_state(), "brief": {**reading_state()["brief"], "urgent": True}}
+        gaps = []
+        for waits in range(3):
+            update = await listener_wait(deps(world), {**urgent, "listener_waits": waits},
+                                         RpcPublishedToNobody(NOBODY), waiting={"status": "waiting_resource"})
+            gaps.append(None if update is None else
+                        (datetime.fromisoformat(update["hold"]["retry_at"]) - world.now).total_seconds())
+        assert gaps == [10.0, 20.0, None], "two short waits, then the normal (urgent) failure path"
+
+    asyncio.run(run())
+
+
+def _graph_states():
+    from app.compactor_digest_graph import CompactorDigestState
+    from app.curiosity_compaction_graph import CompactionState
+    from app.episode_distill_graph import EpisodeDistillState
+    from app.graph import CuriosityRunState
+    from app.harness_smoke_graph import HarnessSmokeState
+    from app.journal_compose_graph import JournalComposeState
+    from app.orion_day_graph import OrionDayState
+    from app.reading_graph import ReadingState
+    from app.self_sense_graph import SelfSenseRunState
+
+    # (state, its listener_wait waiting status) for every graph that can reach listener_wait.
+    return [(CuriosityRunState, "retrying"), (SelfSenseRunState, "retrying"), (HarnessSmokeState, "retrying"),
+            (CompactionState, "waiting_resource"), (ReadingState, "waiting_resource"),
+            (CompactorDigestState, "waiting_resource"), (JournalComposeState, "retrying"),
+            (EpisodeDistillState, "retrying"), (OrionDayState, "retrying")]
+
+
+@pytest.mark.parametrize("state_cls,waiting", _graph_states(), ids=lambda v: getattr(v, "__name__", v))
+def test_every_graph_that_can_wait_declares_its_counter(state_cls, waiting):
+    # LangGraph silently drops an undeclared key: the count would read 1 forever and the cap never trip.
+    assert "listener_waits" in state_cls.__annotations__
+    assert "hold" in state_cls.__annotations__
+    if waiting == "retrying":
+        assert "retry_at" in state_cls.__annotations__
+
+
+def test_self_sense_unheard_question_waits_then_is_answered_without_spending_an_attempt():
+    from test_admitted_self_sense_graph import CFG as SS_CFG, World as SenseWorld, initial as ss_initial
+
+    async def scenario():
+        world, saver = SenseWorld(), InMemorySaver()
+        real = world.turn
+        unheard = [RpcPublishedToNobody("no listener on orion:curiosity:turn:request: request published to nobody")]
+
+        async def turn(req):
+            if unheard:
+                world.turn_calls.append(req)
+                raise unheard.pop(0)
+            return await real(req)
+
+        world.turn = turn
+        await world.graph(saver).ainvoke(ss_initial(), SS_CFG)
+        world.grant()
+        parked = await world.graph(saver).ainvoke(Command(resume=True), SS_CFG)
+        assert parked["status"] == "retrying" and parked["listener_waits"] == 1
+        assert int(parked.get("attempt") or 0) == 0 and not parked.get("answers")
+        snap = await world.graph(saver).aget_state(SS_CFG)
+        assert snap.next == ("retry_wait",)
+        world.now = datetime.fromisoformat(snap.values["retry_at"]) + timedelta(seconds=1)
+        await world.graph(saver).ainvoke(Command(resume=True), SS_CFG)
+        world.grant()
+        done = await world.graph(saver).ainvoke(Command(resume=True), SS_CFG)
+        # max_attempts=1 in this World: had the unheard turn spent an attempt, its question was given up.
+        assert done["status"] == "completed" and len(world.published) == 4
+        assert all(not a.get("error") for a in done["answers"].values())
+        assert len(world.turn_calls) == 5
+
+    asyncio.run(scenario())

@@ -80,7 +80,8 @@ hold is handed back, the run waits `DURABLE_RUNS_LISTENER_WAIT_BASE_SEC * 2^(n-1
 and replays the step. **No attempt is spent.** `listener_waits` counts these per run; past
 `DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES` (default 6, ~22 min in total; 0 = off), or when the wait
 would leave no whole attempt before the deadline, the error takes the graph's normal path as
-before. Each wait is a `run.listener_wait` event (`waits`, `retry_at`, `error`). Graphs that go
+before. Urgent runs (`brief.urgent`) wait within the urgent budget instead: at most 2 waits, 10 s
+then 20 s. Each wait is a `run.listener_wait` event (`waits`, `retry_at`, `error`). Graphs that go
 straight back to `resource_request` (reading, compactor digest, curiosity compaction) are parked
 by `hold = {"retry_at", "listener_wait"}`, which `AdmissionRuntime.register` waits out; graphs
 with a `retry_wait` node also get `retry_at` on the state.

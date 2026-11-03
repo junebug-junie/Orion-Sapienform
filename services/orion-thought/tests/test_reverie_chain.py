@@ -424,7 +424,7 @@ async def test_resonance_tripwire_fires_on_runaway(monkeypatch):
     monkeypatch.setattr(settings, "reverie_resonance_window", 200)
 
     # Recent chains: one theme re-igniting every 60s (inside the 900s bound).
-    events = [("loop:ol-1", NOW + timedelta(seconds=60 * i)) for i in range(5)]
+    events = [("loop:ol-1", NOW + timedelta(seconds=60 * i), "settled") for i in range(5)]
     monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
 
     persisted = []
@@ -445,7 +445,24 @@ async def test_resonance_tripwire_silent_when_damped(monkeypatch):
     monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
     monkeypatch.setattr(settings, "reverie_refractory_sec", 900.0)
     # Every recurrence waited out the refractory bound.
-    events = [("loop:ol-1", NOW + timedelta(seconds=1000 * i)) for i in range(5)]
+    events = [("loop:ol-1", NOW + timedelta(seconds=1000 * i), "settled") for i in range(5)]
+    monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
+
+    bus = AsyncMock()
+    await chain._maybe_emit_resonance_alert(bus)
+    bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resonance_tripwire_ignores_fast_retries_after_no_coalition(monkeypatch):
+    """Live 2026-11-03: one theme paged for days because every quick refire
+    followed a no_coalition chain, which by design never arms the cooldown."""
+    from app import chain
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
+    monkeypatch.setattr(settings, "reverie_refractory_sec", 900.0)
+    events = [("loop:ol-1", NOW + timedelta(seconds=90 * i), "no_coalition") for i in range(5)]
     monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
 
     bus = AsyncMock()

@@ -295,8 +295,8 @@ def test_plurals_for_every_known_kind() -> None:
 
 
 def test_named_subject_keeps_name_and_single_companion_subject() -> None:
-    s = _sentence("person", ["dog", "dog"], name="Teddy")
-    assert s.startswith("Teddy walked") and s.endswith(", moving alongside 2 dogs.")
+    s = _sentence("person", ["dog", "dog"], name="Alex")
+    assert s.startswith("Alex walked") and s.endswith(", moving alongside 2 dogs.")
     assert _sentence("person", ["stroller"]).startswith("A person with a stroller walked")
     assert _sentence("person", []).endswith("(5 detections).")
 

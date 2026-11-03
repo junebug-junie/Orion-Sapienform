@@ -69,7 +69,7 @@ because Y." So "ungradeable, and why" is a first-class state, not a hole to hide
 | Reverie expectations | `substrate_reverie_thought.expectation` | claim yes, confidence **no** | LLM judge vs one fresh percept | 988 made, **984 unscored**, 4 confirmed | not usable: trivial claims ("the laptop will still be on the desk"), almost never settled |
 | Curiosity hypotheses | `curiosity_run_outcomes.per_prior`, worldview `:Prior` | confidence yes | **Orion re-judges themselves** | 31 runs | self-consistency only, not calibration |
 | Dreams | `dream_hypothesis` (dream arm vs random control arm) | no confidence | Orion adopts or not (self-graded) | 183 vs 66 offered | arm contrast only. **Live verdict: dreams 1/183 adopted, random 2/66: not beating chance** |
-| Attention-loop asks | `attention_loop_outcome` | **bug**: `salience_at_close` defaults to 0 on the ask path, 31/31 human verdicts at 0 | Juniper | 39 | usable after the fix |
+| Memory-confirmation asks (corrected 11-03; were read as attention asks) | `attention_loop_outcome` | **no bet**: no salience or confidence exists before the card opens (63/63 at 0) | Juniper | 63 | ungradeable until Orion bets on "will Juniper confirm" in orion-prediction |
 | Chat feedback | `chat_response_feedback` | no prediction | Juniper's thumbs | 8 ever | not usable; `substrate_action_ratings.predicted_rating` is wired but has 0 rows |
 | Power bill | `orion-energy` `energy_reconcile` | **Orion makes no forward bill bet** | the utility's bill | 1 reconcile, `usage_incomplete` | not usable until Orion forecasts the bill |
 | GPU power use | `power_intent_settled.expected_watts` | only 7/41 rows filled | the meter | 41 | usable after filling `expected_watts` |

@@ -13,10 +13,16 @@ Candidate status, first match wins (``reasons`` names the rule that fired):
 2. Below ``MIN_GRADED`` graded bets: ``unknown`` (gradeability says why).
 3. ``unreliable`` (success claims only): the upheld share's upper bound is below 0.5 -- the act fails
    more often than it works, with confidence.
-4. ``miscalibrated``: the mean stated confidence lies outside the upheld share's interval by more than
-   ``CALIBRATION_SLACK``. For intervals the upheld share is the realized coverage.
-5. ``reliable``: success claims whose lower bound is at least 0.5; event and interval claims that
-   pass rule 4.
+4. ``miscalibrated``: the decay-weighted mean stated confidence lies outside the upheld share's
+   interval (both over the same bets: graded ones that stated a confidence) by more than
+   ``min(CALIBRATION_SLACK, 0.25 * min(p, 1 - p))`` -- an absolute 0.05 at p = 0.07 would forgive a
+   ~70% relative miss. For intervals the upheld share is the realized coverage. Skipped when the
+   stated confidence was formed at a coarser key shared with other faculties (``belief_key``): the
+   act ledger keeps one posterior per verb|actor|signal, so judging one trigger name against it
+   would blame that name for its siblings.
+5. ``reliable``: success claims whose lower bound is at least 0.5; interval claims that pass rule 4;
+   event claims that pass rule 4 AND have Brier skill above 0 (calibration-in-the-large is necessary,
+   not sufficient: always saying the base rate passes it).
 6. ``unknown``.
 
 Held status (``advance``): a new candidate replaces the held status only after it has held for
@@ -93,8 +99,14 @@ def _streak(bets: Sequence[SettledBetV1]) -> tuple[Optional[str], int, Optional[
     return kind, n, since
 
 
+def _slack(p: float) -> float:
+    return min(CALIBRATION_SLACK, 0.25 * min(p, 1.0 - p))
+
+
 def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
-                   window_days: float = WINDOW_DAYS) -> FacultyRecordV1:
+                   window_days: float = WINDOW_DAYS, pooled_belief: Optional[str] = None) -> FacultyRecordV1:
+    """``pooled_belief``: the belief key this faculty shares with other faculties, if any (set by
+    ``reduce_bets``). Calibration is not judged then (rule 4)."""
     start = now - timedelta(days=window_days)
     bets = [b for b in bets if start <= b.settled_at <= now]
     graded = [b for b in bets if b.outcome in ("upheld", "refuted") and b.settled_by in _GRADING_SETTLERS]
@@ -121,9 +133,14 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
         exec_lo = wilson(exec_fail, kish(wa))[0]
 
     stated = [b for b in graded if b.stated is not None]
-    stated_mean = sum(b.stated for b in stated) / len(stated) if stated else None
+    ws = [_weight(b, now) for b in stated]
+    stated_mean = cal_rel = cal_lo = cal_hi = None
+    if stated and sum(ws) > 0:
+        stated_mean = sum(w * b.stated for w, b in zip(ws, stated)) / sum(ws)
+        cal_rel = sum(w for w, b in zip(ws, stated) if b.outcome == "upheld") / sum(ws)
+        cal_lo, cal_hi = wilson(cal_rel, kish(ws))
     brier = skill = None
-    if stated and claim_kind in ("success", "event"):
+    if stated and claim_kind in ("success", "event") and pooled_belief is None:
         g = grade([b.stated for b in stated], [b.outcome == "upheld" for b in stated])
         brier, skill = g["brier"], g["skill"]
 
@@ -150,21 +167,32 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
         reasons.append(f"last {streak_len} attempts failed to execute")
     elif gradeability != "graded":
         reasons.append(gradeability)
+    elif None in (reliability, lo, hi, stated_mean, cal_rel, cal_lo, cal_hi):
+        reasons.append("no graded evidence")  # unreachable while "graded" implies both sets non-empty
     else:
-        assert reliability is not None and lo is not None and hi is not None and stated_mean is not None
-        off = stated_mean < lo - CALIBRATION_SLACK or stated_mean > hi + CALIBRATION_SLACK
+        what = "coverage" if claim_kind == "interval" else "happened"
+        judged = pooled_belief is None
+        slack = _slack(stated_mean)
+        off = judged and (stated_mean < cal_lo - slack or stated_mean > cal_hi + slack)
         if claim_kind == "success" and hi < 0.5:
             candidate = "unreliable"
             reasons.append(f"works {reliability:.0%} (upper bound {hi:.2f} < 0.5)")
         elif off:
             candidate = "miscalibrated"
-            what = "coverage" if claim_kind == "interval" else "happened"
-            reasons.append(f"stated {stated_mean:.2f}, {what} {reliability:.2f} [{lo:.2f}, {hi:.2f}]")
-        elif claim_kind != "success" or lo >= 0.5:
+            reasons.append(f"stated {stated_mean:.2f}, {what} {cal_rel:.2f} [{cal_lo:.2f}, {cal_hi:.2f}]")
+        elif claim_kind == "success":
+            if lo >= 0.5:
+                candidate = "reliable"
+                reasons.append(f"works {reliability:.0%} (lower bound {lo:.2f})")
+            else:
+                reasons.append(f"works {reliability:.0%}, interval [{lo:.2f}, {hi:.2f}] spans 0.5")
+        elif claim_kind == "event" and not (skill is not None and skill > 0):
+            reasons.append(f"stated {stated_mean:.2f} matches {what} {cal_rel:.2f}, but no skill over the base rate")
+        elif judged:
             candidate = "reliable"
-            reasons.append(f"stated {stated_mean:.2f} within [{lo:.2f}, {hi:.2f}]")
-        else:
-            reasons.append(f"works {reliability:.0%}, interval [{lo:.2f}, {hi:.2f}] spans 0.5")
+            reasons.append(f"stated {stated_mean:.2f} matches {what} {cal_rel:.2f} [{cal_lo:.2f}, {cal_hi:.2f}]")
+        if not judged:
+            reasons.append(f"calibration not judged: confidence is pooled at {pooled_belief}")
 
     return FacultyRecordV1(
         faculty=faculty,
@@ -208,7 +236,18 @@ def reduce_bets(bets: Iterable[SettledBetV1], *, now: datetime, window_days: flo
             continue
         seen.add(bet.bet_id)
         by_faculty[bet.faculty].append(bet)
-    records = [reduce_faculty(f, b, now=now, window_days=window_days) for f, b in sorted(by_faculty.items())]
+    owners: dict[str, set[str]] = defaultdict(set)
+    for faculty, fbets in by_faculty.items():
+        for bet in fbets:
+            if bet.belief_key:
+                owners[bet.belief_key].add(faculty)
+
+    def pooled(fbets: list[SettledBetV1]) -> Optional[str]:
+        shared = sorted({b.belief_key for b in fbets if b.belief_key and len(owners[b.belief_key]) > 1})
+        return shared[0] if shared else None
+
+    records = [reduce_faculty(f, b, now=now, window_days=window_days, pooled_belief=pooled(b))
+               for f, b in sorted(by_faculty.items())]
     known = {r.faculty for r in records}
     start = now - timedelta(days=window_days)
     for u in ungradeable:
@@ -228,7 +267,9 @@ def advance(previous: Optional[FacultyRecordV1], current: FacultyRecordV1, *, no
     """Carry the held status forward. The first evaluation adopts its candidate (its window is
     already ``window_days`` of evidence); after that a different candidate must hold ``hold``
     consecutive evaluations before it becomes the status."""
-    if previous is None:
+    if previous is not None and previous.faculty != current.faculty:
+        raise ValueError(f"advance: {previous.faculty!r} is not {current.faculty!r}")
+    if previous is None or previous.status_since is None:  # no held status yet: a first evaluation
         return current.model_copy(update={"status": current.candidate_status, "status_since": now,
                                           "candidate_held": hold})
     held = previous.candidate_held + 1 if current.candidate_status == previous.candidate_status else 1

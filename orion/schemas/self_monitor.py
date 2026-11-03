@@ -64,6 +64,14 @@ class SettledBetV1(BaseModel):
             "coverage for interval bets. None when nothing was recorded -- never reconstructed."
         ),
     )
+    belief_key: Optional[str] = Field(
+        None,
+        description=(
+            "The key the stated confidence was formed at, when coarser than the faculty (the act "
+            "ledger's posterior is per verb|actor|signal, shared by every trigger name). Calibration "
+            "is only judged where one faculty owns its belief."
+        ),
+    )
     outcome: BetOutcome = Field(
         ..., description="upheld = the claimed event happened (inside the range, for intervals)."
     )

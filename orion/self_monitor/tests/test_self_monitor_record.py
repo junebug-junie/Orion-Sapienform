@@ -25,27 +25,40 @@ def _bet(i: int, outcome: str, *, faculty: str = "act.make.thing", kind: str = "
 # ---- adapters, fed rows shaped like the live tables -------------------------------------------
 
 def _act_row(**kw):
-    row = {"act_id": "a1", "verb": "make", "object_ref": "journal_trigger:walkway_grade", "predicted": 0.39,
+    row = {"act_id": "a1", "actor": "actions.journal", "verb": "make", "signal_id": "artifact_produced",
+           "object_ref": "journal_trigger:walkway_grade", "predicted": 0.39,
            "opened_at": NOW - timedelta(hours=2), "closed_at": NOW - timedelta(hours=1), "outcome_value": 0,
            "outcome_source": "producer", "outcome_note": ""}
     row.update(kw)
     return row
 
 
-def test_act_faculty_keeps_a_named_trigger_and_drops_instance_ids() -> None:
-    assert adapters.act_faculty("make", "journal_trigger:walkway_grade") == "act.make.journal_trigger.walkway_grade"
-    assert adapters.act_faculty("play", "retro_session:6c359e66-96c3-4eb2-b1a5-b857ec81059c") == "act.play.retro_session"
-    assert adapters.act_faculty("maintain", "topic_foundry_model:orion-hub-aitown-v1-0272029b:v1") == "act.maintain.topic_foundry_model"
-    assert adapters.act_faculty("look", "https://www.deseret.com/politics/x/") == "act.look.url"
-    assert adapters.act_faculty("say", "juniper") == "act.say.juniper"
+def test_act_faculty_is_keyed_on_the_doer_and_a_plain_name_only() -> None:
+    f = adapters.act_faculty
+    assert f("actions.journal", "make", "journal_trigger:walkway_grade") == "act.actions.journal.make.walkway_grade"
+    # review M1: three doers all make a durable_run; merged, painting would hide journal_compose
+    assert f("thought.painting", "make", "durable_run:3f2a91c0-aa") != f("durable.journal_compose", "make",
+                                                                          "durable_run:world-pulse-journal:9b1e")
+    assert f("durable.journal_compose", "make", "durable_run:world-pulse-journal:9b1e") == \
+        "act.durable.journal_compose.make.world-pulse-journal"
+    assert f("hub.retro_coplay", "play", "retro_session:6c359e66-96c3-4eb2-b1a5-b857ec81059c") == "act.hub.retro_coplay.play"
+    assert f("topic_foundry.run", "maintain", "topic_foundry_model:orion-hub-aitown-v1-0272029b:v1") == \
+        "act.topic_foundry.run.maintain"
+    assert f("prime", "infer", "prime_thought:9ff0f3780e9e3c8f") == "act.prime.infer"
+    assert f("hub.world_pulse_read", "look", "https://www.deseret.com/politics/x/") == "act.hub.world_pulse_read.look"
+    assert f("hub.outreach", "say", "juniper") == "act.hub.outreach.say"
 
 
 def test_an_act_that_never_ran_is_failed_to_execute_not_refuted() -> None:
     for note in ("failed: RPC timeout waiting on orion:mind:llm:reply:x", "raised:RuntimeError:journal_compose_fail",
-                 "abandoned:run_abandoned", "no_read_evidence:http_error"):
+                 "abandoned:run_abandoned", "no_read_evidence:http_error", "control run 12ab died",
+                 "treated run 34cd died", "no_planner_decisions"):
         assert adapters.grammar_act(_act_row(outcome_note=note)).outcome == "failed_to_execute", note
-    assert adapters.grammar_act(_act_row(outcome_source="expired", outcome_note="no producer close")).outcome == "failed_to_execute"
-    assert adapters.grammar_act(_act_row(outcome_note="no_read_evidence")).outcome == "refuted"
+    # the ledger's own contract: an expired act is a real 0, settled by the world's silence
+    expired = adapters.grammar_act(_act_row(outcome_source="expired", outcome_note="no producer close"))
+    assert expired.outcome == "refuted" and expired.settled_by == "world"
+    for note in ("no_read_evidence", "session_cap; 0 line(s) spoken", "dropped unresolved: moved on"):
+        assert adapters.grammar_act(_act_row(outcome_note=note)).outcome == "refuted", note
     assert adapters.grammar_act(_act_row(outcome_value=1, outcome_note="stage1_completed")).outcome == "upheld"
     assert adapters.grammar_act(_act_row(outcome_value=None)).outcome == "no_change"
 
@@ -53,6 +66,7 @@ def test_an_act_that_never_ran_is_failed_to_execute_not_refuted() -> None:
 def test_act_stated_is_the_prediction_made_at_open_and_juniper_settles_resolver_acts() -> None:
     bet = adapters.grammar_act(_act_row(outcome_source="resolver", outcome_value=1, verb="say", object_ref="juniper"))
     assert bet.stated == 0.39 and bet.settled_by == "juniper" and bet.claim_kind == "success"
+    assert bet.belief_key == "grammar_acts:say|actions.journal|artifact_produced"
     assert adapters.grammar_act(_act_row(closed_at=None)) is None
 
 
@@ -193,3 +207,48 @@ def test_view_is_unknown_when_absent_stale_future_or_garbage() -> None:
     assert not stale.known and stale.faculty("act.make.thing") is None  # stale changes nothing
     assert self_monitor_view(raw, now=NOW - timedelta(hours=1)).reason == "future_stamped"
     assert self_monitor_view(raw.encode(), now=NOW).known
+
+
+# ---- review findings (M2, M3, m6) -------------------------------------------------------------
+
+def _pooled(i, name, outcome, stated):
+    b = _bet(i, outcome, faculty=f"act.actions.journal.make.{name}", stated=stated)
+    return b.model_copy(update={"belief_key": "grammar_acts:make|actions.journal|artifact_produced"})
+
+
+def test_calibration_is_not_judged_against_a_belief_shared_with_siblings() -> None:
+    # live: town_episode works ~100% while the shared posterior reads 0.52, dragged down by walkway_grade
+    bets = [_pooled(i, "town_episode", "upheld", 0.52) for i in range(40)] + \
+           [_pooled(100 + i, "walkway_day", "upheld" if i % 3 else "refuted", 0.52) for i in range(30)]
+    recs = {r.faculty: r for r in reduce_bets(bets, now=NOW)}
+    town = recs["act.actions.journal.make.town_episode"]
+    assert town.candidate_status == "reliable" and town.brier is None
+    assert any("pooled" in r for r in town.reasons)
+    alone = reduce_bets([_bet(i, "upheld", stated=0.52) for i in range(40)], now=NOW)[0]
+    assert alone.candidate_status == "miscalibrated"  # a belief the faculty owns is judged
+
+
+def test_small_probabilities_get_a_proportional_slack() -> None:
+    # live: asks_question stated 0.07 vs happened ~0.11 [0.10, 0.13] passed under a flat 0.05 slack
+    bets = [_bet(i, "upheld" if i % 9 == 0 else "refuted", kind="event", stated=0.07) for i in range(1600)]
+    rec = reduce_faculty("turn.self.asks_question", bets, now=NOW)
+    assert rec.candidate_status == "miscalibrated"
+
+
+def test_an_event_faculty_without_skill_is_not_reliable() -> None:
+    bets = [_bet(i, "upheld" if i % 2 else "refuted", kind="event", stated=0.5) for i in range(200)]
+    rec = reduce_faculty("f", bets, now=NOW)
+    assert rec.candidate_status == "unknown" and "no skill" in rec.reasons[0]
+    sharp = [_bet(i, "upheld", kind="event", stated=0.9) for i in range(90)] + \
+            [_bet(100 + i, "refuted", kind="event", stated=0.1) for i in range(90)]
+    assert reduce_faculty("f", sharp, now=NOW).candidate_status == "reliable"
+
+
+def test_advance_rejects_a_different_faculty_and_heals_a_missing_since() -> None:
+    import pytest
+    a = reduce_faculty("a", [_bet(i, "upheld", stated=0.97) for i in range(40)], now=NOW)
+    b = a.model_copy(update={"faculty": "b"})
+    with pytest.raises(ValueError):
+        advance(a, b, now=NOW)
+    healed = advance(a, a, now=NOW)  # a raw reduce record as previous: treated as first evaluation
+    assert healed.status_since == NOW

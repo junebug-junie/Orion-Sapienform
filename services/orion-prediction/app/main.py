@@ -333,6 +333,8 @@ class EventSelector(BaseModel):
     source: Literal["vision_events"] = "vision_events"
     event_type: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,50}$")
     stream_id: str | None = Field(None, pattern=r"^[a-z0-9_.:-]{1,40}$")
+    # > 0: rows closer than this to the previous row are one visit (a person logged as a burst counts once).
+    visit_gap_sec: float = Field(0.0, ge=0, le=3600)
 
 
 class EventPairBody(BaseModel):

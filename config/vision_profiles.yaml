@@ -205,8 +205,10 @@ profiles:
       #   real vehicles seen at 0.35 / 0.30 / 0.28 / 0.25: rain 14 / 71 / 96
       #   / 100 %, sunny 28 / 61 / 67 / 81 %, overcast 82 / 95 / 100 / 100 %.
       #   False vehicle boxes: 0 at every cut-off on the whole frame; 1 on the
-      #   tiled pass (0.33, a porch light at night). On rain days the parked
-      #   cars score 0.27-0.35, which is why 11-01 read 0 of 90 windows.
+      #   tiled pass (0.33, a small object on a porch, IR night). On rain days
+      #   the parked cars score 0.27-0.35, which is why 11-01 read 0 of 90
+      #   windows. 0.25 is also the lowest useful value while text_threshold
+      #   is 0.25: every box under it came back with an empty label.
       # cam0 is not listed on purpose (stays on score_threshold). Labels not
       # listed (dog, bicycle, stroller, "mail truck") stay at 0.35.
       box_threshold_by_stream:

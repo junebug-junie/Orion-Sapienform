@@ -272,6 +272,43 @@ def test_a_failed_read_or_publish_never_crashes_the_step():
     assert "self_monitor_publish_failed" in out["warnings"] and len(w.history) == 1
 
 
+def test_status_since_is_byte_identical_while_a_status_is_held():
+    """Outreach (PR #3061) dedupes on status_since: it must not move while the status holds."""
+    w = World()
+    d = driver(w)
+    tick(d)
+    first = json.loads(w.published[0])["faculties"][0]["status_since"]
+    w.candidates["act.make.walkway_grade"] = "broken"   # a candidate that has not held yet
+    for k in range(1, HOLD):
+        w.now = T0 + k * HOUR
+        tick(d)
+    w.candidates["act.make.walkway_grade"] = "reliable"
+    w.now += HOUR
+    tick(d)
+    assert [json.loads(p)["faculties"][0]["status_since"] for p in w.published] == [first] * len(w.published)
+
+
+def test_the_hysteresis_carry_survives_a_restart():
+    """A restarted durable-runs reads the carry from the checkpoint, so a new candidate still has to
+    hold 3 evaluations: advance(None, ...) would adopt it at once (PR #3061's concern)."""
+    w = World()
+    saver = InMemorySaver()
+    a = TemporalSelfDriver(checkpointer=saver, deps=w.deps(), tick_sec=120.0)
+    tick(a)
+    w.candidates["act.make.walkway_grade"] = "broken"
+    w.now += HOUR
+    tick(a)
+    b = TemporalSelfDriver(checkpointer=saver, deps=w.deps(), tick_sec=120.0)   # the restart
+    w.now += HOUR
+    out = tick(b)
+    held = parse_state(w.published[-1]).faculties[0]
+    assert held.status == "reliable" and held.status_since == T0 and held.candidate_held == 2
+    assert out["self_monitor"]["carry"]["act.make.walkway_grade"]["candidate_held"] == 2
+    w.now += HOUR
+    tick(b)
+    assert parse_state(w.published[-1]).faculties[0].status == "broken" and len(changes(w)) == 1
+
+
 def test_disabled_runs_nothing():
     w = World()
     out = tick(driver(w, collect_self_monitor=None))

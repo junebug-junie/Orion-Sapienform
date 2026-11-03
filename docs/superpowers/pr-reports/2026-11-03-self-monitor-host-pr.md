@@ -71,6 +71,8 @@ when it recovered.
 - `services/orion-durable-runs/tests/test_self_monitor_node.py`: new node and store tests.
 - `services/orion-sql-db/manual_migration_self_monitor_history_v1.sql`: new table.
 - `services/orion-dream/app/replay.py`: faculty arcs excluded from replay.
+- `services/orion-sql-writer/app/act_downstream_use.py`: `self_monitor` joins `ARC_SOURCE_TABLES`. A
+  test there pins that list to every table name the Temporal Self adapters use.
 - `orion/inner_state_registry.py`, `config/metrics/metric_definitions.lock.json`: the new signal.
 - `.github/workflows/{orion-durable-runs-tests,temporal-self-tests,self-monitor-tests}.yml`: paths and
   the numpy install.
@@ -136,13 +138,16 @@ the signal-level node only, with its rest and absent meaning. Patch 3 must add t
 semantics for whatever its cue puts in a prompt (for example a `FacultyRecordV1` registry entry, or
 semantics keyed on the nested fields if the gate is extended), and re-lock.
 
-**Coordination with the cue PR (#3063, open when this was written).** Whichever PR merges second does
-these steps:
+**Merge order with the cue PR (#3063) and the outreach PR (#3061), both open when this was written.**
+Both of them add the same `DECLARED_WRITERS` entries for `SelfMonitorStateV1` / `FacultyRecordV1` in
+`orion/schema_skew_discovery.py`, naming orion-durable-runs as the writer. This PR makes the real writer
+visible. So if this PR merges after either of them, this PR removes those entries. If they merge after
+this PR, they drop the entries. The steps for whichever merges second:
 
 1. Rebase. #3063 adds `calibrated_share`, `calibrated_lo` and `calibrated_hi` to `FacultyRecordV1` and
    to the `reduce_faculty` constructor call. This PR does not touch that call or the schema, so the
    rebase is mechanical.
-2. Remove the two entries #3063 declares in `orion/schema_skew_discovery.py`. Those entries name
+2. Remove the entries #3061 / #3063 declare in `orion/schema_skew_discovery.py`. Those entries name
    orion-durable-runs as the writer of the self-monitor state. After both PRs land, this PR is the real
    writer, so `test_declared_writers_are_not_stale` (`tests/scripts/test_schema_skew_discovery.py`)
    fails until the entries go. On this branch alone the test passes (18 passed).
@@ -169,6 +174,11 @@ scripts/check_definition_drift.py --gate         PASS (re-locked: 2 added URNs)
 tests/test_metric_lineage.py, tests/test_metric_prompt_semantics.py  82 passed
 migration allowlist: orion.sql_migration_drift.auto_apply_refusals(...) == [] (new and existing table)
 mutation check: disabling mark_recorded's "recorded" update fails 3 node tests
+contract for the outreach PR (#3061), pinned by node tests:
+  status_since stays byte-identical across evaluations while a status is held
+  the hysteresis carry survives a durable-runs restart (a new driver on the same checkpoint store
+  still needs 3 evaluations before a new status holds)
+services/orion-sql-writer/tests/test_act_downstream_use.py  6 passed
 ```
 
 ## Evals run

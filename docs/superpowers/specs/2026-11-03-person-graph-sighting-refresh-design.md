@@ -206,13 +206,17 @@ consumers see, and no gate has checked that. Write this decision into its
 ## Proposal-mode fields
 
 - **Capability change.** When a named person is seen on the walkway, their
-  camera clusters (and that day's walkway node, through the existing edge)
-  read active for a few hours and then fade. Orion's graph-ranked readers can
+  camera clusters read active for a few hours and then fade. That day's
+  walkway node barely moves (0.039 vs the cluster's 0.61 in the build's test):
+  the tick decays input from a neighbour by the receiving node's own age, and a
+  day node's `observed_at` is the start of the day (`orion/substrate/dynamics.py`,
+  found in review of #3075, not fixed here). Orion's graph-ranked readers can
   tell "B was here this afternoon" from "B was named two weeks ago".
   Those readers are brain-frame samples, the concept-region recall and the
   Hub workbench.
 - **Data touched.** `observed_at`, `decay_half_life_seconds` and
-  `metadata.label_set_at` on at most 128 `entity:vision_individual:*` nodes,
+  `label_set_at` (a native FalkorDB property; entity nodes store no free-form
+  metadata) on at most 128 `entity:vision_individual:*` nodes,
   plus the half-life on new (and, if approved, the 17 existing)
   `evidence:walkway_day:*` nodes. The writer reads Postgres only. It writes no
   Postgres and no person node.

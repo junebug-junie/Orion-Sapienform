@@ -238,6 +238,8 @@ def select_replay(
     the source produced them) are kept even when every other candidate outweighs
     them. A floor never exceeds the source's cap, never exceeds k, and reserves
     nothing when the source has no candidates. Output is ordered by weight.
+    Floor ties trust the caller's order (walkway_candidates sorts newest first), so
+    give a floor only to a source that orders its own output deterministically.
     """
     k = max(0, min(int(k), MAX_REPLAY_ITEMS))
     per_source = max(1, (k + 1) // 2)
@@ -431,8 +433,10 @@ def walkway_replay_slots(k: int) -> int:
 
 
 def walkway_replay_floor(k: int) -> int:
-    """One slot is reserved for the best walkway item whenever one exists (k > 0)."""
-    return 1 if int(k) > 0 else 0
+    """One slot is reserved for the best walkway item whenever one exists, once the
+    replay is big enough for a sixth to be a whole slot (k >= 6). Below that the floor
+    is 0, so a tiny replay is never handed to the street over a critical metacog."""
+    return min(1, max(0, int(k)) // 6)
 
 
 def walkway_candidates(

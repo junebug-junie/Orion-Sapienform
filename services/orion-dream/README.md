@@ -147,7 +147,8 @@ dog around 07:40: came on Thu 22 Oct; did not come on Wed 21 Oct. Over the last 
 days it came 6 of 8 times." Open and unscorable rows are not results and are dropped.
 Weight is a declared heuristic: 0.5 when the subject missed at least once in the
 window (a prediction error), 0.3 when every one came; at most a sixth of the replay
-(2 of 12), and at least one slot whenever any walkway item exists (2026-11-03: by weight
+(2 of 12), and at least one slot whenever any walkway item exists and the replay has >= 6
+slots (2026-11-03: by weight
 alone they never won a slot, since every replay filled 12 slots with items >= 0.5; the
 floor reserves the heaviest walkway item, so a miss beats a met, and the lightest other
 item gives way). Like arcs: replay material only, read after the pressure read, never sleep

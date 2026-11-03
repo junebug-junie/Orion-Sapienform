@@ -88,7 +88,7 @@ def test_ceiling_still_holds_and_floor_never_exceeds_it():
     assert select_replay(walks, 0, source_floors={"walkway": 1}) == []
 
 
-def test_floor_is_deterministic_regardless_of_input_order():
+def test_floor_result_independent_of_non_walkway_order():
     from app.replay import WALKWAY_WEIGHT_MISSED
 
     items = _strong() + [_item("walkway:e1", "walkway", WALKWAY_WEIGHT_MISSED)]
@@ -140,3 +140,11 @@ def test_cycle_replays_one_walkway_item_when_the_replay_is_full():
     assert len(off.replay) == len(on.replay) == 12
     assert all(r.weight >= 0.5 for r in off.replay)
     assert [r.source_kind for r in on.replay].count("walkway") == 1
+
+
+def test_small_replay_reserves_no_walkway_floor():
+    from app.replay import WALKWAY_WEIGHT_MISSED, walkway_replay_floor
+
+    assert [walkway_replay_floor(k) for k in (0, 1, 5, 6, 12, 24)] == [0, 0, 0, 1, 1, 1]
+    picked = _select(_strong() + [_item("walkway:e1", "walkway", WALKWAY_WEIGHT_MISSED)], k=1)
+    assert [p.ref_id for p in picked] == ["metacog:m0"]

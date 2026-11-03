@@ -741,6 +741,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
         self._last_proven = {}
         self._last_proven_reasons = {}
         self._last_gate_labels = {}
+        self._last_gate_probes = {}
         gate = getattr(self, "_self_monitor_gate", None)
         gate_now = datetime.now(timezone.utc)
         if gate is not None and act_refs:
@@ -964,7 +965,30 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             return None
         if decision.probe or not decision.admit:
             self._last_gate_labels[item.dispatch_id] = decision.label()
+        if decision.probe:
+            # Offered only: the probe is spent in _claim_self_monitor_probes when it is really sent.
+            self._last_gate_probes[item.dispatch_id] = decision.faculty
         return None if decision.admit else TRACK_RECORD_FAILING_REASON
+
+    def _claim_self_monitor_probes(self, to_send: list) -> list:
+        """Spend each offered probe on the candidate actually about to be sent. A probe dropped earlier
+        (allowance, risk budget, holdback, preflight) spent nothing, so a later tick may probe again.
+        On a tripwire probe tick or without a motor budget the allocation does not bind and no gate
+        refusal applies either: that only ever loosens back to gate-off behaviour."""
+        probes = getattr(self, "_last_gate_probes", None) or {}
+        gate = getattr(self, "_self_monitor_gate", None)
+        if not probes or gate is None:
+            return to_send
+        now = datetime.now(timezone.utc)
+        kept = []
+        for c in to_send:
+            faculty = probes.get(c.dispatch_id)
+            if faculty is not None and not gate.claim_probe(faculty, now=now):
+                logger.info("self_monitor_probe_dropped dispatch_id=%s faculty=%s", c.dispatch_id, faculty)
+                continue
+            kept.append(c)
+        self._last_gate_probes = {}
+        return kept
 
     def _act_refs_by_cortex_verb(self) -> dict[str, ActRef]:
         if not getattr(self._settings, "orion_dispatch_act_candidates_enabled", False):
@@ -1908,6 +1932,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
         # BEFORE anything is precommitted -- a doer refusal is not an episode in either arm.
         to_send, frame = await self._reading_pull_preflight(frame, to_send)
         to_send, frame = self._proven_act_holdback(frame, to_send, enforcing=allocator_admitted_ids is not None)
+        to_send = self._claim_self_monitor_probes(to_send)
         await self._send_control_pulls()
         if not to_send:
             return self._abandon_tick_without_sending(frame, baseline_fields)

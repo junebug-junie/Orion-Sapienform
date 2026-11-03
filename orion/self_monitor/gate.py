@@ -15,10 +15,11 @@ when work starts). So "was there a probe in the last 6 h" is "did this faculty o
 last 6 h" -- recorded truth that survives restarts. A refused attempt opens no act, and a probe the
 caller admitted but that never started (held back, budget spent) opens none either, so the next
 decision may probe again. The ledger is written over the bus, so a caller also remembers its own
-admitted probes in-process (``ProbeMemo``): the probe slot is spent when the gate admits it, which
-also covers the write lag. If the caller later drops the admitted probe (held back, budget spent)
-the slot stays spent for this window; the next window probes again. After a restart only the
-ledger counts (real attempts), so a restart can never cost a probe. When the ledger cannot be read
+probes in-process (``ProbeMemo``), which covers the write lag. ``decide`` only OFFERS a probe; the
+caller spends it with ``claim_probe`` at the moment the attempt really starts (journal: right before
+its act opens; dispatch: when the candidate is actually sent). A probe offered but then dropped
+(cooldown, budget, holdback) spends nothing, so the window can still probe. After a restart only
+the ledger counts (real attempts), so a restart can never cost a probe. When the ledger cannot be read
 the memo alone decides: the gate fails toward "admit" (gate-off behaviour), never toward a
 permanent refusal.
 
@@ -129,17 +130,23 @@ def act_gate(view: SelfMonitorView, faculty: str, *, last_attempt_at: Optional[d
 
 
 class ProbeMemo:
-    """This process's own admitted probes, faculty -> when. Covers the bus lag between a probe
-    starting and its act row landing; the ledger covers restarts. Thread-safe (orion-actions reads
-    the ledger on a worker thread)."""
+    """This process's own started probes, faculty -> when. Covers the bus lag between a probe
+    starting and its act row landing; the ledger covers restarts. ``claim`` is an atomic
+    check-and-set, so two concurrent callers (orion-actions runs handlers concurrently) can never
+    both start a probe in one window."""
 
     def __init__(self) -> None:
         self._at: dict[str, datetime] = {}
         self._lock = threading.Lock()
 
-    def note(self, faculty: str, at: datetime) -> None:
+    def claim(self, faculty: str, at: datetime, interval_sec: float) -> bool:
+        at = _utc(at)
         with self._lock:
-            self._at[faculty] = _utc(at)
+            prev = self._at.get(faculty)
+            if prev is not None and (at - prev).total_seconds() < interval_sec:
+                return False
+            self._at[faculty] = at
+            return True
 
     def get(self, faculty: str) -> Optional[datetime]:
         with self._lock:
@@ -167,9 +174,13 @@ class ActGate:
         self._ledger_rows = ledger_rows
         self._memo = ProbeMemo()
         self._view: Optional[SelfMonitorView] = None
+        # Faculties already offered a probe in this batch (one tick): a second candidate of the same
+        # faculty in the same batch is refused. Cleared by begin().
+        self._offered: set[str] = set()
 
     def begin(self, now: datetime) -> SelfMonitorView:
         """Read the published state once for this batch. Disabled: an unknown view, no Redis read."""
+        self._offered = set()
         if not self.enabled:
             self._view = SelfMonitorView(known=False, reason="disabled")
         else:
@@ -199,14 +210,24 @@ class ActGate:
             ledger_at = latest_attempt_at(rows, actor=actor, verb=verb, faculty=faculty)
         decision = act_gate(view, faculty, last_attempt_at=newest(ledger_at, self._memo.get(faculty)), now=now,
                             probe_interval_sec=self.probe_interval_sec)
+        if decision.probe and faculty in self._offered:
+            decision = GateDecision(faculty, False, False, decision.status, TRACK_RECORD_FAILING_REASON,
+                                    decision.last_attempt_at)
         if decision.probe:
-            self._memo.note(faculty, now)
-            logger.info("self_monitor_probe_admitted faculty=%s status=%s last_attempt=%s ledger_read=%s",
+            self._offered.add(faculty)
+            logger.info("self_monitor_probe_offered faculty=%s status=%s last_attempt=%s ledger_read=%s",
                         faculty, decision.status, decision.last_attempt_at, rows is not None)
         elif not decision.admit:
             logger.info("self_monitor_refused reason=%s faculty=%s status=%s last_attempt=%s",
                         decision.reason, faculty, decision.status, decision.last_attempt_at)
         return decision
+
+    def claim_probe(self, faculty: str, *, now: datetime) -> bool:
+        """Spend the window's probe at the moment the attempt really starts. False: another caller
+        already started one this window, so this attempt must be refused instead."""
+        ok = self._memo.claim(faculty, now, self.probe_interval_sec)
+        logger.info("self_monitor_probe_%s faculty=%s", "started" if ok else "lost_race", faculty)
+        return ok
 
 
 def read_view_sync(redis_url: str, *, now: datetime, max_age_sec: float = DEFAULT_MAX_AGE_SEC,

@@ -636,7 +636,8 @@ class ExecutionDispatchRuntimeStore:
         the gate treats that as unreadable, never as "no attempt"."""
         from orion.self_monitor.gate import last_attempt_sql
 
-        with self._engine.connect() as conn:
+        with self._engine.begin() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = 5000"))
             rows = conn.execute(text(last_attempt_sql("sqlalchemy")),
                                 {"actor": actor, "verb": verb, "secs": float(secs)}).mappings().all()
         return [dict(r) for r in rows]

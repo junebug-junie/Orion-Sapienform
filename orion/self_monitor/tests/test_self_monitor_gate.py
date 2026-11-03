@@ -167,7 +167,11 @@ def test_act_gate_probe_then_refuse_until_window_passes() -> None:
     gate.begin(NOW)
     first = gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW)
     assert first.probe
-    # The probe's act row has not landed yet (bus lag): the memo still spends the slot.
+    # A second candidate in the same batch is refused: one probe offered per faculty per batch.
+    assert not gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW).admit
+    assert gate.claim_probe(WALKWAY, now=NOW)
+    # The probe's act row has not landed yet (bus lag): the memo still holds the window.
+    gate.begin(NOW + timedelta(minutes=1))
     second = gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW + timedelta(minutes=1))
     assert not second.admit and second.reason == TRACK_RECORD_FAILING_REASON
     # Restart: a new gate sees only the ledger, where the probe's act now sits.
@@ -179,6 +183,27 @@ def test_act_gate_probe_then_refuse_until_window_passes() -> None:
     later = NOW + timedelta(hours=6, minutes=1)
     restarted.begin(later)
     assert restarted.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=later).probe
+
+
+def test_an_offered_probe_that_never_starts_spends_nothing() -> None:
+    gate = _gate(_Ledger())
+    gate.begin(NOW)
+    assert gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW).probe
+    # Dropped (cooldown, budget, holdback): no claim. The next batch may probe again.
+    gate.begin(NOW + timedelta(minutes=1))
+    assert gate.decide("actions.journal", "make", "journal_trigger:walkway_grade",
+                       now=NOW + timedelta(minutes=1)).probe
+
+
+def test_two_concurrent_probes_cannot_both_start() -> None:
+    gate = _gate(_Ledger())
+    gate.begin(NOW)
+    a = gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW)
+    gate.begin(NOW)  # a second handler's own batch
+    b = gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW)
+    assert a.probe and b.probe
+    assert gate.claim_probe(WALKWAY, now=NOW) is True
+    assert gate.claim_probe(WALKWAY, now=NOW) is False
 
 
 def test_act_gate_reads_no_ledger_for_a_healthy_faculty() -> None:
@@ -193,8 +218,24 @@ def test_unreadable_ledger_fails_toward_admit_once_per_window() -> None:
     gate = _gate(_Ledger(fail=True))
     gate.begin(NOW)
     assert gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW).probe
+    assert gate.claim_probe(WALKWAY, now=NOW)
+    gate.begin(NOW + timedelta(hours=1))
     assert not gate.decide("actions.journal", "make", "journal_trigger:walkway_grade",
                            now=NOW + timedelta(hours=1)).admit
+
+
+def test_every_allocator_act_route_is_named_like_the_organ() -> None:
+    """Every act route in the dispatch policy must be in the replay's reach list, so a new route is
+    reviewed for its faculty name (the worker asks for the base act.<actor>.<verb> key)."""
+    from pathlib import Path
+
+    from orion.execution_dispatch.policy import load_execution_dispatch_policy
+    from orion.self_monitor.replay import ALLOCATOR_ACTORS
+
+    repo = Path(__file__).resolve().parents[3]
+    policy = load_execution_dispatch_policy(repo / "config/execution_dispatch/execution_dispatch_policy.v1.yaml")
+    routes = {(a.actor, a.verb) for a in policy.act_refs_by_cortex_verb().values()}
+    assert routes == ALLOCATOR_ACTORS
 
 
 def test_view_read_failure_is_unknown() -> None:

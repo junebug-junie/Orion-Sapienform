@@ -157,7 +157,7 @@ def test_must_not_loosen_unknown_or_healthy_is_identical_to_no_gate(monkeypatch,
         worker._store.act_attempt_rows.assert_not_called()
 
 
-@pytest.mark.parametrize("ledger", [[], [{"object_ref": "durable_run:reverie-visual-abc", "opened_at": NOW}]])
+@pytest.mark.parametrize("ledger", [[], [{"object_ref": "durable_run:reverie-visual-0f1e", "opened_at": NOW}]])
 @pytest.mark.parametrize("scenario", sorted(SCENARIOS))
 def test_must_not_loosen_failing_only_removes_admissions(monkeypatch, scenario, ledger) -> None:
     for status in ("broken", "unreliable"):
@@ -166,6 +166,9 @@ def test_must_not_loosen_failing_only_removes_admissions(monkeypatch, scenario, 
             on = _worker(monkeypatch, view_raw=_state(status), ledger_rows=ledger,
                          **SCENARIOS[scenario])._log_allocator_preview(make(), MOTOR)
             assert set(_decisions(on)[0]) <= set(_decisions(off)[0]), (status, scenario, name)
+            if ledger and scenario != "in_flight":
+                # A recent attempt really spends the window: every act-backed candidate is refused.
+                assert any(why == "track_record_failing" for _, why in _decisions(on)[1]), (status, scenario, name)
 
 
 def test_failing_painting_is_refused_track_record_failing(monkeypatch) -> None:
@@ -183,9 +186,20 @@ def test_probe_after_six_hours_is_admitted_and_marked(monkeypatch) -> None:
     out = worker._log_allocator_preview(_frame(_render()), MOTOR)
     assert [c.dispatch_id for c in out.admitted] == ["dispatch:proposal:render_scene:t1"]
     assert worker._last_gate_labels["dispatch:proposal:render_scene:t1"].startswith(f"self_monitor:probe:{PAINT}")
-    # Next tick, the probe's act row has not landed: still only one probe in the window.
-    again = worker._log_allocator_preview(_frame(_render("dispatch:proposal:render_scene:t2")), MOTOR)
+    # Not sent yet: an offered probe spends nothing, so the next tick offers it again.
+    retry = worker._log_allocator_preview(_frame(_render("dispatch:proposal:render_scene:t2")), MOTOR)
+    assert [c.dispatch_id for c in retry.admitted] == ["dispatch:proposal:render_scene:t2"]
+    # Sent: the probe is spent. Next tick (act row not landed yet) is refused.
+    assert [c.dispatch_id for c in worker._claim_self_monitor_probes([_render("dispatch:proposal:render_scene:t2")])] \
+        == ["dispatch:proposal:render_scene:t2"]
+    again = worker._log_allocator_preview(_frame(_render("dispatch:proposal:render_scene:t3")), MOTOR)
     assert again.refusals_by_reason() == {"track_record_failing": 1}
+
+
+def test_one_probe_per_faculty_per_tick_across_both_lanes(monkeypatch) -> None:
+    worker = _worker(monkeypatch, posteriors={}, view_raw=_state("broken"))
+    out = worker._log_allocator_preview(_frame(_baseline(monkeypatch), _render()), MOTOR)
+    assert len(out.admitted) == 1 and out.refusals_by_reason() == {"track_record_failing": 1}
 
 
 def test_in_flight_candidate_never_spends_the_probe(monkeypatch) -> None:

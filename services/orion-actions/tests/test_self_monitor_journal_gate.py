@@ -85,3 +85,23 @@ def test_unknown_or_healthy_view_changes_nothing(tmp_path, raw):
     assert [e["event_kind"] for e in gated] == [e["event_kind"] for e in off] == ["act_opened", "act_closed"]
     assert [a["status"] for a in gated_audits] == [a["status"] for a in off_audits]
     assert "self_monitor" not in json.dumps(gated_audits)
+
+
+def test_refusal_is_audited_once_per_window(tmp_path):
+    recent = [{"object_ref": "journal_trigger:manual", "opened_at": datetime.now(timezone.utc) - timedelta(hours=1)}]
+    h = _Harness(orch_payload={"ok": True})
+
+    async def body(app):
+        await app.state.bus_handler(_journal_env("first"))
+        await app.state.bus_handler(_journal_env("second"))
+
+    with (
+        patch.object(actions_main.settings, "self_monitor_act_gate_enabled", True),
+        patch.object(actions_main.settings, "postgres_uri", "postgresql://x/y"),
+        patch.object(actions_main, "read_view_sync", lambda url, now: self_monitor_view(_state("broken"), now=now)),
+        patch.object(actions_main, "_fetch_ledger_rows_blocking", lambda dsn, sql, params: recent),
+    ):
+        events = asyncio.run(h.run(tmp_path, body))
+    assert events == []
+    refused = [a for a in _audits(h.hunters[0]) if a.get("reason") == "track_record_failing"]
+    assert len(refused) == 1

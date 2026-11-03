@@ -3560,6 +3560,18 @@ change of the same read (a belief moved days after the link) is a new message.
   `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
   old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
   (3 composition failures before a change is dropped), `_MIN_SPACING_SEC` (6750; 0 = off).
+
+### Self-monitor self-questions (rung 6 E2, 2026-11-03)
+
+`scripts/self_monitor_questions.py` polls the self-monitor state (Redis `orion:self_monitor:latest`)
+every `SELF_MONITOR_QUESTIONS_TICK_SEC` (900). A faculty newly held `broken` or `unreliable` gets ONE
+question in `curiosity_self_questions` (`minted_by='orion'`, family `lived`, id
+`lived.self_monitor.<faculty>.<status>.<status_since>`), e.g. "My faculty
+act.actions.journal.make.walkway_grade didn't run 22 of its last 28 tries in the last 7 days. Why?".
+Once per status episode: last-seen statuses persist in Redis `orion:self_monitor:questions:seen`, and
+the insert is ON CONFLICT DO NOTHING. Stale or absent state mints nothing. Not routed through
+endogenous curiosity and never written as a node prediction_error. Kill switch:
+`SELF_MONITOR_QUESTIONS_ENABLED=false`.
 - **What it cannot see yet.** A belief counts only when the curiosity run that moved it
   names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
   Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so

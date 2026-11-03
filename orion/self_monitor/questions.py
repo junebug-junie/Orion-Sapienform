@@ -106,7 +106,9 @@ def self_questions_for(previous: Mapping[str, str], current: SelfMonitorView, *,
                 status=record.status, episode=episode))
             seen[faculty] = f"{record.status}@{episode}"
         elif record.status not in FAILING_STATUSES:
-            seen[faculty] = f"{record.status}@{episode_key(record, now=now)}"
+            # No status_since: the status alone (a "now" fallback would rewrite memory every tick).
+            seen[faculty] = (f"{record.status}@{episode_key(record, now=now)}" if record.status_since
+                             else f"{record.status}@none")
     return mints, seen
 
 

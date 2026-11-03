@@ -112,7 +112,8 @@ class SelfMonitorQuestionMinter:
                         failed.add(mint.faculty)
                         logger.warning("self_monitor_question_insert_failed faculty=%s err=%s", mint.faculty, exc)
                         continue
-                    minted.append(mint.question_id)
+                    if str(status or "").endswith(" 1"):  # "INSERT 0 0" = already asked
+                        minted.append(mint.question_id)
                     logger.info("self_monitor_question_minted faculty=%s status=%s question_id=%s inserted=%s text=%r",
                                 mint.faculty, mint.status, mint.question_id, status, mint.text)
         for faculty in failed:

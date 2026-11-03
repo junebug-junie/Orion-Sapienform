@@ -106,6 +106,19 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "app/main.py _bet_out validates each stored prediction_action_bet row before returning it from "
         "place / settle / list; the Hub reads only plain JSON from it",
     ),
+    # Self-monitor state: orion-thought's track-record cue reads Redis orion:self_monitor:latest
+    # (orion/self_monitor/view.py). Its writer is the durable-runs self_monitor node (self-monitor
+    # patch 2, a parallel PR); once that lands, code can see the writer and these two go stale --
+    # remove them in that merge (test_declared_writers_are_not_stale says so).
+    "orion.schemas.self_monitor:FacultyRecordV1": (
+        "orion-durable-runs",
+        "nested in SelfMonitorStateV1, published to Redis orion:self_monitor:latest by the self_monitor node",
+    ),
+    "orion.schemas.self_monitor:SelfMonitorStateV1": (
+        "orion-durable-runs",
+        "self_monitor node publishes it to Redis orion:self_monitor:latest hourly; orion-thought reads it "
+        "back (app/self_track_record_cue.py via orion.self_monitor.view.parse_state)",
+    ),
     "orion.schemas.regulation:ArousalInputsV1": (
         "orion-durable-runs",
         "the regulate node builds it from its own DB reads (app/regulation_store.py) and reads it back "

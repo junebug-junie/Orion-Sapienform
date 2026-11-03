@@ -116,6 +116,6 @@ scripts/safe_docker_build.sh orion-diffusion-host up -d --build
 
 ## PR link
 
-(added after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3048
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

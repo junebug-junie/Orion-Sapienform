@@ -56,10 +56,17 @@ def test_apply_filters_each_box_by_its_own_label():
     assert [(o["label"], o["score"]) for o in kept] == [("vehicle", 0.31), ("person dog", 0.36)]
 
 
-def test_shipped_profile_keeps_todays_values(vision_profiles):
-    """Shipped config changes nothing: every camera and label stays at 0.35."""
+def test_shipped_profile_walkway_vehicle_calibrated(vision_profiles):
+    """Shipped config (2026-11-03 calibration, evals/walkway_cutoff_calibration_eval.py):
+    only walkway vehicle moves, to 0.25; walkway person and every other
+    label and camera stay at 0.35."""
     params = vision_profiles.get_profile("retina_detect_open_vocab").params
-    for stream in ("walkway", "cam0", "doorbell", None):
+    walkway = resolve_box_thresholds(params, "walkway")
+    assert walkway.for_label("vehicle") == 0.25
+    assert walkway.floor == 0.25
+    for label in ("person", "dog", "bicycle", "stroller", "mail truck", "vehicle mail truck"):
+        assert walkway.for_label(label) == 0.35
+    for stream in ("cam0", "doorbell", None):
         th = resolve_box_thresholds(params, stream)
         assert th.default == 0.35 and th.floor == 0.35
         for label in ("person", "vehicle", "dog", "mail truck"):
@@ -99,9 +106,15 @@ def test_runner_runs_at_floor_and_filters_per_label(runner_with_spy):
     assert [(o["label"], o["score"]) for o in out["objects"]] == [("person", 0.5)]
 
 
-def test_runner_shipped_profile_behaves_like_single_threshold(runner_with_spy):
+def test_runner_shipped_profile_walkway_keeps_low_vehicle_not_low_person(runner_with_spy):
     r, frame, seen = runner_with_spy
     p = r.profiles.get_profile("retina_detect_open_vocab")
     out = r._run_detect_grounding_dino(p, {"image_path": frame, "stream_id": "walkway"}, "cpu")
+    assert seen == [0.25]
+    # vehicle 0.31 now reaches the walkway vehicle cut-off; person 0.33 still does not.
+    assert sorted((o["label"], o["score"]) for o in out["objects"]) == [("person", 0.5), ("vehicle", 0.31)]
+
+    seen.clear()
+    out = r._run_detect_grounding_dino(p, {"image_path": frame, "stream_id": "cam0"}, "cpu")
     assert seen == [0.35]
     assert [(o["label"], o["score"]) for o in out["objects"]] == [("person", 0.5)]

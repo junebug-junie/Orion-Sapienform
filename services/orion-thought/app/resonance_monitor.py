@@ -94,14 +94,28 @@ def _check(key: str, *, healthy: bool, severity: Severity, message_if_unhealthy:
     )
 
 
-def _is_worsening(theme_key: str) -> HealthCheck:
+def _is_worsening(
+    theme_key: str, *, max_sample_age_sec: float | None = None, now: datetime | None = None
+) -> HealthCheck:
     """Healthy unless this theme's violation_count strictly increased between
-    its last 2 persisted resonance-alert samples (newest vs. previous)."""
+    its last 2 persisted resonance-alert samples (newest vs. previous).
+
+    A newest sample older than `max_sample_age_sec` is stale and reads healthy:
+    the detector only persists a row while the theme is resonant, so once it
+    stops the last 2 rows would otherwise freeze an "increasing" trend and the
+    page could never recover (live 2026-11-03, open-loop-7376a3da4050)."""
     key = f"reverie_resonance_worsening:{theme_key}"
     samples = load_recent_resonance_alerts(theme_key, limit=2)
     if len(samples) < 2:
         # Nothing to compare yet -- a single sample can't show a trend.
         return _check(key, healthy=True, severity="error", message_if_unhealthy="")
+    newest_at = samples[0].get("created_at")
+    if max_sample_age_sec is not None and isinstance(newest_at, datetime):
+        now = now or datetime.now(timezone.utc)
+        if newest_at.tzinfo is None:
+            newest_at = newest_at.replace(tzinfo=timezone.utc)
+        if (now - newest_at).total_seconds() > max_sample_age_sec:
+            return _check(key, healthy=True, severity="error", message_if_unhealthy="")
 
     newest, previous = samples[0], samples[1]
     worsening = int(newest["violation_count"]) > int(previous["violation_count"])
@@ -184,8 +198,13 @@ class ResonanceHealthMonitor:
                     themes_to_check.add(theme_key)
                     self._tracked_themes.add(theme_key)
 
+            # Two cooldown periods with no fresh alert row = the theme is quiet.
+            max_age = 2.0 * float(self._settings.reverie_refractory_sec)
+            now = datetime.now(timezone.utc)
             for theme_key in themes_to_check:
-                self._run_tick_for_check(theme_key, _is_worsening(theme_key))
+                self._run_tick_for_check(
+                    theme_key, _is_worsening(theme_key, max_sample_age_sec=max_age, now=now)
+                )
         except Exception:
             logger.exception("resonance_health_check_failed")
 

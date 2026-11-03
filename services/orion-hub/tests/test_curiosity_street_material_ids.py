@@ -84,7 +84,7 @@ def test_a_real_tick_records_the_street_material_its_prompt_carried() -> None:
 
     street_captions = sorted(i for i in ids if i.startswith("street_caption:"))
     assert street_captions == ["street_caption:ev-bike", "street_caption:ev-gate", "street_caption:ev-van"]
-    assert "street_day:walkway:2026-11-02" in ids
+    assert f"street_day:walkway:2026-11-02@{now.isoformat()}" in ids
     # Every recorded street id is backed by text in the prompt the turn actually got.
     # (Captions with a count get "(count from one frame)" appended, so match the stem.)
     for text in ("A van is parked by the curb", "A cyclist rides past", "Two people talk at the gate", DAY_LINE):
@@ -98,8 +98,10 @@ def test_a_real_tick_records_the_street_material_its_prompt_carried() -> None:
 def test_without_street_material_the_ids_are_unchanged() -> None:
     conn = _StreetConn(captions=[], day_row=None)
     _, decision = _tick(conn)
-    ids = decision["material_ids"]
-    assert ids and all(i.startswith(("crystallization:", "relation:")) for i in ids)
+    # Exactly the pre-2026-11-03 list: the fixture's crystallizations, then its relation.
+    assert decision["material_ids"] == [
+        "crystallization:c0", "crystallization:c1", "crystallization:c2", "crystallization:c3", "relation:d1",
+    ]
 
 
 def _material(**street) -> StudyMaterial:
@@ -109,7 +111,8 @@ def _material(**street) -> StudyMaterial:
     return material
 
 
-def test_ids_follow_the_rendered_sections_exactly() -> None:
+def test_ids_follow_the_rendered_sections() -> None:
+    """Id-less captions are rendered but cannot be recorded (pinned on purpose)."""
     at = datetime(2026, 11, 3, 1, 0, tzinfo=timezone.utc)
     material = _material(
         street_captions=[StreetCaptionCard("ev1", at, "walkway", "A dog walks by."),
@@ -119,6 +122,10 @@ def test_ids_follow_the_rendered_sections_exactly() -> None:
     assert kickoff_material_ids(material) == [
         "crystallization:c1", "relation:r1", "street_caption:ev1", "street_day:walkway:2026-11-02",
     ]
+    # Every recorded caption id's own text is in the rendered prompt.
+    for card in material.street_captions:
+        if f"street_caption:{card.event_id}" in kickoff_material_ids(material):
+            assert card.narrative in build_kickoff_prompt(material, graph_enabled=False)
     prompt = build_kickoff_prompt(material, graph_enabled=False)
     assert "A dog walks by." in prompt and DAY_LINE in prompt
 

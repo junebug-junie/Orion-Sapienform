@@ -575,6 +575,14 @@ class Settings(BaseSettings):
     vision_person_top_k: int = Field(3, alias="VISION_PERSON_TOP_K")
     # Channel used when a cluster or person has no face vectors (body | osnet).
     vision_person_fallback_channel: str = Field("body", alias="VISION_PERSON_FALLBACK_CHANNEL")
+    # Face bars are fitted on unnamed clusters seen this many days back (faces
+    # are rare; an accept bar needs about people / alpha face clusters). Guesses
+    # stay on the VISION_INDIVIDUALS_CANDIDATE_DAYS street. <= that = old rule.
+    # Unnamed clusters are pruned after VISION_SIGHTING_RETENTION_DAYS (90).
+    vision_person_face_candidate_days: float = Field(90.0, alias="VISION_PERSON_FACE_CANDIDATE_DAYS")
+    # Split the false-accept alpha only across labels that are one real person
+    # (person rows marked not_a_person in the Hub do not count). False = every label.
+    vision_person_alpha_split_people_only: bool = Field(True, alias="VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY")
     # The person model runs inside the individuals tick at most this often.
     vision_person_model_interval_sec: float = Field(600.0, alias="VISION_PERSON_MODEL_INTERVAL_SEC")
     # Comma list of crop labels the retention prune never deletes (labelled

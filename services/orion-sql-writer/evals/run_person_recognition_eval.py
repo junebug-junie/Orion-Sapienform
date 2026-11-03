@@ -16,7 +16,9 @@ unnamed one. Outcomes:
 Also reported: street accepts, how many unnamed clusters get "probably X"
 with the full album. An armed bar lets about alpha / people of the street
 through by construction, so treat that number as likely wrong accepts until
-answers confirm them. Per channel: cross-day separation, the AUC of genuine CLUSTER
+answers confirm them. Alpha is split across labels that are one real person
+(``not_a_person`` names excluded); face bars calibrate on the longer face
+street (``face_candidate_days``). Per channel: cross-day separation, the AUC of genuine CLUSTER
 scores (each of a person's clusters held out with every album crop from its
 days) against impostor cluster scores (the street, other people, ruled-out
 clusters), the populations the accept bar is fitted on. 0.5 = no better than
@@ -42,7 +44,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import AbstractSet, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve()
@@ -71,7 +73,9 @@ def mcnemar_p(b: int, c: int) -> float:
 
 
 def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConfig,
-             street: Dict[str, List[pm.Crop]]) -> dict:
+             street: Dict[str, List[pm.Crop]], face_street: Optional[Dict[str, List[pm.Crop]]] = None,
+             not_people: AbstractSet[str] = frozenset()) -> dict:
+    face_street = street if face_street is None else face_street
     clusters: Dict[str, Tuple[str, List[pm.Crop]]] = {}
     for person, pol in album.items():
         for c in pol.get(1, []):
@@ -91,7 +95,7 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
             counts["no_album"] += 1
             per_cluster[cid] = {"truth": truth, "outcome": "no_album"}
             continue
-        bars = pm.fit_all(held, cfg, street)
+        bars = pm.fit_all(held, cfg, street, face_street, not_people)
         newest = sorted(crops, key=lambda c: c.day, reverse=True)[:pm.ATTRIBUTION_CROPS]
         guess = pm.attribute({cid: newest}, held, bars, {}, cfg)
         if not guess:
@@ -109,7 +113,7 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
         gen, imp, accept_bars = [], [], 0
         for person in album:
             if any(ch in c.vecs for c in album[person].get(1, [])):
-                fit = pm.fit_bar(person, ch, album, cfg, street)
+                fit = pm.fit_bar(person, ch, album, cfg, face_street if ch == "face" else street, not_people)
                 gen += fit.genuine_clusters
                 imp += fit.impostor_clusters
                 accept_bars += fit.bar.accept_at is not None
@@ -119,7 +123,7 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
     # album. About alpha / people of the street clears an armed bar by
     # construction, so read this as the bar's likely wrong-accept count until
     # Juniper's answers say otherwise.
-    full_bars = pm.fit_all(album, cfg, street)
+    full_bars = pm.fit_all(album, cfg, street, face_street, not_people)
     street_guess = pm.attribute(street, album, full_bars, {}, cfg)
     street_accepts: Dict[str, int] = {}
     for g in street_guess:
@@ -129,7 +133,9 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
     return {
         "model_version": pm.MODEL_VERSION, "alpha": cfg.alpha, "top_k": cfg.top_k,
         "fallback_channel": cfg.fallback_channel, "people": len(album), "clusters": len(clusters),
-        "street_clusters": len(street),
+        "split_people": pm.people_count(album, cfg, not_people), "not_people": sorted(not_people),
+        "street_clusters": len(street), "face_street_clusters": len(face_street),
+        "face_candidate_days": cfg.face_candidate_days, "alpha_split_people_only": cfg.alpha_split_people_only,
         **counts,
         "correct_accept_rate": round(counts["correct_accept"] / scored, 4) if scored else None,
         "unsure_rate": round(counts["unsure"] / scored, 4) if scored else None,
@@ -170,9 +176,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--top-k", type=int, default=3)
     ap.add_argument("--fallback-channel", default="body")
     ap.add_argument("--tz", default="America/Denver")
+    ap.add_argument("--face-candidate-days", type=float, default=pm.PersonModelConfig.face_candidate_days)
+    ap.add_argument("--split-all-labels", action="store_true",
+                    help="split alpha across every album label (the pre-v2 rule)")
     args = ap.parse_args(argv)
     cfg = pm.PersonModelConfig(alpha=args.alpha, top_k=args.top_k, fallback_channel=args.fallback_channel,
-                               local_tz=args.tz)
+                               local_tz=args.tz, face_candidate_days=args.face_candidate_days,
+                               alpha_split_people_only=not args.split_all_labels)
     tz = ZoneInfo(args.tz)
     engine = create_engine(args.live)
     with engine.connect() as conn:
@@ -183,8 +193,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not album:
             print(json.dumps({"verdict": "nothing to evaluate", **stats}))
             return 2
-        street = pm.unnamed_clusters(conn, datetime.now(timezone.utc), cfg, tz)
-        metrics = evaluate(album, cfg, street)
+        street, face_street = pm.street_pools(conn, datetime.now(timezone.utc), cfg, tz)
+        not_people = pm.not_a_person_names(conn) if cfg.alpha_split_people_only else frozenset()
+        metrics = evaluate(album, cfg, street, face_street, not_people)
         metrics["album"] = {**stats, "exemplars": len(ex)}
         metrics["vs_previous"] = compare_previous(conn, metrics)
     summary = {k: v for k, v in metrics.items() if k != "per_cluster"}

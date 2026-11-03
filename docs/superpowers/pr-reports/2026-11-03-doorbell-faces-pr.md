@@ -148,6 +148,6 @@ PYTHONWARNINGS=ignore .venv/bin/python services/orion-sql-writer/evals/run_perso
 
 ## PR link
 
-(pending)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3085
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

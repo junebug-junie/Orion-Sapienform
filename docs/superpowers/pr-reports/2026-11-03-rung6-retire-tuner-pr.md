@@ -203,6 +203,9 @@ applier (the table is already applied).
   - Evidence: `test_mutation_v21.py` 52 passed.
 - Finding: no committed PR report.
   - Fix: this file.
+- Finding (CI, after rebasing onto main with #3041/#3058): `test_route_engine_reuse.py` listed the deleted tuner's `postgres_reading_reader` as a known per-call engine, and the gate fails on stale entries.
+  - Fix: entry removed.
+  - Evidence: `test_route_engine_reuse.py` 16 passed.
 - Nits fixed: the migration body is marked historical; an `api_routes.py` comment that pointed at "allowed_classes below" is corrected.
 - Nits left: `STREET_HANDOFF_DOMAIN` is kept as a log label. The test and the smoke each keep their own carrier helper (small, and the smoke is a standalone script). Renaming or retiring `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` is left for the existing env-rename follow-up.
 

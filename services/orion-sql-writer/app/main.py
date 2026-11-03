@@ -1253,9 +1253,9 @@ app.include_router(notify_router, prefix="/api/notify-read", tags=["notify-read"
 
 @app.get("/health")
 def health():
-    from app.grammar_truth import build_grammar_truth_snapshot
+    from app.grammar_truth import build_grammar_operational_snapshot
 
-    snap = build_grammar_truth_snapshot()
+    snap = build_grammar_operational_snapshot()
     return {
         "ok": snap["ok"],
         "degraded": snap["degraded"],

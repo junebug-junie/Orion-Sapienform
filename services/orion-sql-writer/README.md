@@ -156,6 +156,11 @@ refuses to delete rows any of the five reducer lanes still has unconsumed below 
 rather than the clamped cutoff -- so "a reducer is stuck" and "retention is caught up"
 cannot look the same.
 
+`GET /health` uses the same queue, subscription, index, and retention degradation state as
+`GET /grammar/truth`, but deliberately omits ledger-wide diagnostics. In particular, the
+exact per-source `COUNT(*)`/latest-event census remains on `/grammar/truth` only: it is an
+operator report over every retained `grammar_events` row, not a liveness prerequisite.
+
 `grammar_traces` is the parent row the Grammar Atlas lists, and is deliberately covered by
 the periodic loop only, not by `main.py`'s startup pass. It was added last (2026-08-20):
 until then its children were pruned at 3 days while the trace rows lived forever, so 42%

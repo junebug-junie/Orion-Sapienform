@@ -850,7 +850,7 @@ class CuriosityInvestigation:
         # kickoff as "YOUR EYES" (orion.situational.camera_eyes). Empty = no
         # section. Live = a frame within camera_live_max_age_sec.
         camera_stream_ids: Tuple[str, ...] = (),
-        # Which of those are street cameras (individuals counted) and the
+        # Which of those are street cameras (people range for today) and the
         # timezone for "since"/"today" -- the situation brief's own settings,
         # so both surfaces say the same thing.
         camera_street_stream_ids: Tuple[str, ...] = (),
@@ -3315,7 +3315,7 @@ class CuriosityInvestigation:
                 asyncio.to_thread(
                     fetch_camera_eyes,
                     self.camera_stream_ids,
-                    count_individuals_for=self.camera_street_stream_ids,
+                    people_range_for=self.camera_street_stream_ids,
                     tz_name=self.camera_timezone,
                     now=now,
                 ),

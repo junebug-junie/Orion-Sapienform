@@ -58,6 +58,11 @@ What is counted (and what is not):
   splits one dog into several)"; its window peak leaves the "most at once" phrase (it is the
   range's low). A version 2/3 row whose stored line states a bare dog count is re-rendered by
   ``display_line``; recent hours are rebuilt once by the writer (``RULES_VERSION`` moved).
+* **Regulars by kind, no number for a living kind (rules_version 5, 2026-11-03).** A regular is
+  an unnamed appearance cluster seen on 2+ days, so "68 unnamed regulars" was one bare cluster
+  count of every kind, people split into several. The line now says "unnamed regulars (...):
+  some people, some dogs, 40 vehicles" (``regulars_phrase``); ``regulars`` in the JSON is
+  unchanged. An older line holding the old clause is re-rendered by ``display_line``.
 * **Named people come from the person record (rules_version 3, 2026-10-24).** Juniper:
   the day line should know people, not cluster names. ``named`` is keyed by the person's
   ``display_name`` when the sighted individual has an active ``vision_individual`` link
@@ -94,7 +99,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 SCHEMA = "vision_rollup.v1"
-RULES_VERSION = 4
+RULES_VERSION = 5
 # The first rules_version whose ``named`` is keyed by the person record (person_link).
 PERSON_RECORD_RULES_VERSION = 3
 # The first rules_version whose stored ``line`` shows people as a range. Older rows are
@@ -105,6 +110,11 @@ COUNT_RANGE_RULES_VERSION = 2
 # ("6 dogs", "most at once 3 dogs") is re-rendered at read time (display_line); one without
 # any is shown as stored (it reads the same either way).
 LIVING_RANGE_RULES_VERSION = 4
+# The first rules_version whose stored ``line`` says unnamed regulars by kind, with no number
+# for a living kind (2026-11-03). Before it the line said "68 unnamed regulars": appearance
+# clusters of every kind, people split into several, as one bare number. An older line that
+# holds that clause is re-rendered at read time (display_line).
+REGULARS_RULES_VERSION = 5
 # Kinds that are someone rather than something (the street line orders them before things). The
 # individuals reducer splits one of these into several appearance clusters the way it splits a
 # person, so every one of them that has clusters is counted as a range.
@@ -520,13 +530,49 @@ def display_line(line: Any, rollup: Any) -> str:
     except (TypeError, ValueError):
         version = 1
     stored = str(line or "").strip()
+    if version >= REGULARS_RULES_VERSION:
+        return stored
     if version >= LIVING_RANGE_RULES_VERSION or (
             version >= COUNT_RANGE_RULES_VERSION and not bare_living_counts(stored)):
-        return stored
+        # Before v5 the line said "68 unnamed regulars": swap that clause in place, so the rest
+        # of the stored line reads exactly as before.
+        return _fix_regulars_clause(stored, r)
     try:
         return render_line(r)
     except Exception:  # noqa: BLE001 -- an unreadable old row shows nothing, not a bare count
         return ""
+
+
+# The pre-v5 regulars clause: "68 unnamed regulars (...)", one bare cluster count of all kinds.
+_REGULARS_CLAUSE_RE = re.compile(r"\b\d+ unnamed regulars? \((seen on [^)]*)\)")
+
+
+def _fix_regulars_clause(line: str, rollup: Mapping[str, Any]) -> str:
+    def _swap(m: "re.Match[str]") -> str:
+        phrase = regulars_phrase(rollup.get("regulars"), str(rollup.get("grain") or "day"))
+        return phrase or f"unnamed regulars ({m.group(1)})"
+    return _REGULARS_CLAUSE_RE.sub(_swap, line)
+
+
+def regulars_phrase(reg: Mapping[str, Any] | None, grain: str) -> str:
+    """"unnamed regulars (seen on another day this week too): some people, some dogs, 40 vehicles".
+    A living kind gets no number (the matcher splits one person or dog into several clusters, and
+    a regular is a cluster); a thing keeps its count, as everywhere else. A row with no
+    ``by_kind`` says no number at all."""
+    reg = reg or {}
+    if not int(reg.get("count", 0) or 0):
+        return ""
+    where = "seen on another day this week too" if grain == "day" else f"seen on 2+ days this {grain}"
+    by_kind = {str(k): int(v or 0) for k, v in (reg.get("by_kind") or {}).items() if int(v or 0) > 0}
+    parts = [f"some {KIND_PLURAL.get(k, k + 's')}" for k in RANGE_KINDS if by_kind.get(k)]
+    parts += [f"some {KIND_PLURAL.get(k, k + 's')}" for k in sorted(by_kind)
+              if k in LIVING_KINDS and k not in RANGE_KINDS]
+    for k in (*KINDS, "other"):
+        n = by_kind.get(k, 0)
+        if n and k not in LIVING_KINDS:
+            parts.append(f"{n} {KIND_SINGULAR.get(k, k) if n == 1 else KIND_PLURAL.get(k, k + 's')}")
+    head = f"unnamed regulars ({where})"
+    return f"{head}: {', '.join(parts)}" if parts else head
 
 
 def _peak_phrase(peaks: Mapping[str, int]) -> str:
@@ -1128,11 +1174,9 @@ def render_line(rollup: Mapping[str, Any]) -> str:
             parts.append("named: " + ", ".join(f"{n} on {len(v.get('days') or [])} "
                                                f"day{'s' if len(v.get('days') or []) != 1 else ''}"
                                                for n, v in named))
-    reg = rollup.get("regulars") or {}
-    if int(reg.get("count", 0)):
-        where = "seen on another day this week too" if grain == "day" else f"seen on 2+ days this {grain}"
-        n = int(reg["count"])
-        parts.append(f"{n} unnamed regular{'s' if n != 1 else ''} ({where})")
+    reg_phrase = regulars_phrase(rollup.get("regulars"), grain)
+    if reg_phrase:
+        parts.append(reg_phrase)
     b, q = rollup.get("busiest"), rollup.get("quietest")
     if b:
         s = f"busiest {_at_words(b['at'], grain)} ({_upper(b['passings'])}"

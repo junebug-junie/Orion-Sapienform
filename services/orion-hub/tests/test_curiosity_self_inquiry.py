@@ -803,10 +803,10 @@ def test_self_senses_are_read_live_per_camera(monkeypatch) -> None:
 
     def _fetch(streams, **kw):
         seen["streams"] = list(streams)
-        seen["counted"] = list(kw["count_individuals_for"])
+        seen["counted"] = list(kw["people_range_for"])
         return [
             CameraEye("cam0", now - timedelta(days=50), now - timedelta(seconds=5)),
-            CameraEye("walkway", now - timedelta(hours=3), now - timedelta(hours=2), 4),
+            CameraEye("walkway", now - timedelta(hours=3), now - timedelta(hours=2), {"low": 1, "high": 4}),
         ]
 
     monkeypatch.setattr(camera_eyes, "fetch_camera_eyes", _fetch)
@@ -814,7 +814,7 @@ def test_self_senses_are_read_live_per_camera(monkeypatch) -> None:
     clauses = asyncio.run(loop._read_self_senses())
     assert seen == {"streams": ["cam0", "walkway"], "counted": ["walkway"]}
     assert clauses[0].startswith("your room camera (cam0") and clauses[0].endswith("receiving frames (newest within the last 15 min)")
-    # Stale walkway: says so, and drops the count it can no longer vouch for.
+    # Stale walkway: says so, and drops the people range it can no longer vouch for.
     assert "your outdoor camera (walkway" in clauses[1]
     assert clauses[1].endswith("no frames arriving, last frame 2 h ago")
 

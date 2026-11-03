@@ -28,7 +28,7 @@ CONTAMINATED = [48.5, 144.5]
 
 def _feed(prior: PowerPrior, values, outcome: str = "settled") -> None:
     for v in values:
-        prior.observe(outcome=outcome, actual_peak_watts=v, **KEY)
+        prior.observe(outcome=outcome, actual_peak_watts=v, at=0.0, **KEY)
 
 
 def test_unmeasured_workload_declares_none_not_a_guess():
@@ -97,26 +97,26 @@ def test_unsettled_outcomes_never_contribute():
     # missing-peak guard do all the work and this test would pass even with
     # the outcome check deleted -- confirmed by mutation, which is how this
     # weaker earlier version was caught.
-    assert prior.observe(outcome="deadline_expired", actual_peak_watts=250.0, **KEY) is False
-    assert prior.observe(outcome="no_samples", actual_peak_watts=250.0, **KEY) is False
-    assert prior.observe(outcome="", actual_peak_watts=250.0, **KEY) is False
+    assert prior.observe(outcome="deadline_expired", actual_peak_watts=250.0, at=0.0, **KEY) is False
+    assert prior.observe(outcome="no_samples", actual_peak_watts=250.0, at=0.0, **KEY) is False
+    assert prior.observe(outcome="", actual_peak_watts=250.0, at=0.0, **KEY) is False
     assert prior.sample_count(**KEY) == 0
 
     # And independently, the missing-peak guard.
-    assert prior.observe(outcome="settled", actual_peak_watts=None, **KEY) is False
+    assert prior.observe(outcome="settled", actual_peak_watts=None, at=0.0, **KEY) is False
     assert prior.sample_count(**KEY) == 0
     assert prior.expected_watts(**KEY) is None
 
     # Control: the same value WITH a settled outcome is accepted, so the
     # assertions above are refusals rather than a prior that never counts.
-    assert prior.observe(outcome="settled", actual_peak_watts=250.0, **KEY) is True
+    assert prior.observe(outcome="settled", actual_peak_watts=250.0, at=0.0, **KEY) is True
     assert prior.expected_watts(**KEY) == pytest.approx(250.0)
 
 
 def test_a_nonpositive_peak_is_a_broken_reading_not_an_idle_card():
     prior = PowerPrior(min_samples=1)
-    assert prior.observe(outcome="settled", actual_peak_watts=0.0, **KEY) is False
-    assert prior.observe(outcome="settled", actual_peak_watts=-5.0, **KEY) is False
+    assert prior.observe(outcome="settled", actual_peak_watts=0.0, at=0.0, **KEY) is False
+    assert prior.observe(outcome="settled", actual_peak_watts=-5.0, at=0.0, **KEY) is False
     assert prior.expected_watts(**KEY) is None
 
 
@@ -207,3 +207,28 @@ def test_missing_file_and_disabled_path_are_quiet(tmp_path):
     assert load_prior_file(prior, str(tmp_path / "absent.json"), now=T0) == 0
     assert load_prior_file(prior, "", now=T0) == 0
     assert save_prior_file(prior, "") is False
+
+
+def test_a_saved_window_from_another_model_is_ignored(tmp_path):
+    """A model swap must not inherit the old model's watts."""
+    path = str(tmp_path / "p.json")
+    old = PowerPrior(min_samples=3, fingerprint="sdxl-turbo|fp16|1|512|512")
+    for i, v in enumerate(CLEAN[:3]):
+        old.observe(outcome="settled", actual_peak_watts=v, at=T0 + i, **KEY)
+    save_prior_file(old, path)
+    new = PowerPrior(min_samples=3, fingerprint="flux-schnell|fp16|4|1024|1024")
+    assert load_prior_file(new, path, now=T0 + 10) == 0
+    same = PowerPrior(min_samples=3, fingerprint="sdxl-turbo|fp16|1|512|512")
+    assert load_prior_file(same, path, now=T0 + 10) == 3
+
+
+def test_observe_requires_a_time():
+    with pytest.raises(TypeError):
+        PowerPrior().observe(outcome="settled", actual_peak_watts=200.0, **KEY)  # type: ignore[call-arg]
+
+
+def test_save_leaves_no_temp_file_behind(tmp_path):
+    prior = PowerPrior()
+    prior.observe(outcome="settled", actual_peak_watts=200.0, at=T0, **KEY)
+    assert save_prior_file(prior, str(tmp_path / "p.json"))
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["p.json"]

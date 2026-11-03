@@ -143,6 +143,15 @@ def _prior_max_age_sec() -> Optional[float]:
     return age if age > 0 else None
 
 
+def _prior_fingerprint() -> str:
+    """What the saved peaks were drawn by. A different model, dtype, step count or image
+    size starts the prior empty instead of inheriting watts from another regime."""
+    return "|".join(str(x) for x in (
+        settings.DIFFUSION_MODEL_ID, settings.DIFFUSION_DTYPE, settings.DIFFUSION_NUM_INFERENCE_STEPS,
+        settings.DIFFUSION_DEFAULT_WIDTH, settings.DIFFUSION_DEFAULT_HEIGHT,
+    ))
+
+
 def get_power_prior() -> PowerPrior:
     global _power_prior
     if _power_prior is None:
@@ -150,6 +159,7 @@ def get_power_prior() -> PowerPrior:
             window=settings.DIFFUSION_POWER_PRIOR_WINDOW,
             min_samples=settings.DIFFUSION_POWER_PRIOR_MIN_SAMPLES,
             max_age_sec=_prior_max_age_sec(),
+            fingerprint=_prior_fingerprint(),
         )
         kept = load_prior_file(_power_prior, settings.DIFFUSION_POWER_PRIOR_STATE_PATH, now=time.time())
         logger.info(

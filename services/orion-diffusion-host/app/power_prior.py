@@ -43,6 +43,7 @@ import json
 import math
 import os
 import statistics
+import tempfile
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional, Tuple
@@ -61,7 +62,7 @@ class PowerPrior:
     """Bounded, per-workload memory of settled peak draw."""
 
     def __init__(self, *, window: int = 20, min_samples: int = 3,
-                 max_age_sec: Optional[float] = None) -> None:
+                 max_age_sec: Optional[float] = None, fingerprint: str = "") -> None:
         if window < 1:
             raise ValueError("window must be >= 1")
         if min_samples < 1:
@@ -73,6 +74,10 @@ class PowerPrior:
         self._window = window
         self._min_samples = min_samples
         self._max_age_sec = max_age_sec
+        # What produced these peaks (model, dtype, steps, size). A saved window from a
+        # different fingerprint is ignored on load: a model swap must not inherit the old
+        # model's watts (the regime change the in-memory prior used to forget by restarting).
+        self._fingerprint = fingerprint
         self._seen: Dict[PriorKey, Deque[Sample]] = {}
 
     def observe(
@@ -83,7 +88,7 @@ class PowerPrior:
         gpu_index: Optional[int],
         outcome: str,
         actual_peak_watts: Optional[float],
-        at: float = 0.0,
+        at: float,
     ) -> bool:
         """Record one settlement observed at unix time `at`. Returns whether it was counted.
 
@@ -149,6 +154,7 @@ class PowerPrior:
         """The whole window as plain JSON-able data."""
         return {
             "version": STATE_VERSION,
+            "fingerprint": self._fingerprint,
             "buckets": [
                 {"workload_kind": k[0], "node": k[1], "gpu_index": k[2],
                  "samples": [[v, t] for v, t in bucket]}
@@ -159,10 +165,13 @@ class PowerPrior:
     def load_state(self, state: Any, *, now: Optional[float] = None) -> int:
         """Merge a saved window back in (oldest first, still bounded by `window`).
 
-        Skips anything malformed, any sample older than `max_age_sec` when `now`
+        Skips the whole file when its fingerprint differs from this prior's, and
+        skips anything malformed, any sample older than `max_age_sec` when `now`
         is given, and any non-positive peak. Returns how many samples were kept.
         """
         if not isinstance(state, dict) or state.get("version") != STATE_VERSION:
+            return 0
+        if str(state.get("fingerprint") or "") != self._fingerprint:
             return 0
         floor = None
         if self._max_age_sec is not None and now is not None:
@@ -209,11 +218,21 @@ def save_prior_file(prior: PowerPrior, path: str) -> bool:
     if not path:
         return False
     target = Path(path)
-    tmp = target.with_name(target.name + ".tmp")
+    tmp_name = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(prior.to_state()), encoding="utf-8")
-        os.replace(tmp, target)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent,
+                                         prefix=target.name + ".", suffix=".tmp", delete=False) as f:
+            tmp_name = f.name
+            f.write(json.dumps(prior.to_state()))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
         return True
     except OSError:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         return False

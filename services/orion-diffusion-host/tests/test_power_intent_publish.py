@@ -35,6 +35,14 @@ from orion.schemas.power import PowerIntentV1
 import app.main as main
 
 
+@pytest.fixture(autouse=True)
+def _isolated_power_prior(monkeypatch, tmp_path):
+    """Never read or write the real prior file (/var/lib/... exists on a deployed host) and
+    start every test with a fresh prior."""
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_PRIOR_STATE_PATH", str(tmp_path / "power_prior.json"))
+    monkeypatch.setattr(main, "_power_prior", None)
+
+
 class _RecordingBus:
     """Bus double whose publish() signature is pinned to the real one."""
 

@@ -3,10 +3,12 @@
 Three acts, all ``actor = "prime"`` (the body-economy family ``prime``, so Prime's own history
 prices its next bid):
 
-* **thought** -- verb ``infer``. Opens when a funded thought starts, closes when it ends.
-  ``artifact_produced`` = the model returned an answer that parsed (a preempted, shed, timed-out
-  or unparseable thought is 0). Horizon: the LLM timeout plus a margin, because the runtime closes
-  the act itself in the same coroutine.
+* **thought** -- verb ``infer``. Published once the model call came back from the model (stamped
+  with the time the try started), closed at once. ``artifact_produced`` = the model returned an
+  answer that parsed (a preempted, timed-out or unparseable thought is 0). A try that never reached
+  the model (no pool seat, no gateway reply, an upstream 5xx) opens no act at all (2026-11-03): it is
+  not a thought, so it is neither graded 0 nor resets the ``prime`` family's hunger. Horizon: the
+  seat wait plus the LLM timeout plus a margin.
 * **nomination** -- verb ``ask`` (a call to another organ, design section 5). One question for
   curiosity's next regular investigate run. ``test_before = "holdback:<arm>"`` records the draw:
   ``treated`` queues it in Hub's focus slot (orion/curiosity/focus.py); ``control`` is the narrator
@@ -103,8 +105,9 @@ CONCERN_BASIS = (
 )
 THOUGHT_MARGIN_SEC = 120.0
 THOUGHT_BASIS = (
-    "artifact_produced = the model returned a Prime answer that parsed; horizon = the LLM call timeout "
-    "+ 120s, the runtime closes the act in the same coroutine"
+    "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the "
+    "LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached "
+    "the model opens no act"
 )
 
 REGULATE_COMPONENT = "prime.regulate"

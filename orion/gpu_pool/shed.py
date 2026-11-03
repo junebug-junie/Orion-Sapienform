@@ -6,8 +6,11 @@ result: ``priority -> reason name``. Everything about who may shed, how strongly
 reasons combine lives here.
 
 - A reason is named, has a precedence (lower number wins) and a fixed set of priorities it blocks.
-  Only ``background`` and ``system`` can ever be shed; a reason naming anything else is refused at
-  import time. ``interactive`` (chat), ``perception`` (Orion's senses) and ``urgent`` are never shed.
+  Only ``background``, ``system`` and ``starved`` can ever be shed; a reason naming anything else is
+  refused at import time. ``starved`` (2026-11-03) is system work lifted above other system work
+  because its last try lost its whole wait to the queue: it is still Orion's own work, so every
+  reason that sheds ``system`` sheds it too (pinned in orion/gpu_pool/tests/test_scheduler_shed.py).
+  ``interactive`` (chat), ``perception`` (Orion's senses) and ``urgent`` are never shed.
 - A signal is one producer's claim that a reason holds: ``(reason, source_id, detail, valid_until)``.
   The board keeps one per ``(reason, source_id)``; a signal past ``valid_until`` counts as absent,
   so a producer that dies stops shedding within its own validity window (fail-open).
@@ -35,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-SHEDDABLE: tuple[str, ...] = ("background", "system")
+SHEDDABLE: tuple[str, ...] = ("background", "system", "starved")
 
 
 @dataclass(frozen=True)
@@ -48,14 +51,14 @@ class ShedReasonSpec:
 
 SHED_REASONS: dict[str, ShedReasonSpec] = {
     "cabinet_hot": ShedReasonSpec(
-        "cabinet_hot", 0, ("background", "system"),
+        "cabinet_hot", 0, ("background", "system", "starved"),
         "orion-hardware-watch reflex (v2): the cabinet is at/above 34 C, or unreadable while the AC reads low"),
     "cabinet_unknown": ShedReasonSpec(
         "cabinet_unknown", 0, ("background",),
         "orion-hardware-watch reflex (v2): no cabinet reading past the grace window (counts as elevated)"),
     # v1 rollback path only (HARDWARE_WATCH_HEAT_CONTROLLER=v1); delete after v2 runs clean a week.
     "cooling_incident": ShedReasonSpec(
-        "cooling_incident", 0, ("background", "system"),
+        "cooling_incident", 0, ("background", "system", "starved"),
         "orion-hardware-watch (v1 rollback): the cabinet AC incident is open and the cabinet is warming"),
     # Background only, never system: system work is Orion's own cognition/execution; shedding it on a
     # routine warm afternoon is the self-DOS failure mode (design, "Background only, not system").

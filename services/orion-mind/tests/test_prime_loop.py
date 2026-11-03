@@ -89,7 +89,8 @@ class LLM:
 SETTINGS = SimpleNamespace(
     SERVICE_NAME="orion-mind", SERVICE_VERSION="t", NODE_NAME="test", PRIME_TICK_SEC=15, PRIME_REFRACTORY_SEC=120,
     PRIME_SETTLE_INTERVAL_SEC=300, PRIME_LLM_ROUTE="prime", PRIME_BID_LANE="chat", PRIME_MAX_TOKENS=700,
-    PRIME_LLM_TIMEOUT_SEC=60, PRIME_HOLDBACK_FRACTION=0.0, PRIME_DURABLE_RUNS_URL="http://dr:8121",
+    PRIME_LLM_TIMEOUT_SEC=60, PRIME_SEAT_WAIT_SEC=600, PRIME_STARVED_LLM_ROUTE="prime_starved",
+    PRIME_HOLDBACK_FRACTION=0.0, PRIME_DURABLE_RUNS_URL="http://dr:8121",
     PRIME_HUB_URL="http://hub:8080",
 )
 
@@ -341,7 +342,7 @@ def test_a_crashing_thought_closes_its_act_and_still_waits_out_the_refractory(mo
     rt = runtime(answer=MOVE)
     rt.llm.request_json = lambda **kw: (_ for _ in ()).throw(AssertionError("unreachable"))
     # The loop module's own globals (conftest re-imports `app`, so sys.modules may hold another copy).
-    monkeypatch.setitem(PrimeRuntime._think.__globals__, "build_frame",
+    monkeypatch.setitem(PrimeRuntime._ask.__globals__, "build_frame",
                         lambda *a, **k: (_ for _ in ()).throw(ValueError("bad payload")))
     asyncio.run(rt.tick())
     rt.clock_box["now"] = T0 + timedelta(seconds=30)
@@ -493,3 +494,111 @@ def test_a_question_with_no_refs_sends_no_refs_key_so_an_older_hub_accepts_it():
     asyncio.run(rt.tick())
     [(_, env)] = rt.bus.rpcs
     assert "refs" not in env.payload["args"]
+
+
+# --- reliability (2026-11-03): seat wait, no-model tries, the starved route ----------------------
+
+NO_SEAT = (None, "empty_llm_response", {"gateway_error": {"error": "gpu_pool_unavailable", "reason": "deadline",
+                                                          "retry_after_sec": None}})
+UPSTREAM_5XX = (None, "empty_llm_response", {"gateway_error": {"error": "upstream_http_5xx", "reason": None,
+                                                               "retry_after_sec": None}})
+
+
+class SeqLLM:
+    """Answers each call with the next (parsed, err, meta) in ``results``."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def request_json(self, **kw):
+        self.calls.append(kw)
+        return self.results.pop(0)
+
+
+def seq_runtime(results, **kw):
+    rt = runtime(answer=MOVE, **kw)
+    rt.llm = SeqLLM(results)
+    return rt
+
+
+def _grammar(rt):
+    return [e.payload for c, e in rt.bus.published if c == "orion:grammar:event"]
+
+
+def test_prime_waits_for_a_seat_on_top_of_its_generation_budget_and_bids_only_the_generation():
+    rt = seq_runtime([(MOVE, None, {})])
+    asyncio.run(rt.tick())
+    [call] = rt.llm.calls
+    assert call["route"] == "prime" and call["timeout_sec"] == 60 and call["pool_wait_sec"] == 600
+    assert rt.bids[0].cost.gpu_slot_s_by_lane == {"chat": 60.0}   # the wait is not a cost
+    [opened] = [e for e in _grammar(rt) if e["event_kind"] == "act_opened" and e["act"]["verb"] == "infer"]
+    # The act spans the whole try: its horizon covers the seat wait + generation (+ margin).
+    assert opened["act"]["expect"]["horizon_sec"] == 600 + 60 + pa.THOUGHT_MARGIN_SEC
+
+
+def test_a_try_that_got_no_seat_is_not_a_thought_and_the_next_tick_retries_on_the_starved_route():
+    rt = seq_runtime([NO_SEAT, (MOVE, None, {})])
+    asyncio.run(rt.tick())
+    assert rt.bus.acts() == []                                     # no thought act, opened or closed
+    assert rt.state.last_thought_at is None and rt.state.pending_changes   # refractory not started
+    assert rt.state.no_model_streak == 1 and rt.state.last_try_kind == "no_seat"
+    assert rt.released == [rt.bids[0].want_id]                     # the bid's reservation is let go
+    assert "never reached the model (no_seat: deadline)" in rt.state.recent_outcomes[-1]
+    rt.clock_box["now"] = T0 + timedelta(seconds=15)
+    asyncio.run(rt.tick())                                         # the retry: next tick, re-bid
+    assert len(rt.bids) == 2
+    assert [c["route"] for c in rt.llm.calls] == ["prime", "prime_starved"]
+    kinds = [(k, a["verb"]) for k, a in rt.bus.acts() if a["verb"] == "infer"]
+    assert kinds == [("act_opened", "infer"), ("act_closed", "infer")]
+    assert rt.state.no_model_streak == 0 and rt.state.last_try_kind == "model"
+    # The thought saw that its previous try was starved.
+    assert "never reached the model" in rt.llm.calls[1]["user_prompt"]
+
+
+def test_an_upstream_5xx_is_retried_once_at_once():
+    rt = seq_runtime([UPSTREAM_5XX, (MOVE, None, {})])
+    asyncio.run(rt.tick())
+    assert [c["route"] for c in rt.llm.calls] == ["prime", "prime"] and len(rt.bids) == 1
+    closed = [a for k, a in rt.bus.acts() if k == "act_closed" and a["verb"] == "infer"]
+    assert closed[0]["outcome"]["value"] == 1.0
+
+
+def test_two_upstream_5xx_in_a_row_are_not_a_thought_and_do_not_escalate():
+    rt = seq_runtime([UPSTREAM_5XX, UPSTREAM_5XX])
+    asyncio.run(rt.tick())
+    assert len(rt.llm.calls) == 2 and rt.bus.acts() == []
+    assert rt.state.last_try_kind == "upstream_5xx" and rt.state.last_thought_at is None
+
+
+def test_a_model_failure_is_still_a_failed_thought_with_the_refractory():
+    rt = seq_runtime([(None, "empty_llm_response", {"gateway_error": {"error": "timeout",
+                                                                      "reason": "caller_budget_exhausted"}})])
+    asyncio.run(rt.tick())
+    closed = [a for k, a in rt.bus.acts() if k == "act_closed"]
+    assert closed[0]["outcome"]["value"] == 0.0 and "failed" in closed[0]["outcome"]["note"]
+    assert rt.state.last_thought_at == T0 and rt.state.no_model_streak == 0
+
+
+def test_no_hot_loop_after_repeated_no_seat_tries():
+    rt = seq_runtime([NO_SEAT] * 5)
+    for i in range(4):
+        rt.clock_box["now"] = T0 + timedelta(seconds=15 * i)
+        asyncio.run(rt.tick())
+    assert len(rt.bids) == 4 and rt.state.no_model_streak == 4 and rt.state.retry_not_before is not None
+    rt.clock_box["now"] = T0 + timedelta(seconds=75)
+    asyncio.run(rt.tick())
+    assert len(rt.bids) == 4                                       # backing off: no bid, no call
+    # One line per streak, not one per try.
+    assert sum("never reached the model" in o for o in rt.state.recent_outcomes) == 1
+
+
+def test_attention_moving_does_not_wake_prime():
+    rt = seq_runtime([(MOVE, None, {})])
+    asyncio.run(rt.tick())                                         # first wake
+    assert len(rt.bids) == 1
+    moved = {**TEMPORAL, "active_arc": {"arc_id": "arc2", "subject_label": "chat", "kind": "attention"}}
+    rt.get_json = lambda url, _orig=rt.get_json: moved if url.endswith("/temporal-self/frame") else _orig(url)
+    rt.clock_box["now"] = T0 + timedelta(hours=1)
+    asyncio.run(rt.tick())
+    assert len(rt.bids) == 1 and rt.state.pending_changes == []

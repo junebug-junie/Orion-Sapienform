@@ -24,8 +24,7 @@ REFRACTORY = timedelta(seconds=120)
 
 
 def _snap(**kw) -> PrimeSnapshotV1:
-    base = dict(active_arc_id="arc1", active_arc_label="Bus synaptic prediction error", binding=[],
-                temporal_self_ok=True, body_ok=True)
+    base = dict(binding=[], body_ok=True)
     return PrimeSnapshotV1(**{**base, **kw})
 
 
@@ -40,13 +39,16 @@ def test_first_tick_wakes_and_a_quiet_tick_after_a_thought_does_not():
     assert again.pending_changes == [] and not wants_to_think(again, T0 + timedelta(minutes=5), refractory=REFRACTORY)
 
 
-def test_attention_moving_is_a_change_but_never_evidence_for_a_concern():
+def test_attention_moving_is_not_a_change_and_never_evidence_for_a_concern():
+    """2026-11-03: attention churn woke Prime and its concerns were dropped as "attention has moved"
+    (22 of 38 drops, 10-30..11-03). Attention stays in the frame as background; it wakes nothing."""
     concern = PrimeConcernV1(concern_id="c1", text="the bus keeps surprising me", arc_id="arc2",
                              opened_at=T0, last_evidence_at=T0)
-    state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
-    state = observe(state, _snap(active_arc_id="arc2", active_arc_label="heat"), T0 + timedelta(hours=3))
-    assert state.pending_changes == ["attention moved to 'heat' (arc arc2)"]
+    state = PrimeStateV1(concerns=[concern], seen_binding=[], last_thought_at=T0)
+    state = observe(state, _snap(), T0 + timedelta(hours=3))
+    assert state.pending_changes == []
     assert state.concerns[0].last_evidence_at == T0
+    assert "active_arc_id" not in PrimeSnapshotV1.model_fields
 
 
 def test_an_unknown_read_is_never_a_change():
@@ -227,7 +229,7 @@ def test_only_a_thought_keeping_a_concern_renews_it():
     concern = PrimeConcernV1(concern_id="c1", text="energy", arc_id="arc1", opened_at=T0, last_evidence_at=T0)
     state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
     later = T0 + CONCERN_TTL + timedelta(hours=1)
-    faded = observe(state, _snap(active_arc_id="arc1"), later)
+    faded = observe(state, _snap(), later)
     assert faded.concerns == [] and "not kept" in faded.pending_changes[-1]
     keep = PrimeAnswerV1.model_validate({"concerns": {"keep": ["c1", "ghost"]}})
     applied = apply_answer(state, keep, now=T0 + timedelta(hours=20), arc_ids=[], focus_pending=False)

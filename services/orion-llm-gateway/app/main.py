@@ -411,6 +411,11 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     left after the grant bounds the upstream call, so a call that queued for most of its budget is
     not then given a fresh budget to generate for a caller that has gone.
 
+    A caller that names its own seat wait (``options["gateway_pool_wait_sec"]``,
+    pool_placement.caller_pool_wait_sec) is waiting that much LONGER: the deadline is wait + budget,
+    the pool wait is its own number (not the priority's), and each upstream call still gets at most
+    the caller's budget. Prime (orion-mind) waits up to ~10 min for a seat, then generates for 60 s.
+
     Under a hold (``hold`` set, stage 4) every acquire is an ``attach``, and an upstream overflow is
     returned as is: the child can only run on the hold's role, so a bigger re-lease has nowhere to go.
 
@@ -419,15 +424,17 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     """
     timing = timing if timing is not None else grammar_emit.CallClock()
     budget_s = resolve_caller_budget_sec(plan.body)
-    deadline = time.monotonic() + budget_s
     options = plan.body.options or {}
+    seat_wait_s = pool_placement.caller_pool_wait_sec(options)
+    deadline = time.monotonic() + budget_s + (seat_wait_s or 0.0)
     estimate = pool_placement.estimate_min_ctx_tokens(plan.body.messages or [], options.get("max_tokens"))
     min_ctx = estimate
     overflow: Optional[Dict[str, Any]] = None
     clamped = False
     for _ in range(3):
         remaining = deadline - time.monotonic()
-        wait_s = min(pool_placement.wait_budget_sec(plan.priority or "system"), remaining)
+        wait_cap = seat_wait_s if seat_wait_s is not None else pool_placement.wait_budget_sec(plan.priority or "system")
+        wait_s = min(wait_cap, remaining)
         timing.waiting()
         try:
             async with pool_placement.lease_for_route(
@@ -436,6 +443,8 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
             ) as lease:
                 timing.granted(getattr(lease.grant, "role", None), busy=pool_placement.busy_at_grant(lease))
                 read_timeout_s = deadline - time.monotonic()
+                if seat_wait_s is not None:
+                    read_timeout_s = min(read_timeout_s, budget_s)   # the seat wait never buys generation time
                 if read_timeout_s <= 0:
                     # The grant came after the caller's budget ran out: generate nothing.
                     return overflow or _pool_unavailable_result(plan, "deadline")

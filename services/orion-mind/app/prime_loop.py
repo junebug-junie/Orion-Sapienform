@@ -10,7 +10,20 @@ Two clocks:
   open question, save the state to Redis. Most ticks stop here.
 * **thought** (only when something changed, the refractory interval has passed, no Juniper turn is
   running, and the body economy FUNDS the bid): one model call on route PRIME_LLM_ROUTE (circe chat
-  lane 0 at background priority), then at most one move.
+  lane 0 at pool priority system), then at most one move.
+
+Seat wait and generation are two numbers (2026-11-03). The call may wait PRIME_SEAT_WAIT_SEC for a pool
+seat and then generate for PRIME_LLM_TIMEOUT_SEC (the gateway's ``gateway_pool_wait_sec`` option); the
+bid's cost ceiling is the generation alone. A try that never reached the model (no seat, no gateway
+reply, or an upstream 5xx after one immediate retry) is not a thought: no act is opened, the refractory
+interval does not start, and the next tick re-bids (orion/prime/state.py ``note_no_model``, with a
+bounded backoff). After a no-seat try the next one goes on PRIME_STARVED_LLM_ROUTE (pool priority
+``starved``: ahead of other system work, still behind Juniper's turn and shed by heat).
+
+The thought act is opened only once the model answered (or failed in a way that is the model's own:
+empty, unparseable, out of generation time), stamped with the time the try started, and closed at once.
+That keeps the act ledger honest: a ``prime`` infer act is a thought that happened, so queue failures
+neither count as failed thoughts nor reset the market's hunger for the ``prime`` family.
 
 Prime obeys its own bid: ``funded`` thinks, anything else (deferred, no answer, flag off) waits. It is
 the first producer whose decision binds (every other bid is still shadow); it never fails open.
@@ -32,9 +45,10 @@ Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tra
 Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
 all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
 work today: a thought whose model call (in a worker thread) overlapped a turn is recorded ``preempted``
-and discarded, and the ``prime`` route's background priority keeps a Prime call from STARTING while
-Juniper's call holds the slot. A call already generating is NOT cancelled (the bus RPC has no cancel);
-the gateway generates nothing for a call granted after its 60 s budget (llm-gateway app/main.py).
+and discarded, and the pool ranks Juniper's turn (interactive) ahead of both Prime routes (system,
+starved), so a Prime call does not START while Juniper's call waits for the slot. A call already
+generating is NOT cancelled (the bus RPC has no cancel); the gateway generates nothing for a call
+granted after its seat wait (llm-gateway app/main.py).
 
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
@@ -49,6 +63,7 @@ import threading
 import time
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterator, Optional
 from uuid import uuid4
@@ -92,10 +107,15 @@ from orion.prime.state import (
     PrimeRegulationOpenV1,
     PrimeSnapshotV1,
     PrimeStateV1,
+    TryKind,
+    classify_try,
     new_id,
+    note_model_reached,
+    note_no_model,
     note_outcome,
     observe,
     trim_record,
+    wants_starved_route,
     wants_to_think,
 )
 from orion.prime.thought import (
@@ -172,6 +192,20 @@ def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
     """Show a line in the next frame WITHOUT making it a change (a refusal Prime caused itself must
     not wake it again, or a refused move would loop)."""
     return state.model_copy(update={"recent_outcomes": [*state.recent_outcomes, text][-MAX_RECENT_OUTCOMES:]})
+
+
+@dataclass
+class _Reply:
+    """One model call's result, and whether it reached the model (orion/prime/state.py classify_try)."""
+
+    route: str
+    parsed: Optional[dict[str, Any]]
+    err: Optional[str]
+    gateway_error: Optional[dict[str, Any]]
+    kind: TryKind
+    started_mono: float = 0.0
+    curiosity: Optional[dict[str, Any]] = None
+    receptors: Optional[dict[str, tuple[str, ...]]] = None
 
 
 class PrimeRuntime:
@@ -289,18 +323,13 @@ class PrimeRuntime:
         body, body_err = await self._read(f"{base}/physiology/state")
         if body is not None and not body.get("ok", False):
             body, body_err = None, "body state not ok"
+        # Attention is read for the frame (background), never as a change that wakes Prime.
         temporal, temporal_err = await self._read(f"{base}/temporal-self/frame")
         active = (temporal or {}).get("active_arc") or {}
         prices = (body or {}).get("prices")
         binding = (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
                    if isinstance(prices, dict) else None)
-        snap = PrimeSnapshotV1(
-            active_arc_id=active.get("arc_id"),
-            active_arc_label=active.get("subject_label") or active.get("subject_ref"),
-            binding=binding,
-            temporal_self_ok=temporal is not None,
-            body_ok=body is not None,
-        )
+        snap = PrimeSnapshotV1(binding=binding, body_ok=body is not None)
         arc_ids = [a.get("arc_id") for a in (temporal or {}).get("arcs_today") or [] if a.get("arc_id")]
         if active.get("arc_id"):
             arc_ids.append(active["arc_id"])
@@ -403,22 +432,64 @@ class PrimeRuntime:
                          basis={"gpu_slot_s_by_lane": f"ceiling: PRIME_LLM_TIMEOUT_SEC {ceiling:g} s per thought"})
 
     # --- the thought -----------------------------------------------------------------------
+    def _route(self) -> str:
+        if wants_starved_route(self.state):
+            return str(getattr(self.s, "PRIME_STARVED_LLM_ROUTE", "") or self.s.PRIME_LLM_ROUTE)
+        return self.s.PRIME_LLM_ROUTE
+
+    def _seat_wait_sec(self) -> float:
+        return float(getattr(self.s, "PRIME_SEAT_WAIT_SEC", 0.0) or 0.0)
+
     async def think(self, inputs: FrameInputs) -> None:
         now = self.clock()
         thought_id = new_id()
-        act = thought_act(thought_id, llm_timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC))
-        await self._open(act, THOUGHT_COMPONENT)
-        # Counts for the refractory interval from the moment it opens, whatever happens next (a failed,
-        # preempted or crashed thought must not retry every tick); its pending changes stay unless applied.
-        self.state = self.state.model_copy(update={"last_thought_at": now})
+        # The act's horizon covers the whole try: the seat wait plus the generation budget.
+        act = thought_act(thought_id, llm_timeout_sec=self._seat_wait_sec() + float(self.s.PRIME_LLM_TIMEOUT_SEC))
         try:
-            produced, note = await self._think(act, thought_id, inputs, now)
+            reply = await self._ask(inputs, now)
+        except Exception as exc:  # noqa: BLE001 -- a crash is a failed thought (refractory holds: no hot loop)
+            logger.exception("prime_thought_crashed thought=%s", thought_id)
+            await self._open_thought(act, now)
+            await self._close(act, THOUGHT_COMPONENT, produced=False,
+                              note=f"failed: {type(exc).__name__}: {str(exc)[:160]}")
+            return
+        if reply.kind != "model":
+            self._note_no_model(reply, now)
+            return
+        await self._open_thought(act, now)
+        try:
+            produced, note = await self._conclude(act, thought_id, inputs, now, reply)
         except Exception as exc:  # noqa: BLE001 -- the act always closes
             logger.exception("prime_thought_crashed thought=%s", thought_id)
             produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
         await self._close(act, THOUGHT_COMPONENT, produced=produced, note=note)
 
-    async def _think(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime) -> tuple[bool, str]:
+    async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
+        """The model was reached: the thought happened. Opened stamped with the try's start; counts for
+        the refractory interval from then (a failed or preempted thought must not retry every tick)."""
+        await self._open(act, THOUGHT_COMPONENT, at=started_at)
+        self.state = note_model_reached(self.state).model_copy(update={"last_thought_at": started_at})
+
+    def _note_no_model(self, reply: "_Reply", now: datetime) -> None:
+        gw = reply.gateway_error or {}
+        first = self.state.no_model_streak == 0
+        self.state = note_no_model(self.state, reply.kind, now,
+                                   base=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC)),
+                                   retry_after_sec=gw.get("retry_after_sec"))
+        if first:
+            # Once per streak, so the next real thought knows its last try was starved (not a change:
+            # it must not wake Prime by itself).
+            self.state = _with_outcome_line(
+                self.state, f"a try to think at {now:%H:%M} UTC never reached the model ({reply.kind}"
+                            f"{': ' + str(gw.get('reason')) if gw.get('reason') else ''}); I tried again")
+        logger.info("prime_try_no_model kind=%s route=%s reason=%s err=%s streak=%d retry_not_before=%s pending=%d",
+                    reply.kind, reply.route, gw.get("reason") or "-", (reply.err or "-")[:160],
+                    self.state.no_model_streak,
+                    self.state.retry_not_before.isoformat() if self.state.retry_not_before else "-",
+                    len(self.state.pending_changes))
+
+    async def _ask(self, inputs: FrameInputs, now: datetime) -> "_Reply":
+        """Build the frame and call the model; one immediate retry on an upstream 5xx."""
         curiosity, curiosity_err = await self._read_curiosity()
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
         receptors, receptors_err = self._receptors()
@@ -429,23 +500,41 @@ class PrimeRuntime:
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
         frame = build_frame(self.state, inputs)
+        route = self._route()
         started = time.monotonic()
+        reply = await self._call(route, system_prompt(receptors), frame)
+        if reply.kind == "upstream_5xx":
+            logger.info("prime_upstream_5xx_retry route=%s err=%s", route, (reply.err or "-")[:160])
+            reply = await self._call(route, system_prompt(receptors), frame)
+        reply.started_mono, reply.curiosity, reply.receptors = started, curiosity, receptors
+        return reply
+
+    async def _call(self, route: str, system: str, frame: str) -> "_Reply":
+        seat = self._seat_wait_sec()
         try:
-            parsed, err, _meta = await asyncio.to_thread(
+            parsed, err, meta = await asyncio.to_thread(
                 self.llm.request_json,
-                system_prompt=system_prompt(receptors), user_prompt=frame, route=self.s.PRIME_LLM_ROUTE,
+                system_prompt=system, user_prompt=frame, route=route,
                 max_tokens=int(self.s.PRIME_MAX_TOKENS), temperature=0.4, thinking=False,
-                timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC),
+                timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC), pool_wait_sec=seat if seat > 0 else None,
             )
         except Exception as exc:  # noqa: BLE001
-            parsed, err = None, f"{type(exc).__name__}: {str(exc)[:160]}"
-        if self.turns.started_since(started):
+            parsed, err, meta = None, f"{type(exc).__name__}: {str(exc)[:160]}", {}
+        gw = (meta or {}).get("gateway_error") if isinstance(meta, dict) else None
+        gw = gw if isinstance(gw, dict) else None
+        kind = "model" if parsed is not None and not err else classify_try(err, gw)
+        return _Reply(route=route, parsed=parsed, err=err, gateway_error=gw, kind=kind)
+
+    async def _conclude(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime,
+                        reply: "_Reply") -> tuple[bool, str]:
+        if self.turns.started_since(reply.started_mono):
             logger.info("prime_thought_preempted thought=%s", thought_id)
             return False, "preempted: a Juniper turn started"
-        answer, perr = (None, err) if err else parse_answer(parsed)
+        answer, perr = (None, reply.err) if reply.err else parse_answer(reply.parsed)
         if answer is None:
             logger.info("prime_thought_failed thought=%s err=%s", thought_id, perr)
             return False, f"failed: {perr}"
+        curiosity, receptors = reply.curiosity, reply.receptors
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
@@ -465,7 +554,8 @@ class PrimeRuntime:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
         note = summary_note(applied)
-        logger.info("prime_thought thought=%s %s reading=%r", thought_id, note, answer.reading[:200])
+        logger.info("prime_thought thought=%s route=%s %s reading=%r", thought_id, reply.route, note,
+                    answer.reading[:200])
         return True, note
 
     async def _unresolved(self, refs: list[RefV1]) -> list[str]:

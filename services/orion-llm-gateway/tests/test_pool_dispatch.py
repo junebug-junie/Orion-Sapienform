@@ -389,3 +389,82 @@ async def test_fetch_pool_state_failure_is_none(monkeypatch):
         assert await pool_placement.fetch_pool_state() is None
     finally:
         pool_placement.reset_pool_state_cache()
+
+
+# ── a caller's own seat wait (2026-11-03, Orion Prime) ────────────────────────────────────
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, None), (600, 600.0), ("30", 30.0), (5000, pool_placement.CALLER_POOL_WAIT_MAX_SEC),
+    (0, None), (-1, None), ("x", None), (True, None), (float("nan"), None),
+])
+def test_caller_pool_wait_option_is_parsed_and_capped(raw, expected):
+    options = {} if raw is None else {pool_placement.CALLER_POOL_WAIT_OPTION: raw}
+    assert pool_placement.caller_pool_wait_sec(options) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_callers_seat_wait_is_its_own_pool_deadline_on_top_of_its_budget(fake_pool, monkeypatch):
+    """Prime asks for 600 s of seat wait and 60 s of generation: the pool lease waits 600 s (not the
+    system priority's 300 s, not the 60 s budget), and the upstream still gets at most 60 s."""
+    seen = {}
+
+    def run(body, plan):
+        seen["read"] = body.options["gateway_read_timeout_sec"]
+        return _ok(body, plan)
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    await gateway._dispatch_chat(_body("prime", gateway_read_timeout_sec=60, gateway_pool_wait_sec=600),
+                                 correlation_id="c")
+    call = fake_pool.calls[0]
+    assert call["priority"] == "system" and call["work_class"] == "chat"
+    assert 599.0 < call["deadline_sec"] <= 600.0
+    assert 59.0 < seen["read"] <= 60.0
+
+
+@pytest.mark.asyncio
+async def test_time_spent_queued_does_not_eat_the_generation_budget(fake_pool, monkeypatch):
+    """The live failure (10-30..11-03): a call queued for most of its 60 s had nothing left to
+    generate with. With a seat wait, a call granted late still gets its whole budget."""
+    import asyncio
+
+    seen = {}
+
+    def run(body, plan):
+        seen["read"] = body.options["gateway_read_timeout_sec"]
+        return _ok(body, plan)
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    fake_pool.max_wait_sec = 5.0
+    fake_pool.busy["chat"] = fake_pool.slots["chat"]          # the seat is taken ...
+
+    def free():
+        fake_pool.busy["chat"] -= 1                             # ... until 0.6 s in
+
+    asyncio.get_running_loop().call_later(0.6, free)
+    await gateway._dispatch_chat(_body("prime_starved", gateway_read_timeout_sec=1, gateway_pool_wait_sec=3),
+                                 correlation_id="c")
+    assert fake_pool.calls[0]["priority"] == "starved"
+    assert seen["read"] > 0.95   # without the seat wait it would be ~0.4 s
+
+
+@pytest.mark.asyncio
+async def test_without_a_seat_wait_the_old_single_budget_rule_holds(fake_pool, monkeypatch):
+    import asyncio
+
+    seen = {}
+
+    def run(body, plan):
+        seen["read"] = body.options["gateway_read_timeout_sec"]
+        return _ok(body, plan)
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    fake_pool.max_wait_sec = 5.0
+    fake_pool.busy["chat"] = fake_pool.slots["chat"]
+
+    def free():
+        fake_pool.busy["chat"] -= 1
+
+    asyncio.get_running_loop().call_later(0.6, free)
+    await gateway._dispatch_chat(_body("prime", gateway_read_timeout_sec=1), correlation_id="c")
+    assert seen["read"] < 0.5

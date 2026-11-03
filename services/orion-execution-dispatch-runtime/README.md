@@ -676,6 +676,18 @@ orion-thought's own single-flight lock is the backstop otherwise. The visual-bas
 not act-scored: it keeps its own schedule, eligibility and old cost path. The scored numbers ride on the candidate as an
 `act_expectation:...` reason. Kill switch: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=false`.
 
+**Self-monitor act gate (rung 6 E1, 2026-11-03).** When the self-monitor organ (Redis
+`orion:self_monitor:latest`, written hourly by orion-durable-runs) holds an act-backed route's faculty
+(`act.<actor>.<verb>`, e.g. `act.thought.painting.make`) `broken` or `unreliable`, the candidate is
+refused before `allocate()` with `allocator:track_record_failing` and a
+`self_monitor:track_record_failing:<faculty>:<status>` reason on the frame. One re-test probe per
+faculty per `SELF_MONITOR_PROBE_INTERVAL_SEC` (21600) is admitted and marked `self_monitor:probe:...`;
+a probe is counted from the faculty's last `grammar_acts` open plus this process's own admitted
+probes. It covers the visual-baseline lane too (same act). It only refuses: an absent, stale or
+unreadable state, any other status, or a gate fault leaves every decision as before
+(`tests/test_self_monitor_act_gate.py`). Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`.
+Code: `orion/self_monitor/gate.py`.
+
 The per-tick randomized holdback (`ORION_DISPATCH_HOLDBACK_FRACTION`) is ON at 0.2 (attend-to-act
 design D3). It draws only on ticks that can yield a control observation: at least one candidate with a
 declared field signal that is not a world action or a visual baseline (`tick_can_yield_control`).

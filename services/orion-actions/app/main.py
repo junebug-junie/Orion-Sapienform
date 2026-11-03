@@ -46,7 +46,10 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STATE_KIND, DurableRunStateV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
+from orion.self_monitor.gate import ActGate, last_attempt_sql, read_view_sync
+from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
 from . import act_emit
+from .vision_pg import fetch_rows_blocking as _fetch_ledger_rows_blocking
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, guard_walkway_draft, run_walkway_tick
@@ -1499,6 +1502,36 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 -- shadow only
             logger.info("journal_shadow_settle_failed")
 
+    # Self-monitor E1 (orion/self_monitor/gate.py): every in-process journal compose passes here, so
+    # this one seam covers walkway_*, daily/notify summaries, town_episode, collapse and capability
+    # journals. Refuse-only; an unknown view admits with no ledger read.
+    _journal_gate = ActGate(
+        enabled=settings.self_monitor_act_gate_enabled,
+        probe_interval_sec=settings.self_monitor_probe_interval_sec,
+        read_view=lambda now: read_view_sync(settings.orion_bus_url, now=now),
+        # No DSN -> None: unreadable, so the in-process memo alone decides (never "no attempt").
+        ledger_rows=lambda actor, verb, secs: _fetch_ledger_rows_blocking(
+            settings.postgres_uri.strip(), last_attempt_sql("pyformat"),
+            {"actor": actor, "verb": verb, "secs": float(secs)}) if (settings.postgres_uri or "").strip() else None,
+    )
+
+    def _journal_gate_decide(trigger_kind: str):
+        now = datetime.now(timezone.utc)
+        _journal_gate.begin(now)
+        return _journal_gate.decide(act_emit.JOURNAL_ACTOR, "make", f"journal_trigger:{trigger_kind}", now=now)
+
+    # One audit row per (faculty, window): a held-open walkway night retries every scheduler tick.
+    _gate_refusals_audited: dict[str, str] = {}
+
+    async def _audit_gate_refusal(parent: BaseEnvelope, gate, *, dedupe_key: str, audit_action: str) -> None:
+        window = gate.last_attempt_at.isoformat() if gate.last_attempt_at else "none"
+        if _gate_refusals_audited.get(gate.faculty) == window:
+            logger.debug("self_monitor_refused_again faculty=%s window=%s", gate.faculty, window)
+            return
+        _gate_refusals_audited[gate.faculty] = window
+        await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action,
+                     reason=TRACK_RECORD_FAILING_REASON, extra={"self_monitor": gate.label()})
+
     async def _dispatch_journal(
         parent: BaseEnvelope,
         *,
@@ -1510,6 +1543,21 @@ async def lifespan(app: FastAPI):
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
             return False
+        gate_extra: dict = {}
+        gate_probe = None
+        if settings.self_monitor_act_gate_enabled:
+            trigger_kind = str(getattr(trigger, "trigger_kind", "") or "unknown")
+            try:
+                gate = await asyncio.to_thread(_journal_gate_decide, trigger_kind)
+            except Exception:  # noqa: BLE001 -- one direction only: a gate fault never refuses
+                logger.warning("self_monitor_gate_failed trigger_kind=%s", trigger_kind, exc_info=True)
+                gate = None
+            if gate is not None and not gate.admit:
+                await _audit_gate_refusal(parent, gate, dedupe_key=dedupe_key, audit_action=audit_action)
+                return False
+            if gate is not None and gate.probe:
+                gate_probe = gate
+                gate_extra = {"self_monitor": gate.label(), "self_monitor_probe": True}
         if not journal_deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason=reason or "journal_cooldown")
             return False
@@ -1534,6 +1582,11 @@ async def lifespan(app: FastAPI):
         try:
             await sem.acquire()
             acquired = True
+            if gate_probe is not None and not _journal_gate.claim_probe(gate_probe.faculty, now=datetime.now(timezone.utc)):
+                # Another handler started this window's probe first: this attempt is refused.
+                _settle_shadow(jshadow, f"blocked:{TRACK_RECORD_FAILING_REASON}")
+                await _audit_gate_refusal(parent, gate_probe, dedupe_key=dedupe_key, audit_action=audit_action)
+                return False
             _settle_shadow(jshadow, "ran")
             await jact.open()
             result = await _run_journal(
@@ -1560,6 +1613,7 @@ async def lifespan(app: FastAPI):
                     "journal_mode": result["draft"]["mode"],
                     "write_channel": settings.actions_journal_write_channel,
                     "journal_entry_id": result["write"]["entry_id"],
+                    **gate_extra,
                 },
             )
             return True
@@ -1574,7 +1628,7 @@ async def lifespan(app: FastAPI):
                 event_id=dedupe_key,
                 action_name=audit_action,
                 reason=str(exc),
-                extra={"duration_ms": dt_ms},
+                extra={"duration_ms": dt_ms, **gate_extra},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
             return False

@@ -667,6 +667,18 @@ class ExecutionDispatchRuntimeStore:
                 """), {"actor": actor, "verb": verb, "signal": signal_id, "hours": lookback_hours}).scalar()
         return None if value is None or float(value) <= 0 else float(value)
 
+    def act_attempt_rows(self, actor: str, verb: str, secs: float) -> list[dict]:
+        """grammar_acts rows (object_ref, opened_at) this actor+verb opened in the last ``secs``: the
+        self-monitor gate's probe bookkeeping (orion/self_monitor/gate.py). Raises on a failed read;
+        the gate treats that as unreadable, never as "no attempt"."""
+        from orion.self_monitor.gate import last_attempt_sql
+
+        with self._engine.begin() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = 5000"))
+            rows = conn.execute(text(last_attempt_sql("sqlalchemy")),
+                                {"actor": actor, "verb": verb, "secs": float(secs)}).mappings().all()
+        return [dict(r) for r in rows]
+
     def _act_episodes_conn_ready(self, conn) -> None:
         from orion.autonomy import act_episodes
 

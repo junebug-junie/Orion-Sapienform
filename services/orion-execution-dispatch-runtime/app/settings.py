@@ -253,6 +253,12 @@ class Settings(BaseSettings):
     # ORION_DISPATCH_HOLDBACK_FRACTION into substrate_act_episodes (control vs treated). false -> the
     # path is off; the information path is untouched either way. Shipped ON.
     orion_dispatch_proven_effect_enabled: bool = Field(True, alias="ORION_DISPATCH_PROVEN_EFFECT_ENABLED")
+    # Self-monitor E1 (orion/self_monitor/gate.py): an act-backed candidate whose faculty is held
+    # broken/unreliable in a fresh orion:self_monitor:latest is refused `track_record_failing`, except
+    # one re-test probe per faculty per SELF_MONITOR_PROBE_INTERVAL_SEC. Unknown/stale/absent state
+    # changes nothing. false -> no Redis read, decisions exactly as before.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
     orion_dispatch_act_cost_lookback_hours: int = Field(
         720, ge=24, le=2160, alias="ORION_DISPATCH_ACT_COST_LOOKBACK_HOURS"
     )

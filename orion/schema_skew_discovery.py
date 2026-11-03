@@ -91,6 +91,16 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    "orion.schemas.self_monitor:SelfMonitorStateV1": (
+        "orion-durable-runs",
+        "the self_monitor node (rung 6 patch 2) writes it to Redis orion:self_monitor:latest; Hub's E2 minter "
+        "(and the dispatch-runtime / orion-actions act gates) read it via orion.self_monitor.view",
+    ),
+    "orion.schemas.self_monitor:FacultyRecordV1": (
+        "orion-durable-runs",
+        "the self_monitor node (rung 6 patch 2) writes SelfMonitorStateV1 to Redis orion:self_monitor:latest; "
+        "Hub's E2 minter, dispatch-runtime and orion-actions read it via orion.self_monitor.view",
+    ),
     "orion.schemas.prediction:ActionBetCountsV1": (
         "orion-prediction",
         "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "

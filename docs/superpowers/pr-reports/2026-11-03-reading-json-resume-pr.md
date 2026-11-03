@@ -142,6 +142,6 @@ The post-pull rebuild redeploys orion-harness-governor, the service that runs th
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/3040
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -9,10 +9,12 @@ from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, Substrat
 from .activation import (
     ACTIVATION_DECAYED_AT_KEY,
     DECAY_MODE_LEGACY,
+    PROPAGATION_DECAY_MODE_SOURCE,
     ActivationConfig,
     activation_decay_anchor,
     decay_activation,
     normalize_decay_mode,
+    normalize_propagation_decay_mode,
     seed_activation,
 )
 from .eligibility import cognitive_view
@@ -80,6 +82,7 @@ class SubstrateDynamicsEngine:
         dormancy_threshold: float = 0.08,
         revival_threshold: float = 0.2,
         decay_mode: str = "since_last",
+        propagation_decay_mode: str = "source",
     ) -> None:
         self._store = store
         # since_last (default): decay the stored activation only by the time
@@ -87,6 +90,15 @@ class SubstrateDynamicsEngine:
         # legacy: decay by the full time since observed_at every tick, which
         # compounds. Rollback only; see orion/substrate/activation.py.
         self._decay_mode = normalize_decay_mode(decay_mode)
+        # source (default, 2026-11-03): a propagated term carries the source
+        # node's decay and is not decayed again by the receiver's age.
+        # receiver_age: the pre-2026-11-03 double decay. Rollback only; see
+        # orion/substrate/activation.py. Ignored when decay_mode is legacy.
+        self._propagation_decay_mode = normalize_propagation_decay_mode(propagation_decay_mode)
+        self._propagate_from_source = (
+            self._decay_mode != DECAY_MODE_LEGACY
+            and self._propagation_decay_mode == PROPAGATION_DECAY_MODE_SOURCE
+        )
         self._activation_config = activation_config or ActivationConfig()
         self._pressure_config = pressure_config or PressureConfig()
         self._dormancy_threshold = dormancy_threshold
@@ -177,21 +189,28 @@ class SubstrateDynamicsEngine:
                 # the anchor is observed_at (no stamp yet).
                 anchor = activation_decay_anchor(node)
                 since_last_seconds = max(0.0, (tick_at - anchor).total_seconds())
-                fresh_activation = activations.get(f"{node_id}:fresh", combined_activation)
-                new_activation = max(
-                    decay_activation(
-                        current=fresh_activation,
-                        elapsed_seconds=age_seconds,
-                        half_life_seconds=half_life,
-                        floor=floor,
-                    ),
-                    decay_activation(
-                        current=prev_activation,
-                        elapsed_seconds=since_last_seconds,
-                        half_life_seconds=half_life,
-                        floor=floor,
-                    ),
-                )
+                if self._propagate_from_source:
+                    # _compute_activations_from_source already returned this
+                    # tick's value: max(own seed decayed by age, stored value
+                    # decayed since its last decay, propagated term as the
+                    # source holds it now). Nothing is decayed twice.
+                    new_activation = combined_activation
+                else:
+                    fresh_activation = activations.get(f"{node_id}:fresh", combined_activation)
+                    new_activation = max(
+                        decay_activation(
+                            current=fresh_activation,
+                            elapsed_seconds=age_seconds,
+                            half_life_seconds=half_life,
+                            floor=floor,
+                        ),
+                        decay_activation(
+                            current=prev_activation,
+                            elapsed_seconds=since_last_seconds,
+                            half_life_seconds=half_life,
+                            floor=floor,
+                        ),
+                    )
                 # Never move the stamp backwards (clock skew, or an
                 # observed_at in the future relative to this tick).
                 new_decay_stamp = max(anchor, tick_at)
@@ -404,6 +423,120 @@ class SubstrateDynamicsEngine:
                     reasons[involved_id] = "contradiction_involved"
         return dict(pressure), reasons
 
+    def _own_activation_now(self, node: BaseSubstrateNodeV1, seed: float, now: datetime) -> float:
+        """The node's activation this tick before any propagation: its seed
+        decayed by its age, or its stored value decayed since its last decay,
+        whichever is higher. The same two terms the since_last tick uses."""
+        bundle = node.signals.activation
+        observed_at = node.temporal.observed_at
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        age_seconds = max(0.0, (now - observed_at).total_seconds())
+        since_last_seconds = max(0.0, (now - activation_decay_anchor(node)).total_seconds())
+        return max(
+            decay_activation(
+                current=seed,
+                elapsed_seconds=age_seconds,
+                half_life_seconds=bundle.decay_half_life_seconds,
+                floor=bundle.decay_floor,
+            ),
+            decay_activation(
+                current=bundle.activation,
+                elapsed_seconds=since_last_seconds,
+                half_life_seconds=bundle.decay_half_life_seconds,
+                floor=bundle.decay_floor,
+            ),
+        )
+
+    def _compute_activations_from_source(
+        self,
+        nodes: dict[str, BaseSubstrateNodeV1],
+        outgoing: dict[str, list[SubstrateEdgeV1]],
+        seeds: dict[str, float],
+        recency_scores: dict[str, float],
+        now: datetime,
+    ) -> dict[str, float]:
+        """Propagation decay mode ``source`` (2026-11-03).
+
+        A propagated term is decayed exactly once. Every node's own value here
+        is "as of now" (seed decayed by its own age, stored value decayed since
+        its last decay). A signal that started at a node that decays already
+        carries that decay, so the receiver takes it as is -- not decayed again
+        by the receiver's age (the receiver_age double decay). A signal that
+        started at a node with NO half-life carries no decay at all, so the
+        first decaying node it reaches decays it by that node's age, exactly as
+        receiver_age did; it travels on as decayed from there. Without this a
+        never-decaying source (6,551 of 10,790 live cognitive nodes on
+        2026-11-03, e.g. topic-foundry evidence at ~0.5) would pin every
+        decaying neighbour at source x attenuation forever.
+
+        Bounds are the legacy ones: per-hop attenuation (< 1, so no loop can
+        sustain itself), ``min_delta``, ``max_hops``, and max (not sum) over
+        incoming paths, so a hub lifts each neighbour to at most hub x
+        attenuation x edge confidence, and only for as long as the hub itself
+        stays active.
+        """
+        current: dict[str, float] = {}
+        # Best undecayed value seen per node for a signal that has not been
+        # decayed yet: pruned and min_delta-checked on the same (undecayed)
+        # scale receiver_age uses, so one hop from a never-decaying source is
+        # bit-for-bit the receiver_age result.
+        raw_best: dict[str, float] = {}
+        frontier: list[tuple[str, float, int, bool]] = []
+        for node_id, node in nodes.items():
+            value = self._own_activation_now(node, seeds[node_id], now)
+            current[node_id] = value
+            raw_best[node_id] = max(seeds[node_id], node.signals.activation.activation)
+            if value >= self._activation_config.min_delta:
+                frontier.append((node_id, value, 0, bool(node.signals.activation.decay_half_life_seconds)))
+        min_delta = self._activation_config.min_delta
+        while frontier:
+            node_id, signal, depth, decayed = frontier.pop(0)
+            if depth >= self._activation_config.max_hops:
+                continue
+            for edge in outgoing.get(node_id, []):
+                if edge.predicate not in self._activation_config.allowed_predicates:
+                    continue
+                target_id = edge.target.node_id
+                target = nodes.get(target_id)
+                if target is None:
+                    continue
+                propagated = max(0.0, min(1.0, signal * self._activation_config.attenuation * edge.confidence))
+                if propagated < min_delta:
+                    continue
+                if decayed:
+                    if propagated <= current[target_id] + 1e-6:
+                        continue
+                    current[target_id] = propagated
+                    frontier.append((target_id, propagated, depth + 1, True))
+                    continue
+                if propagated <= raw_best[target_id] + 1e-6:
+                    continue
+                raw_best[target_id] = propagated
+                half_life = target.signals.activation.decay_half_life_seconds
+                if not half_life:
+                    # Neither end decays: nothing to apply, travels on undecayed.
+                    current[target_id] = max(current[target_id], propagated)
+                    frontier.append((target_id, propagated, depth + 1, False))
+                    continue
+                observed_at = target.temporal.observed_at
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                effective = decay_activation(
+                    current=propagated,
+                    elapsed_seconds=max(0.0, (now - observed_at).total_seconds()),
+                    half_life_seconds=half_life,
+                    floor=target.signals.activation.decay_floor,
+                )
+                current[target_id] = max(current[target_id], effective)
+                frontier.append((target_id, effective, depth + 1, True))
+
+        out: dict[str, float] = {}
+        for node_id, value in current.items():
+            out[node_id] = max(0.0, min(1.0, value))
+            out[f"{node_id}:recency"] = recency_scores.get(node_id, 0.0)
+        return out
+
     def _compute_activations(
         self,
         nodes: dict[str, BaseSubstrateNodeV1],
@@ -414,10 +547,11 @@ class SubstrateDynamicsEngine:
         activations: dict[str, float] = {}
         # Seed input plus propagation, excluding this node's OWN stored value.
         # tick() decays this by full age and the stored value by time since
-        # last decay; see the since_last branch there. Note propagation is
-        # still sourced from a neighbor's combined (stored-including) value,
-        # so a propagated term carries the neighbor's stored activation and is
-        # decayed by this node's age -- same as legacy, not a new behavior.
+        # last decay; see the since_last branch there. With propagation decay
+        # mode receiver_age (rollback) propagation is sourced from a
+        # neighbor's combined, undecayed value and then decayed by THIS node's
+        # age -- a double decay that mutes old nodes reached by fresh
+        # neighbors. Mode source (default) branches off below instead.
         fresh: dict[str, float] = {}
         recency_scores: dict[str, float] = {}
         for node in nodes.values():
@@ -434,6 +568,9 @@ class SubstrateDynamicsEngine:
             recency_scores[node.node_id] = max(0.0, min(1.0, 1.0 - max(0.0, (now - node.temporal.observed_at).total_seconds()) / self._activation_config.recency_horizon_seconds))
             fresh[node.node_id] = base
             activations[node.node_id] = max(base, node.signals.activation.activation)
+
+        if self._propagate_from_source:
+            return self._compute_activations_from_source(nodes, outgoing, fresh, recency_scores, now)
 
         frontier = [(node_id, value, 0) for node_id, value in activations.items() if value >= self._activation_config.min_delta]
         while frontier:

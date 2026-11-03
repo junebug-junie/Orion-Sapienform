@@ -67,7 +67,7 @@ Sightings = dict[str, dict[str, list[datetime]]]
 
 
 def replay(sightings: Sightings, *, start: datetime, end: datetime,
-           names: dict[str, str] | None = None) -> dict[str, Any]:
+           names: dict[str, str] | None = None, propagation_decay_mode: str = "source") -> dict[str, Any]:
     from app.person_graph_loop import LinkRow, PersonRow, _refresh_sightings, person_node
 
     names = names or {}
@@ -85,7 +85,7 @@ def replay(sightings: Sightings, *, start: datetime, end: datetime,
                 individual_id=iid, label=p.display_name, kind="person", ask_id=f"ask-{iid}",
                 answered_at=named_at).nodes[0])))
             _link_fenced(store, entity_node_id_for_individual(iid), p.person_id, referent.node_id, named_at)
-    engine = SubstrateDynamicsEngine(store=store)
+    engine = SubstrateDynamicsEngine(store=store, propagation_decay_mode=propagation_decay_mode)
     # Before ANY tick: a broken fence lifts the target on the very first one.
     fenced_ids = [p.person_id for p in persons] + [referent.node_id]
     fenced_before = {nid: store.get_node_by_id(nid).signals.activation.model_dump() for nid in fenced_ids}
@@ -135,6 +135,7 @@ def replay(sightings: Sightings, *, start: datetime, end: datetime,
                 not_resting.append((iid, round(value, 4)))
     return {
         "start": start.isoformat(), "end": end.isoformat(), "passes": passes,
+        "propagation_decay_mode": propagation_decay_mode,
         "persons": len(sightings), "clusters": len(clusters),
         "replay_hours": int((end - start).total_seconds() // 3600) + 1,
         "active_person_hours": total,
@@ -215,7 +216,7 @@ def verdict(r: dict[str, Any]) -> list[str]:
     return fails
 
 
-def synthetic(*, dominant: bool = False) -> dict[str, Any]:
+def synthetic(*, dominant: bool = False, propagation_decay_mode: str = "source") -> dict[str, Any]:
     """Five people, each seen twice over 3 days. ``dominant``: person A is also seen every
     3 hours, which must fail the domination check."""
     start = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
@@ -233,7 +234,8 @@ def synthetic(*, dominant: bool = False) -> dict[str, Any]:
     }
     if dominant:
         sightings["person-a"]["a1"] = sorted(at(0, 0) + timedelta(hours=3 * k) for k in range(16))
-    return replay(sightings, start=start, end=end, names={k: k[-1].upper() for k in sightings})
+    return replay(sightings, start=start, end=end, names={k: k[-1].upper() for k in sightings},
+                  propagation_decay_mode=propagation_decay_mode)
 
 
 LIVE_ROLLUPS_SQL = (
@@ -301,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--stream", default="walkway")
     ap.add_argument("--dsn", default=os.environ.get("POSTGRES_URI", ""))
+    # SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE (2026-11-03): source (default) or receiver_age.
+    ap.add_argument("--propagation-decay-mode", default="source")
     args = ap.parse_args(argv)
     if args.live:
         if not args.dsn:
@@ -308,9 +312,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         now = datetime.now(timezone.utc)
         sightings, names, since = live_sightings(_dsn(args.dsn), days=args.days, stream=args.stream, now=now)
-        result = replay(sightings, start=since, end=now, names=names)
+        result = replay(sightings, start=since, end=now, names=names,
+                        propagation_decay_mode=args.propagation_decay_mode)
     else:
-        result = synthetic()
+        result = synthetic(propagation_decay_mode=args.propagation_decay_mode)
     fails = verdict(result)
     result["verdict"] = "PASS" if not fails else "FAIL"
     result["failures"] = fails

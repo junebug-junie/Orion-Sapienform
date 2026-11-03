@@ -273,11 +273,7 @@ def test_a_rename_is_not_a_sighting():
     assert _activation(store) <= 0.08
 
 
-def test_day_node_no_longer_holds_a_frozen_value():
-    """Pins the day node's response. The tick decays propagated input by the TARGET's own age,
-    and a day node's observed_at is the day's start, so its echo of a sighting is small; it no
-    longer holds the frozen 0.3. The cluster carries the "seen recently" signal (the spec says
-    not to count the day node as separate evidence)."""
+def _day_node_world():
     store = _store_with(_legacy_cluster())
     day = map_walkway_day_seen_to_substrate(
         stream_id="walkway", day=SEEN.date(), line="Sam at 17:22",
@@ -285,11 +281,35 @@ def test_day_node_no_longer_holds_a_frozen_value():
         observed_at=SEEN.replace(hour=6, minute=0))
     SubstrateGraphMaterializer(store=store).apply_record(day)
     _refresh(store, SEEN)
+    return store, day.nodes[0].node_id
+
+
+def test_day_node_echoes_the_sighting_then_returns_to_rest():
+    """Pins the day node's response (2026-11-03, propagation decay mode ``source``).
+
+    The cluster's activation reaches the day node through its observed_in edge
+    (confidence 0.8) at the default attenuation 0.6 and is NOT decayed again by the
+    day node's own age (its observed_at is the day's start, 11 h earlier). Before this
+    fix it read ~0.04. It still returns to rest once the cluster goes quiet."""
+    store, day_id = _day_node_world()
     engine = SubstrateDynamicsEngine(store=store)
     engine.tick(now=SEEN + timedelta(minutes=5))
-    day_id = day.nodes[0].node_id
+    cluster = _activation(store)
+    day_value = store.get_node_by_id(day_id).signals.activation.activation
+    assert cluster >= 0.5
+    assert abs(day_value - cluster * 0.6 * 0.8) < 0.01
+    assert day_value > 0.2
+    engine.tick(now=SEEN + timedelta(hours=20))
+    assert store.get_node_by_id(day_id).signals.activation.activation <= 0.08
+
+
+def test_day_node_rollback_mode_keeps_the_old_muted_echo():
+    """SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE=receiver_age: the pre-fix double decay."""
+    store, day_id = _day_node_world()
+    engine = SubstrateDynamicsEngine(store=store, propagation_decay_mode="receiver_age")
+    engine.tick(now=SEEN + timedelta(minutes=5))
     assert _activation(store) >= 0.5
-    assert store.get_node_by_id(day_id).signals.activation.activation < 0.2
+    assert store.get_node_by_id(day_id).signals.activation.activation < 0.1   # ~0.075, muted by its 11 h age
     engine.tick(now=SEEN + timedelta(hours=20))
     assert store.get_node_by_id(day_id).signals.activation.activation <= 0.08
 

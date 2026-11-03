@@ -207,6 +207,9 @@ class ArcBindingV1(_Forbid):
     # Orion spending its own budget (orion.physiology.budget.SELF_SPENT_CONSTRAINTS), not the world.
     self_spent: bool = False
     why: str = Field(default="", max_length=LABEL_MAX)
+    # True once a release row (slack for 240 s) ended the arc. A closed arc without it ended by the
+    # stale timeout (unread): its real end is unknown, so readers say "last read binding at".
+    released: bool = False
 
 
 class ArcSegmentV1(_Forbid):

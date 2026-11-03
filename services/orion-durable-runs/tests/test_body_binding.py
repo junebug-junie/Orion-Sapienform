@@ -273,3 +273,43 @@ def test_binding_rows_fold_into_one_arc_per_constraint_and_are_never_copied():
         assert not [e for e in off if e.source_kind == "body_binding"]   # the flag's off path
 
     with_db(scenario_fn)
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+def test_bound_again_after_an_unread_stretch_writes_a_flagged_keepalive_at_once():
+    entry: dict = {}
+    for i, s in enumerate(["binding"] * 3 + ["no_reading"] * 20):    # 40 min unread
+        entry = plan_constraint(entry, s, T0 + i * TICK).written
+    assert entry["open"] and entry["after_gap"]
+    p = plan_constraint(entry, "binding", T0 + 23 * TICK)
+    assert p.row == "keepalive" and p.after_gap and "after_gap" not in p.written
+    row = binding_row(p, _reading(), T0 + 23 * TICK, "d", self_spent=False)
+    assert json.loads(row["payload"])["after_gap"] is True
+    assert S.body_binding(dict(row, payload_json=row["payload"])).payload["after_gap"] is True
+    rows, _ = run(["binding"] * 3 + ["no_reading"] * 3 + ["slack"] * 3)
+    assert rows == [(2, "onset"), (8, "release")]
+
+
+def test_a_malformed_open_carry_starts_over_instead_of_failing_every_tick():
+    bad = {"open": True, "row_at": T0.isoformat(), "state": "binding", "seen_at": T0.isoformat()}  # no began_at
+    p = plan_constraint(bad, "binding", T0 + TICK)
+    assert p.row is None and not p.written.get("open") and p.written["bound_since"] == (T0 + TICK).isoformat()
+
+
+def test_the_gap_limit_follows_the_tick_length():
+    entry = plan_constraint({}, "binding", T0).written
+    slow = timedelta(seconds=400)                                    # a 180 s tick with one late step
+    assert plan_constraint(entry, "binding", T0 + slow).written["bound_since"] == (T0 + slow).isoformat()
+    kept = plan_constraint(entry, "binding", T0 + slow, max_gap_sec=540.0)
+    assert kept.row == "onset" and kept.began_at == T0                # three 180 s ticks: still one run
+
+
+def test_a_vanished_constraint_leaves_the_carry_once_stale():
+    from app.body_binding import keep_entry as keep
+
+    entry = {"open": True, "began_at": T0.isoformat(), "state": "binding", "row_at": T0.isoformat(),
+             "seen_at": T0.isoformat()}
+    p = plan_constraint(entry, None, T0 + timedelta(seconds=BINDING_STALE_SEC + 1))
+    assert not keep(p.written)

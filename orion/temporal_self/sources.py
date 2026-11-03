@@ -469,7 +469,7 @@ def body_binding(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | N
             "unit": payload.get("unit") if isinstance(payload.get("unit"), str) else None,
             "level": _num(payload.get("level")), "line": _num(payload.get("line")),
             "price": _num(payload.get("price")), "ceiling": _num(payload.get("ceiling")),
-            "self_spent": bool(payload.get("self_spent")),
+            "self_spent": bool(payload.get("self_spent")), "after_gap": bool(payload.get("after_gap")),
             "why": str(payload.get("why") or "")[:LABEL_MAX],
         },
     )

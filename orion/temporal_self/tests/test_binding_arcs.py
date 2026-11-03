@@ -171,8 +171,10 @@ def test_cue_names_open_constraints_by_price_with_level_line_and_citation():
     rows = [row("onset", "lane:agent", at(10), at(6), price=0.3), row("onset", "heat", at(4), at(0), price=0.8)]
     cue = project_stance_cue(_frame(rows, now), now)
     heat = [a for a in cue.arc_ids][-2]
-    assert (f"Binding now: cabinet running hot (32.4 °C, line 31 °C) since 09:00 [arc:{heat}]; "
-            "my agent GPU lane full since 09:06 [arc:") in cue.text
+    # Two named: no numbers (the 400-char cap); one named: with its level and line.
+    assert f"Binding now: cabinet running hot since 09:00 [arc:{heat}]; my agent GPU lane full since 09:06 [arc:" in cue.text
+    cue = project_stance_cue(_frame(rows[1:], now), now)
+    assert "Binding now: cabinet running hot (32.4 °C, line 31 °C) since 09:00 [arc:" in cue.text
     assert len(cue.text) <= STANCE_CUE_MAX_CHARS
     assert cue.labels == {}  # constraint ids are not in the text, so they are no match label
 
@@ -197,7 +199,8 @@ def test_energy_alone_is_named_as_my_always_on_body():
     now = at(30)
     cue = project_stance_cue(_frame([row("onset", "energy", at(4), at(0), state="exogenous_bind", price=1.0,
                                          unit="usd", level=8.4, line=100.0)], now), now)
-    assert "Binding now: my always-on body alone over this month's electricity allowance since 09:00 [arc:" in cue.text
+    assert ("Binding now: my always-on body alone on pace to reach this month's electricity allowance since 09:00 "
+            "[arc:") in cue.text
     assert "out of my hands" not in cue.text
 
 
@@ -252,3 +255,74 @@ def test_juniper_words_say_pace_until_the_cap_is_reached():
                      self_spent=True)
     assert binding_words(b) == "messages to Juniper over today's pace (1 of 4 sent)"
     assert binding_words(b.model_copy(update={"level": 4.0})) == "used today's messages to Juniper (4 of 4 sent)"
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+def test_an_unread_stretch_is_never_counted_as_binding_time():
+    rows = [row("onset", "heat", at(4), at(0)), row("keepalive", "heat", at(34), at(0))]
+    gap = row("keepalive", "heat", at(74), at(0))       # 40 min of no_reading, then bound again
+    p = json.loads(gap["payload_json"]) | {"after_gap": True}
+    gap["payload_json"] = json.dumps(p)
+    s = fold(initial_state(), events=evs(rows + [gap]))
+    (arc,) = bindings(s)
+    assert len(arc.segments) == 2 and arc.segments[-1].began_at == at(74)
+    assert arc.cumulative_dwell_sec == 30 * 60      # 09:04 -> 09:34 only, not the unread 40 min
+    rel = row("release", "heat", at(120), at(0), state="slack", slack_since=at(116))
+    rel["payload_json"] = json.dumps(json.loads(rel["payload_json"]) | {"after_gap": True})
+    s = fold(s, events=evs([rel]))
+    (arc,) = bindings(s)
+    assert arc.closed_reason == "source_stale" and arc.ended_at == at(74) and not arc.binding.released
+
+
+def test_a_release_just_after_midnight_never_ends_before_the_carried_arc_began():
+    late = datetime(2026, 10, 10, 5, 0, tzinfo=timezone.utc)
+    midnight = datetime(2026, 10, 10, 6, 0, tzinfo=timezone.utc)
+    rows = [row("onset", "heat", late, late - timedelta(minutes=4)),
+            row("keepalive", "heat", midnight - timedelta(minutes=5), late - timedelta(minutes=4)),
+            row("release", "heat", midnight + timedelta(minutes=2), late - timedelta(minutes=4), state="slack",
+                slack_since=midnight - timedelta(minutes=2))]
+    s = advance_clock(fold(initial_state(), events=evs(rows)), midnight + timedelta(minutes=5))
+    (cont,) = bindings(s)
+    assert cont.closed_reason == "process_ended" and cont.ended_at == midnight
+    assert all(seg.ended_at >= seg.began_at for seg in cont.segments)
+
+
+def test_a_stale_closed_arc_reads_last_read_not_was_binding():
+    rows = [row("onset", "heat", at(4), at(0))]
+    now = at(4 + 80)                                      # no row for 80 min: stale-closed at 09:04
+    cue = project_stance_cue(_frame(rows, now), now)
+    assert "Last read binding at 09:04: cabinet running hot [arc:" in cue.text and "Was binding" not in cue.text
+
+
+def test_binding_fits_the_default_cap_beside_strain_and_play():
+    from orion.temporal_self.tests.test_strain_arcs import GPU, evs as strain_evs, level
+
+    now = at(30)
+    b_rows = [row("onset", "heat", at(4), at(0), price=0.9), row("onset", "lane:agent", at(5), at(1), price=0.6),
+              row("onset", "energy", at(8), at(3), state="exogenous_bind", price=1.0, unit="usd", level=8.4,
+                  line=100.0)]
+    play = {"session_id": "s1", "retro_session_id": "r1", "game_title": "The Legend of Zelda", "kind": "leisure",
+            "started_at": at(10), "ended_at": at(20), "human_share": 0.0, "predictions_met": 3, "decisions": 9,
+            "summary": "played"}
+    events = (evs(b_rows) + strain_evs([level("idle", "strained", at(2), [GPU])])
+              + S.adapt("retro_play", [play]))
+    state = advance_clock(fold(initial_state(), events=sorted(events, key=lambda e: e.occurred_at)), now)
+    cue = project_stance_cue(build_frame(state, now), now)
+    assert len(cue.text) <= STANCE_CUE_MAX_CHARS
+    assert "Strained since" in cue.text and "Played" in cue.text and cue.clauses_dropped == 0
+    # Over the cap the clause names one constraint (the rest counted) instead of being dropped, and
+    # the standing energy bind never takes a named slot while something else binds.
+    assert "Binding now: cabinet running hot (32.4 °C, line 31 °C) since 09:00 [arc:" in cue.text
+    assert "; and 2 more." in cue.text and "electricity" not in cue.text
+    alone = project_stance_cue(_frame(b_rows, now), now)   # binding alone fits with two named
+    assert "my agent GPU lane full since 09:01" in alone.text and "; and 1 more." in alone.text
+
+
+def test_citation_phrases_cover_out_of_hands_only_and_last_read():
+    from orion.temporal_self.citation_truth import KIND_PHRASES
+
+    pats = [p for p, k in KIND_PHRASES if k == "binding"]
+    assert any(p.search("Binding now (out of my hands: Claude limit reached") for p in pats)
+    assert any(p.search("Last read binding at 09:04: cabinet running hot") for p in pats)

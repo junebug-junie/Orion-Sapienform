@@ -56,7 +56,7 @@ def replay(ticks: list[tuple[datetime, PhysiologyStateV1]]) -> tuple[list[dict],
         rows.append(row)
         return True
 
-    deps = SimpleNamespace(record_binding=record)
+    deps = SimpleNamespace(record_binding=record, binding_max_gap_sec=360.0)
     carry: dict = {}
 
     async def go():

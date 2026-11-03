@@ -26,8 +26,10 @@ Rules, per constraint (``plan_constraint``):
   ``BINDING_CHANGE_MIN_SEC`` so a state flapping between two bound states cannot flood the table.
 * keepalive: every ``BINDING_KEEPALIVE_SEC`` while bound.
 * release: slack continuously for ``BINDING_RELEASE_SEC``. The arc ends at the first slack reading.
-* A gap in readings longer than ``MAX_READING_GAP_SEC`` breaks a pending run (the evidence is not
-  continuous). An open episode whose last row is ``BINDING_STALE_SEC`` old was already closed by the
+* A gap in readings longer than ``max_gap_sec`` (three ticks) breaks a pending run (the evidence is
+  not continuous). An open episode that went unread (no_reading or a gap) writes a keepalive with
+  ``after_gap`` as soon as it reads bound again, and its release carries the flag too: the reducer
+  starts a new segment, so the unread stretch is never counted as binding time. An open episode whose last row is ``BINDING_STALE_SEC`` old was already closed by the
   reducer: the next bound reading starts a new one.
 
 No I/O, no clock. The caller supplies ``now``.
@@ -82,27 +84,40 @@ class Plan:
     failed: dict
     began_at: Optional[datetime] = None
     slack_since: Optional[datetime] = None
+    # The episode went unread since its last row: the reducer starts a new segment instead of
+    # counting the gap as bound time.
+    after_gap: bool = False
 
 
-def plan_constraint(entry: Mapping[str, Any], bind_state: Optional[str], now: datetime) -> Plan:
+def plan_constraint(entry: Mapping[str, Any], bind_state: Optional[str], now: datetime, *,
+                    max_gap_sec: float = MAX_READING_GAP_SEC) -> Plan:
     """One tick of one constraint's episode. ``entry`` is its carry: ``open`` (an onset row was
     written), ``began_at`` (the first bound reading of the episode), ``state`` (the bound state the
     last row carried), ``row_at`` (when it was written), ``bound_since`` / ``slack_since`` (the start
-    of a pending onset / release run), ``seen_at`` (the last known reading)."""
+    of a pending onset / release run), ``seen_at`` (the last known reading), ``after_gap`` (an open
+    episode went unread: the next row says so, and the reducer does not count the gap as bound).
+    ``max_gap_sec``: the longest reading gap that keeps a run continuous (three ticks)."""
     e = dict(entry)
     seen = _dt(e.get("seen_at"))
-    if seen is not None and not (0.0 <= (now - seen).total_seconds() <= MAX_READING_GAP_SEC):
+    row_at = _dt(e.get("row_at"))
+    stale = row_at is None or (now - row_at).total_seconds() >= BINDING_STALE_SEC
+    if e.get("open") and (stale or _dt(e.get("began_at")) is None):
+        # No row for the reducer's stale timeout (it closed this arc at its last row already), or a
+        # malformed carry: start over rather than assert on it every tick.
+        e = {"seen_at": e.get("seen_at")}
+        row_at = None
+    gap = seen is None or not (0.0 <= (now - seen).total_seconds() <= max_gap_sec)
+    if gap:
         e["bound_since"] = e["slack_since"] = None  # the readings had a gap: a pending run restarts
+        if e.get("open"):
+            e["after_gap"] = True
     if bind_state not in BOUND_STATES and bind_state != SLACK:
         # no_reading, no price, or the constraint is absent this tick: unknown is not a release.
         e.update(bound_since=None, slack_since=None, seen_at=None)
+        if e.get("open"):
+            e["after_gap"] = True
         return Plan(None, e, e)
     e["seen_at"] = _iso(now)
-    row_at = _dt(e.get("row_at"))
-    if e.get("open") and (row_at is None or (now - row_at).total_seconds() >= BINDING_STALE_SEC):
-        # No row for the reducer's stale timeout: it closed this arc at its last row already.
-        e = {"seen_at": _iso(now)}
-        row_at = None
     began = _dt(e.get("began_at"))
     if bind_state in BOUND_STATES:
         e["slack_since"] = None
@@ -118,11 +133,15 @@ def plan_constraint(entry: Mapping[str, Any], bind_state: Optional[str], now: da
         age = (now - row_at).total_seconds()
         if bind_state != e.get("state") and age >= BINDING_CHANGE_MIN_SEC:
             kind = "change"
-        elif age >= BINDING_KEEPALIVE_SEC:
+        elif age >= BINDING_KEEPALIVE_SEC or (e.get("after_gap") and age >= BINDING_CHANGE_MIN_SEC):
+            # After an unread stretch: as soon as the change rate limit allows (a reading flapping to
+            # no_reading cannot flood the table). Until then the flag waits for the next row.
             kind = "keepalive"
         else:
             return Plan(None, e, e)
-        return Plan(kind, {**e, "state": bind_state, "row_at": _iso(now)}, e, began_at=began)
+        written = {**e, "state": bind_state, "row_at": _iso(now)}
+        written.pop("after_gap", None)
+        return Plan(kind, written, e, began_at=began, after_gap=bool(e.get("after_gap")))
     # slack
     e["bound_since"] = None
     if not e.get("open"):
@@ -131,7 +150,8 @@ def plan_constraint(entry: Mapping[str, Any], bind_state: Optional[str], now: da
     e["slack_since"] = _iso(since)
     if (now - since).total_seconds() < BINDING_RELEASE_SEC:
         return Plan(None, e, e)
-    return Plan("release", {"seen_at": _iso(now)}, e, began_at=began, slack_since=since)
+    return Plan("release", {"seen_at": _iso(now)}, e, began_at=began, slack_since=since,
+                after_gap=bool(e.get("after_gap")))
 
 
 def keep_entry(entry: Mapping[str, Any]) -> bool:
@@ -153,6 +173,7 @@ def binding_row(plan: Plan, reading: Any, now: datetime, day_id: str, *, self_sp
         "unit": reading.unit, "level": reading.level, "line": reading.budget,
         "price": price.value if price is not None else None, "ceiling": price.ceiling if price is not None else None,
         "why": (price.why if price is not None else "")[:WHY_MAX], "self_spent": bool(self_spent),
+        "after_gap": bool(plan.after_gap),
     }
     return {
         "event_id": f"{EVENT_PREFIX}{c}:{began}:{plan.row}:{at}",

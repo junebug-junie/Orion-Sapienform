@@ -191,7 +191,12 @@ def render_closed_day_block(
         parts = []
         for a in bindings:
             start = clock(a, a.episode_began_at or a.began_at)
-            end = "still binding at midnight" if a.closed_reason == "day_boundary" else f"to {clock(a, a.ended_at)}"
+            if a.closed_reason == "day_boundary":
+                end = "still binding at midnight"
+            elif a.closed_reason == "source_stale":
+                end = f"last read binding at {clock(a, a.ended_at)}"  # unread: the real end is unknown
+            else:
+                end = f"to {clock(a, a.ended_at)}"
             parts.append(f"{binding_words(a.binding, short=True)} {start} {end} {ref(a, start)}")
         lines.append((2, "Body limits binding: " + "; ".join(parts) + "."))
 

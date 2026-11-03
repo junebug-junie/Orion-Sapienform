@@ -794,9 +794,19 @@ def _fold_binding(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
     if p.get("row") == "release":
         if arc is None:
             return  # nothing open for this constraint (a lost onset, or already stale-closed)
-        end = max(arc.last_seen_at, min(as_utc(p.get("slack_since")) or t, t))
+        if p.get("after_gap"):
+            # Slack after an unread stretch: when it stopped binding inside the gap was not seen,
+            # so the arc ends at its last bound row.
+            _add_evidence(arc, ref)
+            _end_binding(state, arc, "source_stale", arc.last_seen_at)
+            return
+        # Never before the open segment's start (a release just after midnight on a carried arc).
+        end = max(arc.last_seen_at, min(as_utc(p.get("slack_since")) or t, t),
+                  arc.segments[-1].began_at if arc.segments else arc.began_at)
         _extend(arc, end, ref, accrue=True)
         _end_binding(state, arc, "process_ended", end)
+        if arc.binding is not None:
+            arc.binding.released = True
         return
     if arc is None:
         arc = TemporalSelfArcV1(
@@ -808,7 +818,9 @@ def _fold_binding(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
         _add_evidence(arc, ref)
         state.arcs[arc.arc_id] = arc
     else:
-        _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+        # After an unread stretch (no_reading, a reading gap) a new segment starts: the gap is
+        # never counted as binding time.
+        _extend(arc, max(t, arc.last_seen_at), ref, accrue=not p.get("after_gap"))
     arc.binding = ArcBindingV1(
         constraint=str(p.get("constraint") or e.label), bind_state=p["bind_state"], unit=p.get("unit"),
         level=p.get("level"), line=p.get("line"), price=p.get("price"), ceiling=p.get("ceiling"),

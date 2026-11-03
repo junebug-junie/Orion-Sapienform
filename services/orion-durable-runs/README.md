@@ -695,7 +695,9 @@ into `temporal_self_event` (`source_table='physiology'`, subject `orion:body:<co
 BINDING). Rows: `onset` once bound for 240 s, `change` when the bound state changes (at most every
 600 s), `keepalive` every 30 min while bound, `release` once slack for 240 s (the arc ends at the first
 slack reading). `no_reading` writes nothing; the reducer's 4,500 s stale timeout closes the arc at its
-last row. Event id `body_binding:<constraint>:<episode start>:<row>:<written at>`; the payload carries
+last row. An open episode that went unread (no_reading, or a reading gap over 3 x
+`TEMPORAL_SELF_TICK_SEC`) marks its next row `after_gap`, so the chronicle never counts the unread
+stretch as binding time. Event id `body_binding:<constraint>:<episode start>:<row>:<written at>`; the payload carries
 the level, line, price, ceiling, the price's `why` and `self_spent`. The per-constraint episode rides
 in the checkpoint as `binding_episodes`; a failed write keeps it, so the next tick retries. The
 chronicle folds the rows into one `binding` arc per constraint (several open at once). Awareness only:

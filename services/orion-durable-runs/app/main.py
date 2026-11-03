@@ -354,6 +354,7 @@ def _build_temporal_self(saver: Any):
         physiology_min_interval_sec=s.physiology_min_interval_sec,
         price_body=price_body,
         record_binding=record_binding if s.temporal_self_binding_arcs_enabled else None,
+        binding_max_gap_sec=3.0 * s.temporal_self_tick_sec,
     )
     if body_config is not None:
         deps = dataclasses.replace(deps, body_config=body_config)

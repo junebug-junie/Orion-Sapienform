@@ -142,6 +142,9 @@ class TemporalSelfDeps:
     # Felt state: write one body_binding row (app.body_binding.binding_row) -> written ok. None =
     # TEMPORAL_SELF_BINDING_ARCS_ENABLED off (or physiology off): no rows, no binding arcs.
     record_binding: Optional[Callable[[dict], Awaitable[bool]]] = None
+    # The longest reading gap that keeps a binding run continuous: three ticks (main.py sets
+    # 3 x TEMPORAL_SELF_TICK_SEC, the same rule as max_prev_gap_sec).
+    binding_max_gap_sec: float = 360.0
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -240,7 +243,8 @@ async def _binding_step(deps: TemporalSelfDeps, model: PhysiologyStateV1, state:
         reading = priced.get(name)
         entry = carry.get(name) or {}
         try:
-            plan = plan_constraint(entry, reading.price.bind_state if reading is not None else None, now)
+            plan = plan_constraint(entry, reading.price.bind_state if reading is not None else None, now,
+                                   max_gap_sec=deps.binding_max_gap_sec)
             if plan.row is None:
                 new = plan.written
             else:

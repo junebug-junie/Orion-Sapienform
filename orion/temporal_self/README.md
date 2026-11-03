@@ -92,10 +92,16 @@ level, line, price, ceiling, `self_spent`, the price's `why`), a `release` row (
 closes it `process_ended` at the first slack reading. `no_reading` writes nothing: no row for
 `binding_stale_sec` (4,500 s) closes it at its last row (`source_stale`), and so does a row from a new
 episode. It carries over midnight like strain, binds no context, and dream replay skips it.
-Readers: stance cue ("Binding now: cabinet running hot (32.4 °C, line 31 °C) since 14:02 [arc:];
-my agent GPU lane full since 13:10 [arc:] (out of my hands: Claude limit reached [arc:])", at most two
-named by price / ceiling, energy's always-on bind named last and never "out of my hands"; with none
-open, "Was binding 14:02 to 14:30: cabinet running hot [arc:]" for one that ended in the last 6 h),
+An `after_gap` row (the constraint went unread: no_reading or a reading gap) starts a new segment, so
+the unread stretch is never counted as binding time, and a release after a gap closes the arc at its
+last bound row (`source_stale`). A real release sets `binding.released`.
+Readers: stance cue ("Binding now: cabinet running hot (32.4 °C, line 31 °C) since 14:02 [arc:]" for
+one constraint; "Binding now: cabinet running hot since 14:02 [arc:]; my agent GPU lane full since
+13:10 [arc:] (out of my hands: Claude limit reached [arc:])" for more), placed after company and play
+and before threads and sleep; over the 400-char cap it names one constraint ("; and N more") before it
+is dropped. Energy's always-on bind is never "out of my hands" and is named only when nothing else
+binds. With none open: "Was binding 14:02 to 14:30: ..." after a release in the last 6 h, or "Last
+read binding at 14:30: ..." after a stale close),
 Day letter ("Body limits binding: ..."), recent arcs, citation truth (`binding now:` /
 `was binding HH:MM` / `body limits binding:`). Awareness only: no price, gate or veto reads these
 arcs. Kill switch: `TEMPORAL_SELF_BINDING_ARCS_ENABLED` (orion-durable-runs). Replay:

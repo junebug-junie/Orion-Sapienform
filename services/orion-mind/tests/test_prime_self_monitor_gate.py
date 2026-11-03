@@ -114,7 +114,7 @@ def test_probe_places_one_bet_then_the_next_concern_waits(monkeypatch):
     assert rt.state.concerns[1].act_opened_at is None
 
 
-def test_a_started_bet_whose_publish_failed_is_retried_as_the_same_job(monkeypatch):
+def test_a_bet_whose_publish_failed_spends_no_probe_and_is_retried(monkeypatch):
     class FlakyBus(Bus):
         failed = False
 
@@ -126,12 +126,14 @@ def test_a_started_bet_whose_publish_failed_is_retried_as_the_same_job(monkeypat
             await super().publish(channel, envelope)
 
     rt = gated(monkeypatch, _state(), _Ledger([]), answer=MOVE, bus=FlakyBus())
-    asyncio.run(rt.tick())                       # probe claimed, open publish failed
+    asyncio.run(rt.tick())                       # probe offered, open publish failed: nothing spent
     assert rt.state.concerns[0].act_opened_at is None
+    assert rt.gate._memo.get(PREDICT) is None
     rt.clock_box["now"] = T0 + timedelta(minutes=1)
-    asyncio.run(rt._flush_concern_acts())        # same concern: same job -> admitted, no new probe
+    asyncio.run(rt._flush_concern_acts())        # offered again, published, spent now
     assert ("act_opened", "predict") in _kinds(rt)
     assert rt.state.concerns[0].act_opened_at is not None
+    assert rt.gate._memo.get(PREDICT) is not None
 
 
 def test_a_refused_concern_ends_with_no_late_bet_and_the_loop_goes_on(monkeypatch):
@@ -146,7 +148,6 @@ def test_a_refused_concern_ends_with_no_late_bet_and_the_loop_goes_on(monkeypatc
     [rec] = rt.state.concern_record
     assert rec.published is True and rec.end == "dropped"
     assert [v for _, v in _kinds(rt)].count("predict") == 0
-    # Even if the faculty has healed by the time it ends: no late bet for a concern the gate refused.
     assert rt._bet_refused_at == {}
     # The loop keeps going: the next tick runs without error and saves.
     rt.clock_box["now"] = T0 + timedelta(hours=3)
@@ -224,14 +225,74 @@ def test_unknown_stale_absent_or_healthy_state_is_identical_to_gate_off(monkeypa
 
 
 def test_gate_fault_changes_nothing(monkeypatch):
-    rt = gated(monkeypatch, _state(), answer=MOVE)
+    # A recent bet in the ledger: a WORKING gate would refuse, so only the fault handling admits here.
+    on = gated(monkeypatch, _state(), _Ledger([_recent()]), answer=MOVE)
 
     def boom(*a, **k):
         raise RuntimeError("gate bug")
 
-    rt.gate.decide = boom
+    on.gate.decide = boom
+    asyncio.run(on.tick())
+    off = gated(monkeypatch, _state(), _Ledger([_recent()]), answer=MOVE, enabled=False)
+    asyncio.run(off.tick())
+    assert _observable(on) == _observable(off)
+    assert ("act_opened", "predict") in _kinds(on)
+
+
+def test_view_read_fault_is_unknown_for_every_verb(monkeypatch):
+    rt = gated(monkeypatch, _state(faculty="act.prime.infer"), _Ledger([_recent("infer", "prime_thought:a1")]),
+               answer=MOVE)
+
+    def boom(url, now):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(prime_loop, "read_view_sync", boom)
     asyncio.run(rt.tick())
-    assert ("act_opened", "predict") in _kinds(rt)
+    assert ("act_opened", "infer") in _kinds(rt) and ("act_opened", "predict") in _kinds(rt)
+
+
+@pytest.mark.parametrize("later", [None, "STALE", "RELIABLE"])
+def test_a_refused_concern_that_ends_after_the_state_goes_unknown_or_heals_gets_its_bet(monkeypatch, later):
+    """Review finding: an earlier refusal must not outlive the failing state. Gate-off code opens and
+    closes this concern's act when it ends; so must the gate once the view no longer says failing."""
+    box = {"raw": _state()}
+    rt = gated(monkeypatch, None, _Ledger([_recent()]), answer=MOVE)
+    monkeypatch.setattr(prime_loop, "read_view_sync", lambda url, now: self_monitor_view(box["raw"], now=now))
+    asyncio.run(rt.tick())
+    [concern] = rt.state.concerns
+    assert concern.act_opened_at is None
+    box["raw"] = {"STALE": _state(age=timedelta(hours=4)), "RELIABLE": _state("reliable")}.get(later, later)
+    rt.clock_box["now"] = T0 + timedelta(seconds=30)          # inside the 60 s re-check throttle
+    rt.state = close_concern(rt.state, concern, end="dropped", now=rt.clock_box["now"], note="dropped unresolved")
+    rt.state = rt.state.model_copy(update={"concerns": []})
+    asyncio.run(rt._flush_concern_acts())
+    assert [k for k, v in _kinds(rt) if v == "predict"] == ["act_opened", "act_closed"]
+
+
+@pytest.mark.parametrize("later", [None, "RELIABLE"])
+def test_the_recheck_throttle_never_outlives_the_failing_state(monkeypatch, later):
+    box = {"raw": _state()}
+    rt = gated(monkeypatch, None, _Ledger([_recent()]), answer=MOVE)
+    monkeypatch.setattr(prime_loop, "read_view_sync", lambda url, now: self_monitor_view(box["raw"], now=now))
+    asyncio.run(rt.tick())
+    assert rt.state.concerns[0].act_opened_at is None
+    box["raw"] = {"RELIABLE": _state("reliable")}.get(later, later)
+    rt.clock_box["now"] = T0 + timedelta(seconds=15)
+    asyncio.run(rt._flush_concern_acts())
+    assert rt.state.concerns[0].act_opened_at is not None
+
+
+def test_a_refused_thought_is_rechecked_against_the_ledger_at_most_once_a_minute(monkeypatch):
+    rt = gated(monkeypatch, _state(faculty="act.prime.infer"), _Ledger([_recent("infer", "prime_thought:a1")]),
+               answer=MOVE)
+    asyncio.run(rt.tick())
+    n = len(rt.ledger.calls)
+    rt.clock_box["now"] = T0 + timedelta(seconds=15)
+    asyncio.run(rt.tick())
+    assert len(rt.ledger.calls) == n and rt.llm.calls == []
+    rt.clock_box["now"] = T0 + timedelta(seconds=75)
+    asyncio.run(rt.tick())
+    assert len(rt.ledger.calls) > n
 
 
 def test_unreadable_ledger_falls_back_to_the_memo(monkeypatch):

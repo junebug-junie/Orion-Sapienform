@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from orion.self_monitor.adapters import act_faculty
-from orion.self_monitor.gate import DEFAULT_PROBE_INTERVAL_SEC, FAILING_STATUSES, _utc, act_gate
+from orion.self_monitor.gate import DEFAULT_PROBE_INTERVAL_SEC, FAILING_STATUSES, MAX_SAME_JOB_ATTEMPTS, act_gate, utc
 from orion.self_monitor.questions import self_questions_for
 from orion.self_monitor.view import SelfMonitorView
 
@@ -75,17 +75,17 @@ def replay_acts(view: SelfMonitorView, rows: Iterable[Mapping[str, Any]], *,
     walked oldest first. ``same_job=False`` replays the rule before option A (no retry admission)."""
     out: dict[str, dict[str, Any]] = {}
     last_admitted: dict[str, datetime] = {}
-    job_last_admitted: dict[tuple[str, str], datetime] = {}
+    job_admitted: dict[tuple[str, str], list[datetime]] = defaultdict(list)
     jobs: dict[str, dict[str, dict[str, bool]]] = defaultdict(dict)
     for row in sorted(rows, key=lambda r: r["opened_at"]):
         actor, verb = str(row["actor"]), str(row["verb"])
         faculty = act_faculty(actor, verb, str(row.get("object_ref") or ""))
         if view.status(faculty) not in FAILING_STATUSES:
             continue
-        opened = _utc(row["opened_at"])
+        opened = utc(row["opened_at"])
         key = job_key(row)
-        prev = job_last_admitted.get((faculty, key)) if key else None
-        retry = same_job and prev is not None and (opened - prev).total_seconds() < probe_interval_sec
+        in_window = [t for t in job_admitted.get((faculty, key), []) if (opened - t).total_seconds() < probe_interval_sec] if key else []
+        retry = same_job and 0 < len(in_window) < MAX_SAME_JOB_ATTEMPTS
         d = act_gate(view, faculty, last_attempt_at=last_admitted.get(faculty), now=opened,
                      probe_interval_sec=probe_interval_sec, same_job_attempted=retry)
         stats = out.setdefault(faculty, {"status": view.status(faculty), "reach": reach(actor, verb),
@@ -100,7 +100,7 @@ def replay_acts(view: SelfMonitorView, rows: Iterable[Mapping[str, Any]], *,
             stats["would_retry"] += int(d.same_job_retry)
             last_admitted[faculty] = opened
             if key:
-                job_last_admitted[(faculty, key)] = opened
+                job_admitted[(faculty, key)].append(opened)
         else:
             stats["would_refuse"] += 1
             stats["refused_outcomes"][_outcome_word(row)] += 1

@@ -457,3 +457,27 @@ def test_same_job_retry_only_counts_rows_of_the_same_faculty() -> None:
 
 def test_sql_reads_the_job_column() -> None:
     assert "test_before" in last_attempt_sql() and "test_before" in last_attempt_sql("pyformat")
+
+
+def test_same_job_admits_are_capped_per_window() -> None:
+    from orion.self_monitor.gate import MAX_SAME_JOB_ATTEMPTS
+
+    rows = [{"object_ref": "journal_trigger:walkway_grade", "test_before": NIGHT,
+             "opened_at": NOW - timedelta(minutes=i + 1)} for i in range(MAX_SAME_JOB_ATTEMPTS)]
+    d = _walkway(_job_gate(_Ledger(rows)), NOW)
+    assert not d.admit and d.reason == TRACK_RECORD_FAILING_REASON
+    d = _walkway(_job_gate(_Ledger(rows[:-1])), NOW)
+    assert d.same_job_retry
+
+
+def test_replay_caps_a_stable_job_key_too() -> None:
+    from orion.self_monitor.gate import MAX_SAME_JOB_ATTEMPTS
+    from orion.self_monitor.replay import replay_acts
+
+    start = datetime(2026, 10, 30, 4, 0, tzinfo=timezone.utc)
+    rows = [{"actor": "actions.journal", "verb": "make", "object_ref": "journal_trigger:walkway_grade",
+             "test_before": "journal:stable", "opened_at": start + timedelta(minutes=i),
+             "closed_at": start + timedelta(minutes=i), "outcome_value": 0.0, "outcome_note": "raised:x"}
+            for i in range(MAX_SAME_JOB_ATTEMPTS + 5)]
+    out = replay_acts(_view(_fresh_live(start), start), rows)[WALKWAY]
+    assert (out["would_probe"], out["would_retry"], out["would_refuse"]) == (1, MAX_SAME_JOB_ATTEMPTS - 1, 5)

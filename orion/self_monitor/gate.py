@@ -34,7 +34,8 @@ busy around 04:30Z and retries every few minutes until one attempt runs; with on
 gate would have lost 3 of 7 nights. A job's first attempt is still refused unless a probe is due, so
 a job refused before it ever started stays refused (it never opened an act). The chain is bounded by
 the job key itself (walkway and daily keys carry the date; the others are content hashes of one
-trigger) and by the ledger window: a job whose last attempt is older than the window is a new job.
+trigger), by the ledger window (a job whose last attempt is older than the window is a new job), and
+by ``MAX_SAME_JOB_ATTEMPTS`` tries per job inside the window (then the normal rule applies).
 The dispatch-runtime seam passes no ``job_key``: a sent dispatch leaves the pending set for good
 (``dispatched_candidates``), and a refused one never started, so there is no "retry of an attempted
 dispatch" to admit there.
@@ -65,6 +66,10 @@ logger = logging.getLogger("orion.self_monitor.gate")
 FAILING_STATUSES = frozenset({"broken", "unreliable"})
 DEFAULT_PROBE_INTERVAL_SEC = 6 * 3600.0
 SAME_JOB_RETRY_REASON = "same_job_retry"
+# A job with this many attempts inside the window gets no more same-job admits: a stable key (or a
+# chain of retries under 6 h apart) cannot keep a failing faculty running forever. Live max: 13
+# walkway tries in one night (10-30).
+MAX_SAME_JOB_ATTEMPTS = 24
 
 # The act ledger read every caller runs to find the last real attempt (both drivers name params the
 # same way through the caller's own placeholder style; see last_attempt_sql).
@@ -84,8 +89,11 @@ def last_attempt_sql(style: str = "sqlalchemy") -> str:
     return _LAST_ATTEMPT_SQL.format(actor=":actor", verb=":verb", secs=":secs")
 
 
-def _utc(dt: datetime) -> datetime:
+def utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+_utc = utc
 
 
 def latest_attempt_at(rows: Iterable[Mapping[str, Any]], *, actor: str, verb: str, faculty: str) -> Optional[datetime]:
@@ -108,18 +116,24 @@ def latest_attempt_at(rows: Iterable[Mapping[str, Any]], *, actor: str, verb: st
 JobKeyOf = Callable[[Mapping[str, Any]], Optional[str]]
 
 
-def job_attempted(rows: Iterable[Mapping[str, Any]], *, actor: str, verb: str, faculty: str, job_key: str,
-                  job_key_of: JobKeyOf) -> bool:
-    """True when a ledger row of this faculty belongs to ``job_key`` (the caller's own job identity,
+def job_attempts(rows: Iterable[Mapping[str, Any]], *, actor: str, verb: str, faculty: str, job_key: str,
+                 job_key_of: JobKeyOf) -> int:
+    """How many ledger rows of this faculty belong to ``job_key`` (the caller's own job identity,
     read from the row by ``job_key_of``)."""
+    n = 0
     for row in rows:
         if row.get("opened_at") is None:
             continue
         if act_faculty(actor, verb, str(row.get("object_ref") or "")) != faculty:
             continue
         if job_key_of(row) == job_key:
-            return True
-    return False
+            n += 1
+    return n
+
+
+def job_attempted(rows: Iterable[Mapping[str, Any]], *, actor: str, verb: str, faculty: str, job_key: str,
+                  job_key_of: JobKeyOf) -> bool:
+    return job_attempts(rows, actor=actor, verb=verb, faculty=faculty, job_key=job_key, job_key_of=job_key_of) > 0
 
 
 @dataclass(frozen=True)
@@ -282,15 +296,20 @@ class ActGate:
             rows = None
         if rows is not None:
             ledger_at = latest_attempt_at(rows, actor=actor, verb=verb, faculty=faculty)
-        same_job = bool(job_key) and (
-            self._jobs.seen(faculty, job_key, now=now, window_sec=self.probe_interval_sec)
-            or (rows is not None and self._job_key_of is not None
-                and job_attempted(rows, actor=actor, verb=verb, faculty=faculty, job_key=job_key,
-                                  job_key_of=self._job_key_of)))
+        tries = 0
+        if job_key and rows is not None and self._job_key_of is not None:
+            tries = job_attempts(rows, actor=actor, verb=verb, faculty=faculty, job_key=job_key,
+                                 job_key_of=self._job_key_of)
+        seen = bool(job_key) and (tries > 0 or self._jobs.seen(faculty, job_key, now=now,
+                                                               window_sec=self.probe_interval_sec))
+        same_job = seen and tries < MAX_SAME_JOB_ATTEMPTS
+        if seen and not same_job:
+            logger.info("self_monitor_same_job_cap faculty=%s job=%s tries=%d", faculty, job_key, tries)
         decision = act_gate(view, faculty, last_attempt_at=newest(ledger_at, self._memo.get(faculty)), now=now,
                             probe_interval_sec=self.probe_interval_sec, same_job_attempted=same_job)
         if decision.same_job_retry:
-            logger.info("self_monitor_same_job_retry faculty=%s status=%s job=%s", faculty, decision.status, job_key)
+            logger.info("self_monitor_same_job_retry faculty=%s status=%s job=%s tries=%d",
+                        faculty, decision.status, job_key, tries)
             return decision
         if decision.probe and faculty in self._offered:
             decision = GateDecision(faculty, False, False, decision.status, TRACK_RECORD_FAILING_REASON,
@@ -343,10 +362,12 @@ __all__ = [
     "FAILING_STATUSES",
     "GateDecision",
     "JobMemo",
+    "MAX_SAME_JOB_ATTEMPTS",
     "ProbeMemo",
     "SAME_JOB_RETRY_REASON",
     "act_gate",
     "job_attempted",
+    "job_attempts",
     "last_attempt_sql",
     "latest_attempt_at",
     "newest",

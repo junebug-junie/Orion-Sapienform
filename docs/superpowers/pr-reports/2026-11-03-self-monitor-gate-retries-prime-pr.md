@@ -77,7 +77,9 @@ and settled; only the bet on the ledger is missing.
 
 Rule (option A): the gate stops NEW attempts at a failing faculty. A retry of a job that already
 opened an act inside the ledger window (the probe interval, 6 h) is admitted as `same_job_retry`.
-It is not a probe and does not spend one. A job whose first try was refused never opened an act,
+It is not a probe and does not spend one. A job gets at most 24 tries inside one window
+(`MAX_SAME_JOB_ATTEMPTS`; the live maximum was 13 walkway tries in one night); after that the normal
+rule applies, so a stable job key cannot keep a failing faculty running forever. A job whose first try was refused never opened an act,
 so its later tries are still new attempts. A job last tried longer ago than the window is a new
 job. The chain is bounded by the job key itself: walkway and daily keys carry the date, and the
 other journal keys are content hashes of one trigger.
@@ -88,9 +90,11 @@ What a refusal means for Prime, verb by verb:
   concern stays in Prime's state. It keeps its 24-hour fade, can be kept, dropped or settled by a
   question, and counts in Prime's track record as before. Concerns are not an experiment arm, so no
   arm is touched. Prime is told once per concern, as a frame line that does not wake it. When a
-  refused concern ends, no late bet is placed (its outcome is known by then, so it would test
-  nothing). A concern act whose open already started (re-test claimed, publish failed) is the same
-  job, so its retry is admitted.
+  concern whose act never opened ends, a late bet is placed only if the gate admits it as an
+  ordinary act at that moment. While the faculty is failing it is not placed, not even as the
+  re-test: its outcome is known by then, so it would test nothing. If the self-monitor state has
+  gone unknown, stale or healthy by then, the late bet is placed, exactly as with the gate off. The
+  re-test is spent only after the open was published, so a failed publish costs nothing.
 - `ask` and `regulate` (a move): checked before the holdback arm is drawn. A refusal removes the
   move from both arms alike, so the treated/control comparison stays fair. Prime sees "my move was
   not sent: ...".
@@ -113,7 +117,7 @@ What a refusal means for Prime, verb by verb:
 - `services/orion-execution-dispatch-runtime/app/{worker,store}.py`: docstrings (why no job key).
 - `services/orion-mind/app/prime_loop.py`: the Prime gate.
 - `services/orion-mind/app/settings.py`, `.env_example`, `docker-compose.yml`, `README.md`: 3 keys.
-- `services/orion-mind/tests/test_prime_self_monitor_gate.py`: 19 tests.
+- `services/orion-mind/tests/test_prime_self_monitor_gate.py`: 26 tests.
 - `.github/workflows/orion-prime-tests.yml`: also runs on `orion/self_monitor/**`.
 - `.github/workflows/self-monitor-tests.yml`: also runs on `services/orion-actions/app/act_emit.py`.
 - `docs/superpowers/pr-reports/2026-11-03-self-monitor-effects-pr.md`: amended risk notes.
@@ -142,11 +146,13 @@ What a refusal means for Prime, verb by verb:
 ## Tests run
 
 ```text
-orion/prime + orion/self_monitor/tests                                     194 passed
+orion/prime + orion/self_monitor/tests                                     196 passed
 rung3 / motor allocator / self_monitor_act_gate / reading pull / retro /
-  aitown + services/orion-execution-dispatch-runtime/tests                 302 passed
-services/orion-mind/tests (incl. 19 new Prime gate tests)                  192 passed
+  aitown + services/orion-execution-dispatch-runtime/tests                 302 passed (first commit)
+self_monitor_act_gate + rung3 act candidates + dispatch-runtime tests      205 passed (after fixes)
+services/orion-mind/tests (incl. 26 new Prime gate tests)                  199 passed
 services/orion-actions/tests (incl. journal gate + act_emit)               294 passed
+mutation check: re-adding the review's finding-1 bug fails 3 of the new tests
 scripts/check_env_template_parity.py                                       PASS
 scripts/check_env_key_single_source.py                                     OK
 ```
@@ -167,7 +173,33 @@ Not run (build only, by instruction). Live behaviour is UNVERIFIED until the thr
 
 ## Review findings fixed
 
-(filled in after review)
+Review by an orion-repo-agent subagent on the diff against origin/main.
+
+- Finding (material): a concern refused while failing stayed refused after the self-monitor state
+  went unknown, stale or healthy. Its late bet was skipped, and the 60 s re-check refused without
+  looking. Gate-off code would have placed the bet.
+  - Fix: the late-bet check always asks the gate. The re-check throttle now skips only the ledger
+    read, and only while the fresh view still says failing; the view is read every time.
+  - Evidence: `test_a_refused_concern_that_ends_after_the_state_goes_unknown_or_heals_gets_its_bet`
+    (absent, stale, reliable) and `test_the_recheck_throttle_never_outlives_the_failing_state`.
+    Re-adding the bug fails 3 tests.
+- Finding (material, test passed for the wrong reason): the gate-fault test used an empty ledger,
+  where a working gate already admits as the re-test.
+  - Fix: a recent bet in the ledger, and the result must equal gate off. Added a view-read-fault test.
+  - Evidence: `test_gate_fault_changes_nothing`, `test_view_read_fault_is_unknown_for_every_verb`.
+- Finding (minor): a same-job chain was not bounded (a stable key, for example an empty-content
+  hash, could keep a failing faculty running).
+  - Fix: at most `MAX_SAME_JOB_ATTEMPTS` (24) tries per job per window; the gate logs the try count.
+    The replay applies the same cap.
+  - Evidence: `test_same_job_admits_are_capped_per_window`, `test_replay_caps_a_stable_job_key_too`.
+- Finding (minor): a concern's re-test was spent before its open was published.
+  - Fix: spent only after the publish succeeded.
+  - Evidence: `test_a_bet_whose_publish_failed_spends_no_probe_and_is_retried`.
+- Finding (minor): a refused thought read Postgres every 15 s tick.
+  - Fix: same 60 s ledger re-check throttle as concerns (view still read every tick).
+  - Evidence: `test_a_refused_thought_is_rechecked_against_the_ledger_at_most_once_a_minute`.
+- Nits fixed: replay no longer imports a private helper (`gate.utc`); orion-mind `.env_example` names
+  all four gated verbs; a misleading test comment removed.
 
 ## Restart required
 
@@ -200,6 +232,6 @@ its restart is optional.
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3081
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

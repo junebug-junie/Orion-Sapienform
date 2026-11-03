@@ -35,7 +35,7 @@ EVENT_PAIR_MAX_EVENTS = 200_000   # per selector; above this the read is refused
 def selector_key(sel: dict) -> str:
     """Stable label for one event selector, e.g. ``vision_events:person_presence@walkway``."""
     key = f"{sel['source']}:{sel['event_type']}" + (f"@{sel['stream_id']}" if sel.get("stream_id") else "")
-    return key + (f"~visit{sel['visit_gap_sec']:g}s" if sel.get("visit_gap_sec") else "")
+    return key + (f"~visit{int(sel['visit_gap_sec'])}s" if sel.get("visit_gap_sec") else "")
 
 
 class Effects:

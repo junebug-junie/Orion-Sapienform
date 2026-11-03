@@ -230,8 +230,18 @@ def test_overlapping_selectors_need_a_positive_lag_min(a_stream):
 def test_selector_key():
     assert selector_key({"source": "vision_events", "event_type": "x", "stream_id": None}) == "vision_events:x"
     assert selector_key({"source": "vision_events", "event_type": "x", "stream_id": "cam0",
-                         "visit_gap_sec": 300.0}) == "vision_events:x@cam0~visit300s"
+                         "visit_gap_sec": 300}) == "vision_events:x@cam0~visit300s"
     assert selector_key({"source": "vision_events", "event_type": "x", "visit_gap_sec": 0}) == "vision_events:x"
+
+
+def test_longest_allowed_selector_label_fits_the_120_char_columns():
+    from app.main import EventSelector
+    sel = EventSelector(event_type="e" * 50, stream_id="s" * 33, visit_gap_sec=3600).model_dump()
+    assert len(f"event_pair:{selector_key(sel)}") == 120
+    with pytest.raises(ValueError):
+        EventSelector(event_type="e", stream_id="s" * 34)
+    with pytest.raises(ValueError):
+        EventSelector(event_type="e", visit_gap_sec=300.5)
 
 
 def test_visits_keep_the_first_row_of_each_burst():
@@ -253,7 +263,7 @@ def test_visit_gap_turns_a_bursty_b_into_one_count_per_visit():
     sa = {"source": "vision_events", "event_type": "doorbell_ring", "stream_id": None}
     rows = {"source": "vision_events", "event_type": "person_presence", "stream_id": "cam0"}
     fx.event_pair(sa, rows, start, NOW, 0.0, 300.0, n_placebo=199)
-    fx.event_pair(sa, {**rows, "visit_gap_sec": 60.0}, start, NOW, 0.0, 300.0, n_placebo=199)
+    fx.event_pair(sa, {**rows, "visit_gap_sec": 60}, start, NOW, 0.0, 300.0, n_placebo=199)
     by_rows, by_visits = (r["details"] for r in fx.store.inserted)
     assert by_rows["n_b"] == 20 * len(a) and by_visits["n_b"] == len(a)
     assert by_visits["observed_b_in_windows"] == len(a)

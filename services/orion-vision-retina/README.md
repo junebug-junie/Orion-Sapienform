@@ -169,7 +169,24 @@ source checks for the token every 60 s, so no restart is needed after login.
 The push link is supervised every 60 s: firebase-messaging stops for good
 after 3 connection errors, and ring_doorbell refreshes its session only once.
 A stopped listener shows as `last_error = "ring push listener stopped"` and is
-rebuilt, and the whole connection is rebuilt every 12 h. Each live view is
+rebuilt, and the whole connection is rebuilt every 12 h. 3 dead listeners in a row,
+or 3 push messages in a row that could not be decoded, set `ring_deaf`
+(health `degraded`; also `ring_consecutive_listener_deaths`,
+`ring_listener_restarts`, `ring_push_messages_skipped`).
+
+**Deaf doorbell, 2026-10-28 21:15 UTC .. 2026-11-03 (fixed).** FCM began
+sending each push's `crypto-key`/`encryption` headers without base64 padding.
+firebase-messaging 0.4.5 decodes them strictly, raised
+`binascii.Error: Incorrect padding`, and shut its client down before
+acknowledging the message, so the same message came back on every reconnect:
+~1,440 dead listeners a day, 0 Ring events, 0 doorbell crops outside
+self-looks, health `ok`. `ring_source.ensure_fcm_push_tolerance()` (applied
+before every listener start) pads both headers, and a message that still
+cannot be handled is logged, counted (`ring_push_messages_skipped`,
+`ring_push_last_skip_error`) and acknowledged instead of killing the
+listener. Live check after a restart: `ring_events_seen` grows and
+`journalctl CONTAINER_NAME=orion-vision-retina-doorbell -o cat | grep -c "Incorrect padding"`
+stops growing. Each live view is
 registered with Ring before it starts, so every exit path (no answer, error,
 shutdown) closes it -- an orphaned session keeps a battery camera streaming.
 

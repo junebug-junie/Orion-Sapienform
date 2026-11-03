@@ -17,13 +17,26 @@ _OTHER_SERVICE_ROOTS = tuple(
 )
 
 
+def _is_hub_package(name: str) -> bool:
+    """True when ``sys.modules[name]`` is missing or is Hub's own package."""
+    module = sys.modules.get(name)
+    if module is None:
+        return True
+    hub_dir = (_HUB_ROOT / name).resolve()
+    return any(Path(p).resolve() == hub_dir for p in getattr(module, "__path__", ()) or ())
+
+
 def _ensure_hub_paths() -> None:
-    # Drop cached imports so the corrected sys.path wins (repo-root `scripts/` namespace vs Hub package).
-    for key in list(sys.modules):
-        if key == "scripts" or key.startswith("scripts."):
-            del sys.modules[key]
-        if key == "app" or key.startswith("app."):
-            del sys.modules[key]
+    # Drop cached imports so the corrected sys.path wins (repo-root `scripts/` namespace,
+    # or another service's `app`, vs Hub's packages). Only when the wrong package is
+    # loaded: purging unconditionally made every test re-import Hub's whole app
+    # (scripts.main, ~2 s), which was most of this suite's CI time.
+    for pkg in ("scripts", "app"):
+        if _is_hub_package(pkg):
+            continue
+        for key in list(sys.modules):
+            if key == pkg or key.startswith(pkg + "."):
+                del sys.modules[key]
     # Remove stale entries so we can prepend Hub before cwd (`''`) and duplicate PYTHONPATH entries.
     for p in (str(_REPO_ROOT), str(_HUB_ROOT), *(str(p) for p in _OTHER_SERVICE_ROOTS)):
         try:

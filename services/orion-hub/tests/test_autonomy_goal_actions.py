@@ -43,7 +43,7 @@ def hub_client(monkeypatch):
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret-token")
     import importlib
 
-    import scripts.main as hub_main
+    hub_main = importlib.import_module("scripts.main")
 
     importlib.reload(hub_main)
     with TestClient(hub_main.app) as client:

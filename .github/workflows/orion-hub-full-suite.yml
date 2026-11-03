@@ -26,6 +26,12 @@ on:
       - "requirements-dev.txt"
       - ".github/workflows/orion-hub-full-suite.yml"
 
+# A newer push to the same PR makes the older run pointless: cancel it.
+# Pushes to main are never cancelled, so every main commit keeps its result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   hub-tests:
     name: Hub — full tests folder
@@ -43,8 +49,14 @@ jobs:
           python -m pip install --upgrade pip
           grep -v '^faster-whisper' services/orion-hub/requirements.txt > /tmp/hub-requirements.txt
           python -m pip install -r /tmp/hub-requirements.txt -r requirements-dev.txt \
-            "fakeredis[lua]>=2.23,<3" "mcp>=1,<2"
+            "fakeredis[lua]>=2.23,<3" "mcp>=1,<2" "pytest-timeout>=2.3,<3"
       - name: Run services/orion-hub/tests
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-hub
-        run: python -m pytest -q -p no:cacheprovider services/orion-hub/tests
+        # --timeout: a test that hangs fails after 3 min and prints every thread's
+        # stack, so the log names the hung test. Without it a hang sat silent
+        # until the 30 min job timeout. The slowest healthy test takes ~6 s.
+        run: >-
+          python -m pytest -q -p no:cacheprovider --durations=20
+          --timeout=180 --timeout-method=thread
+          services/orion-hub/tests

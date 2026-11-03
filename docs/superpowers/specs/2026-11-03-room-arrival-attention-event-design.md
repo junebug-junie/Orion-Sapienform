@@ -396,13 +396,61 @@ picks the arrival.
 4. **Patch 4: store the named scene and show it to Orion.** Waits for
    decision 4 in "Missing questions".
 
-#### Patch 0 findings (pending)
+#### Patch 0 findings (read-only investigation, 2026-11-03)
 
-Findings pending. A separate read-only investigation is diagnosing why the
-room-camera face check never reaches `probable` (angle, top-of-head views,
-still size, enrollment set, thresholds). It will fill this subsection with
-evidence and a recommended fix. Patch 3 does not start until the face check
-reaches at least `possible` on a meaningful share of Juniper's sit-downs.
+The room changed. The code did not. On 10-25 the desk where Juniper sat facing
+the camera was removed (compare frames `face_frames/cam0/2026-10-24/235950` and
+`2026-10-25/235938`). Her chair now faces away from the camera. Her enrollment
+(14 crops, one sitting, one pose, 10-12) only covers "seated, facing the
+camera, looking down", and that view no longer happens.
+
+- **No code, model, threshold or gallery change since 10-12.** `git log -L` on
+  `services/orion-vision-host/app/runner.py:659-760`, `identity_gallery.py` and
+  `model_manager.py` shows nothing. The model is facenet vggface2 + MTCNN at
+  its defaults. The bars are `possible` 0.35 and `probable` 0.55
+  (`config/vision_profiles.yaml:559,561`). `juniper.json` is unchanged since
+  2026-10-12 00:47Z. Every saved check used the 2560x1920 still.
+- **The old "about 5,000 person windows a day" were a framed photo** on the
+  desk. PR #2953 (size floor, `vision_profiles.yaml:220-222`) removed it from
+  about 14:00Z on 10-29. The zeros on 10-31..11-02 are real absence plus that
+  fix, not a detector or stream fault. A face check runs only within 8 s of a
+  `person` (`vision_frame_router.yaml:64-65`, `policy.py:319`).
+- **Most "faces" are junk.** Of 2,354 saved faces 10-26..11-03, only 24 look
+  real (detector confidence at least 0.99 and at least 60 px). Five of those
+  reached 0.55. The other 2,330 are false faces, such as a fan grille or a
+  jacket texture. A jacket scored 0.389 (`possible`). Two `possible` hits within
+  10 min count as a corroborated sighting (`orion-vision-window/app/main.py:765-770`,
+  `WINDOW_SIGHTING_MIN_MATCHES=2`). So lowering the bars would create false
+  namings.
+- **The best real face of the 11-03 visit scored 0.528,** just under
+  `probable`: near-frontal, looking down, partly covered. Whether that person
+  is Juniper is UNVERIFIED, because the hair colour differs from the
+  enrollment frames. Juniper to confirm.
+
+Fix, in order:
+
+1. **Junk floor before matching.** Require detector confidence at least 0.98
+   and a face of at least 60 px, or the crop is not scored. This removes about
+   99% of false faces, so `possible` means something again. It is safe without
+   the sit test.
+2. **Sit test, then re-enroll and calibrate.** Juniper does a 5-minute sit test
+   (steps in the investigation report):
+   - stand facing the camera;
+   - walk across the room;
+   - sit at the white desk as usual;
+   - three-quarter turn;
+   - leave.
+
+   The crops are labelled by eye and become both a varied enrollment set
+   (standing, three-quarter, side, current hair) and a labelled hold-out.
+   The 2,330 junk crops are the negatives. The bars are set on that hold-out,
+   not by hand.
+3. **Denser checks while someone is present.** Use
+   `min_seconds_between_dispatch` 2 s instead of 5 s for 60 s after a
+   `person` onset.
+
+Patch 3 does not start until the face check reaches at least `possible` on
+at least half of a sit test's real-face crops.
 
 ### Patch 3: the look act
 
@@ -619,9 +667,12 @@ Picture-change surprise is unchanged and keeps competing as a second input.
 - `.github/workflows/street-attention-tests.yml` (or a sibling workflow).
 - `scripts/check_substrate_ladder_liveness.py` / `orion/vision_detection_rate_watch.py`
   (Patch 0 only).
-- Patch 0 face fix: depends on the pending findings. Likely
-  `services/orion-vision-frame-router/app/dispatcher.py` (still request),
-  `config/vision_profiles.yaml` (`identity_face`), and the enrollment set.
+- Patch 0 face fix: `services/orion-vision-host/app/runner.py` (the junk floor
+  before matching), `config/vision_profiles.yaml` (`identity_face` floors and
+  calibrated bars), `config/vision_frame_router.yaml` (denser checks after
+  onset), and the enrollment set
+  (`/mnt/telemetry/orion-vision-host/identity_gallery/juniper.json`, backed up
+  before any change).
 - Patch 3: `orion/schemas/action_prediction.py`, `orion/autonomy/allocator.py`,
   `orion/grammar/act_ledger.py` (look verb mapping),
   `services/orion-vision-council/app/foveal_probe.py` and a new
@@ -746,8 +797,9 @@ Then the ladder has a `person_rate:cam0` rung (same median rule as
 
 Patch 0 face fix: the face verdicts on the room camera move off `no_face` /
 `unsure`. Pass: during Juniper's sit tests, at least half of face checks read
-`possible` or better, and some read `probable`. The exact query and baseline
-come from the pending findings (baseline since 11-02: 18 checks, 0 `probable`).
+`possible` or better, and some read `probable`. The baseline is 11-02..03: 18 checks, 0 `probable`, best real face 0.528. In
+the labelled hold-out, the junk floor must reject at least 95% of the 2,330
+junk crops and keep every real-face crop.
 
 Patches 1-2 (producer and runtime), after 7 live days:
 
@@ -874,8 +926,8 @@ PR: https://github.com/junebug-junie/Orion-Sapienform/pull/3043
 ## Recommended next patch
 
 Patch 0, before anything else, has two parts. First, fix room-camera face
-recognition, from the pending investigation's findings (see "Patch 0
-findings"). Second, a `person_rate:cam0` ladder rung. It reuses
+recognition (see "Patch 0 findings"): the junk floor now, then the sit test,
+re-enrollment and calibration. Second, a `person_rate:cam0` ladder rung. It reuses
 `orion/vision_detection_rate_watch.py`, counting only `person` windows instead
 of any detection, and its replay must go red on 2026-10-30..11-02 unless
 Juniper confirms she was away. Then a 5-minute sit test with Juniper. If the

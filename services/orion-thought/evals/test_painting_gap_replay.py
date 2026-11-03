@@ -56,7 +56,7 @@ def _replay(threshold_hours: float) -> tuple[list[str], int]:
     )
     alerted: list[str] = []
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get",
+        "app.notify_pending.requests.get",
         return_value=MagicMock(status_code=200, json=lambda: []),
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor

@@ -230,6 +230,6 @@ Expect a first `onset` row within about 4 min of the durable-runs restart for an
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3067
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

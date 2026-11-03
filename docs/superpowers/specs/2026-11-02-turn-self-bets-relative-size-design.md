@@ -1,6 +1,6 @@
 # Turn self-bets: ask "bigger than usual?", not "how big?" (proposal)
 
-Status: **proposal**, awaiting Juniper's approval. This changes what stance is asked, a cognition loop
+Status: **approved 2026-11-03**; built as PR A (readers: schema union, settler, migration) then PR B (prompt and producer). This changes what stance is asked, a cognition loop
 (CLAUDE.md, proposal mode). Parent arc: `2026-10-23-unified-turn-self-prediction-design.md` (#2869).
 A3 settling and grading: #2976.
 
@@ -104,8 +104,10 @@ caller's own rate scores exactly 0, so stance only scores by telling long turns 
   - `hit` = `observed > reference`.
   - With fewer than 20 reference turns, the row is void as `ungradeable_no_reference`.
   - Migration: add `reference real` (additive, `REQUIRED-BY: orion-prediction`).
-  - The reference reads `observed` from both the old range faculties and the new ones, so the history
-    carries over.
+  - As built: every executed turn keeps its true size in `observed` on the `turn.self.steps` and
+    `turn.self.reply_length` rows, even when no range was stated (v2). The reference reads only
+    those rows, so the history carries straight across the version switch. A settle pass runs
+    oldest first and adds each settled turn to the history for the later ones.
 - `/turn-self-bets/live`: no shape change. The new faculties appear with Brier and `skill_vs_caller`.
 
 ## Files likely to touch

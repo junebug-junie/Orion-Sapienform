@@ -1292,8 +1292,9 @@ def persist_compaction_request(request) -> bool:
         return False
 
 
-def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
-    """Recent (theme_key, created_at) chain rows for the resonance detector.
+def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object, str]]:
+    """Recent (theme_key, created_at, terminal_reason) chain rows for the
+    resonance detector.
 
     Read-only, best-effort — returns [] on any miss so the tripwire degrades to
     "no evidence" rather than raising. Skips null/unknown themes."""
@@ -1308,7 +1309,7 @@ def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
             rows = (
                 conn.execute(
                     text(
-                        "SELECT theme_key, created_at FROM substrate_reverie_chain "
+                        "SELECT theme_key, created_at, terminal_reason FROM substrate_reverie_chain "
                         "WHERE theme_key IS NOT NULL AND theme_key <> 'unknown' "
                         "ORDER BY created_at DESC LIMIT :limit"
                     ),
@@ -1317,7 +1318,11 @@ def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
                 .mappings()
                 .all()
             )
-        return [(str(r["theme_key"]), r["created_at"]) for r in rows if r.get("created_at")]
+        return [
+            (str(r["theme_key"]), r["created_at"], str(r.get("terminal_reason") or ""))
+            for r in rows
+            if r.get("created_at")
+        ]
     except Exception as exc:
         logger.debug("resonance chain-event load failed: %s", exc)
         return []

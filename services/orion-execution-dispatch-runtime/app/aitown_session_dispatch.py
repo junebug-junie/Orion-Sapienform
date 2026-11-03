@@ -33,6 +33,8 @@ from orion.schemas.aitown_session import (
     aitown_session_object_ref,
 )
 
+from app.result_status import status_for_settlement, status_for_stored_settlement
+
 logger = logging.getLogger("execution-dispatch-runtime.aitown_session")
 
 AITOWN_SESSION_DISABLED = "aitown_session_disabled"
@@ -93,7 +95,12 @@ class AITownSessionDispatchMixin:
                                                 "dispatch_error": AITOWN_SESSION_DISABLED})
         existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
         if existing is not None:
-            self._record_dispatch_status(existing["status"], live=False)
+            status = status_for_stored_settlement(existing)
+            if existing["status"] == "succeeded":
+                self._store.canonicalize_legacy_dispatch_result_status(
+                    result_id=existing["result_id"], status=status
+                )
+            self._record_dispatch_status(status, live=False)
             return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
                                                 "result_ref": existing["result_id"]})
         started = perf_counter()
@@ -119,7 +126,7 @@ class AITownSessionDispatchMixin:
                       "refusal": out.refusal if out else None,
                       "retry_after_sec": out.retry_after_sec if out else None,
                       "rpc_ms": round(rpc_ms, 1)}
-        status = "failed" if error else "succeeded"
+        status = status_for_settlement(out.state if out else None, error=error)
         self._store.save_dispatch_result(
             result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status=status,
             result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": None,

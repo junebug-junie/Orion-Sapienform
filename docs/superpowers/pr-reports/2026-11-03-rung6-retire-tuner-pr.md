@@ -229,6 +229,6 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## PR link
 
-(filled after PR creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3050
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

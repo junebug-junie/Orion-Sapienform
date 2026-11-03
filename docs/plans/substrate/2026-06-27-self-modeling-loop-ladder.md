@@ -241,7 +241,7 @@ rejections, 0 adoptions since 2026-09-03.
 
 ### Retired 2026-11-03
 
-The expectation tuner above is gone, as one unit (PR: chore/rung6-retire-tuner).
+The expectation tuner above is gone, as one unit (PR #3050).
 
 - **Why.** Live record 2026-10-16..2026-11-03: 16 proposals, 15 rejected
   (12 `trial_failed`, 3 `trial_inconclusive`), 1 adopted (execution `alpha`

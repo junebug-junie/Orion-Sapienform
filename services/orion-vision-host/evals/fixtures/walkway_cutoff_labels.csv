@@ -1,0 +1,112 @@
+frame,box_id,label,family,score,x1,y1,x2,y2,verdict,object,note
+2026-10-29/walkway_14Z.jpg,1,vehicle,vehicle,0.337,1694,367,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_15Z.jpg,1,vehicle,vehicle,0.297,1698,367,1777,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_16Z.jpg,1,vehicle,vehicle,0.343,1694,364,1779,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_17Z.jpg,1,vehicle,vehicle,0.328,1693,361,1778,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_18Z.jpg,1,vehicle,vehicle,0.349,1693,364,1779,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_19Z.jpg,1,vehicle,vehicle,0.396,1693,364,1778,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_19Z.jpg,2,vehicle,vehicle,0.384,475,630,673,735,real,white_suv_left,
+2026-10-29/walkway_20Z.jpg,1,vehicle,vehicle,0.358,1695,363,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_21Z.jpg,1,vehicle,vehicle,0.352,1696,364,1778,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_22Z.jpg,1,vehicle,vehicle,0.355,1696,366,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_22Z.jpg,2,vehicle,vehicle,0.404,1294,451,1408,519,real,silver_car_far,
+2026-10-29/walkway_23Z.jpg,1,vehicle,vehicle,0.36,1695,364,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-29/walkway_23Z.jpg,2,vehicle,vehicle,0.403,1293,451,1409,519,real,silver_car_far,
+2026-10-30/walkway_00Z.jpg,1,vehicle,vehicle,0.362,1695,364,1779,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_00Z.jpg,2,vehicle,vehicle,0.403,1293,449,1410,519,real,silver_car_far,
+2026-10-30/walkway_14Z.jpg,1,vehicle,vehicle,0.37,1694,367,1778,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_15Z.jpg,1,vehicle,vehicle,0.329,1694,364,1779,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_15Z.jpg,2,vehicle,vehicle,0.304,642,608,958,793,real,dark_suv_driving,
+2026-10-30/walkway_16Z.jpg,1,vehicle,vehicle,0.368,1694,367,1778,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_16Z.jpg,2,vehicle,vehicle,0.345,138,1151,193,1354,real,car_left_edge,
+2026-10-30/walkway_17Z.jpg,1,vehicle,vehicle,0.367,1694,365,1778,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_18Z.jpg,1,vehicle,vehicle,0.366,1694,362,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_19Z.jpg,1,vehicle,vehicle,0.365,1693,364,1778,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_20Z.jpg,1,vehicle,vehicle,0.368,1695,362,1778,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_21Z.jpg,1,vehicle,vehicle,0.281,1694,362,1779,429,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_22Z.jpg,1,vehicle,vehicle,0.312,1693,363,1779,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_23Z.jpg,1,vehicle,vehicle,0.302,1693,365,1779,424,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-30/walkway_23Z.jpg,2,vehicle,vehicle,0.37,1230,459,1376,541,real,silver_car_mid,
+2026-10-31/walkway_00Z.jpg,1,vehicle,vehicle,0.335,1692,364,1778,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_00Z.jpg,2,vehicle,vehicle,0.367,1231,459,1374,544,real,silver_car_mid,
+2026-10-31/walkway_14Z.jpg,1,vehicle,vehicle,0.323,1694,364,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_14Z.jpg,2,vehicle,vehicle,0.358,1231,459,1372,536,real,silver_car_mid,
+2026-10-31/walkway_15Z.jpg,1,vehicle,vehicle,0.344,1695,368,1777,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_15Z.jpg,2,vehicle,vehicle,0.378,1231,460,1372,536,real,silver_car_mid,
+2026-10-31/walkway_16Z.jpg,1,vehicle,vehicle,0.31,1907,340,1958,374,real,white_car_far_right,
+2026-10-31/walkway_16Z.jpg,2,vehicle,vehicle,0.342,1696,367,1777,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_16Z.jpg,3,vehicle,vehicle,0.374,1231,460,1372,537,real,silver_car_mid,
+2026-10-31/walkway_17Z.jpg,1,vehicle,vehicle,0.398,1694,366,1778,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_17Z.jpg,2,vehicle,vehicle,0.41,1231,457,1375,539,real,silver_car_mid,
+2026-10-31/walkway_18Z.jpg,1,vehicle,vehicle,0.368,1694,364,1778,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_18Z.jpg,2,vehicle,vehicle,0.404,1232,458,1373,537,real,silver_car_mid,
+2026-10-31/walkway_19Z.jpg,1,vehicle,vehicle,0.346,1695,365,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_19Z.jpg,2,vehicle,vehicle,0.381,1230,459,1372,537,real,silver_car_mid,
+2026-10-31/walkway_20Z.jpg,1,vehicle,vehicle,0.325,1695,366,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_20Z.jpg,2,vehicle,vehicle,0.375,1233,458,1373,536,real,silver_car_mid,
+2026-10-31/walkway_21Z.jpg,1,vehicle,vehicle,0.33,1698,364,1778,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_21Z.jpg,2,vehicle,vehicle,0.39,1235,459,1376,537,real,silver_car_mid,
+2026-10-31/walkway_22Z.jpg,1,vehicle,vehicle,0.342,1696,364,1778,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_22Z.jpg,2,vehicle,vehicle,0.368,1231,458,1374,536,real,silver_car_mid,
+2026-10-31/walkway_23Z.jpg,1,vehicle,vehicle,0.369,1696,366,1778,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-10-31/walkway_23Z.jpg,2,vehicle,vehicle,0.399,1231,460,1371,537,real,silver_car_mid,
+2026-10-31/walkway_23Z.jpg,3,person,person,0.428,2039,610,2157,933,real,man_lawn,
+2026-11-01/walkway_00Z.jpg,1,vehicle,vehicle,0.39,1696,364,1779,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_00Z.jpg,2,vehicle,vehicle,0.426,1232,459,1372,537,real,silver_car_mid,
+2026-11-01/walkway_00Z.jpg,3,person,person,0.394,2053,651,2132,832,real,child_walking,
+2026-11-01/walkway_00Z.jpg,4,person,person,0.348,2243,786,2336,1006,real,person_seated,
+2026-11-01/walkway_14Z.jpg,1,vehicle,vehicle,0.273,1693,361,1778,427,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_14Z.jpg,2,vehicle,vehicle,0.314,1228,460,1376,545,real,silver_car_mid,
+2026-11-01/walkway_15Z.jpg,1,vehicle,vehicle,0.288,1692,365,1778,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_15Z.jpg,2,vehicle,vehicle,0.333,1230,461,1375,544,real,silver_car_mid,
+2026-11-01/walkway_16Z.jpg,1,vehicle,vehicle,0.283,1692,367,1778,429,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_16Z.jpg,2,vehicle,vehicle,0.328,1230,460,1375,544,real,silver_car_mid,
+2026-11-01/walkway_17Z.jpg,1,vehicle,vehicle,0.288,1692,364,1779,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_17Z.jpg,2,vehicle,vehicle,0.339,1230,459,1375,544,real,silver_car_mid,
+2026-11-01/walkway_18Z.jpg,1,vehicle,vehicle,0.313,1692,365,1779,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_18Z.jpg,2,vehicle,vehicle,0.351,1230,459,1374,543,real,silver_car_mid,
+2026-11-01/walkway_19Z.jpg,1,vehicle,vehicle,0.315,1693,366,1778,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_19Z.jpg,2,vehicle,vehicle,0.352,1231,460,1374,542,real,silver_car_mid,
+2026-11-01/walkway_20Z.jpg,1,vehicle,vehicle,0.325,1694,368,1778,427,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_20Z.jpg,2,vehicle,vehicle,0.345,1230,460,1373,542,real,silver_car_mid,
+2026-11-01/walkway_21Z.jpg,1,vehicle,vehicle,0.283,1693,366,1778,426,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_21Z.jpg,2,vehicle,vehicle,0.345,1231,459,1375,543,real,silver_car_mid,
+2026-11-01/walkway_22Z.jpg,1,vehicle,vehicle,0.297,1692,367,1778,429,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_22Z.jpg,2,vehicle,vehicle,0.344,1231,459,1374,544,real,silver_car_mid,
+2026-11-01/walkway_23Z.jpg,1,vehicle,vehicle,0.297,1691,366,1778,429,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-01/walkway_23Z.jpg,2,vehicle,vehicle,0.339,1232,459,1374,545,real,silver_car_mid,
+2026-11-02/walkway_00Z.jpg,1,vehicle,vehicle,0.301,1692,365,1778,428,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_00Z.jpg,2,vehicle,vehicle,0.337,1230,460,1374,542,real,silver_car_mid,
+2026-11-02/walkway_14Z.jpg,1,vehicle,vehicle,0.344,1693,365,1777,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_14Z.jpg,2,vehicle,vehicle,0.383,1231,460,1371,538,real,silver_car_mid,
+2026-11-02/walkway_14Z.jpg,3,vehicle,vehicle,0.323,140,1030,268,1224,real,dark_car_moving_left,
+2026-11-02/walkway_15Z.jpg,1,vehicle,vehicle,0.35,1692,365,1778,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_16Z.jpg,1,vehicle,vehicle,0.307,1693,362,1776,423,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_17Z.jpg,1,vehicle,vehicle,0.314,1695,364,1778,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_18Z.jpg,1,vehicle,vehicle,0.341,1695,366,1777,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_18Z.jpg,2,vehicle,vehicle,0.344,1444,449,1474,518,real,vehicle_behind_post,
+2026-11-02/walkway_19Z.jpg,1,vehicle,vehicle,0.337,1693,364,1778,423,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_19Z.jpg,2,vehicle,vehicle,0.333,1265,433,1427,528,real,maroon_suv,
+2026-11-02/walkway_20Z.jpg,1,vehicle,vehicle,0.343,1694,364,1779,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_21Z.jpg,1,vehicle,vehicle,0.353,1694,365,1779,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_22Z.jpg,1,vehicle,vehicle,0.342,1694,365,1779,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-02/walkway_23Z.jpg,1,vehicle,vehicle,0.373,1695,367,1779,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_00Z.jpg,1,vehicle,vehicle,0.293,1694,366,1779,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_00Z.jpg,2,vehicle,vehicle,0.335,1228,464,1360,536,real,silver_car_mid,
+2026-11-03/walkway_00Z.jpg,3,vehicle,vehicle,0.252,1464,485,1479,539,real,car_sliver_behind_post,
+2026-11-03/walkway_01Z.jpg,1,vehicle,vehicle,0.371,1243,466,1364,530,real,silver_car_mid,
+2026-11-03/walkway_01Z.jpg,2,vehicle,vehicle,0.33,1071,501,1252,585,real,car_parked_far_ir,
+2026-11-03/walkway_01Z.jpg,3,vehicle,vehicle,0.327,228,687,293,729,false,,
+2026-11-03/walkway_14Z.jpg,1,vehicle,vehicle,0.318,1694,364,1778,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_16Z.jpg,1,vehicle,vehicle,0.273,1886,355,1960,382,real,white_car_far_right,
+2026-11-03/walkway_16Z.jpg,2,vehicle,vehicle,0.298,1696,364,1778,419,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_16Z.jpg,3,vehicle,vehicle,0.254,1695,371,1727,420,dup,trailer_far,
+2026-11-03/walkway_17Z.jpg,1,vehicle,vehicle,0.31,1694,363,1780,423,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_17Z.jpg,2,mail truck,vehicle,0.412,193,749,827,1150,real,mail_truck,
+2026-11-03/walkway_17Z.jpg,3,person,person,0.287,472,859,588,1118,real,mail_carrier,
+2026-11-03/walkway_18Z.jpg,1,vehicle,vehicle,0.287,1695,364,1779,422,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_19Z.jpg,1,vehicle,vehicle,0.269,1885,356,1962,381,real,white_car_far_right,
+2026-11-03/walkway_19Z.jpg,2,vehicle,vehicle,0.365,1695,364,1780,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_20Z.jpg,1,vehicle,vehicle,0.364,1695,365,1779,421,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_21Z.jpg,1,vehicle,vehicle,0.4,1696,363,1779,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"
+2026-11-03/walkway_22Z.jpg,1,vehicle,vehicle,0.384,1696,365,1780,420,real,trailer_far,"parked dump trailer, far corner (spot rule, checked on sheets)"

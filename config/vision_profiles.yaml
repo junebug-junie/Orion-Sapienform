@@ -189,23 +189,33 @@ profiles:
       # request's stream_id; a label not listed gets the stream's `default`,
       # else score_threshold above. The detector runs once at the lowest
       # cut-off that applies, then each box must reach its own label's.
-      # Values below are TODAY'S values, written out so a calibrated change is
-      # a one-line edit. Evidence for walkway (PR report
-      # docs/superpowers/pr-reports/2026-10-29-vision-blind-detector-watch-pr.md):
-      # - person: Juniper's Hub verdicts (67 right / 2 wrong walkway person
-      #   stories) are all >= 0.35, so nothing says what lies below; raising it
-      #   would drop real people (p05 of right detections 0.362) and would not
-      #   remove the 2 wrong stories (their best boxes 0.43 / 0.47). Kept.
-      # - vehicle: on the half-blind days (10-22..23) the two parked-car spots
-      #   scored a median ~0.36 (0.40 on 10-28) and were seen in 0-32 % of
-      #   frames (96 % on 10-28). Stored crops start at 0.35, so the
-      #   false-positive cost of a lower cut-off cannot be measured from them.
-      #   Kept until the hourly frame samples are re-scored at a low cut-off.
-      # cam0 is not listed on purpose (stays on score_threshold).
+      # Evidence for walkway: PR reports docs/superpowers/pr-reports/
+      # 2026-10-29-vision-blind-detector-watch-pr.md (person) and
+      # 2026-11-03-walkway-detector-cutoff-pr.md (vehicle). Repeatable eval:
+      # services/orion-vision-host/evals/walkway_cutoff_calibration_eval.py.
+      # - person: 0.35, kept. Juniper's Hub verdicts (67 right / 2 wrong
+      #   walkway person stories) are all >= 0.35; p05 of right detections is
+      #   0.362, and the 2 wrong stories' best boxes are 0.43 / 0.47. The
+      #   2026-11-03 re-score has only 4 people in 98 frames (one mail
+      #   carrier behind the mailbox door at 0.29): too few to move a cut-off
+      #   that feeds motion stories, person learning and the street line.
+      # - vehicle: 0.25 (was 0.35). 2026-11-03: 142 hourly walkway frames
+      #   (10-29..11-03) re-scored at a 0.20 box floor with the live code
+      #   (labels exist only >= text_threshold 0.25), 98 labelled by
+      #   eye (35 sunny, 14 overcast, 15 rain, 34 night). Whole-frame pass,
+      #   real vehicles seen at 0.35 / 0.30 / 0.28 / 0.25: rain 14 / 71 / 96
+      #   / 100 %, sunny 28 / 61 / 67 / 81 %, overcast 82 / 95 / 100 / 100 %.
+      #   False vehicle boxes: 0 at every cut-off on the whole frame; 1 on the
+      #   tiled pass (0.33, a small object on a porch, IR night). On rain days
+      #   the parked cars score 0.27-0.35, which is why 11-01 read 0 of 90
+      #   windows. 0.25 is also the lowest useful value while text_threshold
+      #   is 0.25: every box under it came back with an empty label.
+      # cam0 is not listed on purpose (stays on score_threshold). Labels not
+      # listed (dog, bicycle, stroller, "mail truck") stay at 0.35.
       box_threshold_by_stream:
         walkway:
           person: 0.35
-          vehicle: 0.35
+          vehicle: 0.25
       nms_iou: 0.6
       # Per-camera size floor (2026-10-29): stream_id -> label -> smallest
       # long side of a box, as a fraction of the frame's short side. Boxes

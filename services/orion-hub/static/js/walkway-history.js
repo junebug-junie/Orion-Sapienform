@@ -50,8 +50,8 @@
     item.appendChild(el(doc, "div", "text-xs text-gray-100 break-words", row.line));
     const meta = [cameraChip(row)];
     if (!row.complete) meta.push(row.grain === "hour" ? "not settled" : "still running or partial");
-    const reg = (row.regulars && row.regulars.count) || 0;
-    if (reg) meta.push(`${reg} unnamed regular${reg === 1 ? "" : "s"}`);
+    // No regulars chip (2026-11-03): its count was appearance clusters of every kind, people
+    // split into several. The line itself says regulars by kind (walkway_rollup.regulars_phrase).
     item.appendChild(el(doc, "div", "text-[11px] text-gray-400 break-words", meta.join(" · ")));
     captionLines(row).forEach((t) => item.appendChild(el(doc, "div", "text-[11px] italic text-gray-500 break-words", t)));
     return item;

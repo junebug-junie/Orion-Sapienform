@@ -30,7 +30,8 @@ from orion.situational.street_material import (
     split_caption_sql,
     street_caption_line,
 )
-from orion.vision.walkway_rollup import LIVING_KINDS, count_range, split_note, window_peak
+from orion.vision.motion_story_gate import gate_passed, tally_from_counts
+from orion.vision.walkway_rollup import LIVING_KINDS, count_range, local_midnight, split_note, window_peak
 
 logger = logging.getLogger(__name__)
 
@@ -573,6 +574,106 @@ STREET_CAPTION_MAX = 2
 # (detector labels capped at 3), and the brief shows at most one.
 STREET_BRIEF_CAPTION_CHARS = 100
 
+# MOTION STORIES (2026-11-03; plan: docs/superpowers/specs/2026-10-16-walkway-
+# motion-stories-proposal.md, PR #2736 -- "the street line gains what moved").
+# A story is orion-sql-writer's sentence about one tracked passage
+# (`vision_motion_story`, app/vision_motion.py). It reaches Orion only behind
+# Juniper's spot-check gate (orion/vision/motion_story_gate.py), counted on the
+# newest rules version with published clean stories -- the walkway rollups'
+# rule (services/orion-sql-writer/app/vision_rollup.py `story_gate`), so a
+# verdict on old rules never vouches for new ones. Gate closed, unreadable,
+# or STREET_MOTION_LINE_ENABLED=false: no story line. Today's newest
+# STREET_STORY_MAX (since local midnight), each with its local time; a story
+# told "together with" one already shown is the same passage and is skipped.
+# No stories is no line: the street line never says "nobody passed".
+STREET_MOTION_LINE_ENV = "STREET_MOTION_LINE_ENABLED"
+STREET_STORY_MAX = 2
+STREET_STORY_CHARS = 160
+_STREET_STORY_VERSION_SQL = text(
+    "SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean"
+)
+_STREET_STORY_VERDICTS_SQL = text(
+    "SELECT CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict, count(*) AS n "
+    "FROM vision_motion_story_verdict v JOIN vision_motion_story s ON s.story_id = v.story_id "
+    "WHERE s.published AND s.clean AND s.rules_version = :v GROUP BY 1"
+)
+_STREET_STORIES_SQL = text(
+    "SELECT story_id, started_at, sentence, together_story_ids FROM vision_motion_story "
+    "WHERE stream_id = :stream_id AND published AND clean AND rules_version = :v "
+    "  AND ended_at >= CAST(:since AS timestamptz) AND started_at >= CAST(:since AS timestamptz) "
+    "  AND started_at <= CAST(:until AS timestamptz) "
+    "  AND sentence IS NOT NULL AND sentence <> '' "
+    "ORDER BY started_at DESC LIMIT 8"
+)
+
+
+def street_motion_line_enabled() -> bool:
+    return (os.getenv(STREET_MOTION_LINE_ENV) or "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _ids(raw: Any) -> set[str]:
+    """`together_story_ids`: a list (psycopg2 text[]), a JSON list, or a `{a,b}` array literal."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = [x.strip().strip('"') for x in raw.strip("{}").split(",")] if raw.startswith("{") else []
+        raw = parsed if isinstance(parsed, list) else []
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _clip_sentence(text_: str, limit: int = STREET_STORY_CHARS) -> str:
+    t = " ".join(str(text_ or "").split()).rstrip(".")
+    if len(t) <= limit:
+        return t
+    cut = t[: limit - 1].rsplit(" ", 1)[0].rstrip(",;")
+    return cut + "\u2026"
+
+
+def street_story_line(stories: list[dict[str, Any]] | None, *, camera: str, tz: Any) -> str | None:
+    """"Walkway motion stories today (spot-checked): at 18:22, A person walked ...;
+    at 12:51, ... ." Rows are already gated, newest first. None for none."""
+    shown: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for row in stories or []:
+        sid = str(row.get("story_id") or "")
+        together = _ids(row.get("together_story_ids"))
+        sentence = _clip_sentence(row.get("sentence") or "")
+        if not sentence or (sid and sid in seen) or (together & seen):
+            continue
+        ts = _utc(row.get("started_at"))
+        at = f"at {ts.astimezone(tz):%H:%M}, " if ts else ""
+        shown.append((sid, at + sentence))
+        seen.add(sid)
+        seen |= together
+        if len(shown) >= STREET_STORY_MAX:
+            break
+    if not shown:
+        return None
+    camera = (camera or "").strip() or "camera"
+    head = f"{camera[:1].upper()}{camera[1:]} motion stories today (spot-checked)"
+    return f"{head}: " + "; ".join(t for _, t in shown) + "."
+
+
+def _gated_stories(conn: Any, stream_id: str, *, since: datetime, until: datetime) -> list[dict[str, Any]] | None:
+    """Today's published clean stories IF Juniper's spot-check gate passed, else None."""
+    version_rows = _street_rows(conn, _STREET_STORY_VERSION_SQL, {}, "story_gate_version")
+    if not version_rows or version_rows[0].get("v") is None:
+        return None
+    version = int(version_rows[0]["v"])
+    verdicts = _street_rows(conn, _STREET_STORY_VERDICTS_SQL, {"v": version}, "story_gate_verdicts")
+    if verdicts is None:
+        return None
+    counts = {str(r["verdict"]): int(r["n"] or 0) for r in verdicts if r.get("verdict")}
+    if not gate_passed(tally_from_counts(counts, 0, version)):
+        return None
+    return _street_rows(
+        conn, _STREET_STORIES_SQL, {"stream_id": stream_id, "v": version, "since": since, "until": until}, "stories"
+    )
+
+
 # One head-count row per counted zone, `<stream>:<zone>` (orion-sql-writer's
 # vision_individuals.no_embed_presence_id), recognised by a flag in the
 # snapshot rather than by a hardcoded zone name: `head_count_zone` (writers
@@ -825,6 +926,7 @@ def summarize_street(
     captions: list[dict[str, Any]] | None = None,
     people_windows: list[dict[str, Any]] | None = None,
     stationary_people: int | Mapping[str, int] | None = None,
+    stories: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Pure: rows in, a few short plain-English lines out.
 
@@ -836,7 +938,8 @@ def summarize_street(
     last 15 minutes and `stationary_people` the stationary individuals then,
     by kind (a bare int: persons only); together they are the floor of the
     range of every living kind, people and dogs (None: unread, the line can
-    only say "up to").
+    only say "up to"). `stories` are today's motion stories that passed
+    Juniper's spot-check gate, newest first (None: gate closed or unread).
     """
     lines: list[str] = []
     camera = (camera or "").strip() or "camera"
@@ -962,6 +1065,17 @@ def summarize_street(
         elif count is None:
             lines.append(f"People are on the {zone}.")
         # count == 0 with state present contradicts itself: say nothing.
+
+    # 5. What moved: spot-checked motion stories (already gated by the caller).
+    # Last, so a length cut (chat stance) drops them before the rhythm and patio
+    # lines; its own failure costs only this line.
+    try:
+        story = street_story_line(stories, camera=camera, tz=tz)
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.info("situation_street_story_line_failed err=%s", type(exc).__name__)
+        story = None
+    if story:
+        lines.append(story)
     return lines
 
 
@@ -1056,6 +1170,13 @@ def fetch_street_summary(
                 {**window, "lookback": STREET_RECENT_MINUTES},
                 "stationary_people",
             )
+            stories = None
+            if street_motion_line_enabled():
+                try:
+                    stories = _gated_stories(conn, stream_id, since=local_midnight(now.astimezone(tz).date(), tz), until=until)
+                except Exception as exc:  # noqa: BLE001 -- a story-gate problem costs only the story line
+                    logger.info("situation_street_stories_failed err=%s", type(exc).__name__)
+                    stories = None
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
         return StreetSummary(stream_id, [], False)
@@ -1105,6 +1226,7 @@ def fetch_street_summary(
             # skeleton, so an unread props count makes the floor unread too.
             people_windows=people_windows if stationary_rows is not None else None,
             stationary_people={str(r.get("kind") or ""): int(r.get("n") or 0) for r in stationary_rows or []},
+            stories=stories,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

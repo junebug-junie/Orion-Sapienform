@@ -42,8 +42,13 @@ CUT_SHORT_CODES = frozenset(
         "fcc_timeout",
         "fcc_stream_stalled",
         "fcc_stream_line_limit",
+        # Not a motor error frame: the runner sets it when the turn's final answer is a tool call
+        # written as text that never ran, even after the motor's one resume (fcc_motor.
+        # _resume_text_tool_call). The turn stopped mid-work exactly like the codes above.
+        "fcc_text_tool_call",
     }
 )
+TEXT_TOOL_CALL_CODE = "fcc_text_tool_call"
 
 CUT_SHORT_MARKER = "[Cut short - not a finished answer.]"
 # Tolerant match so a re-rendered marker (em dash, case) is not doubled.
@@ -81,6 +86,7 @@ _REASON_TEXT = {
     "fcc_timeout": "its time budget ran out",
     "fcc_stream_stalled": "one step stalled past the per-step limit",
     "fcc_stream_line_limit": "one step produced output too large to read",
+    "fcc_text_tool_call": "its next step, a tool call, came back as plain text and never ran",
 }
 
 _TEXT_CAP = 600
@@ -204,6 +210,26 @@ class TurnFindings:
 
     def has_findings(self) -> bool:
         return bool(self.entries)
+
+    def drop_trailing_text_call(self) -> None:
+        """Cut a tool call written as text out of the latest note (the turn's final answer).
+
+        That call never ran; its raw syntax is not a finding and must not reach the user. Prose
+        before it stays. A note that was only the call is removed, so a turn whose only step was
+        the call has no findings."""
+        idx = self.last_text_entry_index
+        if idx is None or idx >= len(self.entries):
+            return
+        entry = self.entries[idx]
+        cut = entry.find("<tool_call>")
+        if cut < 0:
+            return
+        kept = entry[:cut].rstrip()
+        if kept == "- Orion noted:":
+            del self.entries[idx]
+            self.last_text_entry_index = None
+        else:
+            self.entries[idx] = kept
 
 
 def build_cut_short_draft(

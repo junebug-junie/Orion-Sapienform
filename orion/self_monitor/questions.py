@@ -2,8 +2,11 @@
 
 Spec: docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md, "Effects" E2. A faculty newly
 held ``broken`` or ``unreliable`` mints exactly one question into Orion's self-inquiry pool
-(``curiosity_self_questions``, ``minted_by='orion'``), e.g. "My faculty
-act.actions.journal.make.walkway_grade didn't run 22 of its last 28 tries in the last 7 days. Why?"
+(``curiosity_self_questions``, ``minted_by='orion'``), e.g. "My walkway-grade journal runs
+(act.actions.journal.make.walkway_grade) didn't run 22 of their last 28 tries in the last 7 days. Why?"
+The faculty is named as ``names.named``: plain words first, the internal id after it in brackets.
+Only the text changed with that (2026-11-03); ``question_id`` and the episode are untouched, and an
+already-minted question keeps its old text (the insert ignores conflicts).
 
 Asked once per status episode: an episode is (faculty, held status, ``status_since``). The caller
 remembers what it last saw per faculty (``seen``: faculty -> ``"<status>@<episode>"``) and persists
@@ -24,6 +27,7 @@ from typing import Mapping, Optional
 
 from orion.schemas.self_monitor import FacultyRecordV1
 from orion.self_monitor.gate import FAILING_STATUSES
+from orion.self_monitor.names import named
 from orion.self_monitor.view import SelfMonitorView
 
 QUESTION_FAMILY = "lived"
@@ -69,13 +73,18 @@ def _days(record: FacultyRecordV1) -> int:
 
 def question_text(record: FacultyRecordV1) -> str:
     days = _days(record)
+    name = named(record.faculty)
     if record.status == "broken":
-        return (f"My faculty {record.faculty} didn't run {record.n_failed_to_execute} of its last "
-                f"{record.n_bets} tries in the last {days} days. Why?")
+        if record.n_failed_to_execute:
+            return (f"My {name} didn't run {record.n_failed_to_execute} of their last "
+                    f"{record.n_bets} tries in the last {days} days. Why?")
+        # Held broken while this window no longer shows a failed start (hysteresis lag, live
+        # 2026-11-03): never a false "didn't run 0 of N", and never a claim the record no longer makes.
+        return (f"My {name} are still held as broken, yet none of their {record.n_bets} tries in the last "
+                f"{days} days failed to start. Why?")
     pct = "?" if record.reliability is None else f"{round(100 * record.reliability)}"
-    return (f"My faculty {record.faculty} worked only about {pct}% of the time over {record.n_graded} "
+    return (f"My {name} worked only about {pct}% of the time over {record.n_graded} "
             f"graded tries in the last {days} days. Why?")
-
 
 
 def _same_episode(previous: Optional[str], record: FacultyRecordV1, *, now: datetime) -> bool:

@@ -9,24 +9,27 @@
   same state always renders the same text;
 * every number comes from the faculty's record (counts, decay-weighted shares, mean stated
   confidence; miscalibration from ``calibrated_share``, the share over the same bets as
-  ``stated_mean``); no LLM, no identifiers in the text;
+  ``stated_mean``); no LLM;
+* each faculty is named as ``names.named``: plain words first, the internal id after it in
+  brackets (Juniper 2026-11-03: "use plain names ALONG with internal ids"); the id carries no number
+  the truth eval counts, and the cap still drops whole lines rather than cutting one;
 * a held status whose window numbers no longer support it (hysteresis lag) renders no line;
 * when at least one sentence shows and room is left, one short clause counts the faculties that
   cannot be graded at all yet (structural reasons, not "too few bets");
 * an unknown view (absent, unparseable, stale, future-stamped) renders "" with the view's reason as
   ``skip_reason``; nothing notable renders "" with ``nothing_notable``.
 
-Faculty keys map to plain plural nouns with ``plain_name`` (a small table plus rules per key family;
-anything unrecognised becomes its humanised words plus "bets").
+Faculty keys map to plain plural nouns with ``orion.self_monitor.names.plain_name`` (shared with
+E2, E3 and the Temporal Self faculty arcs; re-exported here).
 """
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Optional
 
 from orion.schemas.self_monitor import FacultyRecordV1, SelfTrackRecordCueV1
+from orion.self_monitor.names import named, plain_name
 from orion.self_monitor.view import SelfMonitorView
 
 MAX_CHARS = 300
@@ -38,88 +41,6 @@ STRUCTURAL_UNGRADEABLE = frozenset({
     "ungradeable:self_graded",
     "ungradeable:never_settled",
 })
-
-# Exact keys whose generic rule reads badly.
-_EXACT: dict[str, str] = {
-    "turn.self.steps": "guesses about how many steps my turns take",
-    "turn.self.reply_length": "guesses about how long my replies run",
-    "turn.self.asks_question": "guesses that I'll ask a question",
-    "turn.self.fetches_outside": "guesses that I'll look something up outside",
-    "vision.percept_expectation": "guesses about what I'll see next",
-    "act.hub.world_pulse_read.look": "world-pulse reads",
-    "act.topic_foundry.run.maintain": "topic-foundry maintenance runs",
-    "act.aitown.session.play": "AI Town sessions",
-}
-# Act verbs -> the plural noun for one try of that act.
-_VERB_NOUNS: dict[str, str] = {
-    "make": "runs", "run": "runs", "predict": "predictions", "infer": "inferences", "look": "looks",
-    "say": "messages", "ask": "questions", "play": "sessions", "sense": "checks",
-    "maintain": "maintenance runs", "act": "acts",
-}
-# Doers that name the hosting service, not the faculty: dropped from the plain name unless nothing
-# else is left ("act.hub.say" -> "hub messages", never a bare "messages").
-_HOST_WORDS = frozenset({"actions", "hub", "durable", "thought"})
-# Whole-segment and suffix tokens -> words; unit suffixes (_c, _w, ...) are dropped.
-_TOKEN_WORDS: dict[str, str] = {"temp_c": "temperature", "temp": "temperature", "rh": "humidity"}
-_UNIT_SUFFIX = re.compile(r"_(c|f|w|kw|kwh|pct|ms|s|sec)$")
-
-
-def _words(segment: str) -> str:
-    seg = segment.split(":")[-1]
-    if seg in _TOKEN_WORDS:
-        return _TOKEN_WORDS[seg]
-    for token, word in _TOKEN_WORDS.items():
-        if seg.endswith("_" + token):
-            seg = seg[: -len(token) - 1] + " " + word
-            break
-    seg = _UNIT_SUFFIX.sub("", seg)
-    return re.sub(r"[_\s-]+", " ", seg).strip()
-
-
-def _hyphen(segment: str) -> str:
-    return _words(segment).replace(" ", "-")
-
-
-def _generic(parts: list[str]) -> str:
-    words = " ".join(w for w in (_words(p) for p in parts if p != "act") if w)
-    return f"{words or 'unnamed'} bets"
-
-
-def plain_name(faculty: str) -> str:
-    """Faculty key -> a plain plural noun phrase that reads after "My ". Deterministic."""
-    if faculty in _EXACT:
-        return _EXACT[faculty]
-    parts = [p for p in faculty.split(".") if p]
-    head, rest = (parts[0], parts[1:]) if parts else ("", [])
-    if head == "act" and rest:
-        if rest[:2] == ["actions", "journal"] and len(rest) >= 4:
-            return f"{_hyphen(rest[3])} journal runs"
-        verb_at = next((i for i in range(len(rest) - 1, -1, -1) if rest[i] in _VERB_NOUNS), None)
-        if verb_at is not None and verb_at >= len(rest) - 2:
-            doer = [w for w in rest[:verb_at] if w not in _HOST_WORDS] or rest[:verb_at]
-            name = rest[verb_at + 1:]
-            words = " ".join(w for w in (_words(x) for x in doer + name) if w)
-            if not words:
-                return _generic(parts)  # "act.make" -> "make bets", never a bare "runs"
-            noun = _VERB_NOUNS[rest[verb_at]]
-            if doer == ["prime"] and not name:
-                words = "Prime"
-            if words.endswith(" " + noun.rstrip("s")) or words == noun.rstrip("s"):
-                return f"{words}s"  # "session sessions" -> "sessions"
-            return f"{words} {noun}"
-    if head == "forecast" and rest:
-        words = " ".join(w for w in (_words(x) for x in rest) if w)
-        if words:
-            return f"{words} forecast ranges"
-    if head == "turn":
-        words = " ".join(w for w in (_words(x) for x in rest if x != "self") if w)
-        if words:
-            return f"guesses about my turns' {words}"
-    if head == "body" and len(rest) >= 2:
-        domain, skill = _words(rest[0]), _words(rest[-1])
-        if domain and skill:
-            return f"{domain} {skill} moves"
-    return _generic(parts)
 
 
 def _pct(x: float) -> str:
@@ -152,7 +73,7 @@ def sentence(record: FacultyRecordV1) -> Optional[str]:
     """One plain sentence for a notable faculty from its own numbers, or None when the numbers are
     missing or no longer support the held status (a held status can lag its window by hysteresis;
     the cue never prints numbers that contradict the claim)."""
-    name = plain_name(record.faculty)
+    name = named(record.faculty)
     status = record.status
     when = window_phrase(record)
     if status == "broken":
@@ -241,4 +162,4 @@ def project_track_record_cue(view: SelfMonitorView, *, now: datetime,
                                 state_age_sec=view.age_sec)
 
 
-__all__ = ["MAX_CHARS", "plain_name", "project_track_record_cue", "sentence", "window_phrase"]
+__all__ = ["MAX_CHARS", "named", "plain_name", "project_track_record_cue", "sentence", "window_phrase"]

@@ -49,6 +49,9 @@ Gates: ``skip_rate_gates`` (no daily cap or cooldown; these are rare); disabled,
 recent chat, quiet hours and arousal ``strained`` still apply, and a held finding waits for a later
 tick. Body economy: the reading door places no bid today, so this door places none either.
 
+Naming: each faculty is named as ``orion.self_monitor.names.named`` (plain words first, the record's
+id after it in brackets; Juniper 2026-11-03), and Orion is asked to name it the same way.
+
 Grounding: the prompt carries only numbers from the faculty's record. Before ``offer_message``
 runs its own signal-name guard, this door refuses a message that names a faculty the bundle is not
 about (``outreach_vocabulary.find_ungrounded_faculty_mentions``), recorded as
@@ -65,6 +68,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
+from orion.self_monitor.names import named
 from orion.self_monitor.view import SELF_MONITOR_REDIS_KEY, parse_state, self_monitor_view
 
 logger = logging.getLogger("orion-hub.self_finding_outreach")
@@ -100,13 +104,6 @@ _KIND_WORDS = {
     "became_broken": "became broken",
     "recovered": "recovered",
     "became_unreliable": "stopped being reliable",
-}
-_FAMILY_WORDS = {
-    "act": "an act of yours",
-    "body": "a body skill of yours",
-    "forecast": "a forecast of yours",
-    "turn": "a prediction you make about your own chat turns",
-    "vision": "a vision expectation of yours",
 }
 
 
@@ -223,12 +220,6 @@ def record_facts(record: FacultyRecordV1, window_days: float) -> list[str]:
     return facts
 
 
-def plain_faculty(faculty: str) -> str:
-    family, _, rest = faculty.partition(".")
-    words = rest.replace(".", " ").replace("_", " ").replace(":", " ").strip()
-    return f"{_FAMILY_WORDS.get(family, 'a faculty of yours')}: \"{words or faculty}\""
-
-
 def evaluate(state: OutreachState, snapshot: SelfMonitorStateV1, *, now: datetime) -> tuple[OutreachState, list[SelfFinding]]:
     """One fresh self-monitor state -> the updated cursor and the NEW findings it holds. Pure.
 
@@ -319,8 +310,8 @@ def build_self_finding_prompt(findings: list[SelfFinding]) -> str:
         "",
     ]
     for n, f in enumerate(findings, start=1):
-        lines.append(f"{n}. {plain_faculty(f.faculty)} (your record names it {f.faculty}) "
-                     f"{_KIND_WORDS.get(f.kind, f.kind)}.")
+        # Quoted in Orion's own first person: the plain names read after "My " ("my replies").
+        lines.append(f'{n}. "My {named(f.faculty)}" {_KIND_WORDS.get(f.kind, f.kind)}.')
         if f.from_status == UNSEEN:
             lines.append(f"   Your self-monitor has held it as {_STATUS_WORDS[f.to_status]} since {f.status_since[:16]} UTC "
                          "(when its record of this faculty began, not necessarily when it broke). "
@@ -338,7 +329,7 @@ def build_self_finding_prompt(findings: list[SelfFinding]) -> str:
         "and state it as fact.",
         "",
         "Write Juniper a short message about this, in your own words. Name the faculty in plain words she "
-        "would understand. Use only the numbers above and do not mention any other faculty. Give it the "
+        "would understand, with its record name in brackets after it, as above. Use only the numbers above and do not mention any other faculty. Give it the "
         "size the record gives it. If several things changed, say them as one thought, not a list.",
         "",
         "She has not asked you for this message, so it arrives out of nowhere. Say the thing itself "

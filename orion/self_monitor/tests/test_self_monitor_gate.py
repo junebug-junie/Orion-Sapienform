@@ -262,11 +262,27 @@ def test_e2_mints_one_question_for_each_newly_failing_faculty() -> None:
     mints, seen = self_questions_for({}, _view(), now=NOW)
     assert sorted(m.faculty for m in mints) == [WALKWAY, PRIME]
     walkway = next(m for m in mints if m.faculty == WALKWAY)
-    assert walkway.text == (f"My faculty {WALKWAY} didn't run 22 of its last 28 tries in the last 7 days. Why?")
+    assert walkway.text == (f"My walkway-grade journal runs ({WALKWAY}) didn't run 22 of their last 28 tries in "
+                            "the last 7 days. Why?")
     assert walkway.family == "lived" and walkway.question_id.startswith("lived.self_monitor.")
+    # Identity is per (faculty, status, episode) and did not move when the text gained names (2026-11-03).
+    assert walkway.question_id == f"lived.self_monitor.{WALKWAY}.broken.20261102T1200Z"
+    assert walkway.episode == "20261102T1200Z"
     prime = next(m for m in mints if m.faculty == PRIME)
-    assert "about 2% of the time over 36 graded tries" in prime.text
+    assert prime.text.startswith(f"My Prime predictions ({PRIME}) worked only about 2% of the time over 36 graded tries")
+    assert prime.question_id == f"lived.self_monitor.{PRIME}.unreliable.20261102T1200Z"
     assert seen[PAINT].startswith("reliable@")
+
+
+def test_e2_held_broken_with_no_failed_start_left_never_says_zero() -> None:
+    # Hysteresis lag (live 2026-11-03, turn.self.steps): held broken while this window shows none failing.
+    from orion.self_monitor.questions import question_text
+    from orion.schemas.self_monitor import FacultyRecordV1
+
+    rec = FacultyRecordV1.model_validate(_record(WALKWAY, "broken", n_failed_to_execute=0, n_graded=28))
+    text = question_text(rec)
+    assert text == (f"My walkway-grade journal runs ({WALKWAY}) are still held as broken, yet none of their 28 "
+                    "tries in the last 7 days failed to start. Why?")
 
 
 def test_e2_none_on_repeat_none_for_reliable() -> None:

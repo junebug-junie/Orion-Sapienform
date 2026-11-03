@@ -81,7 +81,9 @@ def test_broken_faculty_mints_once_as_orion():
     assert sql == UPSERT_SEED_SQL and "DO NOTHING" in sql
     qid, text, family, pinned, minted_by = args
     assert minted_by == "orion" and family == "lived" and pinned is False
-    assert text == f"My faculty {WALKWAY} didn't run 22 of its last 28 tries in the last 7 days. Why?"
+    assert text == (f"My walkway-grade journal runs ({WALKWAY}) didn't run 22 of their last 28 tries in the "
+                    "last 7 days. Why?")
+    assert qid == f"lived.self_monitor.{WALKWAY}.broken.20261102T1200Z"  # identity unchanged by the names
     assert json.loads(redis.data[SEEN_KEY])[WALKWAY].startswith("broken@")
     # A later tick (or a restarted Hub reading the same Redis memory) asks nothing.
     again = asyncio.run(_minter(redis, pool, NOW + timedelta(hours=1)).tick())

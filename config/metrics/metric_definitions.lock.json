@@ -1,12 +1,23 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 774,
+  "metric_count": 787,
   "_last_change": {
-    "change_count": 2,
+    "change_count": 13,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.state.v1",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.state.v1#window_days"
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded"
     ]
   },
   "definitions": {
@@ -5045,6 +5056,237 @@
         "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = at or above stated_mean. Wilson upper bound of calibrated_share; not printed, it decides whether a miscalibrated line still prints (hysteresis lag).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no stated graded bet: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = at or below stated_mean. Wilson lower bound of calibrated_share; not printed, it decides whether a miscalibrated line still prints (hysteresis lag).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no stated graded bet: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = inside stated_mean's band: calibrated_lo <= stated_mean <= calibrated_hi (within slack). Not one value: it is the share that came true over the same bets as stated_mean. Printed by the cue for a miscalibrated faculty only.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet stated a confidence: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "0.0 = no try failed to start (24 of 40 live, 2026-11-03). Wilson lower bound of the failed-to-execute share; not printed, it decides whether a broken line prints the counts (only when > 0.5).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "None = no attempt in the window: no broken count line.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: the decay-weighted share of graded bets that came true (0-1). For a success faculty 1.0 is the good end; for event and interval bets it is judged against stated_mean, not on its own. Printed by the cue only for an unreliable faculty, by E2 for an unreliable one, and by E3 for any told finding.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet in the window: nothing is printed (the cue and E3 skip the sentence, E2 prints '?'). Never read as 0 or 1.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: Wilson upper bound of reliability. The cue does not print it; it decides whether an unreliable line prints (only when < 0.5). E3 prints it as the band. Saturates at 1.0 on a small or all-success window (11 of 39 live, 2026-11-03).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet: no unreliable line, no E3 band.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: Wilson lower bound of reliability. Printed only by E3, as the band.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet: E3 prints no band.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: the mean confidence Orion stated before the outcome, over the graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by the cue next to calibrated_share for a miscalibrated faculty, and by E3.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet stated a confidence: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text",
+        "services.orion-hub.scripts.self_finding_outreach:record_facts"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-durable-runs/self_monitor.state.v1": {

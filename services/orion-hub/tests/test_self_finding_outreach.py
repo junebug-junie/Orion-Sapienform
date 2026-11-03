@@ -319,6 +319,24 @@ def test_grounding_guard_passes_on_the_composed_fixture(monkeypatch):
     assert delivered[0]["text"] == text
 
 
+def test_prompt_names_each_faculty_plain_first_then_its_id(monkeypatch):
+    """Juniper 2026-11-03: plain names along with internal ids. The prompt names the faculty the way
+    the cue and the E2 question do, and asks Orion to name it the same way; a message that does passes
+    both grounding guards."""
+    from scripts.outreach_vocabulary import find_ungrounded_faculty_mentions, find_ungrounded_signal_mentions
+
+    text = (f"My walkway-grade journal runs ({WALKWAY}) mostly stopped: 22 of their last 28 tries never ran. "
+            "I don't know why yet.")
+    loop, _, redis, rows, composed, delivered, _, _ = _setup(monkeypatch, text=text)
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    assert f'1. "My walkway-grade journal runs ({WALKWAY})" became broken.' in composed[0]
+    assert "with its record name in brackets after it" in composed[0]
+    assert find_ungrounded_faculty_mentions(text, [WALKWAY]) == []
+    assert find_ungrounded_signal_mentions(text, []) == []
+    assert delivered[0]["text"] == text
+
+
 def test_pass_is_final(monkeypatch):
     loop, _, redis, rows, _, delivered, _, _ = _setup(monkeypatch, text="PASS")
     _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))

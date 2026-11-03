@@ -70,7 +70,7 @@ producer timeout/visibility contract:      2 passed
 migration/liveness/deploy static tests:  211 passed
 migration REQUIRED-BY gate:             PASS
 git diff --check / py_compile:           PASS
-feedback + consolidation Docker builds: PASS
+feedback + execution + consolidation Docker builds: PASS
 ```
 
 No latent/model eval applies. This patch changes deterministic reduction, queue, and SQL pairing

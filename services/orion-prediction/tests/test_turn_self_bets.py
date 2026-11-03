@@ -271,3 +271,11 @@ def test_relative_faculties_are_graded_as_probabilities():
              "void_reason": None, "stated_p": 0.8 if h else 0.2, "hit": h} for h in [True, False] * 30]
     g = grade_faculty("turn.self.more_steps_than_usual", rows)
     assert g["brier"] == pytest.approx(0.04) and g["skill_vs_caller"] == pytest.approx(1 - 0.04 / 0.25)
+
+
+def test_relative_grade_reports_the_within_caller_sorting_score():
+    rows = [{"faculty": "turn.self.longer_reply_than_usual", "caller": c, "status": "happened" if h else "not_happened",
+             "void_reason": None, "stated_p": p, "hit": h}
+            for c in ("self", "chat") for p, h in [(0.7, True), (0.3, False), (0.6, True), (0.4, True)] * 15]
+    g = grade_faculty("turn.self.longer_reply_than_usual", rows)
+    assert g["sort_auc"] == pytest.approx(1.0) and g["sort_pairs"] == 2 * 45 * 15 and g["sort_p"] < 1e-6

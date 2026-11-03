@@ -24,6 +24,7 @@ class GraphReviewTelemetryRecorder:
     _records: list[GraphReviewTelemetryRecordV1] = field(default_factory=list)
     _source_kind: str = field(default="memory", init=False)
     _last_error: str | None = field(default=None, init=False)
+    _engine_cache: Any = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.postgres_url:
@@ -259,12 +260,25 @@ class GraphReviewTelemetryRecorder:
         ][-self.max_records :]
         return list(self._records)
 
+    def _engine(self):
+        """One pool for the life of the store (see mutation_control_surface._engine).
+
+        A per-call create_engine() left one idle connection open per call until
+        garbage collection; the hub's 30 s autonomy loop pushed it to 149
+        Postgres connections on 2026-11-02.
+        """
+        if self._engine_cache is None:
+            from sqlalchemy import create_engine
+
+            self._engine_cache = create_engine(self.postgres_url, pool_pre_ping=True)
+        return self._engine_cache
+
     def _ensure_postgres_schema(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -281,9 +295,9 @@ class GraphReviewTelemetryRecorder:
     def _insert_postgres(self, entry: GraphReviewTelemetryRecordV1) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -305,9 +319,9 @@ class GraphReviewTelemetryRecorder:
     def _trim_postgres(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -326,9 +340,9 @@ class GraphReviewTelemetryRecorder:
     def _load_from_postgres(self) -> list[GraphReviewTelemetryRecordV1]:
         if not self.postgres_url:
             return list(self._records)
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._engine()
         with engine.begin() as conn:
             rows = conn.execute(
                 text("SELECT payload_json::text FROM substrate_review_telemetry ORDER BY selected_at ASC")

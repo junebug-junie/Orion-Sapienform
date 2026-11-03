@@ -121,6 +121,7 @@ class _FakeRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.lists: dict[str, list] = {}
+        self.hashes: dict[str, dict[str, str]] = {}
 
     async def get(self, key):
         return self.values.get(key)
@@ -144,6 +145,13 @@ class _FakeRedis:
 
     async def expire(self, key, ttl):
         return True
+
+    async def hset(self, key, field, value):
+        self.hashes.setdefault(key, {})[field] = value
+        return 1
+
+    async def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
 
     async def rpush(self, key, *values):
         lst = self.lists.setdefault(key, [])

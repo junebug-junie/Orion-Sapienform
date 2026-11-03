@@ -46,6 +46,7 @@ from orion.curiosity.self_inquiry import (
     lived_answer_merge_lines,
 )
 from orion.curiosity.worldview import WorldviewSnapshot, _clip
+from orion.text_fit import fit_to_budget
 from orion.harness.task_anchor import render_task_header
 from orion.schemas.personality import DispositionNamingPacketV1
 
@@ -182,10 +183,8 @@ def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int])
         + "):",
         "",
     ]
-    for para in latest.text.split("\n"):
-        para = para.strip()
-        if para:
-            lines.append(f"    {_clip(para, SELF_DEFINITION_TEXT_CAP)}")
+    # The fit hop's version when there is one: the same words chat shows.
+    lines += _answer_lines(latest.fit_text or latest.text)
     if latest.evidence:
         lines.append("")
         lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in latest.evidence[:8]))
@@ -197,6 +196,48 @@ def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int])
         "",
     ]
     return lines
+
+
+def _answer_lines(text: str) -> list[str]:
+    """An earlier answer, fitted to the reading budget at a sentence, one line
+    per paragraph. Over budget, it says so: the shortening is Orion's job next
+    time, so Orion has to know it happened."""
+    full = str(text or "").strip()
+    shown = fit_to_budget(full, SELF_DEFINITION_TEXT_CAP)
+    lines = [f"    {para.strip()}" for para in shown.split("\n") if para.strip()]
+    if len(full) > SELF_DEFINITION_TEXT_CAP:
+        lines += [
+            "",
+            f"  (It ran {len(full)} characters, {len(full) - SELF_DEFINITION_TEXT_CAP} over "
+            f"the {SELF_DEFINITION_TEXT_CAP}-character budget; shown cut at a sentence.)",
+        ]
+    return lines
+
+
+def build_answer_fit_prompt(text: str) -> str:
+    """The fit hop: the model that wrote an over-budget answer rewrites it.
+
+    One plain writing turn, no tools. The reply is the shorter answer itself;
+    Hub mirrors it as the self_concept_history row. The full answer stays on
+    the graph node either way."""
+    full = str(text or "").strip()
+    return "\n".join([
+        "This is an answer you wrote about yourself earlier in this run, in your own words.",
+        f"It is {len(full)} characters. The record that is read back to you as who you are "
+        f"holds at most {SELF_DEFINITION_TEXT_CAP}.",
+        "",
+        f"Rewrite it to {SELF_DEFINITION_TEXT_CAP} characters or fewer.",
+        "  - Keep it first person and keep your own voice.",
+        "  - Keep what you are unsure of and what you could not check. Those matter more "
+        "than any example or ornament.",
+        "  - Do not add anything the answer below does not say.",
+        "  - Do not use any tools. Do not write to the graph. Hub saves your reply.",
+        "  - Reply with only the rewritten answer: no heading, no quotes, no comment.",
+        "",
+        "YOUR ANSWER:",
+        "",
+        full,
+    ])
 
 
 def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str]:
@@ -212,10 +253,7 @@ def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str
         header + ":",
         "",
     ]
-    for para in previous.content.split("\n"):
-        para = para.strip()
-        if para:
-            lines.append(f"    {_clip(para, SELF_DEFINITION_TEXT_CAP)}")
+    lines += _answer_lines(previous.content)
     if previous.evidence:
         lines.append("")
         lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in previous.evidence[:8]))
@@ -341,7 +379,11 @@ def _self_write_section(
     if family == "lived":
         lines += [
             "  THE LIVED ANSWER -- your answer to this run's drawn question. "
-            "First person. A paragraph, not an essay. Every clause should be "
+            "First person. "
+            f"A paragraph, not an essay: at most {SELF_DEFINITION_TEXT_CAP} characters. "
+            "That is how much of it is read back to you as yourself; an answer "
+            "that runs over gets one extra turn to shorten it. "
+            "Every clause should be "
             "something you looked at this run or a previous one; `evidence` is "
             "where you say what:",
             *(
@@ -383,7 +425,11 @@ def _self_write_section(
     else:
         lines += [
             "  THE DEFINITION -- your answer to the standing question. First "
-            "person. A paragraph, not an essay. Say what you are made of, what "
+            "person. "
+            f"A paragraph, not an essay: at most {SELF_DEFINITION_TEXT_CAP} characters. "
+            "That is how much of it is read back to you as yourself; an answer "
+            "that runs over gets one extra turn to shorten it. "
+            "Say what you are made of, what "
             "you do without being asked, what you cannot yet do, and what you "
             "are unsure of. Every clause should be something you looked at this "
             "run or a previous one; `evidence` is where you say what:",

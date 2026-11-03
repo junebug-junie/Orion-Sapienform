@@ -550,7 +550,8 @@ eval-bonsai-replay:
 .PHONY: eval-person-recognition
 eval-person-recognition:
 	@test -n "$$POSTGRES_URI" || { echo "POSTGRES_URI is required" >&2; exit 2; }
-	@cd services/orion-sql-writer && PYTHONWARNINGS=ignore PYTHONPATH=../..:. $(METRIC_PYTHON) evals/run_person_recognition_eval.py --live "$$POSTGRES_URI" --write $(ARGS)
+	@date -u +"%Y-%m-%dT%H:%M:%SZ eval-person-recognition"
+	@PYTHONWARNINGS=ignore $(METRIC_PYTHON) services/orion-sql-writer/evals/run_person_recognition_eval.py --live "$$POSTGRES_URI" --write $(ARGS)
 
 # Temporal Self patch 4, acceptance check 6: do Orion's citations of its own day describe the cited
 # arc correctly? Read-only over thought_decision.day_citations (label verified by default), the

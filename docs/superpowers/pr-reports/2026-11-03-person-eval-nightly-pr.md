@@ -50,13 +50,15 @@ Not applicable (no image change).
 
 ## Review findings fixed
 
-See PR comments / below.
+- Finding: from the primary checkout (where cron runs), `METRIC_PYTHON` is the relative `.venv/bin/python`; the recipe's `cd services/orion-sql-writer` made it point at a file that does not exist, so every nightly run would exit 127 and write no row. The worktree test could not catch it.
+  - Fix: no `cd`; the eval puts its own paths on sys.path. Each run also logs a UTC timestamp line.
+  - Evidence: `make -n -C /mnt/scripts/Orion-Sapienform -f <worktree>/Makefile eval-person-recognition` expands to `.venv/bin/python services/orion-sql-writer/evals/...`, which exists in the main checkout.
 
 ## Restart required
 
 ```text
 No restart required. After merge, add the host cron line:
-23 9 * * * cd /mnt/scripts/Orion-Sapienform && POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' services/orion-hub/.env | cut -d= -f2-) make eval-person-recognition >> logs/orion-person-recognition-eval.log 2>&1
+23 9 * * * POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' /mnt/scripts/Orion-Sapienform/services/orion-hub/.env | cut -d= -f2-) make -C /mnt/scripts/Orion-Sapienform eval-person-recognition >> /mnt/scripts/Orion-Sapienform/logs/orion-person-recognition-eval.log 2>&1
 ```
 
 ## Risks / concerns
@@ -65,6 +67,6 @@ No restart required. After merge, add the host cron line:
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/3068
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

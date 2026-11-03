@@ -491,3 +491,40 @@ def test_monitor_recovers_once_trend_goes_stale():
         assert attention.call_count == 2
         assert "recovered" in attention.call_args.kwargs["message"]
         assert "loop:t1" not in monitor._tracked_themes
+
+
+def test_bootstrap_skips_theme_whose_newest_pending_item_is_a_recovery():
+    """Live 2026-11-03: a pending recovery note (same reason key as its page)
+    re-bootstrapped the theme as unhealthy on every restart, and the next
+    tick sent yet another recovery note. Newest-first list: recovery wins."""
+    pending = [
+        {
+            "source_service": "orion-thought",
+            "reason": "reverie_resonance_worsening:loop:t1",
+            "message": "[Orion reverie] recovered: reverie_resonance_worsening:loop:t1",
+        },
+        {
+            "source_service": "orion-thought",
+            "reason": "reverie_resonance_worsening:loop:t1",
+            "message": "[Orion reverie] theme loop:t1 resonance is worsening: ...",
+        },
+        {
+            "source_service": "orion-thought",
+            "reason": "reverie_resonance_worsening:loop:t2",
+            "message": "[Orion reverie] theme loop:t2 resonance is worsening: ...",
+        },
+    ]
+    with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
+        "app.resonance_monitor.requests.get",
+        return_value=MagicMock(status_code=200, json=lambda: pending),
+    ), patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=_samples(2, 2)):
+        from app.resonance_monitor import ResonanceHealthMonitor
+
+        attention = _client_mock(client_cls)
+        monitor = ResonanceHealthMonitor(settings_obj=_settings())
+        assert monitor._tracked_themes == {"loop:t2"}
+
+        monitor.check(None)
+        # Only t2 (genuinely still open) gets its one recovery note.
+        assert attention.call_count == 1
+        assert "loop:t2" in attention.call_args.kwargs["message"]

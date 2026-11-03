@@ -135,6 +135,7 @@ def _is_worsening(
 
 
 _REASON_PREFIX = "reverie_resonance_worsening:"
+_RECOVERED_PREFIX = "[Orion reverie] recovered:"
 
 
 class ResonanceHealthMonitor:
@@ -239,8 +240,15 @@ class ResonanceHealthMonitor:
             self._last_healthy[check.key] = check.healthy
 
     def _fetch_pending_reasons(self) -> list[str]:
-        """All `reason` strings currently pending for this service, per
-        orion-notify. Empty list on any failure."""
+        """Reasons whose NEWEST pending item for this service is still a
+        "worsening" page, per orion-notify. Empty list on any failure.
+
+        A pending recovery note shares its reason key with the page it
+        answers, so "any pending item" is not "still open": live 2026-11-03,
+        each restart re-bootstrapped recovered themes as unhealthy and sent
+        yet another recovery note (273 of 311 unacked items). The list comes
+        back newest first (sql-writer orders by created_at desc), so the first
+        item seen per reason decides."""
         headers = {}
         if self._settings.notify_api_token:
             headers["X-Orion-Notify-Token"] = self._settings.notify_api_token
@@ -258,13 +266,16 @@ class ResonanceHealthMonitor:
             return []
         if not isinstance(items, list):
             return []
-        return [
-            str(item.get("reason"))
-            for item in items
-            if isinstance(item, dict)
-            and item.get("source_service") == _SOURCE_SERVICE
-            and item.get("reason")
-        ]
+        newest_is_open: dict[str, bool] = {}
+        for item in items:
+            if not isinstance(item, dict) or item.get("source_service") != _SOURCE_SERVICE:
+                continue
+            reason = item.get("reason")
+            if not reason or str(reason) in newest_is_open:
+                continue
+            message = str(item.get("message") or "")
+            newest_is_open[str(reason)] = not message.startswith(_RECOVERED_PREFIX)
+        return [reason for reason, is_open in newest_is_open.items() if is_open]
 
     def _has_open_alert(self, reason: str) -> bool:
         # Fail open (via _fetch_pending_reasons returning []): prefer
@@ -274,7 +285,7 @@ class ResonanceHealthMonitor:
 
     def _publish(self, check: HealthCheck, *, recovered: bool) -> bool:
         if recovered:
-            message = f"[Orion reverie] recovered: {check.key}"
+            message = f"{_RECOVERED_PREFIX} {check.key}"
             severity: Severity = "info"
         else:
             message = f"[Orion reverie] {check.message}"

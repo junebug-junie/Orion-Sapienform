@@ -187,7 +187,6 @@ KNOWN_ORION_PER_CALL_ENGINES = frozenset(
         ("reverie/referent_loader.py", "__init__"),
         ("social/scenario_replay.py", "_memory_service"),
         ("substrate/mutation_worker.py", "_acquire_leader_lock"),
-        ("substrate/prediction_expectation_tuner.py", "postgres_reading_reader"),
     }
 )
 

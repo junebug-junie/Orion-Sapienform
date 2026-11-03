@@ -1,5 +1,7 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime, orion-hub
--- Rung 6 replay corpus (orion/substrate/prediction_expectation.py).
+-- ORION-MIGRATION-REQUIRED-BY: none retired 2026-11-03 with the rung 6 expectation tuner; no service reads or writes this table, kept for history
+-- RETIRED 2026-11-03: orion-substrate-runtime no longer writes this table and
+-- the Hub tuner that read it is deleted. Table and rows kept (no DROP).
+-- (historical, below) Rung 6 replay corpus (orion/substrate/prediction_expectation.py, deleted).
 --
 -- One row per raw per-tick reading of an EWMA-scored prediction-error domain
 -- (execution, chat), recorded by orion-substrate-runtime BEFORE it becomes

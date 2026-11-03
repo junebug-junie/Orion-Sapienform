@@ -21,6 +21,7 @@ on:
       - "orion/core/bus/async_service.py"
       - "orion/core/bus/bus_service_chassis.py"
       - "orion/core/bus/tests/test_rpc_degraded.py"
+      - "orion/core/bus/tests/test_rpc_no_listener.py"
       - "orion/schemas/telemetry/rpc_health.py"
       - "orion/metacog/evidence_map.py"
       - "orion/metacog/tests/test_transport_baseline.py"
@@ -72,6 +73,7 @@ jobs:
             orion/metacog/tests/test_transport_baseline.py \
             orion/metacog/tests/test_transport_baseline_degraded.py \
             orion/core/bus/tests/test_rpc_degraded.py \
+            orion/core/bus/tests/test_rpc_no_listener.py \
             scripts/analysis/tests/test_grade_transport_baseline.py
       - name: Silence-pause mutation eval (every mutant must be killed)
         run: PYTHONPATH=. python orion/metacog/evals/run_transport_baseline_pause_mutations.py

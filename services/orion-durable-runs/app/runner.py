@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, RpcPublishedToNobody
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.curiosity.attention_schema import (
@@ -431,7 +431,8 @@ class DurableRunner:
 
     async def _run_turn(self, request: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
         """RPC to Hub. Any transport failure surfaces as ok=False so the node
-        raises and the thread stays resumable at `harness_turn`."""
+        raises and the thread stays resumable at `harness_turn` -- except an admitted
+        turn published to nobody, which raises ``RpcPublishedToNobody`` for listener_wait."""
         if self._bus is None:
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error="no_bus")
         reply_channel = f"{CURIOSITY_TURN_REPLY_PREFIX}:{request.correlation_id}"
@@ -460,6 +461,15 @@ class DurableRunner:
                 # holding the GPU lane until rpc_timeout (2.5 h); the failed node releases and retries.
                 require_listener=True,
             )
+        except RpcPublishedToNobody:
+            if admitted:
+                # Nobody received it (Hub restarting): the admitted graph waits it out and replays
+                # without spending an attempt (admitted_graph.listener_wait). Typed, so it must raise.
+                raise
+            logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=published_to_nobody",
+                           request.run_id, request.attempt)
+            return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False,
+                                         error="rpc:RpcNoListener")
         except Exception as exc:  # noqa: BLE001 -- surfaced as a failed node, retried by the sweep
             logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=%s", request.run_id, request.attempt, exc)
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"rpc:{type(exc).__name__}")

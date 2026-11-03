@@ -1,12 +1,11 @@
 name: street-attention-tests
 
-# node:substrate.street: street events -> gate -> attention, Rung 6 street_handoff
+# node:substrate.street: street events -> gate -> attention, street_handoff surprise
 # (docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md section 6).
 on:
   pull_request:
     paths:
       - "orion/substrate/street_attention.py"
-      - "orion/substrate/prediction_expectation.py"
       - "orion/substrate/tests/test_street_attention.py"
       - "orion/schemas/attention_candidate.py"
       - "orion/schemas/vision.py"
@@ -19,7 +18,6 @@ on:
     branches: [main]
     paths:
       - "orion/substrate/street_attention.py"
-      - "orion/substrate/prediction_expectation.py"
       - "orion/schemas/attention_candidate.py"
       - "services/orion-substrate-runtime/**"
       - ".github/workflows/street-attention-tests.yml"
@@ -38,15 +36,14 @@ jobs:
           python -m pip install -r services/orion-substrate-runtime/requirements.txt
           python -m pip install -r requirements-dev.txt
           python -m pip install pytest-asyncio httpx
-      - name: Gate, node, Rung 6 (pure)
-        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_street_attention.py orion/substrate/tests/test_prediction_expectation.py
+      - name: Gate, node, handoff surprise (pure)
+        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_street_attention.py
       - name: Runtime wiring + eval
         env:
           POSTGRES_URI: postgresql://unused/unused
         run: |
           PYTHONPATH=.:services/orion-substrate-runtime python -m pytest -q -p no:cacheprovider \
             services/orion-substrate-runtime/tests/test_worker_street_attention.py \
-            services/orion-substrate-runtime/tests/test_worker_prediction_expectation.py \
             services/orion-substrate-runtime/evals/test_street_attention_eval.py
       - name: Gate mutation check (every rule has a test)
         run: python services/orion-substrate-runtime/evals/run_street_gate_mutation_check.py

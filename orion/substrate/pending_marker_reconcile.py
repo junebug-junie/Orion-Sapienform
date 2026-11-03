@@ -62,6 +62,10 @@ class PendingMarkerSpec:
     # Human wording for the warning, e.g. "dispatch frames" / "feedback frame".
     parent_label: str
     child_label: str
+    # Optional second durable completion form. Feedback uses this for compact control
+    # reductions; the other substrate stages still have exactly one child table.
+    alternate_child_table: str | None = None
+    alternate_child_fk_column: str | None = None
 
 
 # Rows re-queued per UPDATE in the full sweep: bounds each write transaction.
@@ -80,10 +84,7 @@ def bounded_requeue_sql(spec: PendingMarkerSpec) -> str:
            SET {spec.marker_column} = true
          WHERE p.generated_at >= now() - make_interval(secs => :window_sec)
            AND NOT p.{spec.marker_column}
-           AND NOT EXISTS (
-                 SELECT 1 FROM {spec.child_table} c
-                  WHERE c.{spec.child_fk_column} = p.frame_id
-           )
+           {_completion_absence_sql(spec)}
     """
 
 
@@ -93,10 +94,7 @@ def full_candidates_sql(spec: PendingMarkerSpec) -> str:
         SELECT p.frame_id
           FROM {spec.parent_table} p
          WHERE NOT p.{spec.marker_column}
-           AND NOT EXISTS (
-                 SELECT 1 FROM {spec.child_table} c
-                  WHERE c.{spec.child_fk_column} = p.frame_id
-           )
+           {_completion_absence_sql(spec)}
     """
 
 
@@ -108,11 +106,28 @@ def full_requeue_batch_sql(spec: PendingMarkerSpec) -> str:
            SET {spec.marker_column} = true
          WHERE p.frame_id = ANY(:ids)
            AND NOT p.{spec.marker_column}
-           AND NOT EXISTS (
+           {_completion_absence_sql(spec)}
+    """
+
+
+def _completion_absence_sql(spec: PendingMarkerSpec) -> str:
+    """SQL predicate meaning the parent has no durable downstream completion."""
+    predicates = [
+        f"""AND NOT EXISTS (
                  SELECT 1 FROM {spec.child_table} c
                   WHERE c.{spec.child_fk_column} = p.frame_id
-           )
-    """
+           )"""
+    ]
+    if spec.alternate_child_table or spec.alternate_child_fk_column:
+        if not (spec.alternate_child_table and spec.alternate_child_fk_column):
+            raise ValueError("alternate child table and FK column must be configured together")
+        predicates.append(
+            f"""AND NOT EXISTS (
+                 SELECT 1 FROM {spec.alternate_child_table} a
+                  WHERE a.{spec.alternate_child_fk_column} = p.frame_id
+           )"""
+        )
+    return "\n           ".join(predicates)
 
 
 class PendingMarkerReconciler:

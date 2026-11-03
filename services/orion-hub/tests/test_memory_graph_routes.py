@@ -86,10 +86,10 @@ def test_memory_graph_approve_requires_named_graph(monkeypatch) -> None:
     import app.settings as hub_app_settings
 
     hub_app_settings.get_settings.cache_clear()
-    import scripts.settings as scripts_settings
+    scripts_settings = importlib.import_module("scripts.settings")
 
     importlib.reload(scripts_settings)
-    import scripts.main as hub_main
+    hub_main = importlib.import_module("scripts.main")
 
     importlib.reload(hub_main)
 

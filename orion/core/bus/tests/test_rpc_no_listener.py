@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from orion.core.bus.async_service import OrionBusAsync, RpcNoListener
+from orion.core.bus.async_service import OrionBusAsync, RpcNoListener, RpcPublishedToNobody
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 SRC = ServiceRef(name="test", version="0", node="athena")
@@ -104,9 +104,11 @@ def _env() -> BaseEnvelope:
 @pytest.mark.asyncio
 async def test_a_request_no_worker_received_fails_at_once_though_the_mirror_heard_it():
     bus = _bus(FakeRedis(at_publish=0))
-    with pytest.raises(RpcNoListener, match="published to nobody"):
+    with pytest.raises(RpcNoListener, match="published to nobody") as raised:
         await asyncio.wait_for(bus.rpc_request(CHANNEL, _env(), reply_channel="r:1", timeout_sec=3600,
                                                require_listener=True), timeout=2)
+    # Typed: durable runs replay this one (nobody received it) without spending an attempt.
+    assert isinstance(raised.value, RpcPublishedToNobody)
     assert len(bus._rpc_health.timeouts) == 1 and len(bus.grammar) == 1   # visible like a timeout
 
 
@@ -121,9 +123,11 @@ async def test_without_the_flag_an_unheard_request_still_waits_as_before():
 async def test_a_listener_gone_on_two_checks_in_a_row_fails_the_wait():
     redis = FakeRedis(polls=[1, 0, 0])
     bus = _bus(redis)
-    with pytest.raises(RpcNoListener, match="while awaiting"):
+    with pytest.raises(RpcNoListener, match="while awaiting") as raised:
         await asyncio.wait_for(bus.rpc_request(CHANNEL, _env(), reply_channel="r:1", timeout_sec=3600,
                                                require_listener=True, listener_check_sec=0.05), timeout=2)
+    # Delivered: its listener may have done work, so it is NOT the replay-safe subclass.
+    assert not isinstance(raised.value, RpcPublishedToNobody)
     assert redis.poll_calls == 3 and len(bus._rpc_health.timeouts) == 1
 
 

@@ -16,10 +16,18 @@ Features at origin t (for each lead k):
 Models are fitted at anchor leads (1, 2, 3, 6, 12, 36, 72, 144, 288 steps, capped at h, plus h)
 and the path is linearly interpolated between anchors, so a 288-step path costs ~10 fits, not 288.
 
-Two variants, both ridge regression (numpy, closed form), so the scoreboard measures what the
+Three variants, all ridge regression (numpy, closed form), so the scoreboard measures what the
 covariates add instead of assuming it:
 - ``direct_ar``: target-history features only.
-- ``direct_arx``: the same plus every declared covariate.
+- ``direct_arx``: the same plus every covariate with full history (spec.covariates minus
+  spec.overlap_covariates).
+- ``direct_arx_overlap``: the same plus EVERY covariate, trained only on the rows where all of them
+  have readings (the overlap window). A covariate younger than the training window (the office room
+  sensor, 2026-10-28, vs cabinet history from 2026-10-23) would otherwise make direct_arx refuse every
+  window (> MAX_COVARIATE_GAPS) or, interpolated, invent days of room temperature. The overlap model
+  refuses on its own (too few complete rows) until enough overlap exists, so its backtest record is
+  only the windows it could really forecast; the gate compares it with the baseline on exactly those
+  windows and refuses it until it covers MIN_WINDOW_SHARE of them (app/backtest.py).
 On the real cabinet history (2026-10-16 replay, 40 windows, MAE vs persistence) the target-history
 features carry the short-horizon gain (0.79 @5 min with no covariates); covariates add only at 1 h
 (0.98 -> 0.93, mostly the AC). A gradient-boosting variant was measured and dropped: it lost at
@@ -82,13 +90,26 @@ def _ridge_fit_predict(F: np.ndarray, t: np.ndarray, f_now: np.ndarray) -> float
     return float(np.concatenate([[1.0], (f_now - mu) / sd]) @ beta)
 
 
-def _direct(grain_min: int, with_covariates: bool):
+def _overlap_start(X: np.ndarray) -> int:
+    """First row from which every covariate has started reporting (its first real reading)."""
+    seen = np.isfinite(X)
+    if not np.all(seen.any(axis=0)):
+        raise ValueError("a covariate has no reading in the training window")
+    return int(seen.argmax(axis=0).max())
+
+
+def _direct(grain_min: int, with_covariates: bool, cols: tuple[int, ...] | None = None, overlap: bool = False):
     def fn(y: np.ndarray, h: int, idx: pd.DatetimeIndex, X: np.ndarray | None = None) -> np.ndarray:
         if not with_covariates:
             X = np.empty((len(y), 0))
         X = np.asarray(X, dtype=float)
         if X.ndim != 2 or X.shape[0] != len(y):
             raise ValueError("covariates must be (n, k) aligned with y")
+        if cols is not None:
+            X = X[:, list(cols)]
+        if overlap and X.shape[1]:
+            start = _overlap_start(X)
+            y, idx, X = y[start:], idx[start:], X[start:]
         gaps = float(np.mean(~np.isfinite(X))) if X.size else 0.0
         if gaps > MAX_COVARIATE_GAPS:
             raise ValueError(f"covariates are {gaps:.0%} gaps in the training window")
@@ -120,5 +141,10 @@ def direct_ar(grain_min: int):
     return _direct(grain_min, with_covariates=False)
 
 
-def direct_arx(grain_min: int):
-    return _direct(grain_min, with_covariates=True)
+def direct_arx(grain_min: int, cols: tuple[int, ...] | None = None):
+    """``cols``: which covariate columns to use (default all)."""
+    return _direct(grain_min, with_covariates=True, cols=cols)
+
+
+def direct_arx_overlap(grain_min: int):
+    return _direct(grain_min, with_covariates=True, overlap=True)

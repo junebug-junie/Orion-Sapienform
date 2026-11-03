@@ -392,21 +392,7 @@ class ExperimentRunner:
                            "triggered_fraction": (trig / total) if total else None,
                            "experiment_dispatches": sum(d.get("triggered:experiment", 0) for d in seen)}
         blocks = [{k: b[k] for k in ("index", "arm", "start", "end")} for b in logged]
-        watts = {}
-        if blocks:
-            first = min(_ts(b["start"]) for b in blocks)
-            last = max(_ts(b["end"]) for b in blocks)
-            specs = [GPU_SPEC] + [s for s in (self.effects.engine.registry.get(i) for i in REGISTRY_CHECKS) if s]
-            for s in specs:
-                try:
-                    y = to_grain(self.effects.store.points(s, first, last), s.grain_min, s.agg, s.max_fill_min,
-                                 start=first, end=last)
-                    est = analyze_switchback(y, blocks, 0, s.grain_min, None, n_perm=2000)
-                    watts[s.series_id] = {"unit": s.unit, "effect": est.effect, "ci_lo": est.ci_lo,
-                                          "ci_hi": est.ci_hi, "p_value": est.p_value,
-                                          "reason": est.details.get("reason")}
-                except Exception as exc:  # noqa: BLE001 -- a missing watts series is reported, not fatal
-                    watts[s.series_id] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+        watts = manipulation_watts(self.effects, blocks)
         on, off = router["on"], router["off"]
         verdict = "unknown"
         if on["blocks_probed"] and off["blocks_probed"]:
@@ -417,6 +403,28 @@ class ExperimentRunner:
             else:
                 verdict = "tier_raised"
         return {"verdict": verdict, "router": router, "watts": watts}
+
+
+def manipulation_watts(effects: Any, blocks: list[dict]) -> dict:
+    """ON minus OFF watts per machine (switchback estimate, no burn-in: power responds in seconds).
+    ``blocks``: {index, arm, start, end}. Also used by app/heat_balance.py's conversion to cabinet C."""
+    watts: dict = {}
+    if not blocks:
+        return watts
+    first = min(_ts(b["start"]) for b in blocks)
+    last = max(_ts(b["end"]) for b in blocks)
+    specs = [GPU_SPEC] + [s for s in (effects.engine.registry.get(i) for i in REGISTRY_CHECKS) if s]
+    for s in specs:
+        try:
+            y = to_grain(effects.store.points(s, first, last), s.grain_min, s.agg, s.max_fill_min,
+                         start=first, end=last)
+            est = analyze_switchback(y, blocks, 0, s.grain_min, None, n_perm=2000)
+            watts[s.series_id] = {"unit": s.unit, "effect": est.effect, "ci_lo": est.ci_lo,
+                                  "ci_hi": est.ci_hi, "p_value": est.p_value,
+                                  "reason": est.details.get("reason")}
+        except Exception as exc:  # noqa: BLE001 -- a missing watts series is reported, not fatal
+            watts[s.series_id] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    return watts
 
 
 def summarize(exp: dict, analysis: dict, manip: dict) -> str:

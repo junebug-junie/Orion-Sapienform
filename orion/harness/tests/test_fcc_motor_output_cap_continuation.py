@@ -228,3 +228,34 @@ def test_compaction_between_pieces_drops_the_head_on_purpose() -> None:
               {"type": "result", "result": '{"a": "fresh"}', "session_id": "s"}]
     draft, _ = _replay(events)
     assert draft == '{"a": "fresh"}'
+
+
+# Live 2026-11-02 (reading a17a5397, trimmed): the cut landed mid-string inside the
+# fenced answer and the continuation re-opened a ```json fence before the rest.
+REFENCE_HEAD = ('```json\n{\n  "label": "Switch radix as the unit of GPU scale-out",\n'
+                '  "definition": "Reading \'N GPUs at ')
+REFENCE_TAIL = ('```json\nspeed to one switch\'s port count rather than as a cluster-size claim.",\n'
+                '  "link_hints": ["ConnectX-8 PCIe switch board"]\n}\n```')
+
+
+def test_a_reopened_fence_at_the_top_of_a_continuation_is_dropped() -> None:
+    draft, st = _replay([
+        _assistant("m1", _text(REFENCE_HEAD)),
+        _user_text(RESUME),
+        _assistant("m2", _text(REFENCE_TAIL)),
+        {"type": "result", "subtype": "success", "result": REFENCE_TAIL, "session_id": "s1"},
+    ])
+    assert st.continuations == 1
+    assert "```json\nspeed" not in draft
+    assert parse_json_object(draft)["definition"].startswith("Reading 'N GPUs at speed to one switch")
+
+
+def test_a_fence_opening_a_continuation_outside_any_fence_is_kept() -> None:
+    """Only a head still inside its own fence makes the tail's fence spurious."""
+    head = "Notes so far: the page states the counts"
+    tail = '```json\n"a": 1}\n```'  # not a whole object, so not a rewrite from the top
+    draft, _st = _replay([
+        _assistant("m1", _text(head)), _user_text(RESUME), _assistant("m2", _text(tail)),
+        {"type": "result", "subtype": "success", "result": tail, "session_id": "s1"},
+    ])
+    assert draft == head + tail

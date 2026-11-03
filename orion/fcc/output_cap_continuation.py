@@ -76,6 +76,8 @@ RESTART_PREFIX_CHARS = 32
 #: How far into the new piece the head's opening may sit (a lead-in line or fence).
 RESTART_SEARCH_CHARS = 200
 _FENCE_OPEN = re.compile(r"^\s*```[a-zA-Z]*\s*")
+#: A fence opener line at the very top of a continuation piece (the line break is eaten too).
+_FENCE_REOPEN = re.compile(r"^\s*```[a-zA-Z]*[ \t]*\r?\n")
 
 
 def _opening(text: str) -> str:
@@ -166,6 +168,13 @@ class OutputCapStitcher:
             # The new piece IS the answer; gluing the old head on would break it.
             self._head = ""
             return text
+        if self._head.count("```") % 2 == 1:
+            # The head is still inside the code fence it opened, so a fence opener at the
+            # top of the continuation is the model re-fencing its output, not answer text.
+            # Live 2026-11-02 (reading a17a5397): the cut landed mid-string ("N GPUs at ")
+            # and the next piece opened "```json\nspeed to one switch...", which put a
+            # fence inside a JSON string and failed the reading.
+            tail = _FENCE_REOPEN.sub("", tail, count=1)
         return (self._head + tail).strip()
 
     def draft_for(self, event: Any, text: str, previous: str = "") -> str:

@@ -39,6 +39,7 @@ export const bootstrap = internalMutation({
       state.next_event = old.next_event;
       await ctx.db.replace(existing._id, {
         worldId, version: state.version, minute: state.minute, seed: state.seed, state,
+        ...(existing.clock ? { clock: existing.clock } : {}),
       });
       return { created: false, replaced: true, seed: state.seed };
     }

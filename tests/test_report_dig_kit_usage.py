@@ -65,3 +65,24 @@ def test_hyphenated_subcommands_are_counted_as_themselves():
         _tool("Bash", command="python -P -m orion.dig body"),
     ])
     assert sorted(s["dig_subcommands"]) == ["body", "body-economy", "name-organs"]
+
+
+def test_dig_run_through_the_batch_tool_counts():
+    """Live 2026-11-03: Orion ran dig via ctx_batch_execute and the report saw nothing."""
+    s = mod.summarize_session([
+        _user("x WHERE THE RECORDS ARE"),
+        _tool("mcp__plugin_context-mode_context-mode__ctx_batch_execute", commands=[
+            {"label": "a", "command": "python -P -m orion.dig body"},
+            {"label": "b", "command": "python -P -m orion.dig inventory now"},
+        ]),
+    ])
+    assert s["used_dig"] is True
+    assert s["dig_subcommands"] == ["body", "inventory"]
+
+
+def test_quoting_dig_in_a_note_is_not_a_dig_call():
+    s = mod.summarize_session([
+        _user("x WHERE THE RECORDS ARE"),
+        _tool("Bash", command='redis-cli GRAPH.QUERY g "SET s.evidence = [\'via orion.dig body\']"'),
+    ])
+    assert s["used_dig"] is False

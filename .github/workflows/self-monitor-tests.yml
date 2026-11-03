@@ -10,6 +10,14 @@ on:
       - "orion/self_monitor/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
+      - "services/orion-thought/app/self_track_record_cue.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/app/reverie.py"
+      - "services/orion-thought/tests/test_self_track_record_cue.py"
+      - "services/orion-thought/tests/conftest.py"
+      - "services/orion-thought/evals/*self_track_record*"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/cognition/prompts/reverie_narrate.j2"
       - "tests/test_self_monitor_act_gate.py"
       - "services/orion-actions/app/main.py"
       - "services/orion-actions/tests/test_self_monitor_journal_gate.py"
@@ -22,6 +30,14 @@ on:
       - "orion/self_monitor/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
+      - "services/orion-thought/app/self_track_record_cue.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/app/reverie.py"
+      - "services/orion-thought/tests/test_self_track_record_cue.py"
+      - "services/orion-thought/tests/conftest.py"
+      - "services/orion-thought/evals/*self_track_record*"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/cognition/prompts/reverie_narrate.j2"
       - "tests/test_self_monitor_act_gate.py"
       - "services/orion-actions/app/main.py"
       - "services/orion-actions/tests/test_self_monitor_journal_gate.py"
@@ -46,6 +62,26 @@ jobs:
       - run: pip install pytest pydantic==2.10.3 numpy sqlalchemy pyyaml
       - name: Gate tests (pure adapters and reducer, no I/O)
         run: python -m pytest -q -p no:cacheprovider orion/self_monitor/tests
+
+  # Spec step 3: the track-record cue in orion-thought (stance_react + reverie), fail-open.
+  cue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-thought/requirements.txt
+          python -m pip install pytest pytest-asyncio jinja2
+      - name: Cue fetch, render and prompt wiring
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_self_track_record_cue.py
+      - name: Truth eval (every number shown resolves to its record)
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider evals/test_self_track_record_truth_eval.py
 
   effects:
     # E1 at orion-actions' journal seam, E2 in Hub (the dispatch-runtime half runs in thinking-rung3).

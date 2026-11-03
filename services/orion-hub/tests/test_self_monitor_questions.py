@@ -115,4 +115,3 @@ def test_bus_not_connected_is_a_skip_not_a_crash():
     m = SelfMonitorQuestionMinter(enabled=True, redis_provider=not_connected, pool_provider=lambda: _Pool(),
                                   clock=lambda: NOW)
     assert asyncio.run(m.tick())["skipped"] == "no_redis"
-

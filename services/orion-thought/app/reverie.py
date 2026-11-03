@@ -453,6 +453,7 @@ def build_reverie_context(
     self_readings: str | None = None,
     recent_arcs: str | None = None,
     personality_cue: str | None = None,
+    self_track_record: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
     street_day: str | None = None,
@@ -529,6 +530,10 @@ def build_reverie_context(
         # mechanism vocabulary (orion/reverie/semantic_lift.py), so body numbers there would
         # only manufacture hollow thoughts.
         ctx["self_readings"] = self_readings
+    if self_track_record:
+        # Self-monitor step 3: what Orion is failing at or misjudging (rendered, no LLM). Coalition
+        # branch only, like self_readings: the concern-card branch drops mechanism vocabulary.
+        ctx["self_track_record"] = self_track_record
     if recent_arcs:
         ctx["recent_arcs"] = recent_arcs
     if personality_cue:
@@ -547,6 +552,7 @@ def build_reverie_plan_request(
     self_readings: str | None = None,
     recent_arcs: str | None = None,
     personality_cue: str | None = None,
+    self_track_record: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
     street_day: str | None = None,
@@ -577,6 +583,7 @@ def build_reverie_plan_request(
             self_readings=self_readings,
             recent_arcs=recent_arcs,
             personality_cue=personality_cue,
+            self_track_record=self_track_record,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
             street_day=street_day,
@@ -992,6 +999,15 @@ async def run_reverie_once(
             )
             return block.text or None
 
+        async def _fetch_self_track_record() -> str | None:
+            # Coalition branch only (see build_reverie_context). Cached read, never waits on Redis.
+            if not want_loop_outcomes:
+                return None
+            from .self_track_record_cue import build_self_track_record_cue
+
+            cue = await build_self_track_record_cue(correlation_id, purpose="reverie")
+            return cue.text or None
+
         (
             loop_outcomes,
             recent_percepts,
@@ -1000,6 +1016,7 @@ async def run_reverie_once(
             (street_percepts, street_predictions),
             personality_cue,
             street_day,
+            self_track_record,
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
@@ -1008,6 +1025,7 @@ async def run_reverie_once(
             _fetch_street(),
             build_personality_cue_text(correlation_id),
             _fetch_street_day(),
+            _fetch_self_track_record(),
         )
         if street_percepts or street_predictions or street_day:
             logger.info(
@@ -1023,6 +1041,7 @@ async def run_reverie_once(
             self_readings=self_readings,
             recent_arcs=recent_arcs,
             personality_cue=personality_cue,
+            self_track_record=self_track_record,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
             street_day=street_day or None,

@@ -117,6 +117,12 @@ async def lifespan(app: FastAPI):
         from .self_readings_cue import warm as warm_self_readings
 
         app.state.self_readings_warm_task = asyncio.create_task(asyncio.to_thread(warm_self_readings))
+    # Self-monitor track record: first Redis read off the event loop (then every 5 min, background).
+    app.state.self_track_record_warm_task = None
+    if settings.self_track_record_cue_enabled:
+        from .self_track_record_cue import warm as warm_self_track_record
+
+        app.state.self_track_record_warm_task = asyncio.create_task(asyncio.to_thread(warm_self_track_record))
     # RPC-health publish (orion:rpc_health:snapshot): one dedicated long-lived bus that
     # drains the process sink every worker/per-call bus folds into (app/rpc_health.py).
     app.state.rpc_health_bus = None
@@ -166,6 +172,7 @@ async def lifespan(app: FastAPI):
         app.state.visual_painting_gap_task,
         app.state.pool_warmup_task,
         app.state.self_readings_warm_task,
+        app.state.self_track_record_warm_task,
     ):
         if task is None:
             continue

@@ -93,13 +93,15 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # the durable-runs writer is now uncovered by this check (single-writer limit).
     "orion.schemas.self_monitor:SelfMonitorStateV1": (
         "orion-durable-runs",
-        "the self_monitor node (rung 6 patch 2) writes it to Redis orion:self_monitor:latest; Hub's E2 minter and E3 "
-        "self_finding_outreach (and the dispatch-runtime / orion-actions act gates) read it via orion.self_monitor.view",
+        "the self_monitor node (rung 6 patch 2) writes it to Redis orion:self_monitor:latest; Hub's E2 minter, E3 "
+        "self_finding_outreach, orion-thought's track-record cue (and the dispatch-runtime / orion-actions act gates) "
+        "read it via orion.self_monitor.view",
     ),
     "orion.schemas.self_monitor:FacultyRecordV1": (
         "orion-durable-runs",
         "the self_monitor node (rung 6 patch 2) writes SelfMonitorStateV1 to Redis orion:self_monitor:latest; "
-        "Hub's E2 minter + E3 self_finding_outreach, dispatch-runtime and orion-actions read it via orion.self_monitor.view",
+        "Hub's E2 minter + E3 self_finding_outreach, orion-thought's cue, dispatch-runtime and orion-actions read it "
+        "via orion.self_monitor.view",
     ),
     "orion.schemas.prediction:ActionBetCountsV1": (
         "orion-prediction",

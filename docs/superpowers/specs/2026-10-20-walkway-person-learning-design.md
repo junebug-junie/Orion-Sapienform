@@ -252,6 +252,27 @@ albums enough that a held-out visit beats the street.
 
 ## Handoff: everything still open (2026-10-20)
 
+**Status update 2026-11-03 (what is built vs what works).**
+- Built and live: Phase 0, Phase 1 albums, bars, attributions, `vision_person_confirm`
+  asks. Live: 1,607 `+1` exemplars over 16 labels, 574 `-1`; 72 confirm asks answered;
+  bars refit daily; 1,347 attributions, all `unsure`.
+- Not working yet: no person has an accept bar, so no "probably X" exists and Phase 2
+  (other consumers) stays closed by design. Cause, measured: for every person, none of
+  their own held-out other-day clusters scores above their bar (body). Example: the person with the most
+  clusters (26): best 0.886 vs bar 0.926. Face has too few street clusters (68-71) to fit
+  a bar at alpha / 16 people.
+- Eval (first full run, 2026-11-03, read-only): 113 labelled clusters, 0 wrong accepts,
+  0 correct accepts, 103 unsure; top unsure guess is the right person 50 of 103 (chance
+  < 10 % with 16 labels); cross-day cluster AUC body 0.853, face 0.614. Orion is learning,
+  but not enough to clear a 0.3 % false-accept bar.
+- Acceptance gap fixed: the eval had never written a `vision_person_model_eval` row. Now
+  `make eval-person-recognition` nightly (separate PR).
+- Phase 3 (trained model): the data threshold is met (1,607 >= 300 across >= 5 people),
+  but a read-only probe of an LDA projection on body vectors did worse than raw (14 vs 21
+  of 97 held-out person-days over a probe bar). No training PR until a candidate beats
+  raw in this eval (McNemar). Non-person labels (a decoration, two delivery roles, a pair
+  label) count as people in alpha / people; worth splitting out.
+
 **Status update 2026-10-29.** Checked against the live database and logs:
 A.1 done (crop_thumbs 13,790, face_frames 5.4G). A.2 applied 2026-10-29: 76 person
 stories (all ended 10-17..10-19, before #2765) got 130 links; a re-run plans 0

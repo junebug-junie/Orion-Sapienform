@@ -167,14 +167,19 @@ from orion.curiosity.self_inquiry import (
     SELF_INQUIRY_PG_TABLE_NAMES,
     SELF_INQUIRY_PG_TABLES,
     SELF_INQUIRY_TAG,
+    SELF_FIT_DEFINITION_FIELD,
+    SELF_FIT_TAG,
     LedgerRow,
     LivedAnswer,
     OpenLivedQuestion,
     SelfDefinition,
     build_lived_answer_history_write,
     build_self_definition_history_write,
+    accept_fit_text,
     lived_answer_from_detail,
     lived_concept_id,
+    needs_fit,
+    with_fit_text,
     read_latest_self_definition,
     read_current_lived_answers,
     valid_question_id,
@@ -192,6 +197,7 @@ from orion.personality.naming_check import check_naming
 from orion.cognition.recall_query import cap_retrieval_query
 from orion.curiosity.self_inquiry_prompt import (
     PreviousLivedAnswer,
+    build_answer_fit_prompt,
     build_self_inquiry_prompt,
     build_self_naming_prompt,
 )
@@ -329,6 +335,24 @@ _DAILY_COUNT_KEY_PREFIX = "orion:curiosity:count:"
 # depends on. Redis, not process state, for the same restart reason as above.
 _LAST_RUN_KEY = "orion:curiosity:last_run_id"
 _STATE_TTL_SEC = 172800
+
+# The fit hop (orion/curiosity/self_inquiry.py, SELF_FIT_TAG). One Redis hash
+# per run: field = "definition" or a lived question_id, value = Orion's own
+# shorter version. Written inside the turn (under the run's GPU hold), read at
+# mirror time, which on the durable path is a later event in this process or a
+# restarted one. TTL is the state TTL: a mirror never lands days later.
+_SELF_FIT_KEY_PREFIX = "orion:curiosity:self_fit:"
+# Motor time per hop. A rewrite of one paragraph is well under this. Under a GPU
+# hold the hop's turn limit is this PLUS the finalize reserve, because
+# `_generate` gives the motor the limit minus that reserve.
+SELF_FIT_TIMEOUT_SEC = 300.0
+# Under a GPU hold: skip the hop when the motor would get less than this before
+# the hold ends, and end the hop this long before the hold so the reply lands.
+SELF_FIT_MIN_TIMEOUT_SEC = 60.0
+SELF_FIT_DEADLINE_MARGIN_SEC = 30.0
+# A run writes one definition or one lived answer; an investigation run can
+# revise a few. Bounded so a run that revised many cannot hold the GPU long.
+SELF_FIT_MAX_PER_RUN = 3
 
 # Urgent runs (start_urgent). One open run per incident, held by an NX key the
 # must-deliver reporter releases when the run ends; the incident hash is what
@@ -980,6 +1004,8 @@ class CuriosityInvestigation:
         # within TURN_RESULT_CACHE_SEC: the cached result is replied as-is.
         self._turn_inflight: dict[str, asyncio.Future] = {}
         self._turn_results: dict[str, tuple[CuriosityTurnResultV1, float]] = {}
+        # Fit-hop results when the bus has no redis (tests); see `_store_fit`.
+        self._self_fits: dict[tuple[str, str], str] = {}
         # Short Mind subject keyed by run_id so durable runner callbacks and
         # in-process `_generate` share the same appraisal text without putting
         # the full kickoff on StanceReactRequestV1.user_message. World-curiosity
@@ -3674,6 +3700,8 @@ class CuriosityInvestigation:
                     parent_run_id=run_id,
                     **({"retrieval_query": retrieval_query} if retrieval_query else {}),
                 )
+                if text:
+                    await self._fit_run_answers(run_id, correlation_id)
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -3990,6 +4018,7 @@ class CuriosityInvestigation:
         if definition is None:
             logger.info("curiosity_self_definition_not_mirrored run=%s reason=absent", run_id)
             return False
+        definition = await self._with_stored_fit(run_id, SELF_FIT_DEFINITION_FIELD, definition)
         version = await self._next_self_concept_version("self:definition")
         row = build_self_definition_history_write(definition, version=version)
         if row is None:
@@ -4041,6 +4070,7 @@ class CuriosityInvestigation:
         if answer is None:
             logger.info("curiosity_lived_answer_not_mirrored run=%s reason=absent", run_id)
             return False
+        answer = await self._with_stored_fit(run_id, answer.question_id, answer)
         version = await self._next_self_concept_version(lived_concept_id(answer.question_id))
         row = build_lived_answer_history_write(answer, version=version, per_question=per_question)
         if row is None:
@@ -4083,6 +4113,129 @@ class CuriosityInvestigation:
             correlation_id,
         )
         return True
+
+    # --- the fit hop -------------------------------------------------------
+    #
+    # An answer Orion wrote about themself that runs over the reading budget
+    # (SELF_DEFINITION_TEXT_CAP) gets ONE more turn from the same model, under
+    # the same GPU hold: "rewrite this to fit". The reply is mirrored as the
+    # self_concept_history row; the full answer stays on the graph node. A
+    # refused or failed hop leaves the full text as the row, and readers cut it
+    # at a sentence (orion/text_fit.py). Never a blind mid-word cut.
+
+    async def _fit_run_answers(
+        self,
+        run_id: str,
+        correlation_id: str,
+        *,
+        gpu_lease: GpuLeaseRefV1 | None = None,
+        deadline: float | None = None,
+    ) -> int:
+        """Run the fit hop for every over-budget answer this run wrote. Returns
+        how many fits were stored. Never raises: the turn already succeeded."""
+        if self._reader is None:
+            return 0
+        try:
+            definition = await asyncio.to_thread(read_self_definition, self._reader, run_id)
+            lived = await asyncio.to_thread(read_lived_answers_for_run, self._reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_fit_read_failed run=%s err=%s", run_id, exc)
+            return 0
+        targets: list[tuple[str, Any]] = []
+        if needs_fit(definition):
+            targets.append((SELF_FIT_DEFINITION_FIELD, definition))
+        targets += [(a.question_id, a) for a in lived if needs_fit(a)]
+        if len(targets) > SELF_FIT_MAX_PER_RUN:
+            logger.info(
+                "curiosity_self_fit_capped run=%s over_budget=%s fitting=%s",
+                run_id, len(targets), SELF_FIT_MAX_PER_RUN,
+            )
+        fitted = 0
+        for field_name, answer in targets[:SELF_FIT_MAX_PER_RUN]:
+            if await self._read_stored_fit(run_id, field_name):
+                continue  # a retried turn already fitted this one
+            timeout = SELF_FIT_TIMEOUT_SEC
+            reserve = self.held_turn_finalize_reserve_sec if gpu_lease is not None else 0.0
+            if deadline is not None:
+                left = deadline - time.monotonic() - SELF_FIT_DEADLINE_MARGIN_SEC
+                timeout = min(timeout + reserve, left) - reserve
+            if timeout < SELF_FIT_MIN_TIMEOUT_SEC:
+                logger.info(
+                    "curiosity_self_fit_skipped run=%s field=%s reason=no_time_left chars=%s",
+                    run_id, field_name, len(answer.text),
+                )
+                break
+            try:
+                raw, debug = await self._generate(
+                    build_answer_fit_prompt(answer.text),
+                    str(uuid5(NAMESPACE_URL, f"{correlation_id}:{SELF_FIT_TAG}:{field_name}")),
+                    source=SELF_FIT_TAG,
+                    require_lookup=False,
+                    timeout_sec=timeout + reserve,
+                    resume_key=f"{run_id}:{SELF_FIT_TAG}:{field_name}",
+                    **(
+                        {
+                            "gpu_lease": gpu_lease,
+                            "fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
+                        }
+                        if gpu_lease is not None
+                        else {}
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_self_fit_failed run=%s field=%s err=%s", run_id, field_name, exc)
+                continue
+            fit = accept_fit_text(raw)
+            if not fit:
+                logger.info(
+                    "curiosity_self_fit_refused run=%s field=%s chars=%s reply_chars=%s error=%s",
+                    run_id, field_name, len(answer.text), len(raw or ""),
+                    (debug or {}).get("error") or "-",
+                )
+                continue
+            if await self._store_fit(run_id, field_name, fit):
+                fitted += 1
+                logger.info(
+                    "curiosity_self_fit_stored run=%s field=%s chars=%s fit_chars=%s reply_chars=%s",
+                    run_id, field_name, len(answer.text), len(fit), len(raw or ""),
+                )
+        return fitted
+
+    async def _store_fit(self, run_id: str, field_name: str, fit: str) -> bool:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            self._self_fits[(run_id, field_name)] = fit
+            return True
+        key = f"{_SELF_FIT_KEY_PREFIX}{run_id}"
+        try:
+            await redis.hset(key, field_name, fit)
+            await redis.expire(key, _STATE_TTL_SEC)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_fit_store_failed run=%s field=%s", run_id, field_name, exc_info=True)
+            return False
+
+    async def _read_stored_fit(self, run_id: str, field_name: str) -> str:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return self._self_fits.get((run_id, field_name), "")
+        try:
+            raw = await redis.hget(f"{_SELF_FIT_KEY_PREFIX}{run_id}", field_name)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_fit_read_back_failed run=%s field=%s", run_id, field_name, exc_info=True)
+            return ""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        return str(raw or "")
+
+    async def _with_stored_fit(self, run_id: str, field_name: str, answer):
+        """The answer carrying its stored fit, when the hop wrote one."""
+        if answer is None or answer.fit_text.strip():
+            return answer
+        fit = await self._read_stored_fit(run_id, field_name)
+        return with_fit_text(answer, fit) if fit else answer
 
     async def _self_concept_entry_exists(self, entry_id: str) -> bool:
         """True when this row is already mirrored. False on any read failure:
@@ -5284,6 +5437,13 @@ class CuriosityInvestigation:
                     # different turns of one run from sharing a session.
                     resume_key=f"{request.run_id}:{request.source_tag}",
                 )
+                if text and request.source_tag in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
+                    await self._fit_run_answers(
+                        request.run_id,
+                        request.correlation_id,
+                        gpu_lease=request.gpu_lease,
+                        deadline=(received + request.timeout_sec) if request.gpu_lease is not None else None,
+                    )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                     await self._stamp_corrections(request.run_id)

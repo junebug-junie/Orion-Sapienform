@@ -176,46 +176,76 @@ def is_deterministic(exc: BaseException) -> bool:
 LISTENER_WAIT_HOLD_KEY = "listener_wait"
 
 
-def published_to_nobody(exc: BaseException | None) -> RpcPublishedToNobody | None:
-    """The ``RpcPublishedToNobody`` behind ``exc``, or None. Follows ``__cause__``/``__context__``
-    because some steps wrap their transport error (self-sense: ``SelfSenseAskFailed from exc``).
-    Classified by type, never by message. Only the publish-time case counts: a request that was
-    delivered and lost its listener while awaiting the reply may already have done work."""
+# Which kind of missing listener a ``listener_wait`` was for (``run.listener_wait`` detail ``case``).
+PUBLISHED_TO_NOBODY = "published_to_nobody"   # the request reached no worker: a replay duplicates nothing
+LOST_IN_FLIGHT = "lost_in_flight"             # a worker got it, then its listener vanished mid-reply
+
+
+def listener_absence(exc: BaseException | None) -> tuple[str, RpcNoListener] | None:
+    """``(case, error)`` for the ``RpcNoListener`` behind ``exc``, or None. Follows
+    ``__cause__``/``__context__`` because some steps wrap their transport error (self-sense:
+    ``SelfSenseAskFailed from exc``). Classified by type, never by message. The first
+    ``RpcNoListener`` on the chain decides: a delivered request orphaned later
+    (``LOST_IN_FLIGHT``) stays that, whatever earlier publish-time failure it chains to."""
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         if isinstance(exc, RpcPublishedToNobody):
-            return exc
+            return PUBLISHED_TO_NOBODY, exc
         if isinstance(exc, RpcNoListener):
-            return None   # a delivered request orphaned later: never replay-safe, whatever it chains to
+            return LOST_IN_FLIGHT, exc
         seen.add(id(exc))
         exc = exc.__cause__ if exc.__cause__ is not None else (None if exc.__suppress_context__ else exc.__context__)
     return None
 
 
-async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseException, *, waiting: dict,
-                        extra: dict | None = None, attempt_sec: float | None = None) -> dict | None:
-    """A step's RPC reached no listener (``published_to_nobody``): the service that answers it is
-    restarting. Live 2026-10-31: 16 reading runs failed this way in four bursts, each a redeploy.
+def published_to_nobody(exc: BaseException | None) -> RpcPublishedToNobody | None:
+    """The ``RpcPublishedToNobody`` behind ``exc``, or None (``listener_absence``). Only the
+    publish-time case: a request that was delivered and lost its listener while awaiting the
+    reply may already have done work."""
+    found = listener_absence(exc)
+    return found[1] if found is not None and found[0] == PUBLISHED_TO_NOBODY else None  # type: ignore[return-value]
 
-    Nobody received the request, so replaying it duplicates nothing. The hold is handed back
-    (nothing to run on it meanwhile), the run is parked until ``retry_at`` -- ``hold.retry_at``
-    for a graph that goes straight to ``resource_request`` (``register`` waits it out), plus
-    ``retry_at`` on the state for a graph with a ``retry_wait`` node -- and the step replays. No
-    attempt is spent; ``listener_waits`` counts these per run.
+
+async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseException, *, waiting: dict,
+                        extra: dict | None = None, attempt_sec: float | None = None,
+                        in_flight_resends: int = 0) -> dict | None:
+    """A step's RPC lost its listener: the service that answers it is restarting. Live
+    2026-10-31: 16 reading runs failed this way in four bursts, each a redeploy.
+
+    ``published_to_nobody``: nobody received the request, so replaying it duplicates nothing.
+    Counted in ``listener_waits``, at most ``listener_wait_max_tries`` per run.
+
+    ``LOST_IN_FLIGHT`` (delivered, then the listener vanished "while awaiting its reply"): a
+    worker may have done work, and a request that itself crashes the worker would loop. Only a
+    workflow that declares its step duplicate-safe opts in, with ``in_flight_resends`` (its own
+    cap, owned where the workflow is defined; 0 = today: the caller's attempt path runs). Counted
+    separately in ``listener_in_flight_resends``. Live 2026-11-03: 3 readings failed this way
+    during Hub redeploys at 18:12 and 18:26 UTC.
+
+    Either way the hold is handed back (nothing to run on it meanwhile), the run is parked until
+    ``retry_at`` -- ``hold.retry_at`` for a graph that goes straight to ``resource_request``
+    (``register`` waits it out), plus ``retry_at`` on the state for a graph with a ``retry_wait``
+    node -- and the step replays. No attempt is spent.
 
     None (the caller's normal failure handling runs, as before this existed) when the error is
-    anything else, the feature is off, ``listener_waits`` is spent, or the wait would leave no
-    whole attempt before the run's deadline."""
-    found = published_to_nobody(exc)
+    anything else, the feature is off (``listener_wait_max_tries`` 0 turns off both cases), the
+    case's counter is spent, or the wait would leave no whole attempt before the run's deadline."""
+    found = listener_absence(exc)
+    if found is None:
+        return None
+    case, err = found
     max_tries, base, cap = (admission.listener_wait_max_tries, admission.listener_wait_base_seconds,
                             admission.listener_wait_max_seconds)
+    counter = "listener_waits"
+    if case == LOST_IN_FLIGHT:
+        max_tries, counter = min(max_tries, max(int(in_flight_resends), 0)), "listener_in_flight_resends"
     if is_urgent(state):
         # Urgent runs end in a report within minutes: the urgent retry budget bounds the wait too.
         max_tries, base = min(max_tries, URGENT_MAX_ATTEMPTS), min(base, URGENT_RETRY_BASE_SECONDS)
         cap = min(cap, base * 2 ** max(max_tries - 1, 0))
-    if found is None or max_tries <= 0:
+    if max_tries <= 0:
         return None
-    count = int(state.get("listener_waits") or 0) + 1
+    count = int(state.get(counter) or 0) + 1
     if count > max_tries:
         return None
     delay = min(cap, base * 2 ** (count - 1))
@@ -224,11 +254,13 @@ async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseExceptio
         return None
     released = await admission.release(state, "listener_absent")
     at = retry_at.isoformat()
-    error = f"listener_wait:{count}/{max_tries}: {found}"[:500]
-    logger.warning("durable_listener_wait run=%s waits=%s retry_in=%.0fs err=%s", state.get("run_id"), count,
-                   delay, found)
-    await admission.event(state, "run.listener_wait", {"waits": count, "retry_at": at, "error": str(found)[:300]})
-    update = {**released, **waiting, "listener_waits": count, "last_error": error,
+    label = "listener_wait" if case == PUBLISHED_TO_NOBODY else "listener_wait_in_flight"
+    error = f"{label}:{count}/{max_tries}: {err}"[:500]
+    logger.warning("durable_listener_wait run=%s case=%s waits=%s retry_in=%.0fs err=%s", state.get("run_id"),
+                   case, count, delay, err)
+    await admission.event(state, "run.listener_wait",
+                          {"waits": count, "case": case, "retry_at": at, "error": str(err)[:300]})
+    update = {**released, **waiting, counter: count, "last_error": error,
               "hold": {"retry_at": at, LISTENER_WAIT_HOLD_KEY: count}, **(extra or {})}
     if waiting.get("status") == "retrying":
         update["retry_at"] = at   # a retry_wait node sleeps on the state's retry_at

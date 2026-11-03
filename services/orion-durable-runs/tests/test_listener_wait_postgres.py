@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from orion.core.bus.async_service import RpcPublishedToNobody  # noqa: E402
+from orion.core.bus.async_service import RpcNoListener, RpcPublishedToNobody  # noqa: E402
 from orion.schemas.durable_run import DurableRunRequestV1  # noqa: E402
 from orion.schemas.reading_turn import ReadingTurnResultV1  # noqa: E402
 from app.admission_runtime import AdmissionRuntime  # noqa: E402
@@ -32,14 +32,16 @@ from test_pool_refusal_postgres import fake_now, scripted  # noqa: E402
 pg = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 
 NOBODY = "no listener on orion:reading:turn:request: request published to nobody"
+AWAITING = "no listener on orion:reading:turn:request while awaiting its reply"
 
 
 class ReadingRunner(Runner):
     """The runtime's fake runner plus a Hub reading turn that is unheard ``unheard`` times."""
 
-    def __init__(self, saver, unheard: int):
+    def __init__(self, saver, unheard: int, lost_in_flight: int = 0):
         super().__init__(saver)
         self.unheard = unheard
+        self.lost_in_flight = lost_in_flight
         self.reading_calls = []
 
     async def _run_reading_turn(self, request):
@@ -47,6 +49,9 @@ class ReadingRunner(Runner):
         if self.unheard > 0:
             self.unheard -= 1
             raise RpcPublishedToNobody(NOBODY)
+        if self.lost_in_flight > 0:
+            self.lost_in_flight -= 1
+            raise RpcNoListener(AWAITING)
         return ReadingTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=True,
                                    text="A grounded reading.", source_fetches=[])
 
@@ -70,8 +75,8 @@ def reading_runtime(pool, saver, store, gpu, runner, **overrides):
     return rt
 
 
-def setup(pool, saver, store, gpu, unheard, **overrides):
-    rt = reading_runtime(pool, saver, store, gpu, ReadingRunner(saver, unheard), **overrides)
+def setup(pool, saver, store, gpu, unheard, lost_in_flight=0, **overrides):
+    rt = reading_runtime(pool, saver, store, gpu, ReadingRunner(saver, unheard, lost_in_flight), **overrides)
     clock = fake_now(rt)
     rt.deps.now = clock          # the graphs' own clock (listener_wait's retry_at) is the same one
     return rt, clock, scripted(rt)
@@ -135,5 +140,57 @@ def test_a_reading_that_stays_unheard_past_the_cap_fails_as_before():
         assert [w["waits"] for w in await history(store, req.run_id, "run.listener_wait")] == [1, 2]
         [failed] = await history(store, req.run_id, "run.failed")
         assert failed["error"].startswith("turn_exception:RpcPublishedToNobody: no listener")
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+@pg
+def test_a_reading_whose_hub_vanished_mid_turn_is_resent_and_completes():
+    """Live 2026-11-03: 3 readings failed "while awaiting its reply" in Hub redeploys."""
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        rt, clock, bus = setup(pool, saver, store, gpu, unheard=0, lost_in_flight=1)
+        req = reading_request("read-inflight-001")
+        await rt.submit(req)
+        await rt._drive(await store.get_run(req.run_id))
+
+        assert (await store.get_run(req.run_id))["terminal"] is None
+        snap = await rt._graph_for("reading.turn").aget_state(rt.config(req.run_id))
+        assert snap.values["listener_in_flight_resends"] == 1 and not snap.values.get("listener_waits")
+        assert int(snap.values.get("attempt") or 0) == 0
+        [wait] = await history(store, req.run_id, "run.listener_wait")
+        assert wait["case"] == "lost_in_flight" and wait["waits"] == 1
+        assert [lease["status"] for lease in gpu.leases()] == ["released"]
+
+        asked = bus.acquires
+        clock.advance(59)
+        await rt._drive(await store.get_run(req.run_id))
+        assert bus.acquires == asked and len(rt.runner.reading_calls) == 1
+
+        clock.advance(2)
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "completed"
+        assert len(rt.runner.reading_calls) == 2
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+@pg
+def test_a_reading_that_keeps_losing_hub_mid_turn_fails_after_two_resends():
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        rt, clock, _ = setup(pool, saver, store, gpu, unheard=0, lost_in_flight=10,
+                             DURABLE_RUNS_LISTENER_WAIT_BASE_SEC=10, DURABLE_RUNS_LISTENER_WAIT_MAX_SEC=10)
+        req = reading_request("read-inflight-002")
+        await rt.submit(req)
+        for _ in range(3):
+            await rt._drive(await store.get_run(req.run_id))
+            clock.advance(11)
+        assert (await store.get_run(req.run_id))["terminal"] == "failed"
+        assert len(rt.runner.reading_calls) == 3, "two re-sends, then the third lost turn fails"
+        assert [(w["case"], w["waits"]) for w in await history(store, req.run_id, "run.listener_wait")] == \
+            [("lost_in_flight", 1), ("lost_in_flight", 2)]
+        [failed] = await history(store, req.run_id, "run.failed")
+        assert failed["error"].startswith("turn_exception:RpcNoListener: no listener")
         await rt.close()
     asyncio.run(with_database(scenario))

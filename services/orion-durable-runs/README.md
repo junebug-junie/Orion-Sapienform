@@ -81,7 +81,8 @@ and replays the step. **No attempt is spent.** `listener_waits` counts these per
 `DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES` (default 6, ~22 min in total; 0 = off), or when the wait
 would leave no whole attempt before the deadline, the error takes the graph's normal path as
 before. Urgent runs (`brief.urgent`) wait within the urgent budget instead: at most 2 waits, 10 s
-then 20 s. Each wait is a `run.listener_wait` event (`waits`, `retry_at`, `error`). Graphs that go
+then 20 s. Each wait is a `run.listener_wait` event (`waits`, `case`, `retry_at`, `error`; `case` is
+`published_to_nobody` or `lost_in_flight`). Graphs that go
 straight back to `resource_request` (reading, compactor digest, curiosity compaction) are parked
 by `hold = {"retry_at", "listener_wait"}`, which `AdmissionRuntime.register` waits out; graphs
 with a `retry_wait` node also get `retry_at` on the state.
@@ -91,14 +92,20 @@ Wired into: `curiosity.investigate`, `self_sense_eval`, `harness.echo_smoke`,
 `journal.compose`, `memory.episode_distill`, `orion_day.letter`. `reverie.visual` and
 `dream.carry` already treat any transport error as a backed-off deferral that spends no attempt.
 
-**Only the publish-time case is replayed.** `RpcNoListener` "while awaiting its reply" means the
-request WAS delivered and its listener went away mid-step: it may have done work (a curiosity turn
-has tools; a reading turn fetches and spends GPU). That keeps the normal attempt path. For
-reading, the seed queue's next attempt then usually lands in the same deploy and is the
-published-to-nobody case, which waits.
+**The in-flight case is replayed only for `reading.turn`.** `RpcNoListener` "while awaiting its
+reply" means the request WAS delivered and its listener went away mid-step: it may have done work
+(a curiosity turn has tools), and a request that itself crashes its worker would loop. Every other
+workflow keeps the normal attempt path for it. `reading.turn` opts in with
+`app/reading_graph.py:IN_FLIGHT_RESENDS` (2): the Hub reading turn is read-only (`no_write`, no
+chat history; the motor gets WebFetch/WebSearch only) and nothing lands until Hub consumes the
+run's result, so a duplicate costs compute plus its own trace rows under a fresh turn correlation
+id. Same backoff, urgent and deadline rules; its own counter `listener_in_flight_resends`; past 2
+the run fails as before. `DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES=0` turns this off too. Live
+2026-11-03: 3 readings failed this way during Hub redeploys at 18:12 and 18:26 UTC.
 
 Eval: `evals/deploy_window_listener_wait.py` (16 readings unheard for a deploy window: all 16 fail
-with the wait off, all 16 complete with it on, no attempt spent). Mutation eval:
+with the wait off, all 16 complete with it on, no attempt spent; plus a Hub that vanishes
+mid-turn: those readings are re-sent and complete, at most 2 re-sends each). Mutation eval:
 `evals/listener_wait_mutations.py`.
 
 ## Workflow registry (2026-09-21)

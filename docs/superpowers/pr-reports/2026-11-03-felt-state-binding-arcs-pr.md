@@ -30,6 +30,7 @@ The replay below runs the shipped code over the last 7 days of real `physiology_
   - Reducer `_fold_binding`.
   - Readers: stance cue, Day letter, recent arcs, citation truth.
 - **orion-dream:** `binding` is in `ARC_EXCLUDED_KINDS`.
+- **orion-sql-writer:** `physiology` is added to `act_downstream_use.ARC_SOURCE_TABLES`. That tuple mirrors every arc evidence table, so a cited binding arc ref can link. `test_arc_source_tables_match_the_temporal_self_sources` pins it, and CI caught the missing entry.
 
 ## The rule
 
@@ -106,6 +107,7 @@ Total: 754 rows (~108 a day) and 89 arcs. The anti-flap rule cut naive onsets by
 - `services/orion-durable-runs/tests/test_body_binding.py` (new, 17 tests incl. a Postgres round trip).
 - `services/orion-durable-runs/evals/{body_binding_replay.py (new),temporal_self_fixture_db.py}`.
 - `services/orion-dream/app/replay.py` and its test.
+- `services/orion-sql-writer/app/act_downstream_use.py`: `physiology` in `ARC_SOURCE_TABLES`.
 - `orion/inner_state_registry.py`: physiology.state.v1 changes from REHEARSAL to SHADOW and lists this reader. `config/metrics/metric_definitions.lock.json` re-locked after merging origin/main.
 - `.github/workflows/orion-durable-runs-tests.yml`: the eval runs in CI.
 
@@ -134,6 +136,7 @@ orion-thought stance/recent-arcs/personality/self-readings        73 passed, 3 s
 orion-hub temporal-self routes, day, curiosity fact, strain       77 passed
 orion-dream test_replay_arc_candidates                            20 passed
 orion/thought                                                     125 passed
+services/orion-sql-writer/tests                                   1172 passed, 181 skipped
 tests/test_metric_definition_drift.py (after re-lock)             63 passed
 Mutation checks: adapter makes a new id -> Postgres test fails (34 copies vs 2);
                  onset at 0 s -> body_binding_replay fixture fails
@@ -199,6 +202,7 @@ Consumer-first, from the clean primary `main` checkout after merge:
 scripts/safe_docker_build.sh orion-thought up -d --build
 scripts/safe_docker_build.sh orion-hub up -d --build
 scripts/safe_docker_build.sh orion-dream up -d --build
+scripts/safe_docker_build.sh orion-sql-writer up -d --build
 scripts/safe_docker_build.sh orion-durable-runs up -d --build
 ```
 

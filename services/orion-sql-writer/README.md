@@ -1087,7 +1087,9 @@ through the emitter and reducer: `python services/orion-sql-writer/evals/storage
 `stale=true` -- never 0.0. CCS811 air quality lands in `office_eco2_ppm` / `office_tvoc_ppb`
 (NULL while the sensor warms up, with `air_warming=true`; NULL `air_warming` on rows from before
 the CCS811 existed). Those three columns are added by boot DDL in `app/main.py`, since
-`create_all` does not alter the existing table. No retention is configured yet (~2,880 rows/day).
+`create_all` does not alter the existing table. Their DDL runs in an isolated, verified startup
+gate: a lock timeout stops SQL writer before bus subscription instead of serving traffic with a
+stale table shape. No retention is configured yet (~2,880 rows/day).
 
 `orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
 `app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned

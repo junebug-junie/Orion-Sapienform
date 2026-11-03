@@ -58,10 +58,12 @@ experiment dispatcher. Where the build departs from the design below, the build 
    `heat_per_watt_total:<w>`); no migration (the table fits). `best_effect` cites the newest stored
    fit's prediction beside an experimental answer. Why two fits: the gap alone answered "how much
    warmer than its intake", but the machines' heat warms the office too, and the room path is most of
-   the effect (live: athena local +0.07 vs total +0.54 C/100 W; circe ~0 vs +0.28). The walkway focus
-   experiment's watts convert to +0.18 C total (-0.05..+0.41) vs its measured +0.21 (-0.16..+0.58).
+   the 0-2 h effect (live, same 129 h: athena local +0.09 vs total +0.92 C/100 W; circe -0.02 vs +0.32).
+   Both fits share their hours; a missing hour is a break for the AR(1) step and the kernel. The
+   walkway focus experiment (20-min blocks -> local basis) converts to -0.00 C local, +0.23 C total, vs
+   its measured +0.21 (-0.16..+0.58).
 
-Metric quality gate for the watts measure (2026-11-03, hourly 2026-10-29..11-03, 123 h):
+Metric quality gate for the watts measure (2026-11-03, hourly 2026-10-29..11-03, 123-129 h):
 
 1. Provenance. `athena.chassis_watts`: athena's iLO `ilo_power_watts` (`orion/telemetry/biometrics_pipeline.py`
    `extract_measurements`, BMC at the PSU). `circe.chassis_watts`: circe has no BMC; athena polls the
@@ -84,13 +86,13 @@ Metric quality gate for the watts measure (2026-11-03, hourly 2026-10-29..11-03,
    level R^2 0.89 itself is one step: 2026-10-30 02:20 UTC the gap fell 1.1 C in 10 min with athena
    flat at ~740 W (cabinet humidity rose 22.8 -> 24.6 %: cooler air came in; no change event logged),
    then athena fell 300 W at 04:00 and the gap moved ~0.1 C. The GLS (change-based) slope is the
-   local answer: +0.07 C/100 W (-0.00..+0.14); the level fit's +0.43 is reported as a disagreement.
+   local answer: +0.09 C/100 W (-0.01..+0.19); the level fit's +0.43 is reported as a disagreement.
 5. Existing mechanism. `scripts/analysis/fit_heat_sensitivity.py` -> `config/physiology/heat_sensitivity.yaml`
    (body economy B2): whole-cabinet hourly first differences on per-host COMPUTE watts (CPU+GPU),
    2 h step, day-block bootstrap, 09-26..10-27, offline, written to config (athena 0.64 [0.20, 1.03],
    circe 0.31 [0.15, 0.48]). It predates the room sensor, so it cannot split local from room heat, and
    it is not reachable from the prediction service or an experiment. The total fit here agrees with
-   it (athena 0.54, circe 0.28); this adds the room split, chassis (whole-node) watts, and the
+   it (athena 0.92, circe 0.32, wide intervals); this adds the room split, chassis (whole-node) watts, and the
    experiment conversion. Not replaced: the budget organ keeps reading its config. Also `/scenario`
    (ARX, levels, conditional) and the replay eval's scenario (+0.36/100 W, levels, same step).
 6. Reversibility. One module, two routes, rows in an existing table under new action names; no

@@ -20,7 +20,8 @@
   the old gate).
 - Orion can now ask "how much does this action heat the cabinet?" and get a per-machine answer with an
   interval, not one confounded correlation. Live: the walkway focus experiment measured +0.21 C
-  (-0.16..+0.58); the heat-per-watt prediction from the watts it moved is +0.18 C (-0.05..+0.41).
+  (-0.16..+0.58); from the watts it moved, heat-per-watt predicts -0.00 C (-0.03..+0.02) with the room
+  held fixed (the headline for its 20-minute blocks) and +0.23 C (-0.04..+0.51) with the room free.
 
 ## Current architecture
 
@@ -112,17 +113,20 @@ windows both forecast, and refuses it below 90 % window share on both routes. No
 candidates that enter automatically once they vary. Rejected: fleet sum, GPU-only, CPU-only,
 `orion_energy_hourly`.
 
-## Heat per watt, live (2026-11-03, 7-day window)
+## Heat per watt, live (2026-11-03, 7-day window, the same 129 h for both fits)
 
-| C per 100 W held ~2 h | local (cabinet - room) | total (room free, outdoor controlled) |
+| C per 100 W, load held ~2 h | local (cabinet - room) | total (room free, outdoor controlled; 0-2 h response) |
 |---|---|---|
-| athena | +0.07 (95 % -0.00..+0.14), 123 h | +0.54 (-0.02..+1.09), 166 h |
-| circe | -0.01 (-0.04..+0.02) | +0.28 (+0.16..+0.40) |
+| athena | +0.09 (95 % -0.01..+0.19) | +0.92 (+0.39..+1.46) |
+| circe | -0.02 (-0.06..+0.02) | +0.32 (+0.17..+0.47) |
 
-Most of a machine's effect on the cabinet comes back through the room. Walkway focus experiment
-9e6f9ab7 (+7.8 W athena, +50 W circe measured): predicted +0.18 C (-0.05..+0.41) total, -0.00 C local;
-measured +0.21 C (-0.16..+0.58). Method: hourly means, lags 0-2 h summed, AR(1) feasible GLS +
-Newey-West. The "95 %" interval covers ~89 % in simulation (plain OLS + HAC: ~82 %).
+Most of a machine's 0-2 h effect on the cabinet comes back through the room. The total fit is not a
+steady state: the room keeps warming after 2 h. Walkway focus experiment 9e6f9ab7 (20-min blocks;
++7.8 W athena, +50 W circe measured): local -0.00 C (-0.03..+0.02) = headline, because the room cannot
+follow 20-min on/off blocks; total +0.23 C (-0.04..+0.51); measured +0.21 C (-0.16..+0.58). The
+experiment's interval is too wide to tell these apart. Method: hourly means, lags 0-2 h summed, AR(1)
+feasible GLS + Newey-West, gap-aware (a missing hour is a break). The "95 %" interval covers ~90 % in
+simulation (plain OLS + HAC: ~82 %).
 
 ## Schema / bus / API changes
 
@@ -146,7 +150,7 @@ Newey-West. The "95 %" interval covers ~89 % in simulation (plain OLS + HAC: ~82
 
 ```text
 docker (orion-prediction image + pytest), services/orion-prediction:
-python -m pytest tests -q -p no:cacheprovider                 -> 244 passed
+python -m pytest tests -q -p no:cacheprovider                 -> 259 passed (after review fixes, merged with origin/main)
 tests/test_young_series.py on the OLD backtest.py             -> FAILS (assert 'direct_ar' != 'direct_ar')  [regression proof]
 host: tests/test_no_private_eval_artifacts.py, tests/test_no_personal_terms.py -> pass
 scripts/check_metric_lineage.py --gate, check_definition_drift.py --gate, check_env_key_single_source.py -> PASS
@@ -156,8 +160,8 @@ scripts/check_metric_lineage.py --gate, check_definition_drift.py --gate, check_
 
 ```text
 evals/run_causal_calibration_eval.py                           -> PASS
-evals/run_heat_per_watt_eval.py (200 draws)                    -> PASS: planted coverage 0.895, mean 0.427 vs 0.43,
-   circe covers 0 0.94, null claim rate 0.065 (refused 0.81), hecate never fitted, total coverage 0.88 / 0.905
+evals/run_heat_per_watt_eval.py (200 draws)                    -> PASS: planted coverage 0.905, mean 0.427 vs 0.43,
+   circe covers 0 0.95, null claim rate 0.06 (refused 0.81), hecate never fitted, total coverage 0.905 / 0.92
 evals/run_heat_per_watt_eval.py --live --days 7 (read-only)    -> numbers in the table above
 evals/run_cabinet_replay_eval.py (registry train_from, CI mode) -> PASS
 evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z vs --without-overlap -> PASS both;
@@ -177,7 +181,39 @@ No image build: requirements unchanged (statsmodels already pinned). Throwaway t
 
 ## Review findings fixed
 
-(filled in after review)
+Review subagent on 17fffa08d vs origin/main: no blockers, 4 should-fix, 5 nits. All fixed.
+
+- Finding: local and total fits ran on different hours (total used pre-room-sensor hours), so "most
+  heat comes back through the room" compared two periods.
+  - Fix: `_common_rows` -- both fits run on the same complete hours; `n_hours` reported for each.
+  - Evidence: `test_both_fits_use_the_same_hours_even_before_the_room_sensor_existed`; live 129 h / 129 h; numbers re-measured.
+- Finding: `dropna` before GLSAR/HAC paired hours across a gap as neighbours.
+  - Fix: `_gap_aware_gls` -- rho, the quasi-difference and the Newey-West kernel (`hac-panel` by run)
+    stay inside runs of consecutive hours; t tests use df = rows - parameters.
+  - Evidence: `test_a_mid_window_gap_is_a_break_not_two_neighbouring_hours` (12 h outage + level jump).
+- Finding: `experiment_watts` cached running experiments and `{error}` results forever.
+  - Fix: cached only when status is `analyzed`/`cancelled` and no entry has an error.
+  - Evidence: `test_experiment_watts_cache_only_finished_clean_experiments`.
+- Finding: headline `predicted_c` used the total fit, the wrong comparison for short switchback blocks;
+  docs called the total a steady state.
+  - Fix: `basis` = local when blocks < 2 h (fit window), total otherwise; both always returned with
+    `basis_reason`; docs and summary say "0-2 h response, not a steady state".
+  - Evidence: `test_basis_follows_block_length_and_both_are_returned`.
+- Finding (nit): stored selections did not fingerprint `overlap_covariates`.
+  - Fix: stored in blend metrics and compared in `restore()`.
+  - Evidence: `test_restore_refuses_a_selection_made_with_different_overlap_covariates`.
+- Finding (nit, pre-existing): shadow covariate contenders got `X=None` when nothing served used covariates.
+  - Fix: `build_forecast` loads covariates when a shadow contender needs them.
+  - Evidence: `test_shadow_covariate_contender_gets_covariates_when_nothing_served_uses_them`.
+- Finding (nit): docs disagreed (+0.89 vs +0.54); eval claimed 120 h is the live window.
+  - Fix: all numbers re-measured on one run; eval docstring corrected.
+- Finding (nit): `test_young_series` accepted `passed_by` "backtest" for the live-route test.
+  - Fix: asserts `== "live"`.
+- Finding (nit): `_convert` uncertainty caveats unstated; controls carried meaningless per-100-W
+  fields; a NaN could 500.
+  - Fix: `note` states z vs t, ignored athena/circe correlation, unmeasured machines (`unmeasured`
+    list); controls carry `per_unit` only; `_finite` maps non-finite floats to null in every response.
+  - Evidence: `test_controls_are_per_unit_and_non_finite_values_are_sanitised`.
 
 ## Restart required
 

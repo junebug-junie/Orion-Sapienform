@@ -371,6 +371,38 @@ def test_restore_refuses_a_selection_made_with_different_covariates():
     assert _engine(reg, store, clock, []).restore(spec) is True
 
 
+def test_restore_refuses_a_selection_made_with_different_overlap_covariates():
+    """direct_arx's columns depend on which covariates are overlap-only: a stored selection made
+    with another split must not be restored (its residuals were measured on other columns)."""
+    import dataclasses
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    asyncio.run(_engine(reg, store, clock, []).tick(_sync))
+    moved = dataclasses.replace(spec, overlap_covariates=("test.watts",))
+    assert _engine(reg, store, clock, []).restore(moved) is False
+    assert _engine(reg, store, clock, []).restore(spec) is True
+
+
+def test_shadow_covariate_contender_gets_covariates_when_nothing_served_uses_them(monkeypatch):
+    import dataclasses
+    monkeypatch.setattr(engine_mod, "build_models", lambda spec, usable: {
+        k: v for k, v in real_build_models(spec, usable).items() if k in FAST + ("direct_arx",)})
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    base = {hm: "naive" for hm in st.served.selection.assignment}
+    sel = dataclasses.replace(st.served.selection, assignment=base)
+    st.served = dataclasses.replace(st.served, selection=sel, shadow=("direct_arx",))
+    origin = eng.latest_complete_bucket(spec, clock.t)
+    series = eng.load_series(spec, clock.t, timedelta(days=10))
+    built = eng.build_forecast(spec, series, origin, clock.t)
+    assert built["X"] is not None
+    rows, failed = eng.build_shadow(spec, built, origin, clock.t)
+    assert failed == {} and {r["model"] for r in rows} == {"direct_arx"}
+
+
 def test_restore_refuses_a_selection_from_another_gate_version():
     reg, spec, s, store, end = _setup()
     clock = Clock(end + timedelta(seconds=90))

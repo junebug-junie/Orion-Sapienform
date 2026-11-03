@@ -4,8 +4,9 @@ data with autocorrelated noise; optional live read-only fit.
     cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--draws 200]
     ... --live [--experiment-id <uuid>]   # read-only fit on the real DB (POSTGRES_URI), nothing stored
 
-Checks (exit 1 on failure), each at 120 h (5 days, the window the live fit uses) with AR(1) noise:
-- planted athena slope 0.43 C/100 W: the 95% interval covers it in >= 85% of draws (measured ~89%:
+Checks (exit 1 on failure), each at 120 h of simulated hours (a short window: the API default is 7 days,
+and fewer complete hours make the intervals hardest to calibrate) with AR(1) noise:
+- planted athena slope 0.43 C/100 W: the 95% interval covers it in >= 85% of draws (measured ~90%:
   feasible GLS + HAC is still under nominal on short, persistent series -- plain OLS+HAC was ~82%), and
   the mean estimate is within 10% of the truth.
 - planted null (no slope): a nonzero claim (fit not refused AND interval excludes 0) in <= 12% of draws.

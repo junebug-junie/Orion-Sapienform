@@ -77,4 +77,4 @@ def test_live_promotion_still_works_when_the_model_covers_the_windows():
     results["direct_ar"].residuals = results["naive"].residuals * 0.5
     live = {("direct_ar", 5): {"verdict": "better", "rel_mae": 0.8}}
     sel = select_champion(results, spec, 180, live=live)
-    assert sel.assignment[5] == "direct_ar" and sel.metrics["direct_ar"]["5"]["passed_by"] in ("live", "backtest")
+    assert sel.assignment[5] == "direct_ar" and sel.metrics["direct_ar"]["5"]["passed_by"] == "live"

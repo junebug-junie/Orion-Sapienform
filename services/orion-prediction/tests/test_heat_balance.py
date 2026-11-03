@@ -102,7 +102,7 @@ def test_null_and_thin_data_are_refused():
 
 def test_interval_coverage_on_autocorrelated_noise():
     """AR(1) GLS + HAC, not plain OLS: neighbouring hours share drift. Over 60 draws the "95%"
-    interval covers the planted slope in >= 80% (measured ~89% over 150; plain OLS+HAC ~82%)."""
+    interval covers the planted slope in >= 80% (measured ~90% over 200 in the eval; plain OLS+HAC ~82%)."""
     hits = 0
     for seed in range(60):
         s = _fit(planted(seed=seed, phi=0.7, n=120)).slopes["athena.chassis_watts"]
@@ -242,3 +242,78 @@ def test_a_confounded_step_is_flagged_not_believed():
     s = fit.slopes["athena.chassis_watts"]
     assert s["levels_per_100w"] > 0.3 and s["per_100w"] < 0.2
     assert s["levels_disagree"] and "rests on something else" in fit.as_dict()["summary"]
+
+
+def test_both_fits_use_the_same_hours_even_before_the_room_sensor_existed():
+    f = planted()
+    f.loc[f.index[:40], ["room", "gap"]] = np.nan        # room sensor installed 40 h in
+    fit = _fit(f)
+    assert fit.n_hours == fit.total["n_hours"] <= len(f) - 40
+
+
+def test_a_mid_window_gap_is_a_break_not_two_neighbouring_hours():
+    """A 12 h outage with a level jump across it: rows on either side are never quasi-differenced or
+    kernel-paired together; the planted slope is still recovered."""
+    f = planted(n=168, seed=4)
+    f.loc[f.index[80:92], ["cabinet", "gap", "room"]] = np.nan
+    f.loc[f.index[92]:, ["gap", "cabinet"]] += 0.8      # an unlogged shift during the outage
+    fit = _fit(f)
+    a = fit.slopes["athena.chassis_watts"]
+    assert a["ci_lo"] < 0.0043 < a["ci_hi"]
+    from app.heat_balance import _gap_aware_gls
+    idx = pd.date_range(T, periods=60, freq="60min").delete(range(30, 40))
+    seg = (idx.to_series().diff() != pd.Timedelta(hours=1)).cumsum().to_numpy()
+    assert len(np.unique(seg)) == 2
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=len(idx))
+    y = 2 * x + np.r_[np.zeros(30), np.full(len(idx) - 30, 50.0)] + rng.normal(0, 0.1, len(idx))
+    X = np.column_stack([np.ones(len(idx)), x, (np.arange(len(idx)) >= 30).astype(float)])
+    res, rho, runs = _gap_aware_gls(y, X, seg, 2)
+    assert runs == 2 and len(res.model.endog) == len(idx) - 2   # each run's first hour dropped
+    assert abs(rho) < 0.5                                        # white noise: no spurious rho from the jump
+
+
+def test_basis_follows_block_length_and_both_are_returned():
+    fit = _fit(planted()).as_dict()
+    w = {"athena.chassis_watts": {"effect": 7.8, "ci_lo": 1.0, "ci_hi": 14.6}}
+    short = predict_heat(fit, w, block_min=20)
+    assert short["basis"] == "local" and short["predicted_c"] == short["local"]["predicted_c"]
+    assert short["total"]["predicted_c"] is not None and "shorter than" in short["basis_reason"]
+    held = predict_heat(fit, w, block_min=180)
+    assert held["basis"] == "total" and "not a steady state" in held["basis_reason"]
+    assert held["local"]["unmeasured"] == ["circe.chassis_watts"] and "hecate" in held["note"]
+
+
+def test_controls_are_per_unit_and_non_finite_values_are_sanitised():
+    from app.heat_balance import _finite
+    fit = _fit(planted())
+    od = fit.total["controls"]["outdoor.temp_f"]
+    assert "per_unit" in od and "per_100w" not in od
+    assert _finite({"a": float("nan"), "b": [np.float64("inf"), np.float64(1.5)], "c": np.int64(2)}) == {
+        "a": None, "b": [None, 1.5], "c": 2}
+
+
+def test_experiment_watts_cache_only_finished_clean_experiments(monkeypatch):
+    import app.experiment_runner as runner_mod
+    from app.effects import Effects
+
+    calls = []
+    result = {"athena.chassis_watts": {"effect": 7.8, "ci_lo": 1.0, "ci_hi": 14.6}}
+    monkeypatch.setattr(runner_mod, "manipulation_watts", lambda eff, blocks: calls.append(1) or dict(result))
+    monkeypatch.setattr(Effects, "_match_design", staticmethod(lambda exp, logged: [{"index": 0}]))
+    fx = Effects.__new__(Effects)
+    fx._manip_watts = {}
+    exp = {"action": "a", "design": {"block_min": 20, "blocks": []}, "status": "designed"}
+    fx.store = _Store([], exp, [{"arm": "on"}])
+    assert fx.experiment_watts("x") == (result, 20.0)
+    fx.experiment_watts("x")
+    assert len(calls) == 2                                  # running: recomputed
+    exp["status"] = "analyzed"
+    result["circe.chassis_watts"] = {"error": "QueryCanceled: timeout"}
+    fx.experiment_watts("x")
+    fx.experiment_watts("x")
+    assert len(calls) == 4                                  # an error entry is retried
+    del result["circe.chassis_watts"]
+    fx.experiment_watts("x")
+    fx.experiment_watts("x")
+    assert len(calls) == 5                                  # finished and clean: cached

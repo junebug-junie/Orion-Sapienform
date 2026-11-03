@@ -249,20 +249,28 @@ class Effects:
         return sorted(out, key=lambda b: b["index"])
 
     # --- heat per watt ------------------------------------------------------------------------
-    def experiment_watts(self, experiment_id: str) -> dict:
-        """The watts an experiment's ON blocks moved (its manipulation check, recomputed from the
-        logged blocks; cached -- a finished experiment's blocks and readings do not change)."""
-        if experiment_id not in self._manip_watts:
-            from app.experiment_runner import manipulation_watts
+    def experiment_watts(self, experiment_id: str) -> tuple[dict, float | None]:
+        """The watts an experiment's ON blocks moved (its manipulation check, recomputed from the logged
+        blocks) and its block length. Cached only once the experiment is finished (analyzed or
+        cancelled) AND every watts entry is a real estimate: a running experiment gains blocks, and a
+        read error must be retried, not remembered."""
+        hit = self._manip_watts.get(experiment_id)
+        if hit is not None:
+            return hit
+        from app.experiment_runner import manipulation_watts
 
-            exp = self.store.experiment(experiment_id)
-            if exp is None:
-                raise CausalError("unknown experiment")
-            logged = [r for r in self.store.interventions(experiment_id=experiment_id, limit=1000) if r["arm"]]
-            if not logged:
-                raise CausalError("no logged blocks for this experiment")
-            self._manip_watts[experiment_id] = manipulation_watts(self, self._match_design(exp, logged))
-        return self._manip_watts[experiment_id]
+        exp = self.store.experiment(experiment_id)
+        if exp is None:
+            raise CausalError("unknown experiment")
+        logged = [r for r in self.store.interventions(experiment_id=experiment_id, limit=1000) if r["arm"]]
+        if not logged:
+            raise CausalError("no logged blocks for this experiment")
+        watts = manipulation_watts(self, self._match_design(exp, logged))
+        block_min = (exp.get("design") or {}).get("block_min")
+        out = (watts, float(block_min) if block_min is not None else None)
+        if exp.get("status") in ("analyzed", "cancelled") and not any("error" in v for v in watts.values()):
+            self._manip_watts[experiment_id] = out
+        return out
 
     def heat_per_watt(self, series_id: str, days: float = 7.0, experiment_id: str | None = None,
                       store: bool = False) -> dict:
@@ -273,7 +281,7 @@ class Effects:
         out = fit.as_dict()
         if experiment_id:
             out["experiment"] = {"experiment_id": experiment_id,
-                                 "prediction": predict_heat(out, self.experiment_watts(experiment_id))}
+                                 "prediction": predict_heat(out, *self.experiment_watts(experiment_id))}
         if store:
             out["estimate_ids"] = [str(r["estimate_id"]) for r in store_fit(self.store, fit)]
         return out
@@ -293,7 +301,7 @@ class Effects:
             fit = self.latest_heat_fit(series_id)
             if fit is None:
                 return {"predicted_c": None, "reason": "no stored heat-per-watt fit; POST /effects/heat-per-watt"}
-            pred = predict_heat(fit, self.experiment_watts(experiment_id))
+            pred = predict_heat(fit, *self.experiment_watts(experiment_id))
             return {**pred, "claim_kind": "observational_effect", "fit_end": fit.get("end"),
                     "fit_r2": fit.get("r2")}
         except (CausalError, HeatBalanceRefused) as exc:
@@ -316,7 +324,8 @@ class Effects:
             if heat is not None:
                 out["heat_balance_prediction"] = heat
                 if heat.get("predicted_c") is not None:
-                    where = "room free to warm" if heat.get("basis") == "total" else "room held fixed"
+                    where = ("room free to warm, 0-2 h" if heat.get("basis") == "total"
+                             else "room held fixed: the comparable basis for short blocks")
                     out["summary"] += (f"; heat-per-watt predicts {heat['predicted_c']:+.2f} {spec.unit} "
                                        f"(95% {heat['ci_lo']:+.2f}..{heat['ci_hi']:+.2f}, {where}) from the "
                                        "watts it moved")

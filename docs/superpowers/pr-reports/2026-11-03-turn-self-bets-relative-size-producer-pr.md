@@ -97,6 +97,6 @@ Manual equivalent from the clean main checkout: scripts/safe_docker_build.sh ori
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3044
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

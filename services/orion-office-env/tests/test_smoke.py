@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from app.smoke import run_smoke
 
-OK = b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0}}\n'
+OK = (
+    b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0},'
+    b'"air":{"eco2_ppm":612,"tvoc_ppb":32,"since_init_ms":5000}}\n'
+)
+NO_AIR = b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0}}\n'
 NO_ENV = b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1}\n'
 
 
@@ -33,6 +37,10 @@ def test_pass_with_real_reading() -> None:
 
 def test_warn_when_frames_have_no_environment() -> None:
     assert run_smoke(port="p", baud=1, seconds=5, open_port=lambda *a, **k: Ser([NO_ENV]), clock=_clock()) == 3
+
+
+def test_warn_when_ccs811_not_reading() -> None:
+    assert run_smoke(port="p", baud=1, seconds=5, open_port=lambda *a, **k: Ser([NO_AIR]), clock=_clock()) == 4
 
 
 def test_fail_on_silence_and_on_junk() -> None:

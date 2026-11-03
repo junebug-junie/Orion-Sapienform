@@ -10,7 +10,8 @@ reference then has zero error and there is nothing to beat. Read the Brier score
 """
 from __future__ import annotations
 
-from typing import Sequence
+import math
+from typing import Hashable, Sequence
 
 import numpy as np
 
@@ -37,3 +38,52 @@ def grade(probs: Sequence[float], hits: Sequence[bool]) -> dict:
     return {"n": n, "brier": brier, "base_rate": base, "brier_base_rate": brier_ref,
             "skill": (1 - brier / brier_ref) if brier_ref > 0 else None, "bins": bins,
             "enough": n >= MIN_GRADED}
+
+
+def _avg_ranks(x: np.ndarray) -> tuple[np.ndarray, float]:
+    """1-based ranks, ties averaged, and the tie term sum(t^3 - t) for the variance."""
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(len(x))
+    _, start, counts = np.unique(x[order], return_index=True, return_counts=True)
+    for s0, c in zip(start, counts):
+        ranks[order[s0:s0 + c]] = s0 + (c + 1) / 2
+    return ranks, float(np.sum(counts.astype(float) ** 3 - counts))
+
+
+def sorting_score(probs: Sequence[float], hits: Sequence[bool],
+                  groups: Sequence[Hashable] | None = None) -> dict:
+    """How well the probabilities put the turns where it happened above those where it did not.
+
+    AUC: the share of (happened, did-not-happen) pairs where the happened one got the higher
+    probability, ties counting half. 0.5 is a coin flip, 1.0 is perfect sorting. Unlike the Brier
+    skill, it ignores the level of the probabilities, so a shift in how often the event happens
+    (a moving base rate) cannot move it. With ``groups``, only pairs inside the same group count,
+    so knowing which group a turn is in earns nothing.
+
+    p_value: one-sided Mann-Whitney test of "no better than a coin flip", normal approximation
+    with the tie correction, pooled over groups. None when there are no pairs.
+    """
+    if any(h is None for h in hits):
+        raise ValueError("sorting_score: hits must be True/False, not None (grade only settled rows)")
+    p = np.asarray(probs, dtype=float)
+    y = np.asarray(hits, dtype=bool)
+    if not np.isfinite(p).all():
+        raise ValueError("sorting_score: probabilities must be finite (NaN would sort as the highest)")
+    g = list(groups) if groups is not None else [None] * len(p)
+    if not (len(p) == len(y) == len(g)):
+        raise ValueError(f"sorting_score: {len(p)} probs, {len(y)} hits, {len(g)} groups -- lengths must match")
+    u = pairs = var = 0.0
+    for key in dict.fromkeys(g):
+        m = np.array([gi == key for gi in g], dtype=bool)
+        n1, n0 = int(y[m].sum()), int((~y[m]).sum())
+        if not n1 or not n0:
+            continue
+        n = n1 + n0
+        ranks, ties = _avg_ranks(p[m])
+        u += float(ranks[y[m]].sum()) - n1 * (n1 + 1) / 2
+        pairs += n1 * n0
+        var += n1 * n0 / 12 * ((n + 1) - ties / (n * (n - 1)))
+    if not pairs:
+        return {"auc": None, "pairs": 0, "p_value": None}
+    z = (u - pairs / 2) / math.sqrt(var) if var > 0 else 0.0
+    return {"auc": u / pairs, "pairs": int(pairs), "p_value": 0.5 * math.erfc(z / math.sqrt(2))}

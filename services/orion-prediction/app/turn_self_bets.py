@@ -41,7 +41,8 @@ outcome fell inside) or ``broken``. Void rows never count toward a grade:
 
 Grades, per faculty and per caller (session_id prefix: world-pulse, curiosity, self, ...; a bare UUID
 session is a chat session, ``chat``; no session id is ``unknown``):
-    p faculties     Brier, and skill against the per-caller base rate. Callers differ a lot (curiosity
+    p faculties     Brier, skill against the per-caller base rate, and the sorting score (``sort_auc``,
+                    ``sort_p``: within-caller AUC and its one-sided p-value; see grading.sorting_score). Callers differ a lot (curiosity
                     fetches, chat mostly does not), so a single base rate would credit Orion for knowing
                     who called. The per-caller rate is computed on the same rows (in-sample), which
                     makes it a slightly stricter bar, not a looser one.
@@ -60,7 +61,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
-from orion.prediction.grading import grade
+from orion.prediction.grading import grade, sorting_score
 from orion.harness.cut_short import CUT_SHORT_MARKER
 
 logger = logging.getLogger("orion-prediction.turn_self_bets")
@@ -174,10 +175,15 @@ def settle(bet: dict, artifact: dict | None, now: datetime,
         value = obs.get(RELATIVE_FACULTIES[faculty][1] if faculty in RELATIVE_FACULTIES else faculty)
         if not void and value is not None:
             row["observed"] = float(value)   # what the turn did, recorded even when nothing was stated
-        if void:
+        if void == "ungradeable_bad_record":
             row["void_reason"] = void
         elif not stated:
+            # Checked before failed/expired: a crashed turn did not fail a bet that was never made.
+            # (11-03: v2 turns that crashed wrote failed rows on the retired range bets, and the
+            # self-monitor told stance "my last 26 guesses about how many steps ... failed to start".)
             row["void_reason"] = "ungradeable_no_stated"
+        elif void:
+            row["void_reason"] = void
         elif value is None:
             row["void_reason"] = "ungradeable_no_outcome"
         elif faculty in RELATIVE_FACULTIES and row["reference"] is None:
@@ -230,6 +236,10 @@ def _grade_p(rows: list[dict]) -> dict:
     out["brier_caller_base_rate"] = ref
     out["skill_vs_caller"] = (1 - out["brier"] / ref) if out["brier"] is not None and ref > 0 else None
     out["mean_stated_p"] = statistics.fmean(r["stated_p"] for r in rows) if rows else None
+    # Sorting, within each caller: does stance give the turns where it happened the higher p?
+    # Immune to a shifting base rate (11-03: replies doubled on 10-31 and the 7-day "usual" lagged).
+    srt = sorting_score([r["stated_p"] for r in rows], [r["hit"] for r in rows], [r["caller"] for r in rows])
+    out.update(sort_auc=srt["auc"], sort_pairs=srt["pairs"], sort_p=srt["p_value"])
     return out
 
 

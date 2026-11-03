@@ -43,7 +43,8 @@ def test_build_state_names_failed_missing_and_bad_sources():
             for i in range(3)]
     bad = [{"bet_id": "x", "settled_at": NOW, "result": "success"}]   # no placed_at: the adapter raises
     out = build_state({"prediction_forecast": rows, "grammar_acts": RuntimeError("boom"),
-                       "prediction_action_bet": bad, "prediction_turn_self_bet": []},
+                       "prediction_action_bet": bad, "prediction_turn_self_bet": [],
+                       "prediction_turn_run": []},
                       now=NOW, window_days=7.0)
     errs = "\n".join(out.source_errors)
     assert "grammar_acts: RuntimeError: boom" in errs

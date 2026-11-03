@@ -131,6 +131,12 @@ def turn_self_bet(row: Row) -> Optional[SettledBetV1]:
         return None
     status = row.get("status")
     if status == "void":
+        # A turn that errored voids all four guesses at once: the turn failed, not the guess. It is
+        # counted once, under ``turn.run`` (``turn_run``), never as a run of failures on each guess
+        # faculty -- live 2026-11-03 that read turn.self.steps/reply_length as "broken" after stance
+        # stopped stating them (relative bets, #3042) and only the failed turns were left.
+        if (row.get("void_reason") or "") == "failed_to_execute":
+            return None
         outcome = _TURN_VOID.get(row.get("void_reason") or "")
         if outcome is None:
             return None  # ungradeable_no_stated / bad record: no bet was made
@@ -150,6 +156,27 @@ def turn_self_bet(row: Row) -> Optional[SettledBetV1]:
         outcome=outcome,
         settled_by="world",
         evidence_ref=f"prediction_turn_self_bet:{row['bet_id']}",
+    )
+
+
+def turn_run(row: Row) -> Optional[SettledBetV1]:
+    """One row per unified turn (``collect`` groups ``prediction_turn_self_bet`` by correlation_id):
+    did the turn run? ``failed`` = every guess on it was voided ``failed_to_execute``."""
+    settled = _aware(row.get("settled_at"))
+    corr = row.get("correlation_id")
+    if settled is None or not corr:
+        return None
+    return SettledBetV1(
+        bet_id=f"prediction_turn_self_bet:turn:{corr}",
+        faculty="turn.run",
+        source="prediction_turn_run",  # the SOURCES name: a read error holds this faculty's status
+        made_at=_aware(row["placed_at"]),
+        settled_at=settled,
+        claim_kind="success",
+        stated=None,
+        outcome="failed_to_execute" if row.get("failed") else "upheld",
+        settled_by="world",
+        evidence_ref=f"prediction_turn_self_bet:correlation_id={corr}",
     )
 
 

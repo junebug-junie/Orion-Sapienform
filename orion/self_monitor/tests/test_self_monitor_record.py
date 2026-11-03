@@ -76,7 +76,8 @@ def test_turn_self_bets_map_status_and_void_reasons() -> None:
             "void_reason": None}
     assert adapters.turn_self_bet({**base, "status": "broken"}).outcome == "refuted"
     assert adapters.turn_self_bet({**base, "status": "upheld"}).stated == 0.8
-    assert adapters.turn_self_bet({**base, "status": "void", "void_reason": "failed_to_execute"}).outcome == "failed_to_execute"
+    # a failed turn is not a wrong guess: it is counted once under turn.run, never per guess faculty
+    assert adapters.turn_self_bet({**base, "status": "void", "void_reason": "failed_to_execute"}) is None
     assert adapters.turn_self_bet({**base, "status": "void", "void_reason": "ungradeable_no_stated"}) is None
     p = {**base, "faculty": "turn.self.asks_question", "claim_kind": "probability", "stated_p": 0.07, "coverage": None}
     bet = adapters.turn_self_bet({**p, "status": "not_happened"})
@@ -252,3 +253,17 @@ def test_advance_rejects_a_different_faculty_and_heals_a_missing_since() -> None
         advance(a, b, now=NOW)
     healed = advance(a, a, now=NOW)  # a raw reduce record as previous: treated as first evaluation
     assert healed.status_since == NOW
+
+
+def test_failed_turns_count_once_under_turn_run_not_as_broken_guesses() -> None:
+    # live 2026-11-03: stance stopped stating step ranges; only 26 failed turns were left, and the
+    # guess faculty read "broken". Now the guess faculty has no bets and turn.run carries the failures.
+    turns = [{"correlation_id": f"c{i}", "placed_at": NOW - timedelta(hours=i + 1),
+              "settled_at": NOW - timedelta(hours=i), "failed": i % 6 == 3} for i in range(156)]
+    bets = [adapters.turn_run(t) for t in turns]
+    recs = {r.faculty: r for r in reduce_bets(bets, now=NOW)}
+    run = recs["turn.run"]
+    assert run.n_failed_to_execute == 26 and run.candidate_status != "broken"
+    assert "turn.self.steps" not in recs
+    all_failed = [adapters.turn_run({**t, "failed": True}) for t in turns[:20]]
+    assert reduce_bets(all_failed, now=NOW)[0].candidate_status == "broken"

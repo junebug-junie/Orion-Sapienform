@@ -28,6 +28,7 @@ from app.temporal_self_driver import CARRIED_KEYS, TemporalSelfDriver  # noqa: E
 from app.temporal_self_graph import NODES, TemporalSelfDeps  # noqa: E402
 from orion.schemas.regulation import ArousalInputsV1  # noqa: E402
 from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1  # noqa: E402
+from orion.self_monitor.collect import SOURCE_NAMES  # noqa: E402
 from orion.self_monitor.record import HOLD  # noqa: E402
 from orion.self_monitor.view import parse_state  # noqa: E402
 from orion.temporal_self.sources import faculty_status_changed  # noqa: E402
@@ -376,7 +377,8 @@ def test_store_reads_sources_writes_history_and_events_on_postgres():
         state = build_state(results, now=now, window_days=7.0)
         faculties = {f.faculty: f for f in state.faculties}
         assert faculties["forecast.athena.cabinet_temp_c"].n_bets == 12
-        assert len(state.source_errors) == 4 and all("UndefinedTable" in e for e in state.source_errors)
+        # every source but the forecast table is missing here (turn bets feed two sources: guesses + turn.run)
+        assert len(state.source_errors) == len(SOURCE_NAMES) - 1 and all("UndefinedTable" in e for e in state.source_errors)
 
         old = state.model_copy(update={"computed_at": now - timedelta(days=40)})
         await self_monitor_store.record_history(pool, old, retention_days=30)

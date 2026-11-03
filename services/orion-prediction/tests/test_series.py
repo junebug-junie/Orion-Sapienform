@@ -15,7 +15,8 @@ def test_repo_registry_loads_and_declares_the_cabinet_target():
     assert t.threshold("shed").value == 34.0
     assert t.threshold("experiment_guard").max_probability == 0.05
     assert set(t.covariates) == {"athena.chassis_watts", "circe.chassis_watts", "hecate.chassis_watts",
-                                 "athena.cabinet_cooling_watts", "athena.central_ac_proxy"}
+                                 "athena.cabinet_cooling_watts", "athena.central_ac_proxy", "office.temp_c"}
+    assert t.overlap_covariates == ("office.temp_c",)
     proxy = reg.get("athena.central_ac_proxy")
     assert proxy.source.kind == "weather" and proxy.lag_min == 180 and proxy.above == 75.0
     assert reg.get("hecate.chassis_watts").zero_before_first and reg.get("circe.chassis_watts").source.kind == "cluster"
@@ -93,7 +94,7 @@ def test_value_from_is_exactly_one_known_owner(bad):
         parse_registry(spec_doc(thresholds=[bad]))
 
 
-def test_repo_registry_declares_the_young_office_target_without_wiring_it_into_the_cabinet():
+def test_repo_registry_declares_the_young_office_target_as_an_overlap_covariate_of_the_cabinet():
     reg = load_registry(REGISTRY_PATH)
     o = reg.get("office.temp_c")
     assert o.role == "target" and o.source.kind == "office_env"
@@ -103,10 +104,21 @@ def test_repo_registry_declares_the_young_office_target_without_wiring_it_into_t
     assert [(a.isoformat(), b.isoformat()) for a, b in o.exclude] == [
         ("2026-10-28T22:16:00+00:00", "2026-10-29T00:10:00+00:00")]   # placement + sensor settling
     assert o.horizons_min == reg.get("athena.cabinet_temp_c").horizons_min
-    assert o.thresholds == () and o.covariates == () and o.consumers == ("prediction-scoreboard",)
-    assert "office.temp_c" not in reg.get("athena.cabinet_temp_c").covariates
+    assert o.thresholds == () and o.covariates == () and "prediction-scoreboard" in o.consumers
+    cab = reg.get("athena.cabinet_temp_c")
+    # Younger than the cabinet's training window: only the overlap-window model may use it.
+    assert "office.temp_c" in cab.covariates and "office.temp_c" in cab.overlap_covariates
     assert {t.series_id for t in reg.targets()} == {"athena.cabinet_temp_c", "office.temp_c"}
     # Daily needs 2 days, weekly 14: both refused at first, weekly alone at ~4 days.
     assert split_seasonalities(o, 3 * 12)[1] == ["daily", "weekly"]
     assert split_seasonalities(o, 4 * 288)[1] == ["weekly"]
     assert split_seasonalities(o, 14 * 288)[1] == []
+
+
+@pytest.mark.parametrize("over,msg", [
+    ({"covariates": [], "overlap_covariates": ["test.temp"]}, "not in covariates"),
+    ({"covariates": ["test.temp"]}, "its own covariate"),
+])
+def test_overlap_covariates_must_be_declared_covariates(over, msg):
+    with pytest.raises(SeriesConfigError, match=msg):
+        parse_registry(spec_doc(**over))

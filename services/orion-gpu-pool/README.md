@@ -412,6 +412,16 @@ slot-seconds pass `GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR` (3360 = 2x the 1
 every `GPU_POOL_PERCEPTION_REALERT_SEC` while high, info when back under. Memory only. Log:
 `gpu_pool_perception_load state=...`. A config without `perception` in `priorities:` still loads
 (the validator inserts it below `interactive`), which is how the code shipped ahead of the YAML.
+
+**Starved priority (2026-11-03, Orion Prime reliability).** Order is now
+`urgent > interactive > perception > starved > system > background`. `starved` is Orion's own work whose previous
+try lost its whole seat wait to the queue; today only Orion Prime's `prime_starved` route uses it (Prime's normal
+route `prime` is `system`). It goes ahead of other system work by priority instead of by arrival, never ahead of
+Juniper's turn or Orion's senses, and every shed reason that blocks `system` blocks `starved` too (the 34 C reflex
+`cabinet_hot` included; pinned in `orion/gpu_pool/tests/test_starved_priority.py`). A config without `starved` in
+`priorities:` still loads (the validator inserts it just above `system`). An OLD image reading a NEW YAML does
+not load it (the `prime_starved` route names an unknown priority): rebuild the pool, the gateway, the lane
+controller (circe) and mesh-guardian together with this change.
 - The pool keeps retrying at the cooldown: the first retry the rebuilt controller accepts clears it.
 - Fix: rebuild the controller on circe (`services/orion-gpu-lane-controller`); confirm with
   `python3 scripts/gpu_pool_actuator_probe.py`.

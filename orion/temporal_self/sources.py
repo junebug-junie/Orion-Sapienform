@@ -629,8 +629,8 @@ NAME_SOURCE_WORDS = {"juniper": "named by Juniper", "recognizer": "a guess"}
 
 def street_story_label(row: Row) -> str:
     """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller".
-    Built from the story's own fields, never its sentence: the sentence says "together with 1 other
-    person", a bare track count. The label carries NO people count. The honest range
+    Built from the story's own fields, never its sentence: the sentence says "moving alongside another
+    person" (older rows: "together with 1 other person"), a bare track count. The label carries NO people count. The honest range
     (orion/vision/walkway_rollup.py, PR #2781) exists only once the hour's rollup closes, a median ~3 h
     after the hour, long after the chronicle reads the story; adding it would give the same arc a
     different label live and on a re-fold. "How many" is the rollups' job (the Day letter line).

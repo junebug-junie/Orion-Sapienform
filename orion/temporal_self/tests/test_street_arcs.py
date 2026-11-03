@@ -147,7 +147,7 @@ def test_gate_constants_match_the_street_attention_gate() -> None:
 
 
 def test_label_never_carries_a_people_count() -> None:
-    """The story sentence says "together with 1 other person" (a track count). The label is built from
+    """The story sentence says "moving alongside another person" (a track count; older rows "together with 1 other person"). The label is built from
     fields and says "with other people", no number; the honest range (#2781) stays with the rollups,
     because it exists only hours after the chronicle reads the story."""
     together = story("s1", at(0), companion_kinds=["person", "stroller"], together_story_ids=["s0"],

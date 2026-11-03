@@ -36,6 +36,9 @@ V2_DAY_LINE = (
     "usual day at most 145.6 passings."
 )
 RANGE = "people: at least 1, at most 2"
+# What a reader shows for it (2026-11-03): the pre-v5 "4 unnamed regulars" clause was one bare
+# cluster count of every kind; walkway_rollup.display_line drops the number in place.
+V2_DAY_LINE_SHOWN = V2_DAY_LINE.replace("4 unnamed regulars", "unnamed regulars")
 
 
 def _render(**ctx) -> str:
@@ -103,7 +106,8 @@ def _read(**kw):
 def test_today_day_row_is_read_with_people_as_a_range(rollup_db):
     _row(rollup_db, grain="day", period_start=TODAY, line=V2_DAY_LINE, rollup={"rules_version": 2})
     got = _read()
-    assert got == V2_DAY_LINE
+    assert got == V2_DAY_LINE_SHOWN
+    assert "4 unnamed regulars" not in got
     assert RANGE in got and wr.bare_people_counts(got) == []
 
 
@@ -154,7 +158,7 @@ def test_two_cameras_on_one_day_follow_the_configured_order(rollup_db):
     _row(rollup_db, grain="day", period_start=TODAY, line="Doorbell day: people: at least 1, at most 1.",
          rollup={"rules_version": 2}, stream="doorbell")
     _row(rollup_db, grain="day", period_start=TODAY, line=V2_DAY_LINE, rollup={"rules_version": 2})
-    assert _read(stream_ids=["walkway", "doorbell"]) == V2_DAY_LINE
+    assert _read(stream_ids=["walkway", "doorbell"]) == V2_DAY_LINE_SHOWN
     assert _read(stream_ids=["doorbell", "walkway"]).startswith("Doorbell day")
 
 

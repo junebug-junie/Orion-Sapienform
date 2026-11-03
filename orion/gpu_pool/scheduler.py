@@ -99,7 +99,7 @@ from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
 URGENT = "urgent"
-PREEMPTIBLE = ("background", "system")
+PREEMPTIBLE = ("background", "system", "starved")
 
 
 @dataclass(frozen=True)

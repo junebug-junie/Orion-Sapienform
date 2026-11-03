@@ -32,9 +32,15 @@ series:
       - {name: shed, value_from: thermal_gate.critical, window: 30min}
       # Switchback experiments may start only while this probability is under max_probability (hot, 32 C).
       - {name: experiment_guard, value_from: thermal_gate.hot, window: 30min, max_probability: 0.05}
-    # The three machines in the cabinet, the portable AC, and the central-AC proxy (metric gate in the spec).
+    # The three machines in the cabinet, the portable AC, the central-AC proxy, and the room air the
+    # cabinet draws in (metric gate in the spec). Room-to-cabinet hourly corr 0.97 (2026-10-29..11-03).
     covariates: [athena.chassis_watts, circe.chassis_watts, hecate.chassis_watts, athena.cabinet_cooling_watts,
-                 athena.central_ac_proxy]
+                 athena.central_ac_proxy, office.temp_c]
+    # Younger than the training window (room sensor from 2026-10-29, cabinet history from 2026-10-23):
+    # direct_arx leaves it out; direct_arx_overlap uses it, trained on the overlap only. The gate decides
+    # whether the overlap model serves (app/direct.py, app/backtest.py). Remove from this list once the
+    # room sensor's history covers the whole training window.
+    overlap_covariates: [office.temp_c]
     # hardware-watch shows the "shed" exceedance beside each reflex decision (observe-only). Exceedance
     # is on the 5-min MEAN, so it understates a single raw reading crossing 34 C.
     consumers: [hardware-watch, prediction-scoreboard, causal-effects]
@@ -43,8 +49,9 @@ series:
   # The cabinet draws its intake air from this room, so this is the cabinet's heat-balance boundary.
   # Young: no selection until the backtest has enough history (~4.1 days at 40 windows x 3 h; /health
   # shows not_ready + ready_at until then). Weekly is refused until 14 days exist.
-  # Joins athena.cabinet_temp_c's covariates once ~14 days of data exist (~2026-11-12): before that
-  # direct_arx would lose every cabinet row older than the sensor.
+  # Also a covariate of athena.cabinet_temp_c (overlap_covariates there: only the overlap-window model
+  # uses it until its history covers the cabinet's training window), and the room side of
+  # GET /effects/heat-per-watt (cabinet - room vs machine watts).
   - series_id: office.temp_c
     role: target
     source: {kind: office_env, node: pan-1, key: office_temp_c}
@@ -63,7 +70,7 @@ series:
     exclude:
       - {start: "2026-10-28T22:16:00Z", end: "2026-10-29T00:10:00Z"}
     horizons: [5min, 15min, 1h, 6h, 24h]
-    consumers: [prediction-scoreboard]
+    consumers: [prediction-scoreboard, causal-effects, heat-per-watt]
 
   - series_id: athena.chassis_watts
     role: covariate

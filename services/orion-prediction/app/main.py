@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 import psycopg
 from psycopg.errors import QueryCanceled
 from pydantic import AwareDatetime, BaseModel, Field
@@ -31,6 +31,7 @@ from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
 from app.event_pair import MIN_A_EVENTS, EventPairRefused
+from app.heat_balance import HeatBalanceRefused
 from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, recover as recover_experiments
 from app.series import load_registry
 from app.settings import get_settings
@@ -447,6 +448,41 @@ async def post_runner_abort() -> dict[str, Any]:
     if not await r.shutdown("aborted by operator"):
         raise HTTPException(409, "no experiment is running")
     return _jsonable(r.status())
+
+
+class HeatPerWattBody(BaseModel):
+    series_id: str = "athena.cabinet_temp_c"
+    days: float = Field(7.0, ge=2, le=21)
+    experiment_id: uuid.UUID | None = None
+
+
+async def _heat(series_id: str, days: float, experiment_id: uuid.UUID | None, store: bool) -> dict[str, Any]:
+    _ready()
+    try:
+        return _jsonable(await asyncio.to_thread(effects.heat_per_watt, series_id, days,
+                                                 str(experiment_id) if experiment_id else None, store))
+    except HeatBalanceRefused as exc:
+        raise HTTPException(422, {"error": "refused", "claim_kind": "observational_effect", "reason": exc.reason,
+                                  **_jsonable(exc.detail)}) from exc
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+# Declared before GET /effects/{action}, which would otherwise capture this path.
+@app.get("/effects/heat-per-watt")
+async def get_heat_per_watt(series_id: str = "athena.cabinet_temp_c", days: float = Query(7.0, ge=2, le=21),
+                            experiment_id: uuid.UUID | None = None) -> dict[str, Any]:
+    """How much warmer than the room each machine's sustained watts make the cabinet (C per W, HAC 95% CI),
+    fitted now on hourly data; ``experiment_id`` converts that experiment's measured watts into a predicted
+    cabinet change. Read-only (POST stores). Too little data or a degenerate fit -> 422 ``refused``."""
+    return await _heat(series_id, days, experiment_id, False)
+
+
+@app.post("/effects/heat-per-watt")
+async def post_heat_per_watt(body: HeatPerWattBody) -> dict[str, Any]:
+    """Same fit, stored in prediction_effect_estimate (action ``heat_per_watt:<watts id>``, one row per
+    machine); GET /effects/{action} cites the newest stored fit beside an experimental answer."""
+    return await _heat(body.series_id, body.days, body.experiment_id, True)
 
 
 @app.get("/effects/{action}")

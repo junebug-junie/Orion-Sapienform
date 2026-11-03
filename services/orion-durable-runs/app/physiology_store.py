@@ -56,7 +56,7 @@ logger = logging.getLogger("orion-durable-runs.physiology_store")
 PRICE_SEED_LOOKBACK = timedelta(days=14)
 # Outreach sources the Hub's daily cap does not count (scripts/endogenous_outreach_decisions.py
 # count_sent_on). They still reach Juniper, so ``sent_today`` counts them.
-CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach")
+CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach", "self_finding_outreach")
 
 ENERGY_HOURS_SQL = (
     "SELECT hour_start, SUM(kwh) AS kwh FROM orion_energy_hourly "

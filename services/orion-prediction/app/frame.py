@@ -51,9 +51,13 @@ def to_grain(points: Iterable[tuple[datetime, float | None]], grain_min: int, ag
 
 
 def mask_windows(series: pd.Series, windows: Sequence[tuple[datetime, datetime]]) -> pd.Series:
+    """NaN every bucket that overlaps a window. On a regular index a bucket [t, t+grain) starting
+    before the window's start still holds readings from inside it (exclude 22:16 on a 5-min grain:
+    the 22:15 bucket averages 22:16-22:20), so it is masked too."""
     out = series.copy()
+    step = out.index[1] - out.index[0] if len(out.index) > 1 else pd.Timedelta(0)
     for start, end in windows:
-        out[(out.index >= pd.Timestamp(start)) & (out.index < pd.Timestamp(end))] = np.nan
+        out[(out.index + step > pd.Timestamp(start)) & (out.index < pd.Timestamp(end))] = np.nan
     return out
 
 
@@ -92,7 +96,9 @@ def load_points(store, spec: SeriesSpec, start: datetime, end: datetime) -> list
 
 
 def covariate_series(store, spec: SeriesSpec, start: datetime, end: datetime, index: pd.DatetimeIndex) -> pd.Series:
-    """One covariate on ``index``: real buckets only, derived rules applied, zero before the first reading.
+    """One covariate on ``index``: real buckets only, derived rules applied, zero before the first reading,
+    the covariate's OWN exclusions masked (a target series used as a covariate, e.g. office.temp_c's
+    sensor-settling window, must not feed readings its own registry entry rejects).
 
     Weather is hourly: each value holds for its hour, so it is carried forward up to the series' max_fill
     (60 min) -- interpolating between hours would leave every bucket after the newest hour empty, and a
@@ -111,4 +117,4 @@ def covariate_series(store, spec: SeriesSpec, start: datetime, end: datetime, in
             s = s.fillna(0.0)
         else:
             s = s.where(~(s.isna() & (s.index < pd.Timestamp(first) + pd.Timedelta(minutes=spec.lag_min))), 0.0)
-    return s.reindex(index)
+    return mask_windows(s, spec.exclude).reindex(index)

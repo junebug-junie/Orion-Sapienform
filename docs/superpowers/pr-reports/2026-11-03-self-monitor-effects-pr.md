@@ -206,6 +206,8 @@ stale or absent view, or a gate fault, refuses anything.
   statement timeout. Fix: mirrored paths; `SET LOCAL statement_timeout = 5000`.
 - Not fixed (documented): on a tripwire probe tick, or with no motor budget, the allocation does not
   bind, so a gate refusal does not either. That only loosens back to gate-off behaviour.
+- CI fix: the replay reused a fresh SQLAlchemy engine per call (Hub's engine-reuse gate); it now
+  uses the report's cached engine.
 - CI fix: `orion/schema_skew_discovery.py` now declares durable-runs (patch 2) as the writer of
   `SelfMonitorStateV1` / `FacultyRecordV1`, which Hub now reads.
 

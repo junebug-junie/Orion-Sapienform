@@ -86,9 +86,9 @@ def _outcome_word(row: Mapping[str, Any]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
-    from orion.self_monitor.report import collect
+    from orion.self_monitor.report import _engine, collect
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--days", type=float, default=7.0)
@@ -102,8 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(timezone.utc)
     state = collect(url, now=now, window_days=args.days)
     view = SelfMonitorView(known=True, reason="fresh", age_sec=0.0, faculties={r.faculty: r for r in state.faculties})
-    engine = create_engine(url, pool_size=1, max_overflow=0, connect_args={
-        "connect_timeout": 5, "options": "-c statement_timeout=60000 -c default_transaction_read_only=on"})
+    engine = _engine(url)  # report's cached read-only engine (one per URL)
     with engine.connect() as conn:
         rows = [dict(r) for r in conn.execute(text(
             "SELECT actor, verb, object_ref, opened_at, closed_at, outcome_value, outcome_note FROM grammar_acts "

@@ -88,10 +88,11 @@ from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1,
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
+from app.aitown_session_dispatch import AITownSessionDispatchMixin
+from app.result_status import status_for_settlement, status_for_stored_settlement
+from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
-from app.aitown_session_dispatch import AITownSessionDispatchMixin
-from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 
 logger = logging.getLogger("orion.execution_dispatch.runtime")
 
@@ -1127,7 +1128,12 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                                                 "dispatch_error": "reading_pull_disabled"})
         existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
         if existing is not None:
-            self._record_dispatch_status(existing["status"], live=False)
+            status = status_for_stored_settlement(existing)
+            if existing["status"] == "succeeded":
+                self._store.canonicalize_legacy_dispatch_result_status(
+                    result_id=existing["result_id"], status=status
+                )
+            self._record_dispatch_status(status, live=False)
             return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
                                                 "result_ref": existing["result_id"]})
         started = perf_counter()
@@ -1151,7 +1157,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                       "seed_id": out.seed_id if out else None, "object_ref": out.object_ref if out else None,
                       "refusal": out.refusal if out else None, "rpc_ms": round(rpc_ms, 1),
                       "pulled_today": out.pulled_today if out else None, "daily_cap": out.daily_cap if out else None}
-        status = "failed" if error else "succeeded"
+        status = status_for_settlement(out.state if out else None, error=error)
         self._store.save_dispatch_result(
             result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status=status,
             result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": None,

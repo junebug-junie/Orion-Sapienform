@@ -140,6 +140,34 @@ def test_publisher_wiring_uses_sink_and_settings() -> None:
     assert pub._bus_getter() is bus
 
 
+def test_health_reports_tripwire_as_degraded() -> None:
+    original = dispatch_main.worker.theater_tripwire_active
+    try:
+        dispatch_main.worker.theater_tripwire_active = True
+        payload = asyncio.run(dispatch_main.health())
+    finally:
+        dispatch_main.worker.theater_tripwire_active = original
+
+    assert payload["status"] == "degraded"
+    assert payload["ok"] is False
+    assert payload["degraded"] is True
+    assert payload["theater_tripwire_active"] is True
+
+
+def test_health_is_ok_when_tripwire_is_clear() -> None:
+    original = dispatch_main.worker.theater_tripwire_active
+    try:
+        dispatch_main.worker.theater_tripwire_active = False
+        payload = asyncio.run(dispatch_main.health())
+    finally:
+        dispatch_main.worker.theater_tripwire_active = original
+
+    assert payload["status"] == "ok"
+    assert payload["ok"] is True
+    assert payload["degraded"] is False
+    assert payload["theater_tripwire_active"] is False
+
+
 @pytest.mark.asyncio
 async def test_lifespan_starts_and_stops_publisher_bus(monkeypatch) -> None:
     fake_bus = AsyncMock(spec=OrionBusAsync)

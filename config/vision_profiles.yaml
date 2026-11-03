@@ -200,7 +200,8 @@ profiles:
       #   carrier behind the mailbox door at 0.29): too few to move a cut-off
       #   that feeds motion stories, person learning and the street line.
       # - vehicle: 0.25 (was 0.35). 2026-11-03: 142 hourly walkway frames
-      #   (10-29..11-03) re-scored at 0.20 with the live code, 98 labelled by
+      #   (10-29..11-03) re-scored at a 0.20 box floor with the live code
+      #   (labels exist only >= text_threshold 0.25), 98 labelled by
       #   eye (35 sunny, 14 overcast, 15 rain, 34 night). Whole-frame pass,
       #   real vehicles seen at 0.35 / 0.30 / 0.28 / 0.25: rain 14 / 71 / 96
       #   / 100 %, sunny 28 / 61 / 67 / 81 %, overcast 82 / 95 / 100 / 100 %.

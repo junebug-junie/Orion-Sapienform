@@ -110,7 +110,7 @@ Recall = sightings with at least one kept real box / all sightings (including on
 
 The one false box is a tile-only box at 0.33 on 11-03 01Z (IR night): a small bright object on a porch behind the fence. It is above 0.32, so it does not decide between 0.25 and 0.32.
 
-Why not lower than 0.25: every one of the 43 raw boxes under 0.25 came back with an empty label. The live `text_threshold` is 0.25, and a box needs a prompt word above it to get a name. So 0.25 is the lowest vehicle cut-off that changes anything while `text_threshold` stays 0.25.
+Why not lower than 0.25: every one of the 43 raw boxes under 0.25 came back with an empty label (41 of them in labelled frames; `report` prints this count). So the eval cannot measure below 0.25, and it now refuses to: the lowest row is 0.25. The live `text_threshold` is 0.25, and a box needs a prompt word above it to get a name. So 0.25 is the lowest vehicle cut-off that changes anything while `text_threshold` stays 0.25.
 
 ### Choice
 
@@ -149,12 +149,12 @@ This patch moves a threshold and adds an eval. It wires no new metric into a mod
 
 ```text
 docker run ... orion-vision-host-vision-host -m pytest tests -q   (worktree)
-  396 passed, 1 skipped, 5 failed
+  398 passed, 1 skipped, 5 failed (after review fixes)
   5 failures are pre-existing: same 5 fail on clean main in the same image
   (test_heartbeat_chassis x2, test_identity_face_broadcast_suppression x2,
    test_model_manager_vlm_family x1)
 docker run ... -m pytest tests/test_walkway_cutoff_calibration_eval.py tests/test_box_thresholds.py -q
-  20 passed
+  22 passed (after review fixes; parity test fails when drop_undersized is removed from replay)
 ```
 
 ## Evals run
@@ -180,7 +180,26 @@ scripts/rebuild_affected_services.py --plan --base origin/main -> orion-vision-h
 
 ## Review findings fixed
 
-- (filled in after review)
+Review ran in a subagent (orion-repo-agent). It found no blocker. It confirmed that `replay()` matches `runner.py` in order and semantics, and that hourly frames are byte copies of live frames.
+
+- Finding: the 0.20 scoring floor is not measurable. Boxes under `text_threshold` 0.25 have empty labels, so the 0.20 and 0.25 rows were identical by construction, and the shipped value sits on the lowest measurable point.
+  - Fix: `CUTOFFS` now starts at 0.25. `replay()` refuses a cut-off under `max(floor, text_threshold)` (only `pool` may go lower). `report` prints the empty-label count. The yaml comment and this report now state the limit and its consequence: a further drop in scores needs `text_threshold` to move too.
+  - Evidence: `test_report_refuses_cutoff_below_text_threshold`; `report` prints `raw boxes with an empty label ...: 41`.
+- Finding: there was no parity test between `replay()` and the real runner.
+  - Fix: `test_replay_matches_real_runner` feeds the same raw boxes (whole frame plus 2 tiles, a seam pair, a tile fragment, an undersized person, a low person, a mail truck) through `_run_detect_grounding_dino` with `detect_tiles` and through `replay()`, and asserts the same kept boxes.
+  - Evidence: passes. With `drop_undersized` removed from `replay()` as a mutation check, it fails.
+- Finding: a second kept box on an already-seen object counted as real (tiled `real 109` against `objects 106`).
+  - Fix: it now counts as `dup`.
+  - Evidence: tiled 0.25 now reads real 105, dup 5. Recall is unchanged.
+- Finding: `frames_with` left out frames whose only vehicle was missed at the floor.
+  - Fix: it now counts missed objects.
+  - Evidence: sunny frames with a vehicle now read 35, not 34 (11-03 15Z).
+- Finding (latent, nit): `build_pool` keeps the higher-scoring geometry, so a partly overlapping whole-frame box could read "unlabelled".
+  - Fix: documented in code. The count is 0 on the committed set, and the `unlabelled` column is printed, so a future set shows it.
+- Finding: the blind-detector watch counts any label, so steady parked cars keep the walkway share near 1.0, and a blindness that hits only people will not card.
+  - Fix: not in this PR. Recorded in Risks with a follow-up.
+- Finding: walkway `caption_dispatch.min_score` is 0.25 and includes `vehicle`, so parked cars now pass the caption gate on triggered frames.
+  - Fix: none. The same-scene gate (IoU 0.5, 300 s) caps it. Recorded as UNVERIFIED in Risks.
 
 ## Restart required
 
@@ -195,6 +214,9 @@ Run from the clean primary `main` checkout after merge. The post-pull rebuild (`
 - Severity: medium. Concern: the hourly sample is 1 frame per hour (98 labelled). Live runs ~240 detector frames per hour, so a rare false vehicle box pattern (headlight glare, a passing shadow) could exist that the sample never saw. Mitigation: after deploy, check `vision_crop_observation` walkway vehicle boxes scoring 0.25-0.35 for a day, for example with a crop-thumb contact sheet. Revert is one value.
 - Severity: low. Concern: the alarm is slightly less sensitive for about 7 days (baseline from the old cut-off). Mitigation: none needed. It self-heals when the baseline window rolls over.
 - Severity: low. Concern: walkway person recall is still low on hard frames (the mail carrier at 0.29). Mitigation: no change without more person evidence. Re-run this eval when more people appear in hourly frames, or label low-score person crops from the Hub.
+- Severity: medium. Concern: `detection_rate:walkway` counts windows with any detection. With parked cars now seen in 81-100 % of daylight frames, the walkway share sits near 1.0, so a blindness that hits only people (or only moving things) will not card. Mitigation: follow-up to give the watch a per-label share or count only non-stationary detections. Not built here.
+- Severity: low. Concern: walkway caption dispatch (`min_score 0.25`, `vehicle` in its labels) can now fire on parked cars in triggered frames. Mitigation: the same-scene gate (IoU 0.5, TTL 300 s) caps it at about 1 call per 5 min per unchanged scene. Check dispatch counts after deploy (UNVERIFIED).
+- Severity: low. Concern: the shipped vehicle value sits on the lowest point the data can measure (`text_threshold` 0.25). If scores fall further, lowering `vehicle` alone does nothing. Mitigation: move `text_threshold` with it, and re-score with this eval first.
 - UNVERIFIED: live share of windows with a detection after deploy, GPU time of crop embeddings after deploy, and the rhythm effect.
 
 ## PR link

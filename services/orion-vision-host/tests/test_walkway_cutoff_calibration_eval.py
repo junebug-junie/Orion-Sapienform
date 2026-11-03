@@ -115,3 +115,83 @@ def test_committed_labelled_set_reports():
     assert old["recalled"] / old["objects"] < 0.5  # the blindness the change fixes
     assert acc[("all", "vehicle")]["false"] == 0
     assert acc.get(("all", "person"), {}).get("false", 0) == 0
+
+
+def test_replay_matches_real_runner(vision_profiles, monkeypatch, tmp_path):
+    """Parity: the same raw boxes through the REAL runner (whole frame + tiles)
+    and through replay() give the same kept boxes. If the runner's order ever
+    changes (NMS before merge, a new floor), this fails instead of the eval's
+    numbers quietly going stale."""
+    import tempfile
+
+    from PIL import Image
+
+    import app.runner as runner_mod
+    from app.runner import VisionRunner
+    from app.tiling import tile_layout, tiling_params, to_frame_coords
+
+    W, H = 2560, 1920
+    frame = tmp_path / "walkway.jpg"
+    Image.new("RGB", (W, H)).save(frame)
+    r = VisionRunner(profiles=vision_profiles, enabled_names=["retina_detect_open_vocab"], cache_dir=tempfile.mkdtemp())
+    p = r.profiles.get_profile("retina_detect_open_vocab")
+    # Exercise the size floor too (walkway ships none): a 30 px person is dropped.
+    p.params = {**p.params, "min_box_long_side_frac_by_stream": {"walkway": {"person": 0.1}}}
+    params = p.params
+
+    whole = [_box("vehicle", 0.27, 1690, 360, 1780, 425),     # kept: walkway vehicle 0.25
+             _box("person", 0.30, 600, 700, 660, 900),         # dropped: person 0.35
+             _box("person", 0.50, 1300, 600, 1380, 820),       # kept
+             _box("person", 0.45, 100, 1500, 115, 1530),       # dropped: under the size floor
+             _box("mail truck", 0.30, 200, 750, 830, 1150)]    # dropped: mail truck stays 0.35
+    tiles = tile_layout(W, H, *[tiling_params(params, {"detect_tiles": True})[k] for k in ("grid", "overlap", "region")])
+    assert len(tiles) == 2
+    seam0 = tiles[0].x1 - tiles[0].x0  # right edge of tile 0, in tile 0 coords
+    seam1 = tiles[0].x1 - tiles[1].x0  # same frame x, in tile 1 coords
+    tile_boxes = [
+        [_box("person", 0.42, seam0 - 40, 300, seam0, 520),            # seam piece, left
+         _box("vehicle", 0.31, 1690 - tiles[0].x0, 72, 1780 - tiles[0].x0, 137)],  # fragment of the whole-frame car
+        [_box("person", 0.40, seam1 - 60, 300, seam1 + 30, 520),       # seam piece, right
+         _box("vehicle", 0.26, 900, 100, 960, 140)],                   # tile-only far car
+    ]
+    calls = []
+
+    def fake(model, processor, images, text, box_th, text_th, device, cast=None):
+        out = []
+        for im in images:
+            if im.size == (W, H):
+                raw = whole
+            else:
+                raw = tile_boxes[len(calls)]
+                calls.append(1)
+            out.append([dict(o) for o in raw if o["score"] >= box_th])
+        return out
+
+    monkeypatch.setattr(runner_mod, "detect_images", fake)
+    monkeypatch.setattr(r.models, "load_grounding_dino", lambda **k: (object(), object()))
+    live = r._run_detect_grounding_dino(p, {"image_path": str(frame), "stream_id": "walkway", "detect_tiles": True}, "cpu")
+    assert len(calls) == 2
+
+    rec = {"frame": "x", "width": W, "height": H, "floor": 0.20, "text_threshold": 0.25,
+           "full_raw": whole,
+           "tiles_raw": [ev._detuple(json.loads(json.dumps(to_frame_coords(o, t, W, H))))
+                         for t, objs in zip(tiles, tile_boxes) for o in objs]}
+    replayed = ev.replay(rec, params, ev.thresholds_for(params, None), tiled=True)
+
+    def key(objs):
+        return sorted((o["label"], round(o["score"], 4), tuple(round(v, 1) for v in o["box_xyxy"])) for o in objs)
+
+    assert key(live["objects"]) == key(replayed)
+    labels = [o["label"] for o in replayed]
+    assert "vehicle" in labels and "mail truck" not in labels
+    assert not any(o["label"] == "person" and o["score"] in (0.30, 0.45) for o in replayed)
+
+
+def test_report_refuses_cutoff_below_text_threshold():
+    """Boxes under text_threshold have no label, so 0.20 must not be reported
+    as if it were measured."""
+    rec = _rec([])
+    rec["text_threshold"] = 0.25
+    with pytest.raises(SystemExit):
+        ev.replay(rec, PARAMS, ev.thresholds_for(PARAMS, 0.22), tiled=False)
+    assert min(ev.CUTOFFS) >= 0.25

@@ -81,7 +81,10 @@ SCORED = DATA / "walkway_cutoff_scored.jsonl"
 LABELS = DATA / "walkway_cutoff_labels.csv"
 FRAMES = DATA / "walkway_cutoff_frames.csv"
 STREAM = "walkway"
-CUTOFFS = (0.20, 0.25, 0.28, 0.30, 0.32, 0.35)
+# Lowest row is 0.25, not the 0.20 scoring floor: GroundingDINO names a box
+# only from prompt tokens above text_threshold (0.25 live), so every stored box
+# under 0.25 has an empty label and no cut-off below it can change anything.
+CUTOFFS = (0.25, 0.28, 0.30, 0.32, 0.35)
 # Detector phrase -> family. GroundingDINO can return merged phrases
 # ("vehicle mail truck"); a mail truck is a vehicle on this street.
 FAMILY = {
@@ -199,15 +202,26 @@ def thresholds_for(params: Mapping[str, Any], cutoff: Any):
     return BoxThresholds(float(cutoff), {})
 
 
-def replay(rec: Mapping[str, Any], params: Mapping[str, Any], th, tiled: bool) -> List[Dict[str, Any]]:
+def measurable_floor(rec: Mapping[str, Any]) -> float:
+    """Lowest cut-off the stored boxes can answer for: the scoring floor, or
+    text_threshold when that is higher (boxes under it carry no label)."""
+    return max(float(rec["floor"]), float(rec.get("text_threshold") or 0.0))
+
+
+def replay(rec: Mapping[str, Any], params: Mapping[str, Any], th, tiled: bool,
+           allow_below_text: bool = False) -> List[Dict[str, Any]]:
     """Same order as runner._run_detect_grounding_dino: per-label cut-off on
-    each pass, tile merge, size floor, NMS, cap."""
+    each pass, tile merge, size floor, NMS, cap. Pinned against the real
+    runner by tests/test_walkway_cutoff_calibration_eval.py
+    (test_replay_matches_real_runner)."""
     from app.box_thresholds import apply_box_thresholds
     from app.detections import cap_by_score, drop_undersized, nms
     from app.tiling import merge_tiled_detections, tiling_params
 
-    if th.floor < float(rec["floor"]) - 1e-9:
-        raise SystemExit(f"cut-off {th.floor} is below the scored floor {rec['floor']}")
+    low = float(rec["floor"]) if allow_below_text else measurable_floor(rec)
+    if th.floor < low - 1e-9:
+        raise SystemExit(f"cut-off {th.floor} is below what the stored boxes can measure ({low}: "
+                         f"scoring floor {rec['floor']}, text_threshold {rec.get('text_threshold')})")
     nms_iou = float(params.get("nms_iou", 0.6))
     max_det = int(params.get("max_detections", 30))
     objs = apply_box_thresholds([dict(o) for o in rec["full_raw"]], th)
@@ -258,7 +272,7 @@ def build_pool(rec: Mapping[str, Any], params: Mapping[str, Any]) -> List[Dict[s
     th = thresholds_for(params, float(rec["floor"]))
     pool: List[Dict[str, Any]] = []
     for tiled in (False, True):
-        for o in replay(rec, params, th, tiled):
+        for o in replay(rec, params, th, tiled, allow_below_text=True):
             fam = family(o["label"])
             if fam not in TRACKED:
                 continue
@@ -267,6 +281,9 @@ def build_pool(rec: Mapping[str, Any], params: Mapping[str, Any]) -> List[Dict[s
             if hit is None:
                 pool.append(o)
             elif o["score"] > hit["score"]:
+                # Known limit: the pool box takes the higher-scoring geometry,
+                # so a whole-frame box that only partly overlaps it could later
+                # read "unlabelled" in report (0 on the committed set).
                 hit.update(o)
     pool.sort(key=lambda o: (o["box_xyxy"][1], o["box_xyxy"][0]))
     for i, o in enumerate(pool, 1):
@@ -420,27 +437,26 @@ def evaluate(scored: List[Mapping[str, Any]], labels: Mapping[str, List[Mapping[
             if fam not in TRACKED:
                 continue
             hit = match(o, pool)
+            if hit is None:
+                kind = "unlabelled"
+            elif hit["verdict"] == "false":
+                kind = "false"
+            else:
+                obj = hit["object"] or (f"box{hit['box_id']}" if hit["verdict"] == "real" else "")
+                # A second kept box on an object already seen this frame (e.g.
+                # "vehicle" + "mail truck" on one truck: NMS is per label) is a dup.
+                kind = "real_boxes" if hit["verdict"] == "real" and obj not in seen[fam] else "dup"
+                if obj:
+                    seen[fam].add(obj)
             for c in (cond, "all"):
-                b = acc[(c, fam)]
-                if hit is None:
-                    b["unlabelled"] += 1
-                elif hit["verdict"] == "false":
-                    b["false"] += 1
-                elif hit["verdict"] == "dup":
-                    b["dup"] += 1
-                else:
-                    b["real_boxes"] += 1
-            if hit is not None and hit["verdict"] in ("real", "dup") and hit["object"]:
-                seen[fam].add(hit["object"])
-            elif hit is not None and hit["verdict"] == "real":
-                seen[fam].add(f"box{hit['box_id']}")
+                acc[(c, fam)][kind] += 1
         for fam in TRACKED:
             n_obj = len(objects[fam]) + frames[key]["missed"].get(fam, 0)
             for c in (cond, "all"):
                 b = acc[(c, fam)]
                 b["objects"] += n_obj
                 b["recalled"] += len(seen[fam] & objects[fam])
-                if objects[fam]:
+                if n_obj:
                     b["frames_with"] += 1
                     b["frames_seen"] += 1 if seen[fam] & objects[fam] else 0
     return acc
@@ -469,6 +485,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             for p in labels[k]:
                 n_boxes[p["family"]][p["verdict"]] += 1
     print("labelled pool boxes: " + "; ".join(f"{f} {dict(v)}" for f, v in sorted(n_boxes.items())))
+    unnamed = sum(1 for r in labelled for o in r["full_raw"] + r["tiles_raw"] if not str(o.get("label") or "").strip())
+    print(f"raw boxes with an empty label (score under text_threshold, never countable): {unnamed}")
     cuts: List[Any] = list(args.cutoff or CUTOFFS) + [None]
     for extra in args.per_label or []:
         cuts.append(json.loads(extra))

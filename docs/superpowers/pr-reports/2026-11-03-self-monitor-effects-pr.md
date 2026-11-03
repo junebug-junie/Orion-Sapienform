@@ -232,9 +232,14 @@ scripts/safe_docker_build.sh orion-hub up -d --build
   journals a shorter probe interval (for example 30 minutes, a per-faculty override), or exempt
   same-night retries. That is a one-line config seam; not built here because the 6 h rule was the
   decision.
+  **Amended 2026-11-03 (Juniper chose option A, follow-up PR
+  `2026-11-03-self-monitor-gate-retries-prime-pr.md`):** the gate only stops NEW attempts. A retry of
+  a job that already opened an act (same dedupe key, the act's `test_before`) is always admitted as
+  `same_job_retry` and spends no probe. Replay: walkway_grade now loses 0 of 7 nights (was 3 of 7).
 - Severity: material.
   Concern: the gate cannot reach `act.prime.predict`, the other faculty failing today.
-  Mitigation: follow-up to call `ActGate.decide` from Prime's act opener.
+  Mitigation: follow-up to call `ActGate.decide` from Prime's act opener. **Done in the same
+  follow-up PR** (services/orion-mind/app/prime_loop.py).
 - Severity: minor.
   Concern: E2 question ids use the host's `status_since`. Patch 1's report leaves it unset, so a
   replay id uses "now". Patch 2 sets it.

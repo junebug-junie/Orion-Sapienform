@@ -10,6 +10,7 @@ on:
       - "orion/self_monitor/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
+      - "orion/temporal_self/**"
       - ".github/workflows/self-monitor-tests.yml"
   push:
     branches: [main]

@@ -5047,7 +5047,7 @@
     "metric://inner_state/orion-durable-runs/self_monitor.state.v1": {
       "schema_id": "SelfMonitorStateV1",
       "value_kind": "bucket",
-      "rest": "reliable or unknown for every faculty: no faculty fails to execute, works less than half the time, or states a confidence its outcomes contradict. Not the live state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 miscalibrated of 49 faculties, so the bucket can and does leave rest.",
+      "rest": "reliable or unknown for every faculty: no faculty fails to execute, works less than half the time, or states a confidence its outcomes contradict. Not the live state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 miscalibrated of 46 faculties, so the bucket can and does leave rest.",
       "sparsity": "per_tick",
       "absent_means": "Redis orion:self_monitor:latest expired (TTL 3 h, three hourly evaluations), the organ is off (SELF_MONITOR_ENABLED=false) or durable-runs is down: track record unknown, and every reader behaves as if the organ did not exist (orion.self_monitor.view: unknown changes nothing). A faculty missing from a fresh state is untracked, never reliable.",
       "declared_consumers": [

@@ -2,6 +2,8 @@ name: Temporal Self reducer
 on:
   pull_request:
     paths:
+      - 'orion/self_monitor/**'
+      - 'orion/prediction/**'
       - 'orion/temporal_self/**'
       - 'orion/schemas/temporal_self.py'
       - 'orion/vision/motion_story_gate.py'
@@ -16,6 +18,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'orion/self_monitor/**'
+      - 'orion/prediction/**'
       - 'orion/temporal_self/**'
       - 'orion/schemas/temporal_self.py'
       - 'orion/vision/motion_story_gate.py'
@@ -40,7 +44,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pytest pydantic==2.10.3 PyYAML
+      # numpy: test_faculty_arcs.py builds rows with the producer's own builder (orion/self_monitor/host.py,
+      # whose reducer imports orion/prediction/grading.py).
+      - run: pip install pytest pydantic==2.10.3 PyYAML numpy
       - name: Gate tests (pure reducer, no I/O)
         run: python -m pytest -q orion/temporal_self/tests
       - name: Arc-precision eval on the exported 10-09 fixture day

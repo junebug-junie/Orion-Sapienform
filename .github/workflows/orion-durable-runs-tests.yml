@@ -32,6 +32,10 @@ on:
       - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
       - "orion/vision/motion_story_gate.py"
       - "orion/temporal_self/**"
+      - "orion/self_monitor/**"
+      - "orion/schemas/self_monitor.py"
+      - "orion/prediction/**"
+      - "services/orion-sql-db/manual_migration_self_monitor_history_v1.sql"
       - "orion/schemas/temporal_self.py"
       - "services/orion-sql-db/manual_migration_regulation_history.sql"
       - "services/orion-sql-db/manual_migration_regulation_gpu_shed_held_v1.sql"
@@ -153,6 +157,10 @@ on:
       - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
       - "orion/vision/motion_story_gate.py"
       - "orion/temporal_self/**"
+      - "orion/self_monitor/**"
+      - "orion/schemas/self_monitor.py"
+      - "orion/prediction/**"
+      - "services/orion-sql-db/manual_migration_self_monitor_history_v1.sql"
       - "orion/schemas/temporal_self.py"
 
 jobs:

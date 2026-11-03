@@ -1544,7 +1544,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                         "reliable or unknown for every faculty: no faculty fails to execute, works less "
                         "than half the time, or states a confidence its outcomes contradict. Not the live "
                         "state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 "
-                        "miscalibrated of 49 faculties, so the bucket can and does leave rest."
+                        "miscalibrated of 46 faculties, so the bucket can and does leave rest."
                     ),
                     sparsity="per_tick",
                     absent_means=(

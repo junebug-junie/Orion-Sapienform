@@ -964,7 +964,9 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
         """``track_record_failing`` when the self-monitor holds this act's faculty failing and the
         window's probe is spent; else None. Every route's live object refs are instance ids (a run,
         session or URL), so the faculty is the base ``act.<actor>.<verb>`` key; an empty object_ref
-        names exactly that (orion/self_monitor/adapters.act_faculty)."""
+        names exactly that (orion/self_monitor/adapters.act_faculty). No ``job_key``: a sent dispatch
+        leaves the pending set for good (it moves to ``dispatched_candidates``) and a refused one never
+        started, so this seam has no "retry of an attempted job" to admit (option A, gate.py)."""
         if gate is None:
             return None
         try:

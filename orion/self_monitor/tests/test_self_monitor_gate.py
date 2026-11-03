@@ -314,21 +314,146 @@ def test_question_id_fits_the_curiosity_id_rule() -> None:
 
 # --- replay (orion/self_monitor/replay.py) -------------------------------------------------------
 
-def test_replay_spends_probes_only_on_admitted_attempts() -> None:
-    from orion.self_monitor.replay import reach, replay_acts
-
-    # The live 10-30 walkway night: first attempt 04:32, retries every ~3-7 min, success at 05:23.
+def _walkway_nights() -> list[dict]:
+    # The live 10-30 walkway night: first attempt 04:32, retries every ~4 min, success at 05:16; then the
+    # next night's first try works. Each night is one job (one dedupe key, the act's test_before).
     start = datetime(2026, 10, 30, 4, 32, tzinfo=timezone.utc)
+    night1 = "journal:actions:journal:walkway_grade:walkway:2026-10-29:athena"
+    night2 = "journal:actions:journal:walkway_grade:walkway:2026-10-30:athena"
     rows = [{"actor": "actions.journal", "verb": "make", "object_ref": "journal_trigger:walkway_grade",
+             "test_before": night1,
              "opened_at": start + timedelta(minutes=4 * i), "closed_at": start + timedelta(minutes=4 * i + 1),
              "outcome_value": 0.0, "outcome_note": "raised:RuntimeError:journal_compose_failed"} for i in range(12)]
     rows[-1].update(outcome_value=1.0, outcome_note="entry_id=x mode=digest")
     rows.append({"actor": "actions.journal", "verb": "make", "object_ref": "journal_trigger:walkway_grade",
+                 "test_before": night2,
                  "opened_at": start + timedelta(days=1), "closed_at": start + timedelta(days=1, minutes=1),
                  "outcome_value": 1.0, "outcome_note": "entry_id=y mode=digest"})
-    out = replay_acts(_view(_fresh_live(start), start), rows)[WALKWAY]
-    assert (out["attempts"], out["would_probe"], out["would_refuse"]) == (13, 2, 11)
-    # The night's eventual success is among the refused: the gate would have cost that entry.
+    return rows
+
+
+def test_replay_before_option_a_loses_the_night() -> None:
+    from orion.self_monitor.replay import replay_acts
+
+    rows = _walkway_nights()
+    start = rows[0]["opened_at"]
+    out = replay_acts(_view(_fresh_live(start), start), rows, same_job=False)[WALKWAY]
+    assert (out["attempts"], out["would_probe"], out["would_refuse"], out["would_retry"]) == (13, 2, 11, 0)
+    # The night's eventual success is among the refused: the old rule would have cost that entry.
     assert out["refused_outcomes"] == {"failed_to_execute": 10, "worked": 1}
-    assert out["reach"] == "actions_journal" and reach("prime", "predict") == "not_gated"
-    assert reach("thought.painting", "make") == "allocator"
+    assert (out["jobs"], out["jobs_worked"], out["jobs_lost"]) == (2, 2, 1)
+
+
+def test_replay_option_a_admits_the_nights_retries() -> None:
+    from orion.self_monitor.replay import reach, replay_acts
+
+    rows = _walkway_nights()
+    start = rows[0]["opened_at"]
+    out = replay_acts(_view(_fresh_live(start), start), rows)[WALKWAY]
+    assert (out["attempts"], out["would_probe"], out["would_refuse"], out["would_retry"]) == (13, 2, 0, 11)
+    assert (out["jobs"], out["jobs_worked"], out["jobs_lost"]) == (2, 2, 0)
+    assert out["reach"] == "actions_journal" and reach("prime", "predict") == "prime"
+    assert reach("thought.painting", "make") == "allocator" and reach("dream.cycle", "make") == "not_gated"
+
+
+def test_replay_a_refused_first_try_does_not_open_a_retry_chain() -> None:
+    """A job whose first try was refused never opened an act, so its later tries are new attempts."""
+    from orion.self_monitor.replay import replay_acts
+
+    start = datetime(2026, 10, 30, 4, 32, tzinfo=timezone.utc)
+    other = {"actor": "actions.journal", "verb": "make", "object_ref": "journal_trigger:walkway_grade",
+             "test_before": "journal:other-job", "opened_at": start - timedelta(hours=1),
+             "closed_at": start, "outcome_value": 0.0, "outcome_note": "raised:x"}
+    job = [{"actor": "actions.journal", "verb": "make", "object_ref": "journal_trigger:walkway_grade",
+            "test_before": "journal:job", "opened_at": start + timedelta(minutes=5 * i),
+            "closed_at": start + timedelta(minutes=5 * i + 1), "outcome_value": 0.0, "outcome_note": "raised:x"}
+           for i in range(3)]
+    out = replay_acts(_view(_fresh_live(start), start), [other, *job])[WALKWAY]
+    assert (out["would_probe"], out["would_retry"], out["would_refuse"]) == (1, 0, 3)
+
+
+# --- option A: same-job retries (Juniper 2026-11-03) ---------------------------------------------
+
+NIGHT = "journal:actions:journal:walkway_grade:walkway:2026-10-29:athena"
+
+
+def _job_gate(ledger) -> ActGate:
+    return ActGate(enabled=True, probe_interval_sec=SIX_H, read_view=lambda now: _view(_fresh_live(now), now),
+                   ledger_rows=ledger, job_key_of=lambda row: row.get("test_before"))
+
+
+def _walkway(gate: ActGate, now: datetime, job: str = NIGHT):
+    gate.begin(now)
+    return gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=now, job_key=job)
+
+
+def test_pure_same_job_retry_is_admitted_while_failing_and_is_not_a_probe() -> None:
+    d = act_gate(_view(), WALKWAY, last_attempt_at=NOW - timedelta(minutes=4), now=NOW, probe_interval_sec=SIX_H,
+                 same_job_attempted=True)
+    assert (d.admit, d.probe, d.reason, d.same_job_retry) == (True, False, "same_job_retry", True)
+    assert d.label() == f"self_monitor:same_job_retry:{WALKWAY}:broken"
+
+
+def test_same_job_flag_never_tightens_an_unknown_or_healthy_view() -> None:
+    for view in (self_monitor_view(None, now=NOW), _view(_state(_record(WALKWAY, "reliable")))):
+        d = act_gate(view, WALKWAY, last_attempt_at=NOW, now=NOW, same_job_attempted=True)
+        assert d.admit and not d.same_job_retry
+
+
+def test_retry_of_a_started_job_is_admitted_from_the_ledger_and_spends_no_probe() -> None:
+    ledger = _Ledger([{"object_ref": "journal_trigger:walkway_grade", "test_before": NIGHT,
+                       "opened_at": NOW - timedelta(minutes=4)}])
+    gate = _job_gate(ledger)
+    d = _walkway(gate, NOW)
+    assert d.admit and d.same_job_retry and not d.probe
+    # No probe was spent: the memo is empty, so a different new job still sees the ledger's window.
+    assert gate._memo.get(WALKWAY) is None
+    new_job = _walkway(gate, NOW, job="journal:actions:journal:walkway_grade:walkway:2026-10-30:athena")
+    assert not new_job.admit and new_job.reason == TRACK_RECORD_FAILING_REASON
+
+
+def test_new_job_is_refused_unless_a_probe_is_due() -> None:
+    other = [{"object_ref": "journal_trigger:walkway_grade", "test_before": "journal:other",
+              "opened_at": NOW - timedelta(hours=1)}]
+    assert not _walkway(_job_gate(_Ledger(other)), NOW).admit
+    assert _walkway(_job_gate(_Ledger([])), NOW).probe
+
+
+def test_probe_then_its_own_retries_are_admitted_before_the_ledger_catches_up() -> None:
+    gate = _job_gate(_Ledger([]))                    # the probe's act row has not landed yet
+    first = _walkway(gate, NOW)
+    assert first.probe
+    assert gate.claim_probe(WALKWAY, now=NOW, job_key=NIGHT)
+    retry = _walkway(gate, NOW + timedelta(minutes=4))
+    assert retry.same_job_retry and retry.admit
+    # Any other job in the window is still refused.
+    assert not _walkway(gate, NOW + timedelta(minutes=5), job="journal:another").admit
+
+
+def test_same_job_memo_and_ledger_respect_the_window() -> None:
+    gate = _job_gate(_Ledger([]))
+    gate.note_job_started(WALKWAY, NIGHT, now=NOW)
+    later = NOW + timedelta(hours=6, minutes=1)
+    d = _walkway(gate, later)
+    assert not d.same_job_retry and d.probe        # a job last tried a window ago is a new job
+
+
+def test_job_key_is_ignored_by_a_gate_without_a_job_notion() -> None:
+    ledger = _Ledger([{"object_ref": "journal_trigger:walkway_grade", "test_before": NIGHT,
+                       "opened_at": NOW - timedelta(minutes=4)}])
+    gate = _gate(ledger)                            # dispatch-runtime shape: no job_key_of
+    gate.begin(NOW)
+    d = gate.decide("actions.journal", "make", "journal_trigger:walkway_grade", now=NOW, job_key=NIGHT)
+    assert not d.admit and not d.same_job_retry
+
+
+def test_same_job_retry_only_counts_rows_of_the_same_faculty() -> None:
+    ledger = _Ledger([{"object_ref": "journal_trigger:town_episode", "test_before": NIGHT,
+                       "opened_at": NOW - timedelta(minutes=4)},
+                      {"object_ref": "journal_trigger:walkway_grade", "test_before": "journal:x",
+                       "opened_at": NOW - timedelta(hours=1)}])
+    assert not _walkway(_job_gate(ledger), NOW).admit
+
+
+def test_sql_reads_the_job_column() -> None:
+    assert "test_before" in last_attempt_sql() and "test_before" in last_attempt_sql("pyformat")

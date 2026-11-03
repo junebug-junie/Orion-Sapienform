@@ -137,9 +137,12 @@ Every in-process journal compose passes `_dispatch_journal`. When the self-monit
 `track_record_failing`; no act opens. One re-test probe per faculty per
 `SELF_MONITOR_PROBE_INTERVAL_SEC` (21600) runs, marked `self_monitor_probe` in its audit row. Probes
 are counted from `grammar_acts`, so keep `ACTIONS_ACT_EMIT_ENABLED` on. Unknown or stale state changes
-nothing. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`. Note: a refused walkway retry holds the
-night open, and the night ends at local midnight, so while walkway_grade is held broken it gets about
-one try per night.
+nothing. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`. Retries of the same job are never refused
+(option A, 2026-11-03): a journal whose dedupe key (the act's `test_before = journal:<dedupe_key>`: one
+walkway night, one daily window, one trigger's content) already opened an act inside the probe window is
+admitted as `same_job_retry`, marked `self_monitor_same_job_retry` in its audit row, and spends no probe. So a
+held-broken walkway_grade still gets its whole night of retries once the night's first try (the probe) ran;
+only a new job's first try is refused.
 
 ### Act ledger producers (2026-10-23, body economy A5)
 

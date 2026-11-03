@@ -21,6 +21,7 @@ on:
       - "orion/schemas/introspect.py"
       - "orion/schemas/physiology_want.py"
       - "services/orion-mind/**"
+      - "orion/self_monitor/**"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -38,6 +39,7 @@ on:
       - "orion/schemas/introspect.py"
       - "orion/schemas/physiology_want.py"
       - "services/orion-mind/**"
+      - "orion/self_monitor/**"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:

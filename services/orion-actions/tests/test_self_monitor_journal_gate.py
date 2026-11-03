@@ -105,3 +105,64 @@ def test_refusal_is_audited_once_per_window(tmp_path):
     assert events == []
     refused = [a for a in _audits(h.hunters[0]) if a.get("reason") == "track_record_failing"]
     assert len(refused) == 1
+
+
+# --- option A (Juniper 2026-11-03): a retry of the same job is never refused ----------------------
+
+def _job_key_of_a_real_run(tmp_path) -> str:
+    """The journal's job identity, read off the act a real (gate-off) run opens."""
+    events, _ = _run(tmp_path, raw=None, ledger=[], enabled=False)
+    return events[0]["act"]["test_before"]
+
+
+def test_job_key_is_the_dedupe_key_on_the_act(tmp_path):
+    from app import act_emit
+    from orion.journaler.worker import build_manual_trigger, cooldown_key_for_trigger
+
+    key = act_emit.journal_job_key(cooldown_key_for_trigger(build_manual_trigger(summary="a thing happened worth writing down")))
+    assert _job_key_of_a_real_run(tmp_path) == key and key.startswith("journal:actions:journal:manual:")
+
+
+def test_retry_of_a_started_job_runs_while_failing_and_is_marked(tmp_path):
+    job = _job_key_of_a_real_run(tmp_path)
+    # This same job opened an act 4 minutes ago (the walkway night's first try): its retry runs.
+    tried = [{"object_ref": "journal_trigger:manual", "test_before": job,
+              "opened_at": datetime.now(timezone.utc) - timedelta(minutes=4)}]
+    events, audits = _run(tmp_path, raw=_state("broken"), ledger=tried)
+    assert [e["event_kind"] for e in events] == ["act_opened", "act_closed"]
+    done = [a for a in audits if a["status"] == "completed"]
+    assert done and "self_monitor_same_job_retry" in json.dumps(done[0])
+    assert "self_monitor_probe" not in json.dumps(done[0])
+
+
+def test_new_job_is_still_refused_while_another_job_holds_the_window(tmp_path):
+    other = [{"object_ref": "journal_trigger:manual", "test_before": "journal:actions:journal:manual:manual:other",
+              "opened_at": datetime.now(timezone.utc) - timedelta(minutes=4)}]
+    events, audits = _run(tmp_path, raw=_state("broken"), ledger=other)
+    assert events == []
+    assert [a["reason"] for a in audits if a["status"] == "skipped"] == ["track_record_failing"]
+
+
+def test_a_probe_job_s_own_retry_runs_and_a_second_job_does_not(tmp_path):
+    """The live walkway night: the first try is the probe and fails on a busy GPU pool; its retry (same
+    dedupe key, act row not landed yet: the ledger is still empty) runs; a different job is refused."""
+    h = _Harness(orch_payload={"ok": False, "error": "gpu_pool_unavailable:deadline"})
+
+    async def body(app):
+        await app.state.bus_handler(_journal_env())          # probe (ledger empty); fails
+        await app.state.bus_handler(_journal_env())          # same content -> same dedupe key: retry
+        await app.state.bus_handler(_journal_env("a different thing happened"))   # new job
+
+    with (
+        patch.object(actions_main.settings, "self_monitor_act_gate_enabled", True),
+        patch.object(actions_main.settings, "postgres_uri", "postgresql://x/y"),
+        patch.object(actions_main, "read_view_sync", lambda url, now: self_monitor_view(_state("broken"), now=now)),
+        patch.object(actions_main, "_fetch_ledger_rows_blocking", lambda dsn, sql, params: []),
+    ):
+        events = asyncio.run(h.run(tmp_path, body))
+    audits = _audits(h.hunters[0])
+    statuses = [(a["status"], a.get("reason")) for a in audits if a["status"] in {"failed", "skipped"}]
+    marks = [json.dumps(a) for a in audits if a["status"] == "failed"]
+    assert [e["event_kind"] for e in events] == ["act_opened", "act_closed"] * 2, statuses
+    assert "self_monitor_probe" in marks[0] and "self_monitor_same_job_retry" in marks[1]
+    assert ("skipped", "track_record_failing") in statuses

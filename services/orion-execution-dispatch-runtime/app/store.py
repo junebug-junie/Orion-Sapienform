@@ -668,7 +668,7 @@ class ExecutionDispatchRuntimeStore:
         return None if value is None or float(value) <= 0 else float(value)
 
     def act_attempt_rows(self, actor: str, verb: str, secs: float) -> list[dict]:
-        """grammar_acts rows (object_ref, opened_at) this actor+verb opened in the last ``secs``: the
+        """grammar_acts rows (object_ref, test_before, opened_at) this actor+verb opened in the last ``secs``: the
         self-monitor gate's probe bookkeeping (orion/self_monitor/gate.py). Raises on a failed read;
         the gate treats that as unreadable, never as "no attempt"."""
         from orion.self_monitor.gate import last_attempt_sql

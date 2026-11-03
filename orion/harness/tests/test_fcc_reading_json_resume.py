@@ -156,6 +156,12 @@ async def test_an_error_from_the_json_resume_run_carries_the_record(monkeypatch)
     monkeypatch.setattr(motor, "load_fcc_env", lambda _p: {"MODEL_CHAT": "x"})
     monkeypatch.setattr(motor, "label_to_claude_model_id", lambda *_a, **_k: "llamacpp/chat")
     monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **_k: None)
+    from pathlib import Path
+
+    from orion.harness import session_resume
+
+    # A resume needs the session's transcript on disk (fcc_motor._resume_held_final).
+    monkeypatch.setattr(session_resume, "find_transcript", lambda _home, _sid: Path(__file__))
     frames = [f async for f in motor.run_fcc_turn(
         prompt="read", correlation_id="corr-json-err", workspace="/tmp", fcc_server_url="http://127.0.0.1:8082",
         auth_token="tok", claude_bin="claude", timeout_sec=300.0, reading_only=True)]

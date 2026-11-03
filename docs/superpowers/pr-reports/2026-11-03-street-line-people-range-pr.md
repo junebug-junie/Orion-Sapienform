@@ -156,6 +156,6 @@ Pass: `bare` is `f`, and the clause reads "today so far (through HH:MM), people:
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3071
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

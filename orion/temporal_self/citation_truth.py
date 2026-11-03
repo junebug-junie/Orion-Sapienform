@@ -59,6 +59,7 @@ KIND_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\breverie\b", re.I), "reverie"),
     (re.compile(r"\bbeen here since\b", re.I), "company"),
     (re.compile(r"\bstrained since\b|\bwas strained (?:\w{3} )?\d{1,2}:\d{2}\b", re.I), "strain"),
+    (re.compile(r"\bbinding now:|\bwas binding (?:\w{3} )?\d{1,2}:\d{2}\b|\bbody limits binding:", re.I), "binding"),
 )
 _SPAN = r"(?:(?P<h>\d+)\s*h(?:ours?|rs?)?\.?)?\s*(?:(?P<m>\d+)\s*min(?:utes?|s)?\.?)?"
 AGO_RE = re.compile(rf"(?<![\w:])(?:(?P<under>under a minute)|{_SPAN})\s+ago\b", re.I)

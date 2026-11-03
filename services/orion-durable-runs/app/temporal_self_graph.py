@@ -17,6 +17,10 @@ One invocation per (coalesced) event on the day's thread ``temporal_self:orion:<
   hands the ``PhysiologyStateV1`` to ``deps.project_physiology`` (Redis ``orion:physiology:latest``
   + bus ``orion:physiology:state`` -> sql-writer ``physiology_state``). Own timeout; a failure is a
   warning and never touches the regulation reading. Nothing decides from it yet (no prices).
+  Felt state (body economy Organ 5): after pricing, each constraint whose price binds writes
+  ``body_binding`` rows into ``temporal_self_event`` (onset, change, keepalive, release;
+  ``app.body_binding``) so the chronicle folds one ``binding`` arc per constraint episode. The
+  per-constraint episode rides in this checkpoint as ``binding_episodes``.
 
 * immune (R4): while arousal is ``idle`` and at most once per ``immune_interval_sec`` (6 h), reads
   24 h of the glossary's semantic field channels (``deps.read_immune_series``), judges them with the
@@ -48,7 +52,9 @@ from langgraph.graph import END, START, StateGraph
 
 from orion.regulation.arousal import classify_arousal, strain_causes
 from orion.regulation.immune import ImmuneConfig, sweep as immune_sweep
+from app.body_binding import binding_row, keep_entry, plan_constraint
 from orion.physiology.body import BodyConfig, BodyInputs, HeatInput, build_physiology_state
+from orion.physiology.budget import SELF_SPENT_CONSTRAINTS
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.physiology import PhysiologyStateV1
 from orion.schemas.regulation import (
@@ -85,6 +91,9 @@ class TemporalSelfGraphState(TypedDict, total=False):
     physiology: Optional[dict]       # its one-line summary: tick_id, no_reading, error
     # Patch B2: the Budget organ's carry between ticks {constraint: {price, bind, ceiling_since, at}}.
     physiology_prices: Optional[dict]
+    # Felt state: per-constraint binding episode {constraint: {open, began_at, state, row_at,
+    # bound_since, slack_since, seen_at}} (app.body_binding). Carried across days.
+    binding_episodes: Optional[dict]
 
 
 @dataclass
@@ -130,6 +139,9 @@ class TemporalSelfDeps:
     # ORION_PHYSIOLOGY_PRICES_ENABLED off: the Body readings are published unpriced.
     price_body: Optional[Callable[[PhysiologyStateV1, BodyInputs, Optional[dict], datetime],
                                   tuple[PhysiologyStateV1, dict]]] = None
+    # Felt state: write one body_binding row (app.body_binding.binding_row) -> written ok. None =
+    # TEMPORAL_SELF_BINDING_ARCS_ENABLED off (or physiology off): no rows, no binding arcs.
+    record_binding: Optional[Callable[[dict], Awaitable[bool]]] = None
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -212,6 +224,38 @@ async def _strain_causes_step(
         warnings.append("strain_cause_write_failed")
         return seen, state.get("strain_row_at"), recorded_now
     return list(seen or []) + joined, now.isoformat(), causes
+
+
+async def _binding_step(deps: TemporalSelfDeps, model: PhysiologyStateV1, state: TemporalSelfGraphState,
+                        now: datetime, warnings: list) -> dict:
+    """Felt state. Per constraint, one ``plan_constraint`` step over this tick's priced reading;
+    a due row is written through ``deps.record_binding``. A failed write keeps the episode as it
+    was, so the next tick retries. Returns the new ``binding_episodes``."""
+    carry = dict(state.get("binding_episodes") or {})
+    priced = {c.constraint: c for c in model.constraints if c.price is not None}
+    self_spent = set(SELF_SPENT_CONSTRAINTS) | set(model.strain.self_spent if model.strain is not None else [])
+    out: dict = {}
+    failed = False
+    for name in sorted(set(carry) | set(priced)):
+        reading = priced.get(name)
+        entry = carry.get(name) or {}
+        try:
+            plan = plan_constraint(entry, reading.price.bind_state if reading is not None else None, now)
+            if plan.row is None:
+                new = plan.written
+            else:
+                ok = await deps.record_binding(binding_row(plan, reading, now, state.get("day_id") or "",
+                                                           self_spent=name in self_spent))
+                new = plan.written if ok else plan.failed
+                failed = failed or not ok
+        except Exception:  # noqa: BLE001 - one bad entry must not cost the others or the body
+            logger.warning("body_binding_step_failed constraint=%s", name, exc_info=True)
+            new, failed = entry, True
+        if keep_entry(new):
+            out[name] = new
+    if failed:
+        warnings.append("binding_write_failed")
+    return out
 
 
 def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
@@ -314,6 +358,11 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
                               "strain_constraint": None if model.strain is None else model.strain.constraint}}
         if "carry" in prices_out:
             out["physiology_prices"] = prices_out["carry"]
+        if deps.record_binding is not None:
+            step_warnings: list[str] = []
+            out["binding_episodes"] = await _binding_step(deps, model, state, now, step_warnings)
+            if step_warnings:
+                out["warnings"] = warnings + step_warnings
         return out
 
     async def immune(state: TemporalSelfGraphState) -> dict:

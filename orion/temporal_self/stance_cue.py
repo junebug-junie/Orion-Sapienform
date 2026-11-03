@@ -19,6 +19,15 @@ latest closed one. The time is when the episode began, even on an earlier day. O
 which causes are present now, a cause that cleared is named as earlier: "(now: GPU jobs backed up;
 earlier: cabinet too hot)", or "(no cause right now, settling; earlier: ...)" while it holds.
 
+Binding arcs (felt state, body economy Organ 5) add one clause sibling to the strain clause:
+"Binding now: cabinet running hot (32.4 °C, line 31 °C) since 14:02 [arc:<id>]; my agent GPU lane
+full since 13:10 [arc:<id>] (out of my hands: Claude limit reached [arc:<id>])." At most two
+constraints are named, the highest price / ceiling first; out-of-hands (``exogenous_bind``) ones
+follow in the trailing part. Energy's exogenous bind is the always-on body, not the room, so it is
+named rather than called out of Orion's hands (Juniper, 2026-10-30, ``orion/physiology/
+report_text.py``). With none open, the latest one that ended in the last 6 h reads "Was binding
+14:02 to 14:30: cabinet running hot [arc:<id>]."
+
 A play arc (Orion plays Zelda, section F) adds today's latest finished Retro session: "Played The
 Legend of Zelda solo, 14 of 31 predictions met (14:02 to 14:24) [arc:<id>]" ("together" when a human
 drove more than half of the frames). It ranks above the thread and sleep clauses: on the real
@@ -194,6 +203,87 @@ def _strain_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[
     return f"Strained since {clock(began)}{why} {_ref(arc)}.", [arc]
 
 
+BINDING_PAST_SEC = 6 * 3600.0
+MAX_BINDING_NAMED = 2
+_LANE_PREFIX = "lane:"
+
+
+def _n(x: float | None, digits: int = 1) -> str:
+    if x is None:
+        return "?"
+    return f"{x:.{digits}f}".rstrip("0").rstrip(".") if digits else f"{x:.0f}"
+
+
+def binding_words(b: Any, *, short: bool = False) -> str:
+    """One binding constraint in plain words (``ArcBindingV1``). ``short``: without the numbers.
+    An unknown constraint id stays as it is, never dropped."""
+    c, state = b.constraint, b.bind_state
+    exo = state == "exogenous_bind"
+    if c == "heat":
+        words = "cabinet hot without my load" if exo else "cabinet running hot"
+        nums = f" ({_n(b.level)} °C, line {_n(b.line)} °C)" if b.level is not None else ""
+    elif c == "energy":
+        words = ("my always-on body alone over this month's electricity allowance" if exo
+                 else "this month's electricity over allowance")
+        nums = ""
+    elif c.startswith(_LANE_PREFIX):
+        words = f"my {c[len(_LANE_PREFIX):]} GPU lane {'held by others' if exo else 'full'}"
+        nums = ""
+    elif c == "attention:juniper":
+        # Binding means the day-end pace is over the cap; the cap itself may not be reached yet.
+        spent = b.level is not None and b.line is not None and b.level >= b.line
+        words = "used today's messages to Juniper" if spent else "messages to Juniper over today's pace"
+        nums = (f" ({_n(b.level, 0)} of {_n(b.line, 0)} sent)" if b.level is not None and b.line is not None else "")
+    elif c == "claude":
+        words, nums = "Claude limit reached", ""
+    else:
+        words, nums = c, ""
+    return words if short else words + nums
+
+
+def _binding_rank(a: ArcSummaryV1) -> tuple:
+    b = a.binding
+    ratio = (b.price / b.ceiling) if b is not None and b.price is not None and b.ceiling else 0.0
+    # Energy's always-on bind sits at its ceiling all month: ranked after the constraints Orion's
+    # own load is pushing now, so it never crowds them out.
+    standing = b is not None and b.constraint == "energy" and b.bind_state == "exogenous_bind"
+    return (standing, -ratio, a.arc_id)
+
+
+def _binding_clause(frame: TemporalSelfFrameV1, now: datetime, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
+    tz = ZoneInfo(tz_name)
+
+    def clock(at) -> str:
+        local = as_utc(at).astimezone(tz)
+        return local.strftime("%H:%M") if local.date().isoformat() == frame.day_id else local.strftime("%a %H:%M")
+
+    opened = {a.arc_id: a for a in frame.active_by_kind.values()
+              if a.kind == "binding" and a.status == "open" and a.binding is not None}
+    opened.update({a.arc_id: a for a in frame.arcs_today
+                   if a.kind == "binding" and a.status == "open" and a.binding is not None})
+    if opened:
+        arcs = list(opened.values())
+        out_of_hands = sorted((a for a in arcs if a.binding.bind_state == "exogenous_bind"
+                               and a.binding.constraint != "energy"), key=_binding_rank)
+        named_all = sorted((a for a in arcs if a not in out_of_hands), key=_binding_rank)
+        named = named_all[:MAX_BINDING_NAMED]
+        parts = [f"{binding_words(a.binding)} since {clock(a.episode_began_at or a.began_at)} {_ref(a)}" for a in named]
+        if len(named_all) > len(named):
+            parts.append(f"and {len(named_all) - len(named)} more")
+        text = "Binding now: " + "; ".join(parts) if parts else "Binding now"
+        if out_of_hands:
+            text += " (out of my hands: " + ", ".join(f"{binding_words(a.binding)} {_ref(a)}" for a in out_of_hands) + ")"
+        return text + ".", named + out_of_hands
+    recent = [a for a in frame.arcs_today if a.kind == "binding" and a.status == "closed" and a.binding is not None
+              and a.ended_at is not None and 0.0 <= (now - as_utc(a.ended_at)).total_seconds() <= BINDING_PAST_SEC]
+    if not recent:
+        return None
+    arc = max(recent, key=lambda a: (as_utc(a.ended_at), a.arc_id))
+    began = arc.episode_began_at or arc.began_at
+    return (f"Was binding {clock(began)} to {clock(arc.ended_at)}: {binding_words(arc.binding, short=True)} "
+            f"{_ref(arc)}."), [arc]
+
+
 def _play_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
     plays = [a for a in frame.arcs_today if a.kind == "play" and a.subject_label.strip()]
     if not plays:
@@ -306,6 +396,10 @@ def project_stance_cue(
     strain = _strain_clause(frame, tz_name)
     if strain is not None:
         clauses.append(strain)
+
+    binding = _binding_clause(frame, now, tz_name)
+    if binding is not None:
+        clauses.append(binding)
 
     company = _company_clause(frame, tz_name)
     if company is not None:

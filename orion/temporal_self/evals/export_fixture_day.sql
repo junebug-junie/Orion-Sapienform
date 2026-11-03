@@ -127,6 +127,12 @@ SELECT json_build_object('k','arousal_transition','event_id',event_id,'day_id',d
 FROM temporal_self_event WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= :start AND occurred_at < :end;
 
+-- Felt state: the physiology node's binding rows (in the chronicle's event table).
+SELECT json_build_object('k','body_binding','event_id',event_id,'day_id',day_id,'occurred_at',occurred_at,
+  'source_ref',source_ref,'payload_json',payload_json)
+FROM temporal_self_event WHERE source_kind = 'body_binding' AND source_table = 'physiology'
+  AND occurred_at >= :start AND occurred_at < :end;
+
 -- Orion plays Zelda (section F): finished Retro sessions, whole rows (one per session). The table is
 -- created by manual_migration_retro_play_sessions_v1.sql (post-pull auto-applied).
 SELECT (jsonb_build_object('k','retro_play') || to_jsonb(r))::json

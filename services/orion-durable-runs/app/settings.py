@@ -174,6 +174,11 @@ class Settings(BaseSettings):
     # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
     # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
     temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
+    # Felt state (body economy design Organ 5, "Where Orion sees it"): the physiology node writes a
+    # body_binding row when a constraint's price starts, changes, keeps or stops binding, and the
+    # chronicle folds them into one `binding` arc per constraint episode (chat stance cue, Day
+    # letter, recent arcs). Awareness only: no price or gate reads it. Off: no rows, no arcs.
+    temporal_self_binding_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_BINDING_ARCS_ENABLED")
     # Orion plays Zelda (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F): the
     # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
     # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.

@@ -207,6 +207,27 @@ def cause_row(new: ArousalReadingV1, day_id: str, joined: list[str], seed: bool)
     }
 
 
+# Felt state (body economy Organ 5): the physiology node's own binding rows
+# (``app/body_binding.py``). Same table and idempotent insert as the regulation rows.
+INSERT_BINDING_SQL = """
+INSERT INTO temporal_self_event (event_id, day_id, occurred_at, source_kind, source_table, source_ref,
+                                 subject_ref, label, payload_json)
+VALUES (%(event_id)s, %(day_id)s, %(occurred_at)s, 'body_binding', 'physiology',
+        %(source_ref)s, %(subject_ref)s, %(label)s, %(payload)s::jsonb)
+ON CONFLICT (event_id) DO NOTHING
+"""
+
+
+async def record_binding(pool: Any, row: dict) -> bool:
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(INSERT_BINDING_SQL, row)
+        return True
+    except Exception:  # noqa: BLE001 - history is best-effort; the next tick retries
+        logger.warning("body_binding_write_failed event=%s", row.get("event_id"), exc_info=True)
+        return False
+
+
 async def record_transition(pool: Any, row: dict) -> bool:
     try:
         async with pool.connection() as conn:

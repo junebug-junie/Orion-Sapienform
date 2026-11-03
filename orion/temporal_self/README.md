@@ -77,6 +77,30 @@ or "Was strained 09:00 to 09:40 (...)"), Day letter ("Strained: ..."), reverie b
 truth (`strained since` / `was strained`, matched against `episode_began_at` too). Kill switch:
 `TEMPORAL_SELF_STRAIN_ARCS_ENABLED` (orion-durable-runs).
 
+### Binding arcs (felt state, body economy Organ 5, 2026-11-03)
+
+Spec: `docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`, Organ 5 "Where Orion sees
+it". Strain only reaches Orion at the 34 °C reflex; between the soft line and that, the heat price
+binds and the hot gate refuses GPU work, and nothing in the day said so. Source: the physiology
+node's own `body_binding` rows in `temporal_self_event` (`source_table='physiology'`, subject
+`orion:body:<constraint>`; producer `services/orion-durable-runs/app/body_binding.py`). The adapter
+keeps each row's own `event_id` (same reason as strain). Bound = the price's `bind_state` is
+`binding`, `exogenous_bind` or `stuck_at_ceiling`. One `binding` arc per constraint episode, several
+open at once (`state.active` / `frame.active_by_kind` key `binding:<constraint>`): opens on an
+`onset` row (bound for 240 s), `change` / `keepalive` rows refresh `ArcBindingV1` (bind state,
+level, line, price, ceiling, `self_spent`, the price's `why`), a `release` row (slack for 240 s)
+closes it `process_ended` at the first slack reading. `no_reading` writes nothing: no row for
+`binding_stale_sec` (4,500 s) closes it at its last row (`source_stale`), and so does a row from a new
+episode. It carries over midnight like strain, binds no context, and dream replay skips it.
+Readers: stance cue ("Binding now: cabinet running hot (32.4 °C, line 31 °C) since 14:02 [arc:];
+my agent GPU lane full since 13:10 [arc:] (out of my hands: Claude limit reached [arc:])", at most two
+named by price / ceiling, energy's always-on bind named last and never "out of my hands"; with none
+open, "Was binding 14:02 to 14:30: cabinet running hot [arc:]" for one that ended in the last 6 h),
+Day letter ("Body limits binding: ..."), recent arcs, citation truth (`binding now:` /
+`was binding HH:MM` / `body limits binding:`). Awareness only: no price, gate or veto reads these
+arcs. Kill switch: `TEMPORAL_SELF_BINDING_ARCS_ENABLED` (orion-durable-runs). Replay:
+`services/orion-durable-runs/evals/body_binding_replay.py [--live --days 7]`.
+
 ### Play arcs (Orion plays Zelda, 2026-10-22)
 
 Spec: `docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md` section F. Source `retro_play`:

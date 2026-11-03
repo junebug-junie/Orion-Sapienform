@@ -741,6 +741,35 @@ Replay: `python -P services/orion-durable-runs/evals/body_binding_replay.py [--l
 Deploy order: orion-thought and orion-hub before this service (`binding` is new to `extra="forbid"`
 frame readers).
 
+**Self-monitor node (2026-11-03, self-monitor organ patch 2: host and publish).** Spec:
+`docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md`. Orion keeps a track record of their
+own faculties (acts, forecasts, turn self-bets, vision expectations). The `self_monitor` node runs
+after `immune`, at most once per `SELF_MONITOR_INTERVAL_SEC` (3,600 s):
+
+1. It reads every bet source for the last 7 days (`app/self_monitor_store.py`; the SQL and adapters are
+   `orion/self_monitor/collect.py`, the same path `python -P -m orion.self_monitor.report` uses). Each
+   source reads in its own read-only transaction with a 15 s statement timeout. A failed source is
+   named in `source_errors`, never skipped silently.
+2. It reduces the bets per faculty and applies hysteresis: a new status must hold 3 evaluations
+   (`orion/self_monitor/host.py`). The memory for that is a small per-faculty carry in this thread's
+   checkpoint (`self_monitor.carry`), carried over midnight.
+3. It publishes the held `SelfMonitorStateV1` to Redis `orion:self_monitor:latest` (TTL 3 h) and
+   appends one row to `substrate_self_monitor_history` (migration
+   `services/orion-sql-db/manual_migration_self_monitor_history_v1.sql`; rows older than
+   `SELF_MONITOR_HISTORY_RETENTION_DAYS`, 30, are pruned by the node).
+4. Each held status change writes one `temporal_self_event` row (`source_kind =
+   faculty_status_changed`, subject `faculty:<name>`). While a notable status (broken, unreliable,
+   miscalibrated) holds, a keepalive row follows every 12 h. The chronicle folds these rows into one
+   `faculty` arc per notable stretch (see `orion/temporal_self/README.md`, "Faculty arcs"). A failed
+   write is retried at the next evaluation.
+
+`GET /self_monitor/state` returns the Redis state verbatim plus `view` (fresh or stale); 404 when no
+evaluation landed in the last 3 h. `/health` shows the node's last summary under
+`temporal_self.self_monitor` (counts by status, source errors, rows written). Own timeout
+(`SELF_MONITOR_TIMEOUT_SEC`, 120 s); a failure is the warning `self_monitor_failed` and never touches the
+regulation reading. Nothing obeys the state yet: effects (act gate, self-question, telling Juniper) are
+later patches. Kill switch: `SELF_MONITOR_ENABLED=false` (no state, no rows, faculty arcs not read).
+
 **Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's
 `retro_play_sessions` (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`,
 REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc per finished Retro

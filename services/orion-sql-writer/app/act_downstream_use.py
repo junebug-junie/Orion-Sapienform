@@ -82,6 +82,8 @@ ARC_SOURCE_TABLES = (
     "reverie_visual_attempt", "reverie_visual_chain", "substrate_action_outcomes", "substrate_attention_schema",
     "substrate_attention_broadcast_log", "substrate_reverie_chain", "substrate_reverie_thought", "vision_events", "vision_handoff_street_outbox",
     "vision_motion_story", "vision_presence_transition",
+    # Self-monitor patch 2: the self_monitor node's faculty_status_changed rows (faculty arcs).
+    "self_monitor",
 )
 
 # Families with an explicit (non-direct) join path. Any other actor links only through a

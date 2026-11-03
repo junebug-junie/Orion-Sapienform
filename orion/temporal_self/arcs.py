@@ -41,6 +41,7 @@ from orion.schemas.temporal_self import (
     ArcAttentionSummaryV1,
     ArcBindingV1,
     ArcSegmentV1,
+    ArcSummaryV1,
     ExpectationRefV1,
     TemporalSelfArcV1,
     TemporalSelfContextItemV1,
@@ -50,7 +51,7 @@ from orion.schemas.temporal_self import (
 )
 from orion.temporal_self.broadcast import BroadcastTickView
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_window
-from orion.temporal_self.sources import VISIT_REF_PREFIX, merge_street_labels
+from orion.temporal_self.sources import VISIT_REF_PREFIX, clip, merge_street_labels
 
 INTERRUPTIONS_CAP = 64
 DAY_LIST_CAP = 256
@@ -127,6 +128,11 @@ class ReducerConfig:
     # camera to the door: config/vision_topology.yaml approach_door prior_sec [3, 30] plus its late
     # margin 2 x (30 - 3) (orion-sql-writer vision_handoff.py); test_street_arcs.py reads the yaml.
     street_visit_gap_sec: float = 84.0
+    # Faculty (self-monitor organ patch 2): the self_monitor node writes a keepalive row every
+    # FACULTY_KEEPALIVE_SEC (12 h, orion/self_monitor/host.py) while a notable status holds. An open
+    # faculty arc with no row for 2.5x that means the organ stopped (flag off, crash): closed
+    # source_stale at its last row, so "broken since" is never asserted past the evidence.
+    faculty_stale_sec: float = 2.5 * 12 * 3600.0
 
 
 LANE_RULES = {
@@ -156,6 +162,11 @@ LANE_RULES = {
                 "release (slack >= 240 s, process_ended at the first slack reading); a row from a new episode or "
                 "no row for binding_stale_sec closes it at its last row (source_stale); nothing binds to it by "
                 "time; spans days"),
+    "faculty": ("faculty_status_changed (the self_monitor node's own rows); one arc per faculty per stretch "
+                "in a notable held status (broken, unreliable, miscalibrated); keepalives (every 12 h) only "
+                "refresh; a change to another notable status closes it and opens the next (process_ended); "
+                "a change to reliable/unknown closes it (process_ended); no row for faculty_stale_sec closes "
+                "it at its last row (source_stale); nothing binds to it by time; spans days"),
 }
 
 
@@ -373,7 +384,7 @@ def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
 # binds to them by time.
 # A street arc is a fact about the outside world: room percepts and Orion's own attention rows in
 # the same seconds are not about it.
-_NO_CONTEXT_KINDS = {"concern", "company", "strain", "street", "binding"}
+_NO_CONTEXT_KINDS = {"concern", "company", "strain", "street", "binding", "faculty"}
 
 
 def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
@@ -829,6 +840,52 @@ def _fold_binding(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
     state.active[binding_active_key(e.subject_ref)] = arc.arc_id
 
 
+FACULTY_ARC_STATUSES = frozenset({"broken", "unreliable", "miscalibrated"})
+
+
+def faculty_status_of(arc: TemporalSelfArcV1 | ArcSummaryV1) -> str:
+    """A faculty arc's status: the label is ``<faculty> <status>``."""
+    return arc.subject_label.rsplit(" ", 1)[-1] if " " in arc.subject_label else ""
+
+
+def _faculty_arc(state: TemporalSelfStateV1, subject_ref: str) -> TemporalSelfArcV1 | None:
+    for arc in state.arcs.values():
+        if arc.kind == "faculty" and arc.status == "open" and arc.subject_ref == subject_ref:
+            return arc
+    return None
+
+
+def _fold_faculty(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """Faculty: one arc per stretch a faculty spends in a notable held status. The self_monitor node
+    writes a row on every held status change and a keepalive every 12 h while a notable status holds,
+    so an open arc's last row is at most ~13 h old while the organ runs."""
+    assert state.day_id is not None and e.subject_ref is not None
+    faculty = str(e.payload.get("faculty") or e.label or "")
+    to_status = str(e.payload.get("to") or "")
+    t = e.occurred_at
+    ref = _ref(e)
+    since = as_utc(e.payload.get("since")) or t
+    arc = _faculty_arc(state, e.subject_ref)
+    if arc is not None and faculty_status_of(arc) != to_status:
+        # The status moved on (to another notable status, or back to reliable/unknown): the stretch ends.
+        _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+        _close(arc, "process_ended", max(t, arc.last_seen_at))
+        arc = None
+    if to_status not in FACULTY_ARC_STATUSES:
+        return
+    if arc is None:
+        arc = TemporalSelfArcV1(
+            arc_id=arc_id_for(state.day_id, "faculty", e.subject_ref, ref), day_id=state.day_id, kind="faculty",
+            subject_ref=e.subject_ref, subject_label=clip(f"{faculty} {to_status}"), began_at=t,
+            last_seen_at=t, status="open", segments=[ArcSegmentV1(began_at=t, ended_at=t)],
+            episode_began_at=min(since, t),
+        )
+        _add_evidence(arc, ref)
+        state.arcs[arc.arc_id] = arc
+        return
+    _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+
+
 def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> None:
     kind = PROCESS_KINDS[e.source_kind]
     assert state.day_id is not None and e.subject_ref is not None
@@ -1028,6 +1085,8 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
         _fold_strain(state, e)
     elif k == "body_binding":
         _fold_binding(state, e)
+    elif k == "faculty_status_changed":
+        _fold_faculty(state, e)
     elif k in ("dream_hypothesis", "expectation_verdict", "action_outcome"):
         _fold_expectation(state, e)
         if k == "action_outcome":
@@ -1062,6 +1121,8 @@ def _expire(state: TemporalSelfStateV1, at: datetime, cfg: ReducerConfig) -> Non
             _end_strain(state, arc, "source_stale", arc.last_seen_at)  # no keepalive: no evidence past it
         if arc.kind == "binding" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.binding_stale_sec:
             _end_binding(state, arc, "source_stale", arc.last_seen_at)  # unread or producer gone
+        if arc.kind == "faculty" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.faculty_stale_sec:
+            _close(arc, "source_stale", arc.last_seen_at)  # the organ stopped writing keepalives
 
 
 def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
@@ -1080,7 +1141,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
         if arc.day_id != old_day or arc.status == "closed":
             continue
         last_row_at = arc.last_seen_at
-        if arc.kind in ("company", "strain", "binding") and arc.status == "open":
+        if arc.kind in ("company", "strain", "binding", "faculty") and arc.status == "open":
             # Still open at midnight (the stale timeout already ran at day_end): going on.
             _extend(arc, max(day_end, arc.last_seen_at), None, accrue=True)
         _close(arc, "day_boundary", arc.last_seen_at)
@@ -1115,6 +1176,16 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
                 episode_began_at=arc.episode_began_at,
                 binding=None if arc.binding is None else arc.binding.model_copy(),
+            ))
+        elif arc.kind == "faculty":
+            continuations.append(TemporalSelfArcV1(
+                arc_id=arc_id_for(next_day, "faculty", arc.subject_ref, arc.arc_id), day_id=next_day,
+                kind="faculty", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
+                # last_seen keeps the real last row, so the stale timeout keeps counting from it.
+                began_at=day_end, last_seen_at=last_row_at, status="open",
+                segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
+                carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+                episode_began_at=arc.episode_began_at,
             ))
         elif arc.kind == "concern":
             cont = TemporalSelfArcV1(

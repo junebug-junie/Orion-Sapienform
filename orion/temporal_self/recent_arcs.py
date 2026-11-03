@@ -68,6 +68,8 @@ def _what(arc: ArcSummaryV1) -> str:
         return f"played {label}"
     if arc.kind == "street":
         return f"saw {label}"  # the label already says "Outside (<camera>): ..."
+    if arc.kind == "faculty":
+        return f"track record: {label}"  # "<faculty> <status>"
     if arc.kind == "strain":
         causes = strain_cause_text(arc.subject_label)
         return f"strained ({causes})" if causes else "strained"

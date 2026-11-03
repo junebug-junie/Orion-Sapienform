@@ -10,6 +10,7 @@ on:
       - "orion/self_monitor/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
+      - "orion/temporal_self/**"
       - "services/orion-thought/app/self_track_record_cue.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-thought/app/reverie.py"
@@ -28,6 +29,7 @@ on:
     branches: [main]
     paths:
       - "orion/self_monitor/**"
+      - "orion/temporal_self/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
       - "services/orion-thought/app/self_track_record_cue.py"

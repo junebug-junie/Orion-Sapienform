@@ -48,6 +48,13 @@ rows (one per onset, bound-state change, keepalive and release of a body-economy
 price binds) become one arc per constraint episode. Same consumer-first rollout: every stored arc
 and frame now carries ``binding`` (``null`` on other kinds), so orion-thought and orion-hub deploy
 before orion-durable-runs.
+
+Self-monitor organ patch 2 (2026-11-03, docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md)
+added ``faculty_status_changed`` / arc kind ``faculty``: the self_monitor node's own status-change rows
+(already in ``temporal_self_event``) become one arc per stretch a faculty spends broken, unreliable or
+miscalibrated ("my walkway grading broke on day X and came back on day Y"). ``episode_began_at`` holds
+when the status began. Same consumer-first rollout: orion-thought, orion-hub and orion-dream before
+orion-durable-runs.
 """
 
 from __future__ import annotations
@@ -92,6 +99,8 @@ TemporalSourceKind = Literal[
     "street_event",
     # the physiology node's binding-constraint rows (felt state: onset, change, keepalive, release)
     "body_binding",
+    # the self-monitor's held faculty status changes and keepalives (self-monitor organ patch 2)
+    "faculty_status_changed",
 ]
 
 ArcKind = Literal[
@@ -108,6 +117,7 @@ ArcKind = Literal[
     "play",
     "street",
     "binding",
+    "faculty",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]

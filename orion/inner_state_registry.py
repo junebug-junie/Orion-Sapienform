@@ -53,6 +53,7 @@ from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import RegulationStateV1
+from orion.schemas.self_monitor import SelfMonitorStateV1
 from orion.schemas.physiology import PhysiologyStateV1
 from orion.schemas.physiology_want import WantDecisionV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
@@ -1521,6 +1522,62 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "to act (gpu_pool_events; reason gpu_fault:<kind>:<seat>, reads unknown). Transport: Redis orion:regulation:latest "
             "+ GET /regulation/state; history: temporal_self_event "
             "arousal_transition rows. No bus channel (no subscriber)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="self_monitor.state.v1",
+        schema=SelfMonitorStateV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/self_monitor/host.py evaluate(): one held FacultyRecordV1 per faculty (status
+            # reliable / unreliable / broken / miscalibrated / unknown, with the rule that fired in
+            # reasons), reduced by orion/self_monitor/record.py reduce_bets from 7 days of settled bets
+            # and held by advance_carry (a new status must hold 3 hourly evaluations). Written by the
+            # `self_monitor` node of services/orion-durable-runs/app/temporal_self_graph.py hourly.
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "reliable or unknown for every faculty: no faculty fails to execute, works less "
+                        "than half the time, or states a confidence its outcomes contradict. Not the live "
+                        "state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 "
+                        "miscalibrated of 46 faculties, so the bucket can and does leave rest."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "Redis orion:self_monitor:latest expired (TTL 3 h, three hourly evaluations), the "
+                        "organ is off (SELF_MONITOR_ENABLED=false) or durable-runs is down: track record "
+                        "unknown, and every reader behaves as if the organ did not exist "
+                        "(orion.self_monitor.view: unknown changes nothing). A faculty missing from a "
+                        "fresh state is untracked, never reliable."
+                    ),
+                ),
+            ),
+        ),
+        shadow_reason=(
+            "Patch 2 of the self-monitor organ: published, no effects. Its one reader is Orion's own "
+            "chronology (faculty arcs, read back in the Day letter and recent arcs); no gate, budget "
+            "or loop obeys a faculty status until patch 4 (E1 act gate) lands with its own flag and "
+            "must-not test."
+        ),
+        cognition_consumers=(
+            "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> "
+            "orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is "
+            "broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed "
+            "rows; read by the Day letter and recent arcs)",
+        ),
+        notes=(
+            "Self-monitor organ (rung 6) patch 2, docs/superpowers/specs/2026-10-20-self-monitor-organ-"
+            "design.md. Inputs: grammar_acts, prediction_turn_self_bet, prediction_action_bet, "
+            "prediction_forecast (champion), vision_percept_expectation (orion/self_monitor/collect.py). "
+            "NOT independent of those sources' own graders: forecast coverage is prediction_forecast."
+            "in_80, act outcomes are grammar_acts' own; the organ re-reads them per faculty, it adds "
+            "no sensor. Transport: Redis orion:self_monitor:latest + GET /self_monitor/state; history: "
+            "substrate_self_monitor_history (30 days) and temporal_self_event faculty_status_changed "
+            "rows. No bus channel (no subscriber)."
         ),
     ),
     InnerStateSignal(

@@ -298,7 +298,8 @@ ARC_CANDIDATES_MAX = 20
 # out of dreams until that is designed on purpose). A binding arc (felt state: a body-economy
 # constraint whose price binds) is the same kind of body state, several open at once for hours: out
 # of dreams for the same reason.
-ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain", "binding"})
+# A faculty arc (self-monitor patch 2) is a days-long stretch of a track record: same reason.
+ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain", "binding", "faculty"})
 
 
 def arc_replay_slots(k: int) -> int:

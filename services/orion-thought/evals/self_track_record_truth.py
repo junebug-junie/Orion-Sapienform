@@ -20,9 +20,12 @@ _INT = re.compile(r"\d+")
 
 def allowed_numbers(r: FacultyRecordV1) -> set[int]:
     nums = {r.n_failed_to_execute, r.n_graded + r.n_failed_to_execute, r.n_graded, r.streak_len}
-    for share in (r.reliability, r.stated_mean, r.execution_failure):
+    for share in (r.reliability, r.stated_mean, r.execution_failure, r.calibrated_share):
         if share is not None:
-            nums.add(round(100 * share))
+            p = round(100 * share)
+            nums.add(min(99, max(1, p)) if 0.0 < share < 1.0 else p)  # the cue's no-false-0/100 clamp
+    days = (r.window_end - r.window_start).total_seconds() / 86400.0
+    nums.add(round(days))  # "in the last N days"
     return nums
 
 

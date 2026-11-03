@@ -181,3 +181,28 @@ def test_context_key_is_classified() -> None:
     from orion.schemas.context_provenance import classify
 
     assert classify("self_track_record") == "derived_summary"
+
+
+@pytest.mark.asyncio
+async def test_thread_start_failure_does_not_wedge_the_refresh(monkeypatch) -> None:
+    class NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(cue_mod.threading, "Thread", NoThread)
+    cue = await cue_mod.build_self_track_record_cue("c-1", purpose="stance", now=NOW)
+    assert cue.skip_reason == "not_loaded" and cue_mod._refreshing is False
+
+
+def test_warm_claims_the_refresh_so_a_racing_turn_does_not_read_twice(monkeypatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(cue_mod, "fetch_raw", lambda: calls.append(1) or _state())
+    monkeypatch.setattr(cue_mod, "_refreshing", True)  # a turn's background read already running
+    cue_mod.warm()
+    assert calls == []
+    monkeypatch.setattr(cue_mod, "_refreshing", False)
+    cue_mod.warm()
+    assert calls == [1] and cue_mod._refreshing is False and cue_mod._cache[1] is not None

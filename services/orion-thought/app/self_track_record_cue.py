@@ -79,8 +79,19 @@ def _cached() -> Optional[tuple[float, object, Optional[str]]]:
         if start:
             _refreshing = True
     if start:
-        threading.Thread(target=refresh, name="self-track-record", daemon=True).start()
+        try:
+            threading.Thread(target=refresh, name="self-track-record", daemon=True).start()
+        except Exception as exc:  # noqa: BLE001 -- e.g. "can't start new thread": retry next call
+            logger.warning("self_track_record_refresh_start_failed err=%s: %s", type(exc).__name__, exc)
+            with _lock:
+                _refreshing = False
     return cached
+
+
+def last_fetch_error() -> Optional[str]:
+    """The last read's error class name, or None (for the skip log)."""
+    with _lock:
+        return _cache[2] if _cache is not None else None
 
 
 def render(now: datetime) -> SelfTrackRecordCueV1:
@@ -99,7 +110,12 @@ def render(now: datetime) -> SelfTrackRecordCueV1:
 
 def warm() -> None:
     """First read at startup (in a thread), so the first turn can already show the cue. Never raises."""
+    global _refreshing
     try:
+        with _lock:  # a first turn racing startup must not start a second read alongside this one
+            if _refreshing:
+                return
+            _refreshing = True
         refresh()
         cue = render(datetime.now(timezone.utc))
         logger.info("self_track_record_warm reason=%s chars=%s", cue.skip_reason, len(cue.text))
@@ -126,6 +142,6 @@ async def build_self_track_record_cue(
                     correlation_id, purpose, len(cue.text), ",".join(cue.shown), cue.lines_dropped,
                     cue.state_age_sec)
     else:
-        logger.info("self_track_record_skipped corr=%s purpose=%s reason=%s age_sec=%s",
-                    correlation_id, purpose, cue.skip_reason, cue.state_age_sec)
+        logger.info("self_track_record_skipped corr=%s purpose=%s reason=%s age_sec=%s fetch_err=%s",
+                    correlation_id, purpose, cue.skip_reason, cue.state_age_sec, last_fetch_error() or "-")
     return cue

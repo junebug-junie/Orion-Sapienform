@@ -106,6 +106,15 @@ class FacultyRecordV1(BaseModel):
     stated_mean: Optional[float] = Field(
         None, description="Mean stated confidence over graded bets that stated one."
     )
+    calibrated_share: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description=(
+            "Decay-weighted upheld share over the SAME bets as stated_mean (graded bets that stated a "
+            "confidence): the number calibration is judged on. For interval bets, realized coverage."
+        ),
+    )
+    calibrated_lo: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wilson lower bound of calibrated_share.")
+    calibrated_hi: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wilson upper bound of calibrated_share.")
     brier: Optional[float] = None
     brier_skill: Optional[float] = Field(None, description="1 - Brier / base-rate Brier; None if undefined.")
     streak_kind: Optional[Literal["upheld", "refuted", "failed_to_execute"]] = None

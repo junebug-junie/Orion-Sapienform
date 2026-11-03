@@ -50,6 +50,24 @@ starved), so a Prime call does not START while Juniper's call waits for the slot
 generating is NOT cancelled (the bus RPC has no cancel); the gateway generates nothing for a call
 granted after its seat wait (llm-gateway app/main.py).
 
+Self-monitor act gate (E1, 2026-11-03; orion/self_monitor/gate.py): Prime opens its acts itself, so
+the gate sits here, on the same faculty names the organ grades (``act.prime.<verb>[.<name>]``) and the
+same rules: refuse-only, an unknown/stale/absent state or a gate fault changes nothing, one re-test
+probe per faculty per SELF_MONITOR_PROBE_INTERVAL_SEC, spent only when the act really opens. Where
+each verb is gated, and what a refusal means:
+
+* ``predict`` (a concern bet): before the concern's act opens. A refusal places no bet; the concern
+  itself stays in Prime's state, keeps its TTL, can be kept, dropped or settled by a question, and
+  shows in the track record as before. Prime is told once per concern (a frame line, not a change).
+  When a concern whose act never opened ends, a late open+close is placed only if the gate admits it
+  as an ordinary act at that moment; while the faculty is failing it is not (not even as the probe:
+  its outcome is known, so it would test nothing) and the record is marked sent with no act. The
+  probe is spent only after the open was published.
+* ``ask`` / ``regulate`` (a move): before the holdback arm is drawn, so a refusal removes the move
+  from both arms alike and the treated/control comparison stays fair. Shown as "my move was not sent".
+* ``infer`` (the thought): before the bid. A refusal is no bid and no model call; the probe is spent
+  only when the model was reached (the thought act opens), matching the act's own rule.
+
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
 """
@@ -79,6 +97,7 @@ from orion.introspect.transport import (
 )
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import (
+    ACTOR,
     CONCERN_COMPONENT,
     REGULATE_COMPONENT,
     regulate_act,
@@ -135,6 +154,9 @@ from orion.schemas.introspect import (
     IntrospectToolBindingV1,
     QueueCuriosityFocusArguments,
 )
+from orion.self_monitor.adapters import act_faculty
+from orion.self_monitor.gate import FAILING_STATUSES, ActGate, GateDecision, last_attempt_sql, read_view_sync
+from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
 
 logger = logging.getLogger("orion-mind.prime")
 
@@ -190,6 +212,48 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# A refused concern bet is asked again at most this often (the tick is 15 s; the answer changes at most
+# hourly, when the self-monitor publishes).
+GATE_RECHECK_SEC = 60.0
+_LEDGER_CONNECT_TIMEOUT_SEC = 3
+_LEDGER_STATEMENT_TIMEOUT_MS = 5000
+
+
+def _ledger_rows(dsn: str, actor: str, verb: str, secs: float) -> list[dict[str, Any]]:
+    """grammar_acts rows for the gate's probe and same-job bookkeeping. Raises on failure; the gate
+    then lets its in-process memo decide (never "no attempt")."""
+    import psycopg2  # inside: a missing driver degrades to an unreadable ledger
+    import psycopg2.extras
+
+    conn = psycopg2.connect(dsn, connect_timeout=_LEDGER_CONNECT_TIMEOUT_SEC,
+                            options=f"-c statement_timeout={_LEDGER_STATEMENT_TIMEOUT_MS}")
+    try:
+        conn.set_session(readonly=True, autocommit=True)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(last_attempt_sql("pyformat"), {"actor": actor, "verb": verb, "secs": float(secs)})
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def build_act_gate(settings: Any) -> ActGate:
+    """Prime's E1 gate. No DSN: the ledger is unreadable and the memo alone decides. A concern act's job
+    is its concern (``object_ref prime_concern:<id>``): a retry of a started open is the same job."""
+    dsn = str(getattr(settings, "SELF_MONITOR_LEDGER_PG_DSN", "") or "").strip()
+    return ActGate(
+        enabled=bool(getattr(settings, "SELF_MONITOR_ACT_GATE_ENABLED", False)),
+        probe_interval_sec=float(getattr(settings, "SELF_MONITOR_PROBE_INTERVAL_SEC", 21600.0)),
+        read_view=lambda now: read_view_sync(str(getattr(settings, "ORION_BUS_URL", "") or ""), now=now),
+        ledger_rows=lambda actor, verb, secs: _ledger_rows(dsn, actor, verb, secs) if dsn else None,
+        job_key_of=lambda row: row.get("object_ref"),
+    )
+
+
+def _gate_why(d: GateDecision, interval_sec: float) -> str:
+    return (f"my own record says these have been {d.status} lately (self-monitor: track_record_failing); "
+            f"one is re-tested every {interval_sec / 3600:g} h")
+
+
 def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
     """Show a line in the next frame WITHOUT making it a change (a refusal Prime caused itself must
     not wake it again, or a refused move would loop)."""
@@ -236,6 +300,13 @@ class PrimeRuntime:
         self.clock = clock
         self.turns = turns
         self.state = PrimeStateV1()
+        self.gate = build_act_gate(settings)
+        # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
+        self._bet_refused_at: dict[str, datetime] = {}
+        # The offered infer probe, spent only when the model is reached (_open_thought).
+        self._infer_probe: Optional[str] = None
+        self._infer_refusal_told = False
+        self._infer_refused_at: Optional[datetime] = None
         self._last_settle: Optional[datetime] = None
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
@@ -364,21 +435,142 @@ class PrimeRuntime:
         return await self._publish(act_closed_event(act, produced=produced, source_service=SOURCE_SERVICE,
                                                     source_component=component, note=note, at=at))
 
+    # --- self-monitor act gate (E1) ---------------------------------------------------------
+    async def _gate_decide(self, verb: str, object_ref: str, *, job_key: Optional[str] = None,
+                           recheck_soon: bool = False) -> Optional[GateDecision]:
+        """The gate's answer, or None (gate off, or a gate fault: one direction only, nothing changes).
+        Runs in a worker thread: the view read is Redis, the ledger read Postgres. ``recheck_soon``: this
+        act was refused under GATE_RECHECK_SEC ago; while the fresh view still holds the faculty failing
+        it stays refused without a ledger read. The view is always read, so an unknown, stale or healed
+        view admits at once, exactly like the gate being off."""
+        if not self.gate.enabled:
+            return None
+        now = self.clock()
+
+        def run() -> GateDecision:
+            view = self.gate.begin(now)
+            faculty = act_faculty(ACTOR, verb, object_ref)
+            if recheck_soon and view.known and view.status(faculty) in FAILING_STATUSES:
+                return GateDecision(faculty, False, False, view.status(faculty), TRACK_RECORD_FAILING_REASON)
+            return self.gate.decide(ACTOR, verb, object_ref, now=now, job_key=job_key)
+
+        try:
+            return await asyncio.to_thread(run)
+        except Exception:  # noqa: BLE001
+            logger.warning("prime_self_monitor_gate_failed verb=%s", verb, exc_info=True)
+            return None
+
+    def _admit(self, d: Optional[GateDecision], *, job_key: Optional[str] = None) -> bool:
+        """Spend an offered probe now (the act is about to open). Prime is one loop, so a claim only
+        fails if something else already started this window's probe: then the act is refused."""
+        if d is None or not d.admit:
+            return d is None
+        if d.probe:
+            return self.gate.claim_probe(d.faculty, now=self.clock(), job_key=job_key)
+        self.gate.note_job_started(d.faculty, job_key, now=self.clock())
+        return True
+
+    async def _concern_bet(self, concern_id: str, text: str, now: datetime) -> tuple[bool, Optional[GateDecision]]:
+        """(may open, the decision). The probe is spent by the caller only after the open was published,
+        so a failed publish spends nothing (and leaves no in-process memo a restart could lose)."""
+        refused_at = self._bet_refused_at.get(concern_id)
+        ref = f"prime_concern:{concern_id}"
+        d = await self._gate_decide("predict", ref, job_key=ref, recheck_soon=(
+            refused_at is not None and (now - refused_at).total_seconds() < GATE_RECHECK_SEC))
+        if d is None or d.admit:
+            self._bet_refused_at.pop(concern_id, None)
+            return True, d
+        if refused_at is None:
+            # Once per concern: a frame line, not a change (a refusal must not wake Prime by itself).
+            self.state = _with_outcome_line(self.state, f"my bet that the concern {text[:120]!r} leads somewhere "
+                                                        f"was not placed: {_gate_why(d, self.gate.probe_interval_sec)}")
+            logger.info("prime_act_refused verb=predict concern=%s gate=%s", concern_id, d.label())
+            self._bet_refused_at[concern_id] = now
+        elif (now - refused_at).total_seconds() >= GATE_RECHECK_SEC:
+            self._bet_refused_at[concern_id] = now
+        return False, d
+
+    def _bet_opened(self, d: Optional[GateDecision], concern_id: str) -> None:
+        if d is None:
+            return
+        ref = f"prime_concern:{concern_id}"
+        if d.probe:
+            self.gate.claim_probe(d.faculty, now=self.clock(), job_key=ref)
+        else:
+            self.gate.note_job_started(d.faculty, ref, now=self.clock())
+
+    async def _late_concern_bet_allowed(self, concern_id: str) -> bool:
+        """A concern whose act never opened has ended: open+close it now only if the gate admits it as an
+        ordinary act NOW (gate off, unknown/stale/absent view, healthy faculty, or a same-job retry). A
+        failing faculty -> no late bet, not even as its probe: the outcome is known, so a late open would
+        test nothing."""
+        ref = f"prime_concern:{concern_id}"
+        d = await self._gate_decide("predict", ref, job_key=ref)
+        return d is None or (d.admit and not d.probe)
+
+    async def _move_refusal(self, move: Any, *, thought_id: str) -> Optional[str]:
+        """None: the move may go (probe spent if it was one). Else why it was refused. Asked before the
+        holdback arm is drawn, so both arms are refused alike."""
+        if isinstance(move, RegulateMoveV1):
+            verb, ref = "regulate", f"physiology_family:{move.family}"
+        else:
+            verb = "ask"
+            ref = f"curiosity_focus:{prime_focus_id(question=move.question, why=move.why, thought_id=thought_id)}"
+        d = await self._gate_decide(verb, ref)
+        if self._admit(d):
+            return None
+        logger.info("prime_act_refused verb=%s gate=%s", verb, d.label() if d else "-")
+        what = "signals" if verb == "regulate" else "questions"
+        return _gate_why(d, self.gate.probe_interval_sec).replace("these", f"my {what}", 1)
+
+    async def _thought_gate_admits(self, now: datetime) -> bool:
+        """Before the bid. A probe is only offered here; it is spent when the model is reached. A refusal
+        is re-checked against the ledger at most every GATE_RECHECK_SEC (the view every tick)."""
+        self._infer_probe = None
+        last = self._infer_refused_at
+        d = await self._gate_decide("infer", "prime_thought:", recheck_soon=(
+            last is not None and (now - last).total_seconds() < GATE_RECHECK_SEC))
+        if d is None or (d.admit and not d.probe):
+            self._infer_refusal_told = False
+            self._infer_refused_at = None
+            return True
+        if d.probe:
+            self._infer_probe = d.faculty
+            self._infer_refused_at = None
+            return True
+        if last is None or (now - last).total_seconds() >= GATE_RECHECK_SEC:
+            self._infer_refused_at = now
+        logger.info("prime_act_refused verb=infer gate=%s pending=%d", d.label(), len(self.state.pending_changes))
+        if not self._infer_refusal_told:
+            self._infer_refusal_told = True
+            self.state = _with_outcome_line(self.state, f"at {now:%H:%M} UTC I did not start a thought: "
+                                                        f"{_gate_why(d, self.gate.probe_interval_sec)}")
+        return False
+
     async def _flush_concern_acts(self) -> None:
         """Open the act of every concern that has none yet (new, or held from before concern acts), then
         publish the close of every unpublished concern record. Marked done only after a publish
         succeeds, so a failed or interrupted send is retried next tick; the ledger keeps the first open
-        and the first close of an act, so a retry never counts twice."""
+        and the first close of an act, so a retry never counts twice. The self-monitor gate decides
+        each open (see the module docstring)."""
         now = self.clock()
         concerns = []
         for c in self.state.concerns:
-            if c.act_opened_at is None and await self._open(concern_act(c.concern_id), CONCERN_COMPONENT, at=now):
-                c = c.model_copy(update={"act_opened_at": now})
+            if c.act_opened_at is None:
+                allowed, decision = await self._concern_bet(c.concern_id, c.text, now)
+                if allowed and await self._open(concern_act(c.concern_id), CONCERN_COMPONENT, at=now):
+                    self._bet_opened(decision, c.concern_id)
+                    c = c.model_copy(update={"act_opened_at": now})
             concerns.append(c)
         records = []
         for r in self.state.concern_record:
             if not r.published:
                 act = concern_act(r.concern_id)
+                if r.act_opened_at is None and not await self._late_concern_bet_allowed(r.concern_id):
+                    # No bet was placed for this concern, so there is no act to close.
+                    logger.info("prime_concern_ended_without_bet concern=%s end=%s", r.concern_id, r.end)
+                    records.append(r.model_copy(update={"published": True}))
+                    continue
                 opened = r.act_opened_at is not None or await self._open(act, CONCERN_COMPONENT, at=r.opened_at)
                 if opened and await self._close(act, CONCERN_COMPONENT, produced=r.produced, note=r.note,
                                                 at=r.closed_at):
@@ -386,6 +578,10 @@ class PrimeRuntime:
                     r = r.model_copy(update={"published": True})
             records.append(r)
         self.state = self.state.model_copy(update={"concerns": concerns, "concern_record": trim_record(records)})
+        live = {c.concern_id for c in self.state.concerns} | {r.concern_id for r in self.state.concern_record
+                                                             if not r.published}
+        for cid in [k for k in self._bet_refused_at if k not in live]:
+            del self._bet_refused_at[cid]
 
     # --- the tick --------------------------------------------------------------------------
     async def tick(self) -> None:
@@ -400,6 +596,9 @@ class PrimeRuntime:
             logger.info("prime_yield reason=juniper_turn pending=%d", len(self.state.pending_changes))
             return
         if not wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC))):
+            return
+        if not await self._thought_gate_admits(now):
+            await self.save()
             return
         from orion.schemas.physiology_want import WantV1
 
@@ -470,6 +669,11 @@ class PrimeRuntime:
     async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
         """The model was reached: the thought happened. Opened stamped with the try's start; counts for
         the refractory interval from then (a failed or preempted thought must not retry every tick)."""
+        if self._infer_probe is not None:
+            # The model was reached: the offered probe is a real attempt now. Prime is one loop, so the
+            # claim cannot lose a race; the thought already happened either way.
+            self.gate.claim_probe(self._infer_probe, now=self.clock())
+            self._infer_probe = None
         await self._open(act, THOUGHT_COMPONENT, at=started_at)
         self.state = note_model_reached(self.state).model_copy(update={"last_thought_at": started_at})
 
@@ -557,6 +761,11 @@ class PrimeRuntime:
             if unopened:
                 applied.move, applied.refs = None, []
                 applied.move_refusal = f"it cites {'; '.join(unopened)}, which a curiosity run could not open"
+        if applied.move is not None:
+            gate_refusal = await self._move_refusal(applied.move, thought_id=thought_id)
+            if gate_refusal:
+                applied.move, applied.refs = None, []
+                applied.move_refusal = gate_refusal
         if applied.move_refusal:
             self.state = _with_outcome_line(self.state, f"my move was not sent: {applied.move_refusal}")
         if isinstance(applied.move, RegulateMoveV1):

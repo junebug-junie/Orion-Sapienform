@@ -1513,12 +1513,16 @@ async def lifespan(app: FastAPI):
         ledger_rows=lambda actor, verb, secs: _fetch_ledger_rows_blocking(
             settings.postgres_uri.strip(), last_attempt_sql("pyformat"),
             {"actor": actor, "verb": verb, "secs": float(secs)}) if (settings.postgres_uri or "").strip() else None,
+        # Option A (2026-11-03): a retry of a journal job that already opened an act (same dedupe key:
+        # a walkway night, a daily window, one trigger) is admitted, never refused.
+        job_key_of=lambda row: row.get("test_before"),
     )
 
-    def _journal_gate_decide(trigger_kind: str):
+    def _journal_gate_decide(trigger_kind: str, dedupe_key: str):
         now = datetime.now(timezone.utc)
         _journal_gate.begin(now)
-        return _journal_gate.decide(act_emit.JOURNAL_ACTOR, "make", f"journal_trigger:{trigger_kind}", now=now)
+        return _journal_gate.decide(act_emit.JOURNAL_ACTOR, "make", f"journal_trigger:{trigger_kind}", now=now,
+                                    job_key=act_emit.journal_job_key(dedupe_key))
 
     # One audit row per (faculty, window): a held-open walkway night retries every scheduler tick.
     _gate_refusals_audited: dict[str, str] = {}
@@ -1545,10 +1549,11 @@ async def lifespan(app: FastAPI):
             return False
         gate_extra: dict = {}
         gate_probe = None
+        gate = None
         if settings.self_monitor_act_gate_enabled:
             trigger_kind = str(getattr(trigger, "trigger_kind", "") or "unknown")
             try:
-                gate = await asyncio.to_thread(_journal_gate_decide, trigger_kind)
+                gate = await asyncio.to_thread(_journal_gate_decide, trigger_kind, dedupe_key)
             except Exception:  # noqa: BLE001 -- one direction only: a gate fault never refuses
                 logger.warning("self_monitor_gate_failed trigger_kind=%s", trigger_kind, exc_info=True)
                 gate = None
@@ -1558,6 +1563,8 @@ async def lifespan(app: FastAPI):
             if gate is not None and gate.probe:
                 gate_probe = gate
                 gate_extra = {"self_monitor": gate.label(), "self_monitor_probe": True}
+            elif gate is not None and gate.same_job_retry:
+                gate_extra = {"self_monitor": gate.label(), "self_monitor_same_job_retry": True}
         if not journal_deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason=reason or "journal_cooldown")
             return False
@@ -1582,11 +1589,16 @@ async def lifespan(app: FastAPI):
         try:
             await sem.acquire()
             acquired = True
-            if gate_probe is not None and not _journal_gate.claim_probe(gate_probe.faculty, now=datetime.now(timezone.utc)):
+            job_key = act_emit.journal_job_key(dedupe_key)
+            if gate_probe is not None and not _journal_gate.claim_probe(
+                    gate_probe.faculty, now=datetime.now(timezone.utc), job_key=job_key):
                 # Another handler started this window's probe first: this attempt is refused.
                 _settle_shadow(jshadow, f"blocked:{TRACK_RECORD_FAILING_REASON}")
                 await _audit_gate_refusal(parent, gate_probe, dedupe_key=dedupe_key, audit_action=audit_action)
                 return False
+            if gate is not None and gate_probe is None:
+                # Started: its next retry is the same job even before this act's row lands.
+                _journal_gate.note_job_started(gate.faculty, job_key, now=datetime.now(timezone.utc))
             _settle_shadow(jshadow, "ran")
             await jact.open()
             result = await _run_journal(

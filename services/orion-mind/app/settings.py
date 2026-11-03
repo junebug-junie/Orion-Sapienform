@@ -158,6 +158,15 @@ class Settings(BaseSettings):
     PRIME_REGULATE_ENABLED: bool = Field(default=True, alias="PRIME_REGULATE_ENABLED")
     # Where Prime reads the receptors: the read-only repo mount (docker-compose volumes).
     PRIME_FAMILIES_PATH: str = Field(default="/repo/config/physiology/families.yaml", alias="PRIME_FAMILIES_PATH")
+    # Self-monitor E1 act gate on Prime's own acts (orion/self_monitor/gate.py; app/prime_loop.py): an act
+    # whose faculty (act.prime.<verb>, e.g. act.prime.predict) is held broken/unreliable in a fresh
+    # orion:self_monitor:latest is not opened (track_record_failing), except one re-test probe per faculty
+    # per SELF_MONITOR_PROBE_INTERVAL_SEC. Unknown/stale/absent state changes nothing. Shipped ON.
+    SELF_MONITOR_ACT_GATE_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    SELF_MONITOR_PROBE_INTERVAL_SEC: float = Field(default=21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
+    # Read-only grammar_acts read for the gate's probe and same-job bookkeeping. Empty: the in-process
+    # memo alone decides (a restart may then probe once early).
+    SELF_MONITOR_LEDGER_PG_DSN: str = Field(default="", alias="SELF_MONITOR_LEDGER_PG_DSN")
 
     # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
     ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")

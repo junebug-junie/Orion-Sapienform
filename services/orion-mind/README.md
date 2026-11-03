@@ -94,6 +94,19 @@ something. Prime is told when a question was held back. Readout: `orion/prime/ev
 Juniper turn overlapped the call), `ask` per question (`test_before = holdback:<arm>`, `parent_act_id` = the
 thought, `goal_ref = prime_concern:<id>`), `predict` per concern (below).
 
+**Self-monitor act gate (2026-11-03).** Prime opens its acts itself, so the self-monitor's act gate
+(`orion/self_monitor/gate.py`, PR #3062) sits in `app/prime_loop.py` too. When the self-monitor (Redis
+`orion:self_monitor:latest`, fresh) holds a Prime faculty `broken` or `unreliable` (today `act.prime.predict`,
+the concern bets, works about 2-6% of the time), the act is not opened (`track_record_failing`), except one
+re-test probe per faculty per `SELF_MONITOR_PROBE_INTERVAL_SEC` (21600). What a refusal means:
+`predict` places no bet, but the concern stays held, fades, settles and counts in the track record exactly as
+before; a refused concern never gets a late bet when it ends. `ask`/`regulate` are refused before the holdback
+arm is drawn, so both arms lose the move alike. `infer` is refused before the bid. Prime is told in its next
+frame ("was not placed" / "my move was not sent" / "I did not start a thought"), as a line that does not wake it.
+Unknown or stale state, or a gate fault, changes nothing. Logs: `prime_act_refused verb=...`,
+`self_monitor_probe_started`, `self_monitor_same_job_retry`. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`.
+Ledger read: `SELF_MONITOR_LEDGER_PG_DSN` (read-only).
+
 **Concerns are graded acts (step 1, 2026-10-30).** Holding a concern is a prediction: "acting on this will
 produce something". Each concern gets one `predict` act (`object_ref = prime_concern:<id>`, act id stable on the
 concern id). It closes **1 (settled)** when a question Prime sent about it (the move's `concern_id`) gets a

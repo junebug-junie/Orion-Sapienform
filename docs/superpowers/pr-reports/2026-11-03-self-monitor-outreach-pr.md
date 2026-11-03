@@ -36,6 +36,7 @@ Before: the self-monitor could see that walkway grading was broken (22 of 28 tri
 - `services/orion-hub/tests/test_self_finding_outreach.py`: gate tests.
 - `services/orion-hub/evals/run_self_finding_replay.py`, `services/orion-hub/evals/test_self_finding_eval.py`: would-tell replay (live) and a planted 48-hour eval.
 - `.github/workflows/orion-reading-tests.yml`: runs the new test and eval; triggers on `orion/self_monitor/**`.
+- `orion/schema_skew_discovery.py`: declares orion-durable-runs (patch 2) as the writer of `SelfMonitorStateV1` / `FacultyRecordV1`, which Hub now reads. CI's skew gate required it. Patch 2 must delete these two entries when its writer lands, or the stale-entry test fails.
 
 ## Schema / bus / API changes
 
@@ -115,6 +116,12 @@ would tell 0 finding(s):
 
 What this means: at 03:51 the first state after deploy would have sent one message, about walkway grading. By the second run, older failures had aged out of the 7-day window: walkway grading now has too few tries to judge (`unknown`, 21 bets), so nothing would be told. `act.prime.predict` is unreliable, but a faculty that is already unreliable at first sight is not told, by the bar. If walkway grading crosses the broken line again after patch 2 deploys, it is told once as `unseen -> broken`.
 
+## CI
+
+```text
+PR #3061: 19 checks passed, 0 failed (Hub full tests folder 14m19s; Static repo gates; reading). The first Hub full-suite run was cancelled at its 30-minute limit while stalled at 38% in an untouched area. The re-run passed.
+```
+
 ## Docker/build/smoke checks
 
 ```text
@@ -158,6 +165,8 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 Run it from the clean primary `main` checkout after this PR merges. The loop acts only after patch 2 (durable-runs publishing `orion:self_monitor:latest`) is deployed; until then it logs `self_finding_view reason=absent` once and does nothing.
 
 ## Risks / concerns
+
+- Severity: low. Concern: two `DECLARED_WRITERS` entries go stale once patch 2's writer is discoverable. Mitigation: `test_schema_skew_discovery` names them; whichever PR merges second removes them.
 
 - Severity: medium. Concern: dedupe and hysteresis depend on patch 2. `status_since` must stay the same while a status is held, and the host must keep prior records across restarts. Otherwise `advance(None, ...)` skips the 3-check hold. Mitigation: the producer contract is written in the module docstring. Patch 2 should pin it with a test.
 - Severity: low. Concern: the decision-log lookup filters on `result_json->>'source'` with no index (582k rows), and it runs only while a finding waits. Mitigation: rare; add an expression index if it shows in `pg_stat_statements`.

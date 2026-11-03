@@ -130,6 +130,13 @@ class Settings(BaseSettings):
     # 3 is the point at which a median is meaningfully a median; at 1 or 2 a
     # single anomalous reading is half or more of the estimate.
     DIFFUSION_POWER_PRIOR_MIN_SAMPLES: int = 3
+    # Where the prior's window survives a container relaunch (the GPU pool relaunches this
+    # service for almost every generation; in memory only, it restarted empty each time --
+    # 2026-11-03). Empty disables persistence. The compose file bind-mounts the directory.
+    DIFFUSION_POWER_PRIOR_STATE_PATH: str = "/var/lib/orion-diffusion-host/power_prior.json"
+    # A sample older than this no longer counts (7 days). After a longer gap the intent says None
+    # (unknown) instead of a stale guess. 0 disables the age limit.
+    DIFFUSION_POWER_PRIOR_MAX_AGE_SEC: float = 604800.0
     # The producer learns from its own settlements by subscribing here, rather
     # than taking a Postgres dependency for a read the bus already carries.
     POWER_INTENT_SETTLED_CHANNEL: str = "orion:power:intent:settled"

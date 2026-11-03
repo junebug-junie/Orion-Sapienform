@@ -321,3 +321,56 @@ def test_the_loop_hands_the_flag_to_the_pass(monkeypatch):
         asyncio.run(person_graph_loop.run_person_graph_loop(get_store=lambda: object(), settings=settings,
                                                             stop_event=stop))
         assert seen == [flag]
+
+
+# --- real FalkorDB: the durable stamp and the tick-owned activation (CI, must not skip) -----
+
+FALKOR = __import__("os").getenv("ORION_TEST_FALKOR_URI", "")
+
+
+@__import__("pytest").mark.skipif(not FALKOR, reason="ORION_TEST_FALKOR_URI not set (throwaway FalkorDB only)")
+def test_real_falkor_refresh_round_trips_and_the_tick_still_owns_activation():
+    """Falkor keeps no free-form entity metadata: only the native label_set_at property makes
+    the relabel guard's stamp survive a restart. The refresh must not touch activation."""
+    import uuid
+
+    import redis
+
+    from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig
+
+    graph = f"orion_test_sighting_refresh_{uuid.uuid4().hex[:10]}"
+    cfg = FalkorSubstrateStoreConfig(uri=FALKOR, graph_name=graph)
+    nid = entity_node_id_for_individual("c1")
+    try:
+        store = FalkorSubstrateStore(cfg, hydrate=False)
+        legacy = _legacy_cluster()
+        SubstrateGraphMaterializer(store=store).apply_record(
+            SubstrateGraphRecordV1(anchor_scope="world", subject_ref=legacy.subject_ref, nodes=[legacy]))
+        SubstrateDynamicsEngine(store=store).tick(now=NAMED + timedelta(minutes=1))
+        born = FalkorSubstrateStore(cfg, hydrate=True).get_node_by_id(nid).signals.activation.activation
+        assert abs(born - 0.625) < 0.02
+        assert _refresh(store, SEEN) == 1
+
+        fresh = FalkorSubstrateStore(cfg, hydrate=True)
+        node = fresh.get_node_by_id(nid)
+        assert node.temporal.observed_at == SEEN and label_set_at(node) == NAMED
+        assert node.signals.activation.decay_half_life_seconds == SIGHTING_HALF_LIFE_SECONDS
+        assert node.signals.activation.activation == born          # the refresh wrote no activation
+        assert _refresh(fresh, SEEN) == 0                            # idempotent after a restart
+
+        # A writer that does not carry the stamp never clears it (ON MATCH omits it).
+        stampless = node.model_copy(update={"metadata": {k: v for k, v in node.metadata.items()
+                                                         if k != LABEL_SET_AT_KEY}})
+        fresh.upsert_node(identity_key=None, node=stampless)
+        assert label_set_at(FalkorSubstrateStore(cfg, hydrate=True).get_node_by_id(nid)) == NAMED
+
+        engine = SubstrateDynamicsEngine(store=fresh)
+        engine.tick(now=SEEN + timedelta(minutes=10))
+        assert fresh.get_node_by_id(nid).signals.activation.activation >= 0.5
+        engine.tick(now=SEEN + timedelta(hours=20))
+        assert FalkorSubstrateStore(cfg, hydrate=True).get_node_by_id(nid).signals.activation.activation <= 0.08
+    finally:
+        try:
+            redis.Redis.from_url(FALKOR).execute_command("GRAPH.DELETE", graph)
+        except redis.ResponseError:  # graph never created: keep the real failure visible
+            pass

@@ -14,48 +14,19 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Optional
+from typing import Optional
 
-from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1, SettledBetV1
-from orion.self_monitor import adapters
-from orion.self_monitor.catalog import UNGRADEABLE
-from orion.self_monitor.record import WINDOW_DAYS, reduce_bets
-
-# (source name, SQL with :since, adapter). Each query is bounded by the window.
-SOURCES: tuple[tuple[str, str, Callable[[dict], Optional[SettledBetV1]]], ...] = (
-    ("grammar_acts",
-     "SELECT act_id, actor, verb, object_ref, signal_id, predicted, opened_at, closed_at, outcome_value, outcome_source, "
-     "outcome_note FROM grammar_acts WHERE closed_at >= :since",
-     adapters.grammar_act),
-    ("prediction_turn_self_bet",
-     "SELECT bet_id, faculty, claim_kind, placed_at, settled_at, status, void_reason, stated_p, coverage "
-     "FROM prediction_turn_self_bet WHERE settled_at >= :since",
-     adapters.turn_self_bet),
-    ("prediction_action_bet",
-     "SELECT bet_id, domain, skill, p, placed_at, settled_at, result FROM prediction_action_bet "
-     "WHERE settled_at >= :since",
-     adapters.action_bet),
-    ("prediction_forecast",
-     "SELECT forecast_id, series_id, role, issued_at, scored_at, in_80 FROM prediction_forecast "
-     "WHERE scored_at >= :since AND role = 'champion'",
-     adapters.forecast),
-    ("vision_percept_expectation",
-     "SELECT expectation_id, emitted_at, scored_at, status, confidence FROM vision_percept_expectation "
-     "WHERE scored_at >= :since",
-     adapters.percept_expectation),
-)
-
-
-def _first_line(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {(str(exc).splitlines() or [''])[0][:160]}"
+from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
+from orion.self_monitor.collect import SOURCES, SourceResult, build_state, first_line
+from orion.self_monitor.record import WINDOW_DAYS
 
 
 def collect(postgres_url: str, *, now: datetime, window_days: float) -> SelfMonitorStateV1:
+    """Read every source with SQLAlchemy (read-only, 60 s per statement) and build the state through
+    the same path the live host uses (``orion.self_monitor.collect.build_state``)."""
     from sqlalchemy import create_engine, text
 
     since = now - timedelta(days=window_days)
-    bets: list[SettledBetV1] = []
-    errors: list[str] = []
     try:
         engine = create_engine(
             postgres_url, pool_size=1, max_overflow=0,
@@ -63,33 +34,18 @@ def collect(postgres_url: str, *, now: datetime, window_days: float) -> SelfMoni
                           "options": "-c statement_timeout=60000 -c default_transaction_read_only=on"},
         )
     except Exception as exc:
-        return SelfMonitorStateV1(computed_at=now, window_days=window_days,
-                                  faculties=reduce_bets([], now=now, window_days=window_days, ungradeable=UNGRADEABLE),
-                                  source_errors=[f"engine: {_first_line(exc)}"])
+        return build_state({}, now=now, window_days=window_days, extra_errors=[f"engine: {first_line(exc)}"])
+    results: dict[str, SourceResult] = {}
     try:
-        for name, sql, adapt in SOURCES:
+        for name, sql, _ in SOURCES:
             try:
                 with engine.connect() as conn:
-                    rows = [dict(r._mapping) for r in conn.execute(text(sql), {"since": since})]
-            except Exception as exc:  # named, never silent
-                errors.append(f"{name}: {_first_line(exc)}")
-                continue
-            bad, example = 0, ""
-            for row in rows:
-                try:
-                    bet = adapt(row)
-                except Exception as exc:
-                    bad += 1
-                    example = example or _first_line(exc)
-                    continue
-                if bet is not None:
-                    bets.append(bet)
-            if bad:
-                errors.append(f"{name}: adapter failed on {bad}/{len(rows)} rows, e.g. {example}")
+                    results[name] = [dict(r._mapping) for r in conn.execute(text(sql), {"since": since})]
+            except Exception as exc:  # named by build_state, never silent
+                results[name] = exc
     finally:
         engine.dispose()
-    faculties = reduce_bets(bets, now=now, window_days=window_days, ungradeable=UNGRADEABLE)
-    return SelfMonitorStateV1(computed_at=now, window_days=window_days, faculties=faculties, source_errors=errors)
+    return build_state(results, now=now, window_days=window_days)
 
 
 def _pct(value: Optional[float]) -> str:

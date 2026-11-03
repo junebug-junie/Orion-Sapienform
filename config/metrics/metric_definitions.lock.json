@@ -1,13 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 772,
+  "metric_count": 774,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 3,
+    "change_count": 2,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:grammar:event (all_producers: \u2026ay', 'orion-sql-writer',\u2026 -> \u2026ay', 'orion-mind', 'orion-sql-writer',\u2026)",
-      "high   routing_changed metric://bus_channel/orion-dream/orion:introspect:result:* (declared_consumers: ['orion-harness-governor'] -> ['orion-harness-governor', 'orion-mind'])",
-      "high   routing_changed metric://bus_channel/orion-harness-governor/orion:introspect:queue_curiosity_focus:request (all_producers: ['orion-harness-governor'] -> ['orion-harness-governor', 'orion-mind'])"
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.state.v1",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.state.v1#window_days"
     ]
   },
   "definitions": {
@@ -5043,6 +5042,29 @@
         "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.state.v1": {
+      "schema_id": "SelfMonitorStateV1",
+      "value_kind": "bucket",
+      "rest": "reliable or unknown for every faculty: no faculty fails to execute, works less than half the time, or states a confidence its outcomes contradict. Not the live state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 miscalibrated of 49 faculties, so the bucket can and does leave rest.",
+      "sparsity": "per_tick",
+      "absent_means": "Redis orion:self_monitor:latest expired (TTL 3 h, three hourly evaluations), the organ is off (SELF_MONITOR_ENABLED=false) or durable-runs is down: track record unknown, and every reader behaves as if the organ did not exist (orion.self_monitor.view: unknown changes nothing). A faculty missing from a fresh state is untracked, never reliable.",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed rows; read by the Day letter and recent arcs)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.state.v1#window_days": {
+      "schema_id": "SelfMonitorStateV1",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed rows; read by the Day letter and recent arcs)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.state.v1"
+      ],
+      "notes": "scalar field on SelfMonitorStateV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {

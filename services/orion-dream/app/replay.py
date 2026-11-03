@@ -268,8 +268,9 @@ ARC_RETURNS_SATURATE = 3
 ARC_CANDIDATES_MAX = 20
 # A sleep never replays a sleep. A strain arc is a body state lasting hours to days: its dwell
 # would saturate the weight and put it in every replay while strained (strain loop part 1 keeps it
-# out of dreams until that is designed on purpose).
-ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain"})
+# out of dreams until that is designed on purpose). A faculty arc (self-monitor patch 2) is a days-long
+# stretch of a track record: same reason.
+ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain", "faculty"})
 
 
 def arc_replay_slots(k: int) -> int:

@@ -427,6 +427,38 @@ def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEvent
     )
 
 
+FACULTY_STATUSES = frozenset({"reliable", "unreliable", "broken", "miscalibrated", "unknown"})
+FACULTY_EVENT_PREFIX = "faculty_status_changed:"
+
+
+def faculty_status_changed(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the self_monitor node wrote itself (``source_table='self_monitor'``,
+    ``orion/self_monitor/host.py`` ``event_row``): one per held faculty status change, plus a keepalive
+    every 12 h while a notable status holds and one row when a notable faculty leaves the window.
+    Time: occurred_at. Subject: ``faculty:<name>``. Verdict: the new status.
+
+    Keeps the row's OWN ``event_id`` (the chronicle stores folded events in that same table, see
+    ``arousal_transition``). ``since`` is when the held status began."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(FACULTY_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    faculty = str(payload.get("faculty") or "").strip()
+    to_status = payload.get("to")
+    if not faculty or to_status not in FACULTY_STATUSES:
+        return None
+    return _event(
+        kind="faculty_status_changed", table="self_monitor", ref=event_id[len(FACULTY_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref=f"faculty:{faculty}", label=clip(faculty),
+        verdict=str(to_status),
+        payload={
+            "faculty": faculty, "from": payload.get("from"), "to": to_status, "since": _iso(payload.get("since")),
+            "keepalive": bool(payload.get("keepalive")), "dropped": bool(payload.get("dropped")),
+            "reasons": [clip(r, 120) for r in (payload.get("reasons") or [])][:4],
+        },
+    )
+
+
 def retro_play_label(row: Row) -> str:
     """A short, deterministic phrase for one session, from the row's own fields: the game, who played
     (``solo`` only for a leisure session with a recorded human share of 0, ``together`` when a human
@@ -747,6 +779,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "arousal_transition": arousal_transition,
     "retro_play": retro_play,
     "street_event": street_event,
+    "faculty_status_changed": faculty_status_changed,
 }
 
 

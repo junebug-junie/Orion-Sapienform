@@ -25,7 +25,7 @@ Candidate status, first match wins (``reasons`` names the rule that fired):
    not sufficient: always saying the base rate passes it).
 6. ``unknown``.
 
-Held status (``advance``): a new candidate replaces the held status only after it has held for
+Held status (``advance`` / ``advance_carry``): a new candidate replaces the held status only after it has held for
 ``HOLD`` consecutive evaluations, so one bad hour does not flip a faculty (trailing-window
 thresholds need hysteresis).
 """
@@ -35,8 +35,8 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Iterable, Optional, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Mapping, Optional, Sequence
 
 from orion.prediction.grading import grade
 from orion.schemas.self_monitor import FacultyRecordV1, SettledBetV1
@@ -262,18 +262,53 @@ def reduce_bets(bets: Iterable[SettledBetV1], *, now: datetime, window_days: flo
     return records
 
 
-def advance(previous: Optional[FacultyRecordV1], current: FacultyRecordV1, *, now: datetime,
-            hold: int = HOLD) -> FacultyRecordV1:
-    """Carry the held status forward. The first evaluation adopts its candidate (its window is
-    already ``window_days`` of evidence); after that a different candidate must hold ``hold``
-    consecutive evaluations before it becomes the status."""
-    if previous is not None and previous.faculty != current.faculty:
-        raise ValueError(f"advance: {previous.faculty!r} is not {current.faculty!r}")
-    if previous is None or previous.status_since is None:  # no held status yet: a first evaluation
+def carry_of(record: FacultyRecordV1) -> dict:
+    """The compact hysteresis carry for one faculty: what ``advance_carry`` needs from the previous
+    evaluation, and nothing else (the graph checkpoint holds one of these per faculty)."""
+    return {"status": record.status,
+            "status_since": record.status_since.isoformat() if record.status_since else None,
+            "candidate_status": record.candidate_status, "candidate_held": record.candidate_held}
+
+
+def _carry_since(carry: Mapping) -> Optional[datetime]:
+    raw = carry.get("status_since")
+    if raw is None:
+        return None
+    try:
+        dt = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+_STATUSES = ("reliable", "unreliable", "broken", "miscalibrated", "unknown")
+
+
+def advance_carry(carry: Optional[Mapping], current: FacultyRecordV1, *, now: datetime,
+                  hold: int = HOLD) -> FacultyRecordV1:
+    """Carry the held status forward from a compact carry (``carry_of``). The first evaluation (no
+    carry, or a carry with no held status yet, or one that no longer parses) adopts its candidate:
+    its window is already ``window_days`` of evidence. After that a different candidate must hold
+    ``hold`` consecutive evaluations before it becomes the status."""
+    since = None if carry is None else _carry_since(carry)
+    status = None if carry is None else carry.get("status")
+    if since is None or status not in _STATUSES:
         return current.model_copy(update={"status": current.candidate_status, "status_since": now,
                                           "candidate_held": hold})
-    held = previous.candidate_held + 1 if current.candidate_status == previous.candidate_status else 1
-    status, since = previous.status, previous.status_since
+    prev_candidate = carry.get("candidate_status")
+    try:
+        prev_held = int(carry.get("candidate_held") or 0)
+    except (TypeError, ValueError):
+        prev_held = 0
+    held = prev_held + 1 if current.candidate_status == prev_candidate else 1
     if current.candidate_status != status and held >= hold:
         status, since = current.candidate_status, now
     return current.model_copy(update={"status": status, "status_since": since, "candidate_held": held})
+
+
+def advance(previous: Optional[FacultyRecordV1], current: FacultyRecordV1, *, now: datetime,
+            hold: int = HOLD) -> FacultyRecordV1:
+    """``advance_carry`` from a whole previous record (same faculty)."""
+    if previous is not None and previous.faculty != current.faculty:
+        raise ValueError(f"advance: {previous.faculty!r} is not {current.faculty!r}")
+    return advance_carry(None if previous is None else carry_of(previous), current, now=now, hold=hold)

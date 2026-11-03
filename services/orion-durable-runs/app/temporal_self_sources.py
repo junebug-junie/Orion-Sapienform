@@ -188,6 +188,12 @@ SELECT event_id, occurred_at, payload_json FROM temporal_self_event
 WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
+    # Self-monitor organ patch 2: the self_monitor node's own faculty rows (status changes, keepalives).
+    SourceQuery("faculty_status_changed", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
     # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
     # session end). Available at ended_at, so the window is on ended_at and needs no slack.
     SourceQuery("retro_play", """

@@ -174,6 +174,17 @@ class Settings(BaseSettings):
     # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
     # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
     temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
+    # Self-monitor organ patch 2 (docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md): the
+    # `self_monitor` node of the temporal_self.update thread reads Orion's settled bets (7 days) at most
+    # once per SELF_MONITOR_INTERVAL_SEC, publishes the held SelfMonitorStateV1 to Redis
+    # orion:self_monitor:latest (TTL 3 h) and GET /self_monitor/state, appends one row to
+    # substrate_self_monitor_history (pruned past SELF_MONITOR_HISTORY_RETENTION_DAYS), and writes a
+    # faculty_status_changed row per held status change, which the chronicle folds into `faculty` arcs.
+    # Off: no state, nothing published, no rows, faculty arcs not read (readers see absent = unknown).
+    self_monitor_enabled: bool = Field(True, alias="SELF_MONITOR_ENABLED")
+    self_monitor_interval_sec: float = Field(3600.0, ge=60.0, alias="SELF_MONITOR_INTERVAL_SEC")
+    self_monitor_timeout_sec: float = Field(120.0, gt=0.0, alias="SELF_MONITOR_TIMEOUT_SEC")
+    self_monitor_history_retention_days: int = Field(30, ge=1, alias="SELF_MONITOR_HISTORY_RETENTION_DAYS")
     # Orion plays Zelda (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F): the
     # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
     # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.

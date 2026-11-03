@@ -333,6 +333,7 @@ def _build_temporal_self(saver: Any):
 
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
+    monitor = _build_self_monitor() if s.self_monitor_enabled else {}
 
     deps = TemporalSelfDeps(
         read_inputs=read_inputs, read_drives=read_drives, project=project,
@@ -350,12 +351,45 @@ def _build_temporal_self(saver: Any):
         read_body=read_body, project_physiology=project_physiology,
         physiology_min_interval_sec=s.physiology_min_interval_sec,
         price_body=price_body,
+        self_monitor_interval_sec=s.self_monitor_interval_sec,
+        self_monitor_timeout_sec=s.self_monitor_timeout_sec,
+        **monitor,
     )
     if body_config is not None:
         deps = dataclasses.replace(deps, body_config=body_config)
     return TemporalSelfDriver(checkpointer=saver, deps=deps,
                               timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
                               retention_days=s.temporal_self_retention_days)
+
+
+def _build_self_monitor() -> dict:
+    """Self-monitor organ patch 2: the self_monitor node's read (every bet source on the checkpointer's
+    pool, read-only), its Redis projection on the long-lived rpc_bus, and its two writes."""
+    from app import self_monitor_store
+    from orion.self_monitor.collect import build_state
+    from orion.self_monitor.record import WINDOW_DAYS
+    from orion.self_monitor.view import DEFAULT_MAX_AGE_SEC, SELF_MONITOR_REDIS_KEY
+
+    s = _settings
+
+    async def collect(now):
+        results = await self_monitor_store.read_sources(_checkpointer_cm, now, WINDOW_DAYS)
+        return build_state(results, now=now, window_days=WINDOW_DAYS)
+
+    async def publish(state) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        await rpc_bus.redis.setex(SELF_MONITOR_REDIS_KEY, int(DEFAULT_MAX_AGE_SEC), state.model_dump_json())
+
+    async def record_history(state) -> None:
+        await self_monitor_store.record_history(_checkpointer_cm, state,
+                                                retention_days=s.self_monitor_history_retention_days)
+
+    async def record_events(rows) -> bool:
+        return await self_monitor_store.record_events(_checkpointer_cm, rows)
+
+    return {"collect_self_monitor": collect, "publish_self_monitor": publish,
+            "record_self_monitor_history": record_history, "record_faculty_events": record_events}
 
 
 def _build_physiology():
@@ -482,7 +516,8 @@ def _build_chronicle():
         _checkpointer_cm, reducer.tz_name,
         exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
                                             ("retro_play", s.temporal_self_retro_play_enabled),
-                                            ("street_event", s.temporal_self_street_episodes_enabled)) if not on)),
+                                            ("street_event", s.temporal_self_street_episodes_enabled),
+                                            ("faculty_status_changed", s.self_monitor_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 
@@ -766,6 +801,32 @@ async def regulation_state():
     if temporal_self.latest is None:
         raise HTTPException(404, "no regulation step has completed yet")
     return temporal_self.latest.model_dump(mode="json")
+
+
+@app.get("/self_monitor/state")
+async def self_monitor_state():
+    """The latest held SelfMonitorStateV1 from Redis orion:self_monitor:latest (TTL 3 h), verbatim,
+    with ``view``: what a reader concludes from it now (fresh / stale). Absent: 404 with the reason."""
+    from datetime import datetime, timezone
+
+    from orion.self_monitor.view import SELF_MONITOR_REDIS_KEY, parse_state, self_monitor_view
+
+    if not _settings.self_monitor_enabled:
+        raise HTTPException(503, "self-monitor is disabled (SELF_MONITOR_ENABLED)")
+    if rpc_bus is None:
+        raise HTTPException(503, "no bus connection: Redis is unreachable from durable-runs")
+    try:
+        raw = await asyncio.wait_for(rpc_bus.redis.get(SELF_MONITOR_REDIS_KEY), timeout=2.0)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"redis read failed: {type(exc).__name__}") from exc
+    if raw is None:
+        raise HTTPException(404, "no self-monitor state: no evaluation in the last 3 h (expired or never ran)")
+    state = parse_state(raw)
+    if state is None:
+        raise HTTPException(502, "self-monitor state in Redis does not parse as SelfMonitorStateV1")
+    view = self_monitor_view(raw, now=datetime.now(timezone.utc))
+    return {**state.model_dump(mode="json"), "view": {"known": view.known, "reason": view.reason,
+                                                       "age_sec": view.age_sec}}
 
 
 def _chronicle_store():

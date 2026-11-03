@@ -127,6 +127,12 @@ SELECT json_build_object('k','arousal_transition','event_id',event_id,'day_id',d
 FROM temporal_self_event WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= :start AND occurred_at < :end;
 
+-- Self-monitor organ patch 2: the self_monitor node's faculty status-change and keepalive rows.
+SELECT json_build_object('k','faculty_status_changed','event_id',event_id,'day_id',day_id,'occurred_at',occurred_at,
+  'source_ref',source_ref,'payload_json',payload_json)
+FROM temporal_self_event WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
+  AND occurred_at >= :start AND occurred_at < :end;
+
 -- Orion plays Zelda (section F): finished Retro sessions, whole rows (one per session). The table is
 -- created by manual_migration_retro_play_sessions_v1.sql (post-pull auto-applied).
 SELECT (jsonb_build_object('k','retro_play') || to_jsonb(r))::json

@@ -36,10 +36,11 @@ from orion.temporal_self.stance_cue import span_words, strain_cause_text
 TOP_ATTENTION = 5
 MAX_CURIOSITY_LINES = 10
 MAX_IMMUNE_LINES = 5
+MAX_FACULTY_ITEMS = 6
 IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
                      "decayed_to_zero": "decayed to zero"}
 KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception",
-              "company", "strain", "play", "street")
+              "company", "strain", "play", "street", "faculty")
 
 
 def _clock(at: datetime | None, day_id: str, tz: ZoneInfo) -> str:
@@ -228,6 +229,21 @@ def render_closed_day_block(
         day_warnings.append(f"{w} {ref(arc)}" if arc is not None else f"{w} {day_ref}")
     if day_warnings:
         lines.append((1, "Instrument warnings: " + " | ".join(day_warnings) + "."))
+
+    # Self-monitor patch 2: the stretches a faculty spent broken, unreliable or miscalibrated. Priority 3,
+    # with expectations: what Orion attended to and did (1-2) survives the cap first.
+    faculties = sorted((a for a in arcs if a.kind == "faculty"),
+                       key=lambda a: (a.episode_began_at or a.began_at, a.arc_id))
+    if faculties:
+        parts = []
+        for a in faculties[:MAX_FACULTY_ITEMS]:
+            start = clock(a, a.episode_began_at or a.began_at)
+            end = "still so at midnight" if a.closed_reason == "day_boundary" else f"to {clock(a, a.ended_at)}"
+            if a.closed_reason == "source_stale":
+                end += ", then no word from the self-monitor"
+            parts.append(f"{a.subject_label} from {start} {end} {ref(a, a.subject_label)}")
+        more = f"; and {len(faculties) - MAX_FACULTY_ITEMS} more {day_ref}" if len(faculties) > MAX_FACULTY_ITEMS else ""
+        lines.append((3, "Track record: " + "; ".join(parts) + more + "."))
 
     # Priority 3 (with expectations and threads): a run of stuck gauges must not evict what Orion
     # attended to and did, which sits at 1-2.

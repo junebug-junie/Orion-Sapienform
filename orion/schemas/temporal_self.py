@@ -40,6 +40,13 @@ Same consumer-first rollout: orion-thought and orion-hub before orion-durable-ru
 ``causes_now`` (2026-10-23, on the arc and its summary) follows the same order: every stored frame
 carries it (``null`` on non-strain arcs), so an orion-thought or orion-hub still on older code
 rejects the whole frame and the stance cue goes dark until they are rebuilt.
+
+Self-monitor organ patch 2 (2026-11-03, docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md)
+added ``faculty_status_changed`` / arc kind ``faculty``: the self_monitor node's own status-change rows
+(already in ``temporal_self_event``) become one arc per stretch a faculty spends broken, unreliable or
+miscalibrated ("my walkway grading broke on day X and came back on day Y"). ``episode_began_at`` holds
+when the status began. Same consumer-first rollout: orion-thought, orion-hub and orion-dream before
+orion-durable-runs.
 """
 
 from __future__ import annotations
@@ -82,6 +89,8 @@ TemporalSourceKind = Literal[
     "retro_play",
     # one notable outside (walkway / doorbell) event: story, ring, or gated handoff (PR #2763 item 1)
     "street_event",
+    # the self-monitor's held faculty status changes and keepalives (self-monitor organ patch 2)
+    "faculty_status_changed",
 ]
 
 ArcKind = Literal[
@@ -97,6 +106,7 @@ ArcKind = Literal[
     "strain",
     "play",
     "street",
+    "faculty",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]
@@ -211,7 +221,8 @@ class TemporalSelfArcV1(_Forbid):
     carried_from_previous_day: bool = False
     carried_from_arc_id: str | None = None
     # A strain arc carried over midnight begins at the day boundary; this keeps when the episode
-    # itself began (the regulation reading's ``since``). None for every other kind.
+    # itself began (the regulation reading's ``since``). A faculty arc: when the held status began
+    # (the self-monitor's ``status_since``). None for every other kind.
     episode_began_at: AwareDatetime | None = None
     # A strain arc's causes present at its newest row (the label keeps every cause seen in the
     # episode). [] while a strain only holds before clearing; None when not recorded (every other

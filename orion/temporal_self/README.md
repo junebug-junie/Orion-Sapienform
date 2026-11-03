@@ -77,6 +77,24 @@ or "Was strained 09:00 to 09:40 (...)"), Day letter ("Strained: ..."), reverie b
 truth (`strained since` / `was strained`, matched against `episode_began_at` too). Kill switch:
 `TEMPORAL_SELF_STRAIN_ARCS_ENABLED` (orion-durable-runs).
 
+### Faculty arcs (self-monitor organ patch 2, 2026-11-03)
+
+Spec: `docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md` ("Self-knowledge"). Source: the
+self_monitor node's own `faculty_status_changed` rows in `temporal_self_event` (orion-durable-runs,
+`orion/self_monitor/host.py` `event_row`): one row per held faculty status change, a keepalive every
+12 h while a notable status holds, and one closing row when a notable faculty leaves the 7-day window.
+The adapter keeps each row's own `event_id`, like strain. One `faculty` arc per stretch a faculty spends
+`broken`, `unreliable` or `miscalibrated`: subject `faculty:<name>`, label `<name> <status>`,
+`episode_began_at` = when the held status began. A change to another notable status closes the arc and
+opens the next; a change to `reliable` or `unknown` closes it (`process_ended`); no row for
+`faculty_stale_sec` (30 h, 2.5x the keepalive) closes it at its last row (`source_stale`), so a
+stopped organ never leaves "broken since" standing. It carries over midnight like strain. Nothing binds
+to it by time, it carries no body summary, it fills only leftover frame slots (with reverie and street),
+and dream replay skips it (`ARC_EXCLUDED_KINDS`). Readers: Day letter ("Track record: <name> <status>
+from 09:00 to 14:00 [arc:]"), recent arcs ("track record: <name> <status>"), citation truth (`track
+record`, `broken since` / `unreliable since` / `miscalibrated since`). The stance cue does not read it:
+the track-record cue is the organ's patch 3. Kill switch: `SELF_MONITOR_ENABLED` (orion-durable-runs).
+
 ### Play arcs (Orion plays Zelda, 2026-10-22)
 
 Spec: `docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md` section F. Source `retro_play`:

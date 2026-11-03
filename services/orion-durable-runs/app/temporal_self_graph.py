@@ -3,7 +3,7 @@ order 3 "R2/R3 core").
 
 One invocation per (coalesced) event on the day's thread ``temporal_self:orion:<local date>``:
 
-    ingest -> regulate -> physiology -> immune -> chronicle -> done
+    ingest -> regulate -> physiology -> immune -> self_monitor -> chronicle -> done
 
 * regulate: reads E1/S1/S2 (``deps.read_inputs``), folds them through the pure, I/O-free
   ``orion.regulation.arousal.classify_arousal`` with the previous reading carried by the
@@ -25,6 +25,18 @@ One invocation per (coalesced) event on the day's thread ``temporal_self:orion:<
   ``RegulationStateV1.immune_findings_open``. It never fixes anything. Last run time and count
   live in this checkpoint (``immune``) and carry over midnight. Own timeout; a failure is a
   warning and never touches the regulation reading.
+
+* self_monitor (self-monitor organ patch 2, docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md):
+  at most once per ``self_monitor_interval_sec`` (1 h), reads every bet source for the 7-day window
+  (``deps.collect_self_monitor``: ``orion.self_monitor.collect``, the same path the report uses),
+  applies hysteresis with the compact per-faculty carry in this checkpoint (``self_monitor.carry``,
+  carried over midnight; ``orion.self_monitor.host.evaluate``), publishes the held
+  ``SelfMonitorStateV1`` (Redis ``orion:self_monitor:latest``), appends one history row, and writes
+  one ``faculty_status_changed`` row in ``temporal_self_event`` per held status change (plus a
+  keepalive every 12 h while a notable status holds), which the chronicle folds into ``faculty``
+  arcs. A failed event write leaves the carry unrecorded, so the next evaluation retries it. Own
+  timeout; a failure is a warning and never touches the regulation reading. No effects: nothing
+  obeys the state yet.
 
 * chronicle (patch 3): runs the pure chronology reducer (``orion.temporal_self``) live through
   ``deps.chronicle`` (``app.temporal_self_chronicle.Chronicler``): reads every bound source up to
@@ -51,6 +63,10 @@ from orion.regulation.immune import ImmuneConfig, sweep as immune_sweep
 from orion.physiology.body import BodyConfig, BodyInputs, HeatInput, build_physiology_state
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.physiology import PhysiologyStateV1
+from orion.schemas.self_monitor import SelfMonitorStateV1
+from orion.self_monitor.host import evaluate as self_monitor_evaluate
+from orion.self_monitor.host import event_row as faculty_event_row
+from orion.self_monitor.host import mark_recorded, summary as self_monitor_summary
 from orion.schemas.regulation import (
     TEMPORAL_SELF_WORKFLOW,
     ArousalInputsV1,
@@ -60,7 +76,7 @@ from orion.schemas.regulation import (
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_graph")
 
-NODES = ("ingest", "regulate", "physiology", "immune", "chronicle", "done")
+NODES = ("ingest", "regulate", "physiology", "immune", "self_monitor", "chronicle", "done")
 IMMUNE_TRACE_CAP = 20   # finding ids kept in the checkpoint
 
 
@@ -85,6 +101,9 @@ class TemporalSelfGraphState(TypedDict, total=False):
     physiology: Optional[dict]       # its one-line summary: tick_id, no_reading, error
     # Patch B2: the Budget organ's carry between ticks {constraint: {price, bind, ceiling_since, at}}.
     physiology_prices: Optional[dict]
+    self_monitor_at: Optional[str]   # when the self_monitor node last ran (ISO), success or failure
+    # {carry: {faculty: compact hysteresis + recorded status}, summary: {...}}: carried across days.
+    self_monitor: Optional[dict]
 
 
 @dataclass
@@ -130,6 +149,16 @@ class TemporalSelfDeps:
     # ORION_PHYSIOLOGY_PRICES_ENABLED off: the Body readings are published unpriced.
     price_body: Optional[Callable[[PhysiologyStateV1, BodyInputs, Optional[dict], datetime],
                                   tuple[PhysiologyStateV1, dict]]] = None
+    # Self-monitor organ patch 2. collect: now -> the window's candidate state (before hysteresis);
+    # publish: held state -> None (Redis; raises on failure); record_history: held state -> None
+    # (raises); record_faculty_events: rows -> written ok. None = SELF_MONITOR_ENABLED off.
+    collect_self_monitor: Optional[Callable[[datetime], Awaitable[SelfMonitorStateV1]]] = None
+    publish_self_monitor: Optional[Callable[[SelfMonitorStateV1], Awaitable[None]]] = None
+    record_self_monitor_history: Optional[Callable[[SelfMonitorStateV1], Awaitable[None]]] = None
+    record_faculty_events: Optional[Callable[[list], Awaitable[bool]]] = None
+    self_monitor_interval_sec: float = 3600.0
+    # The live read is ~1 s (patch 1's report, 11-03); each statement has a 45 s timeout.
+    self_monitor_timeout_sec: float = 120.0
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -391,6 +420,76 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         out["regulation"] = model.model_dump(mode="json")
         return out
 
+    async def self_monitor(state: TemporalSelfGraphState) -> dict:
+        if deps.collect_self_monitor is None:
+            return {}
+        now = deps.now()
+        last = _dt(state.get("self_monitor_at"))
+        if last is not None and 0.0 <= (now - last).total_seconds() < deps.self_monitor_interval_sec:
+            return {}
+        prev = dict(state.get("self_monitor") or {})
+        carry = prev.get("carry") if isinstance(prev.get("carry"), dict) else {}
+        day_id = state.get("day_id") or ""
+
+        async def run() -> tuple[dict, dict, list[str]]:
+            candidate = await deps.collect_self_monitor(now)
+            ev = self_monitor_evaluate(candidate, carry, now=now)
+            new_carry, problems = ev.carry, []
+            if deps.publish_self_monitor is not None:
+                try:
+                    await deps.publish_self_monitor(ev.state)
+                except Exception:  # noqa: BLE001 - readers see absent -> unknown, by design
+                    logger.warning("self_monitor_publish_failed", exc_info=True)
+                    problems.append("self_monitor_publish_failed")
+            if deps.record_self_monitor_history is not None:
+                try:
+                    await deps.record_self_monitor_history(ev.state)
+                except Exception:  # noqa: BLE001 - history is best-effort; Redis carries the state
+                    logger.warning("self_monitor_history_write_failed", exc_info=True)
+                    problems.append("self_monitor_history_write_failed")
+            written = 0
+            if ev.changes:
+                rows = [faculty_event_row(c, day_id=day_id, now=now) for c in ev.changes]
+                ok = False
+                if deps.record_faculty_events is not None:
+                    try:
+                        ok = await deps.record_faculty_events(rows)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("self_monitor_event_write_failed", exc_info=True)
+                if ok:
+                    new_carry = mark_recorded(new_carry, ev.changes, now=now)
+                    written = len(rows)
+                else:
+                    problems.append("self_monitor_event_write_failed")
+            for c in ev.changes:
+                if not c.keepalive:
+                    logger.info("faculty_status_changed faculty=%s from=%s to=%s dropped=%s recorded=%s",
+                                c.faculty, c.from_status, c.to_status, c.dropped, bool(written))
+            out = {**self_monitor_summary(ev.state), "changes": sum(1 for c in ev.changes if not c.keepalive),
+                   "keepalives": sum(1 for c in ev.changes if c.keepalive), "rows_written": written,
+                   "error": None}
+            return new_carry, out, problems
+
+        warnings = list(state.get("warnings") or [])
+        # A failed or timed-out evaluation still stamps self_monitor_at: a broken read is retried
+        # next interval, not on every 120 s step. The carry stays as it was (no hysteresis step).
+        try:
+            new_carry, out, problems = await asyncio.wait_for(run(), timeout=deps.self_monitor_timeout_sec)
+        except asyncio.TimeoutError:
+            logger.warning("self_monitor_node_timeout sec=%s", deps.self_monitor_timeout_sec)
+            return {"self_monitor_at": now.isoformat(),
+                    "self_monitor": {"carry": carry, "summary": {
+                        "error": f"timeout after {deps.self_monitor_timeout_sec:.0f} s", "at": now.isoformat()}},
+                    "warnings": warnings + ["self_monitor_failed"]}
+        except Exception as exc:  # noqa: BLE001 - the organ must never break regulation
+            logger.warning("self_monitor_node_failed", exc_info=True)
+            return {"self_monitor_at": now.isoformat(),
+                    "self_monitor": {"carry": carry, "summary": {
+                        "error": f"{type(exc).__name__}: {str(exc)[:300]}", "at": now.isoformat()}},
+                    "warnings": warnings + ["self_monitor_failed"]}
+        return {"self_monitor_at": now.isoformat(), "self_monitor": {"carry": new_carry, "summary": out},
+                "warnings": warnings + problems}
+
     async def chronicle(state: TemporalSelfGraphState) -> dict:
         if deps.chronicle is None:
             return {"chronicle": None}
@@ -412,13 +511,14 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
 
     g = StateGraph(TemporalSelfGraphState)
     for name, fn in (("ingest", ingest), ("regulate", regulate), ("physiology", physiology), ("immune", immune),
-                     ("chronicle", chronicle), ("done", done)):
+                     ("self_monitor", self_monitor), ("chronicle", chronicle), ("done", done)):
         g.add_node(name, fn)
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "regulate")
     g.add_edge("regulate", "physiology")
     g.add_edge("physiology", "immune")
-    g.add_edge("immune", "chronicle")
+    g.add_edge("immune", "self_monitor")
+    g.add_edge("self_monitor", "chronicle")
     g.add_edge("chronicle", "done")
     g.add_edge("done", END)
     return g.compile(checkpointer=checkpointer)

@@ -176,7 +176,7 @@ evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z vs --without-
 Live read-only smoke from the worktree against the real DB (store writes blocked):
 - office.temp_c backtest + live verdicts (repro): direct_ar 10/18 windows, errors "only 287 complete training rows"
 - Effects.heat_per_watt(athena.cabinet_temp_c, 7 d, experiment 9e6f9ab7) -> fit + prediction above
-No image build: requirements unchanged (statsmodels already pinned). Throwaway test image removed.
+No image build: requirements unchanged (statsmodels already pinned). Throwaway test image (orion-prediction-heatbal-test:tmp) removed after the last run.
 ```
 
 ## Review findings fixed
@@ -238,6 +238,6 @@ curl -fsS -X POST localhost:8132/effects/heat-per-watt -H 'content-type: applica
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3074
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

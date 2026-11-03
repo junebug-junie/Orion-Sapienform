@@ -3005,7 +3005,8 @@ API: `GET /api/cabinet/sensors/latest`, `GET /api/cabinet/sensors/history?window
 while `#cabinet` is visible; sensor history fetches on tab activation, window toggle, or Refresh.
 
 **Office strip** (Biometrics → *Cabinet / Office*, below Cooling): office temperature and
-humidity from pan-1's SHT40, read from Postgres `office_env_sample` (written by sql-writer from
+humidity from pan-1's SHT40, plus eCO2 (estimated from VOCs) and TVOC from its CCS811 (tiles read
+"warming up" for 20 min after each sensor start), read from Postgres `office_env_sample` (written by sql-writer from
 `orion:office:env:sample`, produced by `orion-office-env`). Routes: `GET /api/office/env/latest`
 and `GET /api/office/env/history?window=24h|3d|7d` (`scripts/office_env_routes.py`). Node comes
 from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 90 = three missed

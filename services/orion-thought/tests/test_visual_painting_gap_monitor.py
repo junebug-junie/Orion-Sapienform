@@ -82,7 +82,7 @@ def test_gap_none_age_is_not_flagged():
 
 def test_gap_alerts_once_on_transition_and_recovers_once():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 
@@ -109,7 +109,7 @@ def test_gap_alerts_once_on_transition_and_recovers_once():
 def test_checks_are_independent_gap_bad_while_staleness_green():
     """Staleness healthy while no painting comes out: only the gap check fires."""
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 
@@ -128,7 +128,7 @@ def test_checks_are_independent_gap_bad_while_staleness_green():
 
 def test_checks_are_independent_staleness_bad_while_gap_green():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 
@@ -155,7 +155,7 @@ def test_checks_are_independent_staleness_bad_while_gap_green():
 
 def test_open_alert_lookup_is_per_key_gap_suppressed_by_its_own_item():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get",
+        "app.notify_pending.requests.get",
         return_value=_pending([{"source_service": "orion-thought", "reason": "visual_painting_gap"}]),
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
@@ -171,7 +171,7 @@ def test_open_alert_lookup_is_per_key_gap_suppressed_by_its_own_item():
 
 def test_open_alert_lookup_is_per_key_staleness_item_does_not_suppress_gap():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get",
+        "app.notify_pending.requests.get",
         return_value=_pending([{"source_service": "orion-thought", "reason": "visual_chain_stale"}]),
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
@@ -184,7 +184,7 @@ def test_open_alert_lookup_is_per_key_staleness_item_does_not_suppress_gap():
 
 def test_gap_retries_until_notify_confirms():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 
@@ -267,7 +267,7 @@ def test_db_read_failure_mid_gap_is_no_observation_not_recovery():
     """None (DB read failed) mid-gap must not send a recovery note and then
     re-alert on the next real reading."""
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 
@@ -283,7 +283,7 @@ def test_db_read_failure_mid_gap_is_no_observation_not_recovery():
 
 def test_none_before_any_reading_leaves_state_unset():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 
@@ -467,7 +467,7 @@ def _fresh_deferral(age_sec=60.0):
 
 def _gap_message(deferral, view):
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ), patch("app.store.visual_baseline_deferral", lambda: deferral), patch(
         "orion.regulation.arousal_read.read_arousal_sync", return_value=view
     ):
@@ -492,7 +492,7 @@ def test_monitor_reads_deferral_and_arousal_only_during_a_gap_and_sends_it():
 
     view = ArousalView(level="strained", reason="ok", reasons=STRAINED)
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ), patch("app.store.visual_baseline_deferral", _deferral), patch(
         "orion.regulation.arousal_read.read_arousal_sync", return_value=view
     ):
@@ -529,7 +529,7 @@ def test_deferral_is_not_named_when_arousal_is_not_strained_now(level):
 
 def test_deferral_read_failure_falls_back_to_the_old_wording():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+        "app.notify_pending.requests.get", return_value=_pending([])
     ), patch("app.store.visual_baseline_deferral", side_effect=RuntimeError("db down")):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
 

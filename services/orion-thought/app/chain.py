@@ -255,12 +255,14 @@ async def _maybe_emit_resonance_alert(bus: OrionBusAsync) -> None:
 
         rows = load_recent_chain_theme_events(settings.reverie_resonance_window)
         events: list[ThemeEvent] = []
-        for theme_key, created_at in rows:
+        for theme_key, created_at, terminal_reason in rows:
             at = created_at
             if isinstance(at, datetime) and at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
             if isinstance(at, datetime):
-                events.append(ThemeEvent(theme_key, at))
+                # no_coalition chains don't arm the cooldown (see the arm-list
+                # in run_reverie_chain), so a fast retry after one is no breach.
+                events.append(ThemeEvent(theme_key, at, armed=terminal_reason != "no_coalition"))
         alert = detect_resonance(events, refractory_sec=settings.reverie_refractory_sec)
         if alert is None:
             # No theme is currently resonant. Still let the health monitor

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +58,31 @@ class TurnSelfPredictionV1(BaseModel):
     # Fixed by the prompt, not chosen by Orion: a chosen coverage is a second thing to calibrate.
     coverage: float = SELF_PREDICTION_COVERAGE
 
+
+
+class TurnSelfPredictionV2(BaseModel):
+    """v2 of stance's private turn bet: four probabilities, no size ranges.
+
+    v1's step and reply-length ranges were right 1-8% of the time against a stated 80%. Stance
+    could not guess the absolute size of its turns. A backtest showed it does rank them: AUC
+    0.59-0.84 on most callers. So v2 asks only "bigger than usual for this kind of turn?". "Usual"
+    is computed by the settler from earlier turns and never shown to stance. Same privacy rule as v1:
+    never rendered into the motor or judge prompt.
+    Design: docs/superpowers/specs/2026-11-02-turn-self-bets-relative-size-design.md.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["turn.self_prediction.v2"]
+    asks_question_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    fetches_outside_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    more_steps_than_usual_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    longer_reply_than_usual_p: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+# v1 first, tried left to right: a bet without schema_version is v1 (the v1 producer never sets it).
+# v2 must name itself, so a v2-only key on an unversioned bet fails instead of guessing.
+TurnSelfPrediction = Annotated[Union[TurnSelfPredictionV1, TurnSelfPredictionV2], Field(union_mode="left_to_right")]
 
 class HubAssociationBundleV1(BaseModel):
     schema_version: Literal["hub.association.bundle.v1"] = "hub.association.bundle.v1"
@@ -144,7 +169,7 @@ class ThoughtEventV1(BaseModel):
     # Stance's bet about this turn's own behaviour. LLM-authored but normalized by
     # parse_stance_react_payload (clamped, never defaulted). Must never reach the motor or
     # judge prompt -- see TurnSelfPredictionV1 and finalize.py's thought_event dump.
-    self_prediction: TurnSelfPredictionV1 | None = None
+    self_prediction: TurnSelfPrediction | None = None
 
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"
@@ -184,7 +209,7 @@ class ThoughtDecisionRecordV1(BaseModel):
     # result, with label UNVERIFIED when a sentence named the shown day without citing an arc.
     day_citations: DayCitationCheckV1 | None = None
     # thought_decision.self_prediction (nullable jsonb): the turn's self-prediction bet.
-    self_prediction: TurnSelfPredictionV1 | None = None
+    self_prediction: TurnSelfPrediction | None = None
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"
     model_id: str | None = None

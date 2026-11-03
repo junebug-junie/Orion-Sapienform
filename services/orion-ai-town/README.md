@@ -305,7 +305,9 @@ git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-huma
 
 ## Living world: simulation core
 
-The town now has a world that changes on its own, in plain code with no model calls. It holds places, stock (coffee at the diner, parts at the workshop, everyone's cash), each resident's needs, trust between characters, facts, and quests. Every 5 minutes a Convex cron moves it forward by 5 game-minutes, but only while the town world is running. Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2666), sections 1–3 and 8. This is PR 2 of that design.
+The town now has a world that changes on its own, in plain code with no model calls. It holds places, stock (coffee at the diner, parts at the workshop, everyone's cash), each resident's needs, trust between characters, facts, and quests. A Convex cron moves it forward once a minute, but only while the town world is running.
+
+**Game clock.** The town is open at most 2 real hours a day (Orion's sessions), so a real-time clock would need about 12 real days per game day. The clock runs 45 game minutes per real minute (`FAST_CLOCK_X` in `core.ts`) while no model call is needed. It drops to real time, 1 game minute per real minute, while any conversation is open or any NPC has a model call in flight (`townNeedsGpu`). On 10-31, chats held the GPU about 75% of each session, so a 2-hour day comes out at about one game day. The clock only moves in whole 5-minute steps; the remainder carries to the next tick. The `simState` row keeps `clock.busy_ticks` and `clock.fast_ticks`, so the real split shows in `sim/state:snapshot`. Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2666), sections 1–3 and 8. This is PR 2 of that design.
 
 What one tick does:
 - Needs drift by each resident's schedule. Needs are wants: 0 means satisfied, 1 means urgent. Rest builds up during work and recovers during sleep. Social builds up when awake. Purpose rises while the resident is in an open quest and slowly falls otherwise. Money is not drifted: it follows cash (no cash means 1, 40 cash or more means 0).

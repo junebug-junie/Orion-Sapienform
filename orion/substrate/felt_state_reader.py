@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import threading
@@ -159,12 +160,23 @@ def _pinned_lived_concept_ids() -> tuple[str, ...]:
         return ()
 
 
+@functools.lru_cache(maxsize=None)
+def _shared_engine(database_url: str) -> Any:
+    """One pool per database URL for every reader in the process.
+
+    orion/hub/association.py builds a new reader on every hub chat turn; a
+    per-instance create_engine() left each turn's pool (and its connection)
+    open until garbage collection.
+    """
+    return create_engine(database_url, pool_pre_ping=True)
+
+
 class SubstrateFeltStateReader:
     def __init__(self, *, enabled: bool, database_url: str, max_age_sec: int) -> None:
         self._enabled = enabled
         self._database_url = database_url
         self._max_age_sec = max_age_sec
-        self._engine = create_engine(database_url, pool_pre_ping=True) if enabled else None
+        self._engine = _shared_engine(database_url) if enabled else None
         self._cache: dict[str, tuple[Any, float]] = {}
 
     def _fetch_lived_answers(self) -> list[dict[str, Any]] | None:

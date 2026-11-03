@@ -63,6 +63,14 @@ jobs:
         run: python -m pytest -q tests/test_rung3_reading_pull.py tests/test_rung3_reading_pull_thermal_pin.py
       - name: Retro leisure route (Orion plays Zelda, section E)
         run: python -m pytest -q tests/test_rung3_retro_leisure.py
+      - name: AI Town session route
+        run: python -m pytest -q tests/test_rung3_aitown_session.py
+      - name: Install execution dispatch production dependencies
+        run: pip install -r services/orion-execution-dispatch-runtime/requirements.txt
+      - name: Execution dispatch runtime contracts
+        env:
+          POSTGRES_URI: postgresql://unused/unused
+        run: python -m pytest -q services/orion-execution-dispatch-runtime/tests
       - name: Reading pull against Postgres (must not skip)
         env:
           ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/scratch

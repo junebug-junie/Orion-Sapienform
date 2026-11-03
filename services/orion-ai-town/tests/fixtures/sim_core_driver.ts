@@ -1,6 +1,6 @@
 // Driver for tests/test_sim_core.py. Runs every scenario against the shipped
 // core.ts + seed.ts (copied next to this file) and prints one JSON report.
-import { MAX_EFFECTS, MAX_FACTS, MAX_OPEN_QUESTS, MAX_RESOLVED_QUESTS, MAX_RUMORS, SimError, applyEvent, checkEntities,
+import { CLOCK_TICK_SECONDS, FAST_CLOCK_X, advanceClock, townNeedsGpu, MAX_EFFECTS, MAX_FACTS, MAX_OPEN_QUESTS, MAX_RESOLVED_QUESTS, MAX_RUMORS, SimError, applyEvent, checkEntities,
   checkInjectSource, createState, tick } from './core.ts';
 import type { State } from './core.ts';
 import { SIM_CAST, SIM_SEED } from './seed.ts';
@@ -295,4 +295,26 @@ out.entities = checkEntities(s0, ['Mara', 'mara vale', 'diner', 'Diner', 'coffee
 
 out.tick_bad_minutes = err(() => tick(s0, 7));
 out.tick_too_long = err(() => tick(s0, 1445));
+// Game clock: fast while idle, real time while a model call is open.
+{
+  const run = (pattern: boolean[]) => {
+    let c = null as any; let total = 0; const steps: number[] = [];
+    for (const busy of pattern) { const r = advanceClock(c, busy); c = r.clock; total += r.minutes; steps.push(r.minutes); }
+    return { total, steps, clock: c };
+  };
+  out.clock = {
+    x: FAST_CLOCK_X, tick_s: CLOCK_TICK_SECONDS,
+    idle_hour: run(Array(60).fill(false)).total,
+    busy_hour: run(Array(60).fill(true)),
+    // The 10-31 sessions: chats held the GPU about 75% of each 30 minutes.
+    session_75: run(Array.from({ length: 30 }, (_, i) => i % 4 !== 0)).total,
+    two_hours_75: run(Array.from({ length: 120 }, (_, i) => i % 4 !== 0)).total,
+    gpu: {
+      none: townNeedsGpu(null),
+      empty: townNeedsGpu({ conversations: [], agents: [{}, {}] }),
+      chat: townNeedsGpu({ conversations: [{}], agents: [] }),
+      op: townNeedsGpu({ conversations: [], agents: [{}, { inProgressOperation: { name: 'agentDoSomething' } }] }),
+    },
+  };
+}
 console.log(JSON.stringify(out));

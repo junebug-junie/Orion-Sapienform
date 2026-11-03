@@ -12,18 +12,18 @@ from orion.harness.finalize import build_finalize_reflect_context
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.runner import build_harness_prompt
 from orion.harness.tests.fixtures import make_appraisal, make_repair_overlay, make_thought
-from orion.schemas.thought import TurnSelfPredictionV1
+from orion.schemas.thought import TurnSelfPredictionV2
 
 # Distinctive values that appear nowhere else in a rendered prompt.
-_BET = TurnSelfPredictionV1(
+_BET = TurnSelfPredictionV2(
+    schema_version="turn.self_prediction.v2",
     asks_question_p=0.37,
     fetches_outside_p=0.63,
-    steps_lo=7771,
-    steps_hi=8881,
-    reply_chars_lo=4241,
-    reply_chars_hi=9191,
+    more_steps_than_usual_p=0.7771,
+    longer_reply_than_usual_p=0.4241,
 )
-_MARKERS = ("self_prediction", "asks_question_p", "steps_lo", "7771", "8881", "4241", "9191", "0.37", "0.63")
+_MARKERS = ("self_prediction", "asks_question_p", "more_steps_than_usual", "longer_reply_than_usual",
+            "0.7771", "0.4241", "0.37", "0.63")
 
 
 def _assert_clean(text: str) -> None:

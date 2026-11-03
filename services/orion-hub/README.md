@@ -3015,6 +3015,21 @@ from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 
 while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
 `tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
 
+After deploying sql-writer and Hub on Athena, prove the live path rather than only the
+container state:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+python3 scripts/smoke_office_air_live.py
+```
+
+The read-only smoke requires a fresh non-stale Hub sample, the rendered Office DOM and
+its CCS811 frontend asset link, the asset itself, the three materialized air columns,
+a fresh destination row, and zero
+`office.env.sample.v1` fallback rows in the last 24 hours. It never reads or prints
+fallback payloads. During the sensor's 20-minute post-restart conditioning window,
+`--allow-warming` accepts an explicit warming state without pretending air values exist.
+
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
 biometrics → sql-writer rows with `cabinet_temp_c` and related keys on node

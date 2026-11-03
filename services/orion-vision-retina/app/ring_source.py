@@ -72,6 +72,9 @@ BLIND_AFTER_FAILED_BURSTS = 3
 # This many push listeners in a row that died before the next supervise
 # check = the doorbell is deaf (events are not reaching us at all).
 DEAF_AFTER_LISTENER_DEATHS = 3
+# This many push messages in a row that could not be handled = deaf too: the
+# listener stays up but no event gets through (e.g. FCM changes encoding again).
+DEAF_AFTER_SKIPPED_MESSAGES = 3
 
 
 def _b64url_padded(s: str) -> str:
@@ -85,6 +88,7 @@ class _FcmSkips:
     Process-wide: the patch is on the library class, not on one listener."""
 
     count = 0
+    consecutive = 0   # skips since the last message handled normally
     last_error: str | None = None
 
 
@@ -112,21 +116,31 @@ def ensure_fcm_push_tolerance() -> None:
     cls = fpc.FcmPushClient
     if getattr(cls, "_orion_push_tolerant", False):
         return
-    decrypt = cls._decrypt_raw_data  # staticmethod: a plain function via the class
-    handle = cls._handle_data_message
+    decrypt = getattr(cls, "_decrypt_raw_data", None)  # staticmethod: a plain function via the class
+    handle = getattr(cls, "_handle_data_message", None)
+    if not callable(decrypt) or not callable(handle):
+        # A firebase-messaging that renamed its internals: listen unpatched
+        # (ring_deaf in health shows it if the old failure comes back).
+        logger.warning("[RETINA] ring push tolerance not installed: FcmPushClient internals changed")
+        return
 
-    def _decrypt_raw_data(credentials, crypto_key_str, salt_str, raw_data):
-        return decrypt(credentials, _b64url_padded(crypto_key_str), _b64url_padded(salt_str), raw_data)
+    def _decrypt_raw_data(credentials, crypto_key_str, salt_str, *args, **kwargs):
+        # *args/**kwargs: pass through anything a newer library adds.
+        return decrypt(credentials, _b64url_padded(crypto_key_str), _b64url_padded(salt_str), *args, **kwargs)
 
-    def _handle_data_message(self, msg):
+    def _handle_data_message(self, msg, *args, **kwargs):
         try:
-            return handle(self, msg)
+            out = handle(self, msg, *args, **kwargs)
         except Exception as exc:  # noqa: BLE001 -- one bad message must not kill the listener
             _FcmSkips.count += 1
+            _FcmSkips.consecutive += 1
             _FcmSkips.last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(f"[RETINA] ring push message {getattr(msg, 'persistent_id', '?')} skipped "
-                           f"(acknowledged, not delivered): {_FcmSkips.last_error}")
+                           f"(acknowledged, not delivered; {_FcmSkips.consecutive} in a row): "
+                           f"{_FcmSkips.last_error}")
             return None
+        _FcmSkips.consecutive = 0
+        return out
 
     cls._decrypt_raw_data = staticmethod(_decrypt_raw_data)
     cls._handle_data_message = _handle_data_message
@@ -341,6 +355,7 @@ class RingEventFrameSource:
         # listener that dies within a second of every start read as healthy.
         self.consecutive_listener_deaths = 0
         self.listener_restarts = 0
+        self._dead_listener: Any = None
         self.last_event_kind: str | None = None
         self.last_event_ts: float | None = None
         # Every recorded push, whatever happened to the live view.
@@ -400,11 +415,15 @@ class RingEventFrameSource:
             if not self.ever_connected:
                 await self._connect_once()
             elif not listener_alive(self._listener):
-                self.consecutive_listener_deaths += 1
-                self.listener_restarts += 1
+                # Counted once per dead listener: during a long live view the
+                # reconnect waits, and the same corpse is seen every check.
+                if self._dead_listener is not self._listener:
+                    self._dead_listener = self._listener  # a reference, not id(): ids are reused after GC
+                    self.consecutive_listener_deaths += 1
                 self.last_error = "ring push listener stopped; reconnecting"
-                logger.warning(f"[RETINA] {self.last_error} (dead {self.consecutive_listener_deaths} checks in a row)")
-                await self._reconnect_when_idle()
+                logger.warning(f"[RETINA] {self.last_error} (dead {self.consecutive_listener_deaths} in a row)")
+                if await self._reconnect_when_idle():
+                    self.listener_restarts += 1
             elif time.time() - self._connected_at >= RECONNECT_EVERY_SECONDS:
                 self.consecutive_listener_deaths = 0
                 logger.info("[RETINA] ring periodic reconnect (session refresh)")
@@ -413,11 +432,13 @@ class RingEventFrameSource:
                 self.consecutive_listener_deaths = 0
             await asyncio.sleep(SUPERVISE_SECONDS)
 
-    async def _reconnect_when_idle(self) -> None:
+    async def _reconnect_when_idle(self) -> bool:
+        """True when a reconnect was attempted (it may still have failed)."""
         if self._burst_task is not None and not self._burst_task.done():
-            return  # never pull auth out from under a live view; next round
+            return False  # never pull auth out from under a live view; next round
         await self._disconnect()
         await self._connect_once()
+        return True
 
     async def _connect_once(self) -> bool:
         try:
@@ -751,8 +772,10 @@ class RingEventFrameSource:
 
     @property
     def deaf(self) -> bool:
-        """The push listener keeps dying: no Ring event can reach us."""
-        return self.consecutive_listener_deaths >= DEAF_AFTER_LISTENER_DEATHS
+        """No Ring event can reach us: the push listener keeps dying, or it
+        stays up but every recent message failed to decode."""
+        return (self.consecutive_listener_deaths >= DEAF_AFTER_LISTENER_DEATHS
+                or _FcmSkips.consecutive >= DEAF_AFTER_SKIPPED_MESSAGES)
 
     @property
     def push_messages_skipped(self) -> int:

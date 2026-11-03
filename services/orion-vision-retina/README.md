@@ -169,9 +169,10 @@ source checks for the token every 60 s, so no restart is needed after login.
 The push link is supervised every 60 s: firebase-messaging stops for good
 after 3 connection errors, and ring_doorbell refreshes its session only once.
 A stopped listener shows as `last_error = "ring push listener stopped"` and is
-rebuilt, and the whole connection is rebuilt every 12 h. A listener found dead at 3
-checks in a row sets `ring_deaf` (health `degraded`; also
-`ring_consecutive_listener_deaths`, `ring_listener_restarts`).
+rebuilt, and the whole connection is rebuilt every 12 h. 3 dead listeners in a row,
+or 3 push messages in a row that could not be decoded, set `ring_deaf`
+(health `degraded`; also `ring_consecutive_listener_deaths`,
+`ring_listener_restarts`, `ring_push_messages_skipped`).
 
 **Deaf doorbell, 2026-10-28 21:15 UTC .. 2026-11-03 (fixed).** FCM began
 sending each push's `crypto-key`/`encryption` headers without base64 padding.

@@ -970,15 +970,18 @@ def fcm_client_class():
     fpc = pytest.importorskip("firebase_messaging.fcmpushclient")
     cls = fpc.FcmPushClient
     names = ("_decrypt_raw_data", "_handle_data_message", "_orion_push_tolerant")
+    # Must start unpatched, or the "unpatched" test would test the patch.
+    assert not cls.__dict__.get("_orion_push_tolerant"), "FcmPushClient already patched by an earlier test"
     saved = {n: cls.__dict__[n] for n in names if n in cls.__dict__}
-    skips = (rs._FcmSkips.count, rs._FcmSkips.last_error)
+    skips = (rs._FcmSkips.count, rs._FcmSkips.consecutive, rs._FcmSkips.last_error)
+    rs._FcmSkips.consecutive = 0
     yield cls
     for n in names:
         if n in cls.__dict__:
             delattr(cls, n)
     for n, v in saved.items():
         setattr(cls, n, v)
-    rs._FcmSkips.count, rs._FcmSkips.last_error = skips
+    rs._FcmSkips.count, rs._FcmSkips.consecutive, rs._FcmSkips.last_error = skips
 
 
 def _b64(raw: bytes) -> str:
@@ -1068,7 +1071,7 @@ def test_padded_headers_still_decrypt_after_the_patch(fcm_client_class):
     assert received == [({"motion": 1}, "pid-1")]
 
 
-def test_a_message_that_still_fails_is_skipped_and_acknowledged(fcm_client_class):
+def test_a_message_that_still_fails_is_skipped_and_acknowledged(fcm_client_class, tmp_path):
     """A malformed key (not a P-256 point) cannot be decrypted at all: the
     listener must log, count and ack it, not die and get it redelivered."""
     rs.ensure_fcm_push_tolerance()
@@ -1081,8 +1084,25 @@ def test_a_message_that_still_fails_is_skipped_and_acknowledged(fcm_client_class
     assert client.persistent_ids == ["pid-1"]          # acknowledged: MCS will not redeliver it
     assert client.acks == ["pid-1"]
     assert rs._FcmSkips.count == before + 1 and rs._FcmSkips.last_error
-    src = RingEventFrameSource("Front Door", state_dir="/tmp")
+    src = RingEventFrameSource("Front Door", state_dir=str(tmp_path))
     assert src.push_messages_skipped == before + 1
+
+
+def test_every_message_failing_reads_deaf_and_one_good_message_clears_it(fcm_client_class, tmp_path):
+    """The listener stays up but nothing decodes (e.g. FCM changes encoding
+    again): the same silent deafness one layer down, so it must degrade too."""
+    rs.ensure_fcm_push_tolerance()
+    src = RingEventFrameSource("Front Door", state_dir=str(tmp_path))
+    bad_key = _b64(b"\x04" + b"\x01" * 64).rstrip("=")
+    for i in range(rs.DEAF_AFTER_SKIPPED_MESSAGES):
+        assert src.deaf is False
+        credentials, msg = _fcm_push({"ding": i}, crypto_key_override=bad_key)
+        asyncio.run(_client(fcm_client_class, credentials, [])._handle_message(msg))
+    assert src.deaf is True
+    received = []
+    credentials, msg = _fcm_push({"ding": 9})
+    asyncio.run(_client(fcm_client_class, credentials, received)._handle_message(msg))
+    assert received == [({"ding": 9}, "pid-1")] and src.deaf is False
 
 
 def test_b64url_padded():
@@ -1123,8 +1143,15 @@ def test_supervisor_reports_deaf_when_every_listener_dies(tmp_path, monkeypatch)
         src._disconnect = fake_disconnect
         src._connect_once = fake_connect
         task = asyncio.create_task(src._supervise())
-        await asyncio.sleep(0.1)
-        task.cancel()
+
+        async def settled():
+            while not (len(states) >= 4 and src.consecutive_listener_deaths == 0):
+                await asyncio.sleep(0.005)
+
+        try:
+            await asyncio.wait_for(settled(), timeout=5)
+        finally:
+            task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return src, states
 
@@ -1145,3 +1172,26 @@ def test_health_degrades_when_deaf(tmp_path):
         True, 7, rs.DEAF_AFTER_LISTENER_DEATHS)
     assert "ring_push_messages_skipped" in d
     assert env["status"] == "degraded"
+
+
+def test_a_dead_listener_during_a_live_view_counts_once_and_is_not_a_restart(tmp_path, monkeypatch):
+    """The reconnect waits for the live view; the same dead listener is seen
+    every check and must not count as several deaths or as restarts."""
+    monkeypatch.setattr(rs, "SUPERVISE_SECONDS", 0.005)
+
+    async def run():
+        src = _connected(tmp_path)
+        src._connected_at = time.time()
+        src._listener = SimpleNamespace(started=True, _receiver=SimpleNamespace(is_started=lambda: False))
+        gate = asyncio.Event()
+        src._burst_task = asyncio.create_task(gate.wait())   # a live view that is still open
+        task = asyncio.create_task(src._supervise())
+        await asyncio.sleep(0.08)
+        task.cancel()
+        gate.set()
+        await asyncio.gather(task, src._burst_task, return_exceptions=True)
+        return src
+
+    src = asyncio.run(run())
+    assert src.consecutive_listener_deaths == 1
+    assert src.listener_restarts == 0

@@ -1068,6 +1068,20 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC: float = Field(
         default=6750.0, alias="HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC"
     )
+    # Orion tells Juniper when one of their faculties becomes broken, recovers, or stops being
+    # reliable (scripts/self_finding_outreach.py, self-monitor E3). Reads the self-monitor state
+    # orion-durable-runs publishes to Redis; each held-status episode is told once. No daily cap /
+    # cooldown; quiet hours / turn-in-flight / recent-chat / arousal strained still apply.
+    HUB_SELF_FINDING_OUTREACH_ENABLED: bool = Field(
+        default=True, alias="HUB_SELF_FINDING_OUTREACH_ENABLED"
+    )
+    HUB_SELF_FINDING_OUTREACH_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_SELF_FINDING_OUTREACH_TICK_SEC"
+    )
+    # Composition failures (empty generation, ungrounded name) before a finding is dropped.
+    HUB_SELF_FINDING_OUTREACH_MAX_ATTEMPTS: int = Field(
+        default=3, alias="HUB_SELF_FINDING_OUTREACH_MAX_ATTEMPTS"
+    )
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and
     # production, aligned 2026-10-10) — kill switch for the peer

@@ -421,3 +421,57 @@ def find_ungrounded_signal_mentions(text: str, grounded: Iterable[str]) -> list[
         if lowered in known and lowered not in grounded_lower:
             offenders.setdefault(lowered, token)
     return sorted(offenders.values(), key=str.lower)
+
+
+# --------------------------------------------------------------------------
+# Self-monitor faculty names (self-finding outreach, 2026-11-03)
+# --------------------------------------------------------------------------
+#
+# The self-monitor organ (``orion/self_monitor``) names each faculty it grades
+# ``<family>.<rest>`` -- ``act.actions.journal.make.walkway_grade``,
+# ``forecast.office.temp_c``, ``turn.self.steps``, ``body.retro:zelda.hold``,
+# ``vision.percept_expectation`` (adapters in ``orion/self_monitor/adapters.py``)
+# plus the ungradeable catalog (``orion/self_monitor/catalog.py``). They are
+# minted from live bet rows, so no static registry lists them all; the family
+# prefix is the closed part. A self-finding message may name a faculty only if
+# the finding it tells is about that faculty: "my painting broke" is a claim
+# the record has to back, the same rule as for signal names above.
+#
+# Only the self-finding door (`scripts/self_finding_outreach.py`) runs this
+# check; the other doors are unchanged.
+
+_FACULTY_FAMILIES = ("act", "body", "forecast", "turn", "vision")
+_FACULTY_TOKEN_RE = re.compile(
+    r"^(?:" + "|".join(_FACULTY_FAMILIES) + r")\.[a-z0-9][a-z0-9_:\-]*(?:\.[a-z0-9_:\-]+)*$"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _catalog_faculties() -> frozenset[str]:
+    try:
+        from orion.self_monitor.catalog import UNGRADEABLE
+
+        return frozenset(u.faculty.lower() for u in UNGRADEABLE)
+    except Exception as exc:  # noqa: BLE001 -- the family pattern still guards
+        logger.warning("outreach_vocabulary_self_monitor_catalog_failed err=%s", exc)
+        return frozenset()
+
+
+def is_self_monitor_faculty(token: str) -> bool:
+    """True when ``token`` has the shape of a self-monitor faculty name."""
+    lowered = str(token or "").strip(_TRAILING_PUNCT).lower()
+    return bool(lowered) and (lowered in _catalog_faculties() or bool(_FACULTY_TOKEN_RE.match(lowered)))
+
+
+def find_ungrounded_faculty_mentions(text: str, grounded_faculties: Iterable[str]) -> list[str]:
+    """Faculty names in ``text`` that the finding being told is not about.
+
+    Sorted, de-duplicated, original case. Empty when the message names no
+    faculty, or only the faculties in ``grounded_faculties``."""
+    grounded = {str(g).strip().lower() for g in grounded_faculties if g}
+    offenders: dict[str, str] = {}
+    for token in _extract_candidate_tokens(text):
+        lowered = token.lower()
+        if lowered not in grounded and is_self_monitor_faculty(lowered):
+            offenders.setdefault(lowered, token)
+    return sorted(offenders.values(), key=str.lower)

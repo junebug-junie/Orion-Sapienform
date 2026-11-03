@@ -21,13 +21,14 @@ could read it.
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Iterable, Optional
 
 from orion.core.schemas.cognitive_substrate import (
     EntityNodeV1,
     EvidenceNodeV1,
     NodeRefV1,
+    SubstrateActivationV1,
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
     SubstrateProvenanceV1,
@@ -40,6 +41,68 @@ SOURCE_KIND = "vision_individual"
 SOURCE_CHANNEL = "orion:ask:answered"
 PRODUCER = "orion-substrate-runtime.ask_answered"
 MAX_LABEL_LENGTH = 120
+
+# "Seen recently" fades in about a day (2026-11-03,
+# docs/superpowers/specs/2026-11-03-person-graph-sighting-refresh-design.md). The
+# substrate tick seeds a cluster from its observed_at, which the person-graph loop
+# moves to vision_individual.last_seen_at. With this half-life a sighting (~0.55)
+# falls below the 0.08 dormancy line ~18 h later. Without one the tick can only
+# raise the birth seed, so every named cluster read a frozen 0.625 forever.
+SIGHTING_HALF_LIFE_SECONDS = 6 * 3600
+
+# When the cluster's name was last set (naming or rename), kept apart from
+# observed_at, which follows sightings. The person-graph relabel guard reads it.
+# Durable as a native entity property (falkor_codec), since Falkor keeps no
+# free-form metadata on entity nodes.
+LABEL_SET_AT_KEY = "label_set_at"
+
+
+def _sighting_activation(signals: SubstrateSignalBundleV1) -> SubstrateActivationV1:
+    return signals.activation.model_copy(update={"decay_half_life_seconds": SIGHTING_HALF_LIFE_SECONDS})
+
+
+def label_set_at(node: EntityNodeV1) -> datetime:
+    """When ``node``'s name was set; its observed_at for a node written before the stamp existed."""
+    raw = (node.metadata or {}).get(LABEL_SET_AT_KEY)
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return node.temporal.observed_at
+
+
+def sighting_refreshed_entity(existing: EntityNodeV1, last_seen_at: Optional[datetime]) -> Optional[EntityNodeV1]:
+    """``existing`` cluster node moved forward to its newest sighting, or None if nothing changes.
+
+    observed_at only moves forward (max of the node's and ``last_seen_at``). The
+    sighting half-life is set. ``label_set_at`` is backfilled from the node's
+    current observed_at the first time, before observed_at moves, so the relabel
+    guard keeps the naming time. Activation is never touched: the substrate tick
+    owns it. Pure."""
+    seen = last_seen_at
+    if seen is not None and seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    observed = existing.temporal.observed_at
+    new_observed = max(observed, seen) if seen is not None else observed
+    has_stamp = LABEL_SET_AT_KEY in (existing.metadata or {})
+    has_half_life = existing.signals.activation.decay_half_life_seconds == SIGHTING_HALF_LIFE_SECONDS
+    if new_observed == observed and has_stamp and has_half_life:
+        return None
+    metadata = dict(existing.metadata or {})
+    if not has_stamp:
+        metadata[LABEL_SET_AT_KEY] = observed.isoformat()
+    return existing.model_copy(
+        update={
+            "temporal": existing.temporal.model_copy(update={"observed_at": new_observed}),
+            "signals": existing.signals.model_copy(update={"activation": _sighting_activation(existing.signals)}),
+            "metadata": metadata,
+        }
+    )
 
 # Detector label class -> entity_type. Anything unlisted keeps the detector's
 # own class name (it is already a concrete noun), and a missing kind is
@@ -70,6 +133,10 @@ def entity_node_id_for_individual(individual_id: str) -> str:
     return f"entity:vision_individual:{digest}"
 
 
+def _ensure_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def normalize_label(label: str) -> str:
     return " ".join(str(label or "").split())[:MAX_LABEL_LENGTH]
 
@@ -93,6 +160,7 @@ def map_vision_individual_label_to_substrate(
         "individual_id": individual_id,
         "label_ask_id": ask_id,
         "detector_kind": (kind or None),
+        LABEL_SET_AT_KEY: _ensure_utc(answered_at).isoformat(),
     }
     if stream_id:
         metadata["stream_id"] = stream_id
@@ -103,7 +171,10 @@ def map_vision_individual_label_to_substrate(
         promotion_state="proposed",
         temporal=make_temporal(observed_at=answered_at),
         # Juniper named it: highest-confidence thing in this record.
-        signals=SubstrateSignalBundleV1(confidence=0.9, salience=0.5),
+        signals=SubstrateSignalBundleV1(
+            confidence=0.9, salience=0.5,
+            activation=SubstrateActivationV1(decay_half_life_seconds=SIGHTING_HALF_LIFE_SECONDS),
+        ),
         provenance=SubstrateProvenanceV1(
             authority="user_asserted",
             source_kind=SOURCE_KIND,
@@ -165,6 +236,8 @@ def relabelled_individual_entity(existing: EntityNodeV1, node: EntityNodeV1) -> 
     for key, value in node.metadata.items():
         if value is not None:
             metadata[key] = value
+    # The rename sets the name now; never move the stamp backwards.
+    metadata[LABEL_SET_AT_KEY] = max(label_set_at(existing), label_set_at(node)).isoformat()
     return existing.model_copy(
         update={
             "label": node.label,
@@ -177,7 +250,8 @@ def relabelled_individual_entity(existing: EntityNodeV1, node: EntityNodeV1) -> 
                 update={"observed_at": max(existing.temporal.observed_at, node.temporal.observed_at)}
             ),
             "signals": existing.signals.model_copy(
-                update={"confidence": max(existing.signals.confidence, node.signals.confidence)}
+                update={"confidence": max(existing.signals.confidence, node.signals.confidence),
+                        "activation": _sighting_activation(existing.signals)}
             ),
             "metadata": metadata,
         }
@@ -221,7 +295,11 @@ def map_walkway_day_seen_to_substrate(
         subject_ref=subject_ref,
         promotion_state="proposed",
         temporal=make_temporal(observed_at=observed_at),
-        signals=SubstrateSignalBundleV1(confidence=0.8, salience=0.3),
+        # Same half-life as the clusters: the day node only echoes them (observed_in).
+        signals=SubstrateSignalBundleV1(
+            confidence=0.8, salience=0.3,
+            activation=SubstrateActivationV1(decay_half_life_seconds=SIGHTING_HALF_LIFE_SECONDS),
+        ),
         provenance=provenance,
         metadata={"source_kind": SEEN_SOURCE_KIND, "stream_id": stream_id, "day": day.isoformat(),
                   "summary": " ".join(line.split())[:MAX_SUMMARY_LENGTH]},

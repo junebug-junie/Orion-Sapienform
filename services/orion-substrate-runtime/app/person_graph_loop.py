@@ -32,12 +32,20 @@ the way the listener renames (old name kept as an alias), but only when the row'
 ``labeled_at`` is at least as new as the node: the listener writes a rename from the bus
 before orion-sql-writer applies it to Postgres, and a pass in that gap must not undo it.
 A hand-edited label therefore needs ``labeled_at`` bumped too (the typed-name path does).
-A cluster whose
+The guard compares against the node's ``label_set_at`` stamp (when its name was set),
+not its observed_at, which follows sightings (below). A cluster whose
 name was copied along a "same person" group (``label_copied``) never gets one: the
 interlocutor did not name it, and walkway_seen_loop.py relies on copied clusters having none.
 
+Sightings (2026-11-03, docs/superpowers/specs/2026-11-03-person-graph-sighting-refresh-design.md):
+each linked, non-copied cluster node of a live person gets its observed_at moved forward to
+its row's ``vision_individual.last_seen_at`` (orion-sql-writer updates it on every matched
+crop) and a 6 h decay half-life. The substrate tick then seeds it from that recency and
+decays it back to rest in about a day. This pass never writes activation: the tick owns it.
+Person nodes are not touched. Kill switch: PERSON_SIGHTING_REFRESH_ENABLED=false.
+
 Trace: ``person_graph synced persons=... nodes_written=... nodes_retired=... clusters_written=... claims=...
-clusters_relabelled=... retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
+clusters_relabelled=... sightings_refreshed=... retired=... waiting=... replayed=... stuck=... applied=... held=... failed=...``. Fail-open: an error is logged; the loop keeps going.
 Kill switch: PERSON_GRAPH_ENABLED=false.
 """
 
@@ -61,7 +69,7 @@ _NAMESPACE = uuid.UUID("2d8f5f0e-7c4b-5a39-9e61-4b3a8c1d7e25")
 PERSONS_SQL = "SELECT person_id, display_name, status, created_at FROM person"
 LINKS_SQL = (
     "SELECT l.link_id, l.person_id, l.source_ref, l.evidence_ref, l.decided_by, "
-    "v.label, v.kind, v.label_ask_id, v.stream_id, v.label_copied, o.answered_at, v.labeled_at "
+    "v.label, v.kind, v.label_ask_id, v.stream_id, v.label_copied, o.answered_at, v.labeled_at, v.last_seen_at "
     "FROM person_link l LEFT JOIN vision_individual v ON v.individual_id = l.source_ref "
     "LEFT JOIN orion_ask o ON o.ask_id = v.label_ask_id "
     "WHERE l.source_kind = 'vision_individual' AND l.revoked_at IS NULL"
@@ -91,6 +99,7 @@ class LinkRow:
     answered_at: Optional[datetime] = None
     label_copied: bool = False
     labeled_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None  # vision_individual.last_seen_at: newest matched sighting
 
 
 @dataclass
@@ -100,6 +109,7 @@ class SyncReport:
     nodes_retired: int = 0
     clusters_written: int = 0
     clusters_relabelled: int = 0
+    sightings_refreshed: int = 0
     claims: int = 0
     retired: int = 0
     waiting: int = 0
@@ -194,7 +204,8 @@ def plan_events(*, persons: list[PersonRow], links: list[LinkRow], latest: dict[
 
 
 async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], journal: Any, store: Any,
-                            projector: Any, now: Optional[datetime] = None) -> SyncReport:
+                            projector: Any, now: Optional[datetime] = None,
+                            refresh_sightings: bool = True) -> SyncReport:
     """One pass: person nodes, then journal events, then apply this producer's pending decisions."""
     from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
     from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -223,6 +234,8 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
             report.nodes_retired += 1
     report.clusters_written, report.clusters_relabelled = await _ensure_cluster_nodes(persons, links, store=store, materializer=materializer,
                                                          now=ts)
+    if refresh_sightings:
+        report.sightings_refreshed = await _refresh_sightings(persons, links, store=store)
     latest = await journal.latest_decisions(PRODUCER)
     events, report.claims, report.retired, report.waiting = plan_events(
         persons=persons, links=links, latest=latest, has_node=lambda nid: store.get_node_by_id(nid) is not None,
@@ -235,10 +248,10 @@ async def sync_person_graph(*, persons: list[PersonRow], links: list[LinkRow], j
     if result.blocked is not None:
         report.failed["readers_not_ready"] = result.blocked.reason
     logger.info("person_graph synced persons=%d nodes_written=%d nodes_retired=%d clusters_written=%d "
-                "clusters_relabelled=%d claims=%d retired=%d waiting=%d replayed=%d stuck=%d applied=%d held=%d "
-                "failed=%s",
+                "clusters_relabelled=%d sightings_refreshed=%d claims=%d retired=%d waiting=%d replayed=%d "
+                "stuck=%d applied=%d held=%d failed=%s",
                 report.persons, report.nodes_written, report.nodes_retired, report.clusters_written,
-                report.clusters_relabelled,
+                report.clusters_relabelled, report.sightings_refreshed,
                 report.claims, report.retired,
                 report.waiting, report.replayed, report.stuck, report.applied, report.held, report.failed)
     return report
@@ -251,6 +264,7 @@ async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], 
     from orion.core.schemas.cognitive_substrate import EntityNodeV1
     from orion.substrate.adapters.vision_individual import (
         entity_node_id_for_individual,
+        label_set_at,
         map_vision_individual_label_to_substrate,
         relabelled_individual_entity,
     )
@@ -266,15 +280,17 @@ async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], 
         record = map_vision_individual_label_to_substrate(
             individual_id=link.individual_id, label=link.label, kind=link.kind,
             ask_id=link.label_ask_id or link.evidence_ref or f"person_link:{link.link_id}",
-            answered_at=link.answered_at or now, stream_id=link.stream_id)
+            # Postgres labeled_at before "now": a missed ask row must not stamp the name (and
+            # observed_at, which now means "seen") with the time of this pass.
+            answered_at=link.answered_at or link.labeled_at or now, stream_id=link.stream_id)
         if record is None:
             continue
         if existing is not None:
             node = record.nodes[0]
             if not isinstance(existing, EntityNodeV1) or existing.label == node.label:
                 continue
-            if link.labeled_at is None or existing.temporal.observed_at > link.labeled_at:
-                continue  # the node is newer than Postgres: a rename the writer has not applied yet
+            if link.labeled_at is None or label_set_at(existing) > _utc(link.labeled_at):
+                continue  # the name is newer than Postgres: a rename the writer has not applied yet
             updated = relabelled_individual_entity(existing, node)
             try:
                 await asyncio.to_thread(store.upsert_node,
@@ -296,6 +312,48 @@ async def _ensure_cluster_nodes(persons: list[PersonRow], links: list[LinkRow], 
             continue
         written += 1
     return written, relabelled
+
+
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+async def _refresh_sightings(persons: list[PersonRow], links: list[LinkRow], *, store: Any) -> int:
+    """Move each linked cluster node's observed_at forward to its newest sighting. Returns the
+    number of nodes written. Activation state is skipped on write, so the tick stays its only
+    owner; a pass with no new sighting writes nothing."""
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1
+    from orion.substrate.adapters.vision_individual import entity_node_id_for_individual, sighting_refreshed_entity
+    from orion.substrate.falkor_codec import ACTIVATION_STATE_KEYS, EXTERNALLY_OWNED_METADATA_KEYS
+    from orion.substrate.reconcile import SubstrateIdentityResolver
+
+    live = {p.person_id for p in persons if p.status != "not_a_person"}
+    refreshed = 0
+    seen_clusters: set[str] = set()
+    for link in links:
+        if link.person_id not in live or link.label_copied:
+            continue
+        node_id = entity_node_id_for_individual(link.individual_id)
+        if node_id in seen_clusters:
+            continue
+        seen_clusters.add(node_id)
+        existing = await asyncio.to_thread(store.get_node_by_id, node_id)
+        if not isinstance(existing, EntityNodeV1):
+            continue
+        updated = sighting_refreshed_entity(existing, link.last_seen_at)
+        if updated is None:
+            continue
+        try:
+            await asyncio.to_thread(store.upsert_node,
+                                    identity_key=SubstrateIdentityResolver().canonical_node_key(updated),
+                                    node=updated,
+                                    skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS | ACTIVATION_STATE_KEYS)
+        except Exception as exc:  # noqa: BLE001 -- one cluster must not stop every claim this pass
+            logger.warning("person_graph sighting_refresh_failed individual=%s err=%s", link.individual_id,
+                           type(exc).__name__)
+            continue
+        refreshed += 1
+    return refreshed
 
 
 async def _recover(latest: dict[str, Any], *, journal: Any, store: Any, projector: Any, report: SyncReport) -> None:
@@ -326,7 +384,7 @@ async def read_rows(pool: Any) -> tuple[list[PersonRow], list[LinkRow]]:
                    for r in await conn.fetch(PERSONS_SQL)]
         links = [LinkRow(r["link_id"], r["person_id"], r["source_ref"], r["evidence_ref"], r["decided_by"],
                          r["label"] or "", r["kind"], r["label_ask_id"], r["stream_id"], r["answered_at"],
-                         bool(r["label_copied"]), r["labeled_at"])
+                         bool(r["label_copied"]), r["labeled_at"], r["last_seen_at"])
                  for r in await conn.fetch(LINKS_SQL)]
     return persons, links
 
@@ -356,11 +414,12 @@ async def run_person_graph_loop(
     from orion.substrate.reader_capability import readiness, required_readers_from_env
 
     interval = float(getattr(settings, "person_graph_interval_sec", 600.0) or 600.0)
+    refresh_sightings = bool(getattr(settings, "person_sighting_refresh_enabled", True))
     uri = str(os.getenv("FALKORDB_URI", "") or "").strip()
     required = required_readers_from_env()
     pool = None
     projector = None
-    logger.info("person_graph loop starting interval_sec=%.0f", interval)
+    logger.info("person_graph loop starting interval_sec=%.0f sighting_refresh=%s", interval, refresh_sightings)
     try:
         while stop_event is None or not stop_event.is_set():
             try:
@@ -378,7 +437,7 @@ async def run_person_graph_loop(
                             readiness=lambda: readiness(uri, required), proposal_actors=(PRODUCER,))
                     persons, links = await read_rows(pool)
                     await sync_person_graph(persons=persons, links=links, journal=journal, store=store,
-                                            projector=projector)
+                                            projector=projector, refresh_sightings=refresh_sightings)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- fail-open; a missing person table lands here

@@ -430,6 +430,10 @@ SYNC_PREFIXES = (
     "VISION_CAPTION_MOTION_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
+    # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).
+    # Neither matched a prefix: the default run visited the .env and added nothing.
+    "PERSON_GRAPH_",
+    "PERSON_SIGHTING_",
 )
 
 SYNC_EXACT = frozenset(

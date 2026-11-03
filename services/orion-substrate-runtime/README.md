@@ -87,6 +87,18 @@ Known gap: this is plain pub/sub. If the Hub's publish fails or this service is 
 
 Log line to look for: `ask_answered entity_created ask_id=... individual_id=... node_id=entity:vision_individual:...`.
 
+### A sighting refreshes the named cluster (2026-11-03)
+
+Design: `docs/superpowers/specs/2026-11-03-person-graph-sighting-refresh-design.md`. Before this, every named cluster node held the value of its first tick (0.625) forever, because it had no decay half-life, and its `observed_at` was the naming time, not the time the person was last seen.
+
+- Every 10 minutes the person-graph pass (`app/person_graph_loop.py`, `_refresh_sightings`) reads each linked, non-copied cluster's `vision_individual.last_seen_at` (orion-sql-writer updates it on every matched crop). It moves the cluster node's `observed_at` forward to that time and gives the node a 6 h half-life (`SIGHTING_HALF_LIFE_SECONDS` in `orion/substrate/adapters/vision_individual.py`). New walkway day nodes get the same half-life.
+- The pass never writes activation. The substrate tick seeds the node from the fresh `observed_at`: a sighting reads about 0.55, about 0.27 six hours later, and goes dormant (< 0.08) about 18 h later.
+- The rename guard now compares Postgres `labeled_at` with the node's `label_set_at` (when its name was set), not with `observed_at`. The first refresh copies the old `observed_at` into `label_set_at`. It is a native Falkor property on entity nodes.
+- Person nodes, attention and `node:substrate.perception_walkway` do not change.
+- Trace: `person_graph synced ... sightings_refreshed=N`. A pass with no new sighting writes nothing (`sightings_refreshed=0`).
+- Kill switch: `PERSON_SIGHTING_REFRESH_ENABLED=false` (default true). Nodes then fade to rest within a day.
+- Eval: `python services/orion-substrate-runtime/evals/run_person_sighting_replay_eval.py` replays 14 days of walkway hour rollups (read-only) through the real dynamics engine and fails if one person holds more than 25% of the active person-hours.
+
 ## Bus listener liveness on `/health`
 
 Every bus listener runs through `orion.core.bus.resilience.run_subscription`, which resubscribes after a Redis drop and records its state. `GET /health` reports it:

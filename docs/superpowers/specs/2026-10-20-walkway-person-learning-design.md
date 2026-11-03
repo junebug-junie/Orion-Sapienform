@@ -252,6 +252,21 @@ albums enough that a held-out visit beats the street.
 
 ## Handoff: everything still open (2026-10-20)
 
+**Status update 2026-11-03, later (face bar, PR feat/person-model-face-bar).** Model
+`median-topk-street-v2-people-split-face90`. (1) alpha is split only across labels that
+are one real person: names whose `person` row is `not_a_person` (live: skeleton, UPS
+delivery, a pair label) no longer count, and never get an accept bar. Live split 16 -> 13,
+so an accept bar needs 259 impostor clusters, not 319. "Mail carrier" is still `active`
+and still counts; mark it in the Hub People panel if it is a role, not one person. (2) Face
+bars calibrate on unnamed clusters from the last 90 days (`VISION_PERSON_FACE_CANDIDATE_DAYS`);
+body and guesses stay on 30. Read-only eval, same day: identical to v1 (0 wrong, 0 correct,
+103 unsure, face AUC 0.614, McNemar p = 1.0), because every face crop is under 19 days old
+(first 2026-10-15), so the 90-day window adds nothing yet. Face street grows ~2.8 clusters/day
+(+~2.7 with the doorbell back, PR #3085): about 245 street face clusters, so ~259 face
+impostors per person, about 35 days out (~2026-12-08) at that rate; a 30-day window would cap near 165 and never get
+there. Still binding after that: only 2 people have >= 3 face clusters, and face cross-day
+AUC is 0.614.
+
 **Status update 2026-11-03 (what is built vs what works).**
 - Built and live: Phase 0, Phase 1 albums, bars, attributions, `vision_person_confirm`
   asks. Live: 1,607 `+1` exemplars over 16 labels, 574 `-1`; 72 confirm asks answered;

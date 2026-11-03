@@ -23,7 +23,17 @@ fitted from the album itself:
   clusters, each held out together with every album crop from its days,
   exist and at least half of them score above it: the person must beat the
   street across days, not once by luck. A channel that only matches same-day
-  clothes accepts nobody;
+  clothes accepts nobody. "Number of people" counts only labels that are one
+  real person: a name whose ``person`` row is ``not_a_person`` (a decoration,
+  a role like a delivery company, a pair named together; set in the Hub People
+  panel) keeps its album, its reject bound and its ``unsure`` guesses, and its
+  clusters stay impostors for everyone else, but it never gets an accept bar:
+  "probably <a pair of known people>" would name known people, and the split
+  only covers labels that can accept (2026-11-03);
+- the face channel's street is longer (``face_candidate_days``, 90) than the
+  body/osnet street (``candidate_days``, 30): faces are rare, and an accept
+  bound at alpha / people needs about people / alpha impostor clusters with
+  faces. Guesses are still made on the 30-day street only (2026-11-03);
 - ``reject_below``: alpha-quantile of cross-day genuine CROP scores (needs
   >= 19). Crops of one cluster are correlated, so that n is nominal; the
   bar is applied to a cluster median against the full album, which only
@@ -44,14 +54,14 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import AbstractSet, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 import numpy as np
 
 logger = logging.getLogger("sql-writer.vision_person_model")
 
-MODEL_VERSION = "median-topk-street-v1"
+MODEL_VERSION = "median-topk-street-v2-people-split-face90"
 CHANNELS = ("face", "body", "osnet")
 RECONCILED_SOURCES = ("cluster_label", "pair_same", "picture_different")
 PEOPLE_KINDS = ("person", "man", "woman", "child", "kid")
@@ -72,6 +82,12 @@ class PersonModelConfig:
     fallback_channel: str = "body"
     candidate_days: float = 30.0
     local_tz: str = "America/Denver"
+    # Face bars are fitted on unnamed clusters seen this many days back (faces
+    # are rare). <= candidate_days = the face channel uses the guess street.
+    face_candidate_days: float = 90.0
+    # Split alpha only across labels that are one real person (not the
+    # ``not_a_person`` names). False = split across every album label.
+    alpha_split_people_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -237,11 +253,22 @@ def score_cluster(crops: Sequence[Crop], person: str, channel: str, album: Dict[
     return float(np.median(score))
 
 
+def people_count(album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
+                 not_people: AbstractSet[str] = frozenset()) -> int:
+    """How many ways alpha is split: album labels that are one real person.
+    ``not_people``: casefolded names marked ``not_a_person``. A name with no
+    person row counts as a person (the split only gets stricter)."""
+    if not cfg.alpha_split_people_only:
+        return max(1, len(album))
+    return max(1, sum(1 for p in album if p.strip().casefold() not in not_people))
+
+
 def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
-            street: Optional[Dict[str, List[Crop]]] = None) -> Fit:
+            street: Optional[Dict[str, List[Crop]]] = None,
+            not_people: AbstractSet[str] = frozenset()) -> Fit:
     """Fit one person's bar on one channel. ``album``: person -> polarity -> crops;
-    ``street``: unnamed recent clusters (cluster -> crops). The accept bound
-    uses alpha / number of people in the album."""
+    ``street``: unnamed clusters (cluster -> crops) to calibrate on. The accept
+    bound uses alpha / ``people_count`` (labels that are one real person)."""
     own = album.get(person, {})
     pos = _Side(own.get(1, []), channel)
     neg = _Side(own.get(-1, []), channel)
@@ -269,10 +296,12 @@ def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], 
     sides: Dict[Tuple[str, str, int], _Side] = {(person, channel, 1): pos, (person, channel, -1): neg}
     impostor = [s for s in (score_cluster(cs, person, channel, album, cfg, sides) for cs in groups)
                 if s is not None]
-    accept_at = conformal_accept_at(impostor, cfg.alpha / max(1, len(album)))
+    accept_at = conformal_accept_at(impostor, cfg.alpha / people_count(album, cfg, not_people))
     above = sum(1 for g in genuine_clusters if accept_at is not None and g > accept_at)
     if len(genuine_clusters) < MIN_GENUINE_CLUSTERS or 2 * above < len(genuine_clusters):
         accept_at = None
+    if cfg.alpha_split_people_only and person.strip().casefold() in not_people:
+        accept_at = None     # outside the split: may be asked about, never "probably" it
     bar = Bar(person, channel, accept_at, conformal_reject_below(genuine, cfg.alpha),
               len(genuine), len(impostor))
     return Fit(bar, genuine, genuine_clusters, impostor)
@@ -472,12 +501,17 @@ def load_album(conn, tz: ZoneInfo) -> Tuple[Dict[str, Dict[int, List[Crop]]], st
 
 
 def fit_all(album: Dict[str, Dict[int, List[Crop]]], cfg: PersonModelConfig,
-            street: Optional[Dict[str, List[Crop]]] = None) -> Dict[Tuple[str, str], Bar]:
+            street: Optional[Dict[str, List[Crop]]] = None,
+            face_street: Optional[Dict[str, List[Crop]]] = None,
+            not_people: AbstractSet[str] = frozenset()) -> Dict[Tuple[str, str], Bar]:
+    """Every person's bar on every channel their album has. ``face_street``:
+    the longer street the face channel calibrates on (None = ``street``)."""
     bars = {}
     for person in sorted(album):
         for ch in CHANNELS:
             if any(ch in c.vecs for c in album[person].get(1, [])):
-                bars[(person, ch)] = fit_bar(person, ch, album, cfg, street).bar
+                pool = face_street if ch == "face" and face_street is not None else street
+                bars[(person, ch)] = fit_bar(person, ch, album, cfg, pool, not_people).bar
     return bars
 
 
@@ -493,13 +527,17 @@ def _write_bars(conn, bars: Dict[Tuple[str, str], Bar], fingerprint: str, now: d
              "i": b.n_impostor, "f": fingerprint, "v": MODEL_VERSION, "t": now})
 
 
-def unnamed_clusters(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo) -> Dict[str, List[Crop]]:
+def unnamed_clusters(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo,
+                     days: Optional[float] = None) -> Dict[str, List[Crop]]:
+    """Unnamed, moving person clusters seen in the last ``days`` (default
+    ``cfg.candidate_days``): cluster -> its newest ATTRIBUTION_CROPS crops."""
     from sqlalchemy import text
 
     ids = [r[0] for r in conn.execute(text(
         "SELECT individual_id FROM vision_individual WHERE label IS NULL AND NOT stationary "
         "AND kind = ANY(:k) AND last_seen_at > :since"),
-        {"k": list(PEOPLE_KINDS), "since": now - timedelta(days=cfg.candidate_days)}).fetchall()]
+        {"k": list(PEOPLE_KINDS),
+         "since": now - timedelta(days=cfg.candidate_days if days is None else days)}).fetchall()]
     if not ids:
         return {}
     crops = _load_crops(conn, "crop_id IN (SELECT crop_id FROM (SELECT crop_id, row_number() OVER "
@@ -509,6 +547,47 @@ def unnamed_clusters(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo) 
     for c in crops:
         out.setdefault(c.cluster, []).append(c)
     return out
+
+
+def street_pools(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo
+                 ) -> Tuple[Dict[str, List[Crop]], Dict[str, List[Crop]]]:
+    """(street, face_street): the guess street (``candidate_days``) and the
+    street face bars are fitted on (``face_candidate_days``; the same dict when
+    that is not longer). Unnamed clusters unseen for VISION_SIGHTING_RETENTION_DAYS
+    (90) are pruned, so a longer face window finds nothing more."""
+    if cfg.face_candidate_days <= cfg.candidate_days:
+        street = unnamed_clusters(conn, now, cfg, tz)
+        return street, street
+    from sqlalchemy import text
+
+    face_street = unnamed_clusters(conn, now, cfg, tz, days=cfg.face_candidate_days)
+    recent = {r[0] for r in conn.execute(text(
+        "SELECT individual_id FROM vision_individual WHERE individual_id = ANY(:i) AND last_seen_at > :since"),
+        {"i": list(face_street), "since": now - timedelta(days=cfg.candidate_days)}).fetchall()} if face_street else set()
+    return {k: v for k, v in face_street.items() if k in recent}, face_street
+
+
+def not_a_person_names(conn) -> FrozenSet[str]:
+    """Casefolded labels Juniper marked as not one real person: the display name
+    of every ``person`` row with status ``not_a_person`` and the label of every
+    camera cluster linked to one (people one-record, PR #2852), minus any name
+    an ``active`` person row also carries (a lagging link or a merge never
+    turns a real person into a thing). Empty when the person tables are missing
+    (then every label counts as a person)."""
+    from sqlalchemy import text
+
+    if conn.execute(text("SELECT to_regclass('person') IS NULL OR to_regclass('person_link') IS NULL")).scalar():
+        return frozenset()
+    rows = conn.execute(text(
+        "SELECT p.display_name FROM person p WHERE p.status = 'not_a_person' "
+        "UNION SELECT i.label FROM person p JOIN person_link l ON l.person_id = p.person_id "
+        "AND l.revoked_at IS NULL AND l.source_kind = 'vision_individual' "
+        "JOIN vision_individual i ON i.individual_id = l.source_ref "
+        "WHERE p.status = 'not_a_person' AND i.label IS NOT NULL")).fetchall()
+    active = {r[0].strip().casefold() for r in conn.execute(text(
+        "SELECT display_name FROM person WHERE status <> 'not_a_person'")).fetchall() if r[0]}
+    return frozenset(n for n in (r[0].strip().casefold() for r in rows if r[0] and r[0].strip())
+                     if n not in active)
 
 
 def _blocked(conn) -> Dict[str, set]:
@@ -553,15 +632,17 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
     rows, stats = desired_exemplars(conn, tz)
     added, revoked = reconcile_exemplars(conn, rows, now)
     album, fingerprint = load_album(conn, tz)
-    street = unnamed_clusters(conn, now, cfg, tz)
-    bars = fit_all(album, cfg, street)
+    street, face_street = street_pools(conn, now, cfg, tz)
+    not_people = not_a_person_names(conn) if cfg.alpha_split_people_only else frozenset()
+    bars = fit_all(album, cfg, street, face_street, not_people)
     _write_bars(conn, bars, fingerprint, now)
     guesses = attribute(street, album, bars, _blocked(conn), cfg)
     n, gone = write_attributions(conn, guesses, now)
     return {
         "person_exemplars_added": added, "person_exemplars_revoked": revoked,
         "person_impure_clusters": stats["impure_clusters"],
-        "person_people": len(album), "person_street_clusters": len(street),
+        "person_people": len(album), "person_split_people": people_count(album, cfg, not_people),
+        "person_street_clusters": len(street), "person_face_street_clusters": len(face_street),
         "person_accept_bars": sum(1 for b in bars.values() if b.accept_at is not None), "person_guesses": n,
         "person_accepts": sum(1 for g in guesses if g["band"] == "accept"),
         "person_guesses_revoked": gone,

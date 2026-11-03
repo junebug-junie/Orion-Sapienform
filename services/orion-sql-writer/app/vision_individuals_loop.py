@@ -97,6 +97,8 @@ def person_model_config(settings: Settings) -> Optional[PersonModelConfig]:
         fallback_channel=str(settings.vision_person_fallback_channel),
         candidate_days=float(settings.vision_individuals_candidate_days),
         local_tz=str(settings.vision_local_tz),
+        face_candidate_days=float(settings.vision_person_face_candidate_days),
+        alpha_split_people_only=bool(settings.vision_person_alpha_split_people_only),
     )
 
 

@@ -605,6 +605,16 @@ Each tick it:
    out with every album crop from its days, exist and half of them clear it.
    Below about 2 x people / alpha impostor clusters (~280 at 7 people) the
    bound is the street maximum: no unnamed cluster can be accepted yet.
+   "People" counts only labels that are one real person
+   (`VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY`, on): a name whose `person` row is
+   `not_a_person` (marked in the Hub People panel: a decoration, a delivery
+   company, a pair) keeps its album, reject bound and `unsure` guesses, and
+   stays an impostor for everyone else, but gets no accept bar and does not
+   widen the split ("probably <a pair>" would name known people).
+   Face bars calibrate on a longer street, unnamed clusters seen in the last
+   `VISION_PERSON_FACE_CANDIDATE_DAYS` (90; capped in effect by the 90-day
+   prune of unnamed clusters), because faces are rare; body/osnet bars and
+   all guesses stay on the 30-day street (2026-11-03).
    `reject_below` is the same rule on cross-day genuine crop scores (>= 19).
    NULL = ask only. On 2026-10-20 no person had an accept bar: everything is
    `unsure` until her answers grow the albums.

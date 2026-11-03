@@ -8,7 +8,7 @@ TRUNCATEs the walkway tables -- e.g.:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
     for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1 \\
-             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1; do
+             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 person_record_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_vision_person_model.py
 """
@@ -284,6 +284,108 @@ def test_eval_mcnemar_is_exact_and_two_sided() -> None:
     assert mcnemar_p(6, 0) == pytest.approx(2 / 64)      # 2 * 0.5**6
     assert mcnemar_p(5, 0) > 0.05                       # 5 wins and no losses is not enough
     assert auc([0.9, 0.8], [0.1, 0.2]) == 1.0 and auc([0.5], [0.5]) == 0.5
+
+
+# --- alpha split over real people, longer face street (2026-11-03) ---------------------------------------
+
+
+def _things(names, clusters: int = 2, seed: int = 11) -> dict:
+    """Album labels that are not one person (a decoration, a role): random directions."""
+    rng = np.random.default_rng(seed)
+    return {n: {1: [_crop(f"{n}-{k}-{j}", f"{n}-c{k}", f"2026-10-{k + 1:02d}", rng.normal(0, 1, 8))
+                    for k in range(clusters) for j in range(3)]} for n in names}
+
+
+def test_not_a_person_labels_do_not_widen_the_alpha_split() -> None:
+    """Live 2026-11-03: 16 album labels, 4 not one real person (a decoration, two
+    delivery roles, a pair). Counting them made a bar need 319 impostor clusters, not 259."""
+    people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
+    not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
+    assert pm.people_count(album, CFG, not_people) == 8 and pm.people_count(album, CFG) == 12
+    # 170 street + 7 x 2 people + 4 x 2 things = 192 impostor clusters: alpha / 12
+    # needs 193 (no bar), alpha / 8 needs 192.
+    split_all = pm.fit_bar("Juniper", "body", album, CFG, _street())
+    split_people = pm.fit_bar("Juniper", "body", album, CFG, _street(), not_people)
+    assert len(split_people.impostor_clusters) == 192
+    assert split_all.bar.accept_at is None and split_people.bar.accept_at is not None
+    # The things keep their albums and bars, and still count as impostors.
+    bars = pm.fit_all(album, CFG, _street(), not_people=not_people)
+    assert ("skeleton", "body") in bars and bars[("Juniper", "body")].accept_at is not None
+    assert pm.people_count(album, CFG, frozenset({"SKELETON"})) == 12      # names arrive casefolded
+
+
+def test_a_not_a_person_label_never_gets_an_accept_bar() -> None:
+    """Review finding: "probably A and B" names known people. A label outside the
+    split must not be able to accept, or the split no longer bounds false accepts."""
+    album = {"A and B": {1: _person("ab", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    armed = pm.fit_bar("A and B", "body", album, CFG, _street())          # counted as a person: arms
+    assert armed.bar.accept_at is not None
+    fit = pm.fit_bar("A and B", "body", album, CFG, _street(), frozenset({"a and b"}))
+    assert fit.bar.accept_at is None and fit.genuine_clusters    # still scored, still asked about
+    bars = pm.fit_all(album, CFG, _street(), not_people=frozenset({"a and b"}))
+    near = [_crop(f"n{i}", "near", "2026-10-15", _vec(1, 0.02 * i)) for i in range(3)]
+    (g,) = pm.attribute({"near": near}, album, bars, {}, CFG)
+    assert g["person_label"] == "A and B" and g["band"] == "unsure"
+
+
+def test_split_people_only_off_is_the_old_split_over_every_label() -> None:
+    people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
+    off = pm.PersonModelConfig(alpha_split_people_only=False)
+    not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
+    assert pm.people_count(album, off, not_people) == len(album)
+    assert pm.fit_bar("Juniper", "body", album, off, _street(), not_people).bar.accept_at is None
+    # Off: not_people is ignored entirely, bars equal the old call's.
+    assert pm.fit_all(album, off, _street(), not_people=not_people) == pm.fit_all(album, off, _street())
+
+
+def test_missing_person_tables_mean_everyone_counts_as_a_person() -> None:
+    class _Conn:
+        def execute(self, *_a, **_k):
+            class _R:
+                def scalar(self):
+                    return True       # to_regclass(...) IS NULL
+            return _R()
+    assert pm.not_a_person_names(_Conn()) == frozenset()
+
+
+def _faced(cid: str, cluster: str, day: str, v) -> pm.Crop:
+    return _crop(cid, cluster, day, v, face=v)
+
+
+def test_face_bars_calibrate_on_the_longer_street_body_bars_do_not() -> None:
+    rng = np.random.default_rng(5)
+    album = {"J": {1: [_faced(f"j{k}{i}", f"jc{k}", f"2026-10-0{k + 1}", _vec(1, 0.01 * i)) for k in range(3)
+                       for i in range(3)]}}
+    st = lambda pre, n: {f"{pre}{i}": [_faced(f"{pre}{i}-{j}", f"{pre}{i}", "2026-10-12",  # noqa: E731
+                                              rng.normal(0, 1, 8)) for j in range(3)] for i in range(n)}
+    street = st("now", 10)
+    face_street = {**street, **st("old", 25)}
+    bars = pm.fit_all(album, CFG, street, face_street)
+    assert bars[("J", "face")].n_impostor == 35 and bars[("J", "body")].n_impostor == 10
+    old = pm.fit_all(album, CFG, street)          # no face street = the guess street, as before
+    assert old[("J", "face")].n_impostor == 10
+
+
+def test_face_window_not_longer_means_one_street(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(pm, "unnamed_clusters", lambda conn, now, cfg, tz, days=None: calls.append(days) or {"a": []})
+    street, face = pm.street_pools(None, NOW, pm.PersonModelConfig(face_candidate_days=30.0), ZONE)
+    assert street is face and calls == [None]
+
+
+def test_settings_ship_the_face_window_and_people_split_on() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    cfg = person_model_config(Settings())
+    assert cfg.face_candidate_days == 90.0 and cfg.face_candidate_days > cfg.candidate_days
+    assert cfg.alpha_split_people_only is True
+    off = person_model_config(Settings(VISION_PERSON_FACE_CANDIDATE_DAYS=30, VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY=False))
+    assert off.face_candidate_days == 30.0 and off.alpha_split_people_only is False
+    # The face window is pointless past the prune of unnamed clusters.
+    assert cfg.face_candidate_days <= Settings().vision_sighting_retention_days
 
 
 # --- the cycle against real Postgres --------------------------------------------------------------------
@@ -724,3 +826,42 @@ def test_no_marks_only_the_crops_orion_guessed_on(pg) -> None:
         vi._apply_answers(conn, NOW)
         n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE source='confirm_no'")).scalar()
     assert n == pm.ATTRIBUTION_CROPS
+
+
+@needs_pg
+def test_face_street_reaches_back_further_than_the_guess_street(pg) -> None:
+    with pg.begin() as conn:
+        _add_cluster(conn, "recent", None, [_vec(1)], day=5)
+        _add_cluster(conn, "old", None, [_vec(0, 1)], day=60)
+        _add_cluster(conn, "ancient", None, [_vec(0, 0, 1)], day=120)
+        street, face = pm.street_pools(conn, NOW, CFG, ZONE)
+    assert set(street) == {"recent"} and set(face) == {"recent", "old"}
+
+
+@needs_pg
+def test_not_a_person_names_come_from_the_person_record(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        if conn.execute(text("SELECT to_regclass('person') IS NULL")).scalar():
+            pytest.skip("manual_migration_person_record_v1.sql not applied")
+        conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
+        _add_cluster(conn, "deco", "Skeleton", [_vec(1)], day=1)
+        _add_cluster(conn, "jun", "Juniper", [_vec(0, 1)], day=1)
+        _add_cluster(conn, "gone", "Old name", [_vec(0, 0, 1)], day=1)
+        _add_cluster(conn, "lag", "PersonT", [_vec(0, 0, 0, 1)], day=1)
+        conn.execute(text(
+            "INSERT INTO person (person_id, display_name, status) VALUES "
+            "('p-deco', 'Halloween decor', 'not_a_person'), ('p-jun', 'Juniper', 'active'), "
+            "('p-ups', 'UPS delivery', 'not_a_person'), ('p-ted', 'PersonT', 'active')"))
+        conn.execute(text(
+            "INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by, revoked_at) VALUES "
+            "('l1', 'p-deco', 'vision_individual', 'deco', 'camera_name', NULL), "
+            "('l2', 'p-jun', 'vision_individual', 'jun', 'camera_name', NULL), "
+            "('l3', 'p-deco', 'vision_individual', 'gone', 'camera_name', now()), "
+            "('l4', 'p-deco', 'vision_individual', 'lag', 'camera_name', NULL)"))
+        names = pm.not_a_person_names(conn)
+        conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
+    # The linked label (not just the row's own name) counts; a revoked link and a
+    # name an active person also carries do not.
+    assert names == frozenset({"halloween decor", "skeleton", "ups delivery"})

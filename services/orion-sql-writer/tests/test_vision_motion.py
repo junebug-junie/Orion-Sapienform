@@ -253,7 +253,49 @@ def test_person_with_a_dog_and_two_people_together() -> None:
 
     a, b = walker("a", y2=900), walker("b", x0=640, y2=930)
     sa, sb = stories(a + b)
-    assert "together with 1 other person" in sa.sentence and "together with 1 other person" in sb.sentence
+    assert sa.sentence.endswith(", moving alongside another person.")
+    assert sb.sentence.endswith(", moving alongside another person.")
+
+
+def _sentence(kind: str, companions, people_together: int = 0, name=None) -> str:
+    return vm.sentence_for(kind=kind, sc="walking", lat=1, dep=1, zp=["walkway"], dur=13.0, n=5,
+                           name=name, companions=list(companions), people_together=people_together)
+
+
+def test_repeated_companions_collapse_to_a_count() -> None:
+    # Live 2026-11-03: "together with a dog, a dog, a dog".
+    s = _sentence("person", ["dog", "dog", "dog"])
+    assert s.endswith(", moving alongside 3 dogs.")
+    assert "a dog, a dog" not in s
+
+
+def test_other_people_and_dogs_share_one_clause() -> None:
+    # Live: "together with 1 other person, together with a dog, a dog".
+    s = _sentence("person", ["dog", "dog"], people_together=1)
+    assert s.endswith(", moving alongside another person and 2 dogs.")
+    assert _sentence("person", ["dog"], people_together=2).endswith(", moving alongside 2 other people.")
+
+
+def test_same_kind_companions_read_other_never_a_total() -> None:
+    # Live: "A dog ... together with a dog, a person, a dog".
+    s = _sentence("dog", ["dog", "person", "dog"])
+    assert s.endswith(", moving alongside 2 other dogs and a person.")
+    assert _sentence("dog", ["person", "person"]).endswith(", moving alongside 2 people.")
+    assert _sentence("stroller", ["person", "person"]).endswith(", moving alongside 2 people.")
+    assert _sentence("dog", ["dog"]).endswith(", moving alongside another dog.")
+
+
+def test_plurals_for_every_known_kind() -> None:
+    for kind, plural in (("person", "people"), ("dog", "dogs"), ("bicycle", "bicycles"),
+                         ("stroller", "strollers"), ("vehicle", "vehicles"), ("cat", "cats")):
+        assert vm.companion_phrase("other", [kind, kind], 0) == f"2 {plural}"
+
+
+def test_named_subject_keeps_name_and_single_companion_subject() -> None:
+    s = _sentence("person", ["dog", "dog"], name="Teddy")
+    assert s.startswith("Teddy walked") and s.endswith(", moving alongside 2 dogs.")
+    assert _sentence("person", ["stroller"]).startswith("A person with a stroller walked")
+    assert _sentence("person", []).endswith("(5 detections).")
 
 
 def test_opposite_directions_are_not_together() -> None:

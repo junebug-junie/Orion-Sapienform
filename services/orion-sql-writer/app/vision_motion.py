@@ -97,6 +97,9 @@ VERBS = {
 }
 # Shared with the Hub, which re-derives a story's name when it shows it.
 NOUNS = _SHARED_NOUNS
+# Plural nouns for a counted companion group ("3 dogs"). A kind not listed gets "s".
+PLURALS = {"person": "people", "dog": "dogs", "bicycle": "bicycles", "stroller": "strollers",
+           "vehicle": "vehicles"}
 
 
 @dataclass(frozen=True)
@@ -600,12 +603,32 @@ def sentence_for(*, kind: str, sc: Optional[str], lat: int, dep: int, zp: Sequen
     if zph:
         s += " " + zph
     s += f", over {round(dur)} s ({n} detection{'s' if n != 1 else ''})"
-    if people_together:
-        s += f", together with {people_together} other {'person' if people_together == 1 else 'people'}"
     others = [c for c in companions] if not (kind == "person" and len(companions) == 1) else []
-    if others:
-        s += ", together with " + ", ".join(NOUNS.get(c, f"a {c}") for c in others)
+    group = companion_phrase(kind, others, people_together)
+    if group:
+        s += f", moving alongside {group}"
     return s + "."
+
+
+def companion_phrase(kind: str, companions: Sequence[str], people_together: int) -> str:
+    """The others who moved with this one in the same passage, one count per kind:
+    "another person and 2 dogs". The same kind as the subject reads "other"
+    ("2 other dogs"), so a count never reads as the total on the street.
+    Kinds keep their first-seen order, other people first."""
+    counts: Dict[str, int] = {}
+    if people_together:
+        counts["person"] = int(people_together)
+    for c in companions:
+        counts[c] = counts.get(c, 0) + 1
+    parts = []
+    for c, n in counts.items():
+        if c == kind:
+            parts.append(f"another {c}" if n == 1 else f"{n} other {PLURALS.get(c, c + 's')}")
+        else:
+            parts.append(NOUNS.get(c, f"a {c}") if n == 1 else f"{n} {PLURALS.get(c, c + 's')}")
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
 def _thumb_hex(ref: Optional[str]) -> Optional[str]:

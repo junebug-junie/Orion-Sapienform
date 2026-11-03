@@ -320,6 +320,27 @@ def _material_section(material: StudyMaterial) -> list[str]:
     return lines
 
 
+def kickoff_material_ids(material: StudyMaterial) -> list[str]:
+    """Ids of the study material `_material_section` puts into the kickoff prompt.
+
+    Recorded with the run (`curiosity_offer_decisions.material_ids`) so a query
+    can show which investigations saw which material. Reads the same lists the
+    sections render, with the same gates: a card listed here is a card that was
+    in the prompt, and nothing fetched-but-not-shown is listed. Street ids
+    (2026-11-03): `street_caption:<vision_events.event_id>` per caption shown,
+    and `street_day:<stream_id>:<day label>` for the day card -- the label is
+    the local date, which with stream_id and grain='day' names one
+    `vision_rollup` row. Unresolved percepts are not recorded yet.
+    """
+    ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
+    ids += [f"relation:{r.decision_id}" for r in material.relations]
+    ids += [f"street_caption:{c.event_id}" for c in material.street_captions if c.event_id]
+    card = material.street_day
+    if card is not None:
+        ids.append(f"street_day:{card.stream_id or 'walkway'}:{card.day}")
+    return ids
+
+
 def _street_day_section(material: StudyMaterial) -> list[str]:
     """The walkway over its newest day, as code counted it (2026-10-18). Nothing when absent."""
     card = material.street_day

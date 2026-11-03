@@ -259,3 +259,30 @@ def test_a_fence_opening_a_continuation_outside_any_fence_is_kept() -> None:
         {"type": "result", "subtype": "success", "result": tail, "session_id": "s1"},
     ])
     assert draft == head + tail
+
+
+def test_a_bare_closing_fence_at_the_top_of_a_continuation_is_kept() -> None:
+    """The cut landed just before the answer's own closing fence: that ``` is not a re-open."""
+    head = "Here is the function:\n```python\ndef f():\n    return 1\n"
+    tail = "```\n\nThat is the function."
+    draft, _st = _replay([
+        _assistant("m1", _text(head)), _user_text(RESUME), _assistant("m2", _text(tail)),
+        {"type": "result", "subtype": "success", "result": tail, "session_id": "s1"},
+    ])
+    assert draft == (head + tail).strip()
+
+
+def test_a_reopened_fence_in_a_middle_piece_is_dropped_too() -> None:
+    """Three pieces, the second and third both re-open the fence: neither fence survives."""
+    p1 = '```json\n{\n  "summary": "the page states the'
+    p2 = '```json\n counts, not the ratio", "weight": 0.'
+    p3 = '```json\n047\n}\n```'
+    draft, st = _replay([
+        _assistant("m1", _text(p1)), _user_text(RESUME),
+        _assistant("m2", _text(p2)), _user_text(RESUME),
+        _assistant("m3", _text(p3)),
+        {"type": "result", "subtype": "success", "result": p3, "session_id": "s1"},
+    ])
+    assert st.continuations == 2
+    assert draft.count("```") == 2
+    assert parse_json_object(draft) == {"summary": "the page states the counts, not the ratio", "weight": 0.047}

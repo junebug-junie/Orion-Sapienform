@@ -9,6 +9,7 @@ on:
     paths:
       - "orion/harness/fcc_motor.py"
       - "orion/harness/structured_output.py"
+      - "orion/core/llm_json.py"
       - "orion/harness/fcc_warm_pool.py"
       - "orion/harness/fcc_warm_relay.py"
       - "orion/harness/tests/test_fcc_warm_pool.py"
@@ -28,6 +29,7 @@ on:
     paths:
       - "orion/harness/fcc_motor.py"
       - "orion/harness/structured_output.py"
+      - "orion/core/llm_json.py"
       - "orion/harness/fcc_warm_pool.py"
       - "orion/harness/fcc_warm_relay.py"
       - "orion/llm/call_usage.py"

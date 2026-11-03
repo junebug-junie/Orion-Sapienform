@@ -8,11 +8,15 @@ stitcher). The texts below are trimmed from the governor's transcripts.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 from orion.harness import fcc_motor as motor
 from orion.harness.finalize import canonicalize_structured_output
 from orion.harness.structured_output import is_structured_output
+from orion.harness.tests.test_fcc_motor_cancel import _FakeProc
 from orion.harness.tests.test_fcc_reading_undeclared_tool import BASH_CALL, _result, _run
 
 # Pure prose (ed0adaa9, 2026-11-01): a stance summary instead of the reader JSON.
@@ -118,3 +122,44 @@ async def test_no_json_resume_when_the_deadline_is_nearly_spent(monkeypatch):
     frames, spawned = await _run(monkeypatch, [_result(PROSE_STANCE, "s1")], timeout_sec=5.0)
     assert len(spawned) == 1
     assert [f["llm_response"] for f in frames if f["type"] == "final"] == [PROSE_STANCE]
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_json_resume_is_stamped(monkeypatch):
+    frames, spawned = await _run(monkeypatch, [_result(PROSE_STANCE, "s1")], timeout_sec=5.0)
+    final = [f for f in frames if f["type"] == "final"][0]
+    assert len(spawned) == 1
+    assert final["metadata"]["fcc_reading_resume_skipped"] == {"reason": "deadline", "need": motor.RESUME_NOT_JSON}
+
+
+@pytest.mark.asyncio
+async def test_no_json_resume_without_a_session_id(monkeypatch):
+    no_session = json.dumps({"type": "result", "result": PROSE_STANCE})
+    frames, spawned = await _run(monkeypatch, [no_session])
+    final = [f for f in frames if f["type"] == "final"][0]
+    assert len(spawned) == 1 and final["llm_response"] == PROSE_STANCE
+    assert final["metadata"]["fcc_reading_resume_skipped"]["reason"] == "no_session"
+
+
+@pytest.mark.asyncio
+async def test_an_error_from_the_json_resume_run_carries_the_record(monkeypatch):
+    spawned = []
+
+    async def fake_exec(*args, **kwargs):
+        spawned.append(args)
+        if len(spawned) == 1:
+            return _FakeProc([_result(PROSE_STANCE, "s1")], hang=False, returncode=0)
+        return _FakeProc([], hang=False, returncode=1)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", lambda _p: {"MODEL_CHAT": "x"})
+    monkeypatch.setattr(motor, "label_to_claude_model_id", lambda *_a, **_k: "llamacpp/chat")
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **_k: None)
+    frames = [f async for f in motor.run_fcc_turn(
+        prompt="read", correlation_id="corr-json-err", workspace="/tmp", fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok", claude_bin="claude", timeout_sec=300.0, reading_only=True)]
+    assert len(spawned) == 2
+    assert not [f for f in frames if f["type"] == "final"]
+    errors = [f for f in frames if f["type"] == "error"]
+    assert errors and errors[-1]["metadata"]["fcc_reading_json_resume"]["session_id"] == "s1"

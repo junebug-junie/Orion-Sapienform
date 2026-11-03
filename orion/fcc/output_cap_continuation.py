@@ -77,7 +77,21 @@ RESTART_PREFIX_CHARS = 32
 RESTART_SEARCH_CHARS = 200
 _FENCE_OPEN = re.compile(r"^\s*```[a-zA-Z]*\s*")
 #: A fence opener line at the very top of a continuation piece (the line break is eaten too).
-_FENCE_REOPEN = re.compile(r"^\s*```[a-zA-Z]*[ \t]*\r?\n")
+#: Requires a language tag: a bare ``` at the top of a continuation is usually the
+#: answer's own CLOSING fence (the cut landed just before it), never strip that.
+_FENCE_REOPEN = re.compile(r"^\s*```[a-zA-Z]+[ \t]*\r?\n")
+
+
+def _drop_reopened_fence(head: str, piece: str) -> str:
+    """``piece`` without a fence opener at its top when ``head`` is still inside its own fence.
+
+    Live 2026-11-02 (reading a17a5397): the cut landed mid-string ("N GPUs at ") and the
+    next piece opened "```json\\nspeed to one switch...", which put a fence inside a JSON
+    string and failed the reading.
+    """
+    if head.count("```") % 2 == 1:
+        return _FENCE_REOPEN.sub("", piece, count=1)
+    return piece
 
 
 def _opening(text: str) -> str:
@@ -131,7 +145,9 @@ class OutputCapStitcher:
                 self._cur_text += text
         elif etype == "user":
             if is_output_cap_resume_event(raw):
-                self._head += self._cur_text
+                # A middle piece can re-open the fence too (cleaned before it joins the head,
+                # or the parity check would turn off for the pieces after it).
+                self._head += _drop_reopened_fence(self._head, self._cur_text)
                 self.continuations += 1
             else:
                 self._head = ""
@@ -168,13 +184,9 @@ class OutputCapStitcher:
             # The new piece IS the answer; gluing the old head on would break it.
             self._head = ""
             return text
-        if self._head.count("```") % 2 == 1:
-            # The head is still inside the code fence it opened, so a fence opener at the
-            # top of the continuation is the model re-fencing its output, not answer text.
-            # Live 2026-11-02 (reading a17a5397): the cut landed mid-string ("N GPUs at ")
-            # and the next piece opened "```json\nspeed to one switch...", which put a
-            # fence inside a JSON string and failed the reading.
-            tail = _FENCE_REOPEN.sub("", tail, count=1)
+        # The head is still inside the fence it opened: a fence opener at the top of
+        # the continuation is the model re-fencing its output, not answer text.
+        tail = _drop_reopened_fence(self._head, tail)
         return (self._head + tail).strip()
 
     def draft_for(self, event: Any, text: str, previous: str = "") -> str:

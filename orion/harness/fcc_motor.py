@@ -1328,7 +1328,12 @@ async def run_fcc_turn(
     session_id = str((held_final.get("metadata") or {}).get("claude_session_id") or "")
     # Too little time left: a resume would only end in a bare timeout that loses the cause.
     if not session_id or deadline - time.monotonic() < min(float(stall_timeout_sec), RESUME_MIN_BUDGET_SEC):
-        yield held_final
+        # Stamped, so "resume skipped" reads differently from "resume never needed".
+        skipped = {"reason": "no_session" if not session_id else "deadline", "need": reason}
+        logger.warning("fcc_reading_resume_skipped corr=%s reason=%s need=%s",
+                       correlation_id, skipped["reason"], reason)
+        yield {**held_final, "metadata": {**dict(held_final.get("metadata") or {}),
+                                          "fcc_reading_resume_skipped": skipped}}
         return
     # Once only, for either reason: the resumed turn's answer is final whatever it says.
     if reason == RESUME_UNDECLARED_TOOL:
@@ -1352,7 +1357,7 @@ async def run_fcc_turn(
         resume_mcp = _maybe_render_mcp_config(correlation_id=correlation_id, reading_binding=reading_binding,
                                               reading_only=True)
     except Exception:  # noqa: BLE001 -- McpPreflightError included: keep the original answer
-        logger.warning("fcc_reading_undeclared_tool_resume_mcp_failed corr=%s", correlation_id, exc_info=True)
+        logger.warning("fcc_reading_resume_mcp_failed corr=%s reason=%s", correlation_id, reason, exc_info=True)
         yield held_final
         return
     resume_argv = build_claude_argv(

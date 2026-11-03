@@ -86,6 +86,9 @@ when it recovered.
 - Added: `TemporalSourceKind` value `faculty_status_changed` and `ArcKind` value `faculty`.
 - Added: inner-state signal `self_monitor.state.v1` (SHADOW; its one reader is the chronology).
 - Behavior changed: none for existing readers.
+- Compatibility: once the cue PR lands, `FacultyRecordV1` (extra=forbid) gains fields. orion-thought
+  reads the published state, so orion-thought must run the new schema before durable-runs, or together
+  with it.
 - Compatibility: the arc and frame models forbid unknown values. Orion-thought and orion-hub must run
   the new code before orion-durable-runs folds a faculty arc, the same as for strain and street.
   The post-pull rebuild rebuilds all three in one run, because they all import the changed schema.
@@ -132,6 +135,23 @@ inside the `faculties` list, so this registry entry cannot name them one by one.
 the signal-level node only, with its rest and absent meaning. Patch 3 must add the per-field rest
 semantics for whatever its cue puts in a prompt (for example a `FacultyRecordV1` registry entry, or
 semantics keyed on the nested fields if the gate is extended), and re-lock.
+
+**Coordination with the cue PR (#3063, open when this was written).** Whichever PR merges second does
+these steps:
+
+1. Rebase. #3063 adds `calibrated_share`, `calibrated_lo` and `calibrated_hi` to `FacultyRecordV1` and
+   to the `reduce_faculty` constructor call. This PR does not touch that call or the schema, so the
+   rebase is mechanical.
+2. Remove the two entries #3063 declares in `orion/schema_skew_discovery.py`. Those entries name
+   orion-durable-runs as the writer of the self-monitor state. After both PRs land, this PR is the real
+   writer, so `test_declared_writers_are_not_stale` (`tests/scripts/test_schema_skew_discovery.py`)
+   fails until the entries go. On this branch alone the test passes (18 passed).
+3. Add the prompt semantics. Give the `self_monitor.state.v1` registry entry semantics with
+   `prompt_sites=("orion.self_monitor.cue:project_track_record_cue",)` for each number the cue renders:
+   `status`, `reliability`, `reliability_hi`, `stated_mean`, `calibrated_share/lo/hi`, `n_graded` and
+   `n_failed_to_execute`. Pin those URNs in `PROMPT_INVENTORY_URNS` (`orion/metrics/semantics.py`),
+   then re-lock. This PR does not do it, because the cue code is not on main yet, and a `prompt_sites`
+   entry that names a missing function would fail the lineage gate.
 
 ## Tests run
 

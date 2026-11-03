@@ -104,7 +104,11 @@ def _per_call_engine_functions(path: Path) -> set[tuple[str, str]]:
 
     Cached means: the function is decorated with a cache, the engine is
     assigned to a name the function declares `global`, or it is stored on an
-    attribute (`self._engine = ...`), in a subscript, or via `.setdefault()`.
+    attribute/subscript inside `if <that same target> is None:`. A bare
+    `self._engine = create_engine(...)` (e.g. in `__init__`) is NOT cached: the
+    object may be rebuilt per call (felt_state_reader, 2026-11-03).
+    `.setdefault(key, create_engine(...))` counts as cached: the discarded
+    engine never connects.
     """
     tree = ast.parse(path.read_text())
     found: set[tuple[str, str]] = set()
@@ -116,6 +120,16 @@ def _per_call_engine_functions(path: Path) -> set[tuple[str, str]]:
             continue
         globals_ = {n for node in ast.walk(func) if isinstance(node, ast.Global) for n in node.names}
         cached_calls = set()
+        guarded = {
+            ast.unparse(test.left)
+            for node in ast.walk(func)
+            if isinstance(node, ast.If)
+            for test in ast.walk(node.test)
+            if isinstance(test, ast.Compare)
+            and isinstance(test.ops[0], ast.Is)
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value is None
+        }
         for node in ast.walk(func):
             if isinstance(node, ast.Assign):
                 targets = [
@@ -124,7 +138,10 @@ def _per_call_engine_functions(path: Path) -> set[tuple[str, str]]:
                     for t in ([target] if isinstance(target, ast.Name) else getattr(target, "elts", []))
                     if isinstance(t, ast.Name)
                 ]
-                stored = any(isinstance(t, (ast.Attribute, ast.Subscript)) for t in node.targets)
+                stored = any(
+                    isinstance(t, (ast.Attribute, ast.Subscript)) and ast.unparse(t) in guarded
+                    for t in node.targets
+                )
                 if stored or any(t in globals_ for t in targets):
                     cached_calls.update(id(c) for c in ast.walk(node.value) if isinstance(c, ast.Call))
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "setdefault":
@@ -154,14 +171,20 @@ def test_no_new_per_call_engines_in_hub_scripts() -> None:
 
 # Shared `orion/` code the hub imports. Live 2026-11-02: three substrate stores
 # (review_telemetry, review_queue, policy_profiles) built a pool per call; the
-# hub's 30 s autonomy loop held 149 connections. Known per-call sites below
-# predate this gate; the list can only shrink.
+# hub's 30 s autonomy loop held 149 connections. felt_state_reader built one
+# per hub chat turn. Known per-call sites below predate this gate; the list can
+# only shrink.
 ORION_DIR = Path(__file__).resolve().parents[3] / "orion"
 KNOWN_ORION_PER_CALL_ENGINES = frozenset(
     {
         ("consolidation/repository.py", "_engine_for"),
         ("curiosity/compaction_store.py", "engine"),
         ("discussion_window/sql_fetch.py", "fetch_discussion_window"),
+        # Built once per cortex-exec runtime (endogenous_runtime.py).
+        ("reasoning/calibration_profiles.py", "__init__"),
+        # Real per-tick leak in orion-thought (reverie.py builds one per tick);
+        # not a hub process, left for a separate change.
+        ("reverie/referent_loader.py", "__init__"),
         ("social/scenario_replay.py", "_memory_service"),
         ("substrate/mutation_worker.py", "_acquire_leader_lock"),
         ("substrate/prediction_expectation_tuner.py", "postgres_reading_reader"),

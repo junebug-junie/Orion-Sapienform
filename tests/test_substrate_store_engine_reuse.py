@@ -72,3 +72,24 @@ def test_policy_profiles_reuses_one_engine(engines) -> None:
         store._persist_to_postgres()
     assert store.source_kind() == "postgres"
     assert len(engines) == 1
+
+
+def test_felt_state_readers_share_one_engine_per_url(engines, monkeypatch) -> None:
+    """orion/hub/association.py builds a new reader on every hub chat turn."""
+    import sqlalchemy
+
+    from orion.substrate import felt_state_reader
+
+    monkeypatch.setattr(felt_state_reader, "create_engine", sqlalchemy.create_engine)
+    felt_state_reader._shared_engine.cache_clear()
+    try:
+        readers = [
+            felt_state_reader.SubstrateFeltStateReader(enabled=True, database_url="postgresql://x/y", max_age_sec=60)
+            for _ in range(5)
+        ]
+        other = felt_state_reader.SubstrateFeltStateReader(enabled=True, database_url="postgresql://x/z", max_age_sec=60)
+        assert all(r._engine is readers[0]._engine for r in readers)
+        assert other._engine is not readers[0]._engine
+        assert len(engines) == 2
+    finally:
+        felt_state_reader._shared_engine.cache_clear()

@@ -711,6 +711,14 @@ class ThoughtSettings(BaseSettings):
     personality_cue_max_age_sec: float = Field(3600.0, gt=0.0, alias="PERSONALITY_CUE_MAX_AGE_SEC")
     personality_cue_top_k: int = Field(5, ge=1, le=12, alias="PERSONALITY_CUE_TOP_K")
 
+    # --- Self-monitor track record (app/self_track_record_cue.py; spec 2026-10-20 step 3) ---
+    # What Orion is failing at or misjudging right now (broken / unreliable / miscalibrated
+    # faculties only, <= 300 chars), rendered by a fixed template (orion/self_monitor/cue.py, no
+    # LLM) from the state orion-durable-runs publishes to Redis orion:self_monitor:latest on
+    # ORION_BUS_URL. Read every 5 min in the background; absent / stale / unparseable renders
+    # nothing. Shown to stance_react and reverie's coalition branch. false = both prompts as before.
+    self_track_record_cue_enabled: bool = Field(True, alias="SELF_TRACK_RECORD_CUE_ENABLED")
+
     # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
     # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over
     # substrate_node_prediction_error_history, calibrated by the attention seam's own rule; only

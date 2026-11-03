@@ -113,6 +113,7 @@ from orion.schemas.self_monitor import (
     SETTLED_BET_KIND,
     FacultyRecordV1,
     SelfMonitorStateV1,
+    SelfTrackRecordCueV1,
     SettledBetV1,
 )
 from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
@@ -1582,6 +1583,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SettledBetV1": SettledBetV1,
     "FacultyRecordV1": FacultyRecordV1,
     "SelfMonitorStateV1": SelfMonitorStateV1,
+    # Self-monitor stance/reverie cue (spec step 3): local to orion-thought, rides in plan context.
+    "SelfTrackRecordCueV1": SelfTrackRecordCueV1,
     # Body economy Patch A3 (2026-10-23): Organ 1 Body. Bus orion:physiology:state (durable-runs ->
     # sql-writer physiology_state) and Redis orion:physiology:latest. Also in SCHEMA_REGISTRY.
     "PhysiologyStateV1": PhysiologyStateV1,

@@ -63,6 +63,7 @@ def _render_stance(stance_inputs: dict) -> str:
         temporal_self_cue=None,
         self_readings=None,
         personality_cue=None,
+        self_track_record=None,
         chat_attention_frame=None,
         autonomy_slice=None,
         self_prediction_enabled=False,

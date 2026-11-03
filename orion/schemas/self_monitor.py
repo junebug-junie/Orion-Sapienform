@@ -106,6 +106,15 @@ class FacultyRecordV1(BaseModel):
     stated_mean: Optional[float] = Field(
         None, description="Mean stated confidence over graded bets that stated one."
     )
+    calibrated_share: Optional[float] = Field(
+        None, ge=0.0, le=1.0,
+        description=(
+            "Decay-weighted upheld share over the SAME bets as stated_mean (graded bets that stated a "
+            "confidence): the number calibration is judged on. For interval bets, realized coverage."
+        ),
+    )
+    calibrated_lo: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wilson lower bound of calibrated_share.")
+    calibrated_hi: Optional[float] = Field(None, ge=0.0, le=1.0, description="Wilson upper bound of calibrated_share.")
     brier: Optional[float] = None
     brier_skill: Optional[float] = Field(None, description="1 - Brier / base-rate Brier; None if undefined.")
     streak_kind: Optional[Literal["upheld", "refuted", "failed_to_execute"]] = None
@@ -130,3 +139,23 @@ class SelfMonitorStateV1(BaseModel):
     source_errors: List[str] = Field(
         default_factory=list, description="Sources that could not be read this pass (named, never silent)."
     )
+
+
+class SelfTrackRecordCueV1(BaseModel):
+    """The stance/reverie cue: what Orion is failing at or misjudging right now, in plain words.
+
+    Rendered by ``orion.self_monitor.cue.project_track_record_cue`` (fixed templates, no LLM) from a
+    fresh ``SelfMonitorStateV1``. Not on the bus: the text rides inside the cortex-exec plan context
+    (ctx key ``self_track_record``). ``text`` is "" whenever nothing may be shown, and ``skip_reason``
+    says why (disabled, not_loaded, fetch_failed, absent, unparseable, stale, future_stamped,
+    nothing_notable, render_failed).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rendered_at: AwareDatetime
+    text: str = ""
+    skip_reason: Optional[str] = None
+    shown: List[str] = Field(default_factory=list, description="Faculty keys behind each shown sentence, in order.")
+    lines_dropped: int = Field(0, ge=0, description="Notable faculties left out by the character cap.")
+    state_age_sec: Optional[float] = None

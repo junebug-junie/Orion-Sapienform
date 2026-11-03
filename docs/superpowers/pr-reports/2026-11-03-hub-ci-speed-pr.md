@@ -2,6 +2,7 @@
 
 - The Hub full-suite CI job took 12-14 min and sometimes hung until the 30 min timeout. This makes it ~2.5x faster and makes hangs fail in 3 min with a stack trace.
 - Root cause of the slowness: an autouse fixture in `services/orion-hub/tests/conftest.py` wiped every `scripts.*`/`app.*` module before each of the 4,611 tests. About 200 tests then rebuilt the whole Hub app (`scripts.main`, ~2 s each). It now wipes only when the wrong `scripts`/`app` package is loaded.
+- Second root cause, CI only: Hub's startup connects to `ORION_BUS_URL`, whose default is the live tailscale bus. From a GitHub runner that address goes nowhere, so 16 tests each waited ~30 s for the connect to time out (~8 of the CI job's 10.5 min). On circe the same tests joined the **live** bus. `conftest.py` now points tests at a closed local port (`redis://127.0.0.1:1/0`), which refuses at once and takes the same "bus unavailable" path CI always took.
 - Two tests (`test_memory_graph_routes.py`, `test_autonomy_goal_actions.py`) relied on that wipe; they now fetch reload targets with `importlib.import_module`.
 - Workflow: a newer push to the same PR cancels the older run (main pushes are never cancelled). `pytest-timeout` fails any single test after 180 s and prints every thread's stack.
 
@@ -11,7 +12,7 @@ Local full run: 9:04 -> 3:48, same 4,465 passing. CI test step was ~770 s; expec
 
 ## Files changed
 
-- `services/orion-hub/tests/conftest.py`: conditional purge (`_is_hub_package`).
+- `services/orion-hub/tests/conftest.py`: conditional purge (`_is_hub_package`); `_detach_from_live_bus()`.
 - `services/orion-hub/tests/test_memory_graph_routes.py`, `test_autonomy_goal_actions.py`: `import_module` before `reload`.
 - `.github/workflows/orion-hub-full-suite.yml`: concurrency, pytest-timeout, `--durations=20`.
 
@@ -27,6 +28,9 @@ None.
 
 ```text
 pytest services/orion-hub/tests (before)  4465 passed, 146 skipped in 544.58s
+CI run 41600381246 (purge fix only)       test step 644s; 16 tests at exactly ~30s (bus connect)
+pytest with ORION_BUS_URL=redis://10.255.255.1 (CI-like dead bus), after bus detach:
+                                          1 failed, 4465 passed, 146 skipped in 188.22s; slowest test 7s
 pytest services/orion-hub/tests (after)   1 failed, 4465 passed, 146 skipped in 201.69s (after review fixes)
 ```
 

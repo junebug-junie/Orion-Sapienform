@@ -96,6 +96,21 @@ def _detach_control_plane_from_live_postgres() -> None:
     )
 
 
+# Hub's startup connects to ORION_BUS_URL, whose default is the live tailscale
+# bus. On circe that meant every TestClient(app) in this suite joined the LIVE
+# bus; on a GitHub runner the address goes nowhere, so each startup waited out
+# a ~30 s connect timeout (16 tests, ~8 of the job's ~10.5 min, measured
+# 2026-11-03). A closed local port refuses at once: startup takes the same
+# "bus unavailable" path CI always took, without the wait. Assignment, not
+# setdefault, so a shell or .env value cannot re-attach tests to the live bus.
+# Tests that need a bus install their own (monkeypatch / fakeredis).
+_TEST_BUS_URL = "redis://127.0.0.1:1/0"
+
+
+def _detach_from_live_bus() -> None:
+    os.environ["ORION_BUS_URL"] = _TEST_BUS_URL
+
+
 # Settings() has five fields with NO default (`Field(..., alias=...)`), so
 # constructing it raises unless these are in the environment. Any test that
 # reaches `scripts.chat_history` -> `app.settings.settings` therefore died at
@@ -122,6 +137,7 @@ def _supply_required_settings_env() -> None:
 
 def pytest_configure() -> None:
     _detach_control_plane_from_live_postgres()
+    _detach_from_live_bus()
     _supply_required_settings_env()
     _ensure_hub_paths()
 

@@ -1054,6 +1054,11 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_TICK_SEC: float = Field(
         default=300.0, alias="HUB_READING_FINDING_OUTREACH_TICK_SEC"
     )
+    # Self-monitor E2 (scripts/self_monitor_questions.py): a faculty newly held broken/unreliable in
+    # orion:self_monitor:latest mints ONE self-question (curiosity_self_questions, minted_by='orion'),
+    # once per status episode; last-seen statuses persist in Redis. Unknown/stale state: nothing.
+    SELF_MONITOR_QUESTIONS_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_QUESTIONS_ENABLED")
+    SELF_MONITOR_QUESTIONS_TICK_SEC: float = Field(default=900.0, alias="SELF_MONITOR_QUESTIONS_TICK_SEC")
     # A change recorded within this many hours is told (reads up to 7 days old are watched, so a
     # belief a run moves days after the read still counts). Older changes are never messaged.
     HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS: float = Field(
@@ -1067,6 +1072,20 @@ class Settings(BaseSettings):
     # the wait; 0 = off). Stops the post-quiet-hours flood; derivation in .env_example.
     HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC: float = Field(
         default=6750.0, alias="HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC"
+    )
+    # Orion tells Juniper when one of their faculties becomes broken, recovers, or stops being
+    # reliable (scripts/self_finding_outreach.py, self-monitor E3). Reads the self-monitor state
+    # orion-durable-runs publishes to Redis; each held-status episode is told once. No daily cap /
+    # cooldown; quiet hours / turn-in-flight / recent-chat / arousal strained still apply.
+    HUB_SELF_FINDING_OUTREACH_ENABLED: bool = Field(
+        default=True, alias="HUB_SELF_FINDING_OUTREACH_ENABLED"
+    )
+    HUB_SELF_FINDING_OUTREACH_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_SELF_FINDING_OUTREACH_TICK_SEC"
+    )
+    # Composition failures (empty generation, ungrounded name) before a finding is dropped.
+    HUB_SELF_FINDING_OUTREACH_MAX_ATTEMPTS: int = Field(
+        default=3, alias="HUB_SELF_FINDING_OUTREACH_MAX_ATTEMPTS"
     )
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and

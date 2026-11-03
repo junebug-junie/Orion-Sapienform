@@ -19,6 +19,9 @@ import json
 import pytest
 
 from app.store import _PENDING_MARKER_SPEC, FeedbackRuntimeStore
+from orion.autonomy.contrast import ControlCell
+from orion.autonomy.prediction import EffectPosterior
+from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.substrate.pending_marker_reconcile import PendingMarkerReconciler
 
 
@@ -187,7 +190,8 @@ class TestStaleMarkersCannotSpinTheFifo:
         assert len(eng.calls) == 2
         bulk = eng.calls[1]
         assert "LIMIT :batch" in bulk[1] and bulk[2] == {"batch": 5000}
-        assert "JOIN substrate_feedback_frames" in bulk[1], "only rows that ARE done"
+        assert "EXISTS ( SELECT 1 FROM substrate_feedback_frames" in bulk[1]
+        assert "EXISTS ( SELECT 1 FROM substrate_feedback_control_reductions" in bulk[1]
         assert drained == 5000
 
     def test_the_batch_only_clears_rows_that_actually_have_feedback(self):
@@ -196,5 +200,54 @@ class TestStaleMarkersCannotSpinTheFifo:
         eng = _Engine(begin_script=[_Result(), _Result(rowcount=0)])
         _store(eng).clear_feedback_pending("dispatch-9")
         bulk = eng.calls[1][1]
-        assert "JOIN substrate_feedback_frames y" in bulk
+        assert "FROM substrate_feedback_frames y" in bulk
+        assert "FROM substrate_feedback_control_reductions r" in bulk
         assert "WHERE x.feedback_pending" in bulk
+
+
+class TestControlReductionReceipt:
+    @staticmethod
+    def _dispatch():
+        from datetime import datetime, timezone
+
+        return ExecutionDispatchFrameV1(
+            frame_id="dispatch-empty-1",
+            generated_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
+            source_policy_frame_id="policy-1",
+            source_proposal_frame_id="proposal-1",
+        )
+
+    @staticmethod
+    def _cells():
+        return {
+            ("resource_pressure", "no_action", 2): ControlCell(
+                posterior=EffectPosterior(mean=0.1, variance=0.2, n=7),
+                moved_n=3,
+                move_rate=0.5,
+            )
+        }
+
+    def test_receipt_cells_and_marker_clear_share_one_transaction(self):
+        eng = _Engine(begin_script=[_Result(rowcount=1), _Result(), _Result()])
+
+        inserted = _store(eng).save_control_reduction(
+            self._dispatch(), control_cells=self._cells(), observation_count=1
+        )
+
+        assert inserted is True
+        assert {scope for scope, _sql, _params in eng.calls} == {"begin"}
+        assert "INSERT INTO substrate_feedback_control_reductions" in eng.calls[0][1]
+        assert "INSERT INTO substrate_signal_control_cells" in eng.calls[1][1]
+        assert "SET feedback_pending = false" in eng.calls[2][1]
+
+    def test_replay_clears_a_stale_marker_without_refolding(self):
+        eng = _Engine(begin_script=[_Result(rowcount=0), _Result()])
+
+        inserted = _store(eng).save_control_reduction(
+            self._dispatch(), control_cells=self._cells(), observation_count=1
+        )
+
+        assert inserted is False
+        assert len(eng.calls) == 2
+        assert not any("substrate_signal_control_cells" in sql for _scope, sql, _ in eng.calls)
+        assert "SET feedback_pending = false" in eng.calls[1][1]

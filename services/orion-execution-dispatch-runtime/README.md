@@ -100,7 +100,15 @@ attributable to the layer that caused it — innermost fires first:
 `rpc_timeout_sec` is per-route (`CortexRouteTemplateV1`), not global, because the two needs are
 genuinely opposed: this consumer is single-threaded, so a global ceiling large enough for the prune
 would let one hung inspect stall all dispatch for that long. Only routes that need a longer budget
-get one.
+get one. Route, global-fallback, and GPU-shed RPC timeouts are all bounded to 720 seconds because
+the dispatch frame is timestamped before this concurrent batch and stored afterward; Layer 11's
+900-second source-visibility lag depends on that producer bound before it closes an hourly frame.
+
+Before any dispatch frame receives its final event time or enters the send path, the runtime writes
+`substrate_execution_dispatch_inflight`. The returned database timestamp becomes `generated_at`.
+`save_dispatch_frame()` inserts the durable frame and deletes the in-flight row in the same
+transaction, so Layer 11 never has to infer whether a pre-boundary frame is still only in process
+memory. A crash leaves the policy pending and the receipt visible; the retry reuses the timestamp.
 
 ### Slot arbitration and starvation (2026-08-12)
 
@@ -372,7 +380,9 @@ part-2 throughput redesign this was scoped alongside but does not itself impleme
 `status="success"` — i.e. `empty` (a real send that produced no usable result) or `failed`
 (an RPC send error, or a verb whose own plan reported `fail`/`blocked`) — the worker stops
 sending — visible via `GET /latest`'s `theater_tripwire_active` field and an `orion-notify`
-warning event on the transition into tripped.
+warning event on the transition into tripped. `GET /health` also reports `status="degraded"`,
+`ok=false`, `degraded=true`, and `theater_tripwire_active=true` while the latch is active; it
+remains HTTP 200 because the process is alive and recovery probes are still running.
 
 **Recovery (2026-08-25).** Re-arm used to require a restart, and nothing in the code could
 clear the latch. On 2026-08-23 that turned ordinary post-redeploy startup wobble into **45
@@ -413,6 +423,23 @@ logging, frame warning and re-notification are not gated by that flag.
 | `success` | the plan reported success AND returned a readable result — either an observation verb's `observation` string, or a skill verb's own structured result dict (`result_kind="structured"`, payload preserved verbatim under `result_json.structured_result`) |
 | `empty` | a real send whose payload carried nothing readable: blank `final_text`, malformed JSON, a non-object, `{}`, or an observation verb returning a blank `observation` |
 | `failed` | the RPC send raised, or the plan's own `status` was `fail`/`partial` or `blocked=True`. The verb's measurements, if any, are still preserved under `result_json.structured_result` — a failed prune still really measured the disk |
+
+Custom settlement routes use the same vocabulary: `started` (and the reading control arm's
+`control_recorded`) maps to `success`, a doer `refused` reply maps to `empty`, and an RPC error maps
+to `failed`. Legacy custom-route rows spelled both started and refused as `succeeded`; idempotent
+replays recover their canonical status from the preserved `result_json.settlement.state` and
+rewrite the guarded durable row before the dispatch frame can advance to feedback.
+
+**Tripwire health signal quality gate (2026-11-03):** provenance is the existing in-process
+`worker.theater_tripwire_active` latch, written by `_check_theater_tripwire` and cleared only by
+`_clear_tripwire`. It is independent of the old static health response, which carried no runtime
+state. The theory anchor is circuit-breaker readiness: a live process that is deliberately
+withholding motor dispatch is degraded, not healthy. Live sanity observed both states during this
+incident: journald carries repeated `theater_tripwire_active` and probe-driven
+`theater_tripwire_cleared` transitions, and recovery tests exercise the same transition.
+The existing signal was already exposed by `/latest`, frame warnings, logs, and notifications; this
+adds no detector. The additive health fields have no persistence or schema dependency and are cheap
+to remove.
 
 Note that `raw_len` measures the `observation` string only. Since 2026-08-13 a structured skill
 result can be `status="success"` with `raw_len=0`, so the previously-true invariant
@@ -648,6 +675,18 @@ These guards live in the allocator preview, so they bind only while the allocato
 orion-thought's own single-flight lock is the backstop otherwise. The visual-baseline lane is
 not act-scored: it keeps its own schedule, eligibility and old cost path. The scored numbers ride on the candidate as an
 `act_expectation:...` reason. Kill switch: `ORION_DISPATCH_ACT_CANDIDATES_ENABLED=false`.
+
+**Self-monitor act gate (rung 6 E1, 2026-11-03).** When the self-monitor organ (Redis
+`orion:self_monitor:latest`, written hourly by orion-durable-runs) holds an act-backed route's faculty
+(`act.<actor>.<verb>`, e.g. `act.thought.painting.make`) `broken` or `unreliable`, the candidate is
+refused before `allocate()` with `allocator:track_record_failing` and a
+`self_monitor:track_record_failing:<faculty>:<status>` reason on the frame. One re-test probe per
+faculty per `SELF_MONITOR_PROBE_INTERVAL_SEC` (21600) is admitted and marked `self_monitor:probe:...`;
+a probe is counted from the faculty's last `grammar_acts` open plus this process's own admitted
+probes. It covers the visual-baseline lane too (same act). It only refuses: an absent, stale or
+unreadable state, any other status, or a gate fault leaves every decision as before
+(`tests/test_self_monitor_act_gate.py`). Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`.
+Code: `orion/self_monitor/gate.py`.
 
 The per-tick randomized holdback (`ORION_DISPATCH_HOLDBACK_FRACTION`) is ON at 0.2 (attend-to-act
 design D3). It draws only on ticks that can yield a control observation: at least one candidate with a

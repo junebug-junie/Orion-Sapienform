@@ -427,6 +427,54 @@ def arousal_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEvent
     )
 
 
+BODY_BINDING_EVENT_PREFIX = "body_binding:"
+BODY_BINDING_ROWS = frozenset({"onset", "change", "keepalive", "release"})
+BODY_BOUND_STATES = frozenset({"binding", "exogenous_bind", "stuck_at_ceiling"})
+BODY_SUBJECT_PREFIX = "orion:body:"
+
+
+def _num(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def body_binding(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """temporal_self_event rows the physiology node wrote itself (``source_kind='body_binding'``,
+    ``source_table='physiology'``, ``services/orion-durable-runs/app/body_binding.py``): one per
+    onset, bound-state change, keepalive and release of one body-economy constraint whose price
+    binds. Time: occurred_at (when the row was written). Subject: ``orion:body:<constraint>``.
+    Verdict: the row kind.
+
+    The event keeps the row's OWN ``event_id``. The chronicle stores every event it folds in that
+    same table: a new id would make each fold insert a copy that the next read folds again."""
+    event_id = str(row.get("event_id") or "")
+    payload = _json(row.get("payload_json")) or {}
+    if not event_id.startswith(BODY_BINDING_EVENT_PREFIX) or not isinstance(payload, dict):
+        return None
+    kind, constraint = payload.get("row"), payload.get("constraint")
+    if kind not in BODY_BINDING_ROWS or not isinstance(constraint, str) or not constraint:
+        return None
+    state = payload.get("bind_state")
+    if kind != "release" and state not in BODY_BOUND_STATES:
+        return None
+    began = _iso(payload.get("began_at"))
+    if began is None:
+        return None
+    return _event(
+        kind="body_binding", table="physiology", ref=event_id[len(BODY_BINDING_EVENT_PREFIX):],
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref=f"{BODY_SUBJECT_PREFIX}{constraint}",
+        label=constraint[:LABEL_MAX], verdict=str(kind),
+        payload={
+            "row": kind, "constraint": constraint, "bind_state": state, "began_at": began,
+            "slack_since": _iso(payload.get("slack_since")),
+            "unit": payload.get("unit") if isinstance(payload.get("unit"), str) else None,
+            "level": _num(payload.get("level")), "line": _num(payload.get("line")),
+            "price": _num(payload.get("price")), "ceiling": _num(payload.get("ceiling")),
+            "self_spent": bool(payload.get("self_spent")), "after_gap": bool(payload.get("after_gap")),
+            "why": str(payload.get("why") or "")[:LABEL_MAX],
+        },
+    )
+
+
 def retro_play_label(row: Row) -> str:
     """A short, deterministic phrase for one session, from the row's own fields: the game, who played
     (``solo`` only for a leisure session with a recorded human share of 0, ``together`` when a human
@@ -549,8 +597,8 @@ NAME_SOURCE_WORDS = {"juniper": "named by Juniper", "recognizer": "a guess"}
 
 def street_story_label(row: Row) -> str:
     """"Outside (walkway camera): a person walked left to right, away from the house, with a stroller".
-    Built from the story's own fields, never its sentence: the sentence says "together with 1 other
-    person", a bare track count. The label carries NO people count. The honest range
+    Built from the story's own fields, never its sentence: the sentence says "moving alongside another
+    person" (older rows: "together with 1 other person"), a bare track count. The label carries NO people count. The honest range
     (orion/vision/walkway_rollup.py, PR #2781) exists only once the hour's rollup closes, a median ~3 h
     after the hour, long after the chronicle reads the story; adding it would give the same arc a
     different label live and on a re-fold. "How many" is the rollups' job (the Day letter line).
@@ -747,6 +795,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "arousal_transition": arousal_transition,
     "retro_play": retro_play,
     "street_event": street_event,
+    "body_binding": body_binding,
 }
 
 

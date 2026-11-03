@@ -3005,7 +3005,8 @@ API: `GET /api/cabinet/sensors/latest`, `GET /api/cabinet/sensors/history?window
 while `#cabinet` is visible; sensor history fetches on tab activation, window toggle, or Refresh.
 
 **Office strip** (Biometrics → *Cabinet / Office*, below Cooling): office temperature and
-humidity from pan-1's SHT40, read from Postgres `office_env_sample` (written by sql-writer from
+humidity from pan-1's SHT40, plus eCO2 (estimated from VOCs) and TVOC from its CCS811 (tiles read
+"warming up" for 20 min after each sensor start), read from Postgres `office_env_sample` (written by sql-writer from
 `orion:office:env:sample`, produced by `orion-office-env`). Routes: `GET /api/office/env/latest`
 and `GET /api/office/env/history?window=24h|3d|7d` (`scripts/office_env_routes.py`). Node comes
 from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 90 = three missed
@@ -3013,6 +3014,21 @@ from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 
 "stale"/gaps, never 0. Frontend: `static/js/office-env.js` (own script; polls every 30 s only
 while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
 `tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
+
+After deploying sql-writer and Hub on Athena, prove the live path rather than only the
+container state:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+python3 scripts/smoke_office_air_live.py
+```
+
+The read-only smoke requires a fresh non-stale Hub sample, the rendered Office DOM and
+its CCS811 frontend asset link, the asset itself, the three materialized air columns,
+a fresh destination row, and zero
+`office.env.sample.v1` fallback rows in the last 24 hours. It never reads or prints
+fallback payloads. During the sensor's 20-minute post-restart conditioning window,
+`--allow-warming` accepts an explicit warming state without pretending air values exist.
 
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
@@ -3559,6 +3575,18 @@ change of the same read (a belief moved days after the link) is a new message.
   `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
   old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
   (3 composition failures before a change is dropped), `_MIN_SPACING_SEC` (6750; 0 = off).
+
+### Self-monitor self-questions (rung 6 E2, 2026-11-03)
+
+`scripts/self_monitor_questions.py` polls the self-monitor state (Redis `orion:self_monitor:latest`)
+every `SELF_MONITOR_QUESTIONS_TICK_SEC` (900). A faculty newly held `broken` or `unreliable` gets ONE
+question in `curiosity_self_questions` (`minted_by='orion'`, family `lived`, id
+`lived.self_monitor.<faculty>.<status>.<status_since>`), e.g. "My faculty
+act.actions.journal.make.walkway_grade didn't run 22 of its last 28 tries in the last 7 days. Why?".
+Once per status episode: last-seen statuses persist in Redis `orion:self_monitor:questions:seen`, and
+the insert is ON CONFLICT DO NOTHING. Stale or absent state mints nothing. Not routed through
+endogenous curiosity and never written as a node prediction_error. Kill switch:
+`SELF_MONITOR_QUESTIONS_ENABLED=false`.
 - **What it cannot see yet.** A belief counts only when the curiosity run that moved it
   names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
   Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so
@@ -3569,6 +3597,44 @@ change of the same read (a belief moved days after the link) is a new message.
 - **Logs.** `reading_finding_outreach_result seed=<id> reason=<sent|orion_passed|...>`,
   `reading_finding_outreach_blocked seed=<id> reason=<gate>`,
   `reading_finding_beliefs_unchecked reason=<...>`.
+
+### Self findings reach Juniper (`scripts/self_finding_outreach.py`)
+
+**What it does.** When one of Orion's faculties breaks, comes back, or stops being reliable,
+Orion writes Juniper a message in their own words. A faculty is one thing Orion does and is
+graded on, e.g. the walkway-grade journal act or the office temperature forecast. The
+self-monitor organ in orion-durable-runs grades them and publishes its picture hourly to
+Redis `orion:self_monitor:latest`. This loop only reads it.
+
+- **What is told (Juniper, 2026-11-03).** A faculty becomes `broken` (most tries never ran);
+  a faculty recovers (`broken`/`unreliable` -> `reliable`); a faculty goes `reliable` ->
+  `unreliable`. Never a calibration change (`miscalibrated`) and never an `unknown` flip. Those
+  two never overwrite the last status that counts, so `broken -> unknown -> reliable` is still
+  told as a recovery.
+- **Told once.** Finding id `self_finding:<faculty>:<status>@<status_since>`: one per held-status
+  episode. The decision log (`result_json.source = 'self_finding_outreach'`, `finding_ids`) is the
+  authority; a `sent` or `orion_passed` row means told.
+- **First evaluation.** The first fresh state after deploy tells each faculty already `broken`
+  once (Juniper has never been told). A faculty seen for the first time later is treated the same.
+- **Unknown changes nothing.** Absent, stale (over 3 h), unparseable or future-stamped state
+  (`orion.self_monitor.view`) detects nothing new. Findings already detected still wait to be told.
+- **Grounded.** The prompt carries only the faculty record's own numbers. A message that names a
+  faculty the finding is not about is refused (`outreach_vocabulary.find_ungrounded_faculty_mentions`,
+  recorded as `named_ungrounded_signal`), then `offer_message` runs the usual signal-name guard.
+- **Gates.** Same door as reading findings: no daily cap or cooldown (`skip_rate_gates`), and sends
+  do not consume the background cap; disabled, turn-in-flight, recent-chat, quiet hours and arousal
+  `strained` still apply, and a held finding waits. No body-economy bid (the reading door places none).
+- **State.** Redis `orion:hub:self_finding_outreach:state` (no TTL): last counted status per faculty,
+  the last evaluated `computed_at`, and findings still waiting. A newer finding for the same faculty
+  replaces an older untold one (decision row `superseded`); a waiting finding's numbers refresh each
+  hour. A finding leaves the queue untold only after `_MAX_ATTEMPTS` composition failures (row
+  `gave_up`). With the decision log off or unreadable, nothing is told.
+- **Env.** `HUB_SELF_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300), `_MAX_ATTEMPTS` (3).
+- **Checks.** `tests/test_self_finding_outreach.py`; would-tell replay (read-only, live DB):
+  `PYTHONPATH=services/orion-hub:. POSTGRES_URI=... .venv/bin/python -P services/orion-hub/evals/run_self_finding_replay.py`.
+- **Logs.** `self_finding_detected id=<id> kind=<kind> from=<status>`,
+  `self_finding_outreach_result reason=<sent|orion_passed|...>`, `self_finding_outreach_blocked reason=<gate>`,
+  `self_finding_view reason=<fresh|stale|absent|...>`.
 
 ### Introspect responder: `curiosity`
 

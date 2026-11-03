@@ -44,3 +44,32 @@ def test_quiet_street_leaves_weather_alone() -> None:
     assert env["street_summary"] == ""
     assert _environmental_context(env) == "clear"
     assert _environmental_context({}) is None
+
+
+def test_street_line_with_two_motion_stories_reaches_stance_whole() -> None:
+    """2026-11-03: spot-checked motion stories ride on the street line; the
+    stance clip keeps a realistic line with two of them whole."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    from orion.situational.perception_reader import STREET_STORY_CHARS, street_story_line
+
+    now = datetime(2026, 11, 3, 1, 30, tzinfo=timezone.utc)
+    long_story = "A person walked left to right and away from the house on the walkway, " + "x" * 200
+    story = street_story_line(
+        [{"story_id": "a", "started_at": now - timedelta(minutes=3), "sentence": long_story},
+         {"story_id": "b", "started_at": now - timedelta(minutes=90), "sentence": long_story}],
+        camera="walkway", tz=ZoneInfo("America/Denver"),
+    )
+    assert story and len(story) < 2 * (STREET_STORY_CHARS + 12) + 60
+    line = (
+        "Your outdoor camera (walkway, since 2026-10-14), looking over the community walkway,"
+        " the street and our patio: On the walkway just now: A vehicle is observed in the frame;"
+        " A vehicle is observed in the walkway area. On the walkway in the last 15 minutes: 5 vehicles"
+        " I have each seen on at least 2 days but have no name for. " + story +
+        " Walkway rhythm: vehicle #d5ac3b usually comes around 20:04; vehicle #303e6a did not come"
+        " (usually around 19:18)."
+    )
+    env = _situation_summary_from_ctx(_ctx(line))["environment"]
+    assert env["street_summary"] == line
+    assert _environmental_context(env) == f"clear; {line}"

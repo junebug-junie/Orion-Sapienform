@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.grading import grade
+from orion.prediction.grading import grade
 
 
 def test_perfect_forecast_has_full_skill_and_base_rate_has_none():

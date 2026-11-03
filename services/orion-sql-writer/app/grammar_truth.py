@@ -1024,9 +1024,8 @@ def _other_retention_truth_blocks(settings) -> dict[str, dict[str, Any]]:
     # tests when grammar_traces was added, but it is a trap that would fire again.
     # getattr with a hard failure, not a silent default: a 0 here reads as "retention
     # disabled for this table", which is exactly the wrong thing to invent from a typo.
-    # DEGRADE, DO NOT RAISE. build_grammar_truth_snapshot() is called from /health with no
-    # try/except (main.py), so raising here returns 500 for the WHOLE endpoint -- the exact
-    # blast radius of the KeyError this replaced, just with a different exception name. A
+    # DEGRADE, DO NOT RAISE. This state feeds both /health and /grammar/truth, so raising
+    # here returns 500 for the endpoint instead of reporting the configuration drift. A
     # missing window is reported as a degraded reason on the table it belongs to instead.
     # The real gate against this drift is a test that binds _EXTRA_RETENTION_TABLES to the
     # live Settings class (tests/test_grammar_retention_periodic.py); this branch is the
@@ -1061,7 +1060,13 @@ def _other_retention_truth_blocks(settings) -> dict[str, dict[str, Any]]:
     }
 
 
-def build_grammar_truth_snapshot() -> dict[str, Any]:
+def build_grammar_operational_snapshot() -> dict[str, Any]:
+    """Build the bounded operational state shared by health and detailed truth.
+
+    Keep ledger-wide diagnostics out of this function. In particular, an exact source
+    census reads every retained grammar_events row and must never sit on the liveness
+    path. /grammar/truth composes those operator diagnostics below.
+    """
     from app import worker as worker_mod
 
     settings = get_settings()
@@ -1118,8 +1123,6 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
         "subscribed_channels": subscribed,
         "grammar_worker_count": settings.sql_writer_grammar_workers,
         "grammar_queue": queue,
-        "grammar_fallbacks": _fallback_counts(),
-        "latest_by_source_service": _latest_events_by_source(),
         "grammar_index": index_info,
         "grammar_retention": _retention_truth_block(settings),
         "other_table_retention": other_retention,
@@ -1152,6 +1155,16 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
             "grammar_events_retention_days": settings.grammar_events_retention_days,
         },
     }
+
+
+def build_grammar_truth_snapshot() -> dict[str, Any]:
+    """Build detailed operator truth without changing its existing public fields."""
+    snapshot = build_grammar_operational_snapshot()
+    snapshot["grammar_fallbacks"] = _fallback_counts()
+    snapshot["latest_by_source_service"] = _latest_events_by_source()
+    return snapshot
+
+
 def apply_power_intent_settled_retention(
     retention_days: int,
     *,

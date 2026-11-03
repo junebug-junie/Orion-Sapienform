@@ -1,4 +1,4 @@
-"""The street as an attention source: the gate, the held node value, Rung 6.
+"""The street as an attention source: the gate, the held node value, handoff surprise.
 
 Spec: docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md,
 section 6 ("How loud"), with Juniper's rule from the walkway follow-ups spec
@@ -37,7 +37,7 @@ runtime cannot see the street (listener down, or no street camera delivered a
 frame recently) the tick writes NOTHING, the reading ages, and attention marks
 the node absent (``world_first.PERCEPTION_MAX_AGE_SEC``): silence is not calm.
 
-**Rung 6 domain ``street_handoff``.** One raw reading per graded handoff
+**Handoff surprise (``street_handoff``).** One raw reading per graded handoff
 (``handoff_met`` / ``handoff_late`` / ``handoff_missed``): ``-ln(p_value)`` in
 nats, the surprisal of the tail probability. ``StreetEventV1`` carries no
 predicted transit distribution, so the arrival log-score the spec names cannot
@@ -70,13 +70,12 @@ GATE_P_VALUE = 0.05
 P_VALUE_FLOOR = 1e-6
 CAP_WINDOW_SEC = 3600.0
 
-# Rung 6 starting expectation for street_handoff. alpha 0.2: the same
+# Expectation for street_handoff surprise. alpha 0.2: the same
 # real-observation alpha execution and chat use (prediction_error.py), no
 # domain reason found to differ. min_variance 1e-3: the calibrated variance of
 # -ln U is 1, so a floor three orders below it never binds once warm, and only
-# stops a cold start dividing by ~0. Kept so the tuner's x10 step (1e-2) stays
-# inside the prediction_expectation_patch contract's outer bound (0.03,
-# orion/substrate/mutation_contracts.py) -- a larger floor would be refused.
+# stops a cold start dividing by ~0. Fixed constants since the rung 6
+# expectation tuner was retired (2026-11-03).
 STREET_HANDOFF_EWMA_ALPHA = 0.2
 STREET_HANDOFF_MIN_VARIANCE = 1e-3
 
@@ -147,7 +146,7 @@ def street_gate(
 
 
 def street_handoff_raw_reading(event: Any) -> float | None:
-    """Rung 6 raw reading for a graded handoff, in nats; None otherwise."""
+    """Raw surprisal reading for a graded handoff, in nats; None otherwise."""
     if event.kind not in HANDOFF_KINDS or event.p_value is None:
         return None
     p = float(event.p_value)
@@ -262,8 +261,8 @@ class StreetAttentionState:
 
     def handoff_surprise_z(self, raw: float, *, alpha: float, min_variance: float) -> float | None:
         """Fold one street_handoff raw reading into the running expectation
-        (Orion's adopted Rung 6 setting when live) and return its z against
-        the expectation held BEFORE it. None on the first reading."""
+        and return its z against the expectation held BEFORE it. None on the
+        first reading."""
         with self._lock:
             return self._handoff_surprise_z(raw, alpha=alpha, min_variance=min_variance)
 

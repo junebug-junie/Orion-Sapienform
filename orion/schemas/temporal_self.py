@@ -40,6 +40,14 @@ Same consumer-first rollout: orion-thought and orion-hub before orion-durable-ru
 ``causes_now`` (2026-10-23, on the arc and its summary) follows the same order: every stored frame
 carries it (``null`` on non-strain arcs), so an orion-thought or orion-hub still on older code
 rejects the whole frame and the stance cue goes dark until they are rebuilt.
+
+Felt state, "where Orion sees it" (2026-11-03, body economy design Organ 5,
+docs/superpowers/specs/2026-10-23-organism-body-economy-design.md) added ``body_binding`` / arc kind
+``binding`` and ``binding`` (``ArcBindingV1``) on the arc and its summary: the physiology node's own
+rows (one per onset, bound-state change, keepalive and release of a body-economy constraint whose
+price binds) become one arc per constraint episode. Same consumer-first rollout: every stored arc
+and frame now carries ``binding`` (``null`` on other kinds), so orion-thought and orion-hub deploy
+before orion-durable-runs.
 """
 
 from __future__ import annotations
@@ -82,6 +90,8 @@ TemporalSourceKind = Literal[
     "retro_play",
     # one notable outside (walkway / doorbell) event: story, ring, or gated handoff (PR #2763 item 1)
     "street_event",
+    # the physiology node's binding-constraint rows (felt state: onset, change, keepalive, release)
+    "body_binding",
 ]
 
 ArcKind = Literal[
@@ -97,6 +107,7 @@ ArcKind = Literal[
     "strain",
     "play",
     "street",
+    "binding",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]
@@ -178,6 +189,29 @@ class ArcBodySummaryV1(_Forbid):
     thermal_refusals: int = 0
 
 
+# The body-economy price states that mean a constraint binds (orion/physiology/budget.py
+# price_constraint; the same set the body report calls BINDING, orion/physiology/report_text.py).
+BindingState = Literal["binding", "exogenous_bind", "stuck_at_ceiling"]
+
+
+class ArcBindingV1(_Forbid):
+    """A binding arc's constraint as of its newest row (the physiology node's priced reading)."""
+
+    constraint: str  # heat | energy | lane:<role> | attention:juniper | claude
+    bind_state: BindingState
+    unit: str | None = None
+    level: float | None = None
+    line: float | None = None  # the reading's budget: soft line, envelope, capacity, daily cap
+    price: float | None = None
+    ceiling: float | None = None
+    # Orion spending its own budget (orion.physiology.budget.SELF_SPENT_CONSTRAINTS), not the world.
+    self_spent: bool = False
+    why: str = Field(default="", max_length=LABEL_MAX)
+    # True once a release row (slack for 240 s) ended the arc. A closed arc without it ended by the
+    # stale timeout (unread): its real end is unknown, so readers say "last read binding at".
+    released: bool = False
+
+
 class ArcSegmentV1(_Forbid):
     """One uninterrupted stretch of an arc. Dwell is the sum of segment spans."""
 
@@ -217,6 +251,8 @@ class TemporalSelfArcV1(_Forbid):
     # episode). [] while a strain only holds before clearing; None when not recorded (every other
     # kind, and arcs folded before this field existed).
     causes_now: list[str] | None = None
+    # A binding arc's constraint at its newest row. None for every other kind.
+    binding: ArcBindingV1 | None = None
     related_refs: list[str] = Field(default_factory=list)  # e.g. offered prior ids
     evidence_refs: list[str] = Field(default_factory=list)  # refs that SHARE subject_ref
     evidence_overflow: int = 0
@@ -266,6 +302,8 @@ class ArcSummaryV1(_Forbid):
     episode_began_at: AwareDatetime | None = None
     # Strain loop: the causes present at the strain arc's newest row (see TemporalSelfArcV1).
     causes_now: list[str] | None = None
+    # Felt state: a binding arc's constraint at its newest row (see TemporalSelfArcV1).
+    binding: ArcBindingV1 | None = None
 
 
 class OpenThreadV1(_Forbid):

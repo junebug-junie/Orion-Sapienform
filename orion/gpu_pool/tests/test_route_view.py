@@ -68,7 +68,8 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "metacog_perception",  # Orion's sight, 2026-10-23 (pinned below)
                              "quick_turn",          # repair-pressure probe, 2026-10-23 (pinned below)
                              "quick_embodied",      # Orion's town speech, 2026-10-23
-                             "prime"}               # Orion Prime's thoughts, 2026-10-30 (pinned below)
+                             "prime",               # Orion Prime's thoughts, 2026-10-30 (pinned below)
+                             "prime_starved"}       # Prime after a try that got no seat, 2026-11-03 (pinned below)
 # Roles whose server type changed after the freeze report the current one wherever they serve.
 BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata", "agent": "strata"}   # Strata on gpu0 10-30, gpu1 10-31
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
@@ -196,19 +197,20 @@ def test_quick_turn_route_is_system_only_on_the_fast_class():
     assert CFG.routes["quick_turn"].work_class == CFG.routes["quick"].work_class == "fast"
 
 
-def test_prime_route_is_the_chat_worker_at_background():
-    """Orion Prime's thoughts (2026-10-30): served exactly like `chat` (same class, same roles, same
-    warm model), but background in the pool so the gateway waits for slot slack (Juniper's turn
-    goes first) and the heat reflex sheds it. A background route cannot also be system-only
-    (orion/llm/routes.py), so it is not hidden from the picker; picking it gains nothing."""
+def test_prime_routes_are_the_chat_worker_at_system_and_starved():
+    """Orion Prime's thoughts: served exactly like `chat` (same class, same roles, same warm model).
+    2026-11-03: `prime` is system (it was background and lost its whole budget to the queue);
+    `prime_starved` is the same call at `starved`, after a try that got no seat. Both system-only
+    (orion/llm/routes.py), so neither is a human's Compute choice."""
     from orion.llm.routes import BACKGROUND_LLM_ROUTES, METACOG_LLM_ROUTES, SYSTEM_LLM_ROUTES
     view = build_route_view(None, CFG)
-    [r] = [e for e in view["routes"] if e["id"] == "prime"]
     [chat] = [e for e in view["routes"] if e["id"] == "chat"]
     same = lambda e: {k: v for k, v in e.items() if k not in ("id", "priority")}  # noqa: E731
-    assert same(r) == same(chat)
-    assert CFG.routes["prime"].priority == "background"
-    assert CFG.routes["prime"].work_class == CFG.routes["chat"].work_class == "chat"
-    assert r["priority"] == "background"
-    assert "prime" in BACKGROUND_LLM_ROUTES and "prime" not in SYSTEM_LLM_ROUTES
-    assert "prime" not in METACOG_LLM_ROUTES
+    for route, prio in (("prime", "system"), ("prime_starved", "starved")):
+        [r] = [e for e in view["routes"] if e["id"] == route]
+        assert same(r) == same(chat)
+        assert CFG.routes[route].priority == prio
+        assert CFG.routes[route].work_class == CFG.routes["chat"].work_class == "chat"
+        assert r["priority"] == "system"   # definitional: hidden from the picker
+        assert route in SYSTEM_LLM_ROUTES and route not in BACKGROUND_LLM_ROUTES
+        assert route not in METACOG_LLM_ROUTES

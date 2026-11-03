@@ -71,7 +71,7 @@ class PredictionForecastV1(BaseModel):
 # a quote on its options, places a bet on the one it chose (the service computes ``p`` itself at
 # placing, so no caller can supply a probability after the fact) and settles it. ``skill`` and
 # ``context`` use the game-free vocabulary in orion/embodiment/skills.py; the service treats them
-# as opaque keys. Settled bets are graded with app/grading.py like every other probability.
+# as opaque keys. Settled bets are graded with orion/prediction/grading.py like every other probability.
 
 ACTION_BET_MAX_OPTIONS = 20
 ActionBetResult = Literal["success", "failure", "void"]

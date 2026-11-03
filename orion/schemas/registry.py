@@ -107,6 +107,14 @@ from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpiso
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
+from orion.schemas.self_monitor import (
+    FACULTY_RECORD_KIND,
+    SELF_MONITOR_STATE_KIND,
+    SETTLED_BET_KIND,
+    FacultyRecordV1,
+    SelfMonitorStateV1,
+    SettledBetV1,
+)
 from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
 from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
 from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
@@ -632,6 +640,7 @@ from orion.schemas.thought import (
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
     TurnSelfPredictionV1,
+    TurnSelfPredictionV2,
     StanceReactRequestV1,
     ThoughtDecisionRecordV1,
     ThoughtEventV1,
@@ -725,6 +734,7 @@ from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.field_dominance_run import FieldDominanceRunV1
 from orion.schemas.temporal_self import (
     ArcAttentionSummaryV1,
+    ArcBindingV1,
     ArcBodySummaryV1,
     ArcSummaryV1,
     DayCitationCheckV1,
@@ -1454,6 +1464,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ArcSummaryV1": ArcSummaryV1,
     "ArcAttentionSummaryV1": ArcAttentionSummaryV1,
     "ArcBodySummaryV1": ArcBodySummaryV1,
+    "ArcBindingV1": ArcBindingV1,
     "OpenThreadV1": OpenThreadV1,
     "ExpectationRefV1": ExpectationRefV1,
     # Patch 4 (Orion uses its own day): the two readers' rendered views and the citation gate's
@@ -1568,6 +1579,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
     # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
     "RegulationStateV1": RegulationStateV1,
+    "SettledBetV1": SettledBetV1,
+    "FacultyRecordV1": FacultyRecordV1,
+    "SelfMonitorStateV1": SelfMonitorStateV1,
     # Body economy Patch A3 (2026-10-23): Organ 1 Body. Bus orion:physiology:state (durable-runs ->
     # sql-writer physiology_state) and Redis orion:physiology:latest. Also in SCHEMA_REGISTRY.
     "PhysiologyStateV1": PhysiologyStateV1,
@@ -1609,6 +1623,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CoalitionSnapshotV1": CoalitionSnapshotV1,
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
     "TurnSelfPredictionV1": TurnSelfPredictionV1,
+    "TurnSelfPredictionV2": TurnSelfPredictionV2,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
@@ -1820,6 +1835,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "TurnSelfPredictionV1": SchemaRegistration(
         model=TurnSelfPredictionV1,
         kind="turn.self_prediction.v1",
+    ),
+    "TurnSelfPredictionV2": SchemaRegistration(
+        model=TurnSelfPredictionV2,
+        kind="turn.self_prediction.v2",
     ),
     "HubAssociationBundleV1": SchemaRegistration(
         model=HubAssociationBundleV1,
@@ -2120,6 +2139,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "RegulationStateV1": SchemaRegistration(
         model=RegulationStateV1,
         kind=REGULATION_STATE_KIND,
+    ),
+    "SettledBetV1": SchemaRegistration(
+        model=SettledBetV1,
+        kind=SETTLED_BET_KIND,
+    ),
+    "FacultyRecordV1": SchemaRegistration(
+        model=FacultyRecordV1,
+        kind=FACULTY_RECORD_KIND,
+    ),
+    "SelfMonitorStateV1": SchemaRegistration(
+        model=SelfMonitorStateV1,
+        kind=SELF_MONITOR_STATE_KIND,
     ),
     "PhysiologyStateV1": SchemaRegistration(
         model=PhysiologyStateV1,

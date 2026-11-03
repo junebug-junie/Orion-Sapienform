@@ -50,7 +50,7 @@ def test_open_cooling_incident_stops_new_background_and_system_grants():
         state = await rt.snapshot()
         GpuPoolStateV1.model_validate(state.model_dump(mode="json"))
         assert state.shed["active_reason"] == "cooling_incident"
-        assert state.shed["blocked"] == {"background": "cooling_incident", "system": "cooling_incident"}
+        assert state.shed["blocked"] == {"background": "cooling_incident", "system": "cooling_incident", "starved": "cooling_incident"}
         # resolve clears it: the waiting work is granted on the next tick, in its original order
         assert rt.on_incident(incident(rt, status="resolved")) == "cleared"
         await rt.tick()

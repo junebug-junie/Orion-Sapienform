@@ -127,6 +127,10 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Self-monitor effects (rung 6, 2026-11-03): E1 act gate in dispatch-runtime + orion-actions
+    # (SELF_MONITOR_ACT_GATE_ENABLED, SELF_MONITOR_PROBE_INTERVAL_SEC) and E2 in Hub
+    # (SELF_MONITOR_QUESTIONS_*). Without this the default run visited all three and added nothing.
+    "SELF_MONITOR_",
     # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
     "ORION_PHYSIOLOGY_",
     "CHANNEL_PHYSIOLOGY_",
@@ -426,6 +430,10 @@ SYNC_PREFIXES = (
     "VISION_CAPTION_MOTION_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
+    # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).
+    # Neither matched a prefix: the default run visited the .env and added nothing.
+    "PERSON_GRAPH_",
+    "PERSON_SIGHTING_",
 )
 
 SYNC_EXACT = frozenset(

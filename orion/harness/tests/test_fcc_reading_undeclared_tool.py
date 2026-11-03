@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, List
 
 import pytest
@@ -61,6 +62,10 @@ async def _run(monkeypatch, outputs: List[str], *, reading_only: bool = True, ti
     monkeypatch.setattr(motor, "load_fcc_env", lambda _p: {"MODEL_CHAT": "x"})
     monkeypatch.setattr(motor, "label_to_claude_model_id", lambda *_a, **_k: "llamacpp/chat")
     monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **_k: None)
+    # A resume needs the session's transcript on disk (`claude --resume` fails without it).
+    from orion.harness import session_resume
+
+    monkeypatch.setattr(session_resume, "find_transcript", lambda _home, _sid: Path(__file__))
     frames = [f async for f in motor.run_fcc_turn(
         prompt="read the source", correlation_id="corr-undeclared", workspace="/tmp",
         fcc_server_url="http://127.0.0.1:8082", auth_token="tok", claude_bin="claude", timeout_sec=timeout_sec,
@@ -90,10 +95,14 @@ async def test_a_second_undeclared_call_is_final_no_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_only_reading_turns_are_resumed(monkeypatch):
-    frames, spawned = await _run(monkeypatch, [_result(BASH_CALL, "s1")], reading_only=False)
-    assert len(spawned) == 1
-    assert [f["llm_response"] for f in frames if f["type"] == "final"] == [BASH_CALL]
+async def test_an_ordinary_turn_is_resumed_too_without_the_reading_tool_limit(monkeypatch):
+    """Since 2026-11-03 ordinary turns are resumed as well (test_fcc_text_tool_call.py has the live case)."""
+    frames, spawned = await _run(monkeypatch, [_result(BASH_CALL, "s1"), _result("done", "s1")], reading_only=False)
+    assert len(spawned) == 2
+    assert [f["llm_response"] for f in frames if f["type"] == "final"] == ["done"]
+    second = list(spawned[1])
+    assert "--tools" not in second and second[second.index("--resume") + 1] == "s1"
+    assert "Only WebFetch and WebSearch" not in second[second.index("-p") + 1]
 
 
 @pytest.mark.asyncio

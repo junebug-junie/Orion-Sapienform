@@ -4,6 +4,8 @@ on:
     paths:
       - 'orion/autonomy/act_candidates.py'
       - 'orion/autonomy/allocator.py'
+      - 'orion/self_monitor/**'
+      - 'tests/test_self_monitor_act_gate.py'
       - 'orion/autonomy/self_shed.py'
       - 'orion/autonomy/prediction.py'
       - 'orion/autonomy/evals/run_rung3_replay_eval.py'
@@ -58,11 +60,19 @@ jobs:
           python-version: '3.12'
       - run: pip install -r services/orion-thought/requirements.txt pytest pytest-asyncio psycopg2-binary asyncpg sqlalchemy
       - name: Binding fix + act-backed allocator candidates + holdback draw
-        run: python -m pytest -q tests/test_rung3_world_first_action_floor.py tests/test_rung3_act_candidates.py tests/test_motor_allocator.py
+        run: python -m pytest -q tests/test_rung3_world_first_action_floor.py tests/test_rung3_act_candidates.py tests/test_motor_allocator.py tests/test_self_monitor_act_gate.py
       - name: Reading pull + holdback rule
         run: python -m pytest -q tests/test_rung3_reading_pull.py tests/test_rung3_reading_pull_thermal_pin.py
       - name: Retro leisure route (Orion plays Zelda, section E)
         run: python -m pytest -q tests/test_rung3_retro_leisure.py
+      - name: AI Town session route
+        run: python -m pytest -q tests/test_rung3_aitown_session.py
+      - name: Install execution dispatch production dependencies
+        run: pip install -r services/orion-execution-dispatch-runtime/requirements.txt
+      - name: Execution dispatch runtime contracts
+        env:
+          POSTGRES_URI: postgresql://unused/unused
+        run: python -m pytest -q services/orion-execution-dispatch-runtime/tests
       - name: Reading pull against Postgres (must not skip)
         env:
           ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/scratch

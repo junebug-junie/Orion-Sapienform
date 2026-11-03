@@ -126,8 +126,15 @@ app = FastAPI(title="orion-execution-dispatch-runtime", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": get_settings().service_name}
+async def health() -> dict[str, Any]:
+    tripped = worker.theater_tripwire_active
+    return {
+        "status": "degraded" if tripped else "ok",
+        "ok": not tripped,
+        "degraded": tripped,
+        "theater_tripwire_active": tripped,
+        "service": get_settings().service_name,
+    }
 
 
 @app.get("/latest")

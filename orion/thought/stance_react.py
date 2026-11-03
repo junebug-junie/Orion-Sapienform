@@ -27,8 +27,7 @@ TONE_MAX_LEN = 200
 # A stated 0 or 1 is never calibrated; clamp so one surprise cannot score infinite loss.
 SELF_PREDICTION_P_MIN = 0.02
 SELF_PREDICTION_P_MAX = 0.98
-_SELF_PREDICTION_P_KEYS = ("asks_question_p", "fetches_outside_p")
-_SELF_PREDICTION_RANGE_KEYS = (("steps_lo", "steps_hi"), ("reply_chars_lo", "reply_chars_hi"))
+_SELF_PREDICTION_P_KEYS = ("asks_question_p", "fetches_outside_p", "more_steps_than_usual_p", "longer_reply_than_usual_p")
 
 
 def _coerce_optional_str(value: Any) -> str | None:
@@ -111,12 +110,12 @@ def _finite_number(value: Any) -> float | None:
 
 
 def normalize_self_prediction(value: Any) -> dict[str, Any] | None:
-    """Clean the stance LLM's self-prediction bet. Drops what it cannot trust, never fills in.
+    """Clean the stance LLM's self-prediction bet into a v2 bet. Drops what it cannot trust, never fills in.
 
     A probability outside [0, 1] is dropped (not rescaled: "70" could mean 70% or nonsense),
-    one inside is clamped to [SELF_PREDICTION_P_MIN, SELF_PREDICTION_P_MAX]. A range needs
-    both ends, whole and non-negative, with lo <= hi; otherwise both ends are dropped. Model-
-    supplied coverage is ignored (the prompt fixes it). Nothing usable -> None.
+    one inside is clamped to [SELF_PREDICTION_P_MIN, SELF_PREDICTION_P_MAX]. Any other key,
+    including v1's size ranges (retired 2026-11-03, spec 2026-11-02-turn-self-bets-relative-size-
+    design.md), is dropped. Nothing usable -> None.
     """
     if not isinstance(value, dict):
         return None
@@ -125,14 +124,7 @@ def normalize_self_prediction(value: Any) -> dict[str, Any] | None:
         p = _finite_number(value.get(key))
         if p is not None and 0.0 <= p <= 1.0:
             out[key] = min(max(p, SELF_PREDICTION_P_MIN), SELF_PREDICTION_P_MAX)
-    for lo_key, hi_key in _SELF_PREDICTION_RANGE_KEYS:
-        lo = _finite_number(value.get(lo_key))
-        hi = _finite_number(value.get(hi_key))
-        if lo is None or hi is None or lo < 0 or hi < lo or not lo.is_integer() or not hi.is_integer():
-            continue
-        out[lo_key] = int(lo)
-        out[hi_key] = int(hi)
-    return out or None
+    return {"schema_version": "turn.self_prediction.v2", **out} if out else None
 
 
 # Ternary-Bonsai-2-27B (PQ2_0, 2-bit) writes the key "imperial" where it means

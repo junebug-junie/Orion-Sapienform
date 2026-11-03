@@ -124,6 +124,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_prior_drift_preamble,
     build_resume_preamble,
+    kickoff_material_ids,
     offered_priors_in_prompt,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
@@ -850,7 +851,7 @@ class CuriosityInvestigation:
         # kickoff as "YOUR EYES" (orion.situational.camera_eyes). Empty = no
         # section. Live = a frame within camera_live_max_age_sec.
         camera_stream_ids: Tuple[str, ...] = (),
-        # Which of those are street cameras (individuals counted) and the
+        # Which of those are street cameras (people range for today) and the
         # timezone for "since"/"today" -- the situation brief's own settings,
         # so both surfaces say the same thing.
         camera_street_stream_ids: Tuple[str, ...] = (),
@@ -1397,8 +1398,9 @@ class CuriosityInvestigation:
     ) -> None:
         if not self.spend_log_enabled:
             return
-        material_ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
-        material_ids += [f"relation:{r.decision_id}" for r in material.relations]
+        # Exactly what `build_kickoff_prompt` renders from `material` (it always
+        # renders the material section), street captions and day card included.
+        material_ids = kickoff_material_ids(material)
         await record_offer_decision(
             self._pool_provider(),
             run_id=run_id,
@@ -3315,7 +3317,7 @@ class CuriosityInvestigation:
                 asyncio.to_thread(
                     fetch_camera_eyes,
                     self.camera_stream_ids,
-                    count_individuals_for=self.camera_street_stream_ids,
+                    people_range_for=self.camera_street_stream_ids,
                     tz_name=self.camera_timezone,
                     now=now,
                 ),

@@ -175,10 +175,15 @@ def settle(bet: dict, artifact: dict | None, now: datetime,
         value = obs.get(RELATIVE_FACULTIES[faculty][1] if faculty in RELATIVE_FACULTIES else faculty)
         if not void and value is not None:
             row["observed"] = float(value)   # what the turn did, recorded even when nothing was stated
-        if void:
+        if void == "ungradeable_bad_record":
             row["void_reason"] = void
         elif not stated:
+            # Checked before failed/expired: a crashed turn did not fail a bet that was never made.
+            # (11-03: v2 turns that crashed wrote failed rows on the retired range bets, and the
+            # self-monitor told stance "my last 26 guesses about how many steps ... failed to start".)
             row["void_reason"] = "ungradeable_no_stated"
+        elif void:
+            row["void_reason"] = void
         elif value is None:
             row["void_reason"] = "ungradeable_no_outcome"
         elif faculty in RELATIVE_FACULTIES and row["reference"] is None:

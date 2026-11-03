@@ -60,3 +60,10 @@ def test_real_sorting_is_significant_and_a_base_rate_shift_does_not_move_it():
     assert out["auc"] > 0.7 and out["p_value"] < 1e-6
     # Every probability halved (badly calibrated after a base-rate shift): same order, same score.
     assert sorting_score([x / 2 for x in p], hits)["auc"] == pytest.approx(out["auc"])
+
+
+@pytest.mark.parametrize("probs,hits,groups", [([None, 0.3], [True, False], None), ([0.2, 0.3], [None, False], None),
+                                               ([0.2, 0.3], [True, False], ["a"])])
+def test_sorting_score_refuses_input_it_would_misread(probs, hits, groups):
+    with pytest.raises(ValueError):
+        sorting_score(probs, hits, groups)

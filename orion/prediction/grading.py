@@ -63,9 +63,15 @@ def sorting_score(probs: Sequence[float], hits: Sequence[bool],
     p_value: one-sided Mann-Whitney test of "no better than a coin flip", normal approximation
     with the tie correction, pooled over groups. None when there are no pairs.
     """
+    if any(h is None for h in hits):
+        raise ValueError("sorting_score: hits must be True/False, not None (grade only settled rows)")
     p = np.asarray(probs, dtype=float)
     y = np.asarray(hits, dtype=bool)
+    if not np.isfinite(p).all():
+        raise ValueError("sorting_score: probabilities must be finite (NaN would sort as the highest)")
     g = list(groups) if groups is not None else [None] * len(p)
+    if not (len(p) == len(y) == len(g)):
+        raise ValueError(f"sorting_score: {len(p)} probs, {len(y)} hits, {len(g)} groups -- lengths must match")
     u = pairs = var = 0.0
     for key in dict.fromkeys(g):
         m = np.array([gi == key for gi in g], dtype=bool)

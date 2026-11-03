@@ -146,6 +146,6 @@ Juniper must review every `band='accept'` row by eye before any consumer reads "
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3087
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

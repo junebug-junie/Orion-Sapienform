@@ -53,6 +53,7 @@ on:
       # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
       - "orion/harness/fcc_motor.py"
       - "orion/harness/finalize.py"
+      - "orion/harness/structured_output.py"
       - "orion/harness/runner.py"
       - "orion/harness/tests/test_gpu_lease_transport.py"
       - "orion/hub/turn_orchestrator.py"
@@ -120,6 +121,7 @@ on:
       # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
       - "orion/harness/fcc_motor.py"
       - "orion/harness/finalize.py"
+      - "orion/harness/structured_output.py"
       - "orion/harness/runner.py"
       - "orion/harness/tests/test_gpu_lease_transport.py"
       - "orion/hub/turn_orchestrator.py"

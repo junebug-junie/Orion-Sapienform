@@ -141,7 +141,7 @@ None to schemas, channels or the registry. Behavior only:
   `python scripts/sync_local_env_from_example.py`.
 
 Person nodes are **not** written. They stay fenced and untouched by the tick.
-A consumer that wants "when was Teddy last seen" reads the max over Teddy's
+A consumer that wants "when was person P last seen" reads the max over P's
 `instance_of` clusters. The neighborhood read already walks
 `semantic_projection`. Letting `instance_of` carry activation is the separate,
 measured decision that `eligibility.py` reserves. This doc does not make it.
@@ -186,9 +186,9 @@ consumers see, and no gate has checked that. Write this decision into its
    rest most of the time, and with the half-life it can return to rest: 0.625
    reaches 0.08 in about 3 half-lives (~18 h). Its floor is 0. Today's frozen
    0.625 can never reach rest. The domination check compares two counts.
-   Raw sighting counts: Teddy has 220 of ~731 linked sightings (30%). Hours
-   with any sighting: the top person (Amanda) has 44 of 335 hours (13%), then
-   Addy 35 and Teddy 32. A sighting only resets the recency clock and never
+   Raw sighting counts: person A (most sightings) has 220 of ~731 linked sightings (30%). Hours
+   with any sighting: the top person (person B) has 44 of 335 hours (13%), then
+   person C 35 and person A 32. A sighting only resets the recency clock and never
    adds to it. So the most-seen person can at most stay "recently seen" during
    their own hours. Their activation cannot pile up. The live check after
    deploy is UNVERIFIED until it runs (acceptance 3).
@@ -208,7 +208,7 @@ consumers see, and no gate has checked that. Write this decision into its
 - **Capability change.** When a named person is seen on the walkway, their
   camera clusters (and that day's walkway node, through the existing edge)
   read active for a few hours and then fade. Orion's graph-ranked readers can
-  tell "Amanda was here this afternoon" from "Amanda was named two weeks ago".
+  tell "B was here this afternoon" from "B was named two weeks ago".
   Those readers are brain-frame samples, the concept-region recall and the
   Hub workbench.
 - **Data touched.** `observed_at`, `decay_half_life_seconds` and
@@ -229,7 +229,7 @@ consumers see, and no gate has checked that. Write this decision into its
     same bug as today, just renewed every pass). Acceptance 4 catches this.
   - *node:athena-style domination:* the most-seen person's clusters hold the
     top activation slots. Leaving frequency out bounds this to hours-seen. But
-    Teddy has 26 clusters, so one sighting can wake many clusters at once if
+    person A has 26 clusters, so one sighting can wake many clusters at once if
     the identity match fires on all of them. Acceptance 5 caps this by person,
     not by cluster.
   - *Juniper's own clusters:* she has 13 named walkway clusters, linked to a

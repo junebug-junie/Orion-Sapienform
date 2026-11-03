@@ -2474,8 +2474,8 @@ def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
 # The street clip in stance (2026-11-03, was 520): framing (~120 chars) + up to
 # two captions (~200) + who/rhythm (~200) + up to two spot-checked motion
 # stories (perception_reader.STREET_STORY_MAX x STREET_STORY_CHARS 160 + times
-# and label, ~380). Stories come after the who line, so a cut drops them and
-# the rhythm line first, never the camera framing.
+# and label, ~380). Stories are the street summary's LAST line, so a cut drops
+# them first, never the camera framing, rhythm or patio head count.
 STREET_SUMMARY_CHARS = 900
 
 

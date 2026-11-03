@@ -536,7 +536,10 @@ def display_line(line: Any, rollup: Any) -> str:
             version >= COUNT_RANGE_RULES_VERSION and not bare_living_counts(stored)):
         # Before v5 the line said "68 unnamed regulars": swap that clause in place, so the rest
         # of the stored line reads exactly as before.
-        return _fix_regulars_clause(stored, r)
+        try:
+            return _fix_regulars_clause(stored, r)
+        except Exception:  # noqa: BLE001 -- malformed regulars: nothing, never the bare stored count
+            return ""
     try:
         return render_line(r)
     except Exception:  # noqa: BLE001 -- an unreadable old row shows nothing, not a bare count
@@ -559,11 +562,22 @@ def regulars_phrase(reg: Mapping[str, Any] | None, grain: str) -> str:
     A living kind gets no number (the matcher splits one person or dog into several clusters, and
     a regular is a cluster); a thing keeps its count, as everywhere else. A row with no
     ``by_kind`` says no number at all."""
-    reg = reg or {}
-    if not int(reg.get("count", 0) or 0):
+    reg = reg if isinstance(reg, Mapping) else {}
+    try:
+        if not int(reg.get("count", 0) or 0):
+            return ""
+    except (TypeError, ValueError):
         return ""
     where = "seen on another day this week too" if grain == "day" else f"seen on 2+ days this {grain}"
-    by_kind = {str(k): int(v or 0) for k, v in (reg.get("by_kind") or {}).items() if int(v or 0) > 0}
+    raw = reg.get("by_kind")
+    by_kind: dict[str, int] = {}
+    for k, v in (raw.items() if isinstance(raw, Mapping) else ()):
+        try:
+            n = int(v or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            by_kind[str(k)] = n
     parts = [f"some {KIND_PLURAL.get(k, k + 's')}" for k in RANGE_KINDS if by_kind.get(k)]
     parts += [f"some {KIND_PLURAL.get(k, k + 's')}" for k in sorted(by_kind)
               if k in LIVING_KINDS and k not in RANGE_KINDS]

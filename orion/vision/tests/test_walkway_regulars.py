@@ -44,3 +44,9 @@ def test_new_rows_render_regulars_without_a_number_and_are_shown_as_stored() -> 
     assert wr.RULES_VERSION >= wr.REGULARS_RULES_VERSION == 5
     stored = "Walkway Tue 3 Nov 2026: unnamed regulars (seen on another day this week too): some people."
     assert wr.display_line(stored, {"rules_version": 5, "grain": "day"}) == stored
+
+
+def test_malformed_regulars_never_raise_into_readers() -> None:
+    for reg in ({"count": 3, "by_kind": ["person"]}, {"count": 3, "by_kind": {"person": "x"}}, {"count": "x"}, "junk"):
+        shown = wr.display_line(V4_LINE, {"rules_version": 4, "grain": "day", "regulars": reg})
+        assert "68 unnamed regulars" not in shown

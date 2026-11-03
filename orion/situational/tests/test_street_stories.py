@@ -185,3 +185,37 @@ def test_flag_ships_on_in_every_brief_building_service() -> None:
     for service in ("orion-cortex-exec", "orion-hub"):
         lines = (repo / "services" / service / ".env_example").read_text().splitlines()
         assert f"{STREET_MOTION_LINE_ENV}=true" in lines, service
+
+
+def test_a_broken_story_gate_costs_only_the_story_line(monkeypatch) -> None:
+    """Review 2026-11-03: a bad verdict row must not wipe the caption/who/patio lines."""
+    monkeypatch.delenv(STREET_MOTION_LINE_ENV, raising=False)
+    unresolved = [{"observed_at": NOW - timedelta(minutes=3), "description": "a shape"}]
+    conn = _Conn({**_tables([{"verdict": "right", "n": "lots"}]), "vision_unresolved": unresolved})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
+    assert got.read_ok
+    assert any("could not name" in ln for ln in got.lines)
+    assert not any("motion stories" in ln for ln in got.lines)
+
+
+def test_a_bad_story_row_costs_only_the_story_line() -> None:
+    unresolved = [{"observed_at": NOW - timedelta(minutes=3), "description": "a shape"}]
+    lines = summarize_street(sightings=[], expectations=[], unresolved=unresolved, patio=None, now=NOW, tz=TZ,
+                             stories=[object()])
+    assert len(lines) == 1 and "could not name" in lines[0]
+
+
+def test_story_line_is_last_so_a_length_cut_drops_it_first() -> None:
+    patio = {"zone": "patio", "state": "present", "count": 3, "row_updated_at": datetime.now(timezone.utc)}
+    lines = summarize_street(sightings=[], expectations=[], unresolved=[], patio=patio, now=NOW, tz=TZ,
+                             stories=[_story("a", 5, S1)])
+    assert lines[0] == "At least 3 people are on the patio."
+    assert lines[-1].startswith("Walkway motion stories today")
+
+
+def test_together_ids_shapes() -> None:
+    assert perception_reader._ids(["a", "b"]) == {"a", "b"}
+    assert perception_reader._ids('["a"]') == {"a"}
+    assert perception_reader._ids('"abc"') == set()
+    assert perception_reader._ids('{a,"b"}') == {"a", "b"}
+    assert perception_reader._ids(None) == set() and perception_reader._ids(5) == set()

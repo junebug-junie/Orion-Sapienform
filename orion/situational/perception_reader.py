@@ -31,7 +31,7 @@ from orion.situational.street_material import (
     street_caption_line,
 )
 from orion.vision.motion_story_gate import gate_passed, tally_from_counts
-from orion.vision.walkway_rollup import LIVING_KINDS, count_range, split_note, window_peak
+from orion.vision.walkway_rollup import LIVING_KINDS, count_range, local_midnight, split_note, window_peak
 
 logger = logging.getLogger(__name__)
 
@@ -612,12 +612,16 @@ def street_motion_line_enabled() -> bool:
 
 
 def _ids(raw: Any) -> set[str]:
+    """`together_story_ids`: a list (psycopg2 text[]), a JSON list, or a `{a,b}` array literal."""
     if isinstance(raw, str):
         try:
-            raw = json.loads(raw)
+            parsed = json.loads(raw)
         except ValueError:
-            raw = raw.strip("{}").split(",") if raw.startswith("{") else []
-    return {str(x).strip() for x in raw or [] if str(x).strip()}
+            parsed = [x.strip().strip('"') for x in raw.strip("{}").split(",")] if raw.startswith("{") else []
+        raw = parsed if isinstance(parsed, list) else []
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
 
 
 def _clip_sentence(text_: str, limit: int = STREET_STORY_CHARS) -> str:
@@ -974,11 +978,6 @@ def summarize_street(
     if who:
         lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {who}.")
 
-    # 1b. What moved: spot-checked motion stories (already gated by the caller).
-    story = street_story_line(stories, camera=camera, tz=tz)
-    if story:
-        lines.append(story)
-
     # 2. What was expected, and did it happen.
     outcomes: list[str] = []
     for row in expectations or []:
@@ -1066,12 +1065,18 @@ def summarize_street(
         elif count is None:
             lines.append(f"People are on the {zone}.")
         # count == 0 with state present contradicts itself: say nothing.
+
+    # 5. What moved: spot-checked motion stories (already gated by the caller).
+    # Last, so a length cut (chat stance) drops them before the rhythm and patio
+    # lines; its own failure costs only this line.
+    try:
+        story = street_story_line(stories, camera=camera, tz=tz)
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.info("situation_street_story_line_failed err=%s", type(exc).__name__)
+        story = None
+    if story:
+        lines.append(story)
     return lines
-
-
-def _local_midnight(now: datetime, tz: Any) -> datetime:
-    local = now.astimezone(tz)
-    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
 
 def _json_obj(raw: Any) -> dict[str, Any]:
@@ -1165,10 +1170,13 @@ def fetch_street_summary(
                 {**window, "lookback": STREET_RECENT_MINUTES},
                 "stationary_people",
             )
-            stories = (
-                _gated_stories(conn, stream_id, since=_local_midnight(now, tz), until=until)
-                if street_motion_line_enabled() else None
-            )
+            stories = None
+            if street_motion_line_enabled():
+                try:
+                    stories = _gated_stories(conn, stream_id, since=local_midnight(now.astimezone(tz).date(), tz), until=until)
+                except Exception as exc:  # noqa: BLE001 -- a story-gate problem costs only the story line
+                    logger.info("situation_street_stories_failed err=%s", type(exc).__name__)
+                    stories = None
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
         return StreetSummary(stream_id, [], False)

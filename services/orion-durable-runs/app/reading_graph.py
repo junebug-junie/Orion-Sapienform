@@ -21,6 +21,10 @@ from orion.schemas.reading_turn import (
 # consumes the run's result later (reading_durable_turn). A duplicate costs compute plus its own
 # trace rows (stance decision, grammar, cockpit) under a fresh turn correlation id -- the re-send
 # runs under a new hold, so turn_correlation_id differs and a stray old reply cannot be taken.
+# Known cost: the bus calls a listener gone after two zero counts ~5 s apart, and a live Hub only
+# resubscribing (backoff up to 60 s) is still running the first turn. Its re-send (>= 60 s later,
+# 10 s for urgent) can then run beside that original, which is outside GPU admission once the
+# hold is handed back. The failure path before this did the same, later, via the seed queue.
 # The cap bounds a request that itself kills Hub. Live 2026-11-03: 3 readings failed this way
 # during Hub redeploys at 18:12 and 18:26 UTC.
 IN_FLIGHT_RESENDS = 2

@@ -23,6 +23,8 @@ re-send while Hub is still down is published to nobody. Checks:
   inflight_resends_visible -- every run lost mid-turn has a run.listener_wait with case lost_in_flight
   inflight_resends_bounded -- at most reading_graph.IN_FLIGHT_RESENDS (2) such re-sends per run
 Control (reading's opt-in set to 0): inflight_incident_reproduced -- every run fails as on 11-03.
+Poison request (Hub drops every send of these runs mid-turn, forever):
+  poison_capped -- each run gets exactly IN_FLIGHT_RESENDS re-sends, then fails as before
 
 Prints inspectable JSON; exits non-zero on any failed check. No model inference or production bus.
 """
@@ -56,15 +58,19 @@ class DeployHub(Runner):
     """A Hub reading turn that nobody hears while ``down``. ``in_flight``: Hub received each run's
     first turn and went down mid-turn ("while awaiting its reply"); later sends while down reach nobody."""
 
-    def __init__(self, saver, in_flight: bool = False):
+    def __init__(self, saver, in_flight: bool = False, poison: bool = False):
         super().__init__(saver)
         self.down = True
         self.in_flight = in_flight
+        self.poison = poison
         self.lost: dict[str, int] = {}
         self.unheard: dict[str, int] = {}
         self.answered: dict[str, int] = {}
 
     async def _run_reading_turn(self, request):
+        if self.poison:   # a request that kills Hub every time: delivered, then the listener is gone
+            self.lost[request.run_id] = self.lost.get(request.run_id, 0) + 1
+            raise RpcNoListener(AWAITING)
         if self.down and self.in_flight and request.run_id not in self.lost:
             self.lost[request.run_id] = 1
             raise RpcNoListener(AWAITING)
@@ -76,9 +82,9 @@ class DeployHub(Runner):
                                    text="A grounded reading.", source_fetches=[])
 
 
-async def replay(pool, saver, store, *, max_tries: int, in_flight: bool = False) -> dict:
+async def replay(pool, saver, store, *, max_tries: int, in_flight: bool = False, poison: bool = False) -> dict:
     gpu = await InProcessPool().boot()
-    hub = DeployHub(saver, in_flight)
+    hub = DeployHub(saver, in_flight, poison)
     rt = reading_runtime(pool, saver, store, gpu, hub, DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES=max_tries,
                          DURABLE_RUNS_LISTENER_WAIT_BASE_SEC=BASE_SEC, DURABLE_RUNS_LISTENER_WAIT_MAX_SEC=MAX_SEC,
                          DURABLE_RUNS_HOLD_STATUS_POLL_SEC=0.05)
@@ -134,6 +140,7 @@ async def main() -> int:
         results["off"] = await replay(pool, saver, store, max_tries=0)
         results["on"] = await replay(pool, saver, store, max_tries=MAX_TRIES)
         results["inflight"] = await replay(pool, saver, store, max_tries=MAX_TRIES, in_flight=True)
+        results["poison"] = await replay(pool, saver, store, max_tries=MAX_TRIES, poison=True)
         opted_in, reading_graph.IN_FLIGHT_RESENDS = reading_graph.IN_FLIGHT_RESENDS, 0
         try:
             results["inflight_off"] = await replay(pool, saver, store, max_tries=MAX_TRIES, in_flight=True)
@@ -142,7 +149,8 @@ async def main() -> int:
 
     await asyncio.wait_for(with_database(run), 180)
     off, on = results["off"], results["on"]
-    fl, fl_off = results["inflight"], results["inflight_off"]
+    fl, fl_off, poison = results["inflight"], results["inflight_off"], results["poison"]
+    cap = reading_graph.IN_FLIGHT_RESENDS
     lost = [r for r, n in fl["lost"].items() if n]
     lost_off = [r for r, n in fl_off["lost"].items() if n]
     unheard_on = [r for r, n in on["unheard"].items() if n]
@@ -162,7 +170,9 @@ async def main() -> int:
         "inflight_all_completed": all(t == "completed" for t in fl["terminals"].values()),
         "inflight_no_attempt_spent": all(a == 1 for a in fl["attempts"].values()),
         "inflight_resends_visible": len(lost) == RUNS and all(fl["in_flight_waits"][r] for r in lost),
-        "inflight_resends_bounded": all(len(w) <= reading_graph.IN_FLIGHT_RESENDS for w in fl["in_flight_waits"].values()),
+        "inflight_resends_bounded": all(len(w) <= cap for w in fl["in_flight_waits"].values()),
+        "poison_capped": all(poison["terminals"][r] == "failed" and poison["in_flight_waits"][r] == list(range(1, cap + 1))
+                             and poison["lost"].get(r) == cap + 1 for r in poison["terminals"]),
     }
     report = {
         "runs": RUNS, "deploy_window_sec": DEPLOY_WINDOW_SEC,
@@ -178,6 +188,8 @@ async def main() -> int:
                       "runs_lost_mid_turn": len(lost),
                       "max_in_flight_resends_one_run": max((len(w) for w in fl["in_flight_waits"].values()), default=0),
                       "opt_in_off_failed": sum(t == "failed" for t in fl_off["terminals"].values()),
+                      "poison_failed": sum(t == "failed" for t in poison["terminals"].values()),
+                      "poison_sends_per_run": sorted(set(poison["lost"].values())),
                       "opt_in_off_sample_error": next((e[0] for e in fl_off["failed"].values() if e), None)},
         "checks": checks,
     }

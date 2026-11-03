@@ -171,7 +171,8 @@ def is_deterministic(exc: BaseException) -> bool:
     return isinstance(exc, DETERMINISTIC_ERRORS)
 
 
-# hold.listener_wait: the hold dict of a run parked by ``listener_wait``. ``register`` keeps the
+# hold.listener_wait: the hold dict of a run parked by ``listener_wait`` (value: the firing case's
+# count, read only as a truthy marker; ``hold.case`` names the case). ``register`` keeps the
 # run waiting (no pool request) until hold.retry_at; ``_hold_ready`` resumes it then.
 LISTENER_WAIT_HOLD_KEY = "listener_wait"
 
@@ -229,7 +230,11 @@ async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseExceptio
 
     None (the caller's normal failure handling runs, as before this existed) when the error is
     anything else, the feature is off (``listener_wait_max_tries`` 0 turns off both cases), the
-    case's counter is spent, or the wait would leave no whole attempt before the run's deadline."""
+    case's counter is spent, or the wait would leave no whole attempt before the run's deadline.
+
+    A graph that passes ``in_flight_resends > 0`` must declare ``listener_in_flight_resends`` in
+    its state TypedDict (LangGraph drops undeclared keys: the cap would never trip;
+    tests/test_listener_wait.py checks every graph that opts in)."""
     found = listener_absence(exc)
     if found is None:
         return None
@@ -261,7 +266,7 @@ async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseExceptio
     await admission.event(state, "run.listener_wait",
                           {"waits": count, "case": case, "retry_at": at, "error": str(err)[:300]})
     update = {**released, **waiting, counter: count, "last_error": error,
-              "hold": {"retry_at": at, LISTENER_WAIT_HOLD_KEY: count}, **(extra or {})}
+              "hold": {"retry_at": at, LISTENER_WAIT_HOLD_KEY: count, "case": case}, **(extra or {})}
     if waiting.get("status") == "retrying":
         update["retry_at"] = at   # a retry_wait node sleeps on the state's retry_at
     return update

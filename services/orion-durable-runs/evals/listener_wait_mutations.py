@@ -20,7 +20,7 @@ MUTANTS = [
  ("backoff exponent", "app/admitted_graph.py", "    delay = min(cap, base * 2 ** (count - 1))", "    delay = min(cap, base * 2 ** count)"),
  ("no cause chain", "app/admitted_graph.py", "        exc = exc.__cause__ if exc.__cause__ is not None else (None if exc.__suppress_context__ else exc.__context__)", "        exc = None"),
  ("no deadline check", "app/admitted_graph.py", "    if retry_cannot_finish(state, retry_at, attempt_sec):\n        return None\n    released = await admission.release(state, \"listener_absent\")", "    released = await admission.release(state, \"listener_absent\")"),
- ("no hold park", "app/admitted_graph.py", "\"hold\": {\"retry_at\": at, LISTENER_WAIT_HOLD_KEY: count}, **(extra or {})}", "**(extra or {})}"),
+ ("no hold park", "app/admitted_graph.py", "\"hold\": {\"retry_at\": at, LISTENER_WAIT_HOLD_KEY: count, \"case\": case}, **(extra or {})}", "**(extra or {})}"),
  ("failed_attempt skips wait", "app/admitted_graph.py", "    parked = await listener_wait(admission, state, exc, waiting=waiting, extra=extra, attempt_sec=attempt_sec)\n    if parked is not None:\n        return parked\n", ""),
  ("register ignores park", "app/admission_runtime.py", "        if hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get(\"request_id\") and hold.get(\"retry_at\") \\", "        if False and hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get(\"request_id\") and hold.get(\"retry_at\") \\"),
  ("reading skips wait", "app/reading_graph.py", "            if parked is not None:\n                return parked\n            # Reading's", "            # Reading's"),

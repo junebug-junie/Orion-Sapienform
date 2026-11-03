@@ -113,7 +113,7 @@ def test_reading_turn_published_to_nobody_waits_out_the_deploy_and_completes():
         assert parked["status"] == "waiting_resource", "not failed: the deploy is waited out"
         assert parked.get("attempt", 0) == 0, "no attempt spent"
         assert parked["listener_waits"] == 1
-        assert parked["hold"][LISTENER_WAIT_HOLD_KEY] == 1
+        assert parked["hold"][LISTENER_WAIT_HOLD_KEY] == 1 and parked["hold"]["case"] == PUBLISHED_TO_NOBODY
         assert parked["hold"]["retry_at"] == (world.now + timedelta(seconds=60)).isoformat()
         assert world.releases == ["listener_absent"], "the hold is handed back during the wait"
         assert ("run.listener_wait", {"waits": 1, "case": PUBLISHED_TO_NOBODY, "retry_at": parked["hold"]["retry_at"],
@@ -180,6 +180,7 @@ def test_reading_turn_lost_in_flight_waits_resends_and_completes():
         assert parked["status"] == "waiting_resource", "not failed: Hub's redeploy is waited out"
         assert parked.get("attempt", 0) == 0, "no attempt spent"
         assert parked["listener_in_flight_resends"] == 1
+        assert parked["hold"]["case"] == LOST_IN_FLIGHT
         assert not parked.get("listener_waits"), "its own counter, not the published-to-nobody one"
         assert parked["hold"][LISTENER_WAIT_HOLD_KEY] == 1
         assert parked["hold"]["retry_at"] == (world.now + timedelta(seconds=60)).isoformat(), "same backoff"
@@ -616,3 +617,12 @@ def test_self_sense_unheard_question_waits_then_is_answered_without_spending_an_
         assert len(world.turn_calls) == 5
 
     asyncio.run(scenario())
+
+
+def test_every_graph_that_opts_into_in_flight_resends_declares_its_counter():
+    # LangGraph drops an undeclared key: the in-flight count would read 1 forever and the cap never trip.
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    opted = [f for f in sorted(app_dir.glob("*.py")) if "in_flight_resends=" in f.read_text()]
+    assert [f.name for f in opted] == ["reading_graph.py"], "a new opt-in needs its own safety review"
+    for f in opted:
+        assert "    listener_in_flight_resends: int" in f.read_text(), f.name

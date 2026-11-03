@@ -157,7 +157,7 @@ def test_first_evaluation_tells_a_broken_faculty_once_and_nothing_else(monkeypat
     assert summary["new"] == [f"self_finding:{WALKWAY}:broken@{(T0 - timedelta(hours=1)).isoformat()}"]
     assert [r["reason"] for r in summary["results"]] == ["sent"] and len(delivered) == 1
     prompt = composed[0]
-    assert "In the last 7 days, 22 of its 28 tries never ran." in prompt
+    assert "In the last 7 days, 22 of 28 tries never ran." in prompt
     assert "Juniper has not been told about it before." in prompt
     assert PRIME not in prompt and DREAM not in prompt
     sent = _sent(rows)[0]
@@ -181,7 +181,7 @@ def test_recovery_is_one_finding(monkeypatch):
     summary = asyncio.run(loop.tick())
     assert summary["new"] == [f"self_finding:{WALKWAY}:reliable@{now['t'].isoformat()}"]
     assert [s["finding_kinds"] for s in _sent(rows)] == [["became_broken"], ["recovered"]]
-    assert "It was broken (most of its tries never ran)" in composed[-1]
+    assert "This faculty was broken (most tries never ran)" in composed[-1]
     assert "Of 20 tries that were checked, about 100% worked" in composed[-1]
 
 
@@ -411,7 +411,7 @@ def test_a_newer_finding_replaces_an_untold_older_one(monkeypatch):
     assert [r["reason"] for r in rows] == ["arousal_strained", "superseded", "sent"]
     assert json.loads(rows[1]["finding_ids"]) == [f"self_finding:{WALKWAY}:broken@{T0.isoformat()}"]
     assert _sent(rows)[0]["finding_kinds"] == ["recovered"]
-    assert "It was broken" in composed[0] and "became broken." not in composed[0]
+    assert "This faculty was broken" in composed[0] and "became broken." not in composed[0]
 
 
 def test_a_waiting_finding_gets_fresh_numbers(monkeypatch):
@@ -423,7 +423,7 @@ def test_a_waiting_finding_gets_fresh_numbers(monkeypatch):
     _publish(redis, now["t"], rec(WALKWAY, "broken", T0, **{**BROKEN_NUMBERS, "n_failed_to_execute": 25}))
     loop._pool_provider = lambda: _Pool(rows)
     asyncio.run(loop.tick())
-    assert "25 of its 31 tries never ran" in composed[0]
+    assert "25 of 31 tries never ran" in composed[0]
 
 
 def test_decision_log_switched_off_tells_nothing(monkeypatch):

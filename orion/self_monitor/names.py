@@ -106,6 +106,13 @@ def named(faculty: str) -> str:
 FACULTY_SUBJECT_PREFIX = "faculty:"
 
 
+def faculty_of(subject_ref: str) -> str:
+    """The faculty id of a Temporal Self faculty arc's ``faculty:<id>`` subject, or ""."""
+    if not subject_ref.startswith(FACULTY_SUBJECT_PREFIX):
+        return ""
+    return subject_ref[len(FACULTY_SUBJECT_PREFIX):]
+
+
 def faculty_arc_words(subject_ref: str, subject_label: str) -> str:
     """A Temporal Self faculty arc in words: "<plain name> (<id>) <status>".
 
@@ -113,13 +120,11 @@ def faculty_arc_words(subject_ref: str, subject_label: str) -> str:
     ``faculty_status_of`` reads the status back from it), so only the rendered text changes. An arc
     whose subject is not ``faculty:<id>`` renders its label unchanged."""
     label = subject_label.strip()
-    if not subject_ref.startswith(FACULTY_SUBJECT_PREFIX):
-        return label or subject_ref
-    faculty = subject_ref[len(FACULTY_SUBJECT_PREFIX):]
+    faculty = faculty_of(subject_ref)
     if not faculty:
         return label or subject_ref
     status = label.rsplit(" ", 1)[-1] if " " in label else ""
     return f"{named(faculty)} {status}".rstrip()
 
 
-__all__ = ["FACULTY_SUBJECT_PREFIX", "faculty_arc_words", "named", "plain_name"]
+__all__ = ["FACULTY_SUBJECT_PREFIX", "faculty_arc_words", "faculty_of", "named", "plain_name"]

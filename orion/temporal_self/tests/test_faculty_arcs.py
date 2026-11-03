@@ -112,6 +112,16 @@ def test_arc_carries_over_midnight_with_its_real_start_and_replays_identically()
     assert (f"Track record: walkway-grade journal runs ({GRADE}) unreliable from 23:00 still so at midnight "
             f"[arc:{old.arc_id}].") in block.text
     assert old.subject_label == f"{GRADE} unreliable" and block.labels[old.subject_label] == [old.arc_id]
+    # The citation gate matches what is shown: a letter naming the faculty by its id or its plain
+    # name without [arc:] reads UNVERIFIED, and with it reads verified.
+    from orion.temporal_self.citations import check_arc_citations
+
+    shown = [k[len("arc:"):] for k in block.records if k.startswith("arc:")]
+    for uncited in (f"My {GRADE} was unreliable all evening.", "My walkway-grade journal runs were unreliable."):
+        _, check = check_arc_citations(uncited, shown, labels=block.labels)
+        assert check.label == "UNVERIFIED", uncited
+    _, check = check_arc_citations(f"My {GRADE} was unreliable [arc:{old.arc_id}].", shown, labels=block.labels)
+    assert check.label == "verified"
     # Folding the same rows twice changes nothing.
     end = midnight + timedelta(hours=4)
     whole = advance_clock(fold(initial_state(), events=e), end)

@@ -63,15 +63,20 @@ def test_truth_check_catches_a_number_not_in_the_record() -> None:
 
 
 def test_truth_check_passes_with_ids_and_ignores_digits_inside_a_name() -> None:
-    gpu = _r("act.hub.gpu0_warm.make", "broken", n_bets=30, n_graded=3, n_failed_to_execute=27,
+    from self_track_record_truth import allowed_numbers
+
+    gpu = _r("act.hub.gpu4_warm.make", "broken", n_bets=30, n_graded=3, n_failed_to_execute=27,
              execution_failure=0.9, execution_failure_lo=0.74)
+    assert 4 not in allowed_numbers(gpu)  # so only the id rule can let the 4 through
     raw = SelfMonitorStateV1(computed_at=NOW, window_days=7.0, faculties=[gpu]).model_dump_json()
     view = self_monitor_view(raw, now=NOW)
     cue = project_track_record_cue(view, now=NOW)
-    assert "(act.hub.gpu0_warm.make)" in cue.text and "0" in cue.text.split("failed")[0]
+    assert cue.text.startswith("My gpu4 warm runs (act.hub.gpu4_warm.make) failed to start 27 of 30")
     assert check_cue(cue, view) == []
     forged = cue.model_copy(update={"text": cue.text.replace("27 of 30", "27 of 31")})
     assert any("31" in p for p in check_cue(forged, view))
+    invented = cue.model_copy(update={"text": cue.text.replace("My gpu4 warm", "My gpu8 warm")})
+    assert any("8" in p for p in check_cue(invented, view))  # a digit not in the id is still a claim
 
 
 def test_truth_check_catches_a_missing_id_and_a_foreign_identifier() -> None:

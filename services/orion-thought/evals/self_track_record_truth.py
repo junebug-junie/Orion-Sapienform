@@ -6,9 +6,10 @@ rounded to a whole percent). Also: only held broken / unreliable / miscalibrated
 holds, each sentence names its own faculty's id in brackets (Juniper 2026-11-03: plain names along
 with internal ids), and no other identifier appears in the text.
 
-The faculty's name (``names.named``: plain words plus the bracketed id) is removed from a sentence
-before its numbers are read, so a digit inside a name (``gpu0``, ``room2``) is never counted as a
-claim, and a number forged anywhere else is still caught.
+The bracketed id is removed from a sentence before its numbers are read, and a number that also
+appears inside the faculty id (``gpu4`` in ``act.hub.gpu4_warm.make``, which the plain name repeats)
+is allowed. Nothing is imported from the renderer's naming code: a digit the plain name invented
+would still be caught, and a number forged anywhere else is still caught.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from __future__ import annotations
 import re
 
 from orion.schemas.self_monitor import FacultyRecordV1, SelfTrackRecordCueV1
-from orion.self_monitor.names import named
 from orion.self_monitor.view import SelfMonitorView
 
 NOTABLE = {"broken", "unreliable", "miscalibrated"}
@@ -54,8 +54,9 @@ def check_cue(cue: SelfTrackRecordCueV1, view: SelfMonitorView, *, max_chars: in
         own_id = f"({faculty})"
         if own_id not in line:
             problems.append(f"{faculty}: sentence does not name its id {own_id}: {line!r}")
-        prose = line.replace(named(faculty), "").replace(own_id, "")
-        stray = {int(n) for n in _INT.findall(prose)} - allowed_numbers(record)
+        prose = line.replace(own_id, "")
+        in_id = {int(n) for n in _INT.findall(faculty)}
+        stray = {int(n) for n in _INT.findall(prose)} - allowed_numbers(record) - in_id
         if stray:
             problems.append(f"{faculty}: numbers {sorted(stray)} not in its record: {line!r}")
     prose_text = cue.text

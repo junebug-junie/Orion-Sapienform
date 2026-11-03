@@ -283,6 +283,9 @@ def test_e2_held_broken_with_no_failed_start_left_never_says_zero() -> None:
     text = question_text(rec)
     assert text == (f"My walkway-grade journal runs ({WALKWAY}) are still held as broken, yet none of their 28 "
                     "tries in the last 7 days failed to start. Why?")
+    idle = FacultyRecordV1.model_validate(_record(WALKWAY, "broken", n_failed_to_execute=0, n_graded=0, n_bets=0))
+    assert question_text(idle) == (f"My walkway-grade journal runs ({WALKWAY}) are still held as broken, but made "
+                                   "no tries in the last 7 days. Why?")
 
 
 def test_e2_none_on_repeat_none_for_reliable() -> None:

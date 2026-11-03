@@ -80,6 +80,8 @@ def question_text(record: FacultyRecordV1) -> str:
                     f"{record.n_bets} tries in the last {days} days. Why?")
         # Held broken while this window no longer shows a failed start (hysteresis lag, live
         # 2026-11-03): never a false "didn't run 0 of N", and never a claim the record no longer makes.
+        if not record.n_bets:
+            return f"My {name} are still held as broken, but made no tries in the last {days} days. Why?"
         return (f"My {name} are still held as broken, yet none of their {record.n_bets} tries in the last "
                 f"{days} days failed to start. Why?")
     pct = "?" if record.reliability is None else f"{round(100 * record.reliability)}"

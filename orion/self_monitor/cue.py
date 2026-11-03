@@ -11,8 +11,8 @@
   confidence; miscalibration from ``calibrated_share``, the share over the same bets as
   ``stated_mean``); no LLM;
 * each faculty is named as ``names.named``: plain words first, the internal id after it in
-  brackets (Juniper 2026-11-03: "use plain names ALONG with internal ids"); the id carries no number
-  the truth eval counts, and the cap still drops whole lines rather than cutting one;
+  brackets (Juniper 2026-11-03: "use plain names ALONG with internal ids"); the truth eval removes
+  the bracketed id before it reads numbers, and the cap still drops whole lines rather than cutting one;
 * a held status whose window numbers no longer support it (hysteresis lag) renders no line;
 * when at least one sentence shows and room is left, one short clause counts the faculties that
   cannot be graded at all yet (structural reasons, not "too few bets");

@@ -1606,9 +1606,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     value_kind="level",
                     rest=(
                         "no designed rest: the decay-weighted share of graded bets that came true (0-1). "
-                        "For a success faculty 1.0 is the good end; for event and interval bets it is "
-                        "judged against stated_mean, not on its own. Printed by the cue only for an "
-                        "unreliable faculty, by E2 for an unreliable one, and by E3 for any told finding."
+                        "For a success faculty 1.0 is the good end; for event and interval faculties the "
+                        "judged number is calibrated_share, not this. Printed by the cue and E2 only for "
+                        "an unreliable faculty, and by E3 for a told finding with graded bets."
                     ),
                     sparsity="per_tick",
                     absent_means=(
@@ -1673,7 +1673,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     rest=(
                         "no designed rest: the mean confidence Orion stated before the outcome, over the "
                         "graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by "
-                        "the cue next to calibrated_share for a miscalibrated faculty, and by E3."
+                        "the cue next to calibrated_share for a miscalibrated faculty, and by E3 for "
+                        "interval and event claims."
                     ),
                     sparsity="per_tick",
                     absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
@@ -1688,9 +1689,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                 MetricSemantics(
                     value_kind="level",
                     rest=(
-                        "calm = inside stated_mean's band: calibrated_lo <= stated_mean <= calibrated_hi "
-                        "(within slack). Not one value: it is the share that came true over the same bets "
-                        "as stated_mean. Printed by the cue for a miscalibrated faculty only."
+                        "calm = stated_mean inside [calibrated_lo - slack, calibrated_hi + slack] "
+                        "(record.py _slack); not judged when the confidence is pooled. Not one value: the "
+                        "share that came true over the same bets as stated_mean. Printed by the cue for a "
+                        "miscalibrated faculty only."
                     ),
                     sparsity="per_tick",
                     absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
@@ -1702,8 +1704,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                 MetricSemantics(
                     value_kind="level",
                     rest=(
-                        "calm = at or below stated_mean. Wilson lower bound of calibrated_share; not "
-                        "printed, it decides whether a miscalibrated line still prints (hysteresis lag)."
+                        "calm = at or below stated_mean + slack (record.py _slack). Wilson lower bound "
+                        "of calibrated_share; not printed. The cue re-checks it with no slack, only once "
+                        "the window's own candidate is no longer miscalibrated (hysteresis lag)."
                     ),
                     sparsity="per_tick",
                     absent_means="None = no stated graded bet: no miscalibrated line.",
@@ -1715,8 +1718,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                 MetricSemantics(
                     value_kind="level",
                     rest=(
-                        "calm = at or above stated_mean. Wilson upper bound of calibrated_share; not "
-                        "printed, it decides whether a miscalibrated line still prints (hysteresis lag)."
+                        "calm = at or above stated_mean - slack (record.py _slack). Wilson upper bound "
+                        "of calibrated_share; not printed. The cue re-checks it with no slack, only once "
+                        "the window's own candidate is no longer miscalibrated (hysteresis lag)."
                     ),
                     sparsity="per_tick",
                     absent_means="None = no stated graded bet: no miscalibrated line.",
@@ -1728,7 +1732,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "Self-monitor names-and-semantics (2026-11-03). Not independent of self_monitor.state.v1: the "
             "same records, addressed per field. reliability, calibrated_share and stated_mean are three "
             "reductions of one bet set (calibrated_share == reliability whenever every graded bet stated a "
-            "confidence, as for every live interval faculty). The int counts the cue, E2 and E3 also print "
+            "confidence: true for all 38 faculties with both values in the live state of 2026-11-03 "
+            "20:27Z). The int counts the cue, E2 and E3 also print "
             "(n_graded, n_failed_to_execute, n_bets, streak_len) are not semantics entries because the "
             "lineage resolver addresses float fields only (precedent: transport_baseline_hourly.v1 "
             "degraded_count): they are plain counts of the window's bets, 0 when a faculty has none, and "

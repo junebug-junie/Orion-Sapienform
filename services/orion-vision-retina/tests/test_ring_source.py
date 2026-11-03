@@ -958,3 +958,190 @@ def test_a_setup_failure_counts_toward_blind(tmp_path, fake_aiortc):
     asyncio.run(src._burst("motion"))
     assert src.bursts_failed == 1 and src.consecutive_failed_bursts == 1
     assert "setup: RuntimeError" in src.last_error
+
+
+# --- deaf doorbell: one unpadded FCM message killed every listener (2026-10-28..11-03) ---
+
+
+@pytest.fixture
+def fcm_client_class():
+    """The real FcmPushClient with its class attributes restored after the test
+    (ensure_fcm_push_tolerance patches the class, process-wide)."""
+    fpc = pytest.importorskip("firebase_messaging.fcmpushclient")
+    cls = fpc.FcmPushClient
+    names = ("_decrypt_raw_data", "_handle_data_message", "_orion_push_tolerant")
+    saved = {n: cls.__dict__[n] for n in names if n in cls.__dict__}
+    skips = (rs._FcmSkips.count, rs._FcmSkips.last_error)
+    yield cls
+    for n in names:
+        if n in cls.__dict__:
+            delattr(cls, n)
+    for n, v in saved.items():
+        setattr(cls, n, v)
+    rs._FcmSkips.count, rs._FcmSkips.last_error = skips
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _fcm_push(payload: dict, *, crypto_key_override: str | None = None):
+    """A real aesgcm-encrypted FCM data message the way FCM sends it since
+    2026-10-28: crypto-key and salt WITHOUT base64 padding."""
+    import json as _json
+
+    import http_ece
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from firebase_messaging.proto.mcs_pb2 import AppData, DataMessageStanza
+
+    receiver = ec.generate_private_key(ec.SECP256R1())
+    sender = ec.generate_private_key(ec.SECP256R1())
+    auth_secret, salt = os.urandom(16), os.urandom(16)
+    receiver_pub = receiver.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    sender_pub = sender.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    body = http_ece.encrypt(_json.dumps(payload).encode(), salt=salt, private_key=sender, dh=receiver_pub,
+                            auth_secret=auth_secret, version="aesgcm")
+    der = receiver.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                                 serialization.NoEncryption())
+    credentials = {"gcm": {"app_id": "app"}, "keys": {"private": _b64(der).rstrip("="),
+                                                       "secret": _b64(auth_secret).rstrip("=")}}
+    crypto_key = crypto_key_override if crypto_key_override is not None else _b64(sender_pub).rstrip("=")
+    msg = DataMessageStanza(
+        persistent_id="pid-1", raw_data=body,
+        app_data=[AppData(key="crypto-key", value="dh=" + crypto_key),
+                  AppData(key="encryption", value="salt=" + _b64(salt).rstrip("=")),
+                  AppData(key="subtype", value="app")])
+    assert not crypto_key.endswith("=") and len(crypto_key) % 4  # really unpadded
+    return credentials, msg
+
+
+def _client(cls, credentials, received):
+    """A real client; the selective ack is recorded instead of written to a socket."""
+    client = cls(lambda data, pid, ctx: received.append((data, pid)), SimpleNamespace(), credentials,
+                 config=None)
+    client.acks = []
+
+    async def _ack(pid):
+        client.acks.append(pid)
+
+    client._send_selective_ack = _ack
+    return client
+
+
+def test_unpatched_fcm_client_dies_on_an_unpadded_push(fcm_client_class):
+    """The live failure, reproduced: the library raises on the message itself,
+    so its catch-all shuts the client down before the ack (redelivered forever)."""
+    import binascii
+
+    credentials, msg = _fcm_push({"ding": 1})
+    client = _client(fcm_client_class, credentials, [])
+    with pytest.raises(binascii.Error):
+        client._handle_data_message(msg)
+
+
+def test_patched_fcm_client_decrypts_an_unpadded_push(fcm_client_class):
+    rs.ensure_fcm_push_tolerance()
+    rs.ensure_fcm_push_tolerance()  # idempotent: no wrapper around a wrapper
+    received = []
+    credentials, msg = _fcm_push({"ding": 1})
+    client = _client(fcm_client_class, credentials, received)
+    asyncio.run(client._handle_message(msg))
+    assert received == [({"ding": 1}, "pid-1")]
+    assert client.persistent_ids == ["pid-1"]
+
+
+def test_padded_headers_still_decrypt_after_the_patch(fcm_client_class):
+    """Unchanged behaviour for messages that already carry padding."""
+    rs.ensure_fcm_push_tolerance()
+    received = []
+    credentials, msg = _fcm_push({"motion": 1})
+    for ad in msg.app_data:
+        if ad.key in ("crypto-key", "encryption"):
+            prefix, val = ad.value.split("=", 1)
+            ad.value = f"{prefix}={rs._b64url_padded(val)}"
+    _client(fcm_client_class, credentials, received)._handle_data_message(msg)
+    assert received == [({"motion": 1}, "pid-1")]
+
+
+def test_a_message_that_still_fails_is_skipped_and_acknowledged(fcm_client_class):
+    """A malformed key (not a P-256 point) cannot be decrypted at all: the
+    listener must log, count and ack it, not die and get it redelivered."""
+    rs.ensure_fcm_push_tolerance()
+    before = rs._FcmSkips.count
+    received = []
+    credentials, msg = _fcm_push({"ding": 1}, crypto_key_override=_b64(b"\x04" + b"\x01" * 64).rstrip("="))
+    client = _client(fcm_client_class, credentials, received)
+    asyncio.run(client._handle_message(msg))
+    assert received == []
+    assert client.persistent_ids == ["pid-1"]          # acknowledged: MCS will not redeliver it
+    assert client.acks == ["pid-1"]
+    assert rs._FcmSkips.count == before + 1 and rs._FcmSkips.last_error
+    src = RingEventFrameSource("Front Door", state_dir="/tmp")
+    assert src.push_messages_skipped == before + 1
+
+
+def test_b64url_padded():
+    assert rs._b64url_padded("abc") == "abc="
+    assert rs._b64url_padded("ab") == "ab=="
+    assert rs._b64url_padded("abcd") == "abcd"
+    assert rs._b64url_padded("ab==") == "ab=="
+    assert rs._b64url_padded(" abc\n") == "abc="
+
+
+def test_supervisor_reports_deaf_when_every_listener_dies(tmp_path, monkeypatch):
+    """2026-10-28..11-03: every reconnect cleared last_error and health read
+    "ok" while the listener died within a second of every start."""
+    monkeypatch.setattr(rs, "SUPERVISE_SECONDS", 0.01)
+
+    async def run():
+        src = _connected(tmp_path)
+        src._connected_at = time.time()
+        dead = lambda: SimpleNamespace(started=True, _receiver=SimpleNamespace(is_started=lambda: False))  # noqa: E731
+        src._listener = dead()
+        states = []
+
+        async def _noop():
+            return None
+
+        async def fake_disconnect():
+            src.ever_connected = False
+
+        async def fake_connect():
+            states.append(src.deaf)
+            src.ever_connected = True
+            src._connected_at = time.time()
+            src._listener = dead() if len(states) < 4 else SimpleNamespace(
+                started=True, _receiver=SimpleNamespace(is_started=lambda: True))
+            src.last_error = None
+            return True
+
+        src._disconnect = fake_disconnect
+        src._connect_once = fake_connect
+        task = asyncio.create_task(src._supervise())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return src, states
+
+    src, states = asyncio.run(run())
+    assert states[:4] == [False, False, True, True]   # deaf from the 3rd death in a row
+    assert src.listener_restarts == 4
+    assert src.consecutive_listener_deaths == 0 and src.deaf is False  # a listener that lives clears it
+
+
+def test_health_degrades_when_deaf(tmp_path):
+    src = _connected(tmp_path)
+    src.consecutive_listener_deaths, src.listener_restarts = rs.DEAF_AFTER_LISTENER_DEATHS, 7
+    svc = _service_with(src)
+    svc._copy_source_metrics()
+    env = svc.health_envelope(None).payload
+    d = env["details"]
+    assert (d["ring_deaf"], d["ring_listener_restarts"], d["ring_consecutive_listener_deaths"]) == (
+        True, 7, rs.DEAF_AFTER_LISTENER_DEATHS)
+    assert "ring_push_messages_skipped" in d
+    assert env["status"] == "degraded"

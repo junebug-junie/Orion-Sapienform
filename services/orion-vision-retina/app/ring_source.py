@@ -69,6 +69,68 @@ ANSWER_TIMEOUT_SECONDS = 10.0
 VIDEO_JITTER_CAPACITY = 512
 # This many live views in a row with no frame = the doorbell is blind.
 BLIND_AFTER_FAILED_BURSTS = 3
+# This many push listeners in a row that died before the next supervise
+# check = the doorbell is deaf (events are not reaching us at all).
+DEAF_AFTER_LISTENER_DEATHS = 3
+
+
+def _b64url_padded(s: str) -> str:
+    """Base64url text with exactly the padding a strict decoder wants."""
+    s = (s or "").strip().rstrip("=")
+    return s + "=" * (-len(s) % 4)
+
+
+class _FcmSkips:
+    """Push messages the patched client could not handle and skipped (acked).
+    Process-wide: the patch is on the library class, not on one listener."""
+
+    count = 0
+    last_error: str | None = None
+
+
+def ensure_fcm_push_tolerance() -> None:
+    """Keep one bad push message from deafening the doorbell (idempotent).
+
+    Live 2026-10-28 21:15 UTC .. 2026-11-03: firebase-messaging 0.4.5 decodes
+    each message's ``crypto-key``/``encryption`` headers with a strict
+    ``urlsafe_b64decode``; FCM now sends them unpadded, so decryption raised
+    ``binascii.Error: Incorrect padding``. The client's catch-all then shut
+    itself down BEFORE acknowledging the message, MCS redelivered the same
+    message on every reconnect, and every listener died within a second of
+    starting (1,440 restarts in 24 h, 0 Ring events, 0 doorbell crops).
+
+    Two patches on ``FcmPushClient``: pad both headers before decoding (the
+    library already pads its own stored keys), and if handling one data
+    message still raises, log it, count it and return, so the message is
+    acknowledged and skipped instead of killing the listener. Same fix as
+    https://github.com/bvis/fermax-blue-hass/releases/tag/v0.16.6 and v0.16.7."""
+    try:
+        from firebase_messaging import fcmpushclient as fpc
+    except ImportError as exc:
+        logger.warning(f"[RETINA] ring push tolerance not installed: {exc}")
+        return
+    cls = fpc.FcmPushClient
+    if getattr(cls, "_orion_push_tolerant", False):
+        return
+    decrypt = cls._decrypt_raw_data  # staticmethod: a plain function via the class
+    handle = cls._handle_data_message
+
+    def _decrypt_raw_data(credentials, crypto_key_str, salt_str, raw_data):
+        return decrypt(credentials, _b64url_padded(crypto_key_str), _b64url_padded(salt_str), raw_data)
+
+    def _handle_data_message(self, msg):
+        try:
+            return handle(self, msg)
+        except Exception as exc:  # noqa: BLE001 -- one bad message must not kill the listener
+            _FcmSkips.count += 1
+            _FcmSkips.last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(f"[RETINA] ring push message {getattr(msg, 'persistent_id', '?')} skipped "
+                           f"(acknowledged, not delivered): {_FcmSkips.last_error}")
+            return None
+
+    cls._decrypt_raw_data = staticmethod(_decrypt_raw_data)
+    cls._handle_data_message = _handle_data_message
+    cls._orion_push_tolerant = True
 
 
 def ensure_video_jitter_capacity(video_capacity: int = VIDEO_JITTER_CAPACITY) -> None:
@@ -274,6 +336,11 @@ class RingEventFrameSource:
         self.bursts_failed = 0
         # Live views in a row that delivered no frame; 0 after any frame.
         self.consecutive_failed_bursts = 0
+        # Push listeners in a row found dead at a supervise check; 0 once one
+        # is found alive. Every reconnect clears last_error, so without this a
+        # listener that dies within a second of every start read as healthy.
+        self.consecutive_listener_deaths = 0
+        self.listener_restarts = 0
         self.last_event_kind: str | None = None
         self.last_event_ts: float | None = None
         # Every recorded push, whatever happened to the live view.
@@ -333,12 +400,17 @@ class RingEventFrameSource:
             if not self.ever_connected:
                 await self._connect_once()
             elif not listener_alive(self._listener):
+                self.consecutive_listener_deaths += 1
+                self.listener_restarts += 1
                 self.last_error = "ring push listener stopped; reconnecting"
-                logger.warning(f"[RETINA] {self.last_error}")
+                logger.warning(f"[RETINA] {self.last_error} (dead {self.consecutive_listener_deaths} checks in a row)")
                 await self._reconnect_when_idle()
             elif time.time() - self._connected_at >= RECONNECT_EVERY_SECONDS:
+                self.consecutive_listener_deaths = 0
                 logger.info("[RETINA] ring periodic reconnect (session refresh)")
                 await self._reconnect_when_idle()
+            else:
+                self.consecutive_listener_deaths = 0
             await asyncio.sleep(SUPERVISE_SECONDS)
 
     async def _reconnect_when_idle(self) -> None:
@@ -375,6 +447,7 @@ class RingEventFrameSource:
                 raise RuntimeError(f"no Ring camera matches RETINA_SOURCE={self.device_wanted!r}; account has: {names}")
             self._device = found[0]
 
+            ensure_fcm_push_tolerance()
             fcm_path = Path(self.state_dir) / FCM_FILE
             listener = RingEventListener(
                 ring,
@@ -675,6 +748,19 @@ class RingEventFrameSource:
                 else:
                     self.events_ignored += 1
                     logger.info(f"[RETINA] ring ding queued corr={corr}: reopen refused (ding quota)")
+
+    @property
+    def deaf(self) -> bool:
+        """The push listener keeps dying: no Ring event can reach us."""
+        return self.consecutive_listener_deaths >= DEAF_AFTER_LISTENER_DEATHS
+
+    @property
+    def push_messages_skipped(self) -> int:
+        return _FcmSkips.count
+
+    @property
+    def push_last_skip_error(self) -> str | None:
+        return _FcmSkips.last_error
 
     @property
     def blind(self) -> bool:

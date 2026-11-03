@@ -139,3 +139,71 @@ def test_degenerate_config_is_rejected_at_construction():
         PowerPrior(min_samples=0)
     with pytest.raises(ValueError):
         PowerPrior(window=3, min_samples=5)
+
+
+# --- persistence (2026-11-03) ------------------------------------------------------------------
+# The GPU pool relaunches this container for almost every generation. With an
+# in-memory-only prior, each relaunch started empty and the intent carried
+# expected_watts=None (0 of 9 intents on 2026-11-02, ~1,000 settlements on file).
+
+from app.power_prior import load_prior_file, save_prior_file  # noqa: E402
+
+DAY = 86400.0
+T0 = 1_762_000_000.0
+
+
+def test_window_survives_a_save_and_load(tmp_path):
+    path = str(tmp_path / "state" / "power_prior.json")
+    first = PowerPrior(min_samples=3, max_age_sec=7 * DAY)
+    for i, v in enumerate(CLEAN[:3]):
+        first.observe(outcome="settled", actual_peak_watts=v, at=T0 + i, **KEY)
+    assert save_prior_file(first, path)
+
+    relaunched = PowerPrior(min_samples=3, max_age_sec=7 * DAY)
+    assert relaunched.expected_watts(**KEY, now=T0 + 10) is None  # empty before loading
+    assert load_prior_file(relaunched, path, now=T0 + 10) == 3
+    assert relaunched.expected_watts(**KEY, now=T0 + 10) == pytest.approx(statistics.median(CLEAN[:3]))
+
+
+def test_samples_older_than_max_age_do_not_count(tmp_path):
+    prior = PowerPrior(min_samples=3, max_age_sec=7 * DAY)
+    for i, v in enumerate(CLEAN[:3]):
+        prior.observe(outcome="settled", actual_peak_watts=v, at=T0 + i, **KEY)
+    assert prior.expected_watts(**KEY, now=T0 + 6 * DAY) is not None
+    # After a gap longer than the age limit: unknown again, never a stale guess.
+    assert prior.expected_watts(**KEY, now=T0 + 8 * DAY) is None
+    path = str(tmp_path / "p.json")
+    save_prior_file(prior, path)
+    later = PowerPrior(min_samples=3, max_age_sec=7 * DAY)
+    assert load_prior_file(later, path, now=T0 + 8 * DAY) == 0
+
+
+def test_loaded_window_stays_bounded_and_keeps_the_newest(tmp_path):
+    big = PowerPrior(window=20, min_samples=3)
+    for i in range(20):
+        big.observe(outcome="settled", actual_peak_watts=100.0 + i, at=T0 + i, **KEY)
+    path = str(tmp_path / "p.json")
+    save_prior_file(big, path)
+    small = PowerPrior(window=5, min_samples=3)
+    load_prior_file(small, path, now=T0 + 30)
+    assert small.sample_count(**KEY) == 5
+    assert small.expected_watts(**KEY) == pytest.approx(117.0)  # median of 115..119
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[]", '{"version": 99, "buckets": []}',
+                                     '{"version": 1, "buckets": [{"workload_kind": "x", "node": "circe", '
+                                     '"gpu_index": "2", "samples": [[200, 1]]}]}',
+                                     '{"version": 1, "buckets": [{"samples": [["a", 1], [-5, 1], [200]]}]}'])
+def test_a_bad_state_file_is_an_empty_prior_not_a_crash(tmp_path, content):
+    path = tmp_path / "p.json"
+    path.write_text(content, encoding="utf-8")
+    prior = PowerPrior(min_samples=1)
+    assert load_prior_file(prior, str(path), now=T0) == 0
+    assert prior.expected_watts(**KEY) is None
+
+
+def test_missing_file_and_disabled_path_are_quiet(tmp_path):
+    prior = PowerPrior()
+    assert load_prior_file(prior, str(tmp_path / "absent.json"), now=T0) == 0
+    assert load_prior_file(prior, "", now=T0) == 0
+    assert save_prior_file(prior, "") is False

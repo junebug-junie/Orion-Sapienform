@@ -225,3 +225,31 @@ def test_the_static_index_key_is_gone():
     assert not hasattr(main.settings, "DIFFUSION_POWER_INTENT_GPU_INDEX")
     example = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
     assert "DIFFUSION_POWER_INTENT_GPU_INDEX" not in example
+
+
+def test_intent_carries_expected_watts_after_a_container_relaunch(monkeypatch, tmp_path):
+    """Regression (2026-11-03): the GPU pool relaunches diffusion-host for almost every
+    generation. The prior lived only in memory, so each relaunch declared expected_watts=None
+    (0 of 9 intents on 2026-11-02). Settlements seen by one container must reach the next
+    container's intent."""
+    state = str(tmp_path / "power_prior.json")
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_PRIOR_STATE_PATH", state)
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_PRIOR_MIN_SAMPLES", 3)
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+    monkeypatch.setattr(main.settings, "NODE_NAME", "circe")
+    monkeypatch.setattr(main, "_power_intent_gpu_index", 2)
+    monkeypatch.setattr(main, "_power_prior", None)
+
+    # Container 1 sees three settlements, then the pool stops it.
+    for peak in (158.0, 171.0, 199.0):
+        env = BaseEnvelope(kind="power.intent.settled.v1", source={"name": "orion-biometrics"},
+                           payload={"workload_kind": "reverie_diffusion", "node": "circe", "gpu_index": 2,
+                                    "outcome": "settled", "actual_peak_watts": peak})
+        asyncio.run(main.handle_settled_intent(env))
+    monkeypatch.setattr(main, "_power_prior", None)  # container 2: fresh process memory
+
+    bus = _RecordingBus()
+    monkeypatch.setattr(main, "_heartbeat_chassis", _Chassis(bus))
+    asyncio.run(main._publish_power_intent())
+    intent = PowerIntentV1.model_validate(bus.published[0][1].payload)
+    assert intent.expected_watts == pytest.approx(171.0)

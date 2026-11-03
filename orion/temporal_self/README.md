@@ -136,7 +136,7 @@ room-only (`ROOM_STREAMS = {"cam0"}`): the walkway and doorbell cameras reached 
 Each is one closed `street` process arc, subject `street:<origin>:<id>`, evidence the source row
 (`vision_motion_story:<id>`, `vision_events:<id>`, `vision_handoff_street_outbox:<id>`). The label
 always starts "Outside (<camera>):" and is built from the row's fields, never the story sentence
-(which says "together with 1 other person", a bare track count). The label carries no people count at
+(which says "moving alongside another person", older rows "together with 1 other person", a bare track count). The label carries no people count at
 all: the honest range (`walkway_rollup`, PR #2781) exists only once the hour's rollup closes, a median
 ~3 h after the hour, so using it would give one arc a different label live and on a re-fold. "How many"
 stays the rollups' job (the Day letter line). Nothing binds to a street arc by time (room percepts are

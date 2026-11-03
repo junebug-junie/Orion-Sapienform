@@ -434,3 +434,60 @@ def test_recovery_publish_is_never_gated_by_cooldown():
         # cooldown_active is only ever consulted for the worsening (non-recovered)
         # path, never for the recovery note itself.
         assert mock_active.call_count == 1
+
+
+def _dated(rows, *ages_sec):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 11, 3, 3, 0, tzinfo=timezone.utc)
+    for row, age in zip(rows, ages_sec):
+        row["created_at"] = now - timedelta(seconds=age)
+    return now, rows
+
+
+def test_is_worsening_stale_samples_read_healthy():
+    """Live 2026-11-03: once the detector stops persisting rows for a theme,
+    its last 2 rows froze 17 -> 18 and the page could never recover."""
+    from app.resonance_monitor import _is_worsening
+
+    now, rows = _dated(_samples(18, 17), 3600, 5000)
+    with patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=rows):
+        check = _is_worsening("loop:t1", max_sample_age_sec=1800.0, now=now)
+    assert check.healthy is True
+
+
+def test_is_worsening_fresh_samples_still_flag():
+    from app.resonance_monitor import _is_worsening
+
+    now, rows = _dated(_samples(18, 17), 60, 300)
+    with patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=rows):
+        check = _is_worsening("loop:t1", max_sample_age_sec=1800.0, now=now)
+    assert check.healthy is False
+
+
+def test_monitor_recovers_once_trend_goes_stale():
+    """Flagged worsening, then no new rows: the recovery note publishes."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.resonance_monitor import ResonanceHealthMonitor
+
+    fresh = datetime.now(timezone.utc)
+    rows = _samples(18, 17)
+    rows[0]["created_at"] = fresh
+    rows[1]["created_at"] = fresh - timedelta(seconds=300)
+    with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
+        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+    ), patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=rows), patch(
+        "app.resonance_monitor.resonance_alert_cooldown_active", return_value=False
+    ), patch("app.resonance_monitor.resonance_alert_cooldown_mark", return_value=True):
+        attention = _client_mock(client_cls)
+        monitor = ResonanceHealthMonitor(_settings())
+        monitor.check(_alert())
+        assert attention.call_count == 1  # worsening page
+        # Same 2 rows, now hours old: no fresh evidence of a runaway.
+        rows[0]["created_at"] = fresh - timedelta(hours=3)
+        rows[1]["created_at"] = fresh - timedelta(hours=3, seconds=300)
+        monitor.check(None)
+        assert attention.call_count == 2
+        assert "recovered" in attention.call_args.kwargs["message"]
+        assert "loop:t1" not in monitor._tracked_themes

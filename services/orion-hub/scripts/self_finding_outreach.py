@@ -26,8 +26,21 @@ Finding id: ``self_finding:<faculty>:<to_status>@<status_since>``, one per held-
 
 Persisted state (Redis ``SELF_FINDING_STATE_KEY``, no TTL): the last status that counts per faculty,
 the last state ``computed_at`` evaluated, and the findings still waiting to be told. The decision
-log is the authority on what was told (a row ``sent`` or ``orion_passed`` naming the finding id),
-so the state key is a cursor, not the dedupe record.
+log is the authority on what was told (a row ``sent`` or ``orion_passed`` naming the finding id,
+looked up by id with no time bound), so the state key is a cursor, not the dedupe record. With the
+decision log switched off or unreadable nothing is told. If the key is lost, only episodes still
+``broken`` are rebuilt (as ``unseen -> broken``); a waiting recovery or reliable-to-unreliable
+finding is lost with it.
+
+Pending findings: a newer finding for the same faculty replaces an older untold one (recorded as a
+``superseded`` decision row), so Orion never reports a breakage that is already over. A waiting
+finding's numbers are refreshed from each new state while its episode lasts. A finding is dropped
+only when told or after ``max_attempts`` composition failures (recorded as ``gave_up``).
+
+Producer contract (patch 2, orion-durable-runs): ``status_since`` must stay byte-identical across
+evaluations while a status is held (the finding id contains it), and the host must keep its previous
+records across restarts, or ``record.advance(None, ...)`` adopts a candidate without the 3-evaluation
+hold and this loop tells it at once. Until patch 2 deploys the key is absent and this loop does nothing.
 
 Delivery: the EXISTING outreach door, copied from ``reading_finding_outreach.py``:
 ``EndogenousOutreach.compose`` (the real unified turn, PASS allowed) then ``offer_message``
@@ -46,8 +59,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -64,17 +77,15 @@ FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 # Only these held statuses can change what Juniper is told; the rest never overwrite them.
 COUNTED_STATUSES = frozenset({"broken", "unreliable", "reliable"})
 UNSEEN = "unseen"
-# A finding nobody could tell for this long is old news: dropped and logged.
-PENDING_MAX_AGE = timedelta(days=7)
-# How far back the decision log is read for told / failed findings.
-DECISION_LOOKBACK = timedelta(days=60)
 REDIS_TIMEOUT_SEC = 2.0
 
+# By id, not by time: an episode can stay broken for months with the same ``status_since``.
 DECISIONS_SQL = """
 SELECT reason, result_json->'finding_ids' AS finding_ids
 FROM endogenous_outreach_decisions
-WHERE decided_at >= $1 AND reason = ANY($2::text[])
-  AND result_json->>'source' = 'self_finding_outreach'
+WHERE result_json->>'source' = 'self_finding_outreach'
+  AND reason = ANY($2::text[])
+  AND result_json->'finding_ids' ?| $1::text[]
 """
 
 _STATUS_WORDS = {
@@ -223,8 +234,8 @@ def evaluate(state: OutreachState, snapshot: SelfMonitorStateV1, *, now: datetim
 
     The same ``computed_at`` twice is evaluated once."""
     computed = _iso(snapshot.computed_at) or ""
-    if state.initialized and state.last_computed_at == computed:
-        return state, []
+    if state.initialized and state.last_computed_at and computed <= state.last_computed_at:
+        return state, []  # the same state again, or an older one (restored Redis, skew)
     first = not state.initialized
     last = {k: dict(v) for k, v in state.last_counted.items()}
     new: list[SelfFinding] = []
@@ -236,12 +247,13 @@ def evaluate(state: OutreachState, snapshot: SelfMonitorStateV1, *, now: datetim
         if prev is not None and from_status == rec.status:
             continue
         since = _iso(rec.status_since)
-        last[rec.faculty] = {"status": rec.status, "since": since}
         kind = finding_kind(from_status, rec.status)
-        if kind is None:
+        if kind is not None and since is None:
+            # Not marked as counted: the next state with a since is evaluated again.
+            logger.warning("self_finding_no_status_since faculty=%s status=%s -- not told yet", rec.faculty, rec.status)
             continue
-        if since is None:
-            logger.warning("self_finding_no_status_since faculty=%s status=%s -- not told", rec.faculty, rec.status)
+        last[rec.faculty] = {"status": rec.status, "since": since}
+        if kind is None:
             continue
         new.append(SelfFinding(
             finding_id=finding_id(rec.faculty, rec.status, since), kind=kind, faculty=rec.faculty,
@@ -252,12 +264,23 @@ def evaluate(state: OutreachState, snapshot: SelfMonitorStateV1, *, now: datetim
     if first:
         logger.info("self_finding_first_evaluation faculties=%d broken_told=%d", len(last), len(new))
     known_ids = {f.finding_id for f in state.pending}
-    pending = list(state.pending) + [f for f in new if f.finding_id not in known_ids]
+    new = [f for f in new if f.finding_id not in known_ids]
+    replaced = {f.faculty for f in new}
+    by_faculty = {r.faculty: r for r in snapshot.faculties}
+    pending = []
+    for f in state.pending:
+        if f.faculty in replaced:
+            continue  # superseded by the newer finding for the same faculty
+        rec = by_faculty.get(f.faculty)
+        if rec is not None and rec.status == f.to_status and _iso(rec.status_since) == f.status_since:
+            f = replace(f, facts=record_facts(rec, snapshot.window_days), reasons=list(rec.reasons))
+        pending.append(f)
+    pending += new
     return OutreachState(initialized=True, last_computed_at=computed, last_counted=last, pending=pending), new
 
 
 def still_pending(pending: Iterable[SelfFinding], *, told: set[str], failures: Mapping[str, int],
-                  max_attempts: int, now: datetime) -> tuple[list[SelfFinding], list[tuple[SelfFinding, str]]]:
+                  max_attempts: int) -> tuple[list[SelfFinding], list[tuple[SelfFinding, str]]]:
     """Split pending findings into those still to tell and those dropped (with why). Pure."""
     keep, dropped = [], []
     for f in pending:
@@ -265,8 +288,6 @@ def still_pending(pending: Iterable[SelfFinding], *, told: set[str], failures: M
             dropped.append((f, "told"))
         elif failures.get(f.finding_id, 0) >= max_attempts:
             dropped.append((f, "gave_up"))
-        elif now - datetime.fromisoformat(f.detected_at) > PENDING_MAX_AGE:
-            dropped.append((f, "too_old"))
         else:
             keep.append(f)
     return keep, dropped
@@ -404,15 +425,17 @@ class SelfFindingOutreach:
             logger.warning("self_finding_state_save_failed", exc_info=True)
             return False
 
-    async def _told_and_failures(self, now: datetime) -> Optional[tuple[set[str], dict[str, int]]]:
-        """From the decision log, merged with this process's mirror. None when the log is unreadable:
-        nothing is told without it, so a finding can never be told twice."""
+    async def _told_and_failures(self, ids: list[str]) -> Optional[tuple[set[str], dict[str, int]]]:
+        """From the decision log, merged with this process's mirror. None when the log is switched
+        off or unreadable: nothing is told without it, so a finding can never be told twice."""
+        from scripts.endogenous_outreach_decisions import decision_log_enabled
+
         pool = self._pool_provider()
-        if pool is None:
+        if pool is None or not decision_log_enabled():
             return None
         try:
             async with pool.acquire() as conn:
-                rows = await conn.fetch(DECISIONS_SQL, now - DECISION_LOOKBACK, sorted(TOLD_REASONS | FAILED_REASONS))
+                rows = await conn.fetch(DECISIONS_SQL, sorted(ids), sorted(TOLD_REASONS | FAILED_REASONS))
         except Exception:  # noqa: BLE001
             logger.warning("self_finding_decision_log_unreadable", exc_info=True)
             return None
@@ -447,12 +470,16 @@ class SelfFindingOutreach:
             logger.info("self_finding_view reason=%s age_sec=%s", view.reason, view.age_sec)
             self._last_view_reason = view.reason
         changed = False
+        superseded: list[SelfFinding] = []
         if view.known:
             snapshot = parse_state(raw_monitor)
             if snapshot is not None:
                 before = (state.initialized, state.last_computed_at)
+                old_pending = list(state.pending)
                 state, new = evaluate(state, snapshot, now=now)
                 changed = (state.initialized, state.last_computed_at) != before
+                kept = {f.finding_id for f in state.pending}
+                superseded = [f for f in old_pending if f.finding_id not in kept]
                 summary["new"] = [f.finding_id for f in new]
                 for f in new:
                     logger.info("self_finding_detected id=%s kind=%s from=%s", f.finding_id, f.kind, f.from_status)
@@ -461,24 +488,25 @@ class SelfFindingOutreach:
             if changed:
                 await self._save(redis, state)
             return summary
-        log = await self._told_and_failures(now)
+        outreach = self._outreach_provider() if self._outreach_provider else None
+        if superseded:
+            self._record_dropped(outreach, superseded, "superseded")
+        log = await self._told_and_failures([f.finding_id for f in state.pending])
         if log is None:
             await self._save(redis, state)
             summary["blocked"] = "decision_log_unreadable"
             summary["pending"] = len(state.pending)
             return summary
         told, failures = log
-        keep, dropped = still_pending(state.pending, told=told, failures=failures,
-                                      max_attempts=self.max_attempts, now=now)
-        for f, why in dropped:
-            if why != "told":
-                logger.warning("self_finding_dropped id=%s why=%s", f.finding_id, why)
+        keep, dropped = still_pending(state.pending, told=told, failures=failures, max_attempts=self.max_attempts)
+        gave_up = [f for f, why in dropped if why == "gave_up"]
+        if gave_up:
+            self._record_dropped(outreach, gave_up, "gave_up")
         state.pending = keep
         await self._save(redis, state)
         summary["pending"] = len(keep)
         if not keep:
             return summary
-        outreach = self._outreach_provider() if self._outreach_provider else None
         if outreach is None:
             logger.warning("self_finding_outreach_no_outreach_loop pending=%d", len(keep))
             summary["blocked"] = "no_outreach_loop"
@@ -490,6 +518,14 @@ class SelfFindingOutreach:
             await self._save(redis, state)
             summary["pending"] = len(state.pending)
         return summary
+
+    def _record_dropped(self, outreach: Any, findings: list[SelfFinding], reason: str) -> None:
+        """A finding leaves the queue untold: one decision row names it, so the drop is in the log."""
+        for f in findings:
+            logger.warning("self_finding_dropped id=%s why=%s", f.finding_id, reason)
+        if outreach is not None:
+            outreach.record_blocked(reason, correlation_id=str(uuid4()), source=SELF_FINDING_TAG,
+                                    extra=decision_meta(findings, str(uuid4())))
 
     def _record_block_once(self, outreach: Any, meta: dict[str, Any], reason: str, correlation_id: str) -> None:
         key = (meta["bundle_key"], reason)

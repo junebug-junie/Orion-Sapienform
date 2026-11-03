@@ -434,8 +434,9 @@ def find_ungrounded_signal_mentions(text: str, grounded: Iterable[str]) -> list[
 # plus the ungradeable catalog (``orion/self_monitor/catalog.py``). They are
 # minted from live bet rows, so no static registry lists them all; the family
 # prefix is the closed part. A self-finding message may name a faculty only if
-# the finding it tells is about that faculty: "my painting broke" is a claim
-# the record has to back, the same rule as for signal names above.
+# the finding it tells is about that faculty. This catches raw dotted ids only
+# (`act.thought.painting.make`), not plain-word naming ("my painting broke"):
+# the prompt keeps plain-word claims to the record's numbers instead.
 #
 # Only the self-finding door (`scripts/self_finding_outreach.py`) runs this
 # check; the other doors are unchanged.
@@ -457,21 +458,32 @@ def _catalog_faculties() -> frozenset[str]:
         return frozenset()
 
 
+# A file name ("vision.py", "body.json") is not a faculty.
+_FILE_SUFFIXES = frozenset({"py", "json", "md", "html", "txt", "yaml", "yml", "log", "csv", "sql", "js", "sh"})
+
+
 def is_self_monitor_faculty(token: str) -> bool:
-    """True when ``token`` has the shape of a self-monitor faculty name."""
-    lowered = str(token or "").strip(_TRAILING_PUNCT).lower()
-    return bool(lowered) and (lowered in _catalog_faculties() or bool(_FACULTY_TOKEN_RE.match(lowered)))
+    """True when ``token`` has the shape of a self-monitor faculty name. Faculty ids are
+    lowercase, so a token with a capital ("act.Then", a missing space) is prose."""
+    token = str(token or "").strip(_TRAILING_PUNCT)
+    if not token or token != token.lower():
+        return False
+    if token in _catalog_faculties():
+        return True
+    return bool(_FACULTY_TOKEN_RE.match(token)) and token.rsplit(".", 1)[-1] not in _FILE_SUFFIXES
 
 
 def find_ungrounded_faculty_mentions(text: str, grounded_faculties: Iterable[str]) -> list[str]:
     """Faculty names in ``text`` that the finding being told is not about.
 
-    Sorted, de-duplicated, original case. Empty when the message names no
-    faculty, or only the faculties in ``grounded_faculties``."""
+    A shortened id of a grounded faculty, cut at a dot (``turn.self`` for
+    ``turn.self.steps``), counts as grounded. Sorted, de-duplicated. Empty when
+    the message names no faculty, or only the faculties in ``grounded_faculties``."""
     grounded = {str(g).strip().lower() for g in grounded_faculties if g}
     offenders: dict[str, str] = {}
     for token in _extract_candidate_tokens(text):
-        lowered = token.lower()
-        if lowered not in grounded and is_self_monitor_faculty(lowered):
-            offenders.setdefault(lowered, token)
+        if any(g == token or g.startswith(token + ".") for g in grounded):
+            continue
+        if is_self_monitor_faculty(token):
+            offenders.setdefault(token, token)
     return sorted(offenders.values(), key=str.lower)

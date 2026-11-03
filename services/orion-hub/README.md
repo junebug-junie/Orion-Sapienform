@@ -3598,8 +3598,10 @@ Redis `orion:self_monitor:latest`. This loop only reads it.
   do not consume the background cap; disabled, turn-in-flight, recent-chat, quiet hours and arousal
   `strained` still apply, and a held finding waits. No body-economy bid (the reading door places none).
 - **State.** Redis `orion:hub:self_finding_outreach:state` (no TTL): last counted status per faculty,
-  the last evaluated `computed_at`, and findings still waiting. A finding untold after 7 days, or after
-  `_MAX_ATTEMPTS` composition failures, is dropped and logged.
+  the last evaluated `computed_at`, and findings still waiting. A newer finding for the same faculty
+  replaces an older untold one (decision row `superseded`); a waiting finding's numbers refresh each
+  hour. A finding leaves the queue untold only after `_MAX_ATTEMPTS` composition failures (row
+  `gave_up`). With the decision log off or unreadable, nothing is told.
 - **Env.** `HUB_SELF_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300), `_MAX_ATTEMPTS` (3).
 - **Checks.** `tests/test_self_finding_outreach.py`; would-tell replay (read-only, live DB):
   `PYTHONPATH=services/orion-hub:. POSTGRES_URI=... .venv/bin/python -P services/orion-hub/evals/run_self_finding_replay.py`.

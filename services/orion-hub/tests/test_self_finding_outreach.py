@@ -58,7 +58,9 @@ class _Conn:
         from scripts import self_finding_outreach as sfo
 
         assert sql == sfo.DECISIONS_SQL
-        return [r for r in self.rows if r["reason"] in args[1]]
+        ids, reasons = set(args[0]), args[1]
+        return [r for r in self.rows if r["reason"] in reasons and r.get("source") == "self_finding_outreach"
+                and ids & set(json.loads(r["finding_ids"]))]
 
 
 class _Pool:
@@ -357,3 +359,80 @@ def test_faculty_shape_does_not_flag_prose():
     assert find_ungrounded_faculty_mentions(text, []) == []
     assert find_ungrounded_faculty_mentions("energy.bill and forecast.office.temp_c", []) == [
         "energy.bill", "forecast.office.temp_c"]
+
+
+def test_shortened_ids_file_names_and_capitals_are_not_flagged():
+    from scripts.outreach_vocabulary import find_ungrounded_faculty_mentions
+
+    grounded = ["turn.self.steps"]
+    assert find_ungrounded_faculty_mentions("turn.self is off", grounded) == []
+    assert find_ungrounded_faculty_mentions("See vision.py and body.json.", grounded) == []
+    assert find_ungrounded_faculty_mentions("I act.Then I paused", grounded) == []
+    assert find_ungrounded_faculty_mentions("forecast.office was hot", grounded) == ["forecast.office"]
+    assert find_ungrounded_faculty_mentions("vision.percept_expectation drifted", grounded) == [
+        "vision.percept_expectation"]
+
+
+def test_a_newer_finding_replaces_an_untold_older_one(monkeypatch):
+    loop, outreach, redis, rows, composed, delivered, now, _ = _setup(monkeypatch)
+    real = __import__("scripts.endogenous_outreach", fromlist=["x"]).EndogenousOutreach._gate_inputs
+    strained = {"on": True}
+
+    def gate(self):
+        inp = real(self)
+        return inp.__class__(**{**inp.__dict__, "arousal_level": "strained" if strained["on"] else inp.arousal_level})
+
+    monkeypatch.setattr(type(outreach), "_gate_inputs", gate)
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    asyncio.run(loop.tick())  # held by strain
+    now["t"] = T0 + timedelta(days=3)
+    _publish(redis, now["t"], rec(WALKWAY, "reliable", now["t"], **RELIABLE_NUMBERS))
+    strained["on"] = False
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == ["sent"]
+    assert [r["reason"] for r in rows] == ["arousal_strained", "superseded", "sent"]
+    assert json.loads(rows[1]["finding_ids"]) == [f"self_finding:{WALKWAY}:broken@{T0.isoformat()}"]
+    assert _sent(rows)[0]["finding_kinds"] == ["recovered"]
+    assert "It was broken" in composed[0] and "became broken." not in composed[0]
+
+
+def test_a_waiting_finding_gets_fresh_numbers(monkeypatch):
+    loop, outreach, redis, rows, composed, _, now, _ = _setup(monkeypatch)
+    loop._pool_provider = lambda: None  # held: decision log unreadable
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    asyncio.run(loop.tick())
+    now["t"] = T0 + timedelta(hours=1)
+    _publish(redis, now["t"], rec(WALKWAY, "broken", T0, **{**BROKEN_NUMBERS, "n_failed_to_execute": 25}))
+    loop._pool_provider = lambda: _Pool(rows)
+    asyncio.run(loop.tick())
+    assert "25 of its 31 tries never ran" in composed[0]
+
+
+def test_decision_log_switched_off_tells_nothing(monkeypatch):
+    from scripts import endogenous_outreach_decisions as d
+
+    loop, _, redis, rows, composed, _, _, _ = _setup(monkeypatch)
+    monkeypatch.setattr(d, "decision_log_enabled", lambda: False)
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    summary = asyncio.run(loop.tick())
+    assert summary["blocked"] == "decision_log_unreadable" and composed == []
+
+
+def test_an_older_snapshot_is_ignored(monkeypatch):
+    loop, _, redis, rows, _, delivered, now, _ = _setup(monkeypatch)
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    asyncio.run(loop.tick())
+    now["t"] = T0 + timedelta(minutes=10)
+    _publish(redis, T0 - timedelta(hours=1), rec(WALKWAY, "reliable", T0 - timedelta(hours=1), **RELIABLE_NUMBERS))
+    assert asyncio.run(loop.tick())["new"] == [] and len(delivered) == 1
+
+
+def test_a_change_without_status_since_is_evaluated_again_later():
+    from scripts.self_finding_outreach import OutreachState, evaluate
+
+    no_since = rec(WALKWAY, "broken", T0).model_copy(update={"status_since": None})
+    cursor, new = evaluate(OutreachState(), SelfMonitorStateV1(computed_at=T0, window_days=7.0, faculties=[no_since]), now=T0)
+    assert new == [] and WALKWAY not in cursor.last_counted
+    t1 = T0 + timedelta(hours=1)
+    _, new = evaluate(cursor, SelfMonitorStateV1(computed_at=t1, window_days=7.0, faculties=[rec(WALKWAY, "broken", t1)]), now=t1)
+    assert [f.kind for f in new] == ["became_broken"]

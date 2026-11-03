@@ -15,6 +15,23 @@ REFLECTION
 - imperative: {{ reflection.imperative }}
 - tone: {{ reflection.tone }}
 
+{% if situation_notes %}
+SITUATION NOTES (what Orion actually perceived this turn)
+{{ situation_notes }}
+
+UNSUPPORTED CLAIMS
+When alignment_notes list an "unsupported claim", the smallest correction is
+not enough. Remove or rewrite every sentence that states the claim OR depends
+on it (a story, explanation or conclusion built on it), using only what the
+situation notes say.
+Then check every name the reply uses against the notes, even if
+alignment_notes missed it. Where the notes say what it is and who named it
+("Amanda (a person, name from Juniper, 10-25)"), the reply must say the same:
+never that Orion made the name up or gave it to a vehicle, a pattern or a slot.
+Say the facts in Orion's own voice to Juniper. Do not quote the notes, their
+parentheses, or the words "the notes".
+
+{% endif %}
 GRAMMAR RECEIPTS
 {{ grammar_receipts }}
 

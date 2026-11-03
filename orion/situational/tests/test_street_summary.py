@@ -76,7 +76,7 @@ def test_expectation_outcomes_and_open_windows() -> None:
     (line,) = _street(expectations=exp)
     assert line == (
         "Walkway rhythm: the black dog did not come (usually around 07:40); "
-        "the mail truck came as expected around 07:20; the grey dog is usually here by now; "
+        "the mail truck came as expected (usually around 07:20); the grey dog is usually here by now; "
         "the jogger usually comes around 08:00."
     )
 
@@ -419,3 +419,83 @@ def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.lines == ["At least 3 people are on the patio."]
+
+
+# --- Individual windows read back to the window start (2026-11-03) ----------
+# Live case: "Amanda" (named by Juniper 10-25) had an open 10:05-13:09 window,
+# peak 11:39, no match until 12:48 at the mailbox. At 12:00 the notes said
+# "Amanda usually comes around 11:39" and the reply said "Amanda right on her
+# usual 11:39"; asked where, the reply invented a vehicle "slot" it "started
+# calling Amanda".
+_AMANDA_NOW = datetime(2026, 11, 3, 19, 0, tzinfo=timezone.utc)  # 12:00 MST
+_AMANDA_ROW = {"subject_key": "individual:am", "subject_label": "Amanda", "status": "open",
+               "peak_minute": 699, "window_start": datetime(2026, 11, 3, 17, 5, tzinfo=timezone.utc)}
+_NAMED = {"individual_id": "am", "kind": "person", "named_by": "juniper",
+          "named_at": datetime(2026, 10, 26, 1, 54, tzinfo=timezone.utc), "matched_at": None}
+
+
+def _amanda(window, *, now=_AMANDA_NOW, row=_AMANDA_ROW):
+    (line,) = summarize_street(sightings=[], expectations=[row], unresolved=[], patio=None,
+                               now=now, tz=TZ, individual_windows={"am": window})
+    return line
+
+
+def test_open_window_past_peak_with_no_match_says_so() -> None:
+    line = _amanda(_NAMED)
+    assert "no match for Amanda (a person, name from Juniper, 10-25) yet today (usually around 11:39)" in line
+    assert "usually comes" not in line
+    assert "A person match is the camera's guess" in line
+
+
+def test_a_match_says_its_own_time_not_the_peak() -> None:
+    line = _amanda({**_NAMED, "matched_at": datetime(2026, 11, 3, 19, 48, tzinfo=timezone.utc)},
+                   now=datetime(2026, 11, 3, 19, 50, tzinfo=timezone.utc))
+    assert "Amanda (a person, name from Juniper, 10-25) matched at 12:48 (usually around 11:39)" in line
+    assert " came " not in line
+
+
+def test_peak_still_ahead_keeps_the_habit_wording() -> None:
+    line = _amanda(_NAMED, now=datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc))  # 11:00
+    assert "Amanda (a person, name from Juniper, 10-25) usually comes around 11:39" in line
+    assert "no match" not in line
+
+
+def test_missed_and_met_individuals_say_match_not_came() -> None:
+    missed = _amanda(_NAMED, row={**_AMANDA_ROW, "status": "missed"})
+    assert "no match for Amanda (a person, name from Juniper, 10-25) in the usual window (usually around 11:39)" in missed
+    met = _amanda(_NAMED, row={**_AMANDA_ROW, "status": "met"})
+    assert "Amanda (a person, name from Juniper, 10-25) matched inside the usual window" in met
+
+
+def test_no_name_origin_without_an_answered_ask_and_no_caveat_for_things() -> None:
+    line = _amanda({**_NAMED, "kind": "vehicle", "named_by": None, "named_at": None})
+    assert "name from" not in line
+    assert "person match" not in line
+
+
+def test_individual_windows_unread_keeps_the_old_guarded_wording() -> None:
+    (line,) = summarize_street(sightings=[], expectations=[_AMANDA_ROW], unresolved=[], patio=None,
+                               now=_AMANDA_NOW, tz=TZ, individual_windows=None)
+    assert line == "Walkway rhythm: Amanda usually comes around 11:39."
+
+
+def test_individual_windows_are_read_per_window_start_and_failures_degrade() -> None:
+    seen = {}
+
+    class _WinConn(_Conn):
+        def execute(self, stmt, params):
+            if "unnest(" in str(stmt):
+                seen.update(params)
+            return super().execute(stmt, params)
+
+    conn = _WinConn({
+        "unnest(": [{"individual_id": "am", **{k: v for k, v in _NAMED.items() if k != "individual_id"}}],
+        "vision_percept_expectation": [_AMANDA_ROW],
+    })
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=_AMANDA_NOW)
+    assert seen["ids"] == ["am"] and seen["starts"] == [_AMANDA_ROW["window_start"]]
+    assert any("no match for Amanda" in line for line in got.lines)
+
+    broken = _Conn({"unnest(": RuntimeError("boom"), "vision_percept_expectation": [_AMANDA_ROW]})
+    got = fetch_street_summary("walkway", engine=_Engine(broken), now=_AMANDA_NOW)
+    assert "Walkway rhythm: Amanda usually comes around 11:39." in got.lines

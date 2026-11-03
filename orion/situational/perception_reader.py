@@ -527,6 +527,28 @@ _STREET_EXPECTATIONS_SQL = text(
     ") ORDER BY window_start LIMIT 20"
 )
 
+# INDIVIDUAL WINDOWS (2026-11-03). One row per individual-subject expectation
+# above: the latest time a sighting of that individual overlapped its OWN
+# window (the rhythm reducer's own "met" rule, services/orion-sql-writer/app/
+# vision_rhythm.py: overlap + NOT stationary), its kind, and who gave its
+# name. Read back to each window's start, not the 60-minute sightings
+# lookback: on 11-03 "Amanda" had an open 10:05-13:09 window, the 12:00 turn
+# could only say "Amanda usually comes around 11:39" (the lookback guard
+# forbids an absence claim), and the model wrote "Amanda right on her usual
+# 11:39" with no sighting at all. A window that never overlapped a sighting
+# is now said as "no match ... yet today". Status 'open' alone cannot say
+# that: the reducer scores a window only after it closes.
+_STREET_INDIVIDUAL_WINDOWS_SQL = text(
+    "SELECT w.individual_id, i.kind, a.asked_of AS named_by, a.answered_at AS named_at, "
+    "  (SELECT max(greatest(s.started_at, w.window_start)) FROM vision_individual_sighting s "
+    "    WHERE s.individual_id = w.individual_id AND s.stream_id = :stream_id "
+    "      AND s.ended_at >= w.window_start AND s.started_at <= CAST(:until AS timestamptz) "
+    "      AND NOT s.stationary) AS matched_at "
+    "FROM unnest(CAST(:ids AS text[]), CAST(:starts AS timestamptz[])) AS w(individual_id, window_start) "
+    "LEFT JOIN vision_individual i ON i.individual_id = w.individual_id "
+    "LEFT JOIN orion_ask a ON a.ask_id = i.label_ask_id AND a.answer IS NOT NULL"
+)
+
 _STREET_UNRESOLVED_SQL = text(
     "SELECT observed_at, description FROM vision_unresolved "
     "WHERE stream_id = :stream_id "
@@ -914,6 +936,55 @@ def _past_peak(peak_minute: Any, window_start: datetime | None, *, now: datetime
     return now > peak
 
 
+STREET_PERSON_MATCH_CAVEAT = "A person match is the camera's guess, not a confirmed sighting."
+
+
+def _name_origin(window: Mapping[str, Any], tz: Any) -> str:
+    """Where a name came from, so the model never has to invent it (11-03:
+    "I started calling that slot Amanda" -- Juniper had named that person on
+    10-25, answering "Who is this?"). Every vision_individual label is set by
+    an answered ask; without one, say nothing rather than guess. The kind
+    rides along: the same reply called Amanda a vehicle."""
+    if str(window.get("named_by") or "").strip().lower() != "juniper":
+        return ""
+    kind = str(window.get("kind") or "").strip()
+    what = f"{'an' if kind[:1] in 'aeiou' else 'a'} {kind}, " if kind else ""
+    when = _utc(window.get("named_at"))
+    return f" ({what}name from Juniper, {when.astimezone(tz):%m-%d})" if when else f" ({what}name from Juniper)"
+
+
+def _individual_outcome(
+    label: str,
+    status: str,
+    peak: str | None,
+    row: Mapping[str, Any],
+    window: Mapping[str, Any],
+    *,
+    now: datetime,
+    tz: Any,
+) -> str | None:
+    """One rhythm phrase for an individual whose own window was read.
+
+    "Matched", not "came": a sighting of an individual is a re-identification
+    guess. The time said is the match's own time, never the peak.
+    """
+    name = label + _name_origin(window, tz)
+    usual = f"usually around {peak}" if peak else "usually"
+    matched = _utc(window.get("matched_at"))
+    if matched is not None and status in ("open", "met"):
+        return f"{name} matched at {matched.astimezone(tz):%H:%M} ({usual})"
+    if status == "met":
+        return f"{name} matched inside the usual window ({usual})"
+    if status == "missed":
+        return f"no match for {name} in the usual window ({usual})"
+    if status == "open":
+        window_start = _utc(row.get("window_start"))
+        if _past_peak(row.get("peak_minute"), window_start, now=now, tz=tz):
+            return f"no match for {name} yet today ({usual})"
+        return f"{name} usually comes" + (f" around {peak}" if peak else "")
+    return None
+
+
 def summarize_street(
     *,
     sightings: list[dict[str, Any]] | None,
@@ -927,6 +998,7 @@ def summarize_street(
     people_windows: list[dict[str, Any]] | None = None,
     stationary_people: int | Mapping[str, int] | None = None,
     stories: list[dict[str, Any]] | None = None,
+    individual_windows: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Pure: rows in, a few short plain-English lines out.
 
@@ -940,6 +1012,9 @@ def summarize_street(
     range of every living kind, people and dogs (None: unread, the line can
     only say "up to"). `stories` are today's motion stories that passed
     Juniper's spot-check gate, newest first (None: gate closed or unread).
+    `individual_windows` maps an individual id to its
+    `_STREET_INDIVIDUAL_WINDOWS_SQL` row (None: unread; individuals keep the
+    older wording, which can make no absence claim for an old window).
     """
     lines: list[str] = []
     camera = (camera or "").strip() or "camera"
@@ -980,6 +1055,7 @@ def summarize_street(
 
     # 2. What was expected, and did it happen.
     outcomes: list[str] = []
+    named_people = False
     for row in expectations or []:
         label = str(row.get("subject_label") or "").strip()
         if not label:
@@ -987,8 +1063,18 @@ def summarize_street(
         status = str(row.get("status") or "")
         peak = _hhmm(row.get("peak_minute"))
         at = f" around {peak}" if peak else ""
+        subject_kind, _, subject_ref = str(row.get("subject_key") or "").partition(":")
+        window = (individual_windows or {}).get(subject_ref) if subject_kind == "individual" else None
+        if window is not None:
+            said = _individual_outcome(label, status, peak, row, window, now=now, tz=tz)
+            if said:
+                outcomes.append(said)
+                named_people = named_people or str(window.get("kind") or "") == "person"
+            continue
         if status == "met":
-            outcomes.append(f"{label} came as expected{at}")
+            # The peak is the usual time, not when it came: "came as expected
+            # around 11:39" read as an arrival time (11-03).
+            outcomes.append(f"{label} came as expected (usually{at})" if at else f"{label} came as expected")
         elif status == "missed":
             outcomes.append(f"{label} did not come (usually{at})")
         elif status == "open":
@@ -1023,7 +1109,10 @@ def summarize_street(
             else:
                 outcomes.append(f"{label} usually comes{at}")
     if outcomes:
-        lines.append(f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + ".")
+        rhythm = f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + "."
+        if named_people:
+            rhythm += " " + STREET_PERSON_MATCH_CAVEAT
+        lines.append(rhythm)
 
     # 3. Things I could not name (last hour).
     names = [r for r in unresolved or [] if str(r.get("description") or "").strip()]
@@ -1102,6 +1191,31 @@ def _street_rows(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> li
         return None
 
 
+def _read_individual_windows(
+    conn: Any, expectations: list[dict[str, Any]] | None, window: Mapping[str, Any]
+) -> dict[str, dict[str, Any]] | None:
+    """`_STREET_INDIVIDUAL_WINDOWS_SQL` for every individual-subject
+    expectation with a window start, keyed by individual id. None when the
+    read failed (or there was nothing to read): the caller keeps its older
+    wording for those subjects."""
+    ids: list[str] = []
+    starts: list[datetime] = []
+    for row in expectations or []:
+        kind, _, ref = str(row.get("subject_key") or "").partition(":")
+        start = _utc(row.get("window_start"))
+        if kind == "individual" and ref and start is not None and ref not in ids:
+            ids.append(ref)
+            starts.append(start)
+    if not ids:
+        return None
+    rows = _street_rows(
+        conn, _STREET_INDIVIDUAL_WINDOWS_SQL, {**window, "ids": ids, "starts": starts}, "individual_windows"
+    )
+    if rows is None:
+        return None
+    return {str(r.get("individual_id")): r for r in rows if r.get("individual_id")}
+
+
 def fetch_street_summary(
     stream_id: str,
     *,
@@ -1147,6 +1261,7 @@ def fetch_street_summary(
                 {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
                 "expectations",
             )
+            individual_windows = _read_individual_windows(conn, expectations, window)
             unresolved = _street_rows(
                 conn, _STREET_UNRESOLVED_SQL,
                 {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
@@ -1227,6 +1342,7 @@ def fetch_street_summary(
             people_windows=people_windows if stationary_rows is not None else None,
             stationary_people={str(r.get("kind") or ""): int(r.get("n") or 0) for r in stationary_rows or []},
             stories=stories,
+            individual_windows=individual_windows,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

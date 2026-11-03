@@ -166,6 +166,6 @@ The first self-inquiry prompt after deploy shows, under the ledger rows:
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/3052
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

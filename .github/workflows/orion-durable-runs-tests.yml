@@ -8,6 +8,7 @@ on:
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/body_economy_shadow_vs_real.py"
       - "scripts/analysis/tests/test_body_economy_binding_replay.py"
@@ -91,6 +92,7 @@ on:
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
       - "orion/physiology/**"
       - "config/physiology/**"
       - "scripts/analysis/body_economy_binding_replay.py"
@@ -243,6 +245,16 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/deploy_order_skew.py
+      - name: Deploy-window listener wait eval (2026-10-31 readings unheard during a Hub redeploy) on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/deploy_window_listener_wait.py
+      - name: Listener wait mutation eval (every mutant must be killed) on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/listener_wait_mutations.py
       - name: Temporal Self live replay (the live chronicle over the 10-09 fixture reproduces patch 2) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

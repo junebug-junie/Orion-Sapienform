@@ -143,6 +143,6 @@ Run it from the clean primary `main` checkout after merge. The cue shows nothing
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3063
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

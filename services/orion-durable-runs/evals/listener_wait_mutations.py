@@ -15,12 +15,12 @@ SVC = str(Path(__file__).resolve().parents[1])
 WT = str(Path(SVC).parents[1])
 PY = sys.executable
 MUTANTS = [
- ("listener_wait never parks", "app/admitted_graph.py", "    if found is None or max_tries <= 0:\n        return None", "    if True:\n        return None"),
+ ("listener_wait never parks", "app/admitted_graph.py", "    if max_tries <= 0:\n        return None", "    if True:\n        return None"),
  ("cap off by one", "app/admitted_graph.py", "    if count > max_tries:", "    if count >= max_tries:"),
  ("backoff exponent", "app/admitted_graph.py", "    delay = min(cap, base * 2 ** (count - 1))", "    delay = min(cap, base * 2 ** count)"),
  ("no cause chain", "app/admitted_graph.py", "        exc = exc.__cause__ if exc.__cause__ is not None else (None if exc.__suppress_context__ else exc.__context__)", "        exc = None"),
  ("no deadline check", "app/admitted_graph.py", "    if retry_cannot_finish(state, retry_at, attempt_sec):\n        return None\n    released = await admission.release(state, \"listener_absent\")", "    released = await admission.release(state, \"listener_absent\")"),
- ("no hold park", "app/admitted_graph.py", "\"hold\": {\"retry_at\": at, LISTENER_WAIT_HOLD_KEY: count}, **(extra or {})}", "**(extra or {})}"),
+ ("no hold park", "app/admitted_graph.py", "\"hold\": {\"retry_at\": at, LISTENER_WAIT_HOLD_KEY: count, \"case\": case}, **(extra or {})}", "**(extra or {})}"),
  ("failed_attempt skips wait", "app/admitted_graph.py", "    parked = await listener_wait(admission, state, exc, waiting=waiting, extra=extra, attempt_sec=attempt_sec)\n    if parked is not None:\n        return parked\n", ""),
  ("register ignores park", "app/admission_runtime.py", "        if hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get(\"request_id\") and hold.get(\"retry_at\") \\", "        if False and hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get(\"request_id\") and hold.get(\"retry_at\") \\"),
  ("reading skips wait", "app/reading_graph.py", "            if parked is not None:\n                return parked\n            # Reading's", "            # Reading's"),
@@ -32,9 +32,18 @@ MUTANTS = [
  ("runner swallows admitted", "app/runner.py", "            if admitted:\n                # Nobody received it", "            if False:\n                # Nobody received it"),
  ("bus raises base class", "../../orion/core/bus/async_service.py", "raise RpcPublishedToNobody(f\"no listener on {request_channel}: request published to nobody\")", "raise RpcNoListener(f\"no listener on {request_channel}: request published to nobody\")"),
  ("urgent budget ignored", "app/admitted_graph.py", "    if is_urgent(state):\n        # Urgent runs end", "    if False:\n        # Urgent runs end"),
- ("orphan chained to unheard replayed", "app/admitted_graph.py", "            return None   # a delivered request", "            pass   # a delivered request"),
+ ("orphan chained to unheard replayed", "app/admitted_graph.py", "            return LOST_IN_FLIGHT, exc", "            pass"),
  ("self-sense state drops counter", "app/self_sense_graph.py", "    listener_waits: int", "    _unused_listener_waits: int"),
  ("awaiting also replayed", "app/admitted_graph.py", "        if isinstance(exc, RpcPublishedToNobody):", "        if isinstance(exc, RpcNoListener):"),
+ # 2026-11-03: reading.turn re-sends a turn whose Hub vanished mid-reply, at most 2 times; no one else.
+ ("in-flight opt-in ignored", "app/admitted_graph.py", "        max_tries, counter = min(max_tries, max(int(in_flight_resends), 0)), \"listener_in_flight_resends\"", "        max_tries, counter = max_tries, \"listener_in_flight_resends\""),
+ ("in-flight never resends", "app/admitted_graph.py", "        max_tries, counter = min(max_tries, max(int(in_flight_resends), 0)), \"listener_in_flight_resends\"", "        max_tries, counter = 0, \"listener_in_flight_resends\""),
+ ("in-flight ignores off switch", "app/admitted_graph.py", "        max_tries, counter = min(max_tries, max(int(in_flight_resends), 0)), \"listener_in_flight_resends\"", "        max_tries, counter = max(int(in_flight_resends), 0), \"listener_in_flight_resends\""),
+ ("in-flight shares counter", "app/admitted_graph.py", "        max_tries, counter = min(max_tries, max(int(in_flight_resends), 0)), \"listener_in_flight_resends\"", "        max_tries, counter = min(max_tries, max(int(in_flight_resends), 0)), \"listener_waits\""),
+ ("event drops case", "app/admitted_graph.py", "{\"waits\": count, \"case\": case, ", "{\"waits\": count, "),
+ ("reading not opted in", "app/reading_graph.py", "                                         in_flight_resends=IN_FLIGHT_RESENDS,\n", ""),
+ ("reading cap raised", "app/reading_graph.py", "IN_FLIGHT_RESENDS = 2\n", "IN_FLIGHT_RESENDS = 3\n"),
+ ("reading state drops in-flight counter", "app/reading_graph.py", "    listener_in_flight_resends: int", "    _unused_listener_in_flight_resends: int"),
 ]
 if not os.environ.get("ORION_ADMISSION_TEST_DSN"):
     print("ORION_ADMISSION_TEST_DSN (a disposable database) is required", file=sys.stderr)

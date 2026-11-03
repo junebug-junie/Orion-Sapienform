@@ -1,9 +1,11 @@
 """A step whose RPC reached no listener waits out the deploy and replays, no attempt spent.
 
 Live 2026-10-31: 16 reading runs failed with ``RpcNoListener`` in four bursts (04:28, 07:58,
-22:29, 23:20 UTC), each a service redeploy. Only the publish-time case (``RpcPublishedToNobody``:
-no worker received the request) is replayed; a request delivered and then orphaned
-("while awaiting its reply") keeps the normal attempt path, since its listener may have done work.
+22:29, 23:20 UTC), each a service redeploy. The publish-time case (``RpcPublishedToNobody``: no
+worker received the request) is replayed for every workflow. A request delivered and then orphaned
+("while awaiting its reply") keeps the normal attempt path, since its listener may have done work --
+except ``reading.turn``, whose read-only Hub turn is re-sent at most ``IN_FLIGHT_RESENDS`` (2) times
+(live 2026-11-03: 3 readings lost that way in Hub redeploys at 18:12 and 18:26 UTC).
 """
 from __future__ import annotations
 
@@ -21,10 +23,11 @@ from langgraph.types import Command
 
 from test_admitted_graph import CFG, World, initial
 from app.admitted_graph import (
-    LISTENER_WAIT_HOLD_KEY, WAITING, AdmissionDeps, build_admitted_graph, listener_wait, published_to_nobody,
+    LISTENER_WAIT_HOLD_KEY, LOST_IN_FLIGHT, PUBLISHED_TO_NOBODY, WAITING, AdmissionDeps, build_admitted_graph,
+    listener_absence, listener_wait, published_to_nobody,
 )
 from app.graph import Deps
-from app.reading_graph import build_reading_graph
+from app.reading_graph import IN_FLIGHT_RESENDS, build_reading_graph
 from app.self_sense_graph import SelfSenseAskFailed
 from orion.core.bus.async_service import RpcNoListener, RpcPublishedToNobody
 from orion.schemas.reading_turn import ReadingTurnResultV1
@@ -110,11 +113,12 @@ def test_reading_turn_published_to_nobody_waits_out_the_deploy_and_completes():
         assert parked["status"] == "waiting_resource", "not failed: the deploy is waited out"
         assert parked.get("attempt", 0) == 0, "no attempt spent"
         assert parked["listener_waits"] == 1
-        assert parked["hold"][LISTENER_WAIT_HOLD_KEY] == 1
+        assert parked["hold"][LISTENER_WAIT_HOLD_KEY] == 1 and parked["hold"]["case"] == PUBLISHED_TO_NOBODY
         assert parked["hold"]["retry_at"] == (world.now + timedelta(seconds=60)).isoformat()
         assert world.releases == ["listener_absent"], "the hold is handed back during the wait"
-        assert ("run.listener_wait", {"waits": 1, "retry_at": parked["hold"]["retry_at"], "error": NOBODY}) \
-            in world.events
+        assert ("run.listener_wait", {"waits": 1, "case": PUBLISHED_TO_NOBODY, "retry_at": parked["hold"]["retry_at"],
+                                      "error": NOBODY}) in world.events
+        assert not parked.get("listener_in_flight_resends"), "a publish-time wait is not an in-flight re-send"
         snap = await graph.aget_state(CFG)
         assert snap.next == ("resource_wait",)
 
@@ -152,17 +156,177 @@ def test_reading_listener_waits_are_bounded_then_fail_as_today():
     asyncio.run(run())
 
 
-def test_reading_turn_orphaned_while_awaiting_its_reply_is_not_replayed():
+# --- reading: Hub vanished WHILE the turn ran (2026-11-03) ----------------------------------------
+def test_classification_tells_the_two_cases_apart():
+    assert listener_absence(RpcPublishedToNobody(NOBODY))[0] == PUBLISHED_TO_NOBODY
+    assert listener_absence(RpcNoListener(AWAITING))[0] == LOST_IN_FLIGHT
+    assert listener_absence(TimeoutError("slow")) is None
+    assert listener_absence(ConnectionError("redis")) is None
+
+
+def test_reading_opts_in_to_exactly_two_in_flight_resends():
+    assert IN_FLIGHT_RESENDS == 2
+
+
+def test_reading_turn_lost_in_flight_waits_resends_and_completes():
+    async def run():
+        world, saver = ParkingWorld(), InMemorySaver()
+        turn, calls = reading_turn([RpcNoListener(AWAITING)])
+        graph = build_reading_graph(turn, deps(world), saver)
+        await graph.ainvoke(reading_state(), CFG)
+        world.grant()
+        parked = await graph.ainvoke(Command(resume=True), CFG)
+
+        assert parked["status"] == "waiting_resource", "not failed: Hub's redeploy is waited out"
+        assert parked.get("attempt", 0) == 0, "no attempt spent"
+        assert parked["listener_in_flight_resends"] == 1
+        assert parked["hold"]["case"] == LOST_IN_FLIGHT
+        assert not parked.get("listener_waits"), "its own counter, not the published-to-nobody one"
+        assert parked["hold"][LISTENER_WAIT_HOLD_KEY] == 1
+        assert parked["hold"]["retry_at"] == (world.now + timedelta(seconds=60)).isoformat(), "same backoff"
+        assert parked["last_error"].startswith("listener_wait_in_flight:1/2: ")
+        assert world.releases == ["listener_absent"]
+        assert ("run.listener_wait", {"waits": 1, "case": LOST_IN_FLIGHT, "retry_at": parked["hold"]["retry_at"],
+                                      "error": AWAITING}) in world.events
+        assert (await graph.aget_state(CFG)).next == ("resource_wait",)
+
+        world.now += timedelta(seconds=59)
+        asked = list(world.requests)
+        await graph.ainvoke(Command(resume=True), CFG)
+        assert world.requests == asked and len(calls) == 1, "nothing re-sent inside the wait"
+
+        world.now += timedelta(seconds=2)
+        world.pool_status = "queued"
+        await graph.ainvoke(Command(resume=True), CFG)
+        world.grant()
+        done = await graph.ainvoke(Command(resume=True), CFG)
+        assert done["status"] == "completed" and len(calls) == 2
+        assert done["listener_in_flight_resends"] == 1
+        assert calls[0].correlation_id != calls[1].correlation_id, "the re-send runs under a new turn identity"
+
+    asyncio.run(run())
+
+
+def test_reading_in_flight_resends_stop_at_two_then_fail_as_today():
     async def run():
         world = World()
         world.grant()
         turn, calls = reading_turn([RpcNoListener(AWAITING)])
-        result = await build_reading_graph(turn, deps(world), InMemorySaver()).ainvoke(reading_state(), CFG)
+        # Six published-to-nobody waits left over must not lend the in-flight case any budget, nor the reverse.
+        state = {**reading_state(), "listener_in_flight_resends": 2, "listener_waits": 0}
+        result = await build_reading_graph(turn, deps(world), InMemorySaver()).ainvoke(state, CFG)
         assert result["status"] == "failed" and len(calls) == 1
-        assert result["last_error"].startswith("turn_exception:RpcNoListener")
-        assert not result.get("listener_waits")
+        assert result["last_error"].startswith("turn_exception:RpcNoListener: no listener")
+        assert world.releases == ["attempt_failed"]
+        assert not any(name == "run.listener_wait" for name, _ in world.events)
 
     asyncio.run(run())
+
+
+def test_in_flight_and_published_counters_are_separate():
+    async def run():
+        world = World()
+        spent_nobody = {**reading_state(), "listener_waits": 6}
+        update = await listener_wait(deps(world), spent_nobody, RpcNoListener(AWAITING),
+                                     waiting={"status": "waiting_resource"}, in_flight_resends=2)
+        assert update is not None and update["listener_in_flight_resends"] == 1 and "listener_waits" not in update
+        spent_in_flight = {**reading_state(), "listener_in_flight_resends": 2}
+        update = await listener_wait(deps(world), spent_in_flight, RpcPublishedToNobody(NOBODY),
+                                     waiting={"status": "waiting_resource"}, in_flight_resends=2)
+        assert update is not None and update["listener_waits"] == 1 and "listener_in_flight_resends" not in update
+
+    asyncio.run(run())
+
+
+def test_in_flight_backoff_and_cap():
+    async def run():
+        world = World()
+        gaps = []
+        for n in range(3):
+            update = await listener_wait(deps(world), {**reading_state(), "listener_in_flight_resends": n},
+                                         RpcNoListener(AWAITING), waiting={"status": "waiting_resource"},
+                                         in_flight_resends=2)
+            gaps.append(None if update is None else
+                        (datetime.fromisoformat(update["hold"]["retry_at"]) - world.now).total_seconds())
+        assert gaps == [60.0, 120.0, None]
+
+    asyncio.run(run())
+
+
+def test_in_flight_resend_honours_the_off_switch_urgency_and_deadline():
+    async def run():
+        world = World()
+        off = await listener_wait(deps(world, listener_wait_max_tries=0), reading_state(), RpcNoListener(AWAITING),
+                                  waiting={"status": "waiting_resource"}, in_flight_resends=2)
+        assert off is None, "DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES=0 turns the in-flight case off too"
+        urgent = {**reading_state(), "brief": {**reading_state()["brief"], "urgent": True}}
+        first = await listener_wait(deps(world), urgent, RpcNoListener(AWAITING),
+                                    waiting={"status": "waiting_resource"}, in_flight_resends=2)
+        assert (datetime.fromisoformat(first["hold"]["retry_at"]) - world.now).total_seconds() == 10.0
+        late = {**reading_state(), "admission": {"resource": "llm.route.agent",
+                                                 "deadline_at": (world.now + timedelta(seconds=300)).isoformat()}}
+        assert await listener_wait(deps(world), late, RpcNoListener(AWAITING),
+                                   waiting={"status": "waiting_resource"}, in_flight_resends=2) is None
+
+    asyncio.run(run())
+
+
+def test_a_workflow_that_did_not_opt_in_never_resends_in_flight():
+    async def run():
+        world = World()
+        assert await listener_wait(deps(world), reading_state(), RpcNoListener(AWAITING),
+                                   waiting={"status": "waiting_resource"}) is None
+        assert world.releases == [] and world.events == []
+
+    asyncio.run(run())
+
+
+def test_curiosity_turn_lost_in_flight_still_spends_an_attempt():
+    """The safety every non-reading workflow keeps: a delivered request may have done work."""
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        failures = [RpcNoListener("no listener on orion:curiosity:turn:request while awaiting its reply")]
+
+        async def turn(req):
+            if failures:
+                raise failures.pop(0)
+            return await world.turn(req)
+
+        graph = build_admitted_graph(Deps(turn, world.read, world.row, world.journal),
+                                     AdmissionDeps(world.register, world.lease, world.execute, world.release,
+                                                   world.event, now=lambda: world.now, max_attempts=2,
+                                                   guard=world.guard, keep_for_outreach=world.keep), saver)
+        state = {**initial(), "brief": {**initial()["brief"], "timeout_sec": 600}}
+        await graph.ainvoke(state, CFG)
+        world.grant()
+        result = await graph.ainvoke(Command(resume=True), CFG)
+        assert result["attempt"] == 1, "an attempt is spent"
+        assert not result.get("listener_waits") and not result.get("listener_in_flight_resends")
+        assert "listener_absent" not in world.releases
+        assert not any(name == "run.listener_wait" for name, _ in world.events)
+
+    asyncio.run(scenario())
+
+
+def test_compactor_digest_call_lost_in_flight_still_spends_an_attempt():
+    from test_compactor_digest_graph import Orch, graph, initial as digest_initial
+
+    world = ParkingWorld()
+    world.grant()
+    orch = Orch(world)
+    lost = [RpcNoListener("no listener on orion:cortex:request while awaiting its reply")]
+
+    async def rpc(payload, **kw):
+        if lost:
+            raise lost.pop(0)
+        return await orch_rpc(payload, **kw)
+
+    orch_rpc, orch.rpc = orch.rpc, rpc
+    result, _ = _parked_after_one_unheard_call(lambda saver: graph(world, saver, orch), digest_initial())
+    assert result["attempt"] == 1, "an attempt is spent"
+    assert not result.get("listener_in_flight_resends") and not result.get("listener_waits")
+    assert world.releases == ["attempt_failed"]
+    assert not any(name == "run.listener_wait" for name, _ in world.events)
 
 
 def test_listener_wait_off_keeps_todays_behaviour():
@@ -414,6 +578,8 @@ def _graph_states():
 def test_every_graph_that_can_wait_declares_its_counter(state_cls, waiting):
     # LangGraph silently drops an undeclared key: the count would read 1 forever and the cap never trip.
     assert "listener_waits" in state_cls.__annotations__
+    if state_cls.__name__ == "ReadingState":   # the one workflow that re-sends in-flight turns
+        assert "listener_in_flight_resends" in state_cls.__annotations__
     assert "hold" in state_cls.__annotations__
     if waiting == "retrying":
         assert "retry_at" in state_cls.__annotations__
@@ -451,3 +617,12 @@ def test_self_sense_unheard_question_waits_then_is_answered_without_spending_an_
         assert len(world.turn_calls) == 5
 
     asyncio.run(scenario())
+
+
+def test_every_graph_that_opts_into_in_flight_resends_declares_its_counter():
+    # LangGraph drops an undeclared key: the in-flight count would read 1 forever and the cap never trip.
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    opted = [f for f in sorted(app_dir.glob("*.py")) if "in_flight_resends=" in f.read_text()]
+    assert [f.name for f in opted] == ["reading_graph.py"], "a new opt-in needs its own safety review"
+    for f in opted:
+        assert "    listener_in_flight_resends: int" in f.read_text(), f.name

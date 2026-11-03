@@ -31,6 +31,7 @@ pytest services/orion-hub/tests (before)  4465 passed, 146 skipped in 544.58s
 CI run 41600381246 (purge fix only)       test step 644s; 16 tests at exactly ~30s (bus connect)
 pytest with ORION_BUS_URL=redis://10.255.255.1 (CI-like dead bus), after bus detach:
                                           1 failed, 4465 passed, 146 skipped in 188.22s; slowest test 7s
+CI run 41603871226 (both fixes)           SUCCESS, test step 177s (was ~770s); slowest test 7s
 pytest services/orion-hub/tests (after)   1 failed, 4465 passed, 146 skipped in 201.69s (after review fixes)
 ```
 

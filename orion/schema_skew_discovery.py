@@ -77,6 +77,17 @@ LIB_HOPS = 1
 #: on an entry that no longer matches anything unresolved.
 DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # Cross-service writers code cannot see (validate-then-persist, HTTP API).
+    "orion.schemas.self_monitor:SelfMonitorStateV1": (
+        "orion-durable-runs",
+        "self-monitor patch 2 publishes it to Redis orion:self_monitor:latest; hub reads it via "
+        "orion.self_monitor.view. Remove once that writer lands and is discovered",
+    ),
+    "orion.schemas.self_monitor:FacultyRecordV1": (
+        "orion-durable-runs",
+        "self-monitor patch 2: the temporal_self self_monitor node publishes SelfMonitorStateV1 to Redis "
+        "orion:self_monitor:latest; hub's self_finding_outreach reads it via orion.self_monitor.view. "
+        "Remove this entry once that writer lands and is discovered (the stale-entry test will say so)",
+    ),
     "orion.memory_graph.dto:SuggestDraftV1": (
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",

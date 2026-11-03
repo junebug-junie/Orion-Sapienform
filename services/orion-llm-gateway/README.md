@@ -46,6 +46,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GPU_POOL_CONFIG_PATH` | `/app/config/gpu_pool.yaml` | Route -> pool class/priority map (`routes:`). A route not listed is refused (`route_not_in_gpu_pool`). |
 | `LLM_GATEWAY_POOL_WAIT_SEC` | `300` | Max wait for a pool grant (interactive/system); capped by the caller's own `gateway_read_timeout_sec`. |
 | `LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC` | `900` | Same, for background-priority routes. |
+| (option) `gateway_pool_wait_sec` | none | Per call, in a bus request's `options` (2026-11-03): the caller's own pool seat wait, **on top of** its `gateway_read_timeout_sec`. The pool wait is this number (capped at 900 s) instead of the priority's, and each upstream call still gets at most `gateway_read_timeout_sec`. Absent: the old rule (one budget for wait + generation). Caller today: Orion Prime (orion-mind `PRIME_SEAT_WAIT_SEC`). |
 | `LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC` | `60` | Max pool wait for the HTTP passthroughs (OpenAI/Anthropic); the queued acquire is withdrawn if the client disconnects. |
 | `LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE` | `8` | Threads per granted role URL (one executor per GPU role). |
 | `LLM_ROUTE_DEFAULT` | `quick` | Default routing key when none provided. |

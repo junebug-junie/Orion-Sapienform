@@ -303,3 +303,13 @@ def test_native_apply_template_transport_failure_names_the_apply_url(monkeypatch
                                                  route="agent", served_by="w")
     assert result["raw"]["error"] == "upstream_connect"
     assert result["raw"]["details"]["url"].endswith("/apply-template")
+
+
+@pytest.mark.asyncio
+async def test_bus_reply_reports_the_pool_seat_wait(fake_pool, monkeypatch):
+    """2026-11-03: orion-mind's Prime counts Juniper-first preemption from the grant, not the request,
+    so the reply carries how long the call waited for a seat (meta.pool_wait_ms)."""
+    _transport(monkeypatch, lambda req: httpx.Response(500, json=JINJA_500))
+    out = await gateway.handle_chat(_env("agent"))
+    wait = out.payload.meta["pool_wait_ms"]
+    assert isinstance(wait, (int, float)) and wait >= 0

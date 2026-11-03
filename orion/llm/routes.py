@@ -115,9 +115,11 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         "metacog_perception",
         # hecate's 27B (2026-10-08): its own GPU node, agent-class work a caller asks for by name.
         "agent-deep",
-        # Orion Prime (2026-10-30): the chat worker at background priority, for Prime's thoughts.
-        # Background, so it yields to Juniper's turn (see BACKGROUND_LLM_ROUTES).
+        # Orion Prime (2026-10-30): the chat worker, for Prime's thoughts. Pool priority `system`
+        # since 2026-11-03 (Juniper's turn still goes first); `prime_starved` is the same call at
+        # pool priority `starved`, after a try that got no seat. System-only: see SYSTEM_LLM_ROUTES.
         "prime",
+        "prime_starved",
     }
 )
 
@@ -155,6 +157,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "quick_embodied",
     "metacog_perception",
     "prime",
+    "prime_starved",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -185,8 +188,8 @@ if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
 # Default OFF: reverie.py's route override stays "metacog" until
 # ORION_REVERIE_METACOG_BACKGROUND_ENABLED is flipped on, so the unmitigated failure/timeout rate
 # under real load can be observed first.
-# `prime` (2026-10-30): Orion Prime's thoughts on the chat worker; waits for slack like the others.
-BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background", "metacog_background", "prime"})
+# `prime` left this set 2026-11-03 (pool priority system, now in SYSTEM_LLM_ROUTES).
+BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background", "metacog_background"})
 
 if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
@@ -246,6 +249,8 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
     # `metacog_perception` (2026-10-23): vision-council's route. Jumps the heat shed like
     # metacog_turn, so the same rule: never a human's Compute choice or override.
     # `quick_turn` (2026-10-23): cortex-exec's pre-turn repair-pressure probe. Same rule.
+    # `prime` / `prime_starved` (2026-11-03): Orion Prime's thoughts at pool priority system / starved.
+    # orion-mind sends them straight to the gateway; a human picking one would jump Orion's own queue.
     {
         "harness",
         "agent-burst",
@@ -255,6 +260,8 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
         "quick_turn",
         "quick_embodied",
         "metacog_perception",
+        "prime",
+        "prime_starved",
     }
 )
 

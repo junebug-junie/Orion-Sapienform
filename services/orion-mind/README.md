@@ -57,12 +57,27 @@ orion-mind keeps thinking between conversations. Design: `docs/superpowers/specs
 (PR #2980), rollout step 2A. Code: `app/prime_loop.py` (I/O) and `orion/prime/` (pure logic).
 
 **What it does.** Every `PRIME_TICK_SEC` a CPU-only tick reads the body (durable-runs `GET /physiology/state`)
-and attention (`GET /temporal-self/frame`) and records what changed: attention moved to another arc, the set of
-*binding* body constraints changed, one of Prime's own questions settled, a concern faded. If something changed,
-the refractory interval has passed and no Juniper turn is running, Prime bids in the body economy (family `prime`,
-Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits. A thought is one model
-call on route `prime` (circe chat lane 0 at `background` priority, so Juniper's call always starts first). Prime
-answers with how it reads things now, edits to its at most 3 concerns, and at most one move.
+and attention (`GET /temporal-self/frame`) and records what changed: the set of *binding* body constraints changed,
+one of Prime's own questions settled, a concern faded, first wake, or nothing else woke Prime for 6 hours (the quiet
+floor). Attention moving to another arc is **not** a change since 2026-11-03: it is shown in every frame as
+background, but it does not wake Prime (it drove concern churn: 22 of 38 concern drops said "attention has moved").
+If something changed, the refractory interval has passed and no Juniper turn is running, Prime bids in the body
+economy (family `prime`, Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits.
+A thought is one model call on route `prime` (circe chat lane 0 at pool priority `system`; Juniper's call always
+starts first). Prime answers with how it reads things now, edits to its at most 3 concerns, and at most one move.
+
+**Waiting for the model (2026-11-03).** A try may wait `PRIME_SEAT_WAIT_SEC` (600) for a GPU pool seat, and then
+generate for `PRIME_LLM_TIMEOUT_SEC` (60). The two are separate numbers (llm-gateway option
+`gateway_pool_wait_sec`); the bid is priced at the 60 s of generation only. A try that never reached the model --
+no seat, no gateway reply, or an upstream 5xx after one immediate retry -- is **not a thought**: no act is opened,
+the refractory interval does not start, and the next tick bids again. After 3 such tries in a row each one backs off
+(refractory x 2^n, at most 1 h); a heat-shed answer's own `retry_after_sec` is always waited out. After a no-seat
+try, the next try uses `PRIME_STARVED_LLM_ROUTE` (`prime_starved`, pool priority `starved`: ahead of other system
+work, behind Juniper's turn and Orion's senses, shed by the heat reflex like system work). Log lines:
+`prime_try_no_model kind=... reason=... streak=...`, `prime_upstream_5xx_retry`, and `prime_thought ... route=...`.
+Why: live 10-30..11-03, 96 of 254 thoughts failed, 78 of them because the call spent its whole 60 s queued behind
+system work on the chat class. The thought act is opened only once the model answered, so a queue failure is
+neither a 0 on Prime's record nor a reset of its hunger.
 
 **The one move (2A).** A question for curiosity's next regular investigate run, queued in Hub's existing focus slot
 (`orion/curiosity/focus.py`) with `binding.invocation_context = "prime"`. Hub stores it origin `self` with

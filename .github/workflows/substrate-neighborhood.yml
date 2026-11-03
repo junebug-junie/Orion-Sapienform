@@ -21,6 +21,9 @@ on:
       - 'services/orion-substrate-runtime/evals/**'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
+      - 'scripts/replay_substrate_propagation_decay.py'
+      - 'tests/test_replay_substrate_propagation_decay.py'
+      - 'tests/test_cognitive_substrate_phase4_dynamics.py'
       - 'scripts/repair_substrate_duplicate_identities.py'
       - 'tests/test_repair_substrate_duplicate_identities.py'
       - '.github/workflows/substrate-neighborhood.yml'
@@ -46,6 +49,9 @@ on:
       - 'services/orion-substrate-runtime/evals/**'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
+      - 'scripts/replay_substrate_propagation_decay.py'
+      - 'tests/test_replay_substrate_propagation_decay.py'
+      - 'tests/test_cognitive_substrate_phase4_dynamics.py'
       - 'scripts/repair_substrate_duplicate_identities.py'
       - 'tests/test_repair_substrate_duplicate_identities.py'
       - '.github/workflows/substrate-neighborhood.yml'
@@ -115,7 +121,9 @@ jobs:
           orion/substrate/tests/test_dynamics_decay_since_last.py
           orion/substrate/tests/test_dynamics_propagation_decay.py
           tests/test_cognitive_substrate_phase4_dynamics.py::test_a_fresh_decaying_drive_keeps_an_old_neighbour_awake
+          tests/test_cognitive_substrate_phase4_dynamics.py::test_a_never_decaying_drive_is_still_decayed_once_by_the_neighbours_age
           tests/test_cognitive_substrate_phase4_dynamics.py::test_the_same_drive_in_rollback_mode_is_muted_by_the_neighbours_age
+          tests/test_replay_substrate_propagation_decay.py
           orion/substrate/tests/test_dynamics_lost_update.py
           orion/substrate/tests/test_graphdb_store.py
           orion/substrate/tests/test_routed_store.py

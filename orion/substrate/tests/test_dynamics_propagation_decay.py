@@ -151,31 +151,57 @@ def test_legacy_decay_mode_ignores_the_propagation_mode(seed):
     assert run("source") == run("receiver_age")
 
 
-def test_a_busy_hub_lifts_neighbours_to_at_most_hub_x_attenuation_and_lets_them_rest():
+def _hub_world(spoke_half_life: int):
     hub = _node("hub", observed_at=T0, activation=1.0, half_life=SIX_HOURS)
-    spokes = [_node(f"spoke-{i}", observed_at=T0 - timedelta(days=20), half_life=30 * 86400) for i in range(200)]
-    second = [_node(f"second-{i}", observed_at=T0 - timedelta(days=20), half_life=30 * 86400) for i in range(200)]
+    spokes = [_node(f"spoke-{i}", observed_at=T0 - timedelta(days=20), half_life=spoke_half_life) for i in range(200)]
+    second = [_node(f"second-{i}", observed_at=T0 - timedelta(days=20), half_life=spoke_half_life) for i in range(200)]
     edges = [_edge("hub", f"spoke-{i}", confidence=1.0, predicate="associated_with") for i in range(200)]
     edges += [_edge(f"spoke-{i}", f"second-{i}", confidence=1.0, predicate="associated_with") for i in range(200)]
-    store = _store([hub, *spokes, *second], edges)
+    return _store([hub, *spokes, *second], edges)
+
+
+def _spokes(store, prefix="spoke"):
+    return [_a(store, f"{prefix}-{i}") for i in range(200)]
+
+
+def test_a_busy_hub_lifts_same_clock_neighbours_to_at_most_hub_x_attenuation_then_they_rest():
+    store = _hub_world(SIX_HOURS)
     engine = SubstrateDynamicsEngine(store=store)
     engine.tick(now=T0)
     hub_now = _a(store, "hub")
     # Max (not sum) over paths and 0.6 per hop: 200 spokes at <= 0.6, two hops at <= 0.36.
-    assert max(_a(store, f"spoke-{i}") for i in range(200)) <= hub_now * 0.6 + 1e-9
-    assert max(_a(store, f"second-{i}") for i in range(200)) <= hub_now * 0.36 + 1e-9
-    # Hub goes quiet (6 h half-life). The spokes hold their latched value on their own
-    # 30-day clock, so "rest" is bounded by the slowest half-life on the path -- the same
-    # as before this fix for any spoke young enough not to have been muted.
+    assert min(_spokes(store)) == pytest.approx(hub_now * 0.6, abs=1e-6)
+    assert max(_spokes(store, "second")) <= hub_now * 0.36 + 1e-9
     t = T0
-    while t <= T0 + timedelta(days=1):
+    while t < T0 + timedelta(days=1):
         t += timedelta(hours=1)
         engine.tick(now=t)
     assert _a(store, "hub") < DORMANT
-    assert max(_a(store, f"spoke-{i}") for i in range(200)) < 0.6
+    assert max(_spokes(store)) < DORMANT
+    assert max(_spokes(store, "second")) < DORMANT
+
+
+def test_a_fast_hub_cannot_latch_a_slow_neighbour_above_the_old_level():
+    # A 6 h hub feeding 30-day neighbours: taking the hub's value as is would be
+    # persisted and then fade on the 30-day clock, holding ~0.6 for weeks after the
+    # hub is quiet. The receiver_age rule applies instead, so nothing changes.
+    def run(mode):
+        store = _hub_world(30 * 86400)
+        engine = SubstrateDynamicsEngine(store=store, propagation_decay_mode=mode)
+        out = []
+        for k in range(0, 15 * 24, 6):
+            engine.tick(now=T0 + timedelta(hours=k))
+            out.append((max(_spokes(store)), max(_spokes(store, "second"))))
+        return out
+
+    source, rollback = run("source"), run("receiver_age")
+    assert len(source) == len(rollback) == 60
+    for a, b in zip(source, rollback):
+        assert a == pytest.approx(b, abs=1e-12)
 
 
 def test_no_loop_sustains_itself():
+    # Bound check (passes in either mode): no feedback loop can hold a value up.
     # Two nodes pointing at each other: 0.6 x 0.6 < 1 per round trip, so with the
     # sources quiet both reach rest on their own clocks.
     a = _node("node-a", observed_at=T0, activation=0.9, half_life=3600)

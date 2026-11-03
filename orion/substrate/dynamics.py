@@ -460,38 +460,47 @@ class SubstrateDynamicsEngine:
 
         A propagated term is decayed exactly once. Every node's own value here
         is "as of now" (seed decayed by its own age, stored value decayed since
-        its last decay). A signal that started at a node that decays already
-        carries that decay, so the receiver takes it as is -- not decayed again
-        by the receiver's age (the receiver_age double decay). A signal that
-        started at a node with NO half-life carries no decay at all, so the
-        first decaying node it reaches decays it by that node's age, exactly as
-        receiver_age did; it travels on as decayed from there. Without this a
-        never-decaying source (6,551 of 10,790 live cognitive nodes on
-        2026-11-03, e.g. topic-foundry evidence at ~0.5) would pin every
-        decaying neighbour at source x attenuation forever.
+        its last decay). Each signal carries a clock: the half-life it has
+        already been decayed on (None = not decayed at all).
+
+        - The receiver takes a decayed signal as is -- not decayed again by its
+          own age (the receiver_age double decay) -- when its own half-life is
+          no slower than the signal's clock. The tick persists the result into
+          the receiver's stored value, which then decays on the receiver's
+          clock; with a receiver clock no slower than the signal's, that
+          stored echo fades at least as fast as its source.
+        - Otherwise the receiver_age rule applies to the signal's undecayed
+          value: decayed once by the receiver's age. This covers a source with
+          NO half-life (6,551 of 10,790 live cognitive nodes on 2026-11-03,
+          e.g. topic-foundry evidence at ~0.5, which would otherwise pin every
+          decaying neighbour at source x attenuation forever) and a fast source
+          feeding a slow receiver (a 6 h hub would otherwise leave a 30-day
+          neighbour stuck near hub x 0.6 for weeks; 0 such live edges on
+          2026-11-03, guarded anyway).
 
         Bounds are the legacy ones: per-hop attenuation (< 1, so no loop can
         sustain itself), ``min_delta``, ``max_hops``, and max (not sum) over
         incoming paths, so a hub lifts each neighbour to at most hub x
-        attenuation x edge confidence, and only for as long as the hub itself
-        stays active.
+        attenuation x edge confidence.
         """
         current: dict[str, float] = {}
-        # Best undecayed value seen per node for a signal that has not been
-        # decayed yet: pruned and min_delta-checked on the same (undecayed)
-        # scale receiver_age uses, so one hop from a never-decaying source is
-        # bit-for-bit the receiver_age result.
+        # Best undecayed value seen per node for a signal decayed by the
+        # receiver_age rule: pruned and min_delta-checked on the same
+        # (undecayed) scale receiver_age uses, so one hop from a
+        # never-decaying source is bit-for-bit the receiver_age result.
         raw_best: dict[str, float] = {}
-        frontier: list[tuple[str, float, int, bool]] = []
+        # (node_id, decayed value, undecayed value, depth, clock)
+        frontier: list[tuple[str, float, float, int, int | None]] = []
         for node_id, node in nodes.items():
             value = self._own_activation_now(node, seeds[node_id], now)
+            raw = max(seeds[node_id], node.signals.activation.activation)
             current[node_id] = value
-            raw_best[node_id] = max(seeds[node_id], node.signals.activation.activation)
-            if value >= self._activation_config.min_delta:
-                frontier.append((node_id, value, 0, bool(node.signals.activation.decay_half_life_seconds)))
+            raw_best[node_id] = raw
+            if value >= self._activation_config.min_delta or raw >= self._activation_config.min_delta:
+                frontier.append((node_id, value, raw, 0, node.signals.activation.decay_half_life_seconds or None))
         min_delta = self._activation_config.min_delta
         while frontier:
-            node_id, signal, depth, decayed = frontier.pop(0)
+            node_id, signal, raw_signal, depth, clock = frontier.pop(0)
             if depth >= self._activation_config.max_hops:
                 continue
             for edge in outgoing.get(node_id, []):
@@ -501,35 +510,35 @@ class SubstrateDynamicsEngine:
                 target = nodes.get(target_id)
                 if target is None:
                     continue
-                propagated = max(0.0, min(1.0, signal * self._activation_config.attenuation * edge.confidence))
-                if propagated < min_delta:
-                    continue
-                if decayed:
-                    if propagated <= current[target_id] + 1e-6:
+                factor = self._activation_config.attenuation * edge.confidence
+                propagated = max(0.0, min(1.0, signal * factor))
+                raw_propagated = max(0.0, min(1.0, raw_signal * factor))
+                half_life = target.signals.activation.decay_half_life_seconds or None
+                if clock is not None and (half_life is None or half_life <= clock):
+                    if propagated < min_delta or propagated <= current[target_id] + 1e-6:
                         continue
                     current[target_id] = propagated
-                    frontier.append((target_id, propagated, depth + 1, True))
+                    frontier.append((target_id, propagated, raw_propagated, depth + 1, clock))
                     continue
-                if propagated <= raw_best[target_id] + 1e-6:
+                # receiver_age rule on the undecayed value.
+                if raw_propagated < min_delta or raw_propagated <= raw_best[target_id] + 1e-6:
                     continue
-                raw_best[target_id] = propagated
-                half_life = target.signals.activation.decay_half_life_seconds
-                if not half_life:
-                    # Neither end decays: nothing to apply, travels on undecayed.
-                    current[target_id] = max(current[target_id], propagated)
-                    frontier.append((target_id, propagated, depth + 1, False))
-                    continue
-                observed_at = target.temporal.observed_at
-                if observed_at.tzinfo is None:
-                    observed_at = observed_at.replace(tzinfo=timezone.utc)
-                effective = decay_activation(
-                    current=propagated,
-                    elapsed_seconds=max(0.0, (now - observed_at).total_seconds()),
-                    half_life_seconds=half_life,
-                    floor=target.signals.activation.decay_floor,
-                )
-                current[target_id] = max(current[target_id], effective)
-                frontier.append((target_id, effective, depth + 1, True))
+                raw_best[target_id] = raw_propagated
+                if half_life is None:
+                    effective = raw_propagated
+                else:
+                    observed_at = target.temporal.observed_at
+                    if observed_at.tzinfo is None:
+                        observed_at = observed_at.replace(tzinfo=timezone.utc)
+                    effective = decay_activation(
+                        current=raw_propagated,
+                        elapsed_seconds=max(0.0, (now - observed_at).total_seconds()),
+                        half_life_seconds=half_life,
+                        floor=target.signals.activation.decay_floor,
+                    )
+                if effective > current[target_id]:
+                    current[target_id] = effective
+                frontier.append((target_id, effective, raw_propagated, depth + 1, half_life))
 
         out: dict[str, float] = {}
         for node_id, value in current.items():

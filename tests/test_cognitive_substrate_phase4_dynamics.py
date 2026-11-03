@@ -185,6 +185,13 @@ def test_a_fresh_decaying_drive_keeps_an_old_neighbour_awake() -> None:
     assert stale_now >= 0.2
 
 
+def test_a_never_decaying_drive_is_still_decayed_once_by_the_neighbours_age() -> None:
+    # A drive with no half-life carries no decay, so the old rule applies: dormant.
+    materializer = _stale_node_with_drive(None)
+    first = SubstrateDynamicsEngine(store=materializer.store).tick(now=datetime.now(timezone.utc))
+    assert any(t.node_id == "stale-node" and t.to_state == "dormant" for t in first.dormancy_transitions)
+
+
 def test_the_same_drive_in_rollback_mode_is_muted_by_the_neighbours_age() -> None:
     materializer = _stale_node_with_drive(3600)
     engine = SubstrateDynamicsEngine(store=materializer.store, propagation_decay_mode="receiver_age")

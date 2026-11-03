@@ -8,7 +8,10 @@ Three fixtures on the real SubstrateDynamicsEngine, ticked every 10 minutes for
    after the sighting (``receiver_age`` read ~0.08) and both must reach rest.
 2. hub: one fresh node (6 h half-life) -> 300 neighbours observed 20 days ago
    (6 h half-life). No neighbour may read above hub x 0.6, and all must rest.
-3. never-decaying source: a node with no half-life (0.52, like live topic-foundry
+3. fast hub, slow neighbours: the same hub -> 300 neighbours with a 30-day
+   half-life. ``source`` must equal ``receiver_age`` here (a 6 h signal persisted
+   on a 30-day clock would hold ~0.6 for weeks), checked over 14 days.
+4. never-decaying source: a node with no half-life (0.52, like live topic-foundry
    evidence) -> a concept observed 35 days ago (30-day half-life). ``source``
    must equal ``receiver_age`` here: a source that carries no decay is decayed
    once by the receiver's age, so it cannot pin its neighbour forever.
@@ -88,6 +91,21 @@ def _hub():
     return _world([_node("hub-node", T0, 1.0), *spokes], [_edge("hub-node", f"spoke-{i}", 1.0) for i in range(HUB_N)])
 
 
+def _slow_hub():
+    spokes = [_node(f"spoke-{i}", T0 - timedelta(days=20), half_life=THIRTY_D) for i in range(HUB_N)]
+    return _world([_node("hub-node", T0, 1.0), *spokes], [_edge("hub-node", f"spoke-{i}", 1.0) for i in range(HUB_N)])
+
+
+def _slow_curve(mode):
+    store = _slow_hub()
+    engine = SubstrateDynamicsEngine(store=store, propagation_decay_mode=mode)
+    out = []
+    for hours in range(0, 14 * 24 + 1, 12):
+        engine.tick(now=T0 + timedelta(hours=hours))
+        out.append(max(store.get_node_by_id(f"spoke-{i}").signals.activation.activation for i in range(HUB_N)))
+    return out
+
+
 def _frozen():
     return _world([_node("evidence", T0 - timedelta(days=40), 0.52, half_life=None),
                    _node("old-concept", T0 - timedelta(days=35), 0.05, half_life=THIRTY_D, salience=0.2)],
@@ -111,6 +129,11 @@ def run() -> dict:
             "frozen_source_neighbour_first": round(f_first["old-concept"], 6),
             "frozen_source_neighbour_24h": round(f_end["old-concept"], 6),
         }
+    slow_source, slow_rollback = _slow_curve("source"), _slow_curve("receiver_age")
+    report["slow_spoke_max_first_and_14d"] = {
+        "source": [round(slow_source[0], 4), round(slow_source[-1], 4)],
+        "receiver_age": [round(slow_rollback[0], 4), round(slow_rollback[-1], 4)],
+    }
     s, r = report["source"], report["receiver_age"]
     assert abs(s["day_node_after_sighting"] - s["cluster_after_sighting"] * 0.48) < 2e-3, report
     assert r["day_node_after_sighting"] < 0.1, report
@@ -119,6 +142,7 @@ def run() -> dict:
     assert s["spoke_max_24h"] < DORMANT, report
     assert s["frozen_source_neighbour_first"] == r["frozen_source_neighbour_first"], report
     assert s["frozen_source_neighbour_24h"] == r["frozen_source_neighbour_24h"], report
+    assert max(abs(a - b) for a, b in zip(slow_source, slow_rollback)) < 1e-9, report
     report["passed"] = True
     return report
 

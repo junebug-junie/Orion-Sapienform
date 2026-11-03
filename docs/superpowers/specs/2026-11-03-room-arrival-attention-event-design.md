@@ -584,6 +584,8 @@ Column names in checks 5-6 were checked against the live tables on
 2026-11-03. The `kind = 'attention'` value is to be confirmed in Patch 2's
 eval; the eval script is the binding version.
 
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/3043
+
 ## Recommended next patch
 
 Patch 0, before anything else: a `person_rate:cam0` ladder rung. It reuses

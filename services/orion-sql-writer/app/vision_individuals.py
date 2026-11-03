@@ -932,6 +932,31 @@ def parse_pair_ref(ref: str) -> Optional[Tuple[str, str]]:
     return parts[0], parts[1]
 
 
+FACE_COSINE_REF_PREFIX = "face_cosine:"
+
+
+def face_cosine_from_refs(refs: Any) -> Optional[float]:
+    """The face similarity Orion stored on a "same person?" ask when it opened it
+    (``face_cosine:<sim>`` in ``orion_ask.evidence_refs``): Orion's guess, made
+    before Juniper answered. None when the ask carries none (a handoff ask
+    stores ``body_cosine`` only) or the value is unreadable or out of range."""
+    if isinstance(refs, str):
+        try:
+            refs = json.loads(refs)
+        except ValueError:
+            return None
+    if not isinstance(refs, (list, tuple)):
+        return None
+    for ref in refs:
+        if isinstance(ref, str) and ref.startswith(FACE_COSINE_REF_PREFIX):
+            try:
+                val = float(ref[len(FACE_COSINE_REF_PREFIX):])
+            except ValueError:
+                return None
+            return val if math.isfinite(val) and -1.0 <= val <= 1.0 else None
+    return None
+
+
 @dataclass(frozen=True)
 class FaceCandidate:
     individual_id: str
@@ -2025,7 +2050,8 @@ def pair_names(pair: Tuple[str, str], same: Optional[bool], detail: Dict[str, An
 def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: datetime,
                        detail: Dict[str, Any], now: datetime) -> None:
     """One "are these the same person?" answer -> one vision_individual_pair_verdict
-    row, with the face similarity at that moment (the calibration point).
+    row, with the face similarity Orion stored on the ask when it opened it (the
+    calibration point: the guess made before the answer; recomputed only if none).
     'same' links the two (no merge, no delete); 'different' keeps the pair from
     being asked again. A name typed on the card is applied as a typed name for
     that face (both faces on 'same'). With no name, 'same' carries a name
@@ -2041,9 +2067,19 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
     inds = {r[0]: r for r in conn.execute(text(
         "SELECT individual_id, face_centroid, label FROM vision_individual WHERE individual_id = ANY(:ids)"),
         {"ids": [a, b]}).fetchall()}
-    fa = inds.get(a)[1] if a in inds else None
-    fb = inds.get(b)[1] if b in inds else None
-    sim = cosine(list(fa), list(fb)) if fa and fb and len(fa) == len(fb) else None
+    # The similarity Orion stored when it opened the ask is the calibration point: the guess made
+    # BEFORE the answer. Recomputing from today's centroids was the only source until 2026-11-03,
+    # and it came back empty whenever a face centroid was missing at answer time (8 of 30 live
+    # verdicts on asks that carried a cosine). The recompute stays as the fallback for asks that
+    # stored none (handoff asks carry body_cosine only).
+    sim = face_cosine_from_refs(conn.execute(text(
+        "SELECT evidence_refs FROM orion_ask WHERE ask_id=:a"), {"a": ask_id}).scalar())
+    sim_source = "ask"
+    if sim is None:
+        fa = inds.get(a)[1] if a in inds else None
+        fb = inds.get(b)[1] if b in inds else None
+        sim = cosine(list(fa), list(fb)) if fa and fb and len(fa) == len(fb) else None
+        sim_source = "recomputed" if sim is not None else "none"
     conn.execute(text(
         "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, face_cosine, "
         "ask_id, decided_at) VALUES (:a, :b, :v, :c, :ask, :at) ON CONFLICT (individual_a, individual_b) "
@@ -2052,8 +2088,8 @@ def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: d
         {"a": a, "b": b, "v": "same" if same else "different",
          "c": None if sim is None else round(float(sim), 4), "ask": ask_id, "at": at})
     names = pair_names(pair, same, detail)
-    logger.info("[VISION_PAIR_VERDICT] ask_id=%s a=%s b=%s verdict=%s face_cosine=%s names=%d",
-                ask_id, a, b, "same" if same else "different", sim, len(names))
+    logger.info("[VISION_PAIR_VERDICT] ask_id=%s a=%s b=%s verdict=%s face_cosine=%s cosine_source=%s names=%d",
+                ask_id, a, b, "same" if same else "different", sim, sim_source, len(names))
     if names:
         for iid in (a, b):
             if iid in names:

@@ -383,3 +383,15 @@ def test_compact_facts_carry_belongings_without_ids() -> None:
                                "individual_ids": ["bike"], "person_ids": ["person-sam"]}}})
     assert facts["belongings"] == {"Sam": {"times": ["17:09"], "sightings": 1, "kinds": ["bicycle"]}}
     assert "bike" not in json.dumps(facts)
+
+
+def test_regulars_facts_give_no_number_for_people_or_dogs() -> None:
+    """2026-11-03: a regular is an unnamed cluster seen on 2+ days; one person splits into several,
+    so the journal facts say only that some people were regulars. Things keep their counts."""
+    row = _rollup_row()
+    row["rollup"]["regulars"] = {"count": 71, "by_kind": {"person": 9, "dog": 2, "vehicle": 60}, "ids": ["x"]}
+    facts = wf.compact_rollup_facts(row["rollup"])
+    assert facts["unnamed_regulars"] == {"things_by_kind": {"vehicle": 60},
+                                         "living_kinds_seen_before": ["dog", "person"]}
+    blob = json.dumps(facts["unnamed_regulars"])
+    assert "71" not in blob and "9" not in blob

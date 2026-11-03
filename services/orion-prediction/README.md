@@ -32,8 +32,16 @@ lifecycle state, not a fault: `/health` shows `series.<id>.not_ready` with bucke
 | `athena.cabinet_temp_c` | cabinet air (Nano ESP32 in the cabinet) | `orion_biometrics_summary` (biometrics) |
 | `office.temp_c` | office air = the cabinet's intake (pan-1 SHT40, `orion-office-env`) | `office_env_sample` (office_env: stale/offline rows dropped) |
 
-`office.temp_c` has no thresholds and no covariates. It joins the cabinet's covariates once ~14 days
-of it exist (~2026-11-12); before that `direct_arx` would lose every cabinet row older than the sensor.
+`office.temp_c` has no thresholds and no covariates of its own. It is a cabinet covariate since
+2026-11-03, listed under `overlap_covariates`: younger than the cabinet's training window, so only
+`direct_arx_overlap` uses it (below). Move it out of `overlap_covariates` once its history covers the
+whole training window.
+
+Live coverage on a young series (2026-11-03: `office.temp_c` 80 % coverage 0.67 over 1069 scores) is
+a calibration-pool problem, not a code bug: the conformal pool is 10-18 backtest windows spanning
+30-54 h, the 80 % and 95 % levels both clip to the pool's min/max below 39 paths, and the room swings
+up to 2.5 C/h with weather and doors (11-03 00-03 UTC: -6 C in 3 h). Live 60-min coverage was 0.54.
+It closes as the pool reaches 40 windows (~5 days of origins); until then the alert is correct.
 
 ## Models
 
@@ -44,9 +52,14 @@ of it exist (~2026-11-12); before that `direct_arx` would lose every cabinet row
 | `mstl_ets`, `mstl_arima` | MSTL decomposition (cycles up to 1 day) + ETS / ARIMA trend |
 | `prophet` | changepoints + every declared seasonality as Fourier terms (incl. weekly, custom) |
 | `direct_ar` | one ridge regression per lead time from the temperature's own recent history (`app/direct.py`) |
-| `direct_arx` | the same plus the series' covariates (chassis watts, AC watts) as known at the origin -- never a future value |
+| `direct_arx` | the same plus the series' covariates with full history (chassis watts, AC watts) as known at the origin -- never a future value |
+| `direct_arx_overlap` | the same plus every covariate incl. `overlap_covariates` (the room), trained only on the rows where all of them read |
 
-`direct_ar` vs `direct_arx` is a standing ablation: the scoreboard shows what the covariates add.
+`direct_ar` vs `direct_arx` vs `direct_arx_overlap` is a standing ablation: the scoreboard shows what
+the covariates (and the room) add. The overlap model refuses windows whose overlap is too short
+(< ~3 days at the 24 h lead), so the gate only compares it with the baseline on windows it really
+forecast, and refuses it until it has a residual on 90 % of the baseline's windows -- by the live
+route too (GATE_VERSION 4). Earliest it can serve: ~2026-11-07.
 
 ## Covariates
 
@@ -57,6 +70,10 @@ of it exist (~2026-11-12); before that `direct_arx` would lose every cabinet row
 | `hecate.chassis_watts` | hecate power (BMC, read by athena); 0 before 2026-10-04 | `orion_biometrics_cluster` |
 | `athena.cabinet_cooling_watts` | portable AC power (Shelly plug) | `home_cooling_sample` |
 | `athena.central_ac_proxy` | outdoor F above 75, 3 h earlier: the central AC's switch | `prediction_weather_hourly` |
+| `office.temp_c` | the room air the cabinet draws in (overlap covariate) | `office_env_sample` |
+
+A covariate's own registry exclusions are masked too (the room sensor's settling hour), and a 5-min
+bucket that straddles an exclusion's edge is masked whole.
 
 Weather comes from the shared Open-Meteo client (`orion/weather/openmeteo.py`, also used by the
 situation layer) at the situation layer's location (`ORION_SITUATION_WEATHER_LAT/LON`): refreshed hourly
@@ -149,7 +166,47 @@ for bursty streams (cam0 `person_presence` logs one person as many rows). The st
 Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
 walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
 
-`GET /effects/{action}?series_id=` returns the best available level. `GET /experiments/guard`
+### How much cabinet heat is a watt? (`GET|POST /effects/heat-per-watt`)
+
+Two fits, same method (`app/heat_balance.py`; hourly means, lags 0-2 h summed = a load held ~2 h,
+AR(1) feasible GLS + Newey-West intervals):
+
+- **local**: `cabinet - room` on each machine's chassis watts -- how much warmer than its intake air
+  the cabinet runs, room held fixed;
+- **total**: `cabinet` on the same watts with outdoor air (`prediction_weather_hourly`, observed hours)
+  as a control -- the room is free to warm too, since the machines' heat goes into the office. A 0-2 h
+  response, not a steady state.
+
+Both fits run on the same hours, and a missing hour is a break: hours on either side of it are never
+treated as neighbours by the AR(1) step or the Newey-West kernel.
+
+Query: `series_id` (default `athena.cabinet_temp_c`), `days` (2-21, default 7), optional
+`experiment_id`: converts that experiment's measured watts (its manipulation check, recomputed from
+the logged blocks) into a predicted cabinet change. Both bases are returned; the headline
+`predicted_c` (`basis`) is `local` when the experiment's blocks are shorter than the 2 h fit window
+(the room cannot follow on/off blocks that fast) and `total` otherwise. The experiment watts are cached
+only once the experiment is finished and every reading succeeded. GET is read-only; POST stores rows in
+`prediction_effect_estimate`: `heat_per_watt:<watts id>` (local) and `heat_per_watt_total:<watts id>`
+(`effect` in C per W, the whole fit in `details`). Always `observational_effect`. The local fit is
+refused (`422`, `detail.error = "refused"`) with fewer than 48 complete hours, a flat gap, no machine
+whose watts vary (>= 10 % of hours 20 W from the median), or R^2 < 0.10; the total fit is refused on
+its own without refusing the local answer. A machine that does not vary (hecate; the AC in fan mode)
+is left out and named.
+
+Live (2026-11-03, 7 days, the same 129 h for both fits), C per 100 W: local athena **+0.09 (95 %
+-0.01..+0.19)**, circe -0.02 (-0.06..+0.02); total athena **+0.92 (+0.39..+1.46)**, circe **+0.32
+(+0.17..+0.47)** -- most of a machine's 0-2 h effect on the cabinet comes back through the room. (The older whole-cabinet fit in
+`config/physiology/heat_sensitivity.yaml`, 09-26..10-27: athena 0.64, circe 0.31.) A plain level fit of
+the local gap says +0.43 (R^2 0.90) -- it rests on one unlogged step (2026-10-30 02:20 UTC: gap -1.1 C
+with athena flat at ~740 W; athena's real 300 W drop at 04:00 moved it ~0.1 C), and the response says
+so (`levels_disagree`). The walkway focus experiment (20-minute blocks, so `basis = local`; +7.8 W
+athena, +50 W circe) converts to -0.00 C (-0.03..+0.02) local and +0.23 C (-0.04..+0.51) total,
+against its measured +0.21 (-0.16..+0.58): the experiment cannot tell these apart. The "95 %"
+interval covers ~90 % in simulation (`evals/run_heat_per_watt_eval.py`).
+
+`GET /effects/{action}?series_id=` returns the best available level. An experimental answer on the
+cabinet also carries `heat_balance_prediction`: what the newest stored heat-per-watt fit predicts from
+the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored). `GET /experiments/guard`
 says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
 
 **One dispatcher exists: `POST /experiments/run`** (`app/experiment_runner.py`, 2026-10-29). It
@@ -262,6 +319,8 @@ cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
+PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
+PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_event_pair_live_eval.py  # live vision pairs, read-only
 python evals/export_cabinet_fixture.py --until <iso>                     # refresh the fixture
 ```

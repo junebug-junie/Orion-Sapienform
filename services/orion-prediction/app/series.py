@@ -109,6 +109,10 @@ class SeriesSpec:
     horizons_min: tuple[int, ...] = ()
     thresholds: tuple[Threshold, ...] = ()
     covariates: tuple[str, ...] = ()
+    # Covariates younger than the training window (a sensor installed recently): ``direct_arx`` leaves
+    # them out; ``direct_arx_overlap`` uses every covariate, trained only on the rows where all of them
+    # have readings (app/direct.py). A subset of ``covariates``.
+    overlap_covariates: tuple[str, ...] = ()
     # Pending change-event breaks (app/events.py): Prophet fits a level shift at each one.
     breaks: tuple[datetime, ...] = ()
     # Derived inputs (applied by app.frame.load_points): value at t is the source at t - lag_min,
@@ -231,6 +235,7 @@ def _spec(raw: dict) -> SeriesSpec:
         train_window_min=duration_min(raw.get("train_window", "21d")),
         seasonalities=tuple(seas), exclude=tuple(exclude), horizons_min=horizons,
         thresholds=tuple(thresholds), covariates=tuple(str(c) for c in raw.get("covariates") or ()),
+        overlap_covariates=tuple(str(c) for c in raw.get("overlap_covariates") or ()),
         lag_min=duration_min(raw["lag"]) if raw.get("lag") else 0,
         above=float(raw["above"]) if raw.get("above") is not None else None,
         zero_before_first=bool(raw.get("zero_before_first", False)),
@@ -258,6 +263,11 @@ def parse_registry(doc: dict) -> Registry:
             raise SeriesConfigError(f"duplicate series_id {spec.series_id}")
         reg.series[spec.series_id] = spec
     for spec in reg.series.values():
+        stray = [c for c in spec.overlap_covariates if c not in spec.covariates]
+        if stray:
+            raise SeriesConfigError(f"{spec.series_id}: overlap_covariates {stray} are not in covariates")
+        if spec.series_id in spec.covariates:
+            raise SeriesConfigError(f"{spec.series_id}: a series cannot be its own covariate")
         for cov in spec.covariates:
             other = reg.series.get(cov)
             if other is None:

@@ -133,6 +133,32 @@ def _decay_stamp_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return {ACTIVATION_DECAYED_AT_KEY: raw} if raw is not None else {}
 
 
+# `label_set_at` (entity nodes, 2026-11-03): when a named camera cluster's name was
+# set. Writer: orion/substrate/adapters/vision_individual.py (naming, rename, and the
+# first sighting refresh, which backfills it from observed_at). Consumer: the
+# person-graph relabel guard (services/orion-substrate-runtime/app/person_graph_loop.py),
+# which used to compare against observed_at -- observed_at now follows sightings, so a
+# rename would have been refused forever. Native, because this codec keeps no free-form
+# entity metadata. Omitted from the SET clause when absent, so a writer that does not
+# carry it never clears it.
+LABEL_SET_AT_KEY = "label_set_at"
+
+
+def _label_set_at_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = (metadata or {}).get(LABEL_SET_AT_KEY)
+    if raw is None:
+        return {}
+    return {LABEL_SET_AT_KEY: _dt(raw) if isinstance(raw, datetime) else str(raw)}
+
+
+def _entity_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = _decay_stamp_metadata_from_row(row)
+    raw = row.get(LABEL_SET_AT_KEY)
+    if raw is not None:
+        metadata[LABEL_SET_AT_KEY] = raw
+    return metadata
+
+
 # Node kinds this codec can round-trip through durable Falkor storage.
 #
 # `entity` joined concept/evidence on 2026-08-29 after a live outage: the
@@ -174,6 +200,7 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
         props["label"] = getattr(node, "label")
         props["entity_type"] = getattr(node, "entity_type", "unknown")
         props["aliases_json"] = _json_list(getattr(node, "aliases", None))
+        props.update(_label_set_at_properties_from_metadata(node.metadata))
     elif node.node_kind == "assertion":
         # `assertion_predicate`/`assertion_revision`, not `predicate`/`revision`:
         # the neighborhood join reads a.assertion_revision next to
@@ -626,7 +653,7 @@ def decode_entity_node(row: Mapping[str, Any]) -> EntityNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata=_decay_stamp_metadata_from_row(row),
+        metadata=_entity_metadata_from_row(row),
     )
 
 

@@ -70,7 +70,8 @@ def panel_row(row: Any) -> dict[str, Any]:
         parts["belongings"] = {name: {k: v for k, v in (entry or {}).items() if k != "individual_ids"}
                                for name, entry in (parts.get("belongings") or {}).items()}
     reg = parts.get("regulars") or {}
-    parts["regulars"] = {"count": reg.get("count", 0), "by_kind": reg.get("by_kind", {})}
+    # No total count (2026-11-03): it mixed kinds and split people into several clusters.
+    parts["regulars"] = {"by_kind": reg.get("by_kind", {})}
     stories = parts.get("stories") or {}
     if not stories.get("gate_passed"):
         parts["stories"] = {"gate_passed": False, "checked": stories.get("checked", 0)}

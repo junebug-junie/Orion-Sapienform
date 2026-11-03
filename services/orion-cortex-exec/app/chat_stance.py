@@ -2471,6 +2471,14 @@ def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+# The street clip in stance (2026-11-03, was 520): framing (~120 chars) + up to
+# two captions (~200) + who/rhythm (~200) + up to two spot-checked motion
+# stories (perception_reader.STREET_STORY_MAX x STREET_STORY_CHARS 160 + times
+# and label, ~380). Stories are the street summary's LAST line, so a cut drops
+# them first, never the camera framing, rhythm or patio head count.
+STREET_SUMMARY_CHARS = 900
+
+
 def _environmental_context(environment: Dict[str, Any]) -> str | None:
     """Weather, then the street -- so a turn at 07:45 when the dog did not
     come reads differently from one when it did (walkway spec idea 5)."""
@@ -2480,7 +2488,8 @@ def _environmental_context(environment: Dict[str, Any]) -> str | None:
     # rhythm/unresolved lines that follow them. 520 since it also opens with
     # what the camera is ("Your outdoor camera (walkway, since ...), looking
     # over ...: "), which is why there is no "Street:" prefix any more.
-    street = _compact(environment.get("street_summary"), limit=520)
+    # STREET_SUMMARY_CHARS since 2026-11-03: spot-checked motion stories.
+    street = _compact(environment.get("street_summary"), limit=STREET_SUMMARY_CHARS)
     parts = [p for p in (weather, street) if p]
     return "; ".join(parts) or None
 
@@ -2542,7 +2551,7 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
         # Empty when there is nothing to say; walkway spec idea 5.
         "street_summary": _compact(
             (brief.get("perception") or {}).get("street_summary") if isinstance(brief.get("perception"), dict) else "",
-            limit=520,
+            limit=STREET_SUMMARY_CHARS,
         ),
     }
     relevance = "active" if has_active else ("background" if fragment else "none")

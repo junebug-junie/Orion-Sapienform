@@ -489,6 +489,10 @@ class Settings(BaseSettings):
     # claim per named camera cluster, via the journal (app/person_graph_loop.py). false = none written.
     person_graph_enabled: bool = Field(True, alias="PERSON_GRAPH_ENABLED")
     person_graph_interval_sec: float = Field(600.0, gt=0.0, alias="PERSON_GRAPH_INTERVAL_SEC")
+    # Same pass: move each named camera cluster node's observed_at to its newest sighting
+    # (vision_individual.last_seen_at) and give it a 6 h half-life, so "seen recently" rises
+    # and fades. false = no sighting writes (nodes fade to rest within a day).
+    person_sighting_refresh_enabled: bool = Field(True, alias="PERSON_SIGHTING_REFRESH_ENABLED")
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(

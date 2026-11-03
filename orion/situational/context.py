@@ -1892,7 +1892,7 @@ async def _build_camera_senses(
             asyncio.to_thread(
                 fetch_camera_eyes,
                 streams,
-                count_individuals_for=cfg.street_stream_ids,
+                people_range_for=cfg.street_stream_ids,
                 tz_name=cfg.timezone,
                 now=now,
             ),

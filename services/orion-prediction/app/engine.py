@@ -255,6 +255,8 @@ class Engine:
         zoo = set(build_models(spec, list(usable)))
         fits = (champ["grain_min"] == spec.grain_min
                 and (champ.get("metrics") or {}).get("covariates", []) == list(spec.covariates)
+                # direct_arx's column set depends on which covariates are overlap-only.
+                and (champ.get("metrics") or {}).get("overlap_covariates", []) == list(spec.overlap_covariates)
                 and (champ.get("metrics") or {}).get("gate_version") == GATE_VERSION
                 and all(r.ndim == 2 and r.shape[1] == spec.max_horizon_steps for r in residuals.values())
                 and set(assignment) == set(spec.horizons_min) == set(base_assignment)
@@ -321,7 +323,8 @@ class Engine:
                 (base_id, "baseline_blend", sel.baseline_assignment, True, base_res)):
             rows.append({**common, "run_id": run_id, "kind": kind, "model": kind,
                          "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
-                         "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION,
+                         "metrics": {"covariates": list(spec.covariates),
+                                     "overlap_covariates": list(spec.overlap_covariates), "gate_version": GATE_VERSION,
                                      "train_from": spec.train_from.isoformat() if spec.train_from else None,
                                      "events_key": st.events.get("fingerprint"), "shadow": list(shadow)},
                          "assignment": {str(k): v for k, v in assignment.items()},
@@ -477,7 +480,10 @@ class Engine:
         zoo = build_models(spec, list(served.usable))
         needed = sel.models_needed()
         X = None
-        if any(zoo[n].uses_covariates for n in needed):
+        # Shadow contenders reuse this X (build_shadow): load it when any of them needs covariates too,
+        # or a covariate contender behind an all-history-only serve never builds a live record.
+        shadow = set(served.shadow) if self.shadow_enabled else set()
+        if any(zoo[n].uses_covariates for n in needed | {m for m in shadow if m in zoo}):
             cov = self.load_covariates(spec, train.index)
             X = cov.to_numpy(dtype=float) if cov is not None else None
         # Each model on its own: one dead covariate must not take down horizons (or the baseline)

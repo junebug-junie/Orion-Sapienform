@@ -54,6 +54,7 @@ from zoneinfo import ZoneInfo
 
 from orion.journaler import JournalTriggerV1
 from orion.vision.walkway_rollup import (
+    LIVING_KINDS,
     RANGE_KINDS,
     bare_living_counts,
     display_line,
@@ -432,7 +433,13 @@ def compact_rollup_facts(rollup: dict[str, Any]) -> dict[str, Any]:
         "excluded_not_counted": rollup.get("excluded"),
         "named": named,
         "belongings": belongings,
-        "unnamed_regulars": {"count": reg.get("count", 0), "by_kind": reg.get("by_kind", {})},
+        # A regular is an unnamed cluster seen on 2+ days. Living kinds are split into several
+        # clusters, so they get no number (2026-11-03): only that some were seen; things keep counts.
+        "unnamed_regulars": {
+            "things_by_kind": {k: v for k, v in (reg.get("by_kind") or {}).items() if k not in LIVING_KINDS},
+            "living_kinds_seen_before": sorted(k for k, v in (reg.get("by_kind") or {}).items()
+                                               if k in LIVING_KINDS and int(v or 0) > 0),
+        },
         "busiest": _point_facts(rollup.get("busiest")),
         "quietest": _point_facts(rollup.get("quietest")),
         "usual_total": _baseline_facts(rollup.get("baseline")),

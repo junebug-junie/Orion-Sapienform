@@ -121,7 +121,7 @@ def _write_individual_entity(
         map_vision_individual_label_to_substrate,
         relabelled_individual_entity,
     )
-    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
+    from orion.substrate.falkor_codec import ACTIVATION_STATE_KEYS, EXTERNALLY_OWNED_METADATA_KEYS
     from orion.substrate.materializer import SubstrateGraphMaterializer
     from orion.substrate.reconcile import SubstrateIdentityResolver
 
@@ -147,7 +147,9 @@ def _write_individual_entity(
         renamed = existing.label != node.label
         updated = relabelled_individual_entity(existing, node)
         identity_key = SubstrateIdentityResolver().canonical_node_key(updated)
-        store.upsert_node(identity_key=identity_key, node=updated, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
+        # The tick owns activation: a rename must not write back the copy read a moment ago.
+        store.upsert_node(identity_key=identity_key, node=updated,
+                          skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS | ACTIVATION_STATE_KEYS)
         outcome = "relabelled" if renamed else "updated"
     else:
         materializer = SubstrateGraphMaterializer(

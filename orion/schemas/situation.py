@@ -375,9 +375,9 @@ class CameraSenseV1(BaseModel):
 
     Built by `orion.situational.camera_eyes`: `name`/`view`/`outside` come
     from config (`ORION_CAMERA_DESCRIPTIONS`), the rest from live state
-    (`vision_scene_inventory` per stream, `vision_individual_sighting` for
+    (`vision_scene_inventory` per stream, today's `vision_rollup` day row for
     the street camera). No frames, boxes, faces or names cross here -- a
-    status, an age, a date and a count.
+    status, an age, a date and a people range.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -397,8 +397,16 @@ class CameraSenseV1(BaseModel):
     # Local date (situation timezone) of this camera's first frame.
     since: Optional[str] = None
     last_frame_age_seconds: Optional[float] = None
-    # Distinct individuals since local midnight; street cameras only, live only.
-    individuals_today: Optional[int] = None
+    # People today as a range (street cameras only, live only), from today's
+    # day rollup (vision_rollup, orion/vision/walkway_rollup.person_count_range):
+    # low = most people in one vision window, high = person clusters. Both or
+    # neither. Never a bare cluster count (spec #2763 decision 5); the old
+    # `individuals_today` (distinct clusters of every kind) was retired
+    # 2026-11-03. `people_today_through`: local HH:MM the range is counted
+    # through (closed hours only).
+    people_today_low: Optional[int] = None
+    people_today_high: Optional[int] = None
+    people_today_through: Optional[str] = None
 
 
 class PerceptionContextV1(BaseModel):

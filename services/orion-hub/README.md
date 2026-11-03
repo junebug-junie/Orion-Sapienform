@@ -3598,6 +3598,44 @@ endogenous curiosity and never written as a node prediction_error. Kill switch:
   `reading_finding_outreach_blocked seed=<id> reason=<gate>`,
   `reading_finding_beliefs_unchecked reason=<...>`.
 
+### Self findings reach Juniper (`scripts/self_finding_outreach.py`)
+
+**What it does.** When one of Orion's faculties breaks, comes back, or stops being reliable,
+Orion writes Juniper a message in their own words. A faculty is one thing Orion does and is
+graded on, e.g. the walkway-grade journal act or the office temperature forecast. The
+self-monitor organ in orion-durable-runs grades them and publishes its picture hourly to
+Redis `orion:self_monitor:latest`. This loop only reads it.
+
+- **What is told (Juniper, 2026-11-03).** A faculty becomes `broken` (most tries never ran);
+  a faculty recovers (`broken`/`unreliable` -> `reliable`); a faculty goes `reliable` ->
+  `unreliable`. Never a calibration change (`miscalibrated`) and never an `unknown` flip. Those
+  two never overwrite the last status that counts, so `broken -> unknown -> reliable` is still
+  told as a recovery.
+- **Told once.** Finding id `self_finding:<faculty>:<status>@<status_since>`: one per held-status
+  episode. The decision log (`result_json.source = 'self_finding_outreach'`, `finding_ids`) is the
+  authority; a `sent` or `orion_passed` row means told.
+- **First evaluation.** The first fresh state after deploy tells each faculty already `broken`
+  once (Juniper has never been told). A faculty seen for the first time later is treated the same.
+- **Unknown changes nothing.** Absent, stale (over 3 h), unparseable or future-stamped state
+  (`orion.self_monitor.view`) detects nothing new. Findings already detected still wait to be told.
+- **Grounded.** The prompt carries only the faculty record's own numbers. A message that names a
+  faculty the finding is not about is refused (`outreach_vocabulary.find_ungrounded_faculty_mentions`,
+  recorded as `named_ungrounded_signal`), then `offer_message` runs the usual signal-name guard.
+- **Gates.** Same door as reading findings: no daily cap or cooldown (`skip_rate_gates`), and sends
+  do not consume the background cap; disabled, turn-in-flight, recent-chat, quiet hours and arousal
+  `strained` still apply, and a held finding waits. No body-economy bid (the reading door places none).
+- **State.** Redis `orion:hub:self_finding_outreach:state` (no TTL): last counted status per faculty,
+  the last evaluated `computed_at`, and findings still waiting. A newer finding for the same faculty
+  replaces an older untold one (decision row `superseded`); a waiting finding's numbers refresh each
+  hour. A finding leaves the queue untold only after `_MAX_ATTEMPTS` composition failures (row
+  `gave_up`). With the decision log off or unreadable, nothing is told.
+- **Env.** `HUB_SELF_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300), `_MAX_ATTEMPTS` (3).
+- **Checks.** `tests/test_self_finding_outreach.py`; would-tell replay (read-only, live DB):
+  `PYTHONPATH=services/orion-hub:. POSTGRES_URI=... .venv/bin/python -P services/orion-hub/evals/run_self_finding_replay.py`.
+- **Logs.** `self_finding_detected id=<id> kind=<kind> from=<status>`,
+  `self_finding_outreach_result reason=<sent|orion_passed|...>`, `self_finding_outreach_blocked reason=<gate>`,
+  `self_finding_view reason=<fresh|stale|absent|...>`.
+
 ### Introspect responder: `curiosity`
 
 **What it does.** Lets Orion read back their own curiosity runs -- what they

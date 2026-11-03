@@ -44,7 +44,7 @@ from app.backtest import (
     stitch,
 )
 from app.events import adopt_after, with_events
-from app.grading import grade
+from orion.prediction.grading import grade
 from app.live import RETENTION as SHADOW_RETENTION, verdicts as live_verdicts, window_for
 from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import BASELINES, build_models, split_seasonalities

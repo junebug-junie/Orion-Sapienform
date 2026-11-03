@@ -212,7 +212,7 @@ baseline serves.
 session is its own unit), the paired test from `app/live.py`/`backtest.paired_win_p`: `pending` under
 20 sessions, then `better` / `worse` / `unclear` at p < 0.05. Global over every domain, cached 60 s.
 When the model is live-`worse`, quotes and new bets serve the baseline (`model` / `served_model` say
-`action_skill_rate`). Grading of served and baseline p uses `app/grading.py` `grade` (`enough` at
+`action_skill_rate`). Grading of served and baseline p uses `orion/prediction/grading.py` `grade` (`enough` at
 n >= 50; `reportable` false under 10 bets).
 
 **World-model shadow** `transition_mlp` (never served). A bet can carry body-level `features` and a `feature_version`, from `orion/embodiment/transition.py`; the Hub sends them for every Zelda bet. When the version matches the loaded weights, the service runs the trained TransitionModel in numpy and stores the result on the bet as `shadow` = `{model, tag, p, heads}`. `p` is the model's chance of the skill's success:

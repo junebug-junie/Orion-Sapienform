@@ -48,7 +48,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
-from app.grading import grade
+from orion.prediction.grading import grade
 from orion.harness.cut_short import CUT_SHORT_MARKER
 
 logger = logging.getLogger("orion-prediction.turn_self_bets")

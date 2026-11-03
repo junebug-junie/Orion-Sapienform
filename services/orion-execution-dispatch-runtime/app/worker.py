@@ -45,6 +45,8 @@ from orion.autonomy.prediction import (
     DEFAULT_PRIOR_VARIANCE,
     EffectPosterior,
 )
+from orion.self_monitor.gate import ActGate, read_view_sync
+from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
     build_stale_discard_execution_dispatch_frame,
@@ -322,6 +324,13 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             timeout=10,
         )
         self._stop = asyncio.Event()
+        # Self-monitor E1: refuse a failing act `track_record_failing`, one probe per faculty per window.
+        self._self_monitor_gate = ActGate(
+            enabled=bool(getattr(self._settings, "self_monitor_act_gate_enabled", False)),
+            probe_interval_sec=float(getattr(self._settings, "self_monitor_probe_interval_sec", 21600.0)),
+            read_view=lambda now: read_view_sync(self._settings.orion_bus_url, now=now),
+            ledger_rows=lambda actor, verb, secs: self._store.act_attempt_rows(actor, verb, secs),
+        )
         # In-memory only, by design: the latch never survives a restart, and
         # the tripwire's own judgment is always built from samples this
         # process observed (see _recent_dispatch_statuses below).
@@ -731,10 +740,17 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
         self._last_act_reasons = {}
         self._last_proven = {}
         self._last_proven_reasons = {}
+        self._last_gate_labels = {}
+        gate = getattr(self, "_self_monitor_gate", None)
+        gate_now = datetime.now(timezone.utc)
+        if gate is not None and act_refs:
+            gate.begin(gate_now)
 
         candidates: list[Candidate] = []
         for item in pending:
             ref = act_refs.get(item.cortex_verb or "")
+            # Self-monitor E1 on the visual-baseline lane: it makes the same act as the route.
+            baseline_ref = ref if ref is not None and item.visual_baseline is not None else None
             if ref is not None and item.visual_baseline is not None:
                 # The visual-baseline lane is unchanged: it is admitted on its own schedule and
                 # eligibility, never on the floor, and keeps its old cost path. Scoring it as an act
@@ -772,6 +788,12 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 elif (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
                         or self._act_in_flight(ref, item)):
                     act_in_flight.add(item.dispatch_id)
+                else:
+                    # Self-monitor E1, last: a probe is only spent on a candidate nothing else holds.
+                    # Only ever ADDS a refusal; unknown state admits with no ledger read.
+                    refusal = self._self_monitor_gate_refusal(gate, item, ref, gate_now)
+                    if refusal is not None:
+                        act_held[item.dispatch_id] = refusal
                 act_seen.add(ref)
                 continue
             effect = item.expected_effect
@@ -826,6 +848,10 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                     visual_baseline=item.visual_baseline,
                 )
             )
+            if baseline_ref is not None:
+                refusal = self._self_monitor_gate_refusal(gate, item, baseline_ref, gate_now)
+                if refusal is not None:
+                    act_held[item.dispatch_id] = refusal
 
         # PER-CANDIDATE SCORES, not just the refusal histogram. The aggregate
         # `refusals={'unmeasurable': 2}` says two things were unmeasurable, never
@@ -922,6 +948,23 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 self._notify_all_refused_cleared(self._all_refused_consecutive_ticks)
             self._all_refused_consecutive_ticks = 0
         return allocation
+
+    def _self_monitor_gate_refusal(self, gate, item, ref: ActRef, now: datetime) -> str | None:
+        """``track_record_failing`` when the self-monitor holds this act's faculty failing and the
+        window's probe is spent; else None. Every route's live object refs are instance ids (a run,
+        session or URL), so the faculty is the base ``act.<actor>.<verb>`` key; an empty object_ref
+        names exactly that (orion/self_monitor/adapters.act_faculty)."""
+        if gate is None:
+            return None
+        try:
+            decision = gate.decide(ref.actor, ref.verb, "", now=now)
+        except Exception:
+            # One direction only: a gate fault never refuses anything.
+            logger.warning("self_monitor_gate_failed actor=%s verb=%s", ref.actor, ref.verb, exc_info=True)
+            return None
+        if decision.probe or not decision.admit:
+            self._last_gate_labels[item.dispatch_id] = decision.label()
+        return None if decision.admit else TRACK_RECORD_FAILING_REASON
 
     def _act_refs_by_cortex_verb(self) -> dict[str, ActRef]:
         if not getattr(self._settings, "orion_dispatch_act_candidates_enabled", False):
@@ -1624,8 +1667,12 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             try:
                 allocation = self._log_allocator_preview(frame, motor)
                 act_reasons = dict(getattr(self, "_last_act_reasons", None) or {})
-                for dispatch_id, extra in (getattr(self, "_last_proven_reasons", None) or {}).items():
-                    act_reasons[dispatch_id] = [act_reasons[dispatch_id], extra] if dispatch_id in act_reasons else [extra]
+                for extras in (getattr(self, "_last_proven_reasons", None) or {},
+                               getattr(self, "_last_gate_labels", None) or {}):
+                    for dispatch_id, extra in extras.items():
+                        prior = act_reasons.get(dispatch_id)
+                        act_reasons[dispatch_id] = ([*prior, extra] if isinstance(prior, list)
+                                                    else [prior, extra] if prior is not None else [extra])
                 if act_reasons:
                     # The act-backed expectation the allocator scored on, on every saved copy of
                     # the candidate (admitted, refused or held back): the frame says what this act

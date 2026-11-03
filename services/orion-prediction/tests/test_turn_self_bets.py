@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import app.turn_self_bets as tsb
-from app.turn_self_bets import FACULTIES, TurnSelfBets, caller_of, grade_faculty, live_summary, settle
+from app.turn_self_bets import FACULTIES, SizeHistory, TurnSelfBets, caller_of, grade_faculty, live_summary, settle
 
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
 PRED = {"asks_question_p": 0.1, "fetches_outside_p": 0.9, "steps_lo": 3, "steps_hi": 5,
@@ -31,6 +31,9 @@ def _by(rows):
 def test_a_turn_that_went_as_predicted_upholds_every_faculty():
     rows = _by(settle(_bet(), _art(), NOW))
     assert set(rows) == set(FACULTIES)
+    # A v1 bet states no relative faculty; the size it would compare is still recorded.
+    assert rows["turn.self.more_steps_than_usual"]["void_reason"] == "ungradeable_no_stated"
+    assert rows["turn.self.more_steps_than_usual"]["observed"] == 4.0
     assert rows["turn.self.steps"]["status"] == rows["turn.self.reply_length"]["status"] == "upheld"
     # A 10% bet on a question that was not asked is settled, not broken.
     assert rows["turn.self.asks_question"]["status"] == "not_happened"
@@ -179,6 +182,10 @@ class FakeStore:
         self.rows.update({r["bet_id"]: r for r in new})
         return len(new)
 
+    def turn_size_history(self, since):
+        return [r for r in self.rows.values() if r["faculty"] in tsb.SIZE_FACULTIES
+                and r["observed"] is not None and r["placed_at"] >= since]
+
     def turn_self_bets(self, since, limit=20000):
         return [r for r in self.rows.values() if r["placed_at"] >= since][:limit]
 
@@ -189,7 +196,7 @@ def test_settle_pass_writes_finished_turns_once_and_leaves_running_ones():
     store = FakeStore(pending)
     svc = TurnSelfBets(store, clock=lambda: NOW)
     out = svc.settle_pending()
-    assert out == {"at": NOW, "read": 3, "settled_turns": 2, "waiting": 1, "rows_written": 8}
+    assert out == {"at": NOW, "read": 3, "settled_turns": 2, "waiting": 1, "rows_written": 12}
     assert svc.settle_pending()["rows_written"] == 0     # idempotent: settled turns are not read again
     live = svc.live(force=True)
     assert live["faculties"]["turn.self.steps"]["counts"] == {"upheld": 1, "expired_unsettled": 1}
@@ -208,3 +215,59 @@ def test_live_grades_a_rolling_window_so_old_prompt_bets_age_out():
 def test_bets_older_than_the_lookback_are_not_read(monkeypatch):
     store = FakeStore([dict(_bet("old", age=tsb.LOOKBACK + timedelta(days=1)), run_artifact=_art())])
     assert TurnSelfBets(store, clock=lambda: NOW).settle_pending()["read"] == 0
+
+
+PRED_V2 = {"schema_version": "turn.self_prediction.v2", "asks_question_p": 0.1, "fetches_outside_p": 0.9,
+           "more_steps_than_usual_p": 0.7, "longer_reply_than_usual_p": 0.2}
+
+
+def test_a_v2_bet_settles_bigger_than_usual_against_the_reference():
+    rows = _by(settle(_bet(pred=PRED_V2), _art(steps=9), NOW,
+                      {"turn.self.steps": 8.0, "turn.self.reply_length": float(len(REPLY))}))
+    more, longer = rows["turn.self.more_steps_than_usual"], rows["turn.self.longer_reply_than_usual"]
+    assert (more["status"], more["hit"], more["stated_p"], more["reference"], more["observed"]) == \
+        ("happened", True, 0.7, 8.0, 9.0)
+    # Exactly the usual size is not bigger than usual.
+    assert (longer["status"], longer["hit"]) == ("not_happened", False)
+    # v2 states no range, but the turn's sizes stay on the range rows as reference history.
+    assert rows["turn.self.steps"]["void_reason"] == "ungradeable_no_stated"
+    assert rows["turn.self.steps"]["observed"] == 9.0
+
+
+def test_no_reference_is_void_never_guessed():
+    rows = _by(settle(_bet(pred=PRED_V2), _art(), NOW))
+    assert rows["turn.self.more_steps_than_usual"]["void_reason"] == "ungradeable_no_reference"
+    assert rows["turn.self.more_steps_than_usual"]["hit"] is None
+
+
+def _hist(n, size, caller="orion_curiosity", start=NOW - timedelta(days=1)):
+    return [{"caller": caller, "faculty": "turn.self.steps", "placed_at": start + timedelta(minutes=i),
+             "observed": size} for i in range(n)]
+
+
+def test_reference_uses_only_earlier_turns_inside_the_window():
+    h = SizeHistory(_hist(20, 10.0) + _hist(20, 1000.0, start=NOW - tsb.REFERENCE_WINDOW - timedelta(days=1))
+                    + _hist(20, 1000.0, start=NOW))   # too old, and not yet placed at bet time
+    assert h.reference("orion_curiosity", "turn.self.steps", NOW) == 10.0
+    assert h.reference("chat", "turn.self.steps", NOW) is None       # per caller
+    assert SizeHistory(_hist(19, 10.0)).reference("orion_curiosity", "turn.self.steps", NOW) is None
+
+
+def test_a_settle_pass_builds_the_reference_from_earlier_turns_never_the_turn_itself():
+    # 25 earlier v1 turns of 10 steps, then a v2 turn of 11 steps: its reference is 10, not a median
+    # including its own 11, and it is bigger than usual.
+    pending = [dict(_bet(f"old{i}", age=timedelta(hours=5, minutes=-i)), run_artifact=_art(steps=10))
+               for i in range(25)]
+    pending.append(dict(_bet("new", pred=PRED_V2, age=timedelta(minutes=5)), run_artifact=_art(steps=11)))
+    store = FakeStore(pending)
+    TurnSelfBets(store, clock=lambda: NOW).settle_pending()
+    row = store.rows["new:turn.self.more_steps_than_usual"]
+    assert (row["reference"], row["hit"], row["status"]) == (10.0, True, "happened")
+    assert store.rows["old0:turn.self.more_steps_than_usual"]["void_reason"] == "ungradeable_no_stated"
+
+
+def test_relative_faculties_are_graded_as_probabilities():
+    rows = [{"faculty": "turn.self.more_steps_than_usual", "caller": "self", "status": "happened" if h else "not_happened",
+             "void_reason": None, "stated_p": 0.8 if h else 0.2, "hit": h} for h in [True, False] * 30]
+    g = grade_faculty("turn.self.more_steps_than_usual", rows)
+    assert g["brier"] == pytest.approx(0.04) and g["skill_vs_caller"] == pytest.approx(1 - 0.04 / 0.25)

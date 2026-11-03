@@ -8,12 +8,21 @@ turn's own record (``harness_turn_trace.run_artifact``) and grades Orion's calib
 Unlike action bets, the probability here is Orion's own stated number; the service does not compute
 it. What the service owns is the settling rule and the grade.
 
-Four faculties per turn, one row each (bet_id ``<correlation_id>:<faculty>``):
+Six faculties per turn, one row each (bet_id ``<correlation_id>:<faculty>``):
 
-    turn.self.asks_question    p      hit when the reply's last 300 characters contain "?"
-    turn.self.fetches_outside  p      hit when source_fetches is non-empty
-    turn.self.steps            range  hit when steps_lo <= step_count <= steps_hi
-    turn.self.reply_length     range  hit when reply_chars_lo <= len(final_text) <= reply_chars_hi
+    turn.self.asks_question            p      hit when the reply's last 300 characters contain "?"
+    turn.self.fetches_outside          p      hit when source_fetches is non-empty
+    turn.self.steps                    range  hit when steps_lo <= step_count <= steps_hi        (bet v1)
+    turn.self.reply_length             range  hit when reply_chars_lo <= len(final_text) <= reply_chars_hi (v1)
+    turn.self.more_steps_than_usual    p      hit when step_count > reference                    (bet v2)
+    turn.self.longer_reply_than_usual  p      hit when len(final_text) > reference               (bet v2)
+
+v2 replaced the size ranges, right 1-8% of the time against a stated 80%, with "bigger than usual?"
+(spec 2026-11-02-turn-self-bets-relative-size-design.md). ``reference`` is the median true size of the
+same caller's executed turns placed in the REFERENCE_WINDOW strictly before this bet. Stance never sees
+it, so a constant guess at the caller's own rate scores exactly 0 skill. ``observed`` holds what the
+turn did whenever it executed, even when no bet was stated for that faculty: the size rows of every
+executed turn are the reference history, whichever bet version placed them.
 
 "?" is a crude stand-in for "asks a question". It is the first thing to replace, and it must not
 grow into a word list.
@@ -26,7 +35,9 @@ outcome fell inside) or ``broken``. Void rows never count toward a grade:
     ungradeable_bad_record  the bet or the turn record is not a JSON object (one bad row must not stall
                             every later pass, so it settles void instead of raising)
     expired_unsettled       no turn record EXPIRY after the bet
-    ungradeable_no_stated   stance stated nothing for this faculty (A1 never fills a value in)
+    ungradeable_no_stated   stance stated nothing for this faculty (A1 never fills a value in; a v1 bet
+                            states no relative faculty, a v2 bet no range)
+    ungradeable_no_reference  fewer than MIN_REFERENCE earlier executed turns of this caller in the window
 
 Grades, per faculty and per caller (session_id prefix: world-pulse, curiosity, self, ...; a bare UUID
 session is a chat session, ``chat``; no session id is ``unknown``):
@@ -40,6 +51,7 @@ session is a chat session, ``chat``; no session id is ``unknown``):
 """
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 import statistics
@@ -64,10 +76,18 @@ VERDICT_ROWS = 20000
 # example (real turns: median 14), and bets placed before that grade a different question.
 LIVE_WINDOW = timedelta(days=7)
 
+REFERENCE_WINDOW = timedelta(days=7)
+MIN_REFERENCE = 20              # earlier executed turns of the caller needed before "usual" means anything
+
 P_FACULTIES = {"turn.self.asks_question": "asks_question_p", "turn.self.fetches_outside": "fetches_outside_p"}
 RANGE_FACULTIES = {"turn.self.steps": ("steps_lo", "steps_hi"),
                    "turn.self.reply_length": ("reply_chars_lo", "reply_chars_hi")}
-FACULTIES = tuple(P_FACULTIES) + tuple(RANGE_FACULTIES)
+# relative faculty -> (stated key, the size faculty whose observed value it compares to its reference)
+RELATIVE_FACULTIES = {"turn.self.more_steps_than_usual": ("more_steps_than_usual_p", "turn.self.steps"),
+                      "turn.self.longer_reply_than_usual": ("longer_reply_than_usual_p", "turn.self.reply_length")}
+SIZE_FACULTIES = tuple(RANGE_FACULTIES)
+PROBABILITY_GRADED = set(P_FACULTIES) | set(RELATIVE_FACULTIES)
+FACULTIES = tuple(P_FACULTIES) + tuple(RANGE_FACULTIES) + tuple(RELATIVE_FACULTIES)
 _CALLER = re.compile(r"^[a-z_]+")
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
@@ -112,10 +132,14 @@ def observe(artifact: dict | None) -> tuple[str | None, dict]:
     }
 
 
-def settle(bet: dict, artifact: dict | None, now: datetime) -> list[dict] | None:
+def settle(bet: dict, artifact: dict | None, now: datetime,
+           references: dict[str, float | None] | None = None) -> list[dict] | None:
     """Rows for one turn's bet, or None while it may still settle (no record yet, not expired).
 
-    ``bet``: correlation_id, session_id, created_at (aware), self_prediction (dict)."""
+    ``bet``: correlation_id, session_id, created_at (aware), self_prediction (dict).
+    ``references``: size faculty -> the caller's usual size before this bet (SizeHistory.reference);
+    missing or None -> the relative faculties are void ``ungradeable_no_reference``."""
+    references = references or {}
     pred = bet.get("self_prediction") or {}
     void, obs = observe(artifact)
     if not isinstance(pred, dict):
@@ -130,8 +154,15 @@ def settle(bet: dict, artifact: dict | None, now: datetime) -> list[dict] | None
     rows = []
     for faculty in FACULTIES:
         row = dict(base, bet_id=f"{bet['correlation_id']}:{faculty}", faculty=faculty,
-                   stated_p=None, stated_lo=None, stated_hi=None, observed=None, hit=None, void_reason=None)
-        if faculty in P_FACULTIES:
+                   stated_p=None, stated_lo=None, stated_hi=None, observed=None, reference=None, hit=None,
+                   void_reason=None)
+        if faculty in RELATIVE_FACULTIES:
+            key, size_faculty = RELATIVE_FACULTIES[faculty]
+            row["claim_kind"] = "probability"
+            row["stated_p"] = _num(pred.get(key))
+            row["reference"] = references.get(size_faculty)
+            stated = row["stated_p"] is not None
+        elif faculty in P_FACULTIES:
             row["claim_kind"] = "probability"
             row["stated_p"] = _num(pred.get(P_FACULTIES[faculty]))
             stated = row["stated_p"] is not None
@@ -140,15 +171,20 @@ def settle(bet: dict, artifact: dict | None, now: datetime) -> list[dict] | None
             lo_key, hi_key = RANGE_FACULTIES[faculty]
             row["stated_lo"], row["stated_hi"] = _num(pred.get(lo_key)), _num(pred.get(hi_key))
             stated = row["stated_lo"] is not None and row["stated_hi"] is not None
-        value = obs.get(faculty)
+        value = obs.get(RELATIVE_FACULTIES[faculty][1] if faculty in RELATIVE_FACULTIES else faculty)
+        if not void and value is not None:
+            row["observed"] = float(value)   # what the turn did, recorded even when nothing was stated
         if void:
             row["void_reason"] = void
         elif not stated:
             row["void_reason"] = "ungradeable_no_stated"
         elif value is None:
             row["void_reason"] = "ungradeable_no_outcome"
+        elif faculty in RELATIVE_FACULTIES and row["reference"] is None:
+            row["void_reason"] = "ungradeable_no_reference"
+        elif faculty in RELATIVE_FACULTIES:
+            row["hit"] = value > row["reference"]   # strictly: a turn at the usual size is not bigger
         else:
-            row["observed"] = float(value)
             row["hit"] = (bool(value) if row["claim_kind"] == "probability"
                           else row["stated_lo"] <= value <= row["stated_hi"])
         if row["void_reason"]:
@@ -159,6 +195,27 @@ def settle(bet: dict, artifact: dict | None, now: datetime) -> list[dict] | None
             row["status"] = "upheld" if row["hit"] else "broken"
         rows.append(row)
     return rows
+
+
+class SizeHistory:
+    """Executed turns' true sizes per (caller, size faculty), for the relative bets' reference."""
+
+    def __init__(self, rows: Iterable[dict] = ()):
+        self._by: dict[tuple[str, str], list[tuple[datetime, float]]] = defaultdict(list)
+        for r in rows:
+            self.add(r["caller"], r["faculty"], r["placed_at"], r["observed"])
+
+    def add(self, caller: str, faculty: str, placed_at: datetime, observed: float | None) -> None:
+        if faculty in SIZE_FACULTIES and observed is not None:
+            bisect.insort(self._by[(caller, faculty)], (placed_at, float(observed)))   # kept in time order
+
+    def reference(self, caller: str, faculty: str, before: datetime) -> float | None:
+        """Median size of the caller's turns placed in [before - REFERENCE_WINDOW, before); the bet's
+        own turn is never in it. None below MIN_REFERENCE turns."""
+        rows = self._by.get((caller, faculty), [])
+        lo = bisect.bisect_left(rows, (before - REFERENCE_WINDOW,))
+        hi = bisect.bisect_left(rows, (before,))   # strictly before: a turn placed at `before` is excluded
+        return statistics.median(x for _, x in rows[lo:hi]) if hi - lo >= MIN_REFERENCE else None
 
 
 # --- grading ---------------------------------------------------------------------------------------
@@ -202,7 +259,7 @@ def _grade_range(rows: list[dict]) -> dict:
 
 def grade_faculty(faculty: str, rows: list[dict]) -> dict:
     graded = [r for r in rows if r["status"] != "void"]
-    out = _grade_p(graded) if faculty in P_FACULTIES else _grade_range(graded)
+    out = _grade_p(graded) if faculty in PROBABILITY_GRADED else _grade_range(graded)
     if out.get("n", 0) < MIN_REPORTED:
         # Below the floor a grade is noise: keep the count, drop the numbers.
         out = {"n": out.get("n", 0), "enough": False}
@@ -244,13 +301,19 @@ class TurnSelfBets:
         """One pass: read unsettled bets with their turn records, write rows for every bet that can settle."""
         now = self.clock()
         pending = self.store.pending_turn_self_bets(now - LOOKBACK, PENDING_LIMIT)
+        history = SizeHistory(self.store.turn_size_history(
+            min((b["created_at"] for b in pending), default=now) - REFERENCE_WINDOW) if pending else ())
         rows, waiting = [], 0
-        for bet in pending:
-            settled = settle(bet, bet.get("run_artifact"), now)
+        for bet in pending:   # oldest first, so a turn settled in this pass is history for later ones
+            caller = caller_of(bet.get("session_id"))
+            refs = {f: history.reference(caller, f, bet["created_at"]) for f in SIZE_FACULTIES}
+            settled = settle(bet, bet.get("run_artifact"), now, refs)
             if settled is None:
                 waiting += 1
-            else:
-                rows.extend(settled)
+                continue
+            rows.extend(settled)
+            for r in settled:
+                history.add(r["caller"], r["faculty"], r["placed_at"], r["observed"])
         written = self.store.insert_turn_self_bets(rows) if rows else 0
         self.last_pass = {"at": now, "read": len(pending), "settled_turns": len(rows) // len(FACULTIES),
                           "waiting": waiting, "rows_written": written}

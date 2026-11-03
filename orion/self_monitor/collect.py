@@ -31,6 +31,13 @@ SOURCES: tuple[tuple[str, str, Adapter], ...] = (
      "SELECT bet_id, faculty, claim_kind, placed_at, settled_at, status, void_reason, stated_p, coverage "
      "FROM prediction_turn_self_bet WHERE settled_at >= :since",
      adapters.turn_self_bet),
+    ("prediction_turn_run",
+     "SELECT correlation_id, min(placed_at) AS placed_at, max(settled_at) AS settled_at, "
+     "bool_and(status = 'void' AND void_reason = 'failed_to_execute') AS failed "
+     "FROM prediction_turn_self_bet WHERE settled_at >= :since AND correlation_id IS NOT NULL "
+     "AND NOT (status = 'void' AND void_reason IN ('ungradeable_no_stated', 'ungradeable_bad_record', 'expired_unsettled')) "
+     "GROUP BY correlation_id",
+     adapters.turn_run),
     ("prediction_action_bet",
      "SELECT bet_id, domain, skill, p, placed_at, settled_at, result FROM prediction_action_bet "
      "WHERE settled_at >= :since",

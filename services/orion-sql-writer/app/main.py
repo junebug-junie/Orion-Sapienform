@@ -19,6 +19,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sql-writer")
 
+_OFFICE_ENV_REQUIRED_COLUMN_SHAPES = {
+    "office_eco2_ppm": ("integer", "YES"),
+    "office_tvoc_ppb": ("integer", "YES"),
+    "air_warming": ("boolean", "YES"),
+}
+
+
+def _ensure_office_env_columns() -> None:
+    """Establish the columns required by the live office-sample write path.
+
+    These statements deliberately have their own transaction and no warning-only
+    exception handler. If a deploy overlaps a long-held table lock, startup must
+    fail before Hunter subscribes rather than route every office sample into the
+    fallback table with ``UndefinedColumn``.
+    """
+    with engine.begin() as conn:
+        ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_eco2_ppm INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_tvoc_ppb INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS air_warming BOOLEAN;")
+        actual_shapes = {
+            row[0]: (row[1], row[2])
+            for row in conn.exec_driver_sql(
+                """
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'office_env_sample'
+                """
+            ).fetchall()
+        }
+        invalid = {
+            column: {"expected": expected, "actual": actual_shapes.get(column)}
+            for column, expected in _OFFICE_ENV_REQUIRED_COLUMN_SHAPES.items()
+            if actual_shapes.get(column) != expected
+        }
+        if invalid:
+            raise RuntimeError(f"office_env_sample required column shape mismatch after boot DDL: {invalid}")
+    logger.info(
+        "office_env_sample required columns ensured; boot DDL ran=%d skipped=%d",
+        ddl.ran,
+        ddl.skipped,
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,6 +72,8 @@ async def lifespan(app: FastAPI):
         logger.info("🛠️  Ensured DB schema is present")
     except Exception as e:
         logger.warning("Schema init warning: %s", e)
+
+    _ensure_office_env_columns()
 
     try:
         with engine.begin() as conn:
@@ -68,16 +114,6 @@ async def lifespan(app: FastAPI):
             )
             ddl(
                 "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS sample_age_sec DOUBLE PRECISION;"
-            )
-            # Same hazard: OfficeEnvSampleSQL declares the CCS811 columns (pan-1 air quality).
-            ddl(
-                "ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_eco2_ppm INTEGER;"
-            )
-            ddl(
-                "ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_tvoc_ppb INTEGER;"
-            )
-            ddl(
-                "ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS air_warming BOOLEAN;"
             )
             ddl(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
@@ -1217,9 +1253,9 @@ app.include_router(notify_router, prefix="/api/notify-read", tags=["notify-read"
 
 @app.get("/health")
 def health():
-    from app.grammar_truth import build_grammar_truth_snapshot
+    from app.grammar_truth import build_grammar_operational_snapshot
 
-    snap = build_grammar_truth_snapshot()
+    snap = build_grammar_operational_snapshot()
     return {
         "ok": snap["ok"],
         "degraded": snap["degraded"],

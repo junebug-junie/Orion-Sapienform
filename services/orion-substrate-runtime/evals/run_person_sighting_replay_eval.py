@@ -75,17 +75,22 @@ def replay(sightings: Sightings, *, start: datetime, end: datetime,
     materializer = SubstrateGraphMaterializer(store=store)
     named_at = start - timedelta(days=1)
     persons = [PersonRow(pid, names.get(pid, pid), "active", named_at) for pid in sorted(sightings)]
+    referent = _referent_node(named_at)
+    materializer.apply_record(_record_of(referent))
     for p in persons:
         materializer.apply_record(_record_of(person_node(p, now=named_at)))
         for iid in sorted(sightings[p.person_id]):
-            materializer.apply_record(map_vision_individual_label_to_substrate(
+            # Today's live shape: no half-life and no label_set_at. The first pass upgrades it.
+            materializer.apply_record(_record_of(_legacy_shape(map_vision_individual_label_to_substrate(
                 individual_id=iid, label=p.display_name, kind="person", ask_id=f"ask-{iid}",
-                answered_at=named_at))
+                answered_at=named_at).nodes[0])))
+            _link_fenced(store, entity_node_id_for_individual(iid), p.person_id, referent.node_id, named_at)
     engine = SubstrateDynamicsEngine(store=store)
+    # Before ANY tick: a broken fence lifts the target on the very first one.
+    fenced_ids = [p.person_id for p in persons] + [referent.node_id]
+    fenced_before = {nid: store.get_node_by_id(nid).signals.activation.model_dump() for nid in fenced_ids}
     # Birth tick at naming, as live: every cluster takes its frozen 0.625-shaped seed.
     engine.tick(now=named_at + timedelta(minutes=1))
-    fenced_before = {p.person_id: store.get_node_by_id(p.person_id).signals.activation.model_dump()
-                     for p in persons}
 
     clusters = {iid: pid for pid, by in sightings.items() for iid in by}
     active: dict[str, set[datetime]] = defaultdict(set)
@@ -103,7 +108,7 @@ def replay(sightings: Sightings, *, start: datetime, end: datetime,
                 new_sighting = True
             prev_seen[iid] = seen
             links.append(LinkRow(f"l-{iid}", pid, iid, last_seen_at=seen))
-        written = asyncio.run(_refresh_sightings(persons, links, store=store))
+        written, _ = asyncio.run(_refresh_sightings(persons, links, store=store))
         if passes > 0 and not new_sighting and written:
             flood_writes += written
         passes += 1
@@ -115,8 +120,7 @@ def replay(sightings: Sightings, *, start: datetime, end: datetime,
                 active[pid].add(hour)
         t += STEP
 
-    fenced_after = {p.person_id: store.get_node_by_id(p.person_id).signals.activation.model_dump()
-                    for p in persons}
+    fenced_after = {nid: store.get_node_by_id(nid).signals.activation.model_dump() for nid in fenced_ids}
     hours = {pid: len(active.get(pid, ())) for pid in sightings}
     total = sum(hours.values())
     shares = {pid: (h / total if total else 0.0) for pid, h in hours.items()}
@@ -142,6 +146,51 @@ def replay(sightings: Sightings, *, start: datetime, end: datetime,
         "fenced_changed": sorted(pid for pid in fenced_before if fenced_before[pid] != fenced_after[pid]),
         "not_resting": not_resting,
     }
+
+
+REFERENT_ID = "referent-replay-0000"
+
+
+def _referent_node(at: datetime) -> Any:
+    """A chat referent (people.yaml person) like Juniper's: fenced by its producer."""
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1, SubstrateProvenanceV1, SubstrateTemporalWindowV1
+
+    return EntityNodeV1(
+        node_id=REFERENT_ID, label="Referent", entity_type="person", anchor_scope="world",
+        subject_ref=f"referent:{REFERENT_ID}", temporal=SubstrateTemporalWindowV1(observed_at=at),
+        provenance=SubstrateProvenanceV1(authority="user_asserted", source_kind="memory_referent",
+                                         source_channel="people.yaml", producer="memory.referents"))
+
+
+def _legacy_shape(node: Any) -> Any:
+    from orion.core.schemas.cognitive_substrate import SubstrateActivationV1
+    from orion.substrate.adapters.vision_individual import LABEL_SET_AT_KEY
+
+    return node.model_copy(update={
+        "metadata": {k: v for k, v in node.metadata.items() if k != LABEL_SET_AT_KEY},
+        "signals": node.signals.model_copy(update={"activation": SubstrateActivationV1()}),
+    })
+
+
+def _link_fenced(store: Any, cluster_id: str, person_id: str, referent_id: str, at: datetime) -> None:
+    """The live edges into fenced nodes: an instance_of claim (semantic_projection) to the person,
+    and a plain, propagating observed_in edge to the referent. Neither may lift its target."""
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1, SubstrateProvenanceV1
+    from orion.substrate.adapters._common import make_temporal
+
+    prov = SubstrateProvenanceV1(authority="user_asserted", source_kind="replay", source_channel="replay",
+                                 producer="replay")
+    for predicate, target, role in (("instance_of", person_id, "semantic_projection"),
+                                    ("observed_in", referent_id, "legacy_unreviewed")):
+        extra = {"assertion_id": f"assertion:{cluster_id}|{target}", "assertion_revision": 1} \
+            if role == "semantic_projection" else {}
+        edge = SubstrateEdgeV1(
+            edge_id=f"replay-{predicate}-{cluster_id}-{target}",
+            source=NodeRefV1(node_id=cluster_id, node_kind="entity"),
+            target=NodeRefV1(node_id=target, node_kind="entity"),
+            predicate=predicate, edge_role=role, temporal=make_temporal(observed_at=at),
+            confidence=0.9, provenance=prov, **extra)
+        store.upsert_edge(identity_key=edge.edge_id, edge=edge)
 
 
 def _record_of(node: Any) -> Any:

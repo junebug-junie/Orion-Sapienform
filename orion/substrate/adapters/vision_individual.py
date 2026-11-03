@@ -227,7 +227,9 @@ def relabelled_individual_entity(existing: EntityNodeV1, node: EntityNodeV1) -> 
     Explicit update, not the materializer: merge_node() keeps the existing label and
     lets existing metadata win, so a rename (even a capitalization-only one) and the
     newest label_ask_id would both be silently dropped. The old name is kept as an
-    alias so recall by it still works. The caller upserts the result."""
+    alias so recall by it still works. observed_at is kept: since 2026-11-03 it is the
+    newest sighting, and a bulk rename must not wake every renamed cluster. The caller
+    upserts the result."""
     aliases: list[str] = []
     for alias in [*existing.aliases, existing.label]:
         if alias and alias != node.label and alias not in aliases:
@@ -246,9 +248,8 @@ def relabelled_individual_entity(existing: EntityNodeV1, node: EntityNodeV1) -> 
             "provenance": node.provenance.model_copy(
                 update={"evidence_refs": sorted({*existing.provenance.evidence_refs, *node.provenance.evidence_refs})}
             ),
-            "temporal": existing.temporal.model_copy(
-                update={"observed_at": max(existing.temporal.observed_at, node.temporal.observed_at)}
-            ),
+            # observed_at is unchanged: it means "last seen" (person_graph_loop _refresh_sightings),
+            # and a rename is not a sighting. label_set_at carries the rename time.
             "signals": existing.signals.model_copy(
                 update={"confidence": max(existing.signals.confidence, node.signals.confidence),
                         "activation": _sighting_activation(existing.signals)}

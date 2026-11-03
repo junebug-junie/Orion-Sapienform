@@ -117,8 +117,9 @@ def _store_with(node: EntityNodeV1) -> InMemorySubstrateGraphStore:
 def _refresh(store, last_seen_at, *, iid: str = "c1", person: str = SAM) -> int:
     from app.person_graph_loop import LinkRow, PersonRow, _refresh_sightings
 
-    return asyncio.run(_refresh_sightings([PersonRow(person, "Sam")],
-                                          [LinkRow("l1", person, iid, last_seen_at=last_seen_at)], store=store))
+    refreshed, _ = asyncio.run(_refresh_sightings(
+        [PersonRow(person, "Sam")], [LinkRow("l1", person, iid, last_seen_at=last_seen_at)], store=store))
+    return refreshed
 
 
 def _activation(store, iid: str = "c1") -> float:
@@ -206,7 +207,91 @@ def test_copied_unlinked_and_not_a_person_clusters_are_not_refreshed():
     links = [LinkRow("l1", SAM, "c1", label_copied=True, last_seen_at=SEEN),
              LinkRow("l2", ROBIN, "c2", last_seen_at=SEEN),
              LinkRow("l3", "person-gone", "c3", last_seen_at=SEEN)]
-    assert asyncio.run(_refresh_sightings(persons, links, store=store)) == 0
+    assert asyncio.run(_refresh_sightings(persons, links, store=store)) == (0, 0)
+
+
+def test_named_clusters_outside_the_live_links_get_the_half_life_only():
+    """Review 2026-11-03: belonging-linked, not_a_person and unlinked named clusters kept the
+    frozen 0.625 forever (6 live). They rest now; their observed_at does not move."""
+    from app.person_graph_loop import LinkRow, PersonRow, _refresh_sightings
+
+    store = _store_with(_legacy_cluster("c1"))
+    for iid in ("c2", "c3"):
+        SubstrateGraphMaterializer(store=store).apply_record(SubstrateGraphRecordV1(
+            anchor_scope="world", subject_ref=f"vision_individual:{iid}", nodes=[_legacy_cluster(iid)]))
+    engine = SubstrateDynamicsEngine(store=store)
+    engine.tick(now=NAMED + timedelta(minutes=1))
+    links = [LinkRow("l1", SAM, "c1", last_seen_at=SEEN)]
+    out = asyncio.run(_refresh_sightings([PersonRow(SAM, "Sam")], links, store=store,
+                                         named_cluster_ids=("c1", "c2", "c3", "c-no-node")))
+    assert out == (1, 2)
+    for iid in ("c2", "c3"):
+        node = store.get_node_by_id(entity_node_id_for_individual(iid))
+        assert node.temporal.observed_at == NAMED
+        assert node.signals.activation.decay_half_life_seconds == SIGHTING_HALF_LIFE_SECONDS
+    assert asyncio.run(_refresh_sightings([PersonRow(SAM, "Sam")], links, store=store,
+                                          named_cluster_ids=("c1", "c2", "c3"))) == (0, 0)
+    engine.tick(now=SEEN)
+    assert _activation(store, "c2") <= 0.08 and _activation(store, "c3") <= 0.08
+
+
+def test_the_refresh_names_activation_state_as_not_owned():
+    """The refresh writes back the activation it just read, so comparing values cannot tell a
+    skipped write from an unskipped one. Check the contract on the write itself."""
+    from orion.substrate.falkor_codec import ACTIVATION_STATE_KEYS
+
+    store = _store_with(_legacy_cluster())
+    calls = []
+    real = store.upsert_node
+
+    def recording(**kw):
+        calls.append(kw.get("skip_metadata_keys") or frozenset())
+        return real(**kw)
+
+    store.upsert_node = recording
+    assert _refresh(store, SEEN) == 1
+    assert calls and all(ACTIVATION_STATE_KEYS <= keys for keys in calls)
+
+
+def test_a_rename_is_not_a_sighting():
+    """Review 2026-11-03: a rename used to move observed_at to the answer time, which now
+    reads as "seen" and would wake every cluster of a bulk rename."""
+    from orion.substrate.adapters.vision_individual import relabelled_individual_entity
+
+    store = _store_with(_legacy_cluster())
+    engine = SubstrateDynamicsEngine(store=store)
+    engine.tick(now=NAMED + timedelta(minutes=1))
+    engine.tick(now=SEEN)   # still the frozen value: no half-life yet
+    existing = store.get_node_by_id(entity_node_id_for_individual("c1"))
+    renamed = relabelled_individual_entity(existing, _cluster(label="Robin", answered_at=SEEN))
+    assert renamed.temporal.observed_at == existing.temporal.observed_at
+    assert label_set_at(renamed) == SEEN
+    from orion.substrate.falkor_codec import ACTIVATION_STATE_KEYS, EXTERNALLY_OWNED_METADATA_KEYS
+    store.upsert_node(identity_key=None, node=renamed,
+                      skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS | ACTIVATION_STATE_KEYS)
+    engine.tick(now=SEEN + timedelta(minutes=10))
+    assert _activation(store) <= 0.08
+
+
+def test_day_node_no_longer_holds_a_frozen_value():
+    """Pins the day node's response. The tick decays propagated input by the TARGET's own age,
+    and a day node's observed_at is the day's start, so its echo of a sighting is small; it no
+    longer holds the frozen 0.3. The cluster carries the "seen recently" signal (the spec says
+    not to count the day node as separate evidence)."""
+    store = _store_with(_legacy_cluster())
+    day = map_walkway_day_seen_to_substrate(
+        stream_id="walkway", day=SEEN.date(), line="Sam at 17:22",
+        seen=[(entity_node_id_for_individual("c1"), "Sam", "17:22")],
+        observed_at=SEEN.replace(hour=6, minute=0))
+    SubstrateGraphMaterializer(store=store).apply_record(day)
+    _refresh(store, SEEN)
+    engine = SubstrateDynamicsEngine(store=store)
+    engine.tick(now=SEEN + timedelta(minutes=5))
+    day_id = day.nodes[0].node_id
+    assert _activation(store) >= 0.5
+    assert store.get_node_by_id(day_id).signals.activation.activation < 0.2
+    engine.tick(now=SEEN + timedelta(hours=20))
+    assert store.get_node_by_id(day_id).signals.activation.activation <= 0.08
 
 
 # --- acceptance 6 + kill switch: through the full pass --------------------------------------
@@ -309,12 +394,18 @@ def test_the_loop_hands_the_flag_to_the_pass(monkeypatch):
         seen: list[bool] = []
         stop = asyncio.Event()
 
-        async def _fake_sync(*, refresh_sightings, **_kw):
+        async def _fake_sync(*, refresh_sightings, named_cluster_ids, **_kw):
             seen.append(refresh_sightings)
+            assert named_cluster_ids == (("c1",) if refresh_sightings else ())
             stop.set()
 
         monkeypatch.setitem(sys.modules, "asyncpg", types.SimpleNamespace(create_pool=_create_pool))
         monkeypatch.setattr(person_graph_loop, "read_rows", _read_rows)
+
+        async def _read_named(_pool):
+            return ("c1",)
+
+        monkeypatch.setattr(person_graph_loop, "read_named_cluster_ids", _read_named)
         monkeypatch.setattr(person_graph_loop, "sync_person_graph", _fake_sync)
         settings = types.SimpleNamespace(person_graph_enabled=True, person_graph_interval_sec=0.01,
                                          person_sighting_refresh_enabled=flag, postgres_uri="postgresql://x/y")

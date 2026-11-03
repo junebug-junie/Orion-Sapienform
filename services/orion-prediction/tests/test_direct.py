@@ -74,3 +74,36 @@ def test_zoo_adds_direct_models_only_when_the_series_declares_covariates():
         __import__("tests.conftest", fromlist=["REGISTRY_PATH"]).REGISTRY_PATH).get("athena.cabinet_temp_c")
     zoo = build_models(reg_spec, [])
     assert zoo["direct_arx"].uses_covariates and not zoo["direct_ar"].uses_covariates
+
+
+def test_overlap_model_trains_on_the_overlap_and_direct_arx_ignores_the_young_covariate():
+    """A covariate that starts halfway through the window: direct_arx (full-history columns only) is
+    unaffected; direct_arx_overlap trims to the rows where every covariate reads, and refuses until
+    that overlap holds enough complete rows -- it never interpolates the missing days."""
+    from app.direct import direct_arx_overlap
+    idx, y, P = heat_balance(days=8)
+    P = P[:, 0]
+    young = P.copy()
+    young[: len(y) // 2] = np.nan               # sensor installed 4 days in
+    X = np.column_stack([P, young])
+    full = direct_arx(5, cols=(0,))(y, 12, idx, X)
+    assert np.allclose(full, direct_arx(5)(y, 12, idx, P[:, None]))
+    with pytest.raises(ValueError, match="gaps"):
+        direct_arx(5)(y, 12, idx, X)            # all columns: the young one is 50% gaps
+    out = direct_arx_overlap(5)(y, 12, idx, X)
+    assert out.shape == (12,) and np.all(np.isfinite(out))
+    # Only ~1.5 days of overlap: too few complete rows at the 24 h lead -> refused, not invented.
+    X2 = X.copy()
+    X2[: len(y) - 430, 1] = np.nan
+    with pytest.raises(ValueError, match="complete training rows"):
+        direct_arx_overlap(5)(y, 288, idx, X2)
+
+
+def test_zoo_splits_full_and_overlap_covariates():
+    sp = spec(covariates=[])
+    import dataclasses
+    sp2 = dataclasses.replace(sp, covariates=("a.x", "b.y"), overlap_covariates=("b.y",))
+    zoo = build_models(sp2, [])
+    assert {"direct_arx", "direct_arx_overlap"} <= set(zoo)
+    sp3 = dataclasses.replace(sp, covariates=("b.y",), overlap_covariates=("b.y",))
+    assert "direct_arx" not in build_models(sp3, []) and "direct_arx_overlap" in build_models(sp3, [])

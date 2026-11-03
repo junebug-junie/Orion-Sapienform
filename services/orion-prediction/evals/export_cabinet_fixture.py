@@ -1,9 +1,10 @@
 """Export the cabinet replay fixture from production Postgres (read-only), 5-min bucket means.
 
-    python services/orion-prediction/evals/export_cabinet_fixture.py --until 2026-10-15T22:00:00Z
+    python services/orion-prediction/evals/export_cabinet_fixture.py --until 2026-11-03T00:00:00Z
 
 Writes evals/fixtures/cabinet_5min.csv.gz: bucket_start, cabinet_temp_c, chassis_watts, cooling_watts,
-circe_watts, hecate_watts (fleet table; hecate empty before it ran). Outdoor weather is deliberately not
+circe_watts, hecate_watts (fleet table; hecate empty before it ran), office_temp_c (the pan-1 room
+sensor, office_env_sample, online and fresh samples only; empty before it was installed 2026-10-28). Outdoor weather is deliberately not
 exported: an hourly temperature series from a fixed spot narrows down where it is, and this repo is public.
 from 2026-09-26 (the AC install, the registry's train_from) to --until. Runs psql inside the DB container.
 """
@@ -32,12 +33,16 @@ COPY (
     SELECT to_timestamp(floor(extract(epoch FROM observed_at) / 300) * 300) AS bucket,
            avg((measurements_by_node->'circe'->>'chassis_watts')::float) AS circe_watts,
            avg((measurements_by_node->'hecate'->>'chassis_watts')::float) AS hecate_watts
-    FROM orion_biometrics_cluster WHERE observed_at >= '2026-09-26' AND observed_at < '{until}' GROUP BY 1)
+    FROM orion_biometrics_cluster WHERE observed_at >= '2026-09-26' AND observed_at < '{until}' GROUP BY 1),
+  o AS (
+    SELECT to_timestamp(floor(extract(epoch FROM ts) / 300) * 300) AS bucket, avg(office_temp_c) AS office_temp_c
+    FROM office_env_sample WHERE node = 'pan-1' AND sensor_online AND NOT stale AND office_temp_c IS NOT NULL
+      AND ts >= '2026-09-26' AND ts < '{until}' GROUP BY 1)
   SELECT to_char(b.bucket AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bucket_start,
          round(b.cabinet_temp_c::numeric, 3) AS cabinet_temp_c, round(b.chassis_watts::numeric, 1) AS chassis_watts,
          round(c.cooling_watts::numeric, 1) AS cooling_watts, round(f.circe_watts::numeric, 1) AS circe_watts,
-         round(f.hecate_watts::numeric, 1) AS hecate_watts
-  FROM b LEFT JOIN c USING (bucket) LEFT JOIN f USING (bucket) ORDER BY b.bucket
+         round(f.hecate_watts::numeric, 1) AS hecate_watts, round(o.office_temp_c::numeric, 3) AS office_temp_c
+  FROM b LEFT JOIN c USING (bucket) LEFT JOIN f USING (bucket) LEFT JOIN o USING (bucket) ORDER BY b.bucket
 ) TO STDOUT WITH CSV HEADER
 """
 

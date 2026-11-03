@@ -19,7 +19,8 @@ _REPO = Path(__file__).resolve().parents[3]
 _STANCE = _REPO / "orion" / "cognition" / "prompts" / "stance_react.j2"
 _REVERIE = _REPO / "orion" / "cognition" / "prompts" / "reverie_narrate.j2"
 NOW = datetime(2026, 11, 3, 4, 0, tzinfo=timezone.utc)
-_LINE = "My walkway-grade journal runs failed to start 22 of 28 times this week."
+_LINE = ("My walkway-grade journal runs (act.actions.journal.make.walkway_grade) failed to start 22 of 28 times "
+         "this week.")
 
 
 def _state(computed_at: datetime = NOW) -> str:

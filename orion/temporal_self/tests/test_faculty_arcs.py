@@ -108,7 +108,20 @@ def test_arc_carries_over_midnight_with_its_real_start_and_replays_identically()
     (cont,) = faculties(s)
     assert cont.closed_reason == "process_ended" and cont.ended_at == midnight + timedelta(hours=3)
     block = render_closed_day_block(days[0])
-    assert f"Track record: {GRADE} unreliable from 23:00 still so at midnight [arc:{old.arc_id}]." in block.text
+    # Plain name, then the id, then the status (Juniper 2026-11-03); the stored label is unchanged.
+    assert (f"Track record: walkway-grade journal runs ({GRADE}) unreliable from 23:00 still so at midnight "
+            f"[arc:{old.arc_id}].") in block.text
+    assert old.subject_label == f"{GRADE} unreliable" and block.labels[old.subject_label] == [old.arc_id]
+    # The citation gate matches what is shown: a letter naming the faculty by its id or its plain
+    # name without [arc:] reads UNVERIFIED, and with it reads verified.
+    from orion.temporal_self.citations import check_arc_citations
+
+    shown = [k[len("arc:"):] for k in block.records if k.startswith("arc:")]
+    for uncited in (f"My {GRADE} was unreliable all evening.", "My walkway-grade journal runs were unreliable."):
+        _, check = check_arc_citations(uncited, shown, labels=block.labels)
+        assert check.label == "UNVERIFIED", uncited
+    _, check = check_arc_citations(f"My {GRADE} was unreliable [arc:{old.arc_id}].", shown, labels=block.labels)
+    assert check.label == "verified"
     # Folding the same rows twice changes nothing.
     end = midnight + timedelta(hours=4)
     whole = advance_clock(fold(initial_state(), events=e), end)
@@ -123,7 +136,7 @@ def test_recent_arcs_and_citation_truth_name_the_stretch():
     now = at(90)
     s = advance_clock(fold(initial_state(), events=evs(rows)), now)
     recent = project_recent_arcs(build_frame(s, now), now)
-    assert f"track record: {GRADE} broken" in recent.text
+    assert f"track record: walkway-grade journal runs ({GRADE}) broken" in recent.text
     (arc,) = faculties(s)
     facts = {arc.arc_id: ArcFacts.from_row(arc.model_dump(mode="json"))}
     good = f"My track record says the walkway grade was broken from 09:00 to 09:40 [arc:{arc.arc_id}]."

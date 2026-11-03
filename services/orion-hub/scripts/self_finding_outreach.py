@@ -7,7 +7,7 @@ This loop only reads it (``orion.self_monitor.view``: absent, stale or unparseab
 
 Which changes reach Juniper (Juniper, 2026-11-03), and nothing else:
 
-- ``became_broken``: a faculty's held status becomes ``broken`` (most of its tries never ran).
+- ``became_broken``: a faculty's held status becomes ``broken`` (most tries never ran).
 - ``recovered``: ``broken`` or ``unreliable`` -> ``reliable``.
 - ``became_unreliable``: ``reliable`` -> ``unreliable``.
 
@@ -49,6 +49,9 @@ Gates: ``skip_rate_gates`` (no daily cap or cooldown; these are rare); disabled,
 recent chat, quiet hours and arousal ``strained`` still apply, and a held finding waits for a later
 tick. Body economy: the reading door places no bid today, so this door places none either.
 
+Naming: each faculty is named as ``orion.self_monitor.names.named`` (plain words first, the record's
+id after it in brackets; Juniper 2026-11-03), and Orion is asked to name it the same way.
+
 Grounding: the prompt carries only numbers from the faculty's record. Before ``offer_message``
 runs its own signal-name guard, this door refuses a message that names a faculty the bundle is not
 about (``outreach_vocabulary.find_ungrounded_faculty_mentions``), recorded as
@@ -65,6 +68,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
+from orion.self_monitor.names import named
 from orion.self_monitor.view import SELF_MONITOR_REDIS_KEY, parse_state, self_monitor_view
 
 logger = logging.getLogger("orion-hub.self_finding_outreach")
@@ -89,7 +93,7 @@ WHERE result_json->>'source' = 'self_finding_outreach'
 """
 
 _STATUS_WORDS = {
-    "broken": "broken (most of its tries never ran)",
+    "broken": "broken (most tries never ran)",
     "unreliable": "unreliable (it fails more often than it works)",
     "reliable": "reliable (it works)",
     "miscalibrated": "miscalibrated",
@@ -100,13 +104,6 @@ _KIND_WORDS = {
     "became_broken": "became broken",
     "recovered": "recovered",
     "became_unreliable": "stopped being reliable",
-}
-_FAMILY_WORDS = {
-    "act": "an act of yours",
-    "body": "a body skill of yours",
-    "forecast": "a forecast of yours",
-    "turn": "a prediction you make about your own chat turns",
-    "vision": "a vision expectation of yours",
 }
 
 
@@ -200,7 +197,7 @@ def record_facts(record: FacultyRecordV1, window_days: float) -> list[str]:
     attempts = record.n_graded + record.n_failed_to_execute
     window = f"{window_days:g} days"
     if record.n_failed_to_execute and attempts:
-        facts.append(f"In the last {window}, {record.n_failed_to_execute} of its {attempts} tries never ran.")
+        facts.append(f"In the last {window}, {record.n_failed_to_execute} of {attempts} tries never ran.")
     if record.streak_kind == "failed_to_execute" and record.streak_len >= 2:
         facts.append(f"The latest {record.streak_len} tries in a row never ran"
                      + (f" (since {record.streak_since:%Y-%m-%d %H:%M} UTC)." if record.streak_since else "."))
@@ -208,25 +205,20 @@ def record_facts(record: FacultyRecordV1, window_days: float) -> list[str]:
         band = (f" (95% interval {_pct(record.reliability_lo)} to {_pct(record.reliability_hi)})"
                 if record.reliability_lo is not None and record.reliability_hi is not None else "")
         if record.claim_kind == "interval":
-            stated = f"its stated {_pct(record.stated_mean)} ranges" if record.stated_mean is not None else "its ranges"
+            stated = f"the stated {_pct(record.stated_mean)} ranges" if record.stated_mean is not None else "the ranges"
             facts.append(f"Of {record.n_graded} checked tries, {stated} held about "
                          f"{_pct(record.reliability)} of the time{band}.")
         elif record.claim_kind == "success" or record.claim_kind is None:
             ran = "that ran and were checked" if record.n_failed_to_execute else "that were checked"
             facts.append(f"Of {record.n_graded} tries {ran}, about {_pct(record.reliability)} worked{band}.")
         else:
-            stated = f"it said {_pct(record.stated_mean)} on average and " if record.stated_mean is not None else ""
-            facts.append(f"Of {record.n_graded} checked tries, {stated}it came true about "
+            stated = (f"the stated confidence averaged {_pct(record.stated_mean)} and "
+                      if record.stated_mean is not None else "")
+            facts.append(f"Of {record.n_graded} checked tries, {stated}the claim came true about "
                          f"{_pct(record.reliability)} of the time{band}.")
     if record.n_graded or record.n_failed_to_execute:
         facts.append("Recent tries count more than older ones in the percentages; the counts are plain counts.")
     return facts
-
-
-def plain_faculty(faculty: str) -> str:
-    family, _, rest = faculty.partition(".")
-    words = rest.replace(".", " ").replace("_", " ").replace(":", " ").strip()
-    return f"{_FAMILY_WORDS.get(family, 'a faculty of yours')}: \"{words or faculty}\""
 
 
 def evaluate(state: OutreachState, snapshot: SelfMonitorStateV1, *, now: datetime) -> tuple[OutreachState, list[SelfFinding]]:
@@ -319,14 +311,15 @@ def build_self_finding_prompt(findings: list[SelfFinding]) -> str:
         "",
     ]
     for n, f in enumerate(findings, start=1):
-        lines.append(f"{n}. {plain_faculty(f.faculty)} (your record names it {f.faculty}) "
-                     f"{_KIND_WORDS.get(f.kind, f.kind)}.")
+        # Quoted in Orion's own first person: the plain names read after "My " ("my replies").
+        lines.append(f'{n}. "My {named(f.faculty)}" {_KIND_WORDS.get(f.kind, f.kind)}.')
         if f.from_status == UNSEEN:
-            lines.append(f"   Your self-monitor has held it as {_STATUS_WORDS[f.to_status]} since {f.status_since[:16]} UTC "
+            lines.append(f"   Your self-monitor has held this faculty as {_STATUS_WORDS[f.to_status]} since "
+                         f"{f.status_since[:16]} UTC "
                          "(when its record of this faculty began, not necessarily when it broke). "
                          "Juniper has not been told about it before.")
         else:
-            lines.append(f"   It was {_STATUS_WORDS.get(f.from_status, f.from_status)}; since "
+            lines.append(f"   This faculty was {_STATUS_WORDS.get(f.from_status, f.from_status)}; since "
                          f"{f.status_since[:16]} UTC it is {_STATUS_WORDS.get(f.to_status, f.to_status)}.")
         for fact in f.facts:
             lines.append(f"   {fact}")
@@ -338,7 +331,8 @@ def build_self_finding_prompt(findings: list[SelfFinding]) -> str:
         "and state it as fact.",
         "",
         "Write Juniper a short message about this, in your own words. Name the faculty in plain words she "
-        "would understand. Use only the numbers above and do not mention any other faculty. Give it the "
+        "would understand, with its record name in brackets after it, as above. "
+        "Use only the numbers above and do not mention any other faculty. Give it the "
         "size the record gives it. If several things changed, say them as one thought, not a list.",
         "",
         "She has not asked you for this message, so it arrives out of nowhere. Say the thing itself "

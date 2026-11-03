@@ -64,4 +64,4 @@ def test_first_evaluation_of_one_live_shaped_state():
     out = mod.would_tell(mod.held(_states()[0]))
     assert [f["kind"] for f in out["findings"]] == ["became_broken"]
     assert "act.actions.journal.make.walkway_grade" in out["prompt"]
-    assert "10 of its 20 tries never ran" in out["prompt"]
+    assert "10 of 20 tries never ran" in out["prompt"]

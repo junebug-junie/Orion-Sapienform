@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
-from orion.self_monitor.cue import MAX_CHARS, plain_name, project_track_record_cue, sentence
+from orion.self_monitor.cue import MAX_CHARS, named, plain_name, project_track_record_cue, sentence
 from orion.self_monitor.view import self_monitor_view
 
 NOW = datetime(2026, 11, 3, 4, 0, tzinfo=timezone.utc)
@@ -48,8 +48,10 @@ def _cue(*records, computed_at=NOW, now=NOW, **kw):
 
 def test_renders_walkway_broken_and_turn_size_miscalibrated_lines() -> None:
     cue = _cue(WALKWAY, STEPS, CABINET, UNGRADED)
-    assert cue.text.startswith("My walkway-grade journal runs failed to start 22 of 28 times this week.")
-    assert "My guesses about how many steps my turns take hold 6% of the time (I say 80%)." in cue.text
+    assert cue.text.startswith("My walkway-grade journal runs (act.actions.journal.make.walkway_grade) failed to start "
+                                "22 of 28 times this week.")
+    assert ("My guesses about how many steps my turns take (turn.self.steps) hold 6% of the time (I say 80%)."
+            in cue.text)
     assert cue.shown == [WALKWAY.faculty, STEPS.faculty]
     assert cue.text.endswith("I can't grade 1 other thing I do yet.")
     assert cue.skip_reason is None and "cabinet" not in cue.text
@@ -90,13 +92,13 @@ def test_priority_broken_then_unreliable_then_miscalibrated_and_cap() -> None:
     assert cue.shown[:3] == [WALKWAY.faculty, prime.faculty, STEPS.faculty]
     assert cue.lines_dropped == len(many) + 4 - len(cue.shown)
     assert "I can't grade" not in cue.text  # never ahead of a dropped notable line
-    assert "My Prime predictions work 2% of the time (36 tries this week)." in cue.text
+    assert "My Prime predictions (act.prime.predict) work 2% of the time (36 tries this week)." in cue.text
 
 
 def test_equal_evidence_breaks_tie_by_size_of_miss() -> None:
     asks = _rec("turn.self.asks_question", "miscalibrated", claim_kind="event", n_graded=1657,
                 reliability=0.11, stated_mean=0.07, calibrated_share=0.11, calibrated_lo=0.10, calibrated_hi=0.13)
-    cue = _cue(asks, REPLY, STEPS, max_chars=160)
+    cue = _cue(asks, REPLY, STEPS, max_chars=210)
     assert cue.shown == [STEPS.faculty, REPLY.faculty]
 
 
@@ -106,23 +108,39 @@ def test_deterministic_regardless_of_input_order() -> None:
     assert (a.text, a.shown) == (b.text, b.shown)
 
 
-def test_text_carries_no_identifiers() -> None:
+def test_text_names_each_faculty_plain_first_then_its_id() -> None:
     cue = _cue(WALKWAY, STEPS, REPLY, UNGRADED)
+    for faculty in cue.shown:
+        assert f"My {plain_name(faculty)} ({faculty}) " in cue.text
+    prose = cue.text
+    for faculty in cue.shown:
+        prose = prose.replace(f"({faculty})", "")
     for token in ("act.", "turn.self", "_", "forecast.", "faculty"):
-        assert token not in cue.text
+        assert token not in prose  # no identifier outside a shown faculty's own brackets
+
+
+def test_ids_never_push_the_cue_over_its_cap() -> None:
+    long_ids = [_rec(f"act.actions.journal.make.walkway_grade_variant_number_{i}", "broken", n_bets=28, n_graded=6,
+                     n_failed_to_execute=22, execution_failure=0.74, execution_failure_lo=0.55) for i in range(6)]
+    cue = _cue(*long_ids)
+    assert 0 < len(cue.text) <= MAX_CHARS
+    assert cue.lines_dropped == len(long_ids) - len(cue.shown) > 0
+    assert all(cue.text.count(f"({f})") == 1 for f in cue.shown)  # whole lines only, never a cut id
 
 
 def test_every_number_comes_from_the_record() -> None:
-    assert sentence(WALKWAY) == "My walkway-grade journal runs failed to start 22 of 28 times this week."
+    assert sentence(WALKWAY) == ("My walkway-grade journal runs (act.actions.journal.make.walkway_grade) failed to "
+                                "start 22 of 28 times this week.")
     streak = _rec("act.thought.painting.make", "broken", n_graded=2, n_failed_to_execute=5,
                   execution_failure_lo=0.3, streak_kind="failed_to_execute", streak_len=5)
-    assert sentence(streak) == "My last 5 painting runs all failed to start."
+    assert sentence(streak) == "My last 5 painting runs (act.thought.painting.make) all failed to start."
     under = _rec("act.prime.infer", "miscalibrated", reliability=1.0, stated_mean=0.72, calibrated_share=1.0,
                  calibrated_lo=0.98, calibrated_hi=1.0)
-    assert sentence(under) == "My Prime inferences work 100% of the time (I expect 72%)."
+    assert sentence(under) == "My Prime inferences (act.prime.infer) work 100% of the time (I expect 72%)."
     event = _rec("turn.self.asks_question", "miscalibrated", claim_kind="event", reliability=0.11,
                  stated_mean=0.07, calibrated_share=0.11, calibrated_lo=0.10, calibrated_hi=0.13)
-    assert sentence(event) == "My guesses that I'll ask a question come true 11% of the time (I say 7%)."
+    assert sentence(event) == ("My guesses that I'll ask a question (turn.self.asks_question) come true 11% of the "
+                              "time (I say 7%).")
     assert sentence(CABINET) is None
     assert sentence(_rec("x.y", "miscalibrated", reliability=None)) is None
 
@@ -131,7 +149,7 @@ def test_miscalibrated_uses_the_calibration_share_not_overall_reliability() -> N
     # 30% of all graded bets upheld, but 60% of the ones that stated a confidence: the claim is about those.
     r = _rec("act.prime.infer", "miscalibrated", reliability=0.30, stated_mean=0.90, calibrated_share=0.60,
              calibrated_lo=0.50, calibrated_hi=0.70)
-    assert sentence(r) == "My Prime inferences work 60% of the time (I expect 90%)."
+    assert sentence(r) == "My Prime inferences (act.prime.infer) work 60% of the time (I expect 90%)."
 
 
 def test_hysteresis_lag_never_prints_numbers_that_contradict_the_status() -> None:
@@ -142,7 +160,8 @@ def test_hysteresis_lag_never_prints_numbers_that_contradict_the_status() -> Non
                   reliability=0.79, stated_mean=0.80, calibrated_share=0.79, calibrated_lo=0.75, calibrated_hi=0.83)
     assert sentence(agrees) is None
     still_off = agrees.model_copy(update={"calibrated_share": 0.6, "calibrated_lo": 0.55, "calibrated_hi": 0.65})
-    assert sentence(still_off) == "My guesses about how many steps my turns take hold 60% of the time (I say 80%)."
+    assert sentence(still_off) == ("My guesses about how many steps my turns take (turn.self.steps) hold 60% of the "
+                                  "time (I say 80%).")
 
 
 def test_percent_never_rounds_to_a_false_zero_or_hundred() -> None:
@@ -178,6 +197,13 @@ def test_window_wording_follows_the_record_window() -> None:
 ])
 def test_plain_names(key, name) -> None:
     assert plain_name(key) == name
+    assert named(key) == f"{name} ({key})"
+
+
+def test_cue_reuses_the_one_shared_naming_function() -> None:
+    from orion.self_monitor import cue, names
+
+    assert cue.plain_name is names.plain_name and cue.named is names.named
 
 
 def test_live_shaped_state_from_report_json_renders_within_cap() -> None:

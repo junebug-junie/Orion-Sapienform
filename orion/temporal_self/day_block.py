@@ -30,6 +30,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfDayBlockV1,
     TemporalSelfDayV1,
 )
+from orion.self_monitor.names import faculty_arc_words, faculty_of, plain_name
 from orion.temporal_self.day import DEFAULT_TZ
 from orion.temporal_self.stance_cue import binding_words, span_words, strain_cause_text
 
@@ -255,7 +256,13 @@ def render_closed_day_block(
             end = "still so at midnight" if a.closed_reason == "day_boundary" else f"to {clock(a, a.ended_at)}"
             if a.closed_reason == "source_stale":
                 end += ", then no word from the self-monitor"
-            parts.append(f"{a.subject_label} from {start} {end} {ref(a, a.subject_label)}")
+            # Plain name, then the faculty's id, then the status (Juniper 2026-11-03). The citation
+            # gate matches what is shown: the stored "<faculty> <status>" label, the id and the plain
+            # name, so a letter naming the faculty either way without [arc:] reads UNVERIFIED.
+            faculty = faculty_of(a.subject_ref)
+            shown = (faculty, plain_name(faculty)) if faculty else ()
+            parts.append(f"{faculty_arc_words(a.subject_ref, a.subject_label)} from {start} {end} "
+                         f"{ref(a, a.subject_label, *shown)}")
         more = f"; and {len(faculties) - MAX_FACULTY_ITEMS} more {day_ref}" if len(faculties) > MAX_FACULTY_ITEMS else ""
         lines.append((3, "Track record: " + "; ".join(parts) + more + "."))
 

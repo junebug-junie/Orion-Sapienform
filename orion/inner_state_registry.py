@@ -53,7 +53,7 @@ from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.regulation import RegulationStateV1
-from orion.schemas.self_monitor import SelfMonitorStateV1
+from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
 from orion.schemas.physiology import PhysiologyStateV1
 from orion.schemas.physiology_want import WantDecisionV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
@@ -1578,6 +1578,167 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "no sensor. Transport: Redis orion:self_monitor:latest + GET /self_monitor/state; history: "
             "substrate_self_monitor_history (30 days) and temporal_self_event faculty_status_changed "
             "rows. No bus channel (no subscriber)."
+        ),
+    ),
+    # The per-faculty record inside self_monitor.state.v1 (`faculties[]`). Its own entry because the
+    # lineage resolver addresses only top-level float fields, and these are the numbers Orion is shown
+    # (2026-11-03). Values read from orion/self_monitor/record.py reduce_faculty: decay-weighted shares
+    # (half-life HALF_LIFE_DAYS) with Wilson score intervals at the Kish effective sample size.
+    InnerStateSignal(
+        signal_id="self_monitor.faculty_record.v1",
+        schema=FacultyRecordV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not a signal of its own: one item of self_monitor.state.v1's faculties list, published with it "
+            "hourly. Registered so the numbers its readers put into Orion's prompts carry semantics."
+        ),
+        cognition_consumers=(
+            "orion.self_monitor.cue:project_track_record_cue",
+            "orion.self_monitor.questions:question_text",
+            "services.orion-hub.scripts.self_finding_outreach:record_facts",
+        ),
+        semantics=(
+            (
+                "reliability",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: the decay-weighted share of graded bets that came true (0-1). "
+                        "For a success faculty 1.0 is the good end; for event and interval faculties the "
+                        "judged number is calibrated_share, not this. Printed by the cue and E2 only for "
+                        "an unreliable faculty, and by E3 for a told finding with graded bets."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "None = no graded bet in the window: nothing is printed (the cue and E3 skip the "
+                        "sentence, E2 prints '?'). Never read as 0 or 1."
+                    ),
+                    prompt_sites=(
+                        "orion.self_monitor.cue:project_track_record_cue",
+                        "orion.self_monitor.questions:question_text",
+                        "services.orion-hub.scripts.self_finding_outreach:record_facts",
+                    ),
+                ),
+            ),
+            (
+                "reliability_lo",
+                MetricSemantics(
+                    value_kind="level",
+                    rest="no designed rest: Wilson lower bound of reliability. Printed only by E3, as the band.",
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet: E3 prints no band.",
+                    prompt_sites=("services.orion-hub.scripts.self_finding_outreach:record_facts",),
+                ),
+            ),
+            (
+                "reliability_hi",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: Wilson upper bound of reliability. The cue does not print it; "
+                        "it decides whether an unreliable line prints (only when < 0.5). E3 prints it as "
+                        "the band. Saturates at 1.0 on a small or all-success window (11 of 39 live, "
+                        "2026-11-03)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet: no unreliable line, no E3 band.",
+                    prompt_sites=(
+                        "orion.self_monitor.cue:project_track_record_cue",
+                        "services.orion-hub.scripts.self_finding_outreach:record_facts",
+                    ),
+                ),
+            ),
+            (
+                "execution_failure_lo",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = no try failed to start (24 of 40 live, 2026-11-03). Wilson lower bound of "
+                        "the failed-to-execute share; not printed, it decides whether a broken line prints "
+                        "the counts (only when > 0.5)."
+                    ),
+                    sparsity="designed_sparse",
+                    absent_means="None = no attempt in the window: no broken count line.",
+                    polarity="higher_is_worse",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                    rest_range=(0.0, 0.0),
+                ),
+            ),
+            (
+                "stated_mean",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "no designed rest: the mean confidence Orion stated before the outcome, over the "
+                        "graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by "
+                        "the cue next to calibrated_share for a miscalibrated faculty, and by E3 for "
+                        "interval and event claims."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
+                    prompt_sites=(
+                        "orion.self_monitor.cue:project_track_record_cue",
+                        "services.orion-hub.scripts.self_finding_outreach:record_facts",
+                    ),
+                ),
+            ),
+            (
+                "calibrated_share",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "calm = stated_mean inside [calibrated_lo - slack, calibrated_hi + slack] "
+                        "(record.py _slack); not judged when the confidence is pooled. Not one value: the "
+                        "share that came true over the same bets as stated_mean. Printed by the cue for a "
+                        "miscalibrated faculty only."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                ),
+            ),
+            (
+                "calibrated_lo",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "calm = at or below stated_mean + slack (record.py _slack). Wilson lower bound "
+                        "of calibrated_share; not printed. The cue re-checks it with no slack, only once "
+                        "the window's own candidate is no longer miscalibrated (hysteresis lag)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no stated graded bet: no miscalibrated line.",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                ),
+            ),
+            (
+                "calibrated_hi",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "calm = at or above stated_mean - slack (record.py _slack). Wilson upper bound "
+                        "of calibrated_share; not printed. The cue re-checks it with no slack, only once "
+                        "the window's own candidate is no longer miscalibrated (hysteresis lag)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None = no stated graded bet: no miscalibrated line.",
+                    prompt_sites=("orion.self_monitor.cue:project_track_record_cue",),
+                ),
+            ),
+        ),
+        notes=(
+            "Self-monitor names-and-semantics (2026-11-03). Not independent of self_monitor.state.v1: the "
+            "same records, addressed per field. reliability, calibrated_share and stated_mean are three "
+            "reductions of one bet set (calibrated_share == reliability whenever every graded bet stated a "
+            "confidence: true for all 38 faculties with both values in the live state of 2026-11-03 "
+            "20:27Z). The int counts the cue, E2 and E3 also print "
+            "(n_graded, n_failed_to_execute, n_bets, streak_len) are not semantics entries because the "
+            "lineage resolver addresses float fields only (precedent: transport_baseline_hourly.v1 "
+            "degraded_count): they are plain counts of the window's bets, 0 when a faculty has none, and "
+            "a faculty with no bets renders no line. Every reader names the faculty with "
+            "orion.self_monitor.names.named (plain words, then the id)."
         ),
     ),
     InnerStateSignal(

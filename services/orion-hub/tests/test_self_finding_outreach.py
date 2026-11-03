@@ -157,7 +157,7 @@ def test_first_evaluation_tells_a_broken_faculty_once_and_nothing_else(monkeypat
     assert summary["new"] == [f"self_finding:{WALKWAY}:broken@{(T0 - timedelta(hours=1)).isoformat()}"]
     assert [r["reason"] for r in summary["results"]] == ["sent"] and len(delivered) == 1
     prompt = composed[0]
-    assert "In the last 7 days, 22 of its 28 tries never ran." in prompt
+    assert "In the last 7 days, 22 of 28 tries never ran." in prompt
     assert "Juniper has not been told about it before." in prompt
     assert PRIME not in prompt and DREAM not in prompt
     sent = _sent(rows)[0]
@@ -181,7 +181,7 @@ def test_recovery_is_one_finding(monkeypatch):
     summary = asyncio.run(loop.tick())
     assert summary["new"] == [f"self_finding:{WALKWAY}:reliable@{now['t'].isoformat()}"]
     assert [s["finding_kinds"] for s in _sent(rows)] == [["became_broken"], ["recovered"]]
-    assert "It was broken (most of its tries never ran)" in composed[-1]
+    assert "This faculty was broken (most tries never ran)" in composed[-1]
     assert "Of 20 tries that were checked, about 100% worked" in composed[-1]
 
 
@@ -319,6 +319,24 @@ def test_grounding_guard_passes_on_the_composed_fixture(monkeypatch):
     assert delivered[0]["text"] == text
 
 
+def test_prompt_names_each_faculty_plain_first_then_its_id(monkeypatch):
+    """Juniper 2026-11-03: plain names along with internal ids. The prompt names the faculty the way
+    the cue and the E2 question do, and asks Orion to name it the same way; a message that does passes
+    both grounding guards."""
+    from scripts.outreach_vocabulary import find_ungrounded_faculty_mentions, find_ungrounded_signal_mentions
+
+    text = (f"My walkway-grade journal runs ({WALKWAY}) mostly stopped: 22 of their last 28 tries never ran. "
+            "I don't know why yet.")
+    loop, _, redis, rows, composed, delivered, _, _ = _setup(monkeypatch, text=text)
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    assert f'1. "My walkway-grade journal runs ({WALKWAY})" became broken.' in composed[0]
+    assert "with its record name in brackets after it" in composed[0]
+    assert find_ungrounded_faculty_mentions(text, [WALKWAY]) == []
+    assert find_ungrounded_signal_mentions(text, []) == []
+    assert delivered[0]["text"] == text
+
+
 def test_pass_is_final(monkeypatch):
     loop, _, redis, rows, _, delivered, _, _ = _setup(monkeypatch, text="PASS")
     _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
@@ -393,7 +411,7 @@ def test_a_newer_finding_replaces_an_untold_older_one(monkeypatch):
     assert [r["reason"] for r in rows] == ["arousal_strained", "superseded", "sent"]
     assert json.loads(rows[1]["finding_ids"]) == [f"self_finding:{WALKWAY}:broken@{T0.isoformat()}"]
     assert _sent(rows)[0]["finding_kinds"] == ["recovered"]
-    assert "It was broken" in composed[0] and "became broken." not in composed[0]
+    assert "This faculty was broken" in composed[0] and "became broken." not in composed[0]
 
 
 def test_a_waiting_finding_gets_fresh_numbers(monkeypatch):
@@ -405,7 +423,7 @@ def test_a_waiting_finding_gets_fresh_numbers(monkeypatch):
     _publish(redis, now["t"], rec(WALKWAY, "broken", T0, **{**BROKEN_NUMBERS, "n_failed_to_execute": 25}))
     loop._pool_provider = lambda: _Pool(rows)
     asyncio.run(loop.tick())
-    assert "25 of its 31 tries never ran" in composed[0]
+    assert "25 of 31 tries never ran" in composed[0]
 
 
 def test_decision_log_switched_off_tells_nothing(monkeypatch):

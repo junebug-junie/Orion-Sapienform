@@ -124,7 +124,7 @@ def test_background_warm_returns_immediately_and_reports_not_ready_until_built()
 
 def test_store_is_built_exactly_once_under_concurrent_callers() -> None:
     builder = _GatedBuilder()
-    holder = warm.WarmingSubstrateStore("self", builder)
+    holder = warm.WarmingSubstrateStore("aitown", builder)
 
     threads = [threading.Thread(target=holder.start_warm) for _ in range(8)]
     threads += [threading.Thread(target=holder.build_blocking) for _ in range(4)]
@@ -386,16 +386,17 @@ def test_review_scheduler_tick_skips_while_semantic_store_loads(monkeypatch) -> 
 
 
 def test_api_routes_module_wires_holders_and_starts_background_warm() -> None:
-    """Module-level wiring, not just the helper: all three stores are holders."""
+    """Module-level wiring, not just the helper: both stores are holders (Self Atlas retired 2026-11)."""
     live = _live_api_routes()
     live_warm = _live_warm()
     names = []
-    for attr in ("SUBSTRATE_SEMANTIC_STORE", "SUBSTRATE_SEMANTIC_STORE_SELF", "SUBSTRATE_SEMANTIC_STORE_AITOWN"):
+    for attr in ("SUBSTRATE_SEMANTIC_STORE", "SUBSTRATE_SEMANTIC_STORE_AITOWN"):
         holder = getattr(live, attr)
         assert isinstance(holder, live_warm.WarmingSubstrateStore), attr
         names.append(holder.warm_name)
-    assert names == ["orion", "self", "aitown"]
-    assert [s["store"] for s in live.substrate_store_warm_status()] == ["orion", "self", "aitown"]
+    assert names == ["orion", "aitown"]
+    assert [s["store"] for s in live.substrate_store_warm_status()] == ["orion", "aitown"]
+    assert not hasattr(live, "SUBSTRATE_SEMANTIC_STORE_SELF")
 
 
 def test_startup_event_does_not_await_the_concept_seed() -> None:

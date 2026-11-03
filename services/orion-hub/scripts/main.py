@@ -53,7 +53,6 @@ from scripts.substrate_store_warm import (
     wait_all_ready as _wait_all_substrate_stores_ready,
 )
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
-import scripts.self_atlas_cluster_history as self_atlas_cluster_history_runtime
 import scripts.vision_affect_ambient as vision_affect_ambient_runtime
 import scripts.vision_frame_cache as vision_frame_cache_runtime
 from scripts.websocket_handler import websocket_endpoint
@@ -1347,7 +1346,6 @@ async def startup_event():
                     _wait_all_substrate_stores_ready,
                     (
                         api_routes_runtime.SUBSTRATE_SEMANTIC_STORE,
-                        api_routes_runtime.SUBSTRATE_SEMANTIC_STORE_SELF,
                         api_routes_runtime.SUBSTRATE_SEMANTIC_STORE_AITOWN,
                     ),
                     _SUBSTRATE_STORE_WAIT_SEC,
@@ -1515,88 +1513,6 @@ async def startup_event():
                         )
                     except Exception as exc:  # advisory runtime loop; never crash service startup
                         logger.warning("substrate_topic_foundry_aitown_scheduler_ingest_error error=%s", exc)
-
-                # Self Atlas (self-model rebuild arc, Patch 3, 2026-09-05) --
-                # same three-step shape as Orion/AI Town above, riding on the
-                # same tick interval. Own ENABLE (default on since 2026-09-05,
-                # see settings.py's own comment). The training step refuses to
-                # re-cluster an unchanged self_knowledge_items table -- its
-                # rows arrive from cortex-exec's daily self-study inspect
-                # refresh, not from this tick. Writes into a
-                # different FalkorDB graph (FALKORDB_SELF_SUBSTRATE_GRAPH) and a
-                # different topic-foundry dataset/model
-                # (source_table=self_knowledge_items) -- never feeds Orion's
-                # chat-facing concept graph.
-                if settings.SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED:
-                    try:
-                        self_trigger_summary = await asyncio.to_thread(
-                            concept_atlas_routes_runtime.trigger_topic_foundry_self_training_run
-                        )
-                        logger.info(
-                            "substrate_topic_foundry_self_scheduler_trigger_tick triggered=%s run_id=%s status=%s reason=%s",
-                            self_trigger_summary.get("triggered"),
-                            self_trigger_summary.get("run_id"),
-                            self_trigger_summary.get("status"),
-                            self_trigger_summary.get("reason"),
-                        )
-                    except Exception as exc:  # advisory runtime loop; never crash service startup
-                        logger.warning("substrate_topic_foundry_self_scheduler_trigger_error error=%s", exc)
-
-                    try:
-                        self_enrich_summary = await asyncio.to_thread(
-                            concept_atlas_routes_runtime.trigger_topic_foundry_self_enrichment
-                        )
-                        logger.info(
-                            "substrate_topic_foundry_self_scheduler_enrich_tick triggered=%s run_id=%s status=%s reason=%s "
-                            "enriched_count=%s failed_count=%s",
-                            self_enrich_summary.get("triggered"),
-                            self_enrich_summary.get("run_id"),
-                            self_enrich_summary.get("status"),
-                            self_enrich_summary.get("reason"),
-                            self_enrich_summary.get("enriched_count"),
-                            self_enrich_summary.get("failed_count"),
-                        )
-                    except Exception as exc:  # advisory runtime loop; never crash service startup
-                        logger.warning("substrate_topic_foundry_self_scheduler_enrich_error error=%s", exc)
-
-                    try:
-                        self_ingest_summary = await asyncio.to_thread(
-                            concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry_self
-                        )
-                        logger.info(
-                            "substrate_topic_foundry_self_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s entities_written=%s edges_written=%s typed_edges_written=%s",
-                            self_ingest_summary.get("available"),
-                            self_ingest_summary.get("run_id"),
-                            self_ingest_summary.get("concepts_written"),
-                            self_ingest_summary.get("entities_written"),
-                            self_ingest_summary.get("edges_written"),
-                            self_ingest_summary.get("typed_edges_written"),
-                        )
-                    except Exception as exc:  # advisory runtime loop; never crash service startup
-                        logger.warning("substrate_topic_foundry_self_scheduler_ingest_error error=%s", exc)
-
-                    # Self Atlas's second self_concept_history producer (self-model
-                    # rebuild arc, Patch 3 follow-up, 2026-09-05) -- Layer 3's real
-                    # LLM reflection is the only other writer to this table
-                    # (orion-cortex-exec). Same gate as the three steps above
-                    # (no separate flag): a natural extension of a pipeline that's
-                    # already off by default and unverified against real
-                    # cluster-quality data.
-                    try:
-                        self_history_summary = await asyncio.to_thread(
-                            self_atlas_cluster_history_runtime.publish_self_atlas_cluster_history
-                        )
-                        logger.info(
-                            "substrate_topic_foundry_self_scheduler_history_tick available=%s run_id=%s "
-                            "published_count=%s skipped_unchanged_count=%s failed_count=%s",
-                            self_history_summary.get("available"),
-                            self_history_summary.get("run_id"),
-                            self_history_summary.get("published_count"),
-                            self_history_summary.get("skipped_unchanged_count"),
-                            self_history_summary.get("failed_count"),
-                        )
-                    except Exception as exc:  # advisory runtime loop; never crash service startup
-                        logger.warning("substrate_topic_foundry_self_scheduler_history_error error=%s", exc)
 
         substrate_topic_foundry_scheduler_task = asyncio.create_task(
             _run_substrate_topic_foundry_scheduler(),

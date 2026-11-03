@@ -62,7 +62,6 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "notify.recipient.update.v1": "RecipientProfileDB",
     "notify.preference.update.v1": "NotificationPreferenceDB",
     "journal.entry.write.v1": "JournalEntrySQL",
-    "self_study.items.write.v1": "SelfKnowledgeItemLogSQL",
     "attention.schema.v1": "AttentionSchemaSQL",
     "curiosity.peer.brief.v1": "CuriosityPeerBriefSQL",
     "curiosity.supervisor.reading.v1": "CuriosityHopReadingSQL",
@@ -204,7 +203,6 @@ class Settings(BaseSettings):
             "orion:notify:persistence:request",
             "orion:notify:persistence:receipt",
             "orion:journal:write",
-            "orion:self_study:items:write",
             "orion:attention:schema",
             "orion:curiosity:peer:brief",
             "orion:curiosity:supervisor:reading",
@@ -953,14 +951,6 @@ class Settings(BaseSettings):
         ):
             if energy_channel not in channels:
                 channels.append(energy_channel)
-        # Same guarantee again, same reason, same failure shape review caught
-        # before this shipped: self_study.items.write.v1 is a code-default
-        # route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS
-        # replaces rather than merges -- a stale already-deployed operator
-        # .env that predates this channel would otherwise leave the route/
-        # model/table all correct and the write silently going nowhere.
-        if "orion:self_study:items:write" not in channels:
-            channels.append("orion:self_study:items:write")
         # Same guarantee again, same reason. chat_stance.belief.write.v1 is a
         # code-default route with no feature toggle, and SQL_WRITER_SUBSCRIBE_
         # CHANNELS replaces rather than merges -- a stale already-deployed
@@ -974,9 +964,9 @@ class Settings(BaseSettings):
         if "orion:chat_stance:belief:write" not in channels:
             channels.append("orion:chat_stance:belief:write")
         # Same guarantee again, same reason -- confirmed twice already this
-        # session (chat_stance:belief:write and self_study:items:write both
-        # shipped without this and were caught by review, one after
-        # merging). self_concept.history.write.v1 is a code-default route
+        # session (chat_stance:belief:write and the since-retired
+        # self_study:items:write both shipped without this and were caught by
+        # review, one after merging). self_concept.history.write.v1 is a code-default route
         # with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces
         # rather than merges.
         if "orion:self_concept:history:write" not in channels:

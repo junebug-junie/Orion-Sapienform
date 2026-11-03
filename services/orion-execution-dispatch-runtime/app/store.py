@@ -321,9 +321,11 @@ class ExecutionDispatchRuntimeStore:
         frame that failed schema validation, so load_oldest_policy_frames_
         without_dispatch's/load_freshest_policy_frame_without_dispatch's
         lookups don't re-select this exact row forever."""
+        frame_id = f"execution.dispatch.frame:{raw_frame_id}:schema_incompatible"
+        generated_at = self.start_dispatch_frame_materialization(frame_id)
         stub = ExecutionDispatchFrameV1(
-            frame_id=f"execution.dispatch.frame:{raw_frame_id}:schema_incompatible",
-            generated_at=datetime.now(timezone.utc),
+            frame_id=frame_id,
+            generated_at=generated_at,
             source_policy_frame_id=raw_frame_id,
             source_proposal_frame_id=raw_proposal_frame_id or "unknown",
             dispatch_attempted=False,
@@ -359,6 +361,30 @@ class ExecutionDispatchRuntimeStore:
                 "proposal_frame_incompatible_schema frame_id=%s", frame_id, exc_info=True
             )
             return None
+
+    def start_dispatch_frame_materialization(self, frame_id: str) -> datetime:
+        """Publish producer intent before assigning event time or doing slow work.
+
+        A retry reuses the original database timestamp. There is therefore no instant at which a
+        pre-boundary frame exists only in process memory: before this row commits the frame has no
+        assigned event time; afterward consolidation can see the in-flight lower bound.
+        """
+        with self._engine.begin() as conn:
+            value = conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_execution_dispatch_inflight (frame_id)
+                    VALUES (:frame_id)
+                    ON CONFLICT (frame_id) DO UPDATE
+                        SET frame_id = EXCLUDED.frame_id
+                    RETURNING generated_at
+                    """
+                ),
+                {"frame_id": frame_id},
+            ).scalar_one()
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     def load_dispatch_frame_for_policy_frame(
         self, policy_frame_id: str
@@ -478,6 +504,17 @@ class ExecutionDispatchRuntimeStore:
                      WHERE frame_id = :frame_id
                 """),
                 {"frame_id": frame.source_policy_frame_id},
+            )
+            # SAME TRANSACTION as the real frame insert. Consolidation sees either the in-flight
+            # lower bound or the durable dispatch frame, never a visibility gap between them.
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_execution_dispatch_inflight
+                     WHERE frame_id = :frame_id
+                    """
+                ),
+                {"frame_id": frame.frame_id},
             )
 
     def save_dispatch_result(

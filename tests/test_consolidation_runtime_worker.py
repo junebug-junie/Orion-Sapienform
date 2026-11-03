@@ -53,6 +53,7 @@ def test_tick_skips_when_frame_exists_for_bucket(monkeypatch) -> None:
     )
 
     worker._store.load_consolidation_frame_for_window = MagicMock(return_value=existing)
+    worker._store.load_feedback_completion_watermark = MagicMock(return_value=NOW)
     worker._store.load_window_data = MagicMock()
     worker._store.save_consolidation_frame = MagicMock()
 

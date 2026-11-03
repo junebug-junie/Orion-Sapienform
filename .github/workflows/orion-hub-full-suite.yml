@@ -53,9 +53,10 @@ jobs:
       - name: Run services/orion-hub/tests
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-hub
-        # --timeout: a test that hangs fails after 3 min and prints every thread's
-        # stack, so the log names the hung test. Without it a hang sat silent
-        # until the 30 min job timeout. The slowest healthy test takes ~6 s.
+        # --timeout: if one test runs past 3 min, pytest prints every thread's
+        # stack (naming the hung test) and stops the whole run there. Without it
+        # a hang sat silent until the 30 min job timeout. The slowest healthy
+        # test takes ~6 s.
         run: >-
           python -m pytest -q -p no:cacheprovider --durations=20
           --timeout=180 --timeout-method=thread

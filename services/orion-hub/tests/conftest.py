@@ -23,7 +23,10 @@ def _is_hub_package(name: str) -> bool:
     if module is None:
         return True
     hub_dir = (_HUB_ROOT / name).resolve()
-    return any(Path(p).resolve() == hub_dir for p in getattr(module, "__path__", ()) or ())
+    # all(), not any(): Hub's `app` is a namespace package, so after another
+    # service's root was on sys.path its __path__ can hold both folders.
+    paths = list(getattr(module, "__path__", ()) or ())
+    return bool(paths) and all(Path(p).resolve() == hub_dir for p in paths)
 
 
 def _ensure_hub_paths() -> None:
@@ -169,7 +172,7 @@ def pre_turn_appraisal_off(monkeypatch, request):
 
     The code default is True (aligned with .env_example and production
     2026-10-10). Every live Settings instance is patched, not just one:
-    ``_hub_service_isolation`` purges ``scripts.*``/``app.*`` per test, so a test
+    ``_hub_service_isolation`` can purge ``scripts.*``/``app.*`` between tests, so a test
     module's import-time ``api_routes.settings`` (a module no longer in
     sys.modules) and a call-time ``from scripts.settings import settings`` are
     different objects. So: every module in sys.modules, plus every module or

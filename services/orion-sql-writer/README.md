@@ -608,7 +608,9 @@ Each tick it:
    "People" counts only labels that are one real person
    (`VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY`, on): a name whose `person` row is
    `not_a_person` (marked in the Hub People panel: a decoration, a delivery
-   company, a pair) keeps its album and bars but does not widen the split.
+   company, a pair) keeps its album, reject bound and `unsure` guesses, and
+   stays an impostor for everyone else, but gets no accept bar and does not
+   widen the split ("probably <a pair>" would name known people).
    Face bars calibrate on a longer street, unnamed clusters seen in the last
    `VISION_PERSON_FACE_CANDIDATE_DAYS` (90; capped in effect by the 90-day
    prune of unnamed clusters), because faces are rare; body/osnet bars and

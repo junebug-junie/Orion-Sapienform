@@ -581,7 +581,8 @@ class Settings(BaseSettings):
     # Unnamed clusters are pruned after VISION_SIGHTING_RETENTION_DAYS (90).
     vision_person_face_candidate_days: float = Field(90.0, alias="VISION_PERSON_FACE_CANDIDATE_DAYS")
     # Split the false-accept alpha only across labels that are one real person
-    # (person rows marked not_a_person in the Hub do not count). False = every label.
+    # (person rows marked not_a_person in the Hub do not count and never get an
+    # accept bar). False = every label, as before.
     vision_person_alpha_split_people_only: bool = Field(True, alias="VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY")
     # The person model runs inside the individuals tick at most this often.
     vision_person_model_interval_sec: float = Field(600.0, alias="VISION_PERSON_MODEL_INTERVAL_SEC")

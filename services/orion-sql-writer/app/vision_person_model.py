@@ -26,9 +26,10 @@ fitted from the album itself:
   clothes accepts nobody. "Number of people" counts only labels that are one
   real person: a name whose ``person`` row is ``not_a_person`` (a decoration,
   a role like a delivery company, a pair named together; set in the Hub People
-  panel) keeps its album and bars but does not widen the split, since its
-  accept can never name a stranger as a known person and a cluster accepted for
-  it and a person is downgraded to unsure (2026-11-03);
+  panel) keeps its album, its reject bound and its ``unsure`` guesses, and its
+  clusters stay impostors for everyone else, but it never gets an accept bar:
+  "probably <a pair of known people>" would name known people, and the split
+  only covers labels that can accept (2026-11-03);
 - the face channel's street is longer (``face_candidate_days``, 90) than the
   body/osnet street (``candidate_days``, 30): faces are rare, and an accept
   bound at alpha / people needs about people / alpha impostor clusters with
@@ -299,6 +300,8 @@ def fit_bar(person: str, channel: str, album: Dict[str, Dict[int, List[Crop]]], 
     above = sum(1 for g in genuine_clusters if accept_at is not None and g > accept_at)
     if len(genuine_clusters) < MIN_GENUINE_CLUSTERS or 2 * above < len(genuine_clusters):
         accept_at = None
+    if cfg.alpha_split_people_only and person.strip().casefold() in not_people:
+        accept_at = None     # outside the split: may be asked about, never "probably" it
     bar = Bar(person, channel, accept_at, conformal_reject_below(genuine, cfg.alpha),
               len(genuine), len(impostor))
     return Fit(bar, genuine, genuine_clusters, impostor)
@@ -567,8 +570,10 @@ def street_pools(conn, now: datetime, cfg: PersonModelConfig, tz: ZoneInfo
 def not_a_person_names(conn) -> FrozenSet[str]:
     """Casefolded labels Juniper marked as not one real person: the display name
     of every ``person`` row with status ``not_a_person`` and the label of every
-    camera cluster linked to one (people one-record, PR #2852). Empty when the
-    person tables are missing (then every label counts as a person)."""
+    camera cluster linked to one (people one-record, PR #2852), minus any name
+    an ``active`` person row also carries (a lagging link or a merge never
+    turns a real person into a thing). Empty when the person tables are missing
+    (then every label counts as a person)."""
     from sqlalchemy import text
 
     if conn.execute(text("SELECT to_regclass('person') IS NULL OR to_regclass('person_link') IS NULL")).scalar():
@@ -579,7 +584,10 @@ def not_a_person_names(conn) -> FrozenSet[str]:
         "AND l.revoked_at IS NULL AND l.source_kind = 'vision_individual' "
         "JOIN vision_individual i ON i.individual_id = l.source_ref "
         "WHERE p.status = 'not_a_person' AND i.label IS NOT NULL")).fetchall()
-    return frozenset(r[0].strip().casefold() for r in rows if r[0] and r[0].strip())
+    active = {r[0].strip().casefold() for r in conn.execute(text(
+        "SELECT display_name FROM person WHERE status <> 'not_a_person'")).fetchall() if r[0]}
+    return frozenset(n for n in (r[0].strip().casefold() for r in rows if r[0] and r[0].strip())
+                     if n not in active)
 
 
 def _blocked(conn) -> Dict[str, set]:

@@ -315,6 +315,20 @@ def test_not_a_person_labels_do_not_widen_the_alpha_split() -> None:
     assert pm.people_count(album, CFG, frozenset({"SKELETON"})) == 12      # names arrive casefolded
 
 
+def test_a_not_a_person_label_never_gets_an_accept_bar() -> None:
+    """Review finding: "probably A and B" names known people. A label outside the
+    split must not be able to accept, or the split no longer bounds false accepts."""
+    album = {"A and B": {1: _person("ab", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    armed = pm.fit_bar("A and B", "body", album, CFG, _street())          # counted as a person: arms
+    assert armed.bar.accept_at is not None
+    fit = pm.fit_bar("A and B", "body", album, CFG, _street(), frozenset({"a and b"}))
+    assert fit.bar.accept_at is None and fit.genuine_clusters    # still scored, still asked about
+    bars = pm.fit_all(album, CFG, _street(), not_people=frozenset({"a and b"}))
+    near = [_crop(f"n{i}", "near", "2026-10-15", _vec(1, 0.02 * i)) for i in range(3)]
+    (g,) = pm.attribute({"near": near}, album, bars, {}, CFG)
+    assert g["person_label"] == "A and B" and g["band"] == "unsure"
+
+
 def test_split_people_only_off_is_the_old_split_over_every_label() -> None:
     people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
     album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
@@ -322,6 +336,18 @@ def test_split_people_only_off_is_the_old_split_over_every_label() -> None:
     not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
     assert pm.people_count(album, off, not_people) == len(album)
     assert pm.fit_bar("Juniper", "body", album, off, _street(), not_people).bar.accept_at is None
+    # Off: not_people is ignored entirely, bars equal the old call's.
+    assert pm.fit_all(album, off, _street(), not_people=not_people) == pm.fit_all(album, off, _street())
+
+
+def test_missing_person_tables_mean_everyone_counts_as_a_person() -> None:
+    class _Conn:
+        def execute(self, *_a, **_k):
+            class _R:
+                def scalar(self):
+                    return True       # to_regclass(...) IS NULL
+            return _R()
+    assert pm.not_a_person_names(_Conn()) == frozenset()
 
 
 def _faced(cid: str, cluster: str, day: str, v) -> pm.Crop:
@@ -822,14 +848,20 @@ def test_not_a_person_names_come_from_the_person_record(pg) -> None:
         conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
         _add_cluster(conn, "deco", "Skeleton", [_vec(1)], day=1)
         _add_cluster(conn, "jun", "Juniper", [_vec(0, 1)], day=1)
+        _add_cluster(conn, "gone", "Old name", [_vec(0, 0, 1)], day=1)
+        _add_cluster(conn, "lag", "Teddy", [_vec(0, 0, 0, 1)], day=1)
         conn.execute(text(
             "INSERT INTO person (person_id, display_name, status) VALUES "
-            "('p-deco', 'skeleton', 'not_a_person'), ('p-jun', 'Juniper', 'active'), "
-            "('p-ups', 'UPS delivery', 'not_a_person')"))
+            "('p-deco', 'Halloween decor', 'not_a_person'), ('p-jun', 'Juniper', 'active'), "
+            "('p-ups', 'UPS delivery', 'not_a_person'), ('p-ted', 'Teddy', 'active')"))
         conn.execute(text(
-            "INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by) VALUES "
-            "('l1', 'p-deco', 'vision_individual', 'deco', 'camera_name'), "
-            "('l2', 'p-jun', 'vision_individual', 'jun', 'camera_name')"))
+            "INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by, revoked_at) VALUES "
+            "('l1', 'p-deco', 'vision_individual', 'deco', 'camera_name', NULL), "
+            "('l2', 'p-jun', 'vision_individual', 'jun', 'camera_name', NULL), "
+            "('l3', 'p-deco', 'vision_individual', 'gone', 'camera_name', now()), "
+            "('l4', 'p-deco', 'vision_individual', 'lag', 'camera_name', NULL)"))
         names = pm.not_a_person_names(conn)
         conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
-    assert names == frozenset({"skeleton", "ups delivery"})
+    # The linked label (not just the row's own name) counts; a revoked link and a
+    # name an active person also carries do not.
+    assert names == frozenset({"halloween decor", "skeleton", "ups delivery"})

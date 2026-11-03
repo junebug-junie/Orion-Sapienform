@@ -240,6 +240,6 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select labe
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3066
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

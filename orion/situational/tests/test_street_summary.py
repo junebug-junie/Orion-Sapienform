@@ -429,9 +429,10 @@ def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
 # calling Amanda".
 _AMANDA_NOW = datetime(2026, 11, 3, 19, 0, tzinfo=timezone.utc)  # 12:00 MST
 _AMANDA_ROW = {"subject_key": "individual:am", "subject_label": "Amanda", "status": "open",
-               "peak_minute": 699, "window_start": datetime(2026, 11, 3, 17, 5, tzinfo=timezone.utc)}
+               "peak_minute": 699, "window_start": datetime(2026, 11, 3, 17, 5, tzinfo=timezone.utc),
+               "window_end": datetime(2026, 11, 3, 20, 9, tzinfo=timezone.utc)}
 _NAMED = {"individual_id": "am", "kind": "person", "named_by": "juniper",
-          "named_at": datetime(2026, 10, 26, 1, 54, tzinfo=timezone.utc), "matched_at": None}
+          "named_at": datetime(2026, 10, 26, 1, 54, tzinfo=timezone.utc), "matched_at": None, "caught_up": True}
 
 
 def _amanda(window, *, now=_AMANDA_NOW, row=_AMANDA_ROW):
@@ -494,8 +495,28 @@ def test_individual_windows_are_read_per_window_start_and_failures_degrade() -> 
     })
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=_AMANDA_NOW)
     assert seen["ids"] == ["am"] and seen["starts"] == [_AMANDA_ROW["window_start"]]
+    assert seen["ends"] == [_AMANDA_ROW["window_end"]]
     assert any("no match for Amanda" in line for line in got.lines)
 
     broken = _Conn({"unnest(": RuntimeError("boom"), "vision_percept_expectation": [_AMANDA_ROW]})
     got = fetch_street_summary("walkway", engine=_Engine(broken), now=_AMANDA_NOW)
     assert "Walkway rhythm: Amanda usually comes around 11:39." in got.lines
+
+
+def test_no_absence_claim_while_the_individuals_reducer_lags() -> None:
+    # Review finding: "no match yet" from missing rows alone could be a crop
+    # the individuals reducer has not processed (vision_rhythm._individuals_caught_up).
+    for lag in ({**_NAMED, "caught_up": False}, {k: v for k, v in _NAMED.items() if k != "caught_up"}):
+        line = _amanda(lag)
+        assert "no match" not in line
+        assert "Amanda (a person, name from Juniper, 10-25) usually comes around 11:39" in line
+
+
+def test_person_caveat_only_when_a_person_phrase_is_shown() -> None:
+    # Review finding: a fifth outcome is cut by outcomes[:4]; its caveat must go too.
+    things = [{"subject_key": f"label:v{i}", "subject_label": f"vehicle {i}", "status": "met", "peak_minute": 600 + i}
+              for i in range(4)]
+    (line,) = summarize_street(sightings=[], expectations=things + [_AMANDA_ROW], unresolved=[], patio=None,
+                               now=_AMANDA_NOW, tz=TZ, individual_windows={"am": _NAMED})
+    assert "Amanda" not in line
+    assert "person match" not in line

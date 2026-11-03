@@ -528,10 +528,14 @@ _STREET_EXPECTATIONS_SQL = text(
 )
 
 # INDIVIDUAL WINDOWS (2026-11-03). One row per individual-subject expectation
-# above: the latest time a sighting of that individual overlapped its OWN
-# window (the rhythm reducer's own "met" rule, services/orion-sql-writer/app/
-# vision_rhythm.py: overlap + NOT stationary), its kind, and who gave its
-# name. Read back to each window's start, not the 60-minute sightings
+# above: the FIRST time a sighting of that individual fell inside its OWN
+# window, up to now (the rhythm reducer's own rule, exactly:
+# services/orion-sql-writer/app/vision_rhythm.py `_occurred` -- min, clipped
+# to [window_start, window_end], NOT stationary, any stream), its kind, who
+# gave its name, and whether the individuals reducer has processed crops
+# through about now (`caught_up`; else an absence claim could be a crop still
+# in the queue -- the reducer's own `_individuals_caught_up` guard).
+# Read back to each window's start, not the 60-minute sightings
 # lookback: on 11-03 "Amanda" had an open 10:05-13:09 window, the 12:00 turn
 # could only say "Amanda usually comes around 11:39" (the lookback guard
 # forbids an absence claim), and the model wrote "Amanda right on her usual
@@ -540,14 +544,21 @@ _STREET_EXPECTATIONS_SQL = text(
 # that: the reducer scores a window only after it closes.
 _STREET_INDIVIDUAL_WINDOWS_SQL = text(
     "SELECT w.individual_id, i.kind, a.asked_of AS named_by, a.answered_at AS named_at, "
-    "  (SELECT max(greatest(s.started_at, w.window_start)) FROM vision_individual_sighting s "
-    "    WHERE s.individual_id = w.individual_id AND s.stream_id = :stream_id "
-    "      AND s.ended_at >= w.window_start AND s.started_at <= CAST(:until AS timestamptz) "
-    "      AND NOT s.stationary) AS matched_at "
-    "FROM unnest(CAST(:ids AS text[]), CAST(:starts AS timestamptz[])) AS w(individual_id, window_start) "
+    "  (SELECT min(greatest(s.started_at, w.window_start)) FROM vision_individual_sighting s "
+    "    WHERE s.individual_id = w.individual_id "
+    "      AND s.ended_at >= w.window_start "
+    "      AND s.started_at <= least(w.window_end, CAST(:until AS timestamptz)) "
+    "      AND NOT s.stationary) AS matched_at, "
+    "  COALESCE((SELECT c.last_created_at >= CAST(:now AS timestamptz) - make_interval(secs => :caught_up_grace) "
+    "            FROM vision_individuals_cursor c WHERE c.stream_id = :stream_id), false) AS caught_up "
+    "FROM unnest(CAST(:ids AS text[]), CAST(:starts AS timestamptz[]), CAST(:ends AS timestamptz[])) "
+    "  AS w(individual_id, window_start, window_end) "
     "LEFT JOIN vision_individual i ON i.individual_id = w.individual_id "
     "LEFT JOIN orion_ask a ON a.ask_id = i.label_ask_id AND a.answer IS NOT NULL"
 )
+# The individuals cursor normally runs ~50 s behind live (11-03); past this
+# it is lagging and "no match yet" could be a crop it has not processed.
+STREET_INDIVIDUALS_CAUGHT_UP_GRACE_SEC = 120
 
 _STREET_UNRESOLVED_SQL = text(
     "SELECT observed_at, description FROM vision_unresolved "
@@ -979,7 +990,9 @@ def _individual_outcome(
         return f"no match for {name} in the usual window ({usual})"
     if status == "open":
         window_start = _utc(row.get("window_start"))
-        if _past_peak(row.get("peak_minute"), window_start, now=now, tz=tz):
+        # An absence claim only once the individuals reducer has caught up:
+        # missing or lagging cursor reads as "not known yet".
+        if window.get("caught_up") is True and _past_peak(row.get("peak_minute"), window_start, now=now, tz=tz):
             return f"no match for {name} yet today ({usual})"
         return f"{name} usually comes" + (f" around {peak}" if peak else "")
     return None
@@ -1055,7 +1068,9 @@ def summarize_street(
 
     # 2. What was expected, and did it happen.
     outcomes: list[str] = []
-    named_people = False
+    # Indexes of outcomes that are person matches: the caveat rides only on
+    # what survives the outcomes[:4] cut below.
+    person_outcomes: set[int] = set()
     for row in expectations or []:
         label = str(row.get("subject_label") or "").strip()
         if not label:
@@ -1068,8 +1083,9 @@ def summarize_street(
         if window is not None:
             said = _individual_outcome(label, status, peak, row, window, now=now, tz=tz)
             if said:
+                if str(window.get("kind") or "") == "person":
+                    person_outcomes.add(len(outcomes))
                 outcomes.append(said)
-                named_people = named_people or str(window.get("kind") or "") == "person"
             continue
         if status == "met":
             # The peak is the usual time, not when it came: "came as expected
@@ -1110,7 +1126,7 @@ def summarize_street(
                 outcomes.append(f"{label} usually comes{at}")
     if outcomes:
         rhythm = f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + "."
-        if named_people:
+        if any(i < 4 for i in person_outcomes):
             rhythm += " " + STREET_PERSON_MATCH_CAVEAT
         lines.append(rhythm)
 
@@ -1200,16 +1216,21 @@ def _read_individual_windows(
     wording for those subjects."""
     ids: list[str] = []
     starts: list[datetime] = []
+    ends: list[datetime] = []
     for row in expectations or []:
         kind, _, ref = str(row.get("subject_key") or "").partition(":")
-        start = _utc(row.get("window_start"))
-        if kind == "individual" and ref and start is not None and ref not in ids:
+        start, end = _utc(row.get("window_start")), _utc(row.get("window_end"))
+        if kind == "individual" and ref and start is not None and end is not None and ref not in ids:
             ids.append(ref)
             starts.append(start)
+            ends.append(end)
     if not ids:
         return None
     rows = _street_rows(
-        conn, _STREET_INDIVIDUAL_WINDOWS_SQL, {**window, "ids": ids, "starts": starts}, "individual_windows"
+        conn, _STREET_INDIVIDUAL_WINDOWS_SQL,
+        {**window, "ids": ids, "starts": starts, "ends": ends,
+         "caught_up_grace": STREET_INDIVIDUALS_CAUGHT_UP_GRACE_SEC},
+        "individual_windows",
     )
     if rows is None:
         return None

@@ -2,6 +2,7 @@
 
 - The resonance health monitor stops sending a fresh "recovered" note every time `orion-thought` restarts.
 - At startup, a theme now counts as still open only if its newest pending item is a "worsening" page, not a recovery note.
+- The same rule now covers the reverie-timeout and painting-failure monitors. All three had their own copy of the lookup with the same bug. They now share `app/notify_pending.py` and one `RECOVERED_PREFIX`.
 
 ## Outcome moved
 
@@ -13,12 +14,16 @@ Live 2026-11-03: 273 of 311 unacked resonance items were repeat recovery notes. 
 
 ## Architecture touched
 
-- `services/orion-thought/app/resonance_monitor.py`: `_fetch_pending_reasons` keeps the newest item per reason (list is newest first from sql-writer) and drops reasons whose newest item is a recovery note. `_has_open_alert` uses the same rule.
+- New `services/orion-thought/app/notify_pending.py:open_alert_reasons`: keeps the newest pending item per reason (sql-writer returns newest first) and drops reasons whose newest item is a recovery note. Fail-open (`[]`) as before.
+- `resonance_monitor.py`, `reverie_health_monitor.py`, `visual_chain_health_monitor.py`: `_has_open_alert` / bootstrap call the shared helper; recovery text built from `RECOVERED_PREFIX`.
 
 ## Files changed
 
-- `services/orion-thought/app/resonance_monitor.py`: newest-item-decides rule; `_RECOVERED_PREFIX` constant.
-- `services/orion-thought/tests/test_resonance_monitor.py`: regression test (fails on old code, passes now).
+- `services/orion-thought/app/notify_pending.py`: shared open-page rule (new).
+- `services/orion-thought/app/resonance_monitor.py`, `reverie_health_monitor.py`, `visual_chain_health_monitor.py`: use the shared helper; duplicated lookup removed.
+- `services/orion-thought/tests/test_notify_pending.py`: rule tests + wiring tests for the reverie and visual monitors (new).
+- `services/orion-thought/tests/test_resonance_monitor.py`: restart-loop regression test (fails on old code, passes now).
+- Other monitor tests and `evals/test_attempt_streak_replay.py`, `evals/test_painting_gap_replay.py`: patch target moved to `app.notify_pending.requests.get`.
 
 ## Schema / bus / API changes
 
@@ -31,8 +36,8 @@ Live 2026-11-03: 273 of 311 unacked resonance items were repeat recovery notes. 
 ## Tests run
 
 ```text
-tests/test_resonance_monitor.py tests/test_reverie_chain.py evals -> 80 passed
-new test against old code -> 1 failed (as expected)
+services/orion-thought: pytest -q tests evals -> 820 passed, 32 skipped
+new restart-loop test against old code -> 1 failed (as expected)
 ```
 
 ## Evals run
@@ -49,7 +54,10 @@ Not rebuilt from branch; deploys from main after merge.
 
 ## Review findings fixed
 
-- No material findings. Reviewer confirmed `reason`/`message` fields end to end and that the 200-item cap can drop a reason but cannot invert newest-first.
+- Round 1 finding: the reverie-timeout and painting monitors had the same "any pending item = open" bug (silent on a real new page after a restart if a recovery note was unacked).
+  - Fix: shared `open_alert_reasons` used by all three monitors.
+  - Evidence: `test_reverie_monitor_ignores_answered_page`, `test_visual_monitor_ignores_answered_page`.
+- Round 2: no material findings. Reviewer confirmed every recovery message starts with `RECOVERED_PREFIX`, fail-open is unchanged, rendered log names are unchanged, and no stale patch targets remain.
 
 ## Restart required
 
@@ -59,9 +67,11 @@ scripts/safe_docker_build.sh orion-thought up -d --build
 
 ## Risks / concerns
 
-- Severity: low (follow-up)
-- Concern: `reverie_health_monitor.py:115` and `visual_chain_health_monitor.py:332` still treat any pending item as open. They do not bootstrap, so no spam, but after a restart they may stay silent on a real new page if an unacked recovery note exists.
-- Mitigation: move the newest-is-not-recovery helper into a shared module for all three.
+- Severity: low
+- Concern: the lookup reads only the newest 200 pending items (orion-notify caps `limit` at 200). A page older than that is not seen.
+- Mitigation: the lookup fails open, so the worst case is a duplicate page, not a missed one. The 311-item backlog that crowded the window was acked on 2026-11-03, and this fix stops recovery notes piling up. Removing the cap needs a server-side `source_service` filter in sql-writer, which is a separate API change.
+- Concern: the log lines keep their text, but the logger name is now `orion-thought.notify_pending`.
+- Mitigation: nothing in the repo filters on the old logger names.
 
 ## PR link
 

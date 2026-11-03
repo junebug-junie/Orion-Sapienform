@@ -392,3 +392,13 @@ def test_the_same_drop_listed_twice_closes_once_and_never_crashes_the_thought():
                                                                  {"concern_id": "c1", "why": "b"}]}})
     applied = apply_answer(state, answer, now=T0, arc_ids=[], focus_pending=False)
     assert applied.state.concerns == [] and len(applied.state.concern_record) == 1 and applied.warnings == []
+
+
+def test_the_move_comes_before_unbounded_drop_reasons_in_the_note():
+    c = [PrimeConcernV1(concern_id=f"c{i}", text=f"t{i}", opened_at=T0, last_evidence_at=T0) for i in range(3)]
+    answer = PrimeAnswerV1.model_validate({
+        "concerns": {"drop": [{"concern_id": f"c{i}", "why": "x" * 120} for i in range(3)]},
+        "move": {"kind": "curiosity_focus", "question": "what heats the cabinet?", "why": "w"}})
+    note = summary_note(apply_answer(PrimeStateV1(concerns=c), answer, now=T0, arc_ids=[], focus_pending=False))
+    assert note.index("move curiosity_focus") < note.index("dropped")
+    assert "move curiosity_focus" in ("woke: " + "q" * 160 + " | " + note)[:500]

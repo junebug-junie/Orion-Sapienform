@@ -437,9 +437,9 @@ def woke_note(changes: list[str]) -> str:
 
 def summary_note(applied: Applied) -> str:
     """The thought act's close note: what the thought changed (concerns are never edited silently)."""
+    # Most important first: the act note is cut at 500 chars (orion/grammar/acts.py) after a ~170-char
+    # "woke:" prefix, so the move goes before the unbounded drop reasons and warnings.
     parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]
-    if applied.dropped:
-        parts.append("dropped " + "; ".join(applied.dropped))
     if isinstance(applied.move, RegulateMoveV1):
         m = applied.move
         parts.append(f"move regulate {m.direction} {m.family} for {m.hours:g} h: {m.why[:120]!r}")
@@ -450,6 +450,8 @@ def summary_note(applied: Applied) -> str:
         parts.append(f"move refused: {applied.move_refusal}")
     else:
         parts.append("no move")
+    if applied.dropped:
+        parts.append("dropped " + "; ".join(applied.dropped))
     if applied.warnings:
         parts.append("warnings: " + "; ".join(applied.warnings))
     return " | ".join(parts)

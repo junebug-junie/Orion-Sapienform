@@ -20,7 +20,7 @@ Which body constraints bind is NOT a change either (2026-11-04). Live 11-03 09:4
 attention was removed, Prime thought 26 times, almost every one at the 5-minute floor: 21 did nothing,
 4 dropped a concern "because lane X is no longer the binding constraint", 1 asked a question. Over 3
 days the binding set changed 25 times a day (median spell 12 min, 29 of 75 under 5 min): the market
-moving its prices, not news for a mind. It stays in every frame's BODY section.
+moving its prices, not news for a mind. It stays visible in every frame's BODY section, read live from the body.
 
 Attention moving is NOT a change (2026-11-03). Live 10-30..11-03 Prime's concerns churned with it:
 22 of the 38 concern drops gave "attention has moved ..." as the reason, and 1 of 37 graded concern
@@ -259,7 +259,8 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
         state = note_change(state, f"quiet: nothing has woken me for {hours:.0f} hours")
 
     if snap.body_ok and snap.binding is not None and snap.binding != state.seen_binding:
-        # Remembered for the frame, never a wake (see the module docstring, 2026-11-04).
+        # Kept only as a record of the last binding set Prime saw (persisted state field). The frame's BODY
+        # section reads the live body, not this; it is never a wake (module docstring, 2026-11-04).
         state = state.model_copy(update={"seen_binding": snap.binding})
 
     kept: list[PrimeConcernV1] = []

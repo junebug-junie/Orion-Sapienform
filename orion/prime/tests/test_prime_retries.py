@@ -45,7 +45,7 @@ def test_the_quiet_floor_wakes_prime_after_a_quarter_of_a_concerns_life():
 
 def test_the_quiet_floor_never_fires_before_the_first_thought_or_beside_a_real_change():
     assert [c for c in observe(PrimeStateV1(), SNAP, T0).pending_changes if c.startswith("quiet")] == []
-    busy = PrimeStateV1(seen_binding=[], last_thought_at=T0, pending_changes=["body: binding constraints now heat"])
+    busy = PrimeStateV1(seen_binding=[], last_thought_at=T0, pending_changes=["quiet: nothing has woken me for 6 hours"])
     assert observe(busy, SNAP, T0 + QUIET_FLOOR).pending_changes == busy.pending_changes
 
 
@@ -73,7 +73,7 @@ def test_classify_try(err, gw, kind):
 
 
 def test_a_no_model_try_is_not_a_thought_and_the_next_tick_retries():
-    state = PrimeStateV1(pending_changes=["body: binding constraints now heat"], last_thought_at=T0 - timedelta(hours=1))
+    state = PrimeStateV1(pending_changes=["quiet: nothing has woken me for 6 hours"], last_thought_at=T0 - timedelta(hours=1))
     after = note_no_model(state, "no_seat", T0, base=REFRACTORY)
     assert after.last_thought_at == state.last_thought_at          # the refractory clock did not start
     assert after.pending_changes == state.pending_changes          # still something to think about

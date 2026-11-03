@@ -191,6 +191,7 @@ def test_a_thought_overlapping_a_juniper_turn_is_preempted_and_discarded():
     asyncio.run(rt.tick())
     closed = [a for k, a in rt.bus.acts() if k == "act_closed"]
     assert closed[0]["outcome"]["value"] == 0.0 and "preempted" in closed[0]["outcome"]["note"]
+    assert closed[0]["outcome"]["note"].startswith("woke: first wake")
     assert rt.bus.rpcs == [] and rt.state.concerns == [] and rt.state.pending_changes  # nothing applied
 
 
@@ -349,6 +350,7 @@ def test_a_crashing_thought_closes_its_act_and_still_waits_out_the_refractory(mo
     asyncio.run(rt.tick())
     closed = [a for k, a in rt.bus.acts() if k == "act_closed"]
     assert len(closed) == 1 and closed[0]["outcome"]["value"] == 0.0 and "bad payload" in closed[0]["outcome"]["note"]
+    assert closed[0]["outcome"]["note"].startswith("woke: first wake")
     assert len(rt.bids) == 1   # no hot loop: the second tick is inside the refractory interval
 
 
@@ -650,6 +652,7 @@ def test_a_juniper_turn_during_generation_still_preempts(monkeypatch):
     asyncio.run(rt.tick())
     closed = [a for k, a in rt.bus.acts() if k == "act_closed" and a["verb"] == "infer"]
     assert closed[0]["outcome"]["value"] == 0.0 and "preempted" in closed[0]["outcome"]["note"]
+    assert closed[0]["outcome"]["note"].startswith("woke: first wake")
 
 
 def test_the_no_model_backoff_has_a_floor_even_with_no_refractory():

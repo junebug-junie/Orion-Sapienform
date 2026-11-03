@@ -648,13 +648,15 @@ class PrimeRuntime:
         thought_id = new_id()
         # The act's horizon covers the whole try: the seat wait plus the generation budget.
         act = thought_act(thought_id, llm_timeout_sec=self._seat_wait_sec() + float(self.s.PRIME_LLM_TIMEOUT_SEC))
+        # Captured before anything can clear pending changes: every close of this act says why it woke.
+        woke = woke_note(list(self.state.pending_changes))
         try:
             reply = await self._ask(inputs, now)
         except Exception as exc:  # noqa: BLE001 -- a crash is a failed thought (refractory holds: no hot loop)
             logger.exception("prime_thought_crashed thought=%s", thought_id)
             await self._open_thought(act, now)
             await self._close(act, THOUGHT_COMPONENT, produced=False,
-                              note=f"failed: {type(exc).__name__}: {str(exc)[:160]}")
+                              note=f"{woke} | failed: {type(exc).__name__}: {str(exc)[:160]}")
             return
         if reply.kind != "model":
             self._note_no_model(reply, self.clock())   # the backoff counts from the end of the try
@@ -665,7 +667,7 @@ class PrimeRuntime:
         except Exception as exc:  # noqa: BLE001 -- the act always closes
             logger.exception("prime_thought_crashed thought=%s", thought_id)
             produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
-        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=note)
+        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=f"{woke} | {note}")
 
     async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
         """The model was reached: the thought happened. Opened stamped with the try's start; counts for
@@ -754,7 +756,6 @@ class PrimeRuntime:
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
-        woke = list(self.state.pending_changes)  # apply_answer clears them; the act keeps why it woke
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
                                receptors=receptors)
         self.state = applied.state
@@ -775,7 +776,7 @@ class PrimeRuntime:
         elif applied.move is not None:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
-        note = f"{woke_note(woke)} | {summary_note(applied)}"
+        note = summary_note(applied)
         logger.info("prime_thought thought=%s route=%s %s reading=%r", thought_id, reply.route, note,
                     answer.reading[:200])
         return True, note

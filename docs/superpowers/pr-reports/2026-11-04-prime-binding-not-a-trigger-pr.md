@@ -52,7 +52,7 @@ None.
 
 ## Tests run
 ```text
-orion/prime                 76 passed
+orion/prime                 77 passed
 services/orion-mind/tests  200 passed
 orion-static-gates.yml      all steps PASS locally
 ```
@@ -62,6 +62,18 @@ orion-static-gates.yml      all steps PASS locally
 run_prime_wake_replay.py: 3/3 PASS (5.0 thoughts/day; floor woke 12 of 19; longest gap 6.0 h)
 run_prime_frame_eval.py: 11/11 PASS
 ```
+
+## Review findings fixed
+- **Only a successful thought got the wake note.**
+  - Fix: the reason is captured before the model call, and every close of a thought act carries it: success, preempted by a Juniper turn, unparseable answer, or a crash.
+  - Evidence: the preempted and crash tests now assert the note starts with `woke:`.
+- **The 500-character note cap could cut off the move.**
+  - Fix: the move now comes right after the counts, ahead of the drop reasons and warnings, which have no length limit.
+  - Evidence: `test_the_move_comes_before_unbounded_drop_reasons_in_the_note`.
+- **A comment implied `seen_binding` feeds the frame.** It doesn't; the frame reads the live body.
+  - Fix: the comment and docstring are corrected.
+- **Test fixtures still used a binding change as the example pending change.**
+  - Fix: they now use the quiet-floor text.
 
 ## Restart required
 ```bash

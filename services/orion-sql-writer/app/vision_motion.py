@@ -614,14 +614,17 @@ def companion_phrase(kind: str, companions: Sequence[str], people_together: int)
     """The others who moved with this one in the same passage, one count per kind:
     "another person and 2 dogs". The same kind as the subject reads "other"
     ("2 other dogs"), so a count never reads as the total on the street.
-    Kinds keep their first-seen order, other people first."""
+    Kinds read in a fixed order (people, then the NOUNS order, then any other
+    kind alphabetically), so the same companions always read the same way.
+    The counts are track counts: one dog split into two tracks reads "2 dogs"."""
     counts: Dict[str, int] = {}
     if people_together:
         counts["person"] = int(people_together)
     for c in companions:
         counts[c] = counts.get(c, 0) + 1
+    order = {k: i for i, k in enumerate(["person"] + [k for k in NOUNS if k != "person"])}
     parts = []
-    for c, n in counts.items():
+    for c, n in sorted(counts.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0])):
         if c == kind:
             parts.append(f"another {c}" if n == 1 else f"{n} other {PLURALS.get(c, c + 's')}")
         else:

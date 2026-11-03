@@ -279,7 +279,10 @@ def test_other_people_and_dogs_share_one_clause() -> None:
 def test_same_kind_companions_read_other_never_a_total() -> None:
     # Live: "A dog ... together with a dog, a person, a dog".
     s = _sentence("dog", ["dog", "person", "dog"])
-    assert s.endswith(", moving alongside 2 other dogs and a person.")
+    assert s.endswith(", moving alongside a person and 2 other dogs.")
+    # Fixed kind order, not story-id order: the same companions always read the same way.
+    assert vm.companion_phrase("person", ["stroller", "dog", "stroller"], 1) == "another person, a dog and 2 strollers"
+    assert vm.companion_phrase("dog", ["cat", "dog", "bicycle"], 0) == "another dog, a bicycle and a cat"
     assert _sentence("dog", ["person", "person"]).endswith(", moving alongside 2 people.")
     assert _sentence("stroller", ["person", "person"]).endswith(", moving alongside 2 people.")
     assert _sentence("dog", ["dog"]).endswith(", moving alongside another dog.")

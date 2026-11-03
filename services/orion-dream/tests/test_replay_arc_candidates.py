@@ -73,6 +73,7 @@ def test_closed_only_and_sleep_and_strain_excluded():
         _arc("susp1", status="suspended"),
         _arc("sleep1", kind="sleep"),
         _arc("strain1", kind="strain"),  # a body state lasting days would saturate every replay
+        _arc("binding1", kind="binding"),  # same: a constraint binding for hours
         {**_arc("closed_no_end"), "ended_at": None},
     ]
     assert [c.ref_id for c in arc_candidates(rows, SINCE, NOW)] == ["arc:closed1"]

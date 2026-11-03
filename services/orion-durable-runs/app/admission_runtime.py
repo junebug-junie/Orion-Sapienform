@@ -167,7 +167,7 @@ def _without_backoff(hold: dict) -> dict:
     return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
 
 
-from app.admitted_graph import HoldLost
+from app.admitted_graph import LISTENER_WAIT_HOLD_KEY, HoldLost
 
 # release() reasons of a pool take-back (HoldLost / HoldPreempted): the node goes straight back to
 # resource_wait, so a hold the pool already re-granted is kept for it.
@@ -202,7 +202,11 @@ class AdmissionRuntime:
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
             guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued,
-            max_takebacks=settings.hold_max_takebacks)
+            max_takebacks=settings.hold_max_takebacks,
+            # getattr: bare test settings predate these keys; the AdmissionDeps defaults match Settings'.
+            listener_wait_max_tries=int(getattr(settings, "listener_wait_max_tries", 6)),
+            listener_wait_base_seconds=float(getattr(settings, "listener_wait_base_sec", 60.0)),
+            listener_wait_max_seconds=float(getattr(settings, "listener_wait_max_sec", 300.0)))
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
         # curiosity graph.
@@ -432,6 +436,11 @@ class AdmissionRuntime:
         admission = row["request"]["admission"]
         hold = dict(state.get("hold") or {})
         seq = int(state.get("hold_seq") or 0)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get("request_id") and hold.get("retry_at") \
+                and self.now() < datetime.fromisoformat(hold["retry_at"]):
+            # Parked by listener_wait (a step's RPC reached nobody): no pool request until
+            # retry_at. resource_wait interrupts; _hold_ready resumes the run once it passes.
+            return {"status": "waiting_resource", "hold": hold, "hold_seq": seq}
         if seq == 0 and not hold.get("request_id"):
             # Never asked the pool yet: a binding family's run asks the body economy first.
             held = await self._economy_gate(state, row["request"])
@@ -1002,6 +1011,10 @@ class AdmissionRuntime:
         lease_id = hold.get("lease_id")
         retry_at = hold.get("retry_at")
         backing_off = bool(retry_at) and self.now() < datetime.fromisoformat(retry_at)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and backing_off:
+            # Parked by listener_wait: the only pool event for it is its own released hold. Wait.
+            self._hints.discard(run_id)
+            return False
         if run_id in self._hints:
             # The pool only publishes events for a hold it created, so a hint means the pool is
             # answering -- even mid-backoff (e.g. an acquire that timed out but landed and was

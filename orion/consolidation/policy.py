@@ -13,6 +13,9 @@ class ConsolidationWindowConfigV1(BaseModel):
     lookback_minutes: int = 60
     min_support_count: int = 3
     max_frames_per_source: int = 500
+    # Dispatch frames are stamped before their bounded RPC batch and inserted afterward. Layer 11
+    # must not freeze an hour while a pre-boundary frame is still invisible upstream.
+    source_visibility_lag_sec: int = Field(900, ge=0)
 
 
 class MotifThresholdsV1(BaseModel):

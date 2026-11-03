@@ -3,8 +3,9 @@
 orion-actions had no database access before this; the walkway tables
 (`vision_unresolved`, `vision_percept_expectation`,
 `vision_individual_sighting`) live in the shared `conjourney` database and are
-written by orion-sql-writer and orion-vision-council. This module reads them
-and nothing else.
+written by orion-sql-writer and orion-vision-council. This module reads them.
+The self-monitor journal gate (main.py `_journal_gate`) also reads
+`grammar_acts` through `fetch_rows_blocking` (raises; the gate handles it).
 
 Contract: never raises. `None` means the read did not happen (no DSN, driver
 missing, table missing because the manual migration has not been applied,
@@ -41,6 +42,11 @@ def _fetch_blocking(dsn: str, sql: str, params: Mapping[str, Any]) -> list[dict[
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+# Read-only, statement-timeout-bounded, raises on failure (callers that must tell "unreadable" from
+# "no rows" use this and catch).
+fetch_rows_blocking = _fetch_blocking
 
 
 async def fetch_rows(

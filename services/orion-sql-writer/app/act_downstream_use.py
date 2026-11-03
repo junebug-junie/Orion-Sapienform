@@ -78,7 +78,7 @@ SITE = "thought_decision.day_citations"
 ARC_SOURCE_TABLES = (
     "attention_loop_outcome", "attention_salience_trace", "chat_history_log", "curiosity_run_outcomes",
     "dream_cycle", "dream_hypothesis", "episode_memory", "field_dominance_run", "gpu_pool_events",
-    "memory_consolidation_windows", "orion_metacog", "regulation", "retro_play_sessions",
+    "memory_consolidation_windows", "orion_metacog", "physiology", "regulation", "retro_play_sessions",
     "reverie_visual_attempt", "reverie_visual_chain", "substrate_action_outcomes", "substrate_attention_schema",
     "substrate_attention_broadcast_log", "substrate_reverie_chain", "substrate_reverie_thought", "vision_events", "vision_handoff_street_outbox",
     "vision_motion_story", "vision_presence_transition",

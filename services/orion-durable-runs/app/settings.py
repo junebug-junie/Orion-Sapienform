@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # attempt; this bounds how often one run may be taken back and replayed. 0 = unbounded.
     hold_max_takebacks: int = Field(12, ge=0, le=1000, alias="DURABLE_RUNS_HOLD_MAX_TAKEBACKS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
+    # A step's RPC published to nobody (the answering service restarting in a deploy): the run
+    # hands its hold back, waits BASE * 2^(n-1) s (capped at MAX) and replays the step -- no
+    # attempt spent -- at most MAX_TRIES times per run, then fails as any transport error does.
+    # Defaults wait 60+120+240+300+300+300 s (~22 min). 0 tries = off.
+    listener_wait_max_tries: int = Field(6, ge=0, le=100, alias="DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES")
+    listener_wait_base_sec: float = Field(60.0, gt=0.0, alias="DURABLE_RUNS_LISTENER_WAIT_BASE_SEC")
+    listener_wait_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_LISTENER_WAIT_MAX_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
     # Admitted runs: a run is failed terminally once it has at least
     # RESUME_MAX_FAILURES resume failures since its last real node progress
@@ -174,6 +181,11 @@ class Settings(BaseSettings):
     # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
     # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
     temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
+    # Felt state (body economy design Organ 5, "Where Orion sees it"): the physiology node writes a
+    # body_binding row when a constraint's price starts, changes, keeps or stops binding, and the
+    # chronicle folds them into one `binding` arc per constraint episode (chat stance cue, Day
+    # letter, recent arcs). Awareness only: no price or gate reads it. Off: no rows, no arcs.
+    temporal_self_binding_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_BINDING_ARCS_ENABLED")
     # Self-monitor organ patch 2 (docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md): the
     # `self_monitor` node of the temporal_self.update thread reads Orion's settled bets (7 days) at most
     # once per SELF_MONITOR_INTERVAL_SEC, publishes the held SelfMonitorStateV1 to Redis

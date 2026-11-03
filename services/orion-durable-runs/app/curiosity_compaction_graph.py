@@ -33,6 +33,7 @@ class CompactionState(TypedDict, total=False):
     requested_at: str
     attempt: int
     hold_takebacks: int
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict | None
     hold: dict | None
     hold_seq: int

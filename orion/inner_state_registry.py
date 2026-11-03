@@ -1585,8 +1585,20 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         schema=PhysiologyStateV1,
         producer_service="orion-durable-runs",
         cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.REHEARSAL,
-        cognition_consumers=(),
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR #1266). "
+            "SHADOW in the literal sense only: the felt-state reader below turns each "
+            "constraint whose price binds into a Temporal Self arc Orion is shown; it "
+            "decides nothing (no price, gate or veto reads the arcs)."
+        ),
+        cognition_consumers=(
+            "services.orion-durable-runs.app.temporal_self_graph:_binding_step -> "
+            "app.body_binding:plan_constraint -> orion.temporal_self.arcs:_fold_binding "
+            "(felt state, body economy Organ 5: one `binding` arc per constraint episode "
+            "whose price.bind_state binds; read by the chat stance cue, the Day letter and "
+            "recent arcs)",
+        ),
         semantics=(
             # orion/physiology/body.py build_physiology_state(): one reading per constraint
             # (heat, energy, lane:<role>, attention:juniper, claude), each in its own unit with

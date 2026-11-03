@@ -66,6 +66,41 @@ draft does recover on a fresh sample: their own minimum-attempt retry), `compact
 `reverie.visual` / `dream.carry` (deferrals that never spend an attempt). Each already
 retries with backoff.
 
+### A step's RPC published to nobody waits out the deploy (2026-11-03)
+
+Every RPC a work step sends asks the bus for a live listener (`require_listener=True`). When the
+answering service is restarting, the bus raises `RpcPublishedToNobody` (a subclass of
+`RpcNoListener`): PUBSUB NUMSUB read 0 workers in the same transaction as the PUBLISH, so nobody
+received the request. Live 2026-10-31: 16 reading runs failed this way in four bursts, each a
+redeploy.
+
+`app/admitted_graph.py:listener_wait` handles it before any graph's normal failure path: the
+hold is handed back, the run waits `DURABLE_RUNS_LISTENER_WAIT_BASE_SEC * 2^(n-1)` (capped at
+`DURABLE_RUNS_LISTENER_WAIT_MAX_SEC`; defaults 60 s doubling to 300 s), then takes a fresh hold
+and replays the step. **No attempt is spent.** `listener_waits` counts these per run; past
+`DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES` (default 6, ~22 min in total; 0 = off), or when the wait
+would leave no whole attempt before the deadline, the error takes the graph's normal path as
+before. Urgent runs (`brief.urgent`) wait within the urgent budget instead: at most 2 waits, 10 s
+then 20 s. Each wait is a `run.listener_wait` event (`waits`, `retry_at`, `error`). Graphs that go
+straight back to `resource_request` (reading, compactor digest, curiosity compaction) are parked
+by `hold = {"retry_at", "listener_wait"}`, which `AdmissionRuntime.register` waits out; graphs
+with a `retry_wait` node also get `retry_at` on the state.
+
+Wired into: `curiosity.investigate`, `self_sense_eval`, `harness.echo_smoke`,
+`curiosity.compaction` (via `failed_attempt`), `reading.turn`, `compactor.digest`,
+`journal.compose`, `memory.episode_distill`, `orion_day.letter`. `reverie.visual` and
+`dream.carry` already treat any transport error as a backed-off deferral that spends no attempt.
+
+**Only the publish-time case is replayed.** `RpcNoListener` "while awaiting its reply" means the
+request WAS delivered and its listener went away mid-step: it may have done work (a curiosity turn
+has tools; a reading turn fetches and spends GPU). That keeps the normal attempt path. For
+reading, the seed queue's next attempt then usually lands in the same deploy and is the
+published-to-nobody case, which waits.
+
+Eval: `evals/deploy_window_listener_wait.py` (16 readings unheard for a deploy window: all 16 fail
+with the wait off, all 16 complete with it on, no attempt spent). Mutation eval:
+`evals/listener_wait_mutations.py`.
+
 ## Workflow registry (2026-09-21)
 
 ### Admitted reading turns (2026-09-26)
@@ -685,6 +720,26 @@ read `strained` (`scripts/analysis/measure_arousal_reader_replay.py` filters the
 would restart a level's age). The causes already recorded and the last row's time ride in the
 checkpoint as `strain_causes_seen` / `strain_row_at` / `strain_causes_now`.
 Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
+
+**Binding arcs (2026-11-03, body economy design Organ 5 "Felt state").** Strain only fires at the 34 °C
+reflex; between the soft line and that, the heat price binds and the hot gate refuses GPU work, but
+nothing in Orion's day said so. After pricing, the `physiology` node now writes `body_binding` rows
+into `temporal_self_event` (`source_table='physiology'`, subject `orion:body:<constraint>`;
+`app/body_binding.py`, insert `regulation_store.record_binding`). Bound means the price's
+`bind_state` is `binding`, `exogenous_bind` or `stuck_at_ceiling` (what the body report calls
+BINDING). Rows: `onset` once bound for 240 s, `change` when the bound state changes (at most every
+600 s), `keepalive` every 30 min while bound, `release` once slack for 240 s (the arc ends at the first
+slack reading). `no_reading` writes nothing; the reducer's 4,500 s stale timeout closes the arc at its
+last row. An open episode that went unread (no_reading, or a reading gap over 3 x
+`TEMPORAL_SELF_TICK_SEC`) marks its next row `after_gap`, so the chronicle never counts the unread
+stretch as binding time. Event id `body_binding:<constraint>:<episode start>:<row>:<written at>`; the payload carries
+the level, line, price, ceiling, the price's `why` and `self_spent`. The per-constraint episode rides
+in the checkpoint as `binding_episodes`; a failed write keeps it, so the next tick retries. The
+chronicle folds the rows into one `binding` arc per constraint (several open at once). Awareness only:
+no price or gate reads it. Kill switch: `TEMPORAL_SELF_BINDING_ARCS_ENABLED=false` (no rows, no arcs).
+Replay: `python -P services/orion-durable-runs/evals/body_binding_replay.py [--live --days 7]`.
+Deploy order: orion-thought and orion-hub before this service (`binding` is new to `extra="forbid"`
+frame readers).
 
 **Self-monitor node (2026-11-03, self-monitor organ patch 2: host and publish).** Spec:
 `docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md`. Orion keeps a track record of their

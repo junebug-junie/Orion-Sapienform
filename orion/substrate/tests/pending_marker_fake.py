@@ -19,11 +19,20 @@ DAY = 86400.0
 
 
 class Row:
-    def __init__(self, frame_id, age_days, *, pending=False, has_child=False):
+    def __init__(
+        self,
+        frame_id,
+        age_days,
+        *,
+        pending=False,
+        has_child=False,
+        has_alternate_child=False,
+    ):
         self.frame_id = frame_id
         self.generated_at = NOW - timedelta(days=age_days)
         self.pending = pending
         self.has_child = has_child
+        self.has_alternate_child = has_alternate_child
 
 
 class _Result:
@@ -62,6 +71,11 @@ class FakeDb:
             if "NOT p." in sql and r.pending:
                 continue
             if "NOT EXISTS" in sql and r.has_child:
+                continue
+            if (
+                "substrate_feedback_control_reductions" in sql
+                and r.has_alternate_child
+            ):
                 continue
             out.append(r)
         return out

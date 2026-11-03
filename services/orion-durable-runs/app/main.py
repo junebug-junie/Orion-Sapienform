@@ -315,6 +315,9 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.cause_row(reading, day_id, joined, seed))
 
+    async def record_binding(row) -> bool:
+        return await regulation_store.record_binding(_checkpointer_cm, row)
+
     async def read_immune_series(now):
         """R4: 24 h of every glossary channel that carries semantics, one sample per minute."""
         from orion.field.channel_glossary import load_glossary
@@ -351,6 +354,8 @@ def _build_temporal_self(saver: Any):
         read_body=read_body, project_physiology=project_physiology,
         physiology_min_interval_sec=s.physiology_min_interval_sec,
         price_body=price_body,
+        record_binding=record_binding if s.temporal_self_binding_arcs_enabled else None,
+        binding_max_gap_sec=3.0 * s.temporal_self_tick_sec,
         self_monitor_interval_sec=s.self_monitor_interval_sec,
         self_monitor_timeout_sec=s.self_monitor_timeout_sec,
         **monitor,
@@ -515,6 +520,7 @@ def _build_chronicle():
     return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
         _checkpointer_cm, reducer.tz_name,
         exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
+                                            ("body_binding", s.temporal_self_binding_arcs_enabled),
                                             ("retro_play", s.temporal_self_retro_play_enabled),
                                             ("street_event", s.temporal_self_street_episodes_enabled),
                                             ("faculty_status_changed", s.self_monitor_enabled)) if not on)),

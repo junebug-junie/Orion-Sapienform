@@ -7,26 +7,19 @@ from typing import Any
 from orion.core.schemas.substrate_mutation import MutationAdoptionV1, MutationDecisionV1, MutationProposalV1
 from orion.substrate.mutation_contracts import RETIRED_MUTATION_CLASSES
 from orion.substrate.mutation_control_surface import (
-    ControlSurfaceReadError,
     ControlSurfaceWriteError,
     get_chat_reflective_lane_threshold,
-    get_prediction_expectation,
     set_chat_reflective_lane_threshold,
-    set_prediction_expectation,
-)
-from orion.substrate.prediction_expectation import (
-    MUTATION_CLASS as PREDICTION_EXPECTATION_CLASS,
-    domain_for_surface,
-    expectation_from_payload,
 )
 
 @dataclass
 class PatchApplier:
     """Applies typed patches to bounded in-memory surfaces.
 
-    Live surfaces: ``prediction_expectation_patch`` writes the substrate
-    control surface (rung 6). The graph_consolidation policy-store staging
-    branch was removed 2026-10-16 with that class's retirement.
+    No class writes a live surface today. The graph_consolidation
+    policy-store staging branch was removed 2026-10-16 and the
+    prediction_expectation_patch control-surface branch 2026-11-03, each with
+    its class's retirement (RETIRED_MUTATION_CLASSES).
     """
 
     surfaces: dict[str, dict[str, Any]]
@@ -71,17 +64,6 @@ class PatchApplier:
         Surfaces it cannot compare return None, because "cannot tell" must not
         read as "no change".
         """
-        if proposal.mutation_class == PREDICTION_EXPECTATION_CLASS:
-            spec = domain_for_surface(proposal.target_surface)
-            if spec is None:
-                return None
-            try:
-                live = get_prediction_expectation(spec.domain)
-            except Exception:
-                return None
-            if expectation_from_payload(proposal.patch.patch, default=live) == live:
-                return f"patch_is_noop:{spec.control_surface_key}=alpha:{live.alpha},min_variance:{live.min_variance}"
-            return None
         if proposal.mutation_class != "routing_threshold_patch":
             return None
         try:
@@ -147,8 +129,6 @@ class PatchApplier:
             proposal = proposal.model_copy(
                 update={"patch": proposal.patch.model_copy(update={"rollback_payload": rollback_payload})}
             )
-        if proposal.mutation_class == PREDICTION_EXPECTATION_CLASS:
-            return self._apply_prediction_expectation(proposal=proposal, decision=decision)
         current = self.surfaces.setdefault(proposal.target_surface, {})
         current.update(proposal.patch.patch)
         return MutationAdoptionV1(
@@ -160,58 +140,7 @@ class PatchApplier:
             rollback_window_sec=900,
         )
 
-    def _apply_prediction_expectation(
-        self, *, proposal: MutationProposalV1, decision: MutationDecisionV1
-    ) -> MutationAdoptionV1 | None:
-        """Write Orion's revised expectation to the live control surface.
-
-        The rollback payload is the value read live at apply time, never the
-        proposal's own copy: undo restores what was actually running.
-        """
-        spec = domain_for_surface(proposal.target_surface)
-        if spec is None or proposal.patch.target_ref != spec.domain:
-            return None
-        try:
-            live = get_prediction_expectation(spec.domain, strict=True)
-        except ControlSurfaceReadError:
-            # Unknown live value -> unknown rollback target. Refuse.
-            return None
-        candidate = expectation_from_payload(proposal.patch.patch, default=live)
-        if candidate == live or not spec.in_bounds(candidate):
-            return None
-        try:
-            set_prediction_expectation(
-                spec.domain,
-                alpha=candidate.alpha,
-                min_variance=candidate.min_variance,
-                actor="mutation_apply",
-                proposal_id=proposal.proposal_id,
-                decision_id=decision.decision_id,
-            )
-        except ControlSurfaceWriteError:
-            return None
-        return MutationAdoptionV1(
-            proposal_id=proposal.proposal_id,
-            decision_id=decision.decision_id,
-            target_surface=proposal.target_surface,
-            applied_patch=candidate.as_patch(),
-            rollback_payload=live.as_patch(),
-            rollback_window_sec=spec.rollback_window_sec,
-        )
-
     def rollback(self, *, adoption: MutationAdoptionV1) -> None:
-        spec = domain_for_surface(adoption.target_surface)
-        if spec is not None:
-            previous = expectation_from_payload(adoption.rollback_payload, default=spec.default)
-            set_prediction_expectation(
-                spec.domain,
-                alpha=previous.alpha,
-                min_variance=previous.min_variance,
-                actor="mutation_rollback",
-                proposal_id=adoption.proposal_id,
-                decision_id=adoption.decision_id,
-            )
-            return
         threshold = adoption.rollback_payload.get("chat_reflective_lane_threshold")
         if threshold is not None:
             set_chat_reflective_lane_threshold(

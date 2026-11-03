@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.feedback.builder import build_feedback_frame
 from orion.feedback.outcome_resolution import (
+    OutcomeResolution,
     resolve_action_outcomes,
     summarize_control_observations,
 )
@@ -32,6 +34,17 @@ _VISUAL_PARK_RECHECK_SEC = 30.0
 _VISUAL_PARK_MAX_FRAMES = 256
 # A parked entry whose recheck came due this long ago was consumed some other way.
 _VISUAL_PARK_FORGET_SEC = 3600.0
+# Serial, bounded catch-up. Three items per 2-second poll gives the stage headroom over the
+# measured ~28.5 dispatch frames/minute without introducing concurrent field scoring or an
+# unbounded loop that could starve world settlement and shutdown.
+_MAX_ITEMS_PER_POLL = 3
+
+
+@dataclass(frozen=True)
+class ControlReductionResult:
+    dispatch_frame_id: str
+    observation_count: int
+    cell_count: int
 
 
 class FeedbackRuntimeWorker:
@@ -70,9 +83,7 @@ class FeedbackRuntimeWorker:
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                frame = await asyncio.to_thread(self._tick)
-                if frame is not None:
-                    await self._publish_feedback_frame(frame)
+                await self._process_pending_batch()
             except Exception:
                 logger.exception("feedback_runtime_tick_failed")
             try:
@@ -89,6 +100,18 @@ class FeedbackRuntimeWorker:
             except asyncio.CancelledError:
                 break
 
+    async def _process_pending_batch(self) -> int:
+        """Process a small FIFO batch, stopping as soon as the queue cannot advance."""
+        processed = 0
+        for _ in range(_MAX_ITEMS_PER_POLL):
+            result = await asyncio.to_thread(self._tick)
+            if result is None:
+                break
+            processed += 1
+            if isinstance(result, FeedbackFrameV1):
+                await self._publish_feedback_frame(result)
+        return processed
+
     async def _publish_feedback_frame(self, frame: FeedbackFrameV1) -> None:
         env = BaseEnvelope(
             kind="feedback.frame.v1",
@@ -102,7 +125,7 @@ class FeedbackRuntimeWorker:
             self._settings.feedback_bus_channel,
         )
 
-    def _tick(self) -> Optional[FeedbackFrameV1]:
+    def _tick(self) -> Optional[FeedbackFrameV1 | ControlReductionResult]:
         if not self._settings.enable_feedback_runtime:
             return None
 
@@ -130,13 +153,17 @@ class FeedbackRuntimeWorker:
             self._store.clear_feedback_pending(dispatch.frame_id)
             return None
 
-        policy_frame = self._store.load_policy_frame(dispatch.source_policy_frame_id)
-        proposal_frame = self._store.load_proposal_frame(dispatch.source_proposal_frame_id)
+        structurally_empty = _is_structurally_empty_dispatch(dispatch)
         # Loaded BEFORE the window is chosen, because the window depends on how
         # long these actions actually took. Previously loaded after the frame
         # was built; moving it up is the whole reason the settle can be
         # measured rather than assumed.
-        cortex_results = self._store.load_cortex_result_evidence(dispatch)
+        # A structurally empty frame has no sends and therefore no result identity to look up.
+        # Avoid the query entirely on the compact path; an inconsistent frame is not classified
+        # empty and retains the full evidence path.
+        cortex_results = (
+            [] if structurally_empty else self._store.load_cortex_result_evidence(dispatch)
+        )
 
         pending_renders = _pending_render_dispatch_ids(cortex_results)
         if pending_renders:
@@ -229,6 +256,45 @@ class FeedbackRuntimeWorker:
                 settle_sec,
             )
             return None
+
+        resolution: OutcomeResolution | None = None
+        resolution_attempted = False
+        if structurally_empty:
+            resolution_attempted = True
+            resolution = self._resolve_outcomes(
+                dispatch=dispatch,
+                feedback_frame_id=f"feedback.control-reduction:{dispatch.frame_id}",
+                cortex_results=cortex_results,
+                settle_sec=settle_sec,
+                settle_clamped=settle_clamped,
+            )
+            # No synthetic success: if the field window did not yield a real untreated
+            # observation, retain the full inspectable feedback artifact and its warnings.
+            if (
+                resolution is not None
+                and resolution.control_observations
+                and resolution.control_posteriors
+            ):
+                inserted = self._store.save_control_reduction(
+                    dispatch,
+                    control_cells=resolution.control_posteriors,
+                    observation_count=len(resolution.control_observations),
+                )
+                logger.info(
+                    "feedback_control_reduced dispatch_frame_id=%s observations=%d cells=%d "
+                    "inserted=%s untreated=%s",
+                    dispatch.frame_id,
+                    len(resolution.control_observations),
+                    len(resolution.control_posteriors),
+                    inserted,
+                    summarize_control_observations(resolution.control_observations),
+                )
+                return ControlReductionResult(
+                    dispatch_frame_id=dispatch.frame_id,
+                    observation_count=len(resolution.control_observations),
+                    cell_count=len(resolution.control_posteriors),
+                )
+
         # 2026-07-22 (SelfStateV1 burn): field_before is the exact field
         # tick dispatch was built against; field_after is the next real
         # field tick observed within the policy's window, same "did the
@@ -238,6 +304,8 @@ class FeedbackRuntimeWorker:
             dispatch.generated_at,
             window_sec=self._policy.windows.field_after_window_sec,
         )
+        policy_frame = self._store.load_policy_frame(dispatch.source_policy_frame_id)
+        proposal_frame = self._store.load_proposal_frame(dispatch.source_proposal_frame_id)
         frame = build_feedback_frame(
             dispatch_frame=dispatch,
             policy_frame=policy_frame,
@@ -252,43 +320,14 @@ class FeedbackRuntimeWorker:
         # bug must not stall the pipeline that has been running for months.
         # An empty resolution is a legitimate outcome (a tick can dispatch
         # nothing, or dispatch only actions that declare no signal).
-        try:
-            # NOT the feedback frame's own field_before/field_after. Those
-            # are [t-205s, t+1.1s] and the action has not returned at the
-            # closing edge -- see store.load_action_scoring_window for the
-            # measurements and why that made every contrast an unbiased
-            # estimate of a null quantity.
-            if settle_clamped:
-                # A window we already know is too short yields a confident wrong
-                # posterior, which is strictly worse than a gap. Refuse.
-                logger.warning(
-                    "feedback_scoring_window_clamped dispatch_frame_id=%s settle_sec=%.1f "
-                    "-- action outlasts the ceiling; NOT scoring (a short window would "
-                    "fold a belief that is null by construction)",
-                    dispatch.frame_id,
-                    settle_sec,
-                )
-                score_before, score_after = None, None
-            else:
-                score_before, score_after = self._store.load_action_scoring_window(
-                    dispatch.generated_at,
-                    settle_sec=settle_sec,
-                )
-            resolution = resolve_action_outcomes(
-                dispatch_frame=dispatch,
+        if not resolution_attempted:
+            resolution = self._resolve_outcomes(
+                dispatch=dispatch,
                 feedback_frame_id=frame.frame_id,
-                field_before=score_before,
-                field_after=score_after,
-                priors=self._store.load_effect_posteriors(),
-                control_priors=self._store.load_control_posteriors(),
-                latency_by_dispatch_id=_latencies(cortex_results),
                 cortex_results=cortex_results,
+                settle_sec=settle_sec,
+                settle_clamped=settle_clamped,
             )
-        except Exception:
-            logger.exception(
-                "action_outcome_resolution_failed dispatch_frame_id=%s", dispatch.frame_id
-            )
-            resolution = None
 
         self._store.save_feedback_frame(
             frame,
@@ -321,6 +360,49 @@ class FeedbackRuntimeWorker:
                 sorted(counts.items()),
             )
         return frame
+
+    def _resolve_outcomes(
+        self,
+        *,
+        dispatch,
+        feedback_frame_id: str,
+        cortex_results: list[dict[str, object]],
+        settle_sec: float,
+        settle_clamped: bool,
+    ) -> OutcomeResolution | None:
+        """Resolve treated/control observations from the action-containing scoring window."""
+        try:
+            # NOT the feedback frame's own field_before/field_after. Those are much earlier
+            # snapshots and can close before an action returns.
+            if settle_clamped:
+                logger.warning(
+                    "feedback_scoring_window_clamped dispatch_frame_id=%s settle_sec=%.1f "
+                    "-- action outlasts the ceiling; NOT scoring (a short window would "
+                    "fold a belief that is null by construction)",
+                    dispatch.frame_id,
+                    settle_sec,
+                )
+                score_before, score_after = None, None
+            else:
+                score_before, score_after = self._store.load_action_scoring_window(
+                    dispatch.generated_at,
+                    settle_sec=settle_sec,
+                )
+            return resolve_action_outcomes(
+                dispatch_frame=dispatch,
+                feedback_frame_id=feedback_frame_id,
+                field_before=score_before,
+                field_after=score_after,
+                priors=self._store.load_effect_posteriors(),
+                control_priors=self._store.load_control_posteriors(),
+                latency_by_dispatch_id=_latencies(cortex_results),
+                cortex_results=cortex_results,
+            )
+        except Exception:
+            logger.exception(
+                "action_outcome_resolution_failed dispatch_frame_id=%s", dispatch.frame_id
+            )
+            return None
 
     def _score_world_episodes(self, now: datetime | None = None) -> int:
         """Settle-time scoring for world actions (both arms). Rate limited; returns rows scored."""
@@ -440,6 +522,29 @@ def _pending_render_dispatch_ids(cortex_results: list[dict[str, object]] | None)
         for raw in cortex_results or []
         if raw.get("settlement_state") in UNSETTLED_RENDER_STATES
     }
+
+
+def _is_structurally_empty_dispatch(dispatch) -> bool:
+    """True only when every persisted representation agrees that no candidate existed."""
+    required = (
+        "candidates",
+        "blocked_candidates",
+        "dispatched_candidates",
+        "dispatch_attempted",
+        "dispatch_count",
+        "blocked_count",
+    )
+    if any(not hasattr(dispatch, field) for field in required):
+        return False
+    return (
+        not dispatch.candidates
+        and not dispatch.blocked_candidates
+        and not dispatch.dispatched_candidates
+        and not dispatch.dispatch_attempted
+        and dispatch.dispatch_count == 0
+        and dispatch.blocked_count == 0
+        and not dispatch.warnings
+    )
 
 
 def _window_latencies(

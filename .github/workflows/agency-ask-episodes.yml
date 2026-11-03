@@ -38,6 +38,7 @@ jobs:
           tests/test_curiosity_peer_briefs.py tests/test_curiosity_peer_brief_persist.py
           tests/test_curiosity_peer_kickoff.py tests/test_curiosity_peer_patch0_acceptance.py
           orion/curiosity/tests/test_self_inquiry_prompt_drawn_question.py
+          orion/curiosity/tests/test_self_inquiry_prompt_dig_body.py
           tests/scripts/test_schema_skew_discovery.py
           orion/autonomy/tests/test_agency_episode.py orion/autonomy/tests/test_agency_episode_reader.py -q
       - run: PYTHONPATH=services/orion-curiosity-peer:. python services/orion-curiosity-peer/evals/run_contractor_peer_eval.py

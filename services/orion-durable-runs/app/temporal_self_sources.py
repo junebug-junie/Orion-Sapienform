@@ -188,6 +188,13 @@ SELECT event_id, occurred_at, payload_json FROM temporal_self_event
 WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
+    # Felt state (body economy Organ 5): the physiology node's own binding rows in the event table
+    # (app/body_binding.py). Only the physiology node writes this kind; the adapter keeps their ids.
+    SourceQuery("body_binding", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'body_binding' AND source_table = 'physiology'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
     # Self-monitor organ patch 2: the self_monitor node's own faculty rows (status changes, keepalives).
     SourceQuery("faculty_status_changed", """
 SELECT event_id, occurred_at, payload_json FROM temporal_self_event

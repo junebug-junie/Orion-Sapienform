@@ -142,7 +142,11 @@ semantics keyed on the nested fields if the gate is extended), and re-lock.
 Both of them add the same `DECLARED_WRITERS` entries for `SelfMonitorStateV1` / `FacultyRecordV1` in
 `orion/schema_skew_discovery.py`, naming orion-durable-runs as the writer. This PR makes the real writer
 visible. So if this PR merges after either of them, this PR removes those entries. If they merge after
-this PR, they drop the entries. The steps for whichever merges second:
+this PR, they drop the entries. Status at the last merge of main into this branch: main already carried those two entries (they came
+with the E1/E2 patch), so this PR removes them from `orion/schema_skew_discovery.py`, and
+`test_declared_writers_are_not_stale` passes (18 passed). Main also gained binding arcs (body economy
+Organ 5) in the same files this PR touches; faculty arcs sit beside them, and both are excluded from
+dream replay. The steps for whichever merges second:
 
 1. Rebase. #3063 adds `calibrated_share`, `calibrated_lo` and `calibrated_hi` to `FacultyRecordV1` and
    to the `reduce_faculty` constructor call. This PR does not touch that call or the schema, so the

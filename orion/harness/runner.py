@@ -30,6 +30,7 @@ from orion.harness.fcc_motor import (
     run_fcc_turn,
     is_progress_frame,
     summarize_harness_step,
+    text_tool_call,
 )
 from orion.harness.grammar_emit import (
     HarnessGrammarCollector,
@@ -45,7 +46,7 @@ from orion.gpu_pool.placement import (
     placement_from_route_default,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
-from orion.harness.cut_short import TurnFindings, build_cut_short_draft, is_cut_short_code
+from orion.harness.cut_short import TEXT_TOOL_CALL_CODE, TurnFindings, build_cut_short_draft, is_cut_short_code
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
 from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
@@ -621,6 +622,44 @@ class HarnessRunner:
                 seen_served_model = _served_model_from_metadata(meta)
                 if seen_served_model:
                     fcc_served_model = seen_served_model
+                text_call = (
+                    None if getattr(request, "reading_only", False) else text_tool_call(draft_text)
+                )
+                if text_call:
+                    # The answer is a tool call that never ran (the motor already resumed once).
+                    # Finalize would "repair" raw call syntax into a summary of work that never
+                    # happened -- live 2026-11-03, 4bbaaf2a. Build the draft from what the turn
+                    # actually recorded, marked cut short, so repair is skipped.
+                    logger.warning(
+                        "harness_text_tool_call_final corr=%s tool=%s steps=%s",
+                        request.correlation_id,
+                        text_call,
+                        step_count,
+                    )
+                    # Treated like the error branch's cut-short path: no clean-final side effects
+                    # (last-tool-fetch hint), and the last step is recorded as failed.
+                    error_path_taken = True
+                    turn_findings.drop_trailing_text_call()
+                    cut_short_draft = build_cut_short_draft(
+                        error_code=TEXT_TOOL_CALL_CODE,
+                        step_count=step_count,
+                        findings=turn_findings,
+                    )
+                    compliance_verdict = "partial"
+                    grounding_status = TEXT_TOOL_CALL_CODE
+                    if last_recorded_step_order > 0:
+                        collector.record_step_failed(
+                            order=last_recorded_step_order,
+                            error_kind=short_error_kind(TEXT_TOOL_CALL_CODE),
+                        )
+                    if cut_short_draft:
+                        draft_text = cut_short_draft
+                        cut_short_reason = TEXT_TOOL_CALL_CODE
+                    else:
+                        # Nothing recorded to stand behind a draft: the motor failed.
+                        draft_text = ""
+                        compliance_verdict = "failed"
+                        motor_failed = True
             elif etype == "error":
                 error_path_taken = True
                 partial = str(event.get("llm_response") or "").strip()

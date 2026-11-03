@@ -10,41 +10,89 @@ This is the patch-1 surface of the organ: it changes nothing anywhere.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from orion.schemas.self_monitor import FacultyRecordV1, SelfMonitorStateV1
 from orion.self_monitor.collect import SOURCES, SourceResult, build_state, first_line
 from orion.self_monitor.record import WINDOW_DAYS
 
+_ENGINE_CACHE_MAX = 4
+_ENGINE_CACHE: dict[str, Any | None] = {}
+_ENGINE_CACHE_LOCK = threading.Lock()
+
+
+_first_line = first_line
+
+
+def _engine(postgres_url: str) -> Any:
+    """Return one read-only pool per configured URL without racing first use.
+
+    A process is expected to use one database URL. The small hard cap catches
+    accidental URL churn without evicting and disposing an engine another
+    thread may still be using.
+    """
+    from sqlalchemy import create_engine
+
+    with _ENGINE_CACHE_LOCK:
+        if postgres_url not in _ENGINE_CACHE:
+            if len(_ENGINE_CACHE) >= _ENGINE_CACHE_MAX:
+                raise RuntimeError(
+                    f"self-monitor engine cache is full ({_ENGINE_CACHE_MAX} database URLs)"
+                )
+            _ENGINE_CACHE[postgres_url] = None
+        if _ENGINE_CACHE[postgres_url] is None:
+            try:
+                _ENGINE_CACHE[postgres_url] = create_engine(
+                    postgres_url,
+                    pool_pre_ping=True,
+                    pool_size=1,
+                    max_overflow=0,
+                    connect_args={
+                        "connect_timeout": 5,
+                        "options": "-c statement_timeout=60000 -c default_transaction_read_only=on",
+                    },
+                )
+            except Exception:
+                del _ENGINE_CACHE[postgres_url]
+                raise
+        return _ENGINE_CACHE[postgres_url]
+
+
+def _dispose_cached_engines() -> None:
+    """Dispose every cached pool when no callers are active (tests/shutdown)."""
+    with _ENGINE_CACHE_LOCK:
+        engines = [engine for engine in _ENGINE_CACHE.values() if engine is not None]
+        _ENGINE_CACHE.clear()
+    for engine in engines:
+        engine.dispose()
+
+
+atexit.register(_dispose_cached_engines)
+
 
 def collect(postgres_url: str, *, now: datetime, window_days: float) -> SelfMonitorStateV1:
     """Read every source with SQLAlchemy (read-only, 60 s per statement) and build the state through
     the same path the live host uses (``orion.self_monitor.collect.build_state``)."""
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
     since = now - timedelta(days=window_days)
     try:
-        engine = create_engine(
-            postgres_url, pool_size=1, max_overflow=0,
-            connect_args={"connect_timeout": 5,
-                          "options": "-c statement_timeout=60000 -c default_transaction_read_only=on"},
-        )
+        engine = _engine(postgres_url)
     except Exception as exc:
         return build_state({}, now=now, window_days=window_days, extra_errors=[f"engine: {first_line(exc)}"])
     results: dict[str, SourceResult] = {}
-    try:
-        for name, sql, _ in SOURCES:
-            try:
-                with engine.connect() as conn:
-                    results[name] = [dict(r._mapping) for r in conn.execute(text(sql), {"since": since})]
-            except Exception as exc:  # named by build_state, never silent
-                results[name] = exc
-    finally:
-        engine.dispose()
+    for name, sql, _ in SOURCES:
+        try:
+            with engine.connect() as conn:
+                results[name] = [dict(r._mapping) for r in conn.execute(text(sql), {"since": since})]
+        except Exception as exc:  # named by build_state, never silent
+            results[name] = exc
     return build_state(results, now=now, window_days=window_days)
 
 

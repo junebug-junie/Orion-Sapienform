@@ -5,7 +5,7 @@ would hold a stale reference that `unittest.mock.patch("app....")` can't see.
 
 `ResonanceHealthMonitor.__init__` unconditionally bootstraps its tracked-theme
 set from orion-notify's pending list, so every test that constructs one must
-mock `app.resonance_monitor.requests.get` (via `_no_bootstrap_items()` below)
+mock `app.notify_pending.requests.get` (via `_no_bootstrap_items()` below)
 or it will attempt a real network call.
 """
 from __future__ import annotations
@@ -91,7 +91,7 @@ def test_is_worsening_healthy_when_violation_count_decreasing_or_flat():
 
 def test_monitor_does_not_alert_on_healthy_first_observation():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=_samples(3)):
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -102,7 +102,7 @@ def test_monitor_does_not_alert_on_healthy_first_observation():
 
 def test_monitor_alerts_only_on_worsening_transition_not_every_tick():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts") as mock_load:
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -121,7 +121,7 @@ def test_monitor_alerts_only_on_worsening_transition_not_every_tick():
 
 def test_monitor_sends_recovery_note_on_healthy_transition():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts") as mock_load:
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -146,7 +146,7 @@ def test_monitor_evicts_theme_after_confirmed_recovery():
     """Once a recovery note is confirmed delivered, the theme must stop being
     tracked -- otherwise every completed chain re-queries it forever."""
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts") as mock_load:
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -174,7 +174,7 @@ def test_monitor_evicts_theme_after_confirmed_recovery():
 
 def test_monitor_retries_until_notify_confirms_delivery():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts") as mock_load:
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -203,7 +203,7 @@ def test_monitor_retries_until_notify_confirms_delivery():
 
 def test_monitor_suppresses_first_observation_when_notify_has_open_item():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get"
+        "app.notify_pending.requests.get"
     ) as mock_get, patch(
         "app.resonance_monitor.load_recent_resonance_alerts", return_value=_samples(6, 3)
     ):
@@ -234,7 +234,7 @@ def test_monitor_recovers_previously_tracked_theme_even_when_alert_is_none():
     """A theme that stops being the current tick's most-severe theme should
     still get checked (and recovered) rather than staying silently open."""
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts") as mock_load:
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -261,7 +261,7 @@ def test_bootstrap_reconstructs_tracked_themes_from_notify_pending_list():
     pending list -- otherwise a theme dropped by the restart could never be
     re-tracked, and its open Pending Attention item could never recover."""
     with patch("app.resonance_monitor.NotifyClient"), patch(
-        "app.resonance_monitor.requests.get"
+        "app.notify_pending.requests.get"
     ) as mock_get:
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -293,7 +293,7 @@ def test_bootstrap_reconstructed_theme_can_recover_on_next_tick():
     at startup must be able to actually recover (fire the recovery note) on
     the next real observation, rather than being silently dropped forever."""
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get"
+        "app.notify_pending.requests.get"
     ) as mock_get, patch(
         "app.resonance_monitor.load_recent_resonance_alerts", return_value=_samples(3, 6)
     ):
@@ -322,7 +322,7 @@ def test_bootstrap_reconstructed_theme_can_recover_on_next_tick():
 
 def test_bootstrap_failure_is_fail_open_not_fatal():
     with patch("app.resonance_monitor.NotifyClient"), patch(
-        "app.resonance_monitor.requests.get", side_effect=RuntimeError("network down")
+        "app.notify_pending.requests.get", side_effect=RuntimeError("network down")
     ):
         from app.resonance_monitor import ResonanceHealthMonitor
 
@@ -349,7 +349,7 @@ def test_check_resonance_worsening_module_singleton_never_raises():
 
 def test_worsening_publish_skips_network_call_when_cooldown_active():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch(
         "app.resonance_monitor.load_recent_resonance_alerts"
     ) as mock_load, patch(
@@ -378,7 +378,7 @@ def test_worsening_publish_skips_network_call_when_cooldown_active():
 
 def test_worsening_publish_sends_and_marks_cooldown_when_not_active():
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch(
         "app.resonance_monitor.load_recent_resonance_alerts"
     ) as mock_load, patch(
@@ -406,7 +406,7 @@ def test_recovery_publish_is_never_gated_by_cooldown():
     """The cooldown only applies to the 'worsening' side -- a genuine recovery
     note must always go out, never be swallowed by the same-key cooldown."""
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch(
         "app.resonance_monitor.load_recent_resonance_alerts"
     ) as mock_load, patch(
@@ -476,7 +476,7 @@ def test_monitor_recovers_once_trend_goes_stale():
     rows[0]["created_at"] = fresh
     rows[1]["created_at"] = fresh - timedelta(seconds=300)
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get", return_value=_no_bootstrap_items()
+        "app.notify_pending.requests.get", return_value=_no_bootstrap_items()
     ), patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=rows), patch(
         "app.resonance_monitor.resonance_alert_cooldown_active", return_value=False
     ), patch("app.resonance_monitor.resonance_alert_cooldown_mark", return_value=True):
@@ -515,7 +515,7 @@ def test_bootstrap_skips_theme_whose_newest_pending_item_is_a_recovery():
         },
     ]
     with patch("app.resonance_monitor.NotifyClient") as client_cls, patch(
-        "app.resonance_monitor.requests.get",
+        "app.notify_pending.requests.get",
         return_value=MagicMock(status_code=200, json=lambda: pending),
     ), patch("app.resonance_monitor.load_recent_resonance_alerts", return_value=_samples(2, 2)):
         from app.resonance_monitor import ResonanceHealthMonitor

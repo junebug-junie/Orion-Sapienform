@@ -61,3 +61,17 @@ def test_degenerate_budgets() -> None:
     assert fit_to_budget("abc", 0) == ""
     assert fit_to_budget("abcd", 1) == ELLIPSIS
     assert fit_to_budget("", 10) == ""
+
+
+def test_a_newline_is_a_word_boundary_too() -> None:
+    assert fit_to_budget("word\nnext line here", 8) == "word" + ELLIPSIS
+
+
+def test_abbreviations_are_not_sentence_ends() -> None:
+    out = fit_to_budget("I use e.g. this one and that one a lot, really a lot", 30)
+    assert out != "I use e.g. " + ELLIPSIS
+    assert out.endswith(ELLIPSIS) and len(out) <= 30
+
+
+def test_a_hard_cut_has_no_space_before_the_ellipsis() -> None:
+    assert fit_to_budget("ab cd", 4) == "ab" + ELLIPSIS

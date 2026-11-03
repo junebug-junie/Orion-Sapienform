@@ -1281,8 +1281,11 @@ run's GPU hold): "rewrite this to fit". Its reply is stored in Redis
 `content`. The graph node always keeps the full answer. A refused or failed hop
 mirrors the full text, and every reader (self-inquiry read-back, chat identity
 inject) cuts at a sentence with `orion/text_fit.py`, never mid-word. Until
-2026-11-03 every durable path cut `text[:1200]`; 132 rows were restored from
-the graph by `scripts/backfill_self_answer_full_text.py`. Check it live:
+2026-11-03 every durable path cut `text[:1200]`; the cut rows are restored
+from the graph by `scripts/backfill_self_answer_full_text.py` (dry-run by
+default; `--apply` is a guarded direct UPDATE, since sql-writer treats this
+table as insert-only). Deploy `orion-durable-runs` with Hub: its finish detail
+is built by the same module. Check it live:
 `python services/orion-hub/evals/run_self_answer_fit_eval.py --since <date>`
 (exit 1 on any row cut mid-word at exactly 1200).
 

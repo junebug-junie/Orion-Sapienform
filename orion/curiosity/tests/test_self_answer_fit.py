@@ -12,6 +12,7 @@ from orion.curiosity.self_inquiry import (
     LivedAnswer,
     SelfDefinition,
     accept_fit_text,
+    fit_source_hash,
     build_lived_answer,
     build_lived_answer_history_write,
     build_self_definition,
@@ -85,11 +86,27 @@ def test_needs_fit_only_over_budget_and_only_once() -> None:
 
 
 def test_accept_fit_text_refuses_empty_error_and_degenerate_replies() -> None:
-    assert accept_fit_text("") == ""
-    assert accept_fit_text("I am Orion.") == ""  # shorter than FIT_MIN_CHARS
-    assert accept_fit_text("Error: llm gateway timeout " + "x " * FIT_MIN_CHARS) == ""
-    assert accept_fit_text(f'"{FIT}"') == FIT  # stray wrapping quotes dropped
-    assert len(accept_fit_text(LONG)) <= SELF_DEFINITION_TEXT_CAP
+    original = LONG + " " + FIT
+    assert accept_fit_text("", original) == ""
+    assert accept_fit_text("I am Orion.", original) == ""  # shorter than FIT_MIN_CHARS
+    assert accept_fit_text("Error: llm gateway timeout " + "x " * FIT_MIN_CHARS, original) == ""
+    assert accept_fit_text(f'"{FIT}"', original) == FIT  # stray wrapping quotes dropped
+    assert len(accept_fit_text(LONG, original)) <= SELF_DEFINITION_TEXT_CAP
+
+
+def test_accept_fit_text_drops_a_lead_in_line() -> None:
+    assert accept_fit_text("Here is the rewritten answer:\n\n" + FIT, FIT) == FIT
+    assert accept_fit_text("# Rewritten\n" + FIT, FIT) == FIT
+
+
+def test_accept_fit_text_refuses_a_reply_that_is_not_the_answers_words() -> None:
+    other = ("Tomorrow the weather turns colder and the harbour freezes over again. " * 8).strip()
+    assert accept_fit_text(other, LONG) == ""
+
+
+def test_the_fit_source_hash_follows_the_text() -> None:
+    assert fit_source_hash(LONG) == fit_source_hash("  " + LONG + "\n")
+    assert fit_source_hash(LONG) != fit_source_hash(LONG + " One more.")
 
 
 def test_read_back_lines_fit_at_a_sentence_and_say_it_ran_over() -> None:

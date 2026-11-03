@@ -183,7 +183,8 @@ def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int])
         + "):",
         "",
     ]
-    lines += _answer_lines(latest.text)
+    # The fit hop's version when there is one: the same words chat shows.
+    lines += _answer_lines(latest.fit_text or latest.text)
     if latest.evidence:
         lines.append("")
         lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in latest.evidence[:8]))

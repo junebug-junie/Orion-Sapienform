@@ -825,6 +825,7 @@ _SELF_DEFINITION_CHAT_CAP = 1200
 LIVED_ANSWERS_CTX_KEY = "orion_lived_answers"
 LIVED_MARKER_PREFIX = "In my own words (lived /"
 _LIVED_ANSWERS_CHAR_CAP = 800
+_LIVED_ANSWER_MIN_CHARS = 40
 
 
 def _lived_question_slug(question_id: str) -> str:
@@ -847,7 +848,8 @@ def _lived_answer_lines(answers: list[dict[str, Any]]) -> list[str]:
         slug = _lived_question_slug(str(answer.get("question_id") or ""))
         prefix = f"{LIVED_MARKER_PREFIX} {slug}): "
         remaining = _LIVED_ANSWERS_CHAR_CAP - total
-        if remaining <= len(prefix):
+        # Too little room for a real sentence: stop instead of emitting a stub.
+        if remaining - len(prefix) < _LIVED_ANSWER_MIN_CHARS:
             break
         if len(prefix) + len(content) > remaining:
             content = fit_to_budget(content, remaining - len(prefix))

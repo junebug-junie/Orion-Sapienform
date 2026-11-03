@@ -13,13 +13,16 @@ A row is repaired only when ALL hold (anything else is reported and skipped):
   * the node's text is longer than 1200 and starts with the row's content,
     i.e. the row is provably a cut of that exact answer
 
-The write goes through the normal bus -> sql-writer path. sql-writer merges on
-entry_id and replaces the row, so the row's own created_at, version and
-evidence_refs are sent back unchanged: "current" (latest created_at per
-concept) does not move.
+The write is a direct, guarded UPDATE of `content` only. It cannot go through
+the bus: sql-writer treats self_concept_history as insert-only and skips a
+repeated entry_id as a duplicate. The guard (`WHERE entry_id = $2 AND content
+= $3`) only touches a row still holding exactly the snapshotted cut text, and
+created_at / version / evidence_refs are untouched, so "current" (latest
+created_at per concept) does not move. Every repaired row is read back.
 
-Dry-run by default. --publish sends the writes. Snapshot, progress log,
-before/after CSV and report land in --out (default /tmp/self-answer-full-text-backfill).
+Dry-run by default. --apply writes. Snapshot, progress log, before/after CSV
+and report land in --out (default /tmp/self-answer-full-text-backfill).
+Rollback: snapshot.jsonl holds every row's original content.
 
   PYTHONPATH=.:services/orion-hub python3 services/orion-hub/scripts/backfill_self_answer_full_text.py
 """
@@ -35,7 +38,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid5
 
 CAP = 1200
 SELECT_SQL = (
@@ -44,8 +46,8 @@ SELECT_SQL = (
     "WHERE produced_by = 'curiosity_self_inquiry' AND length(content) = $1 "
     "ORDER BY created_at"
 )
-CHANNEL = "orion:self_concept:history:write"
-KIND = "self_concept.history.write.v1"
+UPDATE_SQL = "UPDATE self_concept_history SET content = $1 WHERE entry_id = $2 AND content = $3"
+READ_BACK_SQL = "SELECT length(content) FROM self_concept_history WHERE entry_id = $1"
 
 
 def parse_entry(entry_id: str, concept_id: str) -> tuple[str, str | None] | None:
@@ -84,10 +86,9 @@ def decide(row: dict, full: str | None) -> tuple[str, str]:
 
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--publish", action="store_true", help="send the repaired rows to sql-writer")
+    parser.add_argument("--apply", action="store_true", help="write the repaired rows (production write)")
     parser.add_argument("--out", default="/tmp/self-answer-full-text-backfill")
     parser.add_argument("--pg-dsn", default=os.environ.get("POSTGRES_URI") or os.environ.get("RECALL_PG_DSN"))
-    parser.add_argument("--bus-url", default=os.environ.get("ORION_BUS_URL"))
     parser.add_argument("--graph-host", default=os.environ.get("HUB_CURIOSITY_GRAPH_HOST", "127.0.0.1"))
     parser.add_argument("--graph-port", type=int, default=int(os.environ.get("HUB_CURIOSITY_GRAPH_PORT", "6380")))
     parser.add_argument("--graph-name", default=os.environ.get("HUB_CURIOSITY_GRAPH_OWN", "orion_worldview"))
@@ -95,14 +96,10 @@ async def main(argv: list[str] | None = None) -> int:
     if not args.pg_dsn:
         print("missing --pg-dsn / POSTGRES_URI", file=sys.stderr)
         return 2
-    if args.publish and not args.bus_url:
-        print("missing --bus-url / ORION_BUS_URL", file=sys.stderr)
-        return 2
 
     import asyncpg
 
     from orion.curiosity.worldview import WorldviewReader
-    from orion.schemas.self_concept_history import SelfConceptHistoryV1
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -115,10 +112,7 @@ async def main(argv: list[str] | None = None) -> int:
         progress.flush()
 
     conn = await asyncpg.connect(args.pg_dsn)
-    try:
-        rows = [dict(r) for r in await conn.fetch(SELECT_SQL, CAP)]
-    finally:
-        await conn.close()
+    rows = [dict(r) for r in await conn.fetch(SELECT_SQL, CAP)]
 
     with (out / "snapshot.jsonl").open("w") as fh:
         for r in rows:
@@ -126,16 +120,6 @@ async def main(argv: list[str] | None = None) -> int:
     log(f"snapshot rows={len(rows)} file={out / 'snapshot.jsonl'}")
 
     reader = WorldviewReader(host=args.graph_host, port=args.graph_port, graph_name=args.graph_name)
-    bus = None
-    if args.publish:
-        from orion.core.bus.async_service import OrionBusAsync
-
-        bus = OrionBusAsync(args.bus_url)
-        await bus.connect()
-
-    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-
-    source = ServiceRef(name="orion-hub", instance="backfill_self_answer_full_text")
     decisions: list[dict] = []
     errors = 0
     started = time.monotonic()
@@ -153,28 +137,12 @@ async def main(argv: list[str] | None = None) -> int:
                     full = None
                     log(f"graph_read_error entry={row['entry_id']} err={exc}")
                 verdict, reason = decide(row, full)
-            if verdict == "repair" and bus is not None:
-                evidence = row["evidence_refs"]
-                if isinstance(evidence, str):
-                    evidence = json.loads(evidence)
-                write = SelfConceptHistoryV1(
-                    entry_id=row["entry_id"],
-                    created_at=row["created_at"],
-                    concept_id=row["concept_id"],
-                    version=row["version"],
-                    content=full.strip(),
-                    evidence_refs=list(evidence or []),
-                    produced_by=row["produced_by"],
-                )
-                await bus.publish(
-                    CHANNEL,
-                    BaseEnvelope(
-                        kind=KIND,
-                        source=source,
-                        correlation_id=uuid5(NAMESPACE_URL, f"self-answer-full-text:{row['entry_id']}"),
-                        payload=write.model_dump(mode="json"),
-                    ),
-                )
+            if verdict == "repair" and args.apply:
+                status = await conn.execute(UPDATE_SQL, full.strip(), row["entry_id"], row["content"])
+                after = await conn.fetchval(READ_BACK_SQL, row["entry_id"])
+                if status != "UPDATE 1" or after != len(full.strip()):
+                    errors += 1
+                    verdict, reason = "skip", f"write_not_confirmed:{status}:len={after}"
             decisions.append({
                 "entry_id": row["entry_id"],
                 "concept_id": row["concept_id"],
@@ -193,8 +161,7 @@ async def main(argv: list[str] | None = None) -> int:
                 f"rate={rate:.1f}/s errors={errors} {verdict} {row['entry_id']} {reason}"
             )
     finally:
-        if bus is not None:
-            await bus.close()
+        await conn.close()
 
     with (out / "before_after.csv").open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(decisions[0].keys()) if decisions else ["entry_id"])
@@ -206,11 +173,11 @@ async def main(argv: list[str] | None = None) -> int:
         if d["verdict"] == "skip":
             skipped[d["reason"]] = skipped.get(d["reason"], 0) + 1
     restored = sum(d["after_chars"] - d["before_chars"] for d in repaired)
-    mode = "publish" if args.publish else "dry-run"
+    mode = "apply" if args.apply else "dry-run"
     (out / "report.md").write_text(
         "# self answer full-text backfill\n\n"
         f"- mode: {mode}\n- rows at exactly {CAP} chars: {len(rows)}\n"
-        f"- {'repaired' if args.publish else 'would repair'}: {len(repaired)}\n"
+        f"- {'repaired (read back)' if args.apply else 'would repair'}: {len(repaired)}\n"
         f"- characters restored: {restored}\n- skipped: {skipped or 'none'}\n- errors: {errors}\n"
         f"- files: {out / 'snapshot.jsonl'}, {out / 'before_after.csv'}, {out / 'progress.log'}\n"
     )

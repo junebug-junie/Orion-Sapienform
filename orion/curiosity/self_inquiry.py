@@ -57,6 +57,7 @@ handed in. Both Hub and orion-durable-runs import from here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
@@ -707,19 +708,43 @@ def needs_fit(answer: "SelfDefinition | LivedAnswer | None") -> bool:
 FIT_MIN_CHARS = 300
 
 
-def accept_fit_text(raw: str) -> str:
+# Share of the fit's content words that must appear in the original answer. A
+# rewrite reuses the answer's own words; a reply that mostly doesn't is new
+# content (recall leaking in, or a different answer), not a fit.
+FIT_MIN_WORD_OVERLAP = 0.5
+_WORD = re.compile(r"[A-Za-z0-9_']{4,}")
+# A lead-in line the model adds about the reply itself ("Here is the
+# rewritten answer:", "# Rewritten", "Rewritten (1180 chars):").
+_FIT_LEAD_IN = re.compile(r"^\s*(?:#+\s.*|[^\n]{0,80}:\s*)\n+")
+
+
+def _content_words(text: str) -> set[str]:
+    return {w.lower() for w in _WORD.findall(text or "")}
+
+
+def accept_fit_text(raw: str, original: str) -> str:
     """The fit hop's reply as a usable fit, or "" to refuse it.
 
-    Refused: empty text, error text, and a reply under FIT_MIN_CHARS (never
-    mirrored as Orion's words). A reply still over budget is kept, cut at a
-    sentence: it is the model's own shorter version, and the cut drops less
-    than cutting the original would."""
+    Refused: empty or error text, a reply under FIT_MIN_CHARS, and a reply
+    whose words are mostly not the original's (never mirrored as Orion's
+    words). A leading meta line is dropped first. A reply still over budget is
+    kept, cut at a sentence: it is the model's own shorter version."""
     from orion.cognition.cortex_payload_extract import looks_like_error_text
 
-    text = str(raw or "").strip().strip('"').strip()
+    text = str(raw or "").strip()
+    text = _FIT_LEAD_IN.sub("", text, count=1).strip().strip('"').strip()
     if len(text) < FIT_MIN_CHARS or looks_like_error_text(text):
         return ""
+    words = _content_words(text)
+    if not words or len(words & _content_words(original)) / len(words) < FIT_MIN_WORD_OVERLAP:
+        return ""
     return fit_to_budget(text, SELF_DEFINITION_TEXT_CAP)
+
+
+def fit_source_hash(text: str) -> str:
+    """Ties a stored fit to the exact answer it was written from: a retried
+    turn that rewrites the answer must not inherit the old answer's fit."""
+    return hashlib.sha1(str(text or "").strip().encode("utf-8")).hexdigest()[:16]
 
 
 def mirrored_content(answer: "SelfDefinition | LivedAnswer") -> str:

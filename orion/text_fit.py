@@ -16,7 +16,9 @@ ELLIPSIS = "…"
 
 # A sentence ends at . ! ? (optionally followed by closing quotes or brackets)
 # when whitespace or the end of the text follows.
-_SENTENCE_END = re.compile(r"[.!?][\"'”’)\]]*(?=\s|$)")
+# "e.g." / "i.e." (letter, dot, letter, dot) is not a sentence end.
+_LAST_SPACE = re.compile(r"\s(?=\S*$)")
+_SENTENCE_END = re.compile(r"(?<![A-Za-z]\.[A-Za-z])[.!?][\"'”’)\]]*(?=\s|$)")
 
 # A sentence boundary this early would throw away most of the text; below it,
 # a word boundary is the better cut.
@@ -41,7 +43,7 @@ def fit_to_budget(text: str, budget: int) -> str:
     ends = [m.end() for m in _SENTENCE_END.finditer(window)]
     if ends and ends[-1] >= len(window) * _MIN_SENTENCE_KEEP:
         return window[: ends[-1]].rstrip() + " " + ELLIPSIS
-    space = window.rfind(" ")
-    if space > 0:
-        return window[:space].rstrip(" ,;:") + ELLIPSIS
-    return s[: budget - 1] + ELLIPSIS
+    space = _LAST_SPACE.search(window)
+    if space is not None and space.start() > 0:
+        return window[: space.start()].rstrip(" \t\n,;:") + ELLIPSIS
+    return s[: budget - 1].rstrip() + ELLIPSIS

@@ -651,6 +651,9 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         "provider_reasoning_available": bool(str(reasoning_content or "").strip()),
         "inline_think_extracted": bool(str(inline_think_content or "").strip()),
         "thinking_source": thinking_source,
+        # Time spent waiting for a pool seat (stage 6.2 clock). Lets a caller with a long seat wait
+        # (Orion Prime) tell what happened during the wait from what happened during generation.
+        "pool_wait_ms": call_clock.wait_ms,
     }
     if isinstance(structured_diag, dict) and structured_diag:
         meta["structured_output_diagnostics"] = structured_diag

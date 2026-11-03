@@ -196,6 +196,8 @@ class MindLLMClient:
             meta["usage"] = usage
             if isinstance(result_meta, dict) and isinstance(result_meta.get(GATEWAY_ERROR_KEY), dict):
                 meta[GATEWAY_ERROR_KEY] = result_meta[GATEWAY_ERROR_KEY]
+            if isinstance(result_meta, dict) and isinstance(result_meta.get("pool_wait_ms"), (int, float)):
+                meta["pool_wait_ms"] = float(result_meta["pool_wait_ms"])
             if isinstance(result_meta, dict):
                 unc = result_meta.get("llm_uncertainty")
                 if isinstance(unc, dict):

@@ -15,6 +15,11 @@ can still defer). Checks:
                   refractory interval; without the floor the longest gap is reported, so the floor's
                   reason to exist stays visible.
 
+Known bias: the settled-act closes come from the OLD regime, which thought ~2.4x as often and so had more acts
+to settle. The replay therefore over-counts wake triggers: ``rate_drops`` is conservative (the real rate should
+be lower still), and ``still_wakes`` is easier to pass than it will be live -- the quiet floor is what guarantees
+it, and ``floor_bounds`` checks the floor directly.
+
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_wake_replay.py`` (exit 1 on any failed check).
 """
 
@@ -34,7 +39,8 @@ TICK = timedelta(seconds=15)
 REFRACTORY = timedelta(seconds=300)
 
 
-def replay(data: dict, *, floor: bool = True) -> list[datetime]:
+def replay(data: dict, *, floor: bool = True) -> tuple[list[datetime], int]:
+    """(thought times, how many of them the quiet floor woke)."""
     start = datetime.fromisoformat(data["window"]["start"])
     end = datetime.fromisoformat(data["window"]["end"])
     binding = [(datetime.fromisoformat(r["at"]), r["binding"]) for r in data["binding_changes"]]
@@ -45,6 +51,7 @@ def replay(data: dict, *, floor: bool = True) -> list[datetime]:
     try:
         state = PrimeStateV1()
         thoughts: list[datetime] = []
+        quiet_woken = 0
         bi = ci = 0
         current = binding[0][1]
         now = start
@@ -58,11 +65,12 @@ def replay(data: dict, *, floor: bool = True) -> list[datetime]:
             state = observe(state, PrimeSnapshotV1(binding=list(current), body_ok=True), now)
             if wants_to_think(state, now, refractory=REFRACTORY):
                 thoughts.append(now)
+                quiet_woken += all(c.startswith("quiet:") for c in state.pending_changes)
                 state = state.model_copy(update={"pending_changes": [], "last_thought_at": now})
             now += TICK
     finally:
         ps.QUIET_FLOOR = saved_floor
-    return thoughts
+    return thoughts, quiet_woken
 
 
 def _max_gap(thoughts: list[datetime]) -> timedelta:
@@ -75,7 +83,7 @@ def run() -> list[tuple[str, bool, str]]:
     end = datetime.fromisoformat(data["window"]["end"])
     days = (end - start).total_seconds() / 86400.0
     live_per_day = data["live_thought_tries_in_window"] / days
-    thoughts = replay(data)
+    thoughts, quiet_woken = replay(data)
     per_day = len(thoughts) / days
     results = [("rate_drops", per_day <= 0.6 * live_per_day,
                 f"{len(thoughts)} thoughts in {days * 24:.1f} h = {per_day:.1f}/day (live with attention: "
@@ -85,12 +93,11 @@ def run() -> list[tuple[str, bool, str]]:
     results.append(("still_wakes", all(by_day.get(d, 0) > 0 for d in every),
                     "thoughts per UTC day: " + ", ".join(f"{d:%m-%d} {by_day.get(d, 0)}" for d in every)))
     bound = ps.QUIET_FLOOR + TICK + REFRACTORY
-    no_floor = replay(data, floor=False)
+    no_floor, _ = replay(data, floor=False)
     gap, gap_no_floor = _max_gap(thoughts), _max_gap(no_floor)
-    quiet = len(thoughts) - len(no_floor)
     results.append(("floor_bounds", gap <= bound,
                     f"longest gap {gap.total_seconds() / 3600:.1f} h with the floor (bound {bound.total_seconds() / 3600:.2f} h), "
-                    f"{gap_no_floor.total_seconds() / 3600:.1f} h without; the floor added {quiet} thoughts"))
+                    f"{gap_no_floor.total_seconds() / 3600:.1f} h without; {quiet_woken} thoughts woken by the floor alone"))
     return results
 
 

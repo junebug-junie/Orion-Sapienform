@@ -191,7 +191,6 @@ class PrimeSnapshotV1(BaseModel):
 
     # Body constraints whose bind_state is "binding", sorted. None when the body was not read.
     binding: Optional[list[str]] = None
-    temporal_self_ok: bool = False
     body_ok: bool = False
 
 

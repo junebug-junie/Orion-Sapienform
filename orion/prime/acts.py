@@ -7,7 +7,9 @@ prices its next bid):
   with the time the try started), closed at once. ``artifact_produced`` = the model returned an
   answer that parsed (a preempted, timed-out or unparseable thought is 0). A try that never reached
   the model (no pool seat, no gateway reply, an upstream 5xx) opens no act at all (2026-11-03): it is
-  not a thought, so it is neither graded 0 nor resets the ``prime`` family's hunger. Horizon: the
+  not a thought, so it is neither graded 0 nor resets the ``prime`` family's hunger. A pool recall
+  (``gpu_pool_recalled``) counts as no seat even if generation had started: that GPU time is spent with
+  no act recorded (accepted: the pool took the seat back, Prime produced nothing). Horizon: the
   seat wait plus the LLM timeout plus a margin.
 * **nomination** -- verb ``ask`` (a call to another organ, design section 5). One question for
   curiosity's next regular investigate run. ``test_before = "holdback:<arm>"`` records the draw:

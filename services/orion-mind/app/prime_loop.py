@@ -146,6 +146,8 @@ FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
+# The no-model backoff's base never drops below this, even with PRIME_REFRACTORY_SEC=0 (no tick-rate loop).
+NO_MODEL_BACKOFF_FLOOR_SEC = 60.0
 
 
 class JuniperTurns:
@@ -203,6 +205,7 @@ class _Reply:
     err: Optional[str]
     gateway_error: Optional[dict[str, Any]]
     kind: TryKind
+    pool_wait_sec: Optional[float] = None
     started_mono: float = 0.0
     curiosity: Optional[dict[str, Any]] = None
     receptors: Optional[dict[str, tuple[str, ...]]] = None
@@ -454,7 +457,7 @@ class PrimeRuntime:
                               note=f"failed: {type(exc).__name__}: {str(exc)[:160]}")
             return
         if reply.kind != "model":
-            self._note_no_model(reply, now)
+            self._note_no_model(reply, self.clock())   # the backoff counts from the end of the try
             return
         await self._open_thought(act, now)
         try:
@@ -474,7 +477,8 @@ class PrimeRuntime:
         gw = reply.gateway_error or {}
         first = self.state.no_model_streak == 0
         self.state = note_no_model(self.state, reply.kind, now,
-                                   base=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC)),
+                                   base=timedelta(seconds=max(float(self.s.PRIME_REFRACTORY_SEC),
+                                                              NO_MODEL_BACKOFF_FLOOR_SEC)),
                                    retry_after_sec=gw.get("retry_after_sec"))
         if first:
             # Once per streak, so the next real thought knows its last try was starved (not a change:
@@ -505,8 +509,13 @@ class PrimeRuntime:
         reply = await self._call(route, system_prompt(receptors), frame)
         if reply.kind == "upstream_5xx":
             logger.info("prime_upstream_5xx_retry route=%s err=%s", route, (reply.err or "-")[:160])
+            started = time.monotonic()
             reply = await self._call(route, system_prompt(receptors), frame)
-        reply.started_mono, reply.curiosity, reply.receptors = started, curiosity, receptors
+        # Juniper-first preemption counts from the GRANT: a Juniper turn during the seat wait went ahead
+        # of Prime in the pool and is over or running beside it, not overlapped by generation. When the
+        # gateway did not report its wait, count from the start (the conservative old rule).
+        reply.started_mono = started + (reply.pool_wait_sec or 0.0)
+        reply.curiosity, reply.receptors = curiosity, receptors
         return reply
 
     async def _call(self, route: str, system: str, frame: str) -> "_Reply":
@@ -523,7 +532,9 @@ class PrimeRuntime:
         gw = (meta or {}).get("gateway_error") if isinstance(meta, dict) else None
         gw = gw if isinstance(gw, dict) else None
         kind = "model" if parsed is not None and not err else classify_try(err, gw)
-        return _Reply(route=route, parsed=parsed, err=err, gateway_error=gw, kind=kind)
+        wait_ms = (meta or {}).get("pool_wait_ms") if isinstance(meta, dict) else None
+        return _Reply(route=route, parsed=parsed, err=err, gateway_error=gw, kind=kind,
+                      pool_wait_sec=float(wait_ms) / 1000.0 if isinstance(wait_ms, (int, float)) else None)
 
     async def _conclude(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime,
                         reply: "_Reply") -> tuple[bool, str]:

@@ -602,3 +602,60 @@ def test_attention_moving_does_not_wake_prime():
     rt.clock_box["now"] = T0 + timedelta(hours=1)
     asyncio.run(rt.tick())
     assert len(rt.bids) == 1 and rt.state.pending_changes == []
+
+
+class _TurnDuringCall:
+    """A model call during which a Juniper turn starts and ends. ``wait_sec`` is what the gateway reports
+    as seat wait; the clock is faked so the turn falls inside it (or not)."""
+
+    def __init__(self, turns, monkeypatch, *, wait_ms):
+        self.turns, self.mp, self.wait_ms, self.calls = turns, monkeypatch, wait_ms, []
+
+    def request_json(self, **kw):
+        self.calls.append(kw)
+        import app.prime_loop as pl
+
+        base = pl.time.monotonic()
+        # The turn starts 1 s into the call; the reply arrives 30 s later.
+        self.mp.setattr(pl.time, "monotonic", lambda: base + 1.0)
+        with self.turns.turn():
+            pass
+        self.mp.setattr(pl.time, "monotonic", lambda: base + 30.0)
+        return MOVE, None, {"pool_wait_ms": self.wait_ms}
+
+
+def test_a_juniper_turn_during_the_seat_wait_does_not_discard_the_thought(monkeypatch):
+    """Review 2026-11-03: with a 10 min seat wait, counting preemption from the start of the try would
+    throw away most thoughts. A turn that went first in the pool, during the wait, did not overlap."""
+    import app.prime_loop as pl
+
+    turns = JuniperTurns()
+    rt = runtime(answer=MOVE, turns=turns)
+    real = pl.time.monotonic
+    monkeypatch.setattr(pl.time, "monotonic", lambda: real())
+    rt.llm = _TurnDuringCall(turns, monkeypatch, wait_ms=5_000)   # granted at +5 s; the turn was at +1 s
+    asyncio.run(rt.tick())
+    closed = [a for k, a in rt.bus.acts() if k == "act_closed" and a["verb"] == "infer"]
+    assert closed[0]["outcome"]["value"] == 1.0
+
+
+def test_a_juniper_turn_during_generation_still_preempts(monkeypatch):
+    import app.prime_loop as pl
+
+    turns = JuniperTurns()
+    rt = runtime(answer=MOVE, turns=turns)
+    real = pl.time.monotonic
+    monkeypatch.setattr(pl.time, "monotonic", lambda: real())
+    rt.llm = _TurnDuringCall(turns, monkeypatch, wait_ms=500)     # granted at +0.5 s; the turn was at +1 s
+    asyncio.run(rt.tick())
+    closed = [a for k, a in rt.bus.acts() if k == "act_closed" and a["verb"] == "infer"]
+    assert closed[0]["outcome"]["value"] == 0.0 and "preempted" in closed[0]["outcome"]["note"]
+
+
+def test_the_no_model_backoff_has_a_floor_even_with_no_refractory():
+    rt = seq_runtime([NO_SEAT] * 4)
+    rt.s.PRIME_REFRACTORY_SEC = 0
+    for i in range(4):
+        rt.clock_box["now"] = T0 + timedelta(seconds=15 * i)
+        asyncio.run(rt.tick())
+    assert rt.state.retry_not_before == T0 + timedelta(seconds=45 + 60)

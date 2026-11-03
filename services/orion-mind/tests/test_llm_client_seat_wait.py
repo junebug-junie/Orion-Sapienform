@@ -78,3 +78,9 @@ def test_gateway_error_of_reads_raw_error_and_details() -> None:
         "error": "gpu_pool_unavailable", "reason": "shed:cabinet_hot", "retry_after_sec": 42.0}
     assert gateway_error_of({"error": "upstream_http_5xx", "details": "x"}) == {
         "error": "upstream_http_5xx", "reason": None, "retry_after_sec": None}
+
+
+def test_the_gateways_seat_wait_is_passed_up(monkeypatch) -> None:
+    client, _ = _client(monkeypatch, ('{"ok": true}', {}, "chat", {"pool_wait_ms": 4200}))
+    _, _, meta = client.request_json(system_prompt="s", user_prompt="u", route="prime", max_tokens=10)
+    assert meta["pool_wait_ms"] == 4200.0

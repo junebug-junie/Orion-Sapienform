@@ -204,6 +204,8 @@ def test_a_failed_event_write_is_retried_next_evaluation_with_the_same_from():
     w.now += HOUR
     tick(d)
     assert [(c["from"], c["to"]) for c in changes(w)] == [("reliable", "broken")]
+    # Stamped at the retry, past the chronicle's watermark, so it still folds (review finding).
+    assert w.events[0]["occurred_at"] == w.now
 
 
 def test_keepalive_every_12_hours_while_a_notable_status_holds():

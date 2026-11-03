@@ -175,7 +175,31 @@ No `up` was run (worktree).
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A review subagent read the diff against main. Fixed:
+
+- Finding (material): a change row was stamped at the time its status began. A row retried an hour
+  later then sat behind the chronicle's read point and was never folded, so its arc never opened.
+  - Fix: every row is stamped when it is written. The status start stays in the payload and becomes
+    the arc's `episode_began_at`. The event id still uses the status start, so a retry adds no copy.
+  - Evidence: `test_a_retried_change_row_is_stamped_at_its_write_time_so_the_chronicle_still_reads_it`,
+    and the node retry test now checks the stamp.
+- Finding (material): each source read could take 45 s. Five reads (225 s) did not fit in the 120 s
+  step limit, so two slow tables could blank the whole evaluation. The writes had no timeout.
+  - Fix: 15 s per read (75 s total). The writes get a 15 s statement timeout and a 5 s lock timeout.
+  - Evidence: the Postgres store test passes with the new settings.
+- Finding (should): a faculty whose source failed this hour still counted the partial evidence toward
+  a new status.
+  - Fix: its held status is published unchanged and the hour does not count.
+  - Evidence: `test_a_faculty_whose_source_erred_keeps_its_held_status_and_counts_nothing`.
+- Finding (nit): a retried "dropped" row got a new id each time.
+  - Fix: its id uses the held status start. Evidence: `test_a_retried_drop_row_keeps_its_id`.
+- Finding (rollout): the new arc kind needs readers first. Fix: the restart order below lists
+  orion-thought, orion-hub and orion-dream before orion-durable-runs.
+
+Not changed: the arc's status is read back from its label (`<faculty> <status>`). A label is cut only
+past 300 characters, and faculty names are far shorter. The reviewer agreed with the keepalive choice.
+One more effect of it: a faculty whose source stays unreadable for more than 30 h gets its arc closed
+with "then no word from the self-monitor". That is correct: there was no evidence for that time.
 
 ## Restart required
 
@@ -187,6 +211,7 @@ the exact apply command. By hand, from the primary checkout on main:
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < services/orion-sql-db/manual_migration_self_monitor_history_v1.sql
 scripts/safe_docker_build.sh orion-thought up -d --build
 scripts/safe_docker_build.sh orion-hub up -d --build
+scripts/safe_docker_build.sh orion-dream up -d --build
 scripts/safe_docker_build.sh orion-durable-runs up -d --build
 ```
 

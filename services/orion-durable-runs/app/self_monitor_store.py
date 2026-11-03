@@ -23,7 +23,10 @@ from orion.self_monitor.host import FACULTY_EVENT_KIND, FACULTY_EVENT_TABLE
 
 logger = logging.getLogger("orion-durable-runs.self_monitor_store")
 
-STATEMENT_TIMEOUT = "45s"
+# 5 sources x 15 s = 75 s, under the node's 120 s ceiling, so a slow source fails alone and is named
+# (review finding: at 45 s two slow sources timed out the whole evaluation).
+STATEMENT_TIMEOUT = "15s"
+WRITE_TIMEOUTS = ("SET LOCAL statement_timeout = '15s'", "SET LOCAL lock_timeout = '5s'")
 
 INSERT_HISTORY_SQL = """
 INSERT INTO substrate_self_monitor_history (computed_at, state_json)
@@ -64,6 +67,8 @@ async def record_history(pool: Any, state: SelfMonitorStateV1, *, retention_days
     cutoff = state.computed_at - timedelta(days=retention_days)
     async with pool.connection() as conn:
         async with conn.transaction():
+            for sql in WRITE_TIMEOUTS:
+                await conn.execute(sql)
             await conn.execute(INSERT_HISTORY_SQL, {"computed_at": state.computed_at,
                                                     "state": state.model_dump_json()})
             await conn.execute(PRUNE_HISTORY_SQL, {"cutoff": cutoff})
@@ -75,6 +80,8 @@ async def record_events(pool: Any, rows: list[dict]) -> bool:
     try:
         async with pool.connection() as conn:
             async with conn.transaction():
+                for sql in WRITE_TIMEOUTS:
+                    await conn.execute(sql)
                 for row in rows:
                     await conn.execute(INSERT_EVENT_SQL, row)
         return True

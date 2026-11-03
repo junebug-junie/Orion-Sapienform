@@ -693,7 +693,7 @@ after `immune`, at most once per `SELF_MONITOR_INTERVAL_SEC` (3,600 s):
 
 1. It reads every bet source for the last 7 days (`app/self_monitor_store.py`; the SQL and adapters are
    `orion/self_monitor/collect.py`, the same path `python -P -m orion.self_monitor.report` uses). Each
-   source reads in its own read-only transaction with a 45 s statement timeout. A failed source is
+   source reads in its own read-only transaction with a 15 s statement timeout. A failed source is
    named in `source_errors`, never skipped silently.
 2. It reduces the bets per faculty and applies hysteresis: a new status must hold 3 evaluations
    (`orion/self_monitor/host.py`). The memory for that is a small per-faculty carry in this thread's

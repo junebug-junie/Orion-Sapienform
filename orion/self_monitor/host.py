@@ -67,6 +67,16 @@ def _utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _carry_since(carry: Mapping) -> Optional[datetime]:
+    raw = carry.get("status_since")
+    if not raw:
+        return None
+    try:
+        return _utc(datetime.fromisoformat(str(raw).replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _row_age(carry: Mapping, now: datetime) -> Optional[float]:
     raw = carry.get("row_at")
     if not raw:
@@ -84,8 +94,18 @@ def evaluate(candidate: SelfMonitorStateV1, carry: Optional[Mapping[str, Mapping
     held_records: list[FacultyRecordV1] = []
     out: dict[str, dict] = {}
     changes: list[FacultyChange] = []
+    erred = erred_sources(candidate)
     for record in candidate.faculties:
         prev = prev_all.get(record.faculty)
+        if prev is not None and erred.intersection(record.sources) and _carry_since(prev) is not None:
+            # Part of this faculty's evidence is unread: publish its held status unchanged and do not
+            # count this evaluation toward a new candidate (review finding).
+            held = record.model_copy(update={"status": prev.get("status") or record.status,
+                                             "status_since": _carry_since(prev),
+                                             "candidate_held": int(prev.get("candidate_held") or 0)})
+            held_records.append(held)
+            out[held.faculty] = dict(prev)
+            continue
         held = advance_carry(prev, record, now=now, hold=hold)
         held_records.append(held)
         entry = {**carry_of(held), "sources": list(held.sources),
@@ -108,7 +128,6 @@ def evaluate(candidate: SelfMonitorStateV1, carry: Optional[Mapping[str, Mapping
                                              record=held))
         out[held.faculty] = entry
 
-    erred = erred_sources(candidate)
     for faculty, prev in prev_all.items():
         if faculty in out:
             continue
@@ -116,7 +135,9 @@ def evaluate(candidate: SelfMonitorStateV1, carry: Optional[Mapping[str, Mapping
             out[faculty] = dict(prev)  # unread, not gone: keep its memory untouched
             continue
         if prev.get("recorded") in NOTABLE_STATUSES:
-            changes.append(FacultyChange(faculty, prev.get("recorded"), "unknown", now, dropped=True))
+            # Keyed on the held status's start, so a retried drop row keeps its id.
+            since = _carry_since(prev) or now
+            changes.append(FacultyChange(faculty, prev.get("recorded"), "unknown", since, dropped=True))
             out[faculty] = dict(prev)  # forgotten once the closing row is written (mark_recorded)
     state = candidate.model_copy(update={"faculties": held_records})
     return Evaluation(state=state, carry=out, changes=changes)
@@ -137,8 +158,8 @@ def mark_recorded(carry: Mapping[str, Mapping], changes: list[FacultyChange], *,
 
 
 def event_row(change: FacultyChange, *, day_id: str, now: datetime) -> dict:
-    """One ``temporal_self_event`` row. Deterministic id: a change is keyed by its held-status start, a
-    keepalive also by its write time, so a retried write never adds a copy."""
+    """One ``temporal_self_event`` row. Deterministic id: a change (and a drop) is keyed by its
+    held-status start, a keepalive also by its write time, so a retried write never adds a copy."""
     since = _utc(change.since)
     at = _utc(now)
     event_id = f"{FACULTY_EVENT_PREFIX}{change.faculty}:{since.isoformat()}:{change.to_status}"
@@ -164,7 +185,11 @@ def event_row(change: FacultyChange, *, day_id: str, now: datetime) -> dict:
         "event_id": event_id,
         "day_id": day_id,
         # A change happened when the status was adopted; a keepalive or a drop when it was observed.
-        "occurred_at": at if (change.keepalive or change.dropped) else since,
+        # Every row is stamped when it was WRITTEN, never at ``since``: the chronicle reads rows past its
+        # watermark (now - 300 s), so a change row retried an hour later and stamped at ``since`` would
+        # sit behind it and never fold (review finding). ``since`` rides in the payload, and the fold
+        # keeps it as the arc's episode_began_at.
+        "occurred_at": at,
         "source_ref": f"self_monitor.state.v1:{at.isoformat()}",
         "subject_ref": f"faculty:{change.faculty}",
         "label": change.to_status,

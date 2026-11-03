@@ -144,3 +144,34 @@ def test_event_row_ids_are_deterministic_and_typed():
     assert event_row(change, day_id="2026-11-03", now=t) == row
     payload = json.loads(row["payload"])
     assert payload["from"] == "reliable" and payload["n_graded"] == 12 and payload["keepalive"] is False
+
+
+def test_a_retried_change_row_is_stamped_at_its_write_time_so_the_chronicle_still_reads_it():
+    """Review finding: a row stamped at ``since`` and retried an hour later sat behind the chronicle's
+    watermark (now - 300 s) and never folded. Every row is stamped when written."""
+    ev, carry = run(state(rec("b", "broken")), None, NOW, ok=False)
+    t = NOW + HOUR
+    ev2 = evaluate(state(rec("b", "broken", now=t), now=t), carry, now=t)
+    (change,) = ev2.changes
+    row = event_row(change, day_id="2026-11-03", now=t)
+    assert row["occurred_at"] == t and json.loads(row["payload"])["since"] == NOW.isoformat()
+    assert row["event_id"] == event_row(ev.changes[0], day_id="2026-11-03", now=NOW)["event_id"]
+
+
+def test_a_faculty_whose_source_erred_keeps_its_held_status_and_counts_nothing():
+    _, carry = run(state(rec("a", "reliable")), None, NOW)
+    for k in range(1, HOLD + 2):
+        t = NOW + k * HOUR
+        ev, carry = run(state(rec("a", "broken", now=t), errors=["grammar_acts: timeout"], now=t), carry, t)
+        assert ev.state.faculties[0].status == "reliable" and ev.changes == []
+    assert carry["a"]["candidate_held"] == HOLD and carry["a"]["candidate_status"] == "reliable"
+
+
+def test_a_retried_drop_row_keeps_its_id():
+    _, carry = run(state(rec("b", "broken")), None, NOW)
+    ids = []
+    for k in (1, 2):
+        t = NOW + k * HOUR
+        ev = evaluate(state(now=t), carry, now=t)
+        ids.append(event_row(ev.changes[0], day_id="2026-11-03", now=t)["event_id"])
+    assert ids[0] == ids[1]

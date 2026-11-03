@@ -157,7 +157,7 @@ class TemporalSelfDeps:
     record_self_monitor_history: Optional[Callable[[SelfMonitorStateV1], Awaitable[None]]] = None
     record_faculty_events: Optional[Callable[[list], Awaitable[bool]]] = None
     self_monitor_interval_sec: float = 3600.0
-    # The live read is ~1 s (patch 1's report, 11-03); each statement has a 45 s timeout.
+    # The live read is ~1 s (patch 1's report, 11-03); each of the 5 reads has a 15 s timeout.
     self_monitor_timeout_sec: float = 120.0
 
 

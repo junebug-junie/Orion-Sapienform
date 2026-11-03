@@ -1,8 +1,8 @@
 """5b sees the Situation block the draft was written from (2026-11-03).
 
-Live case: the notes said "Amanda usually comes around 11:39"; the draft said
-"Amanda right on her usual 11:39"; asked where, the next draft invented a
-vehicle "slot" it had "started calling Amanda". 5b called that draft
+Live case: the notes said "Rowan usually comes around 11:39"; the draft said
+"Rowan right on her usual 11:39"; asked where, the next draft invented a
+vehicle "slot" it had "started calling Rowan". 5b called that draft
 accurate: it never saw the notes, so it had nothing to check it against.
 """
 
@@ -17,15 +17,15 @@ from orion.harness.finalize import build_finalize_reflect_context, build_finaliz
 from orion.harness.tests.fixtures import make_appraisal, make_repair_overlay, make_thought
 
 TEMPLATE = Path(finalize.__file__).resolve().parents[1] / "cognition" / "prompts" / "harness_finalize_reflect.j2"
-NOTES = ("Situation:\n- Walkway rhythm: no match for Amanda (a person, name from Juniper, 10-25) yet today "
+NOTES = ("Situation:\n- Walkway rhythm: no match for Rowan (a person, name from Juniper, 10-25) yet today "
          "(usually around 11:39). A person match is the camera's guess, not a confirmed sighting.")
 
 
 def _ctx(notes):
     return build_finalize_reflect_context(
-        correlation_id="c-notes", draft_text="Amanda right on her usual 11:39.", thought=make_thought(),
+        correlation_id="c-notes", draft_text="Rowan right on her usual 11:39.", thought=make_thought(),
         substrate_appraisal=make_appraisal(), repair_overlay=make_repair_overlay(),
-        user_message="where did you spot Amanda?", situation_notes=notes,
+        user_message="where did you spot Rowan?", situation_notes=notes,
     )
 
 
@@ -55,7 +55,7 @@ def test_a_runaway_fragment_is_capped() -> None:
 
 def test_prompt_shows_the_notes_and_the_claims_check_only_when_there_are_notes() -> None:
     with_notes = _render(_ctx(NOTES))
-    assert "no match for Amanda (a person, name from Juniper, 10-25)" in with_notes
+    assert "no match for Rowan (a person, name from Juniper, 10-25)" in with_notes
     assert "PERCEPTION CLAIMS CHECK" in with_notes
     assert "unsupported claim:" in with_notes
     without = _render(_ctx(None))

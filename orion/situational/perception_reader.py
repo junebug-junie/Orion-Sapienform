@@ -536,9 +536,9 @@ _STREET_EXPECTATIONS_SQL = text(
 # through about now (`caught_up`; else an absence claim could be a crop still
 # in the queue -- the reducer's own `_individuals_caught_up` guard).
 # Read back to each window's start, not the 60-minute sightings
-# lookback: on 11-03 "Amanda" had an open 10:05-13:09 window, the 12:00 turn
-# could only say "Amanda usually comes around 11:39" (the lookback guard
-# forbids an absence claim), and the model wrote "Amanda right on her usual
+# lookback: on 11-03 "Rowan" had an open 10:05-13:09 window, the 12:00 turn
+# could only say "Rowan usually comes around 11:39" (the lookback guard
+# forbids an absence claim), and the model wrote "Rowan right on her usual
 # 11:39" with no sighting at all. A window that never overlapped a sighting
 # is now said as "no match ... yet today". Status 'open' alone cannot say
 # that: the reducer scores a window only after it closes.
@@ -952,10 +952,10 @@ STREET_PERSON_MATCH_CAVEAT = "A person match is the camera's guess, not a confir
 
 def _name_origin(window: Mapping[str, Any], tz: Any) -> str:
     """Where a name came from, so the model never has to invent it (11-03:
-    "I started calling that slot Amanda" -- Juniper had named that person on
+    "I started calling that slot Rowan" -- Juniper had named that person on
     10-25, answering "Who is this?"). Every vision_individual label is set by
     an answered ask; without one, say nothing rather than guess. The kind
-    rides along: the same reply called Amanda a vehicle."""
+    rides along: the same reply called Rowan a vehicle."""
     if str(window.get("named_by") or "").strip().lower() != "juniper":
         return ""
     kind = str(window.get("kind") or "").strip()

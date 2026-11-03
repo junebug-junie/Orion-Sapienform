@@ -463,8 +463,8 @@ def build_finalize_reflect_context(
         "user_message": user_message,
         # The Situation block the motor saw (HarnessRunRequestV1.situation_prompt_fragment),
         # so 5b can check what the draft says it perceived against what the notes
-        # actually said. 11-03: notes said "Amanda usually comes around 11:39", the
-        # draft said "Amanda right on her usual 11:39", and 5b had nothing to check it with.
+        # actually said. 11-03: notes said "Rowan usually comes around 11:39", the
+        # draft said "Rowan right on her usual 11:39", and 5b had nothing to check it with.
         "situation_notes": _clip_situation_notes(situation_notes),
         # Owner-lane finalize: hold route when admitted; else agent FCC label
         # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.

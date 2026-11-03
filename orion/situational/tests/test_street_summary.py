@@ -422,62 +422,62 @@ def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
 
 
 # --- Individual windows read back to the window start (2026-11-03) ----------
-# Live case: "Amanda" (named by Juniper 10-25) had an open 10:05-13:09 window,
+# Live case: "Rowan" (named by Juniper 10-25) had an open 10:05-13:09 window,
 # peak 11:39, no match until 12:48 at the mailbox. At 12:00 the notes said
-# "Amanda usually comes around 11:39" and the reply said "Amanda right on her
+# "Rowan usually comes around 11:39" and the reply said "Rowan right on her
 # usual 11:39"; asked where, the reply invented a vehicle "slot" it "started
-# calling Amanda".
-_AMANDA_NOW = datetime(2026, 11, 3, 19, 0, tzinfo=timezone.utc)  # 12:00 MST
-_AMANDA_ROW = {"subject_key": "individual:am", "subject_label": "Amanda", "status": "open",
+# calling Rowan".
+_ROWAN_NOW = datetime(2026, 11, 3, 19, 0, tzinfo=timezone.utc)  # 12:00 MST
+_ROWAN_ROW = {"subject_key": "individual:am", "subject_label": "Rowan", "status": "open",
                "peak_minute": 699, "window_start": datetime(2026, 11, 3, 17, 5, tzinfo=timezone.utc),
                "window_end": datetime(2026, 11, 3, 20, 9, tzinfo=timezone.utc)}
 _NAMED = {"individual_id": "am", "kind": "person", "named_by": "juniper",
           "named_at": datetime(2026, 10, 26, 1, 54, tzinfo=timezone.utc), "matched_at": None, "caught_up": True}
 
 
-def _amanda(window, *, now=_AMANDA_NOW, row=_AMANDA_ROW):
+def _rowan(window, *, now=_ROWAN_NOW, row=_ROWAN_ROW):
     (line,) = summarize_street(sightings=[], expectations=[row], unresolved=[], patio=None,
                                now=now, tz=TZ, individual_windows={"am": window})
     return line
 
 
 def test_open_window_past_peak_with_no_match_says_so() -> None:
-    line = _amanda(_NAMED)
-    assert "no match for Amanda (a person, name from Juniper, 10-25) yet today (usually around 11:39)" in line
+    line = _rowan(_NAMED)
+    assert "no match for Rowan (a person, name from Juniper, 10-25) yet today (usually around 11:39)" in line
     assert "usually comes" not in line
     assert "A person match is the camera's guess" in line
 
 
 def test_a_match_says_its_own_time_not_the_peak() -> None:
-    line = _amanda({**_NAMED, "matched_at": datetime(2026, 11, 3, 19, 48, tzinfo=timezone.utc)},
+    line = _rowan({**_NAMED, "matched_at": datetime(2026, 11, 3, 19, 48, tzinfo=timezone.utc)},
                    now=datetime(2026, 11, 3, 19, 50, tzinfo=timezone.utc))
-    assert "Amanda (a person, name from Juniper, 10-25) matched at 12:48 (usually around 11:39)" in line
+    assert "Rowan (a person, name from Juniper, 10-25) matched at 12:48 (usually around 11:39)" in line
     assert " came " not in line
 
 
 def test_peak_still_ahead_keeps_the_habit_wording() -> None:
-    line = _amanda(_NAMED, now=datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc))  # 11:00
-    assert "Amanda (a person, name from Juniper, 10-25) usually comes around 11:39" in line
+    line = _rowan(_NAMED, now=datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc))  # 11:00
+    assert "Rowan (a person, name from Juniper, 10-25) usually comes around 11:39" in line
     assert "no match" not in line
 
 
 def test_missed_and_met_individuals_say_match_not_came() -> None:
-    missed = _amanda(_NAMED, row={**_AMANDA_ROW, "status": "missed"})
-    assert "no match for Amanda (a person, name from Juniper, 10-25) in the usual window (usually around 11:39)" in missed
-    met = _amanda(_NAMED, row={**_AMANDA_ROW, "status": "met"})
-    assert "Amanda (a person, name from Juniper, 10-25) matched inside the usual window" in met
+    missed = _rowan(_NAMED, row={**_ROWAN_ROW, "status": "missed"})
+    assert "no match for Rowan (a person, name from Juniper, 10-25) in the usual window (usually around 11:39)" in missed
+    met = _rowan(_NAMED, row={**_ROWAN_ROW, "status": "met"})
+    assert "Rowan (a person, name from Juniper, 10-25) matched inside the usual window" in met
 
 
 def test_no_name_origin_without_an_answered_ask_and_no_caveat_for_things() -> None:
-    line = _amanda({**_NAMED, "kind": "vehicle", "named_by": None, "named_at": None})
+    line = _rowan({**_NAMED, "kind": "vehicle", "named_by": None, "named_at": None})
     assert "name from" not in line
     assert "person match" not in line
 
 
 def test_individual_windows_unread_keeps_the_old_guarded_wording() -> None:
-    (line,) = summarize_street(sightings=[], expectations=[_AMANDA_ROW], unresolved=[], patio=None,
-                               now=_AMANDA_NOW, tz=TZ, individual_windows=None)
-    assert line == "Walkway rhythm: Amanda usually comes around 11:39."
+    (line,) = summarize_street(sightings=[], expectations=[_ROWAN_ROW], unresolved=[], patio=None,
+                               now=_ROWAN_NOW, tz=TZ, individual_windows=None)
+    assert line == "Walkway rhythm: Rowan usually comes around 11:39."
 
 
 def test_individual_windows_are_read_per_window_start_and_failures_degrade() -> None:
@@ -491,32 +491,32 @@ def test_individual_windows_are_read_per_window_start_and_failures_degrade() -> 
 
     conn = _WinConn({
         "unnest(": [{"individual_id": "am", **{k: v for k, v in _NAMED.items() if k != "individual_id"}}],
-        "vision_percept_expectation": [_AMANDA_ROW],
+        "vision_percept_expectation": [_ROWAN_ROW],
     })
-    got = fetch_street_summary("walkway", engine=_Engine(conn), now=_AMANDA_NOW)
-    assert seen["ids"] == ["am"] and seen["starts"] == [_AMANDA_ROW["window_start"]]
-    assert seen["ends"] == [_AMANDA_ROW["window_end"]]
-    assert any("no match for Amanda" in line for line in got.lines)
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=_ROWAN_NOW)
+    assert seen["ids"] == ["am"] and seen["starts"] == [_ROWAN_ROW["window_start"]]
+    assert seen["ends"] == [_ROWAN_ROW["window_end"]]
+    assert any("no match for Rowan" in line for line in got.lines)
 
-    broken = _Conn({"unnest(": RuntimeError("boom"), "vision_percept_expectation": [_AMANDA_ROW]})
-    got = fetch_street_summary("walkway", engine=_Engine(broken), now=_AMANDA_NOW)
-    assert "Walkway rhythm: Amanda usually comes around 11:39." in got.lines
+    broken = _Conn({"unnest(": RuntimeError("boom"), "vision_percept_expectation": [_ROWAN_ROW]})
+    got = fetch_street_summary("walkway", engine=_Engine(broken), now=_ROWAN_NOW)
+    assert "Walkway rhythm: Rowan usually comes around 11:39." in got.lines
 
 
 def test_no_absence_claim_while_the_individuals_reducer_lags() -> None:
     # Review finding: "no match yet" from missing rows alone could be a crop
     # the individuals reducer has not processed (vision_rhythm._individuals_caught_up).
     for lag in ({**_NAMED, "caught_up": False}, {k: v for k, v in _NAMED.items() if k != "caught_up"}):
-        line = _amanda(lag)
+        line = _rowan(lag)
         assert "no match" not in line
-        assert "Amanda (a person, name from Juniper, 10-25) usually comes around 11:39" in line
+        assert "Rowan (a person, name from Juniper, 10-25) usually comes around 11:39" in line
 
 
 def test_person_caveat_only_when_a_person_phrase_is_shown() -> None:
     # Review finding: a fifth outcome is cut by outcomes[:4]; its caveat must go too.
     things = [{"subject_key": f"label:v{i}", "subject_label": f"vehicle {i}", "status": "met", "peak_minute": 600 + i}
               for i in range(4)]
-    (line,) = summarize_street(sightings=[], expectations=things + [_AMANDA_ROW], unresolved=[], patio=None,
-                               now=_AMANDA_NOW, tz=TZ, individual_windows={"am": _NAMED})
-    assert "Amanda" not in line
+    (line,) = summarize_street(sightings=[], expectations=things + [_ROWAN_ROW], unresolved=[], patio=None,
+                               now=_ROWAN_NOW, tz=TZ, individual_windows={"am": _NAMED})
+    assert "Rowan" not in line
     assert "person match" not in line

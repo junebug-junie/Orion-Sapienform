@@ -421,6 +421,18 @@ def resolve_finalize_llm_lane(
     return "chat"
 
 
+# The compact situation fragment runs ~3.5-4.5K chars (11-03 live turns);
+# the cap only guards a runaway fragment, it is not a budget for the usual one.
+FINALIZE_SITUATION_NOTES_MAX_CHARS = 6000
+
+
+def _clip_situation_notes(notes: str | None) -> str:
+    text = (notes or "").strip()
+    if len(text) <= FINALIZE_SITUATION_NOTES_MAX_CHARS:
+        return text
+    return text[:FINALIZE_SITUATION_NOTES_MAX_CHARS].rstrip() + " [notes cut]"
+
+
 def build_finalize_reflect_context(
     *,
     correlation_id: str,
@@ -432,6 +444,7 @@ def build_finalize_reflect_context(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
         gpu_lease=gpu_lease,
@@ -448,6 +461,11 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": "",
         "user_message": user_message,
+        # The Situation block the motor saw (HarnessRunRequestV1.situation_prompt_fragment),
+        # so 5b can check what the draft says it perceived against what the notes
+        # actually said. 11-03: notes said "Rowan usually comes around 11:39", the
+        # draft said "Rowan right on her usual 11:39", and 5b had nothing to check it with.
+        "situation_notes": _clip_situation_notes(situation_notes),
         # Owner-lane finalize: hold route when admitted; else agent FCC label
         # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.
         "llm_route": lane,
@@ -472,6 +490,7 @@ def build_finalize_reflect_plan_request(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("harness_finalize_reflect", mode="brain")
     return PlanExecutionRequest(
@@ -491,6 +510,7 @@ def build_finalize_reflect_plan_request(
             grammar_receipts=grammar_receipts,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
         ),
     )
 
@@ -535,6 +555,7 @@ async def run_finalize_reflection(
     cortex_client: CortexClientFn | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -563,6 +584,7 @@ async def run_finalize_reflection(
         grammar_receipts=grammar_receipts,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
     )
     try:
         exec_result = await cortex_client(plan_request)
@@ -663,6 +685,7 @@ async def maybe_run_finalize_tool_retry(
     grammar_publish_fn: Any = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
@@ -830,6 +853,7 @@ async def maybe_run_finalize_tool_retry(
             cortex_client=cortex_client,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
         )
     except Exception as exc:
         logger.warning(
@@ -911,6 +935,7 @@ def build_response_repair_context(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
         gpu_lease=gpu_lease,
@@ -919,6 +944,10 @@ def build_response_repair_context(
     return {
         "draft_text": draft_text,
         "reflection": reflection.model_dump(mode="json"),
+        # Same notes 5b checked against: a repair of an unsupported perception
+        # claim needs the facts, not only "this was wrong" (eval 11-03: without
+        # them the repair kept the invented name story around a removed arrival).
+        "situation_notes": _clip_situation_notes(situation_notes),
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "user_message": user_message,
@@ -947,6 +976,7 @@ def build_response_repair_plan_request(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_response_repair", mode="brain")
     return PlanExecutionRequest(
@@ -964,6 +994,7 @@ def build_response_repair_plan_request(
             grammar_receipts=grammar_receipts,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
         ),
     )
 
@@ -1019,6 +1050,7 @@ async def run_orion_response_repair(
     cortex_client: CortexClientFn | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Orion capability: minimal post-reflection response repair.
 
@@ -1037,6 +1069,7 @@ async def run_orion_response_repair(
         grammar_receipts=grammar_receipts,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_response_repair_text(exec_result)
@@ -1385,6 +1418,7 @@ async def run_harness_finalize_chain(
     grammar_publish_fn: Any = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
     cut_short: bool = False,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
@@ -1435,6 +1469,7 @@ async def run_harness_finalize_chain(
         cortex_client=cortex_client,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
@@ -1464,6 +1499,7 @@ async def run_harness_finalize_chain(
                 bus=bus,
                 grammar_channel=grammar_channel,
                 grammar_publish_fn=grammar_publish_fn,
+                situation_notes=situation_notes,
             )
         )
         if not attempt_retried:
@@ -1531,6 +1567,7 @@ async def run_harness_finalize_chain(
                 cortex_client=cortex_client,
                 gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
+                situation_notes=situation_notes,
             )
             voice_meta = {
                 **voice_meta,

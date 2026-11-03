@@ -573,6 +573,7 @@ async def handle_harness_run_request(
             preserve_structured_output=bool(request.reading_only),
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
+            situation_notes=request.situation_prompt_fragment,
             cut_short=bool(getattr(motor, "cut_short_reason", None)),
             repair_overlay=repair_overlay,
             user_message=request.user_message,

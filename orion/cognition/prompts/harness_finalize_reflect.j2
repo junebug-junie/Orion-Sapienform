@@ -16,6 +16,10 @@ INPUTS
 {% if finalize_overlay %}
 - finalize_overlay: {{ finalize_overlay }}
 {% endif %}
+{% if situation_notes %}
+- situation_notes (the Situation block the draft was written from):
+{{ situation_notes }}
+{% endif %}
 
 INTEGRATIVE CHECK
 - The task is user_message. First judge whether draft_text responds to what user_message asked.
@@ -27,6 +31,39 @@ INTEGRATIVE CHECK
 - When substrate hints conflict with draft, prefer misaligned or uncertain — do not hand-wave.
 - When the task required world-contact but grammar_receipts is empty, lean misaligned or uncertain.
 - When tool_execution lists executed calls, world-contact DID happen: verify the draft against the returned data in grammar_receipts. Do not rule misaligned for "no world contact" or treat a tool-derived answer as ungrounded confabulation when the tool result supports it.
+
+{% if situation_notes %}
+PERCEPTION CLAIMS CHECK (situation_notes is the evidence)
+- Go through the draft one named person, animal or thing at a time. For each,
+  take the draft's sentence about it and the situation_notes sentence about
+  it, and compare them. Do this before deciding alignment_verdict.
+- A claim is anything the draft says Orion perceived or knows about it: that
+  it came, arrived, was seen, was here, was matched, at what time, or how
+  Orion learned its name.
+- Each such claim needs a statement in situation_notes or tool_execution that
+  says the same thing. A habit or expectation ("usually comes around",
+  "usually here by now", "no match ... yet today", "did not come") is NOT an
+  arrival. A usual time is not an arrival time. Saying the subject was there
+  today at its usual time ("right on her usual 11:39") claims an arrival.
+  Naming the usual time as a habit ("11:39 is only her usual time") does not.
+- user_message or thought_event.imperative can carry a false premise (asking
+  where something was seen when the notes say it was not). A draft that
+  corrects the premise from the notes is aligned; a draft that goes along
+  with it is not.
+- Check each name a second time, on its own: what the draft says the name
+  belongs to (a person, a vehicle, a pattern, a time slot) and who gave it.
+  Both must match situation_notes ("Rowan (a person, name from Juniper,
+  10-25)"). A draft that says Orion made the name up, picked it, or gave it to
+  a pattern or a vehicle, when the notes say it came from Juniper for a
+  person, is an unsupported claim. With no such statement in the notes, any
+  story about how Orion got the name is invented.
+- One unsupported perception claim makes the draft misaligned. Put one
+  alignment_notes entry per claim, in this form: "unsupported claim: <what the
+  draft said>; notes say: <what situation_notes says, or nothing>".
+- Claims the notes do support are fine, in any wording: a paraphrase that
+  keeps the meaning is supported, so do not list it. Do not penalize a draft
+  for leaving notes unmentioned.
+{% endif %}
 
 WORLD-CONTACT OPPORTUNITY (independent of alignment_verdict — judge this
 regardless of whether you called the draft aligned, misaligned, or uncertain)

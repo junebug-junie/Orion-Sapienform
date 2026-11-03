@@ -62,6 +62,17 @@ caller's own rate scores exactly 0, so stance only scores by telling long turns 
    exactly that knowledge. World-pulse steps (0.00) is the likely failure; expect that bet to be dropped
    there. Independent check: on curiosity turns, the stance input's length alone has a correlation of
    0.55 with "above usual steps".
+4c. **Backtest of the proposed bet (11-03).** I replayed it on 2,250 stored v1 turns, using
+   only information from the prior 7 days for each turn (at least 20 earlier turns of the same caller).
+   - Stance's call: its range midpoint minus its own prior median midpoint.
+   - The outcome: true size above the prior median true size.
+   - The score is AUC: 0.50 is chance. p is from 300 shuffles. "early" and "late" are the two halves
+     in time.
+   - Reply length: self 0.84, curiosity 0.75, world-pulse 0.70, chat 0.66, stage 0.63; all p < 0.003,
+     and every half is above 0.57.
+   - Steps: curiosity 0.67, stage 0.66, self 0.63, chat 0.59 (p 0.017).
+   - **World-pulse steps: 0.52 (p 0.25), no signal.** Expect that bet to be dropped there.
+   - Caveat: world-pulse reply length falls from 0.73 early to 0.59 late. Watch it at the decision point.
 5. **Existing mechanism.** This reuses the settle loop, the table, `_grade_p` and the live endpoint
    from #2976. No new service and no new grader.
 6. **Reversibility.** The change is cheap to undo. Old v1 rows stay as they are, and the settler reads

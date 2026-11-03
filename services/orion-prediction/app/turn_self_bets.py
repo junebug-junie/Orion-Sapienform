@@ -51,6 +51,7 @@ session is a chat session, ``chat``; no session id is ``unknown``):
 """
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 import statistics
@@ -206,13 +207,15 @@ class SizeHistory:
 
     def add(self, caller: str, faculty: str, placed_at: datetime, observed: float | None) -> None:
         if faculty in SIZE_FACULTIES and observed is not None:
-            self._by[(caller, faculty)].append((placed_at, float(observed)))
+            bisect.insort(self._by[(caller, faculty)], (placed_at, float(observed)))   # kept in time order
 
     def reference(self, caller: str, faculty: str, before: datetime) -> float | None:
         """Median size of the caller's turns placed in [before - REFERENCE_WINDOW, before); the bet's
         own turn is never in it. None below MIN_REFERENCE turns."""
-        sizes = [x for t, x in self._by.get((caller, faculty), ()) if before - REFERENCE_WINDOW <= t < before]
-        return statistics.median(sizes) if len(sizes) >= MIN_REFERENCE else None
+        rows = self._by.get((caller, faculty), [])
+        lo = bisect.bisect_left(rows, (before - REFERENCE_WINDOW,))
+        hi = bisect.bisect_left(rows, (before,))   # strictly before: a turn placed at `before` is excluded
+        return statistics.median(x for _, x in rows[lo:hi]) if hi - lo >= MIN_REFERENCE else None
 
 
 # --- grading ---------------------------------------------------------------------------------------

@@ -598,13 +598,11 @@ def build_default_worker(*, store: SubstrateMutationStore) -> SubstrateAdaptatio
             "routing_threshold_patch": "replay-routing-v1",
             "recall_weighting_patch": "replay-recall-v1",
             "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
-            "prediction_expectation_patch": "replay-prediction-raw-reading-v1",
         },
         baseline_metric_ref_by_class={
             "routing_threshold_patch": "baseline-routing-v1",
             "recall_weighting_patch": "baseline-recall-v1",
             "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
-            "prediction_expectation_patch": "baseline-prediction-expectation-live-v1",
         },
     )
     return SubstrateAdaptationWorker(

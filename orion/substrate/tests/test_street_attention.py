@@ -1,4 +1,4 @@
-"""Street events -> attention: the gate, the held value, the calm state, Rung 6.
+"""Street events -> attention: the gate, the held value, the calm state, handoff surprise.
 
 Spec: docs/superpowers/specs/2026-10-20-street-continuity-handoff-design.md
 section 6. Pure rules in orion/substrate/street_attention.py.
@@ -19,21 +19,12 @@ from orion.schemas.attention_candidate import (
     is_world_source_id,
 )
 from orion.schemas.vision import StreetEventV1
-from orion.substrate import mutation_control_surface
-from orion.substrate.mutation_control_surface import RuntimeControlSurfaceStore, get_prediction_expectation
 from orion.substrate.prediction_error_magnitude import compute_prediction_error_magnitude
-from orion.substrate.prediction_expectation import (
-    WARMUP_READINGS,
-    Expectation,
-    assess,
-    candidate_grid,
-    domain_specs,
-    paired_gain,
-)
 from orion.substrate.street_attention import (
     GATE_P_VALUE,
     P_VALUE_FLOOR,
-    STREET_HANDOFF_DOMAIN,
+    STREET_HANDOFF_EWMA_ALPHA,
+    STREET_HANDOFF_MIN_VARIANCE,
     StreetAttentionState,
     street_gate,
     street_handoff_raw_reading,
@@ -280,45 +271,9 @@ def test_calibrated_p_values_average_one_nat_the_rest_point() -> None:
     assert var == pytest.approx(1.0, abs=0.1)
 
 
-SPEC = domain_specs()[STREET_HANDOFF_DOMAIN]
-T0 = NOW - timedelta(days=5)
-
-
-def _timed(values):
-    return [(T0 + timedelta(minutes=10 * i), v) for i, v in enumerate(values)]
-
-
-def _calibrated(n: int, seed: int) -> list[float]:
-    r = random.Random(seed)
-    return [-math.log(max(r.random(), P_VALUE_FLOOR)) for _ in range(n)]
-
-
-def test_domain_spec_is_registered_with_a_24h_rollback_window() -> None:
-    assert SPEC.domain == "street_handoff"
-    assert SPEC.target_surface == "prediction_expectation:street_handoff"
-    assert SPEC.rollback_window_sec == 24 * 3600
-    assert SPEC.default == Expectation(0.2, 1e-3)
-
-
-def test_too_few_handoffs_propose_nothing() -> None:
-    assert assess(SPEC, _timed(_calibrated(250, 1)), current=SPEC.default) is None
-
-
-def test_candidates_stay_inside_domain_bounds() -> None:
-    for candidate in candidate_grid(SPEC, SPEC.default):
-        assert SPEC.in_bounds(candidate)
-
-
-def test_going_numb_loses_on_calibrated_handoffs() -> None:
-    values = _calibrated(900, 2)
-    gain = paired_gain(values, candidate=Expectation(0.2, 100.0), reference=SPEC.default, score_from=WARMUP_READINGS)
-    assert gain is not None and gain.upper_bound < 0.0
-
-
-def test_unset_surface_reads_as_the_default(tmp_path, monkeypatch) -> None:
-    store = RuntimeControlSurfaceStore(sql_db_path=str(tmp_path / "control.sqlite3"))
-    monkeypatch.setattr(mutation_control_surface, "_CONTROL_SURFACE_STORE", store)
-    assert get_prediction_expectation(STREET_HANDOFF_DOMAIN) == SPEC.default
+def test_handoff_expectation_is_the_fixed_constant() -> None:
+    # Rung 6's tuner (retired 2026-11-03) used to override these at runtime.
+    assert (STREET_HANDOFF_EWMA_ALPHA, STREET_HANDOFF_MIN_VARIANCE) == (0.2, 1e-3)
 
 
 def test_handoff_surprise_z_reads_the_expectation() -> None:

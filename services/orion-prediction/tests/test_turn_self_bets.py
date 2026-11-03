@@ -28,14 +28,6 @@ def _by(rows):
     return {r["faculty"]: r for r in rows}
 
 
-V1_STATED = set(tsb.P_FACULTIES) | set(tsb.RANGE_FACULTIES)
-
-
-def _stated(rows):
-    """The rows for the faculties a v1 bet states (the relative ones are always no_stated on v1)."""
-    return [r for r in rows if r["faculty"] in V1_STATED]
-
-
 def test_a_turn_that_went_as_predicted_upholds_every_faculty():
     rows = _by(settle(_bet(), _art(), NOW))
     assert set(rows) == set(FACULTIES)
@@ -71,7 +63,7 @@ def test_question_mark_only_counts_near_the_end():
 @pytest.mark.parametrize("art", [_art(code=-9), _art(code=1), _art(text=""), _art(text="   "),
                                  {"exit_code": 0, "step_count": 2}])
 def test_failed_or_cut_short_turns_are_void_not_misses(art):
-    rows = _stated(settle(_bet(), art, NOW))
+    rows = settle(_bet(), art, NOW)
     assert {r["status"] for r in rows} == {"void"}
     assert {r["void_reason"] for r in rows} == {"failed_to_execute"}
     assert all(r["hit"] is None for r in rows)
@@ -79,7 +71,7 @@ def test_failed_or_cut_short_turns_are_void_not_misses(art):
 
 def test_no_record_waits_then_expires():
     assert settle(_bet(age=timedelta(hours=1)), None, NOW) is None
-    rows = _stated(settle(_bet(age=timedelta(hours=7)), None, NOW))
+    rows = settle(_bet(age=timedelta(hours=7)), None, NOW)
     assert {r["void_reason"] for r in rows} == {"expired_unsettled"}
 
 
@@ -110,7 +102,7 @@ def test_a_cut_short_notice_is_void_not_a_graded_reply():
     from orion.harness.cut_short import CUT_SHORT_MARKER
 
     art = _art(text=CUT_SHORT_MARKER + " This turn was stopped after 230 steps.", steps=230, code=None)
-    assert {r["void_reason"] for r in _stated(settle(_bet(), art, NOW))} == {"failed_to_execute"}
+    assert {r["void_reason"] for r in settle(_bet(), art, NOW)} == {"failed_to_execute"}
 
 
 @pytest.mark.parametrize("bet_pred,art", [("not an object", _art()), (PRED, ["not", "an", "object"])])
@@ -290,11 +282,17 @@ def test_relative_grade_reports_the_within_caller_sorting_score():
 
 
 @pytest.mark.parametrize("art,age", [(_art(code=1), timedelta(minutes=10)), (None, timedelta(hours=7))])
-def test_a_crashed_or_lost_turn_does_not_fail_a_bet_that_was_never_made(art, age):
-    # Review finding 11-03: a v2 bet states no range, and a crashed v2 turn wrote failed_to_execute
-    # rows for the ranges anyway; the self-monitor then reported 26 "failed" step guesses.
-    rows = _by(settle(_bet(pred=PRED_V2, age=age), art, NOW))
-    assert rows["turn.self.steps"]["void_reason"] == "ungradeable_no_stated"
-    assert rows["turn.self.reply_length"]["void_reason"] == "ungradeable_no_stated"
-    stated_void = "failed_to_execute" if art is not None else "expired_unsettled"
-    assert rows["turn.self.more_steps_than_usual"]["void_reason"] == stated_void
+def test_a_crashed_or_lost_turn_voids_every_faculty_so_it_reads_as_one_failed_turn(art, age):
+    # The self-monitor counts a turn as failed only when ALL its rows are failed_to_execute
+    # (turn.run, #3078), and skips those rows on the guess faculties. Marking the unstated ones
+    # no_stated instead would make every crashed v2 turn read as a turn that ran.
+    reason = "failed_to_execute" if art is not None else "expired_unsettled"
+    assert {r["void_reason"] for r in settle(_bet(pred=PRED_V2, age=age), art, NOW)} == {reason}
+
+
+def test_relative_grade_reports_the_within_caller_sorting_score():
+    rows = [{"faculty": "turn.self.longer_reply_than_usual", "caller": c, "status": "happened" if h else "not_happened",
+             "void_reason": None, "stated_p": p, "hit": h}
+            for c in ("self", "chat") for p, h in [(0.7, True), (0.3, False), (0.6, True), (0.4, True)] * 15]
+    g = grade_faculty("turn.self.longer_reply_than_usual", rows)
+    assert g["sort_auc"] == pytest.approx(1.0) and g["sort_pairs"] == 2 * 45 * 15 and g["sort_p"] < 1e-6

@@ -479,44 +479,64 @@ def test_scheduler_self_revision_lane_is_retired(monkeypatch, scheduler_fixture)
     ]
 
 
-def _steady_readings(n: int = 1500):
-    import random
-    from datetime import timedelta
+def _field_topology_carrier():
+    from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationProposalV1
 
-    r = random.Random(2)
-    start = datetime.now(timezone.utc) - timedelta(minutes=n + 5)
-    return [(start + timedelta(minutes=i), abs(0.02 + r.gauss(0, 0.005))) for i in range(n)]
-
-
-def test_scheduled_cycle_lets_orion_adopt_a_self_tuned_expectation(monkeypatch, scheduler_fixture) -> None:
-    """Rung 6 end to end through the Hub's scheduled cycle: the tuner proposes
-    from recorded raw readings, the trial scores the held-out span, and the
-    unattended applier writes Orion's new expectation to the control surface."""
-    from orion.substrate.prediction_expectation import domain_specs
-    from orion.substrate.prediction_expectation_tuner import PredictionExpectationTuner
-
-    readings = _steady_readings()
-    tuner = PredictionExpectationTuner(
-        read_readings=lambda domain, since: [r for r in readings if r[0] >= since] if domain == "execution" else [],
-        read_live=mutation_control_surface.get_prediction_expectation,
+    return MutationProposalV1(
+        lane="operational",
+        mutation_class="field_topology_weight_patch",
+        risk_tier="low",
+        target_surface="field_topology",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        evidence_refs=["telemetry:placeholder"],
+        source_signal_ids=["signal:placeholder"],
+        source_pressure_id="pressure-carrier-test",
+        patch=MutationPatchV1(
+            mutation_class="field_topology_weight_patch",
+            target_surface="field_topology",
+            target_ref="field_topology",
+            patch={"edge_weight_delta": 0.1},
+            rollback_payload={"edge_weight_delta": 0.0},
+        ),
     )
-    monkeypatch.setattr(api_routes, "_prediction_expectation_tuner", lambda: tuner)
+
+
+def test_scheduled_cycle_has_no_expectation_tuner_and_applies_nothing(monkeypatch, scheduler_fixture) -> None:
+    """Rung 6's expectation tuner is retired (2026-11-03): no producer, no
+    summary field, and the unattended cycle applies nothing even with every
+    apply gate on."""
+    assert not hasattr(api_routes, "_prediction_expectation_tuner")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "true")
-    default = domain_specs()["execution"].default
-    assert mutation_control_surface.get_prediction_expectation("execution") == default
 
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])
 
     assert payload["status"] == "completed", payload
-    assert payload["summary"]["prediction_expectation_proposals"] == 1
-    assert payload["summary"]["adoptions_completed"] == 1, payload["summary"]
-    adopted = mutation_control_surface.get_prediction_expectation("execution")
-    assert adopted != default and adopted.alpha < default.alpha
+    assert "prediction_expectation_proposals" not in payload["summary"]
+    assert "prediction_expectation_tuner" not in payload["summary"].get("phase_sec", {})
+    assert payload["summary"]["adoptions_completed"] == 0
 
-    # Same hour: no second proposal; the adoption holds the surface.
-    again = api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])
-    assert again["summary"]["prediction_expectation_proposals"] == 0
+
+def test_scheduled_applier_with_no_allowed_classes_applies_nothing() -> None:
+    """An explicit empty allow-set means "apply nothing", not "apply all".
+
+    Before 2026-11-03 an empty set was read as "no filter" -- harmless while
+    the scheduled cycle always passed one class, but the moment its last
+    class retired an empty set would have opened apply to every class."""
+    from orion.core.schemas.substrate_mutation import MutationDecisionV1
+
+    proposal = _field_topology_carrier()
+    decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote", reason="test")
+
+    closed = api_routes._ScheduledCyclePatchApplier(surfaces={}, allow_apply=True, allowed_classes=set())
+    assert closed.apply(proposal=proposal, decision=decision) is None
+    assert closed.blocked == 1 and closed.completed == 0
+    assert closed.surfaces == {}
+
+    unfiltered = api_routes._ScheduledCyclePatchApplier(surfaces={}, allow_apply=True, allowed_classes=None)
+    assert unfiltered.apply(proposal=proposal, decision=decision) is not None
+    assert unfiltered.completed == 1
 
 
 def test_review_telemetry_is_turned_into_signals_once(monkeypatch) -> None:

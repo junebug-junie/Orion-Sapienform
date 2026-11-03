@@ -208,6 +208,28 @@ def test_tick_takes_whole_steps_up_to_a_day(report):
     assert "at most 1440" in report["tick_too_long"]
 
 
+def test_clock_runs_fast_when_idle_and_real_time_on_the_gpu(report):
+    c = report["clock"]
+    assert c["idle_hour"] == c["x"] * 60  # 45 game hours per idle real hour
+    busy = c["busy_hour"]
+    assert busy["total"] == 60  # real time: 1 game minute per real minute
+    # Whole 5-minute steps only: real time runs one step every 5 ticks, carry kept.
+    assert set(busy["steps"]) == {0, 5} and busy["clock"]["pending"] == 0
+    assert busy["clock"]["busy_ticks"] == 60 and busy["clock"]["fast_ticks"] == 0
+    # A 2-hour daily budget at the measured ~75% chat load is about one game day.
+    assert 20 * 60 <= c["two_hours_75"] <= 28 * 60
+    assert c["gpu"] == {"none": False, "empty": False, "chat": True, "op": True}
+
+
+def test_cron_runs_the_clock_every_tick_seconds():
+    patch = (_SERVICE / "patches" / "orion-sim-core-hooks.patch").read_text()
+    assert "+crons.interval('sim tick', { seconds: 60 }, internal.sim.tick.run, {});" in patch
+    assert "export const CLOCK_TICK_SECONDS = 60;" in (_SIM / "core.ts").read_text()
+    tick = (_SIM / "tick.ts").read_text()
+    assert "townNeedsGpu(await ctx.db.get(worldId))" in tick
+    assert "clock: next.clock" in tick
+
+
 # ---- plain Python: the core stays importable by node, the seed tracks the cards ----
 
 def test_core_imports_nothing():

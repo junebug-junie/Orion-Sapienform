@@ -37,6 +37,8 @@ MutationClassV1 = Literal[
     "cognitive_stance_continuity_adjustment",
     "cognitive_social_continuity_repair",
     "field_topology_weight_patch",
+    # Retired 2026-11-03 (mutation_contracts.RETIRED_MUTATION_CLASSES). Kept so
+    # the stored historical proposals with this class still parse.
     "prediction_expectation_patch",
 ]
 MutationDecisionActionV1 = Literal["reject", "hold", "require_review", "auto_promote"]

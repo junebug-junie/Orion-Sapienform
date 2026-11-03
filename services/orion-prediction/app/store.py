@@ -35,7 +35,8 @@ TABLES = {
     "prediction_weather_hourly": ("hour_ts", "temp_f", "is_forecast", "source", "fetched_at"),
     "prediction_exceedance": ("exceedance_id", "probability", "window_start", "window_end", "hit_raw", "hit_mean"),
     "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result", "shadow"),
-    "prediction_turn_self_bet": ("bet_id", "correlation_id", "faculty", "status", "stated_p", "stated_lo", "observed"),
+    "prediction_turn_self_bet": ("bet_id", "correlation_id", "faculty", "status", "stated_p", "stated_lo", "observed",
+                                 "reference"),
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
@@ -43,7 +44,8 @@ ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "act
 _ACTION_BET_JSONB = {"context", "action", "counts", "detail", "shadow"}
 _SETTLED = "result IN ('success', 'failure')"
 TURN_SELF_BET_COLS = ("bet_id", "correlation_id", "faculty", "claim_kind", "caller", "placed_at", "settled_at",
-                      "status", "void_reason", "stated_p", "stated_lo", "stated_hi", "coverage", "observed", "hit")
+                      "status", "void_reason", "stated_p", "stated_lo", "stated_hi", "coverage", "observed", "reference",
+                      "hit")
 
 
 def _since(ts: datetime) -> str:
@@ -486,13 +488,20 @@ class PostgresStore:
             return 0
         cols = TURN_SELF_BET_COLS
         written = 0
-        for i in range(0, len(rows), 1000):  # 1000 x 15 params, well under Postgres's 65535 per statement
+        for i in range(0, len(rows), 1000):  # 1000 x 16 params, well under Postgres's 65535 per statement
             chunk = rows[i:i + 1000]
             values = ", ".join(["(" + ", ".join(["%s"] * len(cols)) + ")"] * len(chunk))
             args = [r[c] for r in chunk for c in cols]
             written += len(self._all(f"INSERT INTO prediction_turn_self_bet ({', '.join(cols)}) VALUES {values} "
                                      "ON CONFLICT (bet_id) DO NOTHING RETURNING bet_id", args))
         return written
+
+    def turn_size_history(self, since: datetime) -> list[dict]:
+        """Executed turns' true sizes (the v1 range faculties' observed), for the relative bets'
+        reference (manual_migration_prediction_turn_self_bet_reference_v1.sql)."""
+        return self._all("SELECT caller, faculty, placed_at, observed FROM prediction_turn_self_bet "
+                         "WHERE faculty IN ('turn.self.steps', 'turn.self.reply_length') AND observed IS NOT NULL "
+                         "AND placed_at >= %s", (since,))
 
     def turn_self_bets(self, since: datetime, limit: int = 20000) -> list[dict]:
         return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "

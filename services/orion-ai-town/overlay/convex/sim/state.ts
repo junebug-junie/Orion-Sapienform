@@ -18,7 +18,7 @@ export const snapshot = internalQuery({
       .withIndex('worldMinute', (q) => q.eq('worldId', worldId))
       .order('desc')
       .take(Math.max(0, Math.min(args.events ?? 20, 200)));
-    return { worldId, state: doc?.state ?? null, events };
+    return { worldId, state: doc?.state ?? null, clock: doc?.clock ?? null, events };
   },
 });
 
@@ -39,6 +39,7 @@ export const bootstrap = internalMutation({
       state.next_event = old.next_event;
       await ctx.db.replace(existing._id, {
         worldId, version: state.version, minute: state.minute, seed: state.seed, state,
+        ...(existing.clock ? { clock: existing.clock } : {}),
       });
       return { created: false, replaced: true, seed: state.seed };
     }

@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - "orion/harness/fcc_motor.py"
+      - "orion/harness/structured_output.py"
+      - "orion/core/llm_json.py"
       - "orion/harness/fcc_warm_pool.py"
       - "orion/harness/fcc_warm_relay.py"
       - "orion/harness/tests/test_fcc_warm_pool.py"
@@ -26,6 +28,8 @@ on:
     branches: [main]
     paths:
       - "orion/harness/fcc_motor.py"
+      - "orion/harness/structured_output.py"
+      - "orion/core/llm_json.py"
       - "orion/harness/fcc_warm_pool.py"
       - "orion/harness/fcc_warm_relay.py"
       - "orion/llm/call_usage.py"
@@ -60,6 +64,7 @@ jobs:
             orion/harness/tests/test_fcc_motor_output_cap_continuation.py \
             orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py \
             orion/harness/tests/test_fcc_reading_undeclared_tool.py \
+            orion/harness/tests/test_fcc_reading_json_resume.py \
             orion/harness/tests/test_call_usage_harness.py \
             orion/llm/tests/test_call_usage.py \
             -q -p no:cacheprovider

@@ -3,7 +3,8 @@
 from typing import Any, TypedDict
 
 from app.admitted_graph import (
-    HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued, resource_nodes, taken_back,
+    HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, listener_wait, replay_if_requeued, resource_nodes,
+    taken_back,
 )
 from app.graph import turn_correlation_id
 from orion.schemas.reading_turn import (
@@ -22,6 +23,7 @@ class ReadingState(TypedDict, total=False):
     requested_at: str
     attempt: int
     hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict | None
     hold: dict | None
     hold_seq: int
@@ -88,6 +90,12 @@ def build_reading_graph(run_turn, admission, checkpointer: Any):
             return await taken_back(admission, dict(state), exc.release_reason,
                                     f"{type(exc).__name__}: {exc}", {"status": "waiting_resource"})
         except Exception as exc:
+            # Hub restarting in a deploy: the request reached nobody, so wait it out and replay
+            # (no attempt; bounded by DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES). Live 2026-10-31.
+            parked = await listener_wait(admission, dict(state), exc, waiting={"status": "waiting_resource"},
+                                         extra={"harness_turn_meta": {"turn_correlation_id": turn_correlation_id(state)}})
+            if parked is not None:
+                return parked
             # Reading's existing queue owns bounded actual-work retries. Waiting
             # and recalls never spend those attempts; do not nest another retry loop.
             released = await admission.release(dict(state), "attempt_failed")

@@ -3005,7 +3005,8 @@ API: `GET /api/cabinet/sensors/latest`, `GET /api/cabinet/sensors/history?window
 while `#cabinet` is visible; sensor history fetches on tab activation, window toggle, or Refresh.
 
 **Office strip** (Biometrics → *Cabinet / Office*, below Cooling): office temperature and
-humidity from pan-1's SHT40, read from Postgres `office_env_sample` (written by sql-writer from
+humidity from pan-1's SHT40, plus eCO2 (estimated from VOCs) and TVOC from its CCS811 (tiles read
+"warming up" for 20 min after each sensor start), read from Postgres `office_env_sample` (written by sql-writer from
 `orion:office:env:sample`, produced by `orion-office-env`). Routes: `GET /api/office/env/latest`
 and `GET /api/office/env/history?window=24h|3d|7d` (`scripts/office_env_routes.py`). Node comes
 from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 90 = three missed
@@ -3013,6 +3014,21 @@ from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 
 "stale"/gaps, never 0. Frontend: `static/js/office-env.js` (own script; polls every 30 s only
 while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
 `tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
+
+After deploying sql-writer and Hub on Athena, prove the live path rather than only the
+container state:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+python3 scripts/smoke_office_air_live.py
+```
+
+The read-only smoke requires a fresh non-stale Hub sample, the rendered Office DOM and
+its CCS811 frontend asset link, the asset itself, the three materialized air columns,
+a fresh destination row, and zero
+`office.env.sample.v1` fallback rows in the last 24 hours. It never reads or prints
+fallback payloads. During the sensor's 20-minute post-restart conditioning window,
+`--allow-warming` accepts an explicit warming state without pretending air values exist.
 
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires

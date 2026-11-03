@@ -63,9 +63,22 @@ PARKED_TARGET_SURFACES: frozenset[str] = frozenset()
 # day from ~30 real reviews), its patch was one hardcoded constant, its trial
 # needed reviews that resolve (0 of 300+ in 10 days did), and even an adoption
 # only staged a profile nobody activates. 930 proposals, 930 rejections in the
-# week before retirement. Its replacement as rung 6's live class is
-# prediction_expectation_patch (orion/substrate/prediction_expectation.py).
-RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch", "graph_consolidation_param_patch"})
+# week before retirement. Its replacement as rung 6's live class was
+# prediction_expectation_patch.
+#
+# "prediction_expectation_patch" retired 2026-11-03 (the rung 6 expectation
+# tuner, PR #2715). It tuned the smoothing rate and variance floor of the
+# execution/chat/street-handoff surprise readings. 16 proposals, 1 adoption
+# (execution alpha 0.2 -> 0.05, 2026-10-26), 15 rejections; the raw reading it
+# learned from was mostly zeros. Its producer (prediction_expectation_tuner.py),
+# assessor (prediction_expectation.py), trial evaluator, apply branch and
+# control-surface accessors are deleted; the runtime scores with its
+# calibrated constants again. The literal stays in MutationClassV1 and the
+# contract below stays so the stored historical proposals still parse and
+# display. Successor: the self-monitor organ (design PR #2827).
+RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset(
+    {"routing_threshold_patch", "graph_consolidation_param_patch", "prediction_expectation_patch"}
+)
 
 # Single shared reason string for "routing" specifically, for the Hub
 # endpoints/injected-cognition-context callers that report on it
@@ -212,11 +225,11 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         evaluation_metrics=("queue_resolution_delta", "requeue_rate_delta"),
         auto_promote_default=True,
     ),
-    # Rung 6 (2026-10-16): Orion revises how surprised they expect to be, per
-    # EWMA-scored prediction-error domain. target_ref is the domain. Per-domain
-    # bounds (relative to each domain's calibrated floor) are enforced again in
-    # prediction_expectation.DomainSpec.in_bounds(); these are the global outer
-    # limits validate_patch() can check without knowing the domain.
+    # Retired 2026-11-03 (RETIRED_MUTATION_CLASSES above). Kept, like
+    # routing_threshold_patch's entry, only so the stored historical
+    # proposals still score and display; nothing can decide or apply it.
+    # Was rung 6 (2026-10-16): Orion revised how surprised they expect to be,
+    # per EWMA-scored prediction-error domain. target_ref is the domain.
     "prediction_expectation_patch": MutationClassContract(
         mutation_class="prediction_expectation_patch",
         allowed_targets=("execution", "chat", "street_handoff"),
@@ -228,8 +241,7 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         # Lower confidence bound of the paired per-reading log-score gain on
         # readings the candidate was not chosen on. > 0 means "better with
         # ~95% confidence", not "better on average by any sliver".
-        # And the mean gain must be worth a live change (MIN_EFFECT_NATS in
-        # prediction_expectation.py; literal here to avoid an import cycle).
+        # And the mean gain had to be worth a live change.
         evaluation_metrics=("holdout_log_score_gain_lower_bound", "holdout_log_score_gain_mean"),
         metric_minimums={"holdout_log_score_gain_lower_bound": 1e-9, "holdout_log_score_gain_mean": 0.01},
         auto_promote_default=True,

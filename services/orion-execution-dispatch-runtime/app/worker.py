@@ -88,10 +88,11 @@ from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1,
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
+from app.aitown_session_dispatch import AITownSessionDispatchMixin
+from app.result_status import status_for_settlement, status_for_stored_settlement
+from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
-from app.aitown_session_dispatch import AITownSessionDispatchMixin
-from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 
 logger = logging.getLogger("orion.execution_dispatch.runtime")
 
@@ -448,6 +449,13 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - frame_generated_at).total_seconds()
 
+    def _start_frame_materialization(
+        self, frame: ExecutionDispatchFrameV1
+    ) -> ExecutionDispatchFrameV1:
+        """Make producer intent visible, then assign that DB timestamp as event time."""
+        generated_at = self._store.start_dispatch_frame_materialization(frame.frame_id)
+        return frame.model_copy(update={"generated_at": generated_at})
+
     def _check_freshest_fallback(self) -> PolicyDecisionFrameV1 | None:
         """2026-07-30 follow-up (docs/superpowers/specs/2026-07-30-execution-
         dispatch-staleness-discard-design.md's own live-verified finding):
@@ -528,6 +536,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 age_sec=age_sec,
                 staleness_threshold_sec=threshold_sec,
             ).model_copy(update=baseline)
+            discard_frame = self._start_frame_materialization(discard_frame)
             self._store.save_dispatch_frame(discard_frame)
             last_discard_frame = discard_frame
             discarded += 1
@@ -635,6 +644,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 policy_id=self._policy.policy_id,
                 reason=f"proposal_frame {policy_frame.source_proposal_frame_id} unavailable",
             ).model_copy(update=carry_forward_baseline)
+            frame = self._start_frame_materialization(frame)
             self._store.save_dispatch_frame(frame)
             logger.info(
                 "execution_dispatch_frame_saved_unevaluable frame_id=%s policy_frame_id=%s",
@@ -668,6 +678,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
             # model_copy would otherwise stamp the previous tick's map back
             # over it, freezing every counter at its first value.
         ).model_copy(update=updated_baseline)
+        frame = self._start_frame_materialization(frame)
 
         if (
             self._settings.execution_dispatch_mode == "dispatch_read_only"
@@ -1127,7 +1138,12 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                                                 "dispatch_error": "reading_pull_disabled"})
         existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
         if existing is not None:
-            self._record_dispatch_status(existing["status"], live=False)
+            status = status_for_stored_settlement(existing)
+            if existing["status"] == "succeeded":
+                self._store.canonicalize_legacy_dispatch_result_status(
+                    result_id=existing["result_id"], status=status
+                )
+            self._record_dispatch_status(status, live=False)
             return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
                                                 "result_ref": existing["result_id"]})
         started = perf_counter()
@@ -1151,7 +1167,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                       "seed_id": out.seed_id if out else None, "object_ref": out.object_ref if out else None,
                       "refusal": out.refusal if out else None, "rpc_ms": round(rpc_ms, 1),
                       "pulled_today": out.pulled_today if out else None, "daily_cap": out.daily_cap if out else None}
-        status = "failed" if error else "succeeded"
+        status = status_for_settlement(out.state if out else None, error=error)
         self._store.save_dispatch_result(
             result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status=status,
             result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": None,

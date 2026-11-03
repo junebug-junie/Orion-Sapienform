@@ -78,14 +78,10 @@ from orion.substrate.prediction_error import (
     perception_prediction_error,
     vision_channel_staleness_pressure,
     chat_prediction_error,
-    chat_raw_reading,
     codebase_prediction_error,
     execution_prediction_error,
-    execution_raw_reading,
     route_prediction_error,
 )
-from orion.substrate.mutation_control_surface import RuntimeControlSurfaceStore, get_prediction_expectation
-from orion.substrate.prediction_expectation import Expectation
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
     process_transport_grammar_events,
@@ -649,13 +645,8 @@ class BiometricsSubstrateWorker:
         # would repeat CLAUDE.md 0A's own documented mistake.
         self._last_execution_prediction_error: float | None = None
         self._last_chat_prediction_error: float | None = None
-        # Rung 6: Orion's self-tuned expectation per domain, cached
-        # (monotonic fetch time, value) so the hot tick doesn't hit Postgres.
-        self._prediction_expectation_cache: dict[str, tuple[float, Expectation | None]] = {}
         self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
         self._world_reading_link_events_cache_at: datetime | None = None
-        self._control_surface_store: RuntimeControlSurfaceStore | None = None
-        self._last_raw_reading_prune_monotonic = 0.0
         self._last_route_prediction_error: float | None = None
         self._last_bus_synaptic_prediction_error: float | None = None
         # RPC delivery bridge (orion/substrate/rpc_delivery.py): the listener
@@ -1683,14 +1674,14 @@ class BiometricsSubstrateWorker:
         await asyncio.to_thread(self._process_street_event, decoded.envelope.payload or {})
 
     def _process_street_event(self, payload: Any, *, now: datetime | None = None) -> None:
-        """Gate one StreetEventV1, log the verdict, record Rung 6, write on pass.
+        """Gate one StreetEventV1, log the verdict, score handoff surprise, write on pass.
 
         One ``substrate_street_event`` log line per received event (kind,
         salience, verdict, reason, correlation_id). Fail-open."""
         from orion.schemas.vision import StreetEventV1
-        from orion.substrate.prediction_expectation import domain_specs
         from orion.substrate.street_attention import (
-            STREET_HANDOFF_DOMAIN,
+            STREET_HANDOFF_EWMA_ALPHA,
+            STREET_HANDOFF_MIN_VARIANCE,
             STREET_NODE_ID,
             street_handoff_raw_reading,
         )
@@ -1714,12 +1705,8 @@ class BiometricsSubstrateWorker:
         raw = street_handoff_raw_reading(event)
         surprise_z: float | None = None
         if raw is not None:
-            self._record_prediction_raw_reading(STREET_HANDOFF_DOMAIN, raw, event.occurred_at)
-            expectation = self._prediction_expectation(STREET_HANDOFF_DOMAIN) or domain_specs()[
-                STREET_HANDOFF_DOMAIN
-            ].default
             surprise_z = state.handoff_surprise_z(
-                raw, alpha=expectation.alpha, min_variance=expectation.min_variance
+                raw, alpha=STREET_HANDOFF_EWMA_ALPHA, min_variance=STREET_HANDOFF_MIN_VARIANCE
             )
         logger.info(
             "substrate_street_event kind=%s salience=%.3f p_value=%s verdict=%s reason=%r "
@@ -4753,62 +4740,6 @@ class BiometricsSubstrateWorker:
             except asyncio.CancelledError:
                 break
 
-    def _prediction_expectation(self, domain: str) -> Expectation | None:
-        """Orion's adopted expectation for ``domain`` (rung 6), or None to
-        use the calibrated constants. Refreshed at most every
-        SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC.
-
-        A failed read keeps the last value actually read (never silently the
-        defaults while the Hub believes an adoption is live), and a store that
-        fell back to memory/sqlite at boot is rebuilt while a Postgres URL is
-        configured, so one DB blip cannot pin the constants for the process's
-        whole life.
-        """
-        # `is True`: tests build this worker with __new__ and MagicMock
-        # settings; anything but an explicit True means "behave as before".
-        if getattr(self._settings, "prediction_expectation_live_enabled", False) is not True:
-            return None
-        cache = self.__dict__.setdefault("_prediction_expectation_cache", {})
-        now_mono = time.monotonic()
-        cached = cache.get(domain)
-        if cached is not None and now_mono - cached[0] < self._settings.prediction_expectation_refresh_sec:
-            return cached[1]
-        previous = cached[1] if cached is not None else None
-        try:
-            store = getattr(self, "_control_surface_store", None)
-            if store is None or (store.source_kind() != "postgres" and store.postgres_url):
-                # Resolves SUBSTRATE_CONTROL_PLANE_POSTGRES_URL like every other
-                # control-surface reader (scripts/check_control_surface_store_parity.py).
-                store = RuntimeControlSurfaceStore()
-                self._control_surface_store = store
-                if store.source_kind() != "postgres":
-                    logger.warning(
-                        "prediction_expectation_store_not_postgres source_kind=%s error=%s",
-                        store.source_kind(),
-                        store.last_error(),
-                    )
-            expectation: Expectation | None = get_prediction_expectation(domain, store=store, strict=True)
-        except Exception:
-            logger.warning("prediction_expectation_read_failed domain=%s keeping=%s", domain, previous, exc_info=True)
-            expectation = previous
-        cache[domain] = (now_mono, expectation)
-        return expectation
-
-    def _record_prediction_raw_reading(self, domain: str, raw_reading: float | None, now: datetime) -> None:
-        """Append the rung-6 replay corpus row; prune at most hourly. Best effort."""
-        if raw_reading is None or getattr(self._settings, "prediction_raw_readings_enabled", False) is not True:
-            return
-        try:
-            self._store.save_prediction_raw_reading(domain=domain, observed_at=now, raw_value=raw_reading)
-            now_mono = time.monotonic()
-            if now_mono - getattr(self, "_last_raw_reading_prune_monotonic", 0.0) >= 3600.0:
-                self._last_raw_reading_prune_monotonic = now_mono
-                self._store.prune_prediction_raw_readings(
-                    older_than=now - timedelta(hours=self._settings.prediction_raw_reading_retention_hours)
-                )
-        except Exception:
-            logger.warning("prediction_raw_reading_write_failed domain=%s", domain, exc_info=True)
-
     def _execution_tick(self) -> str | None:
         spec = REDUCER_SPECS[1]
         events = self._store.fetch_execution_grammar_events(
@@ -4846,11 +4777,7 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = load_projection()
-            raw_reading = execution_raw_reading(prev_projection, curr_projection)
-            error = execution_prediction_error(
-                prev_projection, curr_projection, expectation=self._prediction_expectation("execution")
-            )
-            self._record_prediction_raw_reading("execution", raw_reading, now)
+            error = execution_prediction_error(prev_projection, curr_projection)
             # execution_prediction_error mutates curr_projection's EWMA baseline
             # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
             # that regardless of whether error > 0.0 this tick, or the baseline
@@ -4940,11 +4867,7 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = _load_chat_projection()
-            raw_reading = chat_raw_reading(prev_projection, curr_projection)
-            error = chat_prediction_error(
-                prev_projection, curr_projection, expectation=self._prediction_expectation("chat")
-            )
-            self._record_prediction_raw_reading("chat", raw_reading, now)
+            error = chat_prediction_error(prev_projection, curr_projection)
             # chat_prediction_error mutates curr_projection's EWMA baseline
             # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
             # that regardless of whether error > 0.0 this tick, mirroring

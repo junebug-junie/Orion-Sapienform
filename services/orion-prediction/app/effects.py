@@ -23,7 +23,7 @@ from app.causal import (
     time_of_day_profile,
 )
 from app.engine import Engine, InputStale
-from app.event_pair import EventPairRefused, event_pair_effect
+from app.event_pair import EventPairRefused, event_pair_effect, visits
 from app.events import breaks_between
 from app.frame import covariate_series, mask_windows, to_grain, training_slice
 from app.heat_balance import HEAT_BALANCE, HeatBalanceRefused, fit_heat_per_watt, predict_heat, store_fit
@@ -37,7 +37,8 @@ EVENT_PAIR_MAX_EVENTS = 200_000   # per selector; above this the read is refused
 
 def selector_key(sel: dict) -> str:
     """Stable label for one event selector, e.g. ``vision_events:person_presence@walkway``."""
-    return f"{sel['source']}:{sel['event_type']}" + (f"@{sel['stream_id']}" if sel.get("stream_id") else "")
+    key = f"{sel['source']}:{sel['event_type']}" + (f"@{sel['stream_id']}" if sel.get("stream_id") else "")
+    return key + (f"~visit{int(sel['visit_gap_sec'])}s" if sel.get("visit_gap_sec") else "")
 
 
 class Effects:
@@ -122,7 +123,8 @@ class Effects:
         if len(rows) > EVENT_PAIR_MAX_EVENTS:
             raise EventPairRefused(f"{selector_key(sel)} has more than {EVENT_PAIR_MAX_EVENTS} events in range; "
                                    "narrow the time range")
-        return np.array([(t - start).total_seconds() for t in rows], dtype=float)
+        return visits(np.array([(t - start).total_seconds() for t in rows], dtype=float),
+                      float(sel.get("visit_gap_sec") or 0.0))
 
     def event_pair(self, a: dict, b: dict, start: datetime, end: datetime, lag_min_sec: float, lag_max_sec: float,
                    n_placebo: int = 999, seed: int = 0, placebo: str = "same_time_of_day") -> dict:

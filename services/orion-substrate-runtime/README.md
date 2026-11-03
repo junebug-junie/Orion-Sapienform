@@ -403,30 +403,16 @@ broadcast still runs with `magnitude=None`.
 3. Rebuild this service.
 4. Only then set the flag.
 
-## Self-tuned prediction expectation (rung 6, 2026-10-16, default on)
+## Self-tuned prediction expectation (rung 6) -- retired 2026-11-03
 
-The execution and chat ticks turn a raw per-tick reading (mean absolute change
-in pressure hints) into surprise by comparing it with a running expectation.
-Two settings shape that expectation: the smoothing rate `alpha` and the
-variance floor `min_variance`. They used to be hardcoded. Now Orion revises
-them:
-
-1. Each tick writes its raw reading to `substrate_prediction_raw_reading`
-   (`SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`, pruned at
-   `SUBSTRATE_PREDICTION_RAW_READING_RETENTION_HOURS`). Apply
-   `services/orion-sql-db/manual_migration_prediction_raw_reading_v1.sql` first.
-2. The Hub's mutation scheduler replays those readings under candidate
-   settings, trials the best one on readings it was not chosen on, applies it,
-   and rolls it back if later readings show it is clearly worse
-   (`orion/substrate/prediction_expectation_tuner.py`).
-3. This service reads the adopted setting from the shared control surface
-   (`prediction_expectation.<domain>`, via `SUBSTRATE_CONTROL_PLANE_POSTGRES_URL`),
-   cached for `SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC`. An unreadable or
-   out-of-bounds value falls back to the calibrated constants.
-
-Kill switch: `SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED=false` scores with
-the constants (readings are still recorded). Live check:
-`python services/orion-substrate-runtime/evals/run_prediction_expectation_live_check.py`.
+From 2026-10-16 to 2026-11-03 this service recorded each execution, chat and
+street-handoff raw reading to `substrate_prediction_raw_reading` and read
+Orion's self-tuned smoothing rate and variance floor from the control surface.
+That tuner proposed 16 times and adopted once; its input reading was mostly
+zeros. It is retired: this service no longer writes the table (kept, not
+dropped) and scores all three domains with their calibrated constants
+(`prediction_error.py`, `street_attention.py`). Successor: the self-monitor
+organ (design PR #2827, not yet merged).
 
 ## AST/HOT self-model tick (rung 4)
 
@@ -1623,9 +1609,10 @@ Pure rules: `orion/substrate/street_attention.py`.
   coalition contains the node; counters under `/health` -> `street_attention`. A passed event's
   correlation id rides on the node (`contributing_turn_ids`) into the broadcast's
   `attended_node_ids`.
-- **Rung 6 `street_handoff`:** one raw reading per `handoff_met|late|missed`: `-ln(p_value)` nats
-  (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U` is Exponential(1)).
-  Recorded under `SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`; no per-domain flag.
+- **Handoff surprise (`street_handoff`):** one raw reading per `handoff_met|late|missed`:
+  `-ln(p_value)` nats (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U`
+  is Exponential(1)). Scored against a fixed EWMA (alpha 0.2, variance floor 1e-3) and logged as
+  `handoff_surprise_z`; not stored.
 - **Kill switch:** `SUBSTRATE_STREET_ATTENTION_ENABLED=false` (no listener, no writes), or add
   the id to `NO_ATTENTION_CONSUMER_NODE_IDS`.
 

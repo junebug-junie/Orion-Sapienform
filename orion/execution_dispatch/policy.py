@@ -9,6 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from orion.schemas.grammar import ActSignal, ActVerb
 
 
+# Upper bound on the interval between stamping an execution-dispatch frame and making it visible
+# in SQL. Sends in one tick run concurrently, so the longest RPC is the bound. Layer 11's source
+# visibility lag is statically required to cover this value before freezing an hourly window.
+MAX_DISPATCH_RPC_TIMEOUT_SEC = 720.0
+
+
 class DispatchModeConfigV1(BaseModel):
     default_dispatch_mode: str = "dry_run"
     allow_dispatch_read_only: bool = False
@@ -111,7 +117,9 @@ class CortexRouteTemplateV1(BaseModel):
     # this consumer is single-threaded, so a global ceiling large enough for
     # the prune would let ONE hung inspect stall all dispatch for that long.
     # Only routes that actually need a longer budget get one.
-    rpc_timeout_sec: float | None = None
+    rpc_timeout_sec: float | None = Field(
+        None, gt=0.0, le=MAX_DISPATCH_RPC_TIMEOUT_SEC
+    )
 
     # 2026-08-25: static per-route arguments for the target verb, merged into
     # the envelope's `context.skill_args` (orion/execution_dispatch/

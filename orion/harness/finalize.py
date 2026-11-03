@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -20,6 +19,7 @@ from orion.cognition.cortex_payload_extract import (
 )
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
+from orion.harness.structured_output import canonicalize_structured_output  # noqa: F401 -- re-exported
 from orion.embodiment.intents import build_intent
 from orion.harness.cut_short import ensure_cut_short_marked
 from orion.harness.reading_receipts import enforce_reading_receipt_grounding
@@ -61,11 +61,6 @@ REPAIR_PRESSURE_MAX = 0.3
 # favors it, fewer when the turn is already expensive). Named here, not
 # built, so the idea isn't lost when that system exists.
 MAX_FINALIZE_LOOP_RETRIES = 1
-
-
-def canonicalize_structured_output(text: str) -> str:
-    """Return a compact JSON object or raise when a machine draft is not JSON."""
-    return json.dumps(parse_json_object(text), ensure_ascii=False)
 
 # Semantic verb names the reflect prompt is allowed to recommend. Kept in
 # lockstep with the TOOL RECOMMENDATION section of harness_finalize_reflect.j2

@@ -156,6 +156,11 @@ refuses to delete rows any of the five reducer lanes still has unconsumed below 
 rather than the clamped cutoff -- so "a reducer is stuck" and "retention is caught up"
 cannot look the same.
 
+`GET /health` uses the same queue, subscription, index, and retention degradation state as
+`GET /grammar/truth`, but deliberately omits ledger-wide diagnostics. In particular, the
+exact per-source `COUNT(*)`/latest-event census remains on `/grammar/truth` only: it is an
+operator report over every retained `grammar_events` row, not a liveness prerequisite.
+
 `grammar_traces` is the parent row the Grammar Atlas lists, and is deliberately covered by
 the periodic loop only, not by `main.py`'s startup pass. It was added last (2026-08-20):
 until then its children were pruned at 3 days while the trace rows lived forever, so 42%
@@ -1084,7 +1089,12 @@ through the emitter and reducer: `python services/orion-sql-writer/evals/storage
 (`office.env.sample.v1`, produced by `orion-office-env` on pan-1). The table is created by
 `create_all`; `_normalize_office_env_sample_payload` flattens the nested payload. A stale sample
 (no fresh Nano frame) is stored with NULL `office_temp_c` / `office_humidity_pct` and
-`stale=true` -- never 0.0. No retention is configured yet (~2,880 rows/day).
+`stale=true` -- never 0.0. CCS811 air quality lands in `office_eco2_ppm` / `office_tvoc_ppb`
+(NULL while the sensor warms up, with `air_warming=true`; NULL `air_warming` on rows from before
+the CCS811 existed). Those three columns are added by boot DDL in `app/main.py`, since
+`create_all` does not alter the existing table. Their DDL runs in an isolated, verified startup
+gate: a lock timeout stops SQL writer before bus subscription instead of serving traffic with a
+stale table shape. No retention is configured yet (~2,880 rows/day).
 
 `orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
 `app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned

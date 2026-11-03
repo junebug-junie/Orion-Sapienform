@@ -5079,7 +5079,7 @@ def execute_substrate_mutation_scheduled_cycle(
         # retired 2026-09-05 (RETIRED_MUTATION_CLASSES) -- that zone's BASE
         # signal is a permanent no-op now (_RETIRED_TELEMETRY_ZONES), so this
         # filter alone made the scheduled cycle apply nothing for real,
-        # regardless of allowed_classes below. "world_ontology" is
+        # regardless of allowed_classes (now set(), see above). "world_ontology" is
         # graph_consolidation's real zone (TARGET_SURFACE_BY_ZONE) and is
         # live in production today (confirmed: 141 operator_review/
         # world_ontology rows in the last 14 days, 2026-09-08) -- this is

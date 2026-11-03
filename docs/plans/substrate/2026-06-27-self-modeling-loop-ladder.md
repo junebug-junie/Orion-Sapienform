@@ -263,5 +263,4 @@ The expectation tuner above is gone, as one unit (PR: chore/rung6-retire-tuner).
   auto-promotable class retired, the Hub's scheduled cycle still reads signals
   and queues proposals for operator review, but applies nothing
   (`allowed_classes=set()`).
-- **Successor.** The self-monitor organ:
-  `docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md` (PR #2827).
+- **Successor.** The self-monitor organ (design PR #2827, not yet merged).

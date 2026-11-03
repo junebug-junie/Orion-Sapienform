@@ -1661,3 +1661,77 @@ def test_recall_eval_runs_and_candidate_reviews_persist_across_sql_reload(tmp_pa
     loaded_review = reloaded.get_recall_production_candidate_review(review.review_id)
     assert loaded_run is not None and loaded_run.profile_id == profile.profile_id
     assert loaded_review is not None and loaded_review.profile_id == profile.profile_id
+
+
+def test_no_mutation_class_auto_promotes_with_the_default_policy() -> None:
+    """Every auto-promotable class is retired (2026-11-03). With the default
+    DecisionEngine, no class reaches auto_promote, even with a passing trial."""
+    from orion.substrate.mutation_contracts import CONTRACTS
+
+    for mutation_class, contract in CONTRACTS.items():
+        target = contract.allowed_targets[0]
+        field = contract.allowed_fields[0]
+        lo_hi = contract.bounds.get(field)
+        value = lo_hi[0] if lo_hi else "x"
+        proposal = MutationProposalV1(
+            lane="operational",
+            mutation_class=mutation_class,
+            risk_tier="low",
+            target_surface=target,
+            anchor_scope="orion",
+            subject_ref="entity:orion",
+            evidence_refs=["telemetry:placeholder"],
+            source_signal_ids=["signal:placeholder"],
+            source_pressure_id="pressure-allowlist-test",
+            patch=MutationPatchV1(
+                mutation_class=mutation_class,
+                target_surface=target,
+                target_ref=target,
+                patch={field: value},
+                rollback_payload={field: value},
+            ),
+        )
+        metrics = {metric: contract.metric_minimums.get(metric, 0.0) + 1.0 for metric in contract.evaluation_metrics}
+        trial = SubstrateTrialRunner(
+            scorer=ClassSpecificScorer(),
+            corpus_registry=ReplayCorpusRegistry(
+                corpus_by_class={mutation_class: "corpus-v1"},
+                baseline_metric_ref_by_class={mutation_class: "baseline-v1"},
+            ),
+        ).run_trial(proposal=proposal, measured_metrics=metrics)
+        decision = DecisionEngine().decide(
+            proposal=proposal, trial=trial, has_replay_and_baseline=True, active_surface_exists=False
+        )
+        assert decision.action != "auto_promote", (mutation_class, decision.reason)
+
+
+def test_allowlisted_class_still_auto_promotes_when_a_policy_opts_in() -> None:
+    """The real allowlist branch still works for a future effector class."""
+    proposal = MutationProposalV1(
+        lane="operational",
+        mutation_class="recall_weighting_patch",
+        risk_tier="low",
+        target_surface="recall",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        evidence_refs=["telemetry:placeholder"],
+        source_signal_ids=["signal:placeholder"],
+        source_pressure_id="pressure-allowlist-test",
+        patch=MutationPatchV1(
+            mutation_class="recall_weighting_patch",
+            target_surface="recall",
+            target_ref="recall",
+            patch={"semantic_weight": 0.5},
+            rollback_payload={"semantic_weight": 0.4},
+        ),
+    )
+    trial = SubstrateTrialRunner(
+        scorer=ClassSpecificScorer(),
+        corpus_registry=ReplayCorpusRegistry(
+            corpus_by_class={"recall_weighting_patch": "corpus-v1"},
+            baseline_metric_ref_by_class={"recall_weighting_patch": "baseline-v1"},
+        ),
+    ).run_trial(proposal=proposal, measured_metrics={"retrieval_quality_delta": 0.1, "hallucination_rate_delta": 0.1})
+    engine = DecisionEngine(policy=DecisionPolicy(auto_promote_allowlist={"recall_weighting_patch"}))
+    decision = engine.decide(proposal=proposal, trial=trial, has_replay_and_baseline=True, active_surface_exists=False)
+    assert decision.action == "auto_promote"

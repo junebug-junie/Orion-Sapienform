@@ -86,15 +86,16 @@ def _base_surfaces() -> list[AutonomyPolicySurfaceV1]:
             apply="forbidden",
             rollback="none",
             human_required=True,
-            # Retired 2026-11-03: the rung 6 expectation tuner proposed 9
-            # times and adopted 0; its input reading was mostly zeros.
+            # Retired 2026-11-03: the rung 6 expectation tuner proposed 16
+            # times, adopted once (execution alpha 0.2 -> 0.05, settled) and
+            # rejected 15; its input reading was mostly zeros.
             # Successor is the self-monitor organ (design PR #2827). Kept for
             # historical proposal rows.
             status="retired",
             required_gates=[],
             forbidden=["any_apply"],
             description="Self-tuned prediction-error expectation (alpha, min_variance) -- retired 2026-11-03.",
-            rationale="9 proposals, 0 adoptions; the raw reading it learned from was mostly zeros. Execution/chat/street-handoff surprise use their calibrated constants again. Successor: self-monitor organ (PR #2827).",
+            rationale="16 proposals, 1 adoption (execution alpha 0.2 -> 0.05, settled), 15 rejected; the raw reading it learned from was mostly zeros. Execution/chat/street-handoff surprise use their calibrated constants again. Successor: self-monitor organ (PR #2827).",
             risk_tier="low",
             live_apply_allowed=False,
             autonomous_apply_allowed=False,

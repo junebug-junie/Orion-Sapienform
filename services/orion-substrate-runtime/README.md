@@ -412,7 +412,7 @@ That tuner proposed 16 times and adopted once; its input reading was mostly
 zeros. It is retired: this service no longer writes the table (kept, not
 dropped) and scores all three domains with their calibrated constants
 (`prediction_error.py`, `street_attention.py`). Successor: the self-monitor
-organ (`docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md`).
+organ (design PR #2827, not yet merged).
 
 ## AST/HOT self-model tick (rung 4)
 

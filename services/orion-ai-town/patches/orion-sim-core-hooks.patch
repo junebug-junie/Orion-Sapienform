@@ -6,8 +6,8 @@ index 155238c..5b7288c 100644
  
  crons.interval('restart dead worlds', { seconds: 60 }, internal.world.restartDeadWorlds);
  
-+// Orion living-world sim core: 5 game-minutes per tick (convex/sim/tick.ts).
-+crons.interval('sim tick', { minutes: 5 }, internal.sim.tick.run, {});
++// Orion living-world sim core: one game-clock tick a minute (convex/sim/tick.ts).
++crons.interval('sim tick', { seconds: 60 }, internal.sim.tick.run, {});
 +
  crons.daily('vacuum old entries', { hourUTC: 4, minuteUTC: 20 }, internal.crons.vacuumOldEntries);
  

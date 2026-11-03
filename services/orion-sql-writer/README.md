@@ -1084,7 +1084,10 @@ through the emitter and reducer: `python services/orion-sql-writer/evals/storage
 (`office.env.sample.v1`, produced by `orion-office-env` on pan-1). The table is created by
 `create_all`; `_normalize_office_env_sample_payload` flattens the nested payload. A stale sample
 (no fresh Nano frame) is stored with NULL `office_temp_c` / `office_humidity_pct` and
-`stale=true` -- never 0.0. No retention is configured yet (~2,880 rows/day).
+`stale=true` -- never 0.0. CCS811 air quality lands in `office_eco2_ppm` / `office_tvoc_ppb`
+(NULL while the sensor warms up, with `air_warming=true`; NULL `air_warming` on rows from before
+the CCS811 existed). Those three columns are added by boot DDL in `app/main.py`, since
+`create_all` does not alter the existing table. No retention is configured yet (~2,880 rows/day).
 
 `orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
 `app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned

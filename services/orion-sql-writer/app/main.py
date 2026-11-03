@@ -69,6 +69,16 @@ async def lifespan(app: FastAPI):
             ddl(
                 "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS sample_age_sec DOUBLE PRECISION;"
             )
+            # Same hazard: OfficeEnvSampleSQL declares the CCS811 columns (pan-1 air quality).
+            ddl(
+                "ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_eco2_ppm INTEGER;"
+            )
+            ddl(
+                "ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_tvoc_ppb INTEGER;"
+            )
+            ddl(
+                "ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS air_warming BOOLEAN;"
+            )
             ddl(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )

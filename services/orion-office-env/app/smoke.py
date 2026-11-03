@@ -54,7 +54,14 @@ def run_smoke(
     if env is None or (env.temp_c is None and env.humidity_pct is None):
         print(f"WARN frames arrive (seq={last.seq}) but carry no environment: SHT40 not reading")
         return 3
-    print(f"PASS seq={last.seq} temp_c={env.temp_c} humidity_pct={env.humidity_pct}")
+    air = last.air
+    if air is None or air.eco2_ppm is None:
+        print(f"WARN seq={last.seq} temp_c={env.temp_c} but no air reading: CCS811 not reading")
+        return 4
+    print(
+        f"PASS seq={last.seq} temp_c={env.temp_c} humidity_pct={env.humidity_pct} "
+        f"eco2_ppm={air.eco2_ppm} tvoc_ppb={air.tvoc_ppb} air_since_init_ms={air.since_init_ms}"
+    )
     return 0
 
 

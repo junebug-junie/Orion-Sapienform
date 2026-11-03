@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Office environment contracts (pan-1 Nano ESP32 + SHT40).
+"""Office environment contracts (pan-1 Nano ESP32 + SHT40 + CCS811).
 
 Two shapes live here:
 
@@ -31,6 +31,19 @@ class OfficeEnvFrameEnvironmentV1(BaseModel):
     humidity_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
 
 
+class OfficeEnvFrameAirV1(BaseModel):
+    """CCS811 raw registers. Bounds are the uint16 register width, not the datasheet
+    range, so one odd reading cannot reject the whole frame (and drop the SHT40 values
+    with it). ``build_sample`` applies the datasheet range."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    eco2_ppm: Optional[int] = Field(default=None, ge=0, le=65535)
+    tvoc_ppb: Optional[int] = Field(default=None, ge=0, le=65535)
+    # Time since the firmware last (re)started the CCS811. Drives the warm-up gate.
+    since_init_ms: Optional[int] = Field(default=None, ge=0)
+
+
 class OfficeEnvFrameV1(BaseModel):
     """One firmware tick. Every sub-payload is optional."""
 
@@ -40,6 +53,7 @@ class OfficeEnvFrameV1(BaseModel):
     seq: int = Field(ge=0)
     uptime_ms: int = Field(ge=0)
     environment: Optional[OfficeEnvFrameEnvironmentV1] = None
+    air: Optional[OfficeEnvFrameAirV1] = None
 
     @field_validator("schema_name")
     @classmethod
@@ -53,8 +67,9 @@ class OfficeEnvSensorV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    model: str = "SHT40"
-    # True when the serial link produced a valid frame inside the stale window.
+    model: str = "SHT40"  # primary sensor; the same node also carries the CCS811
+    # True when the serial link produced a valid frame inside the stale window carrying
+    # a usable reading from either sensor (SHT40 or CCS811).
     online: bool
 
 
@@ -65,6 +80,9 @@ class OfficeEnvMeasurementsV1(BaseModel):
 
     office_temp_c: Optional[float] = Field(default=None, ge=-40.0, le=125.0)
     office_humidity_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    # CCS811 datasheet output ranges. eCO2 is estimated from VOCs, not measured CO2.
+    office_eco2_ppm: Optional[int] = Field(default=None, ge=400, le=29206)
+    office_tvoc_ppb: Optional[int] = Field(default=None, ge=0, le=32768)
 
 
 class OfficeEnvStateV1(BaseModel):
@@ -74,6 +92,9 @@ class OfficeEnvStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stale: bool = False
+    # True while the CCS811 is inside its 20-minute conditioning period after a start:
+    # its readings exist but are not yet valid, so they are omitted from measurements.
+    air_warming: bool = False
 
 
 class OfficeEnvProvenanceV1(BaseModel):
@@ -83,10 +104,11 @@ class OfficeEnvProvenanceV1(BaseModel):
     frame_seq: Optional[int] = Field(default=None, ge=0)
     firmware_uptime_ms: Optional[int] = Field(default=None, ge=0)
     sample_age_sec: Optional[float] = Field(default=None, ge=0.0)
+    air_since_init_ms: Optional[int] = Field(default=None, ge=0)
 
 
 class OfficeEnvSampleV1(BaseModel):
-    """Read-only office temperature/humidity sample."""
+    """Read-only office temperature/humidity/air-quality sample."""
 
     model_config = ConfigDict(extra="forbid")
 

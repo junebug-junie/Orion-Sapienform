@@ -85,6 +85,6 @@ None by hand. After the merge, check on circe: `tail -6 ~/.orion/post_pull_rebui
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3036
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

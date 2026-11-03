@@ -44,7 +44,7 @@ def test_the_2026_10_16_state_raises_a_critical_card_by_the_sixth_failed_attempt
     """Replays 10-16 as the watchdog saw it: attempts 04:34 .. 18:56 abandoned, gap growing.
     Before this patch the only card was ("visual_painting_gap", "error")."""
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get",
+        "app.notify_pending.requests.get",
         return_value=MagicMock(status_code=200, json=lambda: []),
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor
@@ -68,7 +68,7 @@ def test_the_2026_10_16_state_raises_a_critical_card_by_the_sixth_failed_attempt
 
 def test_a_failed_read_is_no_observation():
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
-        "app.visual_chain_health_monitor.requests.get",
+        "app.notify_pending.requests.get",
         return_value=MagicMock(status_code=200, json=lambda: []),
     ):
         from app.visual_chain_health_monitor import VisualChainHealthMonitor

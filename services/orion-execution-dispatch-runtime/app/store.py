@@ -941,6 +941,26 @@ class ExecutionDispatchRuntimeStore:
             "raw_len": row["raw_len"],
         }
 
+    def canonicalize_legacy_dispatch_result_status(self, *, result_id: str, status: str) -> bool:
+        """Replace the retired custom-route ``succeeded`` spelling in place.
+
+        The guard keeps this replay repair from overwriting any result that a
+        concurrent settlement path has already moved to a canonical status.
+        """
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE substrate_dispatch_results
+                       SET status = :status
+                     WHERE result_id = :result_id
+                       AND status = 'succeeded'
+                    """
+                ),
+                {"result_id": result_id, "status": status},
+            )
+        return bool(getattr(result, "rowcount", 0))
+
     def sum_risk_dispatched_today(self) -> float:
         """Real cumulative risk_score spent today, not a blind action count.
 

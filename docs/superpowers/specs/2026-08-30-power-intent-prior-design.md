@@ -121,6 +121,21 @@ settlements arrive (~30 min at current cadence). That is honest — it declares
 unknown rather than a stale guess — and it self-heals. Persisting the prior
 across restarts is a follow-up, not this patch.
 
+**Amendment 2026-11-03: persistence shipped.** The "~30 min to re-warm" estimate
+assumed a long-lived container. Since the GPU pool took over gpu2
+(`config/gpu_pool.yaml` role `diffusion`), the actuator stops the container
+whenever the agent model reloads on gpu2 after ~15 idle minutes, and starts it
+again for the next generation. Almost every generation ran in a fresh process,
+so `expected_watts` was None on 0 of 9 intents on 2026-11-02 and 1 of 17 on
+2026-10-31, with ~1,000 settlements on file. The window is now saved to
+`DIFFUSION_POWER_PRIOR_STATE_PATH` (bind-mounted host directory). Each sample
+carries its observation time, and a sample older than
+`DIFFUSION_POWER_PRIOR_MAX_AGE_SEC` (7 days) stops counting. The saved file
+carries a fingerprint (model, dtype, steps, image size). A file from a
+different fingerprint is ignored, so a model swap still starts from None
+instead of inheriting the old model's watts. That keeps the regime-change
+protection the in-memory design got for free.
+
 ### Filtering
 
 Only `outcome == "settled"` contributes. `no_samples` and `deadline_expired`
@@ -150,7 +165,7 @@ This is deliberately a zero-schema-change patch.
 - No budget. A budget with one claimant is not a budget; `reverie_diffusion`
   is still the only workload that declares anything.
 - No refusal. Nothing may decline or defer a declaration yet.
-- No cross-restart persistence.
+- No cross-restart persistence. (Superseded 2026-11-03, see the amendment above.)
 - No error bars. `PowerIntentV1` carries a scalar `expected_watts`; adding a
   variance field is a schema change and is not needed to make `residual_watts`
   real.

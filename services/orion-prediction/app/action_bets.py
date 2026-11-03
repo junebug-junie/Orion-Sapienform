@@ -44,7 +44,7 @@ from scipy import special, stats
 
 from app.backtest import paired_win_p
 from orion.embodiment.transition import TransitionWeights, success_p
-from app.grading import grade
+from orion.prediction.grading import grade
 from app.live import LIVE_ALPHA, MIN_INDEPENDENT
 
 logger = logging.getLogger("orion-prediction.action_bets")

@@ -44,11 +44,10 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-import requests
-
 from orion.notify.client import NotifyClient
 from orion.reverie.baseline import AROUSAL_STRAINED_REASON, DEFAULT_RETRY_SEC
 
+from .notify_pending import RECOVERED_PREFIX, open_alert_reasons
 from .settings import ThoughtSettings
 from .settings import settings as _default_settings
 
@@ -162,7 +161,7 @@ def _painting_gap_check(*, age_hours: float | None, threshold_hours: float,
             else ""
         ),
         recovery_message=(
-            f"[Orion reverie] recovered: {_PAINTING_GAP_CHECK_KEY} -- a painting "
+            f"{RECOVERED_PREFIX} {_PAINTING_GAP_CHECK_KEY} -- a painting "
             f"landed (latest {age_hours:.1f} hours ago)."
             if (not gap and age_hours is not None)
             else ""
@@ -193,7 +192,7 @@ def _attempt_streak_check(*, streak: int | None, threshold: int) -> HealthCheck:
             else ""
         ),
         recovery_message=(
-            f"[Orion reverie] recovered: {_ATTEMPT_STREAK_CHECK_KEY} -- the run of failed painting "
+            f"{RECOVERED_PREFIX} {_ATTEMPT_STREAK_CHECK_KEY} -- the run of failed painting "
             f"attempts is below {threshold} again (now {streak})."
             if not bad and streak is not None
             else ""
@@ -330,36 +329,11 @@ class VisualChainHealthMonitor:
             self._last_healthy[key] = check.healthy
 
     def _has_open_alert(self, key: str = _CHECK_KEY) -> bool:
-        headers = {}
-        if self._settings.notify_api_token:
-            headers["X-Orion-Notify-Token"] = self._settings.notify_api_token
-        try:
-            response = requests.get(
-                f"{self._settings.notify_base_url}/attention",
-                params={"status": "pending", "limit": 200},
-                headers=headers,
-                timeout=10,
-            )
-            response.raise_for_status()
-            items = response.json()
-        except Exception:
-            logger.exception("visual_chain_health_pending_lookup_failed")
-            # Fail open: if we can't confirm an existing alert, prefer
-            # attempting a possibly duplicate one over silently missing a
-            # real incident.
-            return False
-        if not isinstance(items, list):
-            return False
-        return any(
-            isinstance(item, dict)
-            and item.get("source_service") == _SOURCE_SERVICE
-            and item.get("reason") == key
-            for item in items
-        )
+        return key in open_alert_reasons(self._settings, log_label="visual_chain_health")
 
     def _publish(self, check: HealthCheck, *, recovered: bool) -> bool:
         if recovered:
-            message = check.recovery_message or f"[Orion reverie] recovered: {check.key}"
+            message = check.recovery_message or f"{RECOVERED_PREFIX} {check.key}"
             severity: Severity = "info"
         else:
             message = f"[Orion reverie] {check.message}"

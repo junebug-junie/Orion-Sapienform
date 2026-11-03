@@ -759,12 +759,14 @@ def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
     assert "identity_kernel" in by_surface
     assert "policy_safety" in by_surface
     assert "production_prompt" in by_surface
-    # Since 2026-10-16 exactly one surface applies live without approval:
-    # rung 6's self-tuned prediction expectation. Anything else appearing
-    # here is a constitution regression.
-    assert payload["summary"]["live_apply_surfaces"] == ["prediction_expectation_patch"]
-    assert by_surface["prediction_expectation_patch"]["autonomous_apply_allowed"] is True
-    assert by_surface["prediction_expectation_patch"]["human_required"] is False
+    # Since 2026-11-03 no surface applies live without approval: rung 6's
+    # self-tuned prediction expectation (the only one, 2026-10-16..11-03) is
+    # retired. Anything appearing here is a constitution regression.
+    assert payload["summary"]["live_apply_surfaces"] == []
+    assert by_surface["prediction_expectation_patch"]["status"] == "retired"
+    assert by_surface["prediction_expectation_patch"]["apply"] == "forbidden"
+    assert by_surface["prediction_expectation_patch"]["autonomous_apply_allowed"] is False
+    assert by_surface["prediction_expectation_patch"]["human_required"] is True
     assert by_surface["routing_threshold_patch"]["status"] == "retired"
     assert by_surface["routing_threshold_patch"]["live_apply_allowed"] is False
     # graph_consolidation_param_patch retired 2026-10-16.

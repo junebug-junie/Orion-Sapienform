@@ -22,7 +22,7 @@ behind trials + rollback.
 | 3 Continuous broadcast | GWT broadcast | `attention_frame.py` | always-on, substrate-wide re-broadcast | **DONE** (`attention_broadcast.py`, flag off) |
 | 4 Autobiographical continuity | narrative/HOT | `consolidation.py` | episodic time-window rollup | **DONE** (`episodic_consolidation.py`, flag off) |
 | 5 Endogenous agency | intrinsic motivation | `frontier_curiosity.py` | intrinsic-signal-seeded goals | **DONE** (`endogenous_curiosity.py`, flag off — needs sign-off) |
-| 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error → self-tuned expectation | **REBUILT 2026-10-16** (`prediction_expectation.py`; see rung 6 below) |
+| 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error → self-tuned expectation | **RETIRED 2026-11-03** (the 2026-10-16 expectation tuner; successor: self-monitor organ, PR #2827; see rung 6 below) |
 
 Dependency order: 1 → 2 → 3, then 4, then 5, then 6. Rung 6 consumes rung 1's
 signal; rungs 4/5/6 all read the unified state from rung 2.
@@ -238,3 +238,30 @@ rejections, 0 adoptions since 2026-09-03.
   (runtime uses the constants), `SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED=false`
   (no proposals), `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED=false` (no applies).
 - **Live check.** `services/orion-substrate-runtime/evals/run_prediction_expectation_live_check.py`.
+
+### Retired 2026-11-03
+
+The expectation tuner above is gone, as one unit (PR: chore/rung6-retire-tuner).
+
+- **Why.** Live record 2026-10-16..2026-11-03: 16 proposals, 15 rejected
+  (12 `trial_failed`, 3 `trial_inconclusive`), 1 adopted (execution `alpha`
+  0.2 -> 0.05 on 2026-10-26, settled, never rolled back). The raw reading it
+  learned from was mostly zeros, so the evidence could not carry the loop.
+- **What changed.** `orion-substrate-runtime` stops writing
+  `substrate_prediction_raw_reading` (table and migration kept, no DROP) and
+  stops reading `prediction_expectation.<domain>`. Execution, chat and
+  street-handoff surprise score with their calibrated constants again, so the
+  one live adoption (execution `alpha` 0.05) no longer applies. The Hub's tuner,
+  `prediction_expectation.py`, `prediction_expectation_tuner.py`, the trial
+  evaluator hook, the apply branch and the control-surface accessors are
+  deleted.
+- **History kept.** `prediction_expectation_patch` stays in `MutationClassV1`
+  and `CONTRACTS` and joins `RETIRED_MUTATION_CLASSES`, so the stored proposals
+  still parse; nothing can decide or apply one.
+- **Mutation pipeline kept.** The generic proposal/trial/decision/apply
+  machinery stays as the future effector of the self-monitor organ. With every
+  auto-promotable class retired, the Hub's scheduled cycle still reads signals
+  and queues proposals for operator review, but applies nothing
+  (`allowed_classes=set()`).
+- **Successor.** The self-monitor organ:
+  `docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md` (PR #2827).

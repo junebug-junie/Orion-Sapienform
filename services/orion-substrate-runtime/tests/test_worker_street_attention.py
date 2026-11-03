@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from orion.core.bus import resilience
-from orion.substrate.street_attention import STREET_HANDOFF_DOMAIN, STREET_NODE_ID
+from orion.substrate.street_attention import STREET_NODE_ID
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -28,9 +28,6 @@ def _settings(**kw):
         street_camera_up_max_age_sec=600.0,
         perception_walkway_stream_ids="walkway",
         perception_log_only_stream_ids="doorbell",
-        prediction_raw_readings_enabled=True,
-        prediction_raw_reading_retention_hours=192.0,
-        prediction_expectation_live_enabled=False,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -41,11 +38,9 @@ def _worker(**kw):
 
     w = object.__new__(BiometricsSubstrateWorker)
     w._settings = _settings(**kw)
-    w.raw = []
-    w._store = SimpleNamespace(
-        save_prediction_raw_reading=lambda **r: w.raw.append(r),
-        prune_prediction_raw_readings=lambda **r: 0,
-    )
+    # No store methods: the street path must not write to the database
+    # (the rung 6 raw-reading corpus was retired 2026-11-03).
+    w._store = SimpleNamespace()
     w.writes = []
     w._write_prediction_error_node = lambda **node: w.writes.append(node)
     return w
@@ -85,10 +80,9 @@ def test_a_ring_passes_writes_the_node_and_logs_the_verdict(caplog) -> None:
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("substrate_street_event "))
     assert "kind=doorbell_ring" in line and "verdict=pass" in line
     assert "correlation_id=9f1c0e7a-0000-4000-8000-000000000001" in line and "salience=1.000" in line
-    assert w.raw == []  # a ring is not a graded handoff
 
 
-def test_a_high_p_handoff_is_blocked_but_still_records_its_rung6_reading(caplog) -> None:
+def test_a_high_p_handoff_is_blocked_but_still_scores_its_surprise(caplog) -> None:
     w = _worker()
     w._street_state().frame_seen("doorbell", NOW.timestamp())
     w._street_state().frame_seen("walkway", NOW.timestamp())
@@ -97,10 +91,8 @@ def test_a_high_p_handoff_is_blocked_but_still_records_its_rung6_reading(caplog)
     assert w.writes == []
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("substrate_street_event "))
     assert "verdict=block" in line and "p_value 0.5 >= 0.05" in line
-    (row,) = w.raw
-    assert row["domain"] == STREET_HANDOFF_DOMAIN
-    assert row["raw_value"] == pytest.approx(0.693147, abs=1e-5)
-    assert row["observed_at"] == NOW  # occurred_at: a re-delivered event hits the PK, not a 2nd row
+    assert "raw_nats=0.693" in line  # -ln(0.5), scored with the fixed constants
+    assert w._street_state().handoff_count == 1
 
 
 def test_camera_down_blocks_a_significant_handoff() -> None:

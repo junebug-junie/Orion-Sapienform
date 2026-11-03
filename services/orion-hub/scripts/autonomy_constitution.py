@@ -81,28 +81,24 @@ def _base_surfaces() -> list[AutonomyPolicySurfaceV1]:
         AutonomyPolicySurfaceV1(
             surface="prediction_expectation_patch",
             category="prediction_error",
-            propose="auto_scheduled",
-            trial="auto_replay_holdout",
-            apply="gated_auto",
-            rollback="auto_post_adoption_replay",
-            human_required=False,
-            # Rung 6 (2026-10-16): Orion revises the smoothing rate and
-            # variance floor of their execution/chat surprise from recorded
-            # raw readings. Live control-surface write, no operator step.
-            status="live_auto_apply",
-            required_gates=[
-                "SUBSTRATE_AUTONOMY_ENABLED",
-                "SUBSTRATE_AUTONOMY_APPLY_ENABLED",
-                "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
-                "SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED",
-            ],
-            forbidden=["out_of_domain_bounds_values"],
-            description="Orion self-tunes how surprised they expect to be (alpha, min_variance) per prediction-error domain.",
-            rationale="Bounded numeric settings, exact counterfactual replay (raw readings do not depend on the setting), held-out trial, automatic rollback when later readings show the new setting is confidently worse. Kill switch: SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED=false.",
+            propose="none",
+            trial="none",
+            apply="forbidden",
+            rollback="none",
+            human_required=True,
+            # Retired 2026-11-03: the rung 6 expectation tuner proposed 9
+            # times and adopted 0; its input reading was mostly zeros.
+            # Successor is the self-monitor organ (design PR #2827). Kept for
+            # historical proposal rows.
+            status="retired",
+            required_gates=[],
+            forbidden=["any_apply"],
+            description="Self-tuned prediction-error expectation (alpha, min_variance) -- retired 2026-11-03.",
+            rationale="9 proposals, 0 adoptions; the raw reading it learned from was mostly zeros. Execution/chat/street-handoff surprise use their calibrated constants again. Successor: self-monitor organ (PR #2827).",
             risk_tier="low",
-            live_apply_allowed=True,
-            autonomous_apply_allowed=True,
-            production_write_allowed=True,
+            live_apply_allowed=False,
+            autonomous_apply_allowed=False,
+            production_write_allowed=False,
         ),
         AutonomyPolicySurfaceV1(
             surface="graph_consolidation_param_patch",
@@ -118,7 +114,7 @@ def _base_surfaces() -> list[AutonomyPolicySurfaceV1]:
             required_gates=[],
             forbidden=["any_apply"],
             description="Graph consolidation param tuning -- retired 2026-10-16.",
-            rationale="Evidence was normal operation, patch was a constant, trial could never conclude. Replaced as rung 6 by prediction_expectation_patch.",
+            rationale="Evidence was normal operation, patch was a constant, trial could never conclude. Replaced as rung 6 by prediction_expectation_patch (itself retired 2026-11-03).",
             risk_tier="medium",
             live_apply_allowed=False,
             autonomous_apply_allowed=False,
@@ -311,8 +307,8 @@ def load_autonomy_constitution() -> AutonomyConstitutionV1:
         loaded_at=datetime.now(timezone.utc).isoformat(),
         surfaces=_base_surfaces(),
         safety_invariants=[
-            "routing_threshold_patch (2026-09-05) and graph_consolidation_param_patch (2026-10-16) are retired",
-            "prediction_expectation_patch is the only surface Orion applies without approval: bounded alpha/min_variance per prediction-error domain, held-out trial first, automatic rollback on post-adoption regression",
+            "routing_threshold_patch (2026-09-05), graph_consolidation_param_patch (2026-10-16) and prediction_expectation_patch (2026-11-03) are retired",
+            "no substrate mutation surface is applied without operator approval",
             "recall production default remains v1 unless explicit external operator process changes it",
             "recall autonomous production promotion is forbidden",
             "recall_weighting_patch live apply is forbidden",

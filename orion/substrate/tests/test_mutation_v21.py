@@ -21,7 +21,8 @@ from orion.core.schemas.substrate_mutation import (
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 from orion.substrate import mutation_control_surface
 from orion.substrate.mutation_apply import PatchApplier
-from orion.substrate.mutation_decision import DecisionEngine
+from orion.substrate.mutation_contracts import RETIRED_MUTATION_CLASSES
+from orion.substrate.mutation_decision import DecisionEngine, DecisionPolicy
 from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
 from orion.substrate.mutation_proposals import (
@@ -112,53 +113,117 @@ def _direct_routing_proposal(*, target_value: float = 0.58, rollback_value: floa
     )
 
 
-# The execution domain's calibrated expectation (prediction_error.py). The
-# autouse fixture gives every test a fresh control surface, so this is what
-# get_prediction_expectation("execution") reads until something is applied.
-_PE_DEFAULT_ALPHA = 0.2
-_PE_DEFAULT_MIN_VARIANCE = 1e-10
-_PE_SURFACE = "prediction_expectation:execution"
-_PE_PASSING_METRICS = {"holdout_log_score_gain_lower_bound": 0.1, "holdout_log_score_gain_mean": 0.1}
+# Generic queue/store/apply mechanics (active-surface locking, rollback
+# cooldown, reliability, retention) need SOME proposal that passes every real
+# decision gate and that PatchApplier.apply() will actually apply. Every
+# auto-promotable class is retired (RETIRED_MUTATION_CLASSES):
+# routing_threshold_patch 2026-09-05, graph_consolidation_param_patch
+# 2026-10-16, prediction_expectation_patch 2026-11-03. So the carrier is
+# field_topology_weight_patch -- not retired, applied only to the in-memory
+# ``surfaces`` dict (no live write) -- and _CarrierDecisionEngine flips just
+# the final "class not auto-promotable" step. Every gate before it (retired,
+# patch contract, active surface, evidence, rollback payload, trial,
+# replay/baseline) is the real DecisionEngine.
+_CARRIER_SURFACE = "field_topology"
+_CARRIER_PASSING_METRICS = {"divergence_delta": 0.1}
 
 
-def _direct_prediction_expectation_proposal(*, alpha: float = 0.1) -> MutationProposalV1:
-    """A prediction_expectation_patch proposal, appliable for real.
-
-    Generic queue/store mechanics tests (active-surface locking, rollback
-    cooldown, reliability, retention) need SOME proposal PatchApplier.apply()
-    will actually apply. Both earlier carriers are retired
-    (RETIRED_MUTATION_CLASSES; apply() refuses them even given a hand-built
-    auto_promote decision): routing_threshold_patch 2026-09-05,
-    graph_consolidation_param_patch 2026-10-16. prediction_expectation_patch
-    is rung 6's live auto-promotable class, and its apply is a real write to
-    the (test-isolated) control surface, so apply() declines a patch equal to
-    the live value -- callers applying more than once on one surface pass a
-    distinct ``alpha`` each time.
-    """
+def _carrier_proposal(*, delta: float = 0.1) -> MutationProposalV1:
     return MutationProposalV1(
         lane="operational",
-        mutation_class="prediction_expectation_patch",
+        mutation_class="field_topology_weight_patch",
         risk_tier="low",
-        target_surface=_PE_SURFACE,
+        target_surface=_CARRIER_SURFACE,
         anchor_scope="orion",
         subject_ref="entity:orion",
-        rationale=f"placeholder:prediction_expectation_patch alpha={alpha}",
+        rationale=f"placeholder:field_topology_weight_patch delta={delta}",
         expected_effect="reduce_runtime_failure",
-        evidence_refs=["telemetry:prediction_raw_reading:placeholder"],
+        evidence_refs=["telemetry:placeholder"],
         source_signal_ids=["signal:placeholder"],
-        source_pressure_id="pressure-prediction-expectation-test",
+        source_pressure_id="pressure-carrier-test",
         patch=MutationPatchV1(
-            mutation_class="prediction_expectation_patch",
-            target_surface=_PE_SURFACE,
-            target_ref="execution",
-            patch={"alpha": alpha, "min_variance": _PE_DEFAULT_MIN_VARIANCE},
-            rollback_payload={"alpha": _PE_DEFAULT_ALPHA, "min_variance": _PE_DEFAULT_MIN_VARIANCE},
+            mutation_class="field_topology_weight_patch",
+            target_surface=_CARRIER_SURFACE,
+            target_ref="field_topology",
+            patch={"edge_weight_delta": delta},
+            rollback_payload={"edge_weight_delta": 0.0},
         ),
     )
 
 
-def _live_execution_alpha() -> float:
-    return mutation_control_surface.get_prediction_expectation("execution").alpha
+class _CarrierDecisionEngine(DecisionEngine):
+    """Test-only: auto-promote once every real gate has passed."""
+
+    def decide(self, **kwargs) -> MutationDecisionV1:
+        decision = super().decide(**kwargs)
+        if decision.reason == "class_not_auto_promotable":
+            return decision.model_copy(
+                update={"action": "auto_promote", "reason": "test_carrier", "requires_operator_review": False}
+            )
+        return decision
+
+
+def _historical_prediction_expectation_proposal() -> MutationProposalV1:
+    """The shape of the 16 prediction_expectation_patch rows stored in live
+    Postgres (2026-10-16..2026-11-01) before the class was retired."""
+    return MutationProposalV1(
+        lane="operational",
+        mutation_class="prediction_expectation_patch",
+        risk_tier="low",
+        target_surface="prediction_expectation:execution",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        rationale="historical rung 6 proposal",
+        expected_effect="reduce_runtime_failure",
+        evidence_refs=["telemetry:prediction_raw_reading:execution"],
+        source_signal_ids=["signal:historical"],
+        source_pressure_id="pressure-historical",
+        patch=MutationPatchV1(
+            mutation_class="prediction_expectation_patch",
+            target_surface="prediction_expectation:execution",
+            target_ref="execution",
+            patch={"alpha": 0.05, "min_variance": 1e-10},
+            rollback_payload={"alpha": 0.2, "min_variance": 1e-10},
+        ),
+    )
+
+
+def test_retired_prediction_expectation_history_loads_but_never_applies(tmp_path: Path) -> None:
+    """prediction_expectation_patch is retired (2026-11-03). Stored proposals
+    with that class must still hydrate on store load (Hub boot), and nothing
+    may decide or apply one, even with a passing trial or a hand-built
+    auto_promote decision."""
+    db = tmp_path / "mutation.sqlite3"
+    proposal = _historical_prediction_expectation_proposal()
+    SubstrateMutationStore(sql_db_path=str(db)).add_proposal(proposal)
+
+    reloaded = SubstrateMutationStore(sql_db_path=str(db))
+    loaded = reloaded._proposals[proposal.proposal_id]
+    assert loaded.mutation_class == "prediction_expectation_patch"
+    assert loaded.patch.patch == {"alpha": 0.05, "min_variance": 1e-10}
+
+    assert "prediction_expectation_patch" in RETIRED_MUTATION_CLASSES
+    assert "prediction_expectation_patch" not in DecisionPolicy().auto_promote_allowlist
+    trial = SubstrateTrialRunner(
+        scorer=ClassSpecificScorer(),
+        corpus_registry=ReplayCorpusRegistry(
+            corpus_by_class={loaded.mutation_class: "corpus-v1"},
+            baseline_metric_ref_by_class={loaded.mutation_class: "baseline-v1"},
+        ),
+    ).run_trial(
+        proposal=loaded,
+        measured_metrics={"holdout_log_score_gain_lower_bound": 0.1, "holdout_log_score_gain_mean": 0.1},
+    )
+    decision = DecisionEngine().decide(
+        proposal=loaded, trial=trial, has_replay_and_baseline=True, active_surface_exists=False
+    )
+    assert decision.action == "reject"
+    assert decision.reason == "mutation_class_retired"
+
+    applier = PatchApplier(surfaces={})
+    hand_promoted = MutationDecisionV1(proposal_id=loaded.proposal_id, action="auto_promote", reason="test")
+    assert applier.apply(proposal=loaded, decision=hand_promoted) is None
+    assert applier.surfaces == {}
 
 
 def test_retired_graph_consolidation_apply_writes_nothing_even_when_hand_promoted() -> None:
@@ -167,7 +232,8 @@ def test_retired_graph_consolidation_apply_writes_nothing_even_when_hand_promote
     Replaces test_graph_consolidation_apply_stages_a_real_policy_profile and
     test_graph_consolidation_apply_without_policy_store_keeps_old_dict_behavior,
     which proved the (now dead) staging behavior. DecisionEngine's
-    mutation_class_retired reject is covered in test_prediction_expectation.py;
+    mutation_class_retired reject is covered by
+    test_retired_prediction_expectation_history_loads_but_never_applies;
     this covers the apply-side defense in depth: a hand-built auto_promote
     decision passed straight to apply() writes nothing.
     """
@@ -714,7 +780,7 @@ def test_proposal_to_trial() -> None:
 
 
 def test_trial_to_decision() -> None:
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -722,8 +788,8 @@ def test_trial_to_decision() -> None:
             corpus_by_class={proposal.mutation_class: "corpus-v1"},
             baseline_metric_ref_by_class={proposal.mutation_class: "baseline-v1"},
         ),
-    ).run_trial(proposal=proposal, measured_metrics=dict(_PE_PASSING_METRICS))
-    decision = DecisionEngine().decide(
+    ).run_trial(proposal=proposal, measured_metrics=dict(_CARRIER_PASSING_METRICS))
+    decision = _CarrierDecisionEngine().decide(
         proposal=proposal,
         trial=trial,
         has_replay_and_baseline=True,
@@ -771,7 +837,7 @@ def test_decision_engine_keeps_prompt_profile_operator_gated() -> None:
 def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal1 = _direct_prediction_expectation_proposal()
+    proposal1 = _carrier_proposal()
     assert proposal1 is not None
     queue_item = store.add_proposal(proposal1)
     assert queue_item.status == "queued"
@@ -781,8 +847,8 @@ def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) ->
         baseline_metric_ref_by_class={proposal1.mutation_class: "baseline-v1"},
     )
     trial_runner = SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=registry)
-    trial = trial_runner.run_trial(proposal=proposal1, measured_metrics=dict(_PE_PASSING_METRICS))
-    decision = DecisionEngine().decide(
+    trial = trial_runner.run_trial(proposal=proposal1, measured_metrics=dict(_CARRIER_PASSING_METRICS))
+    decision = _CarrierDecisionEngine().decide(
         proposal=proposal1,
         trial=trial,
         has_replay_and_baseline=True,
@@ -795,11 +861,11 @@ def test_store_allows_only_single_active_mutation_per_surface(tmp_path: Path) ->
 
     # A different (non-noop) change on the same surface, with a passing trial:
     # the only thing standing between it and auto_promote is the live lock.
-    proposal2 = _direct_prediction_expectation_proposal(alpha=0.35)
+    proposal2 = _carrier_proposal(delta=0.12)
     assert proposal2 is not None
-    decision2 = DecisionEngine().decide(
+    decision2 = _CarrierDecisionEngine().decide(
         proposal=proposal2,
-        trial=trial_runner.run_trial(proposal=proposal2, measured_metrics=dict(_PE_PASSING_METRICS)),
+        trial=trial_runner.run_trial(proposal=proposal2, measured_metrics=dict(_CARRIER_PASSING_METRICS)),
         has_replay_and_baseline=True,
         active_surface_exists=store.active_surface(proposal2.target_surface) is not None,
     )
@@ -902,7 +968,7 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
     normally on it.
     """
     store = SubstrateMutationStore()
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     store._active_surface_by_target[proposal.target_surface] = "existing-adoption"
     store.add_proposal(proposal, priority=60)
     applier = PatchApplier(surfaces={})
@@ -915,11 +981,11 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(
-                corpus_by_class={"prediction_expectation_patch": "corpus-v1"},
-                baseline_metric_ref_by_class={"prediction_expectation_patch": "baseline-v1"},
+                corpus_by_class={"field_topology_weight_patch": "corpus-v1"},
+                baseline_metric_ref_by_class={"field_topology_weight_patch": "baseline-v1"},
             ),
         ),
-        decision_engine=DecisionEngine(),
+        decision_engine=_CarrierDecisionEngine(),
         applier=applier,
         monitor=PostAdoptionMonitor(),
         trace_logger=traces.append,
@@ -928,15 +994,15 @@ def test_one_live_mutation_invariant_blocks_before_side_effects() -> None:
     # Passing trial evidence, so the lock -- not a missing/failed trial -- is
     # the only reason this can be held.
     result = worker.run_cycle(
-        telemetry=[], measured_metrics_by_proposal={proposal.proposal_id: dict(_PE_PASSING_METRICS)}
+        telemetry=[], measured_metrics_by_proposal={proposal.proposal_id: dict(_CARRIER_PASSING_METRICS)}
     )
     assert any(
         event.get("event") == "mutation_decision_recorded" and event.get("decision") == "hold"
         for event in traces
     ), f"active-surface invariant was never exercised -- no hold decision recorded; events={sorted({e.get('event') for e in traces})}"
     assert result["adoptions"] == 0
-    # No side effect: the live control surface still holds the calibrated value.
-    assert _live_execution_alpha() == _PE_DEFAULT_ALPHA
+    # No side effect: nothing was written to any surface.
+    assert applier.surfaces == {}
 
 
 def test_rollback_payload_required_before_apply() -> None:
@@ -1028,7 +1094,7 @@ def test_restart_safe_reload_of_in_flight_mutation_state(tmp_path: Path) -> None
 def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1036,8 +1102,8 @@ def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
             corpus_by_class={proposal.mutation_class: "corpus-v1"},
             baseline_metric_ref_by_class={proposal.mutation_class: "baseline-v1"},
         ),
-    ).run_trial(proposal=proposal, measured_metrics=dict(_PE_PASSING_METRICS))
-    decision = DecisionEngine().decide(
+    ).run_trial(proposal=proposal, measured_metrics=dict(_CARRIER_PASSING_METRICS))
+    decision = _CarrierDecisionEngine().decide(
         proposal=proposal,
         trial=trial,
         has_replay_and_baseline=True,
@@ -1051,13 +1117,13 @@ def test_duplicate_apply_prevention_after_retry(tmp_path: Path) -> None:
     retried = adoption.model_copy(update={"adoption_id": "substrate-mutation-adoption-retry"})
     warnings = store.record_adoption(retried)
     assert warnings == ["duplicate_adoption_for_proposal"]
-    assert store.active_surface(_PE_SURFACE) == adoption.adoption_id
+    assert store.active_surface(_CARRIER_SURFACE) == adoption.adoption_id
 
 
 def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1065,8 +1131,8 @@ def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
             corpus_by_class={proposal.mutation_class: "corpus-v1"},
             baseline_metric_ref_by_class={proposal.mutation_class: "baseline-v1"},
         ),
-    ).run_trial(proposal=proposal, measured_metrics=dict(_PE_PASSING_METRICS))
-    decision = DecisionEngine().decide(
+    ).run_trial(proposal=proposal, measured_metrics=dict(_CARRIER_PASSING_METRICS))
+    decision = _CarrierDecisionEngine().decide(
         proposal=proposal,
         trial=trial,
         has_replay_and_baseline=True,
@@ -1082,13 +1148,13 @@ def test_active_surface_recovered_after_reload(tmp_path: Path) -> None:
         conn.execute("DELETE FROM substrate_mutation_active_surface")
         conn.commit()
     reloaded = SubstrateMutationStore(sql_db_path=str(db))
-    assert reloaded.active_surface(_PE_SURFACE) == adoption.adoption_id
+    assert reloaded.active_surface(_CARRIER_SURFACE) == adoption.adoption_id
 
 
 def test_rollback_continuity_after_reload(tmp_path: Path) -> None:
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1096,8 +1162,8 @@ def test_rollback_continuity_after_reload(tmp_path: Path) -> None:
             corpus_by_class={proposal.mutation_class: "corpus-v1"},
             baseline_metric_ref_by_class={proposal.mutation_class: "baseline-v1"},
         ),
-    ).run_trial(proposal=proposal, measured_metrics=dict(_PE_PASSING_METRICS))
-    decision = DecisionEngine().decide(
+    ).run_trial(proposal=proposal, measured_metrics=dict(_CARRIER_PASSING_METRICS))
+    decision = _CarrierDecisionEngine().decide(
         proposal=proposal,
         trial=trial,
         has_replay_and_baseline=True,
@@ -1107,15 +1173,15 @@ def test_rollback_continuity_after_reload(tmp_path: Path) -> None:
     adoption = applier.apply(proposal=proposal, decision=decision)
     assert adoption is not None
     assert store.record_adoption(adoption) == []
-    assert _live_execution_alpha() == 0.1
+    assert applier.surfaces[_CARRIER_SURFACE]["edge_weight_delta"] == 0.1
     rollback = PostAdoptionMonitor().build_rollback(adoption=adoption, reason="regression")
     store.record_rollback(rollback)
     applier.rollback(adoption=adoption)
 
     reloaded = SubstrateMutationStore(sql_db_path=str(db))
-    assert reloaded.active_surface(_PE_SURFACE) is None
-    # The undo restored what was live at apply time, not just the lock state.
-    assert _live_execution_alpha() == _PE_DEFAULT_ALPHA
+    assert reloaded.active_surface(_CARRIER_SURFACE) is None
+    # The undo restored the rollback payload, not just the lock state.
+    assert applier.surfaces[_CARRIER_SURFACE]["edge_weight_delta"] == 0.0
     assert any(item["rollback_id"] == rollback.rollback_id for item in reloaded.recent_rollbacks(limit=10))
 
 
@@ -1125,7 +1191,7 @@ def test_record_rollback_refuses_on_non_applied_adoption() -> None:
     store trusted every caller's own discipline and enforced nothing itself.
     """
     store = SubstrateMutationStore()
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     assert proposal is not None
     store.add_proposal(proposal)
     decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote")
@@ -1152,7 +1218,7 @@ def test_rollback_cooldown_blocks_readoption_scaled_by_risk_tier() -> None:
     elapsed time -- the multiplier is real, not a flat cooldown.
     """
     store = SubstrateMutationStore()
-    high = _direct_prediction_expectation_proposal().model_copy(update={"risk_tier": "high"})
+    high = _carrier_proposal().model_copy(update={"risk_tier": "high"})
     store.add_proposal(high)
     decision = MutationDecisionV1(proposal_id=high.proposal_id, action="auto_promote")
     high_adoption = PatchApplier(surfaces={}).apply(proposal=high, decision=decision)
@@ -1185,15 +1251,13 @@ def test_surface_reliability_cold_start_then_computed() -> None:
     is undone.
     """
     store = SubstrateMutationStore()
-    assert store.surface_reliability(_PE_SURFACE) is None
+    assert store.surface_reliability(_CARRIER_SURFACE) is None
 
     outcomes = ["settled", "settled", "rolled_back"]
     for i, outcome in enumerate(outcomes):
-        # Distinct proposal_id AND alpha per iteration: each is a real,
-        # separate adoption, and prediction_expectation_patch's apply declines
-        # a patch equal to the live value (build_rollback does not undo the
-        # control-surface write, so the previous iteration's alpha is live).
-        proposal = _direct_prediction_expectation_proposal(alpha=(0.1, 0.15, 0.25)[i]).model_copy(
+        # Distinct proposal_id AND delta per iteration: each is a real,
+        # separate adoption.
+        proposal = _carrier_proposal(delta=(0.05, 0.1, 0.15)[i]).model_copy(
             update={"proposal_id": f"substrate-mutation-proposal-rel-{i}"}
         )
         store.add_proposal(proposal)
@@ -1203,7 +1267,7 @@ def test_surface_reliability_cold_start_then_computed() -> None:
         adoption = adoption.model_copy(update={"adoption_id": f"substrate-mutation-adoption-rel-{i}"})
         assert store.record_adoption(adoption) == []
         if i < 2:
-            assert store.surface_reliability(_PE_SURFACE) is None  # still below MIN_SAMPLES
+            assert store.surface_reliability(_CARRIER_SURFACE) is None  # still below MIN_SAMPLES
         if outcome == "settled":
             assert store.record_settlement(adoption.adoption_id) is True
         else:
@@ -1211,7 +1275,7 @@ def test_surface_reliability_cold_start_then_computed() -> None:
             assert store.record_rollback(rollback) is True
 
     # 2 settled, 1 rolled_back -> (2+1)/(2+1+2) = 0.6
-    assert store.surface_reliability(_PE_SURFACE) == pytest.approx(0.6)
+    assert store.surface_reliability(_CARRIER_SURFACE) == pytest.approx(0.6)
 
 
 def test_proposal_factory_refuses_below_reliability_floor() -> None:
@@ -1266,7 +1330,7 @@ def test_retention_compaction_preserves_active_state(tmp_path: Path, monkeypatch
     monkeypatch.setenv("SUBSTRATE_MUTATION_RETENTION_MAX_ROLLBACKS", "50")
     db = tmp_path / "mutation.sqlite3"
     store = SubstrateMutationStore(sql_db_path=str(db))
-    proposal = _direct_prediction_expectation_proposal()
+    proposal = _carrier_proposal()
     assert proposal is not None
     trial = SubstrateTrialRunner(
         scorer=ClassSpecificScorer(),
@@ -1274,8 +1338,8 @@ def test_retention_compaction_preserves_active_state(tmp_path: Path, monkeypatch
             corpus_by_class={proposal.mutation_class: "corpus-v1"},
             baseline_metric_ref_by_class={proposal.mutation_class: "baseline-v1"},
         ),
-    ).run_trial(proposal=proposal, measured_metrics=dict(_PE_PASSING_METRICS))
-    decision = DecisionEngine().decide(
+    ).run_trial(proposal=proposal, measured_metrics=dict(_CARRIER_PASSING_METRICS))
+    decision = _CarrierDecisionEngine().decide(
         proposal=proposal,
         trial=trial,
         has_replay_and_baseline=True,
@@ -1288,13 +1352,13 @@ def test_retention_compaction_preserves_active_state(tmp_path: Path, monkeypatch
         store.record_apply_blocked(
             proposal_id=f"p-{idx}",
             decision_id=f"d-{idx}",
-            target_surface=_PE_SURFACE,
+            target_surface=_CARRIER_SURFACE,
             reason="active_surface",
             queue_status="approved",
         )
     reloaded = SubstrateMutationStore(sql_db_path=str(db))
     assert len(reloaded.recent_blocked_applies(limit=500)) <= 50
-    assert reloaded.active_surface(_PE_SURFACE) == adoption.adoption_id
+    assert reloaded.active_surface(_CARRIER_SURFACE) == adoption.adoption_id
 
 
 def test_targeted_signal_persistence_keeps_restart_reload_behavior(tmp_path: Path) -> None:

@@ -548,6 +548,12 @@ channels:
   # source in the world-first attention contests, eligible only at its own
   # p99+ band (orion/schemas/attention_candidate.py ATTENTION_MIN_BAND_BY_NODE_ID);
   # still fenced from the broadcast's salience signals.
+  # 0 graph edges ON PURPOSE (2026-11-03, docs/superpowers/specs/2026-11-03-person-graph-sighting-refresh-design.md):
+  # whole-frame surprise does not know who was in the frame (a car or a light change
+  # raises it as much as a person). An outgoing edge would push its pressure and
+  # activation into every named cluster / walkway day node on each surprising frame.
+  # "Who was seen" reaches the graph through vision_individual.last_seen_at on the
+  # cluster nodes instead (app/person_graph_loop.py _refresh_sightings). Do not "fix" the 0.
   - node: "node:substrate.perception_walkway"
     producer: orion-substrate-runtime
     channel: prediction_error

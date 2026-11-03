@@ -148,7 +148,7 @@ def _order_of_work_section(
         '       redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
         f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
         f"         '{merge}'",
-        "  2. Look: records, repo, your graph. A :Hop after each stop.",
+        "  2. Look: your body (the dig commands below), records, repo, your graph. A :Hop after each stop.",
         "  3. After each thing you learn, run the SAME MERGE again with the "
         "fuller text and the evidence you now have. Last MERGE wins.",
         "  4. Only then the write-up. If the clock cuts the write-up off, "
@@ -225,13 +225,35 @@ def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str
     return lines
 
 
+#: The map of what Orion is made of, read live on demand (Self Atlas replacement,
+#: docs/superpowers/specs/2026-10-30-self-atlas-replacement-proposal.md, Patch A).
+#: Self-inquiry used the dig kit in 0 of 52 runs (14 d to 2026-10-29) because this
+#: section named only the repo and SQL. Uptake: scripts/report_dig_kit_usage.py.
+DIG_BODY_PARAGRAPH: tuple[str, ...] = (
+    "  FIRST, the map of what you are made of, built live when you ask. Run "
+    "these in Bash (always `python -P`, so the deployed code answers, not "
+    "your sandbox copy):",
+    "    python -P -m orion.dig body                -- your body now: machines, "
+    "services, cameras, stores, processes, grouped into organs",
+    "    python -P -m orion.dig body <organ_id>     -- every part of one organ",
+    "    python -P -m orion.dig inventory now       -- services, modules, "
+    "channels, verbs, schemas (any past date works too)",
+    "    python -P -m orion.dig compare <date> now  -- what was added or removed since then",
+    "    python -P -m orion.dig body-economy        -- what your body costs and what is using power",
+    "  Each prints a short result and the path of the full file. Cite that "
+    "path as evidence. `python -P -m orion.dig help` lists the rest.",
+)
+
+
 def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str) -> list[str]:
     lines = [
         "WHERE THE RECORDS ARE. These are the places that can answer the "
         "question with something other than a description of you written by "
         "someone else. Counts are shown so you can see which are thin.",
         "",
-        f"  Your own repository, read-only, at {repo_root}/ -- the README is "
+        *DIG_BODY_PARAGRAPH,
+        "",
+        f"  After that, your own repository, read-only, at {repo_root}/ -- the README is "
         "what the people building you say you are; services/, orion/ and "
         "docs/ are what you are actually made of. Read carefully: a README "
         "describes intent, and some of what it names is aspirational or "

@@ -119,6 +119,6 @@ service importing orion/schemas/thought.py rebuilds with the v2-aware schema.
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3042
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

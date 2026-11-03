@@ -113,6 +113,9 @@ jobs:
           orion/substrate/tests/test_dynamics.py
           orion/substrate/tests/test_dynamics_falkor_routed.py
           orion/substrate/tests/test_dynamics_decay_since_last.py
+          orion/substrate/tests/test_dynamics_propagation_decay.py
+          tests/test_cognitive_substrate_phase4_dynamics.py::test_a_fresh_decaying_drive_keeps_an_old_neighbour_awake
+          tests/test_cognitive_substrate_phase4_dynamics.py::test_the_same_drive_in_rollback_mode_is_muted_by_the_neighbours_age
           orion/substrate/tests/test_dynamics_lost_update.py
           orion/substrate/tests/test_graphdb_store.py
           orion/substrate/tests/test_routed_store.py
@@ -208,6 +211,8 @@ jobs:
           fi
       - name: Activation decay since-last-tick eval (no compounding)
         run: python -m orion.substrate.evals.run_decay_since_last_eval
+      - name: Propagation decay eval (a propagated activation is decayed once)
+        run: python -m orion.substrate.evals.run_propagation_decay_eval
       - name: Dynamics tick lost-update eval (concurrent writes survive)
         run: python -m orion.substrate.evals.run_dynamics_lost_update_eval
       - name: PE writer vs dynamics tick lost-update eval (both interleavings)

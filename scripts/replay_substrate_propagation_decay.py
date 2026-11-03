@@ -11,8 +11,9 @@ Two horizons, both with no new producer writes (the graph is frozen at snapshot)
 
 - short: ``--ticks`` ticks at ``--step-sec`` (default 60 x 30 s = 30 min, the live
   cadence) -- "what changes right after deploy";
-- long: ``--long-hours`` at ``--long-step-min`` steps (default 48 h x 60 min) -- "does everything return to rest
-  when nothing new arrives" (a hub must not hold its neighbours up by itself).
+- long: ``--long-hours`` at ``--long-step-min`` steps (default 48 h x 60 min) --
+  "does everything return to rest when nothing new arrives" (a hub must not
+  hold its neighbours up by itself).
 
 Run:
   python scripts/replay_substrate_propagation_decay.py --uri redis://127.0.0.1:6380
@@ -90,7 +91,7 @@ def compare(base, *, start, steps, step, kinds, labels, in_degree) -> dict:
     delta = {nid: new[nid] - old.get(nid, 0.0) for nid in new}
     changed = {nid: d for nid, d in delta.items() if abs(d) > 1e-3}
     rises = sorted(changed.items(), key=lambda kv: -kv[1])[:20]
-    falls = sorted(changed.items(), key=lambda kv: kv[1])[:5]
+    lowest = sorted(changed.items(), key=lambda kv: kv[1])[:5]
     top_new = sorted(new.items(), key=lambda kv: -kv[1])[:10]
 
     def row(nid, d=None):
@@ -110,7 +111,7 @@ def compare(base, *, start, steps, step, kinds, labels, in_degree) -> dict:
         "dist_old": _dist(old),
         "dist_new": _dist(new),
         "top20_rises": [row(n, d) for n, d in rises],
-        "top5_falls": [row(n, d) for n, d in falls],
+        "top5_lowest_delta": [row(n, d) for n, d in lowest],
         "top10_new": [row(n) for n, _ in top_new],
         "node_athena": {k: round(v.get("node:athena", 0.0), 4) for k, v in (("old", old), ("new", new))},
     }

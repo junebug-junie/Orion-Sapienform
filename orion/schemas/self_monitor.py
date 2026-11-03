@@ -130,3 +130,23 @@ class SelfMonitorStateV1(BaseModel):
     source_errors: List[str] = Field(
         default_factory=list, description="Sources that could not be read this pass (named, never silent)."
     )
+
+
+class SelfTrackRecordCueV1(BaseModel):
+    """The stance/reverie cue: what Orion is failing at or misjudging right now, in plain words.
+
+    Rendered by ``orion.self_monitor.cue.project_track_record_cue`` (fixed templates, no LLM) from a
+    fresh ``SelfMonitorStateV1``. Not on the bus: the text rides inside the cortex-exec plan context
+    (ctx key ``self_track_record``). ``text`` is "" whenever nothing may be shown, and ``skip_reason``
+    says why (disabled, not_loaded, fetch_failed, absent, unparseable, stale, future_stamped,
+    nothing_notable, render_failed).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rendered_at: AwareDatetime
+    text: str = ""
+    skip_reason: Optional[str] = None
+    shown: List[str] = Field(default_factory=list, description="Faculty keys behind each shown sentence, in order.")
+    lines_dropped: int = Field(0, ge=0, description="Notable faculties left out by the character cap.")
+    state_age_sec: Optional[float] = None

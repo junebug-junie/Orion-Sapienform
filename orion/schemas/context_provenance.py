@@ -163,6 +163,16 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "stance_react and reverie (app/self_readings_cue.py, orion/attention/self_readings.py).",
         ),
         _entry(
+            "self_track_record",
+            "derived_summary",
+            "What Orion is failing at or misjudging right now: a fixed template (no LLM, "
+            "orion/self_monitor/cue.py) over the self-monitor state orion-durable-runs publishes to "
+            "Redis orion:self_monitor:latest -- held broken / unreliable / miscalibrated faculties "
+            "only, numbers from each faculty's settled bets over 7 days, <= 300 chars; absent or "
+            "stale state renders nothing. Set by orion-thought for stance_react and reverie "
+            "(app/self_track_record_cue.py).",
+        ),
+        _entry(
             "recent_arcs",
             "derived_summary",
             "Orion's last few CLOSED arcs of today, most recent first, local time: one line each "

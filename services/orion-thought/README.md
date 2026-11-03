@@ -419,6 +419,27 @@ A frame that is missing, invalid, older than `PERSONALITY_CUE_MAX_AGE_SEC=3600`,
 Log (one per build): `personality_cue corr=... rendered=true|false ids=... skip=disabled|fetch_failed|invalid_frame|stale|empty|render_failed`.
 Kill switch: `PERSONALITY_CUE_ENABLED=false`.
 
+## Self-monitor track record for stance_react and reverie (self-monitor spec step 3)
+
+What Orion is failing at or misjudging right now, from their own settled bets, in plain first-person
+sentences. `app/self_track_record_cue.py` reads Redis `orion:self_monitor:latest` on `ORION_BUS_URL`
+(the self-monitor state orion-durable-runs publishes hourly) every 5 min in a background thread and
+renders it with `orion.self_monitor.cue.project_track_record_cue` (fixed templates, no LLM).
+
+- **What renders:** only faculties whose held status is `broken`, `unreliable` or `miscalibrated`
+  (never `reliable`, never `unknown`), worst status first, then most evidence; at most 300 chars.
+  When room is left, one clause counts faculties that cannot be graded at all yet. Example:
+  "My walkway-grade journal runs failed to start 22 of 28 times this week. My guesses about how many
+  steps my turns take hold 6% of the time (I say 80%)."
+- **Where:** stance_react (`MY TRACK RECORD`) and reverie's coalition branch (same heading).
+- **Fail-open:** the turn never waits on Redis; an absent, unparseable, stale (> 3 h) or
+  future-stamped state renders nothing (reader contract, `orion/self_monitor/view.py`). Shows nothing
+  until orion-durable-runs publishes the key (self-monitor patch 2).
+- Logs: `self_track_record corr=... purpose=stance|reverie chars=... shown=...` or
+  `self_track_record_skipped reason=disabled|not_loaded|fetch_failed|absent|unparseable|stale|future_stamped|nothing_notable|render_failed`.
+- Kill switch: `SELF_TRACK_RECORD_CUE_ENABLED=false` (both prompts exactly as before).
+- Eval: `python evals/run_self_track_record_live_eval.py` renders the cue from the live state.
+
 ## Self-readings for stance_react and reverie (self-calibration spec section C)
 
 Orion's body signals, each scored 0-10 against its own last 7 days, shown to the unified turn's

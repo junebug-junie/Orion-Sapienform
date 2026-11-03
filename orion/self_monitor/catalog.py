@@ -25,8 +25,13 @@ UNGRADEABLE: tuple[Ungradeable, ...] = (
         "priors are re-judged by Orion after investigating; no outside settlement",
     ),
     Ungradeable(
-        "attention.ask", "attention_loop_outcome", "ungradeable:source_bug",
-        "the ask path stores salience_at_close = 0 (31/31 on 10-20); store the pre-ask salience",
+        # Corrected 2026-11-03: the 10-20 audit read these as attention asks with a salience bug. All
+        # 63 `orion_is_asking` outcomes are memory-confirmation cards (orion/memory/episode/
+        # confirmation.py); no salience or confidence exists before the ask, so there is nothing to
+        # copy -- episode_memory.strength is a per-purpose constant the answer itself changes.
+        "memory.confirmation", "attention_loop_outcome", "ungradeable:no_stated_confidence",
+        "Orion makes no bet before asking Juniper to confirm a memory; add a confirm-chance bet "
+        "(orion-prediction) when the card opens",
     ),
     Ungradeable(
         "vision.same_person", "vision_individual_pair_verdict", "ungradeable:source_bug",

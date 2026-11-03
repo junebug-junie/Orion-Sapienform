@@ -54,3 +54,14 @@ def test_report_counts_only_files_inside_the_window(tmp_path):
     assert out["by_kind"]["self_inquiry"]["sessions"] == 1
     assert out["by_kind"]["self_inquiry"]["used_dig"] == 1
     assert out["curiosity_dig_subcommands"] == {"body": 1}
+
+
+def test_hyphenated_subcommands_are_counted_as_themselves():
+    """`body-economy` and `name-organs` are their own commands, not `body` / `name`."""
+    s = mod.summarize_session([
+        _user("Orion harness motor ... WHERE THE RECORDS ARE. ..."),
+        _tool("Bash", command="python -P -m orion.dig body-economy hosts"),
+        _tool("Bash", command="python -P -m orion.dig name-organs"),
+        _tool("Bash", command="python -P -m orion.dig body"),
+    ])
+    assert sorted(s["dig_subcommands"]) == ["body", "body-economy", "name-organs"]

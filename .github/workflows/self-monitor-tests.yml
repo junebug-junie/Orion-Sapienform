@@ -10,6 +10,11 @@ on:
       - "orion/self_monitor/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
+      - "tests/test_self_monitor_act_gate.py"
+      - "services/orion-actions/app/main.py"
+      - "services/orion-actions/tests/test_self_monitor_journal_gate.py"
+      - "services/orion-hub/scripts/self_monitor_questions.py"
+      - "services/orion-hub/tests/test_self_monitor_questions.py"
       - ".github/workflows/self-monitor-tests.yml"
   push:
     branches: [main]
@@ -17,6 +22,11 @@ on:
       - "orion/self_monitor/**"
       - "orion/schemas/self_monitor.py"
       - "orion/prediction/**"
+      - "tests/test_self_monitor_act_gate.py"
+      - "services/orion-actions/app/main.py"
+      - "services/orion-actions/tests/test_self_monitor_journal_gate.py"
+      - "services/orion-hub/scripts/self_monitor_questions.py"
+      - "services/orion-hub/tests/test_self_monitor_questions.py"
   workflow_dispatch:
 
 permissions:
@@ -33,6 +43,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pytest pydantic==2.10.3 numpy sqlalchemy
+      - run: pip install pytest pydantic==2.10.3 numpy sqlalchemy pyyaml
       - name: Gate tests (pure adapters and reducer, no I/O)
         run: python -m pytest -q -p no:cacheprovider orion/self_monitor/tests
+
+  effects:
+    # E1 at orion-actions' journal seam, E2 in Hub (the dispatch-runtime half runs in thinking-rung3).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-actions/requirements.txt pytest pytest-asyncio sqlalchemy
+      - name: E1 journal gate (orion-actions lifespan, bus faked)
+        working-directory: services/orion-actions
+        run: python -m pytest -q -p no:cacheprovider tests/test_self_monitor_journal_gate.py tests/test_act_emit.py
+      - name: E2 self-question minter (pure + fakes)
+        working-directory: services/orion-hub
+        env:
+          PYTHONPATH: ${{ github.workspace }}/services/orion-hub:${{ github.workspace }}
+        run: |
+          pip install pydantic-settings pyyaml
+          python -m pytest -q -p no:cacheprovider --noconftest tests/test_self_monitor_questions.py

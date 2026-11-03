@@ -1054,6 +1054,11 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_TICK_SEC: float = Field(
         default=300.0, alias="HUB_READING_FINDING_OUTREACH_TICK_SEC"
     )
+    # Self-monitor E2 (scripts/self_monitor_questions.py): a faculty newly held broken/unreliable in
+    # orion:self_monitor:latest mints ONE self-question (curiosity_self_questions, minted_by='orion'),
+    # once per status episode; last-seen statuses persist in Redis. Unknown/stale state: nothing.
+    SELF_MONITOR_QUESTIONS_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_QUESTIONS_ENABLED")
+    SELF_MONITOR_QUESTIONS_TICK_SEC: float = Field(default=900.0, alias="SELF_MONITOR_QUESTIONS_TICK_SEC")
     # A change recorded within this many hours is told (reads up to 7 days old are watched, so a
     # belief a run moves days after the read still counts). Older changes are never messaged.
     HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS: float = Field(

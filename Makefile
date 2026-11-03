@@ -543,6 +543,16 @@ eval-self-sense:
 eval-bonsai-replay:
 	@ORION_BUS_URL=$${ORION_BUS_URL:-redis://100.92.216.81:6379/0} PYTHONPATH=. $(METRIC_PYTHON) scripts/run_bonsai_replay_eval.py $(ARGS)
 
+# Person learning Phase 1 acceptance check (docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md):
+# leave-one-cluster-out over every cluster Juniper named; writes one vision_person_model_eval row
+# (wrong accepts, correct accepts, unsure rate, cross-day separation per channel). Exit 1 = a wrong
+# accept (gate failed). ~20 min of CPU, so nightly cron, not a sql-writer tick. Needs POSTGRES_URI.
+.PHONY: eval-person-recognition
+eval-person-recognition:
+	@test -n "$$POSTGRES_URI" || { echo "POSTGRES_URI is required" >&2; exit 2; }
+	@date -u +"%Y-%m-%dT%H:%M:%SZ eval-person-recognition"
+	@PYTHONWARNINGS=ignore $(METRIC_PYTHON) services/orion-sql-writer/evals/run_person_recognition_eval.py --live "$$POSTGRES_URI" --write $(ARGS)
+
 # Temporal Self patch 4, acceptance check 6: do Orion's citations of its own day describe the cited
 # arc correctly? Read-only over thought_decision.day_citations (label verified by default), the
 # stored reply and temporal_self_arc; deterministic checks only, no LLM judge. A measurement, not a

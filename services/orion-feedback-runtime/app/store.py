@@ -29,7 +29,9 @@ _PENDING_MARKER_SPEC = PendingMarkerSpec(
     child_fk_column="source_execution_dispatch_frame_id",
     log_prefix="feedback_pending",
     parent_label="dispatch frames",
-    child_label="feedback frame",
+    child_label="feedback frame or control-reduction receipt",
+    alternate_child_table="substrate_feedback_control_reductions",
+    alternate_child_fk_column="source_execution_dispatch_frame_id",
 )
 
 logger = logging.getLogger("orion.feedback_runtime.store")
@@ -196,8 +198,17 @@ class FeedbackRuntimeStore:
                      WHERE u.frame_id IN (
                            SELECT x.frame_id
                              FROM substrate_execution_dispatch_frames x
-                             JOIN substrate_feedback_frames y ON y.source_execution_dispatch_frame_id = x.frame_id
                             WHERE x.feedback_pending
+                              AND (
+                                    EXISTS (
+                                        SELECT 1 FROM substrate_feedback_frames y
+                                         WHERE y.source_execution_dispatch_frame_id = x.frame_id
+                                    )
+                                    OR EXISTS (
+                                        SELECT 1 FROM substrate_feedback_control_reductions r
+                                         WHERE r.source_execution_dispatch_frame_id = x.frame_id
+                                    )
+                              )
                             LIMIT :batch
                      )
                 """),
@@ -809,6 +820,72 @@ class FeedbackRuntimeStore:
                     frame.frame_id,
                     len(control_cells or {}),
                 )
+
+    def save_control_reduction(
+        self,
+        dispatch: ExecutionDispatchFrameV1,
+        *,
+        control_cells: dict[ControlCellKey, ControlCell],
+        observation_count: int,
+    ) -> bool:
+        """Atomically fold and acknowledge one structurally empty dispatch.
+
+        The receipt is the idempotency key. Only the transaction that inserts it advances the
+        aggregate cells; a replay merely clears a stale pending marker. Unlike the full-frame
+        path, a control-cell failure is not isolated behind a savepoint: the reduction has no
+        other cognitive substance, so acknowledging it without the fold would lose the only
+        observation it carried.
+
+        Returns True when this call inserted and folded a new reduction, False on replay.
+        """
+        if observation_count <= 0 or not control_cells:
+            raise ValueError("a control reduction must carry real observations and cells")
+
+        with self._engine.begin() as conn:
+            inserted = conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_feedback_control_reductions (
+                        source_execution_dispatch_frame_id,
+                        source_dispatch_generated_at,
+                        control_observation_count,
+                        control_cell_count,
+                        created_at
+                    ) VALUES (
+                        :frame_id,
+                        :generated_at,
+                        :observation_count,
+                        :cell_count,
+                        now()
+                    )
+                    ON CONFLICT (source_execution_dispatch_frame_id) DO NOTHING
+                    """
+                ),
+                {
+                    "frame_id": dispatch.frame_id,
+                    "generated_at": dispatch.generated_at,
+                    "observation_count": int(observation_count),
+                    "cell_count": len(control_cells),
+                },
+            )
+            is_new = int(inserted.rowcount or 0) == 1
+            if is_new:
+                self._write_control_cells(
+                    conn,
+                    control_cells,
+                    dispatch_frame_id=dispatch.frame_id,
+                )
+            conn.execute(
+                text(
+                    """
+                    UPDATE substrate_execution_dispatch_frames
+                       SET feedback_pending = false
+                     WHERE frame_id = :frame_id
+                    """
+                ),
+                {"frame_id": dispatch.frame_id},
+            )
+        return is_new
 
     # --- attend-to-act loop: settle-time world scoring ---------------------------------------
     def load_world_episodes_due(self, *, now: datetime, limit: int = 20) -> list[dict]:

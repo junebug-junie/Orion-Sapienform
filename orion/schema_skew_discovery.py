@@ -77,17 +77,6 @@ LIB_HOPS = 1
 #: on an entry that no longer matches anything unresolved.
 DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # Cross-service writers code cannot see (validate-then-persist, HTTP API).
-    "orion.schemas.self_monitor:SelfMonitorStateV1": (
-        "orion-durable-runs",
-        "self-monitor patch 2 publishes it to Redis orion:self_monitor:latest; hub reads it via "
-        "orion.self_monitor.view. Remove once that writer lands and is discovered",
-    ),
-    "orion.schemas.self_monitor:FacultyRecordV1": (
-        "orion-durable-runs",
-        "self-monitor patch 2: the temporal_self self_monitor node publishes SelfMonitorStateV1 to Redis "
-        "orion:self_monitor:latest; hub's self_finding_outreach reads it via orion.self_monitor.view. "
-        "Remove this entry once that writer lands and is discovered (the stale-entry test will say so)",
-    ),
     "orion.memory_graph.dto:SuggestDraftV1": (
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",
@@ -102,6 +91,16 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    "orion.schemas.self_monitor:SelfMonitorStateV1": (
+        "orion-durable-runs",
+        "the self_monitor node (rung 6 patch 2) writes it to Redis orion:self_monitor:latest; Hub's E2 minter and E3 "
+        "self_finding_outreach (and the dispatch-runtime / orion-actions act gates) read it via orion.self_monitor.view",
+    ),
+    "orion.schemas.self_monitor:FacultyRecordV1": (
+        "orion-durable-runs",
+        "the self_monitor node (rung 6 patch 2) writes SelfMonitorStateV1 to Redis orion:self_monitor:latest; "
+        "Hub's E2 minter + E3 self_finding_outreach, dispatch-runtime and orion-actions read it via orion.self_monitor.view",
+    ),
     "orion.schemas.prediction:ActionBetCountsV1": (
         "orion-prediction",
         "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "

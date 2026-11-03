@@ -45,6 +45,12 @@ class TestItGuardsTheRightTables:
         assert sql.startswith("UPDATE substrate_execution_dispatch_frames p SET feedback_pending = true")
         assert "NOT p.feedback_pending" in sql
         assert "SELECT 1 FROM substrate_feedback_frames c WHERE c.source_execution_dispatch_frame_id = p.frame_id" in sql
+        assert "SELECT 1 FROM substrate_feedback_control_reductions a WHERE a.source_execution_dispatch_frame_id = p.frame_id" in sql
+
+    def test_a_control_reduction_is_also_a_durable_child(self):
+        reduced = Row("reduced", 0.02, has_alternate_child=True)
+        assert _run(_store(), FakeDb([reduced]), force=True) == 0
+        assert reduced.pending is False
 
 
 class TestBoundedSweep:

@@ -21,3 +21,7 @@ os.environ.setdefault(
     "EXECUTION_DISPATCH_POLICY_PATH",
     str(REPO_ROOT / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"),
 )
+
+# The self-monitor act gate reads live organ state from Redis (ORION_BUS_URL); a unit test must never
+# let live state decide what is admitted. Gate tests inject their own view.
+os.environ["SELF_MONITOR_ACT_GATE_ENABLED"] = "false"

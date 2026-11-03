@@ -645,7 +645,8 @@ Needs `manual_migration_vision_person_album_v1.sql`; without it the step logs
 live; `--write` stores a `vision_person_model_eval` row):
 `evals/run_person_recognition_eval.py --live <dsn>` -- leave-one-cluster-out,
 gate = zero wrong accepts; a new model version must beat the last on an exact
-McNemar test (p < 0.05).
+McNemar test (p < 0.05). Nightly from repo root: `POSTGRES_URI=... make eval-person-recognition`
+(host cron 09:23 UTC, log `logs/orion-person-recognition-eval.log`; ~20 min of CPU).
 
 **One record per person** (`app/person_record.py`, 2026-10-22, spec
 `docs/superpowers/specs/2026-10-22-people-one-record-design.md`). Runs inside

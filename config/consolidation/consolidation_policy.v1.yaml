@@ -5,6 +5,10 @@ window:
   lookback_minutes: 60
   min_support_count: 3
   max_frames_per_source: 500
+  # Execution dispatch stamps before its concurrent send batch and inserts afterward. The
+  # canonical maximum RPC timeout is 720s; 900s leaves 180s for preflight/persistence. A static
+  # cross-policy test refuses any execution route timeout above this closure lag.
+  source_visibility_lag_sec: 900
 
 motif_thresholds:
   min_support_score: 0.20

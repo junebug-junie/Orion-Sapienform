@@ -90,6 +90,7 @@ from scripts.reading_turn_listener import ReadingTurnListener
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
 from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
 from scripts.reading_finding_outreach import ReadingFindingOutreach
+from scripts.self_monitor_questions import SelfMonitorQuestionMinter
 from scripts.self_finding_outreach import SelfFindingOutreach
 from scripts.orion_day_letter import DurableRunsClient, OrionDayLetterLoop
 from scripts.endogenous_outreach import EndogenousOutreach
@@ -386,6 +387,7 @@ world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 reading_finding_outreach: Optional[ReadingFindingOutreach] = None
 self_finding_outreach: Optional[SelfFindingOutreach] = None
+self_monitor_question_minter: Optional[SelfMonitorQuestionMinter] = None
 orion_day_letter: Optional[OrionDayLetterLoop] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
@@ -491,7 +493,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, self_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, self_finding_outreach, self_monitor_question_minter, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -1045,6 +1047,18 @@ async def startup_event():
                 await self_finding_outreach.start()
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("self_finding_outreach_start_failed")
+            # Self-monitor E2 (rung 6): a faculty newly held broken/unreliable mints ONE self-question
+            # into curiosity_self_questions (minted_by='orion'), once per status episode.
+            try:
+                self_monitor_question_minter = SelfMonitorQuestionMinter(
+                    enabled=settings.SELF_MONITOR_QUESTIONS_ENABLED,
+                    redis_provider=lambda: bus.redis if bus is not None else None,
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    tick_interval_sec=settings.SELF_MONITOR_QUESTIONS_TICK_SEC,
+                )
+                await self_monitor_question_minter.start()
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("self_monitor_questions_start_failed")
 
 
             # Claude as a third room participant. Hub only publishes the
@@ -1773,7 +1787,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, self_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, self_finding_outreach, self_monitor_question_minter, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1902,6 +1916,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("self_finding_outreach_stop_failed", exc_info=True)
         self_finding_outreach = None
+    if self_monitor_question_minter is not None:
+        try:
+            await self_monitor_question_minter.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("self_monitor_questions_stop_failed", exc_info=True)
+        self_monitor_question_minter = None
     if orion_day_letter is not None:
         try:
             await orion_day_letter.stop()

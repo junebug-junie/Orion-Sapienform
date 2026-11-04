@@ -271,7 +271,7 @@ New family in `config/physiology/families.yaml`:
 ```yaml
   curiosity.replica:
     # Orion Prime 2C' (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md): one short plan per
-    # replica-arm investigate run, plus at most 3 challenge thoughts a day. Tier 2: when it is unfunded, the rule
+    # replica-arm investigate run, plus at most 3 answers to Prime a day. Tier 2: when it is unfunded, the rule
     # order runs and curiosity loses nothing. 90 s: the kickoff will not wait longer.
     tier: 2
     deferrable_window_s: 90
@@ -384,8 +384,8 @@ run schemas, unrelated), so the library is named `orion/mindloop/` to avoid a co
 - **Behavior changed:** `offer_arm` returns one of three arms with a propensity map. New constant
   `ARM_REPLICA_ORDER = "replica_order"`. `value_arm_propensity` stays written for old readers.
   `select_priors` gains `head_ids` (default empty, so every current caller is unchanged).
-- **Act ledger:** new actor `curiosity.replica`. Acts: `infer` (a plan or challenge thought),
-  `ask` (a challenge, parented to Prime's act). No new verbs, no new `ActSignal`.
+- **Act ledger:** new actor `curiosity.replica`. Acts: `infer` (a plan, or a thought answering Prime),
+  `ask` (a support, challenge or refusal, parented to Prime's act). No new verbs, no new `ActSignal`.
 - **Family:** `curiosity.replica` (section 8).
 - **Compatibility:** with the replica flag off, `offer_arm` draws only the two rule arms, exactly as today.
 
@@ -475,8 +475,8 @@ For the build (the trace that proves it worked):
     so a prior can be pushed at most until it goes stale; the track record shows the replica its own repeats.
   - *A replica that loses by starvation, not by judgment.* Guard: fallback rate by reason, reviewed at 14 days with a
     30% threshold (section 8).
-  - *A Prime and replica argument loop.* Guard: one challenge per Prime act, 3 a day, 30 minutes refractory, and
-    Prime's existing refractory per receiver. Loop check: no challenge to an act whose parent is itself a challenge.
+  - *A Prime and replica argument loop.* Guard: one answer per Prime act, 3 a day, 30 minutes refractory, and
+    Prime's existing refractory per receiver. Loop check: no answer to an act whose parent is itself an answer.
   - *Kickoff stuck waiting.* Guard: 90 s hard deadline in Hub, then the rule.
   - *Fallback that looks like success.* Guard: every plan row has a status; fallbacks are counted against the arm.
   - *Juniper's chat slowed.* Guard: same lane rules as Prime (Juniper first, preemption), measured in E9.
@@ -497,5 +497,5 @@ Then, in order:
    `select_priors(head_ids)`, the neutral prompt sentence. Replica flag off at the Hub side until patch 3 lands.
 3. **Replica instance + Hub consumer:** frame, plan, validation, fallback, plan rows, acts. Flags on. The three-arm
    test starts the day this deploys.
-4. **Prime hears the organ:** challenges, holdback, "ORGAN REPLIES" in Prime's frame.
+4. **Prime hears the organ:** challenges and refusals, holdback, "ORGAN REPLIES" in Prime's frame.
 5. **Analysis:** three-arm replay with permutation tests and the stop rule; 14-day fallback and E9 report.

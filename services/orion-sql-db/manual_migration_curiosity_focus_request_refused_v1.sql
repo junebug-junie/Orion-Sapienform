@@ -19,6 +19,9 @@
 --   * a focus with origin 'juniper' can never be refused. This is the database half of the rule;
 --     orion/curiosity/focus.py refuse_focus also only touches pending Prime focus rows.
 --
+-- The deploy gate's "applied" check reads the columns only, not the two constraints: apply in one
+-- transaction (the post-pull applier does), so the columns never exist without them.
+--
 -- Every focus SELECT in orion/curiosity/focus.py names these columns, so Hub needs them before
 -- it starts. Additive DDL only, so the post-pull applier applies it.
 -- Apply by hand, once, in one transaction (a second run fails on the two constraints, which

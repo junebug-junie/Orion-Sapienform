@@ -89,6 +89,12 @@ class CuriosityPendingFocusV1(BaseModel):
     # replica may refuse. Juniper's focus, and one Orion chose in a conversation, can be challenged only.
     from_prime: bool = False
 
+    @model_validator(mode="after")
+    def _prime_focus_is_self_origin(self) -> "CuriosityPendingFocusV1":
+        if self.from_prime and self.origin != "self":
+            raise ValueError("a focus Prime queued has origin 'self'; Juniper's focus is never from_prime")
+        return self
+
 
 class CuriosityOfferPlanRequestV1(BaseModel):
     """Hub -> orion-mind: plan the top of this run's offer before ``deadline_at``."""

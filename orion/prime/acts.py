@@ -294,7 +294,10 @@ GONE_READS_TO_SETTLE = 2
 
 def treated_focus_gone(focus_id: str, curiosity: Optional[dict[str, Any]]) -> Optional[bool]:
     """True when Hub's pending slot does not hold this focus AND no listed run took it: replaced by a
-    chat focus, cleared by Juniper, expired, or never written (an RPC with no answer). None = unknown."""
+    chat focus, cleared by Juniper, refused by the organ (curiosity.replica, orion/curiosity/focus.py
+    refuse_focus), expired, or never written (an RPC with no answer). None = unknown. A refusal's reason
+    is not in Hub's runs/schedule read; the settle note naming it is curiosity replica patch 4, which
+    must land before anything applies a refusal."""
     if not isinstance(curiosity, dict) or not isinstance(curiosity.get("runs"), list):
         return None
     pending = ((curiosity.get("schedule") or {}).get("pending_focus") or {})

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from types import MappingProxyType
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -504,7 +505,8 @@ class ArmDraw:
     so the offer row records the whole design of the draw, not just the arm that won."""
 
     arm: str
-    propensities: dict[str, float]
+    # Read-only (a MappingProxyType), so the frozen draw cannot be edited after the fact.
+    propensities: Mapping[str, float]
 
     @property
     def value_arm_propensity(self) -> float:
@@ -538,7 +540,7 @@ def draw_offer_arm(
     if total > 1.0:
         pv, pr = pv / total, pr / total
     pu = max(0.0, 1.0 - pv - pr)
-    propensities = {ARM_VALUE_ORDER: pv, ARM_REPLICA_ORDER: pr, ARM_UNCERTAINTY_ORDER: pu}
+    propensities = MappingProxyType({ARM_VALUE_ORDER: pv, ARM_REPLICA_ORDER: pr, ARM_UNCERTAINTY_ORDER: pu})
     if pv <= 0.0 and pr <= 0.0:
         return ArmDraw(ARM_UNCERTAINTY_ORDER, propensities)
     digest = hashlib.sha256(f"curiosity-offer-arm:{run_id}".encode("utf-8")).hexdigest()

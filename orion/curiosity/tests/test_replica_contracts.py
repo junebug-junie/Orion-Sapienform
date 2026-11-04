@@ -249,3 +249,17 @@ def test_concerns_view_publishes_only_open_concerns_with_age() -> None:
     assert set(view.concerns[0].model_dump()) == {"concern_id", "text", "age_h", "arc_id"}
     assert len(concerns_view(PrimeStateV1(), now=NOW).concerns) == 0
     assert MAX_CONCERNS >= 1
+
+
+def test_a_prime_focus_is_never_juniper_origin_in_the_request() -> None:
+    with pytest.raises(ValidationError, match="never from_prime"):
+        cr.CuriosityPendingFocusV1(focus_id="f", origin="juniper", question="q", from_prime=True)
+    assert cr.CuriosityPendingFocusV1(focus_id="f", origin="juniper", question="q").from_prime is False
+
+
+def test_the_arm_draw_cannot_be_edited_after_the_fact() -> None:
+    from orion.curiosity.value import draw_offer_arm
+
+    draw = draw_offer_arm("abc123", value_enabled=True, value_propensity=0.5)
+    with pytest.raises(TypeError):
+        draw.propensities[ARM_REPLICA_ORDER] = 1.0  # type: ignore[index]

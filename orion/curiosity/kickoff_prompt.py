@@ -75,7 +75,9 @@ DEFAULT_MAX_HOPS = 5
 # value, replica), true of each: the order was chosen before the run and is not a recommendation. It
 # names no rule and no planner, so the prompt is byte-identical across arms except for the prior
 # lines (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 5). The self-inquiry
-# line renders the same section, so it carries the same sentence.
+# line renders the same section, so it carries the same sentence. It went live with patch 2 (before the
+# replica arm exists), on both live arms at once: runs on either side of that deploy must not be pooled
+# in the value-vs-uncertainty comparison (the design already says compare only concurrent runs).
 ORDER_SENTENCE = (
     "These are ORDERED, and the order is not neutral: it is a presentation "
     "choice made before this run, not a recommendation. Which one, if any, "

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from orion.gpu_pool.scheduler import Abort, BACKGROUND_DRAIN, Recall
+from orion.gpu_pool.scheduler import Abort, BACKGROUND_DRAIN, BACKGROUND_DRAIN_CUT, Expire, Recall
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, lease, of
 from orion.gpu_pool.tests.test_warm_standby import SEAT, gpu2, sched
 
@@ -63,7 +63,7 @@ def _recalling(seconds_ago: float):
 def test_a_later_interactive_owner_cuts_the_long_grace_back_to_the_normal_one():
     urgent_img = diffusion(lease_id="img", priority="interactive")
     late = sched([_recalling(D.hold_clawback_grace_sec + 1), urgent_img], crds=gpu2(loaded=True))
-    assert [a.lease_id for a in of(Abort, late)] == ["s"]
+    assert [(a.lease_id, a.reason) for a in of(Abort, late)] == [("s", BACKGROUND_DRAIN_CUT)]
     early = sched([_recalling(D.hold_clawback_grace_sec - 60), urgent_img], crds=gpu2(loaded=True))
     assert of(Abort, early) == []
 
@@ -72,3 +72,10 @@ def test_still_background_only_the_long_grace_runs_out_normally():
     bg = diffusion(lease_id="img")
     assert of(Abort, sched([_recalling(D.hold_clawback_grace_sec + 1), bg], crds=gpu2(loaded=True))) == []
     assert [a.lease_id for a in of(Abort, sched([_recalling(LONG + 1), bg], crds=gpu2(loaded=True)))] == ["s"]
+
+
+def test_a_hold_whose_heartbeat_was_lost_gets_one_decision_not_two():
+    lost = on_seat(status="recalling", reason=BACKGROUND_DRAIN, expires_at=T0 - timedelta(seconds=1),
+                   recall_by=T0 - timedelta(seconds=D.hold_clawback_grace_sec + 1) + timedelta(seconds=LONG))
+    d = sched([lost, diffusion(lease_id="img", priority="interactive")], crds=gpu2(loaded=True))
+    assert [e.lease_id for e in of(Expire, d)] == ["s"] and of(Abort, d) == []

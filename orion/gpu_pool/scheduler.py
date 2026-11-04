@@ -107,6 +107,8 @@ URGENT = "urgent"
 PREEMPTIBLE = ("background", "system", "starved")
 # H5 recall reason: a hold recalled from a seat that drains only for background owner demand.
 BACKGROUND_DRAIN = "draining_background"
+# H5 abort reason: that long grace cut back because the seat now drains for something else.
+BACKGROUND_DRAIN_CUT = "background_drain_cut"
 
 
 @dataclass(frozen=True)
@@ -765,10 +767,16 @@ def schedule(
     for lease in leases:
         if (lease.status == "recalling" and lease.reason == BACKGROUND_DRAIN and lease.recall_by is not None
                 and lease.recall_by > now and lease.role in ctx.draining
-                and lease.role not in ctx.background_drain):
+                and lease.role not in ctx.background_drain
+                # Section 1 already expired it this tick (heartbeat lost): one decision per lease.
+                and (lease.expires_at is None or lease.expires_at > now)):
+            # Derived from config, so a grace change across a restart only shifts the cut (never
+            # past recall_by, which section 1 still enforces).
             recalled_at = lease.recall_by - timedelta(seconds=long_grace)
             if (now - recalled_at).total_seconds() >= d.hold_clawback_grace_sec:
-                out.append(Abort(lease.lease_id))
+                # Own reason: the published recall_by said +long_grace; the history must say why
+                # the hold went earlier.
+                out.append(Abort(lease.lease_id, BACKGROUND_DRAIN_CUT))
 
     # U1 bookkeeping, before any recall: each waiting urgent lease (up to the cap) is owed one
     # pause. A pause already under way (recalling urgent_preempt) on a slot it could take pays

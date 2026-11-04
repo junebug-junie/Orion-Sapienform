@@ -32,7 +32,8 @@ defaults:
   # Default 3600 lives in orion/gpu_pool/config.py (Defaults.background_drain_grace_sec), NOT here yet:
   # Defaults is extra=forbid and circe's lane controller parses this file, so a new key here breaks any
   # reader still on older code. Add `background_drain_grace_sec: <sec>` here once every reader is deployed.
-  # Rollback: set it equal to hold_clawback_grace_sec.
+  # Rollback today is a code change (set that default to 600); once every reader of this file is deployed
+  # with the field, setting the key here equal to hold_clawback_grace_sec also rolls it back.
   swap_min_residency_sec: 600   # after a seat unloads, its evicted residents stay this long (swap_requested reason=min_residency)
   actuate_ack_sec: 10           # the actuator must answer "accepted" within this, else swap_failed reason=actuator_unreachable
   # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md)

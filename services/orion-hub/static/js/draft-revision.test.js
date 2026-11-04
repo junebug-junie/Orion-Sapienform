@@ -143,3 +143,9 @@ test('revisedLabel names known reasons and falls back to the raw one', () => {
   assert.equal(api.revisedLabel('something_new'), 'revised: something_new');
   assert.equal(api.revisedLabel(null), 'revised: the check changed it');
 });
+
+test('revisedLabel names the unsupported-claim repairs (finalize perception re-check)', () => {
+  assert.equal(api.revisedLabel('unsupported_claim'), 'revised: the check found a claim the notes did not support');
+  assert.equal(api.revisedLabel('unsupported_claim_repaired_twice'),
+    'revised: the check found a claim the notes did not support, and fixed it twice');
+});

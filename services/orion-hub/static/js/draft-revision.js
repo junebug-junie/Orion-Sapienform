@@ -20,6 +20,8 @@
     misaligned: 'the check found it out of line with the stance',
     uncertain: 'the check was unsure about it',
     finalize_changed: 'the final pass changed it',
+    unsupported_claim: 'the check found a claim the notes did not support',
+    unsupported_claim_repaired_twice: 'the check found a claim the notes did not support, and fixed it twice',
   };
 
   function revisedLabel(reason) {

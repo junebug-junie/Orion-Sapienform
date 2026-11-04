@@ -1210,6 +1210,86 @@ def _outcome_molecule_id(molecule: HarnessTurnOutcomeMoleculeV1) -> str:
     )
 
 
+# The line format harness_finalize_reflect.j2's PERCEPTION CLAIMS CHECK asks
+# for: "unsupported claim: <what the draft said>; notes say: <...>". It is the
+# prompt's output contract, read only to know that check fired.
+UNSUPPORTED_CLAIM_PREFIX = "unsupported claim:"
+UNSUPPORTED_CLAIM_REASON = "unsupported_claim"
+UNSUPPORTED_CLAIM_TWICE_REASON = "unsupported_claim_repaired_twice"
+
+
+def has_unsupported_claim(reflection: FinalizeReflectionV1) -> bool:
+    return any(
+        str(note).strip().lower().startswith(UNSUPPORTED_CLAIM_PREFIX)
+        for note in (reflection.alignment_notes or [])
+    )
+
+
+async def _recheck_unsupported_claim_repair(
+    *,
+    correlation_id: str,
+    repaired_text: str,
+    thought: ThoughtEventV1,
+    substrate_appraisal: SubstrateFinalizeAppraisalV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    cortex_client: CortexClientFn,
+    gpu_lease: GpuLeaseRefV1 | None,
+    fcc_model_label: str | None,
+    situation_notes: str,
+    voice_contract: AnswerContract | dict[str, Any] | None,
+) -> tuple[str, str]:
+    """One bounded re-check of a repair that 5b asked for because of an
+    unsupported perception claim, and at most one more repair.
+
+    Eval 2026-11-03 (orion/harness/evals/perception_claims_replay_eval.py):
+    the first repair always dropped the false arrival but kept an invented
+    name story in 6 of 9 runs, and nothing looked at the repair again. Returns
+    (text to send, response_repair_reason). Fails open to the first repair:
+    a re-check problem never costs the turn.
+    """
+    try:
+        recheck, _quick, _trace = await run_finalize_reflection(
+            correlation_id=correlation_id,
+            draft_text=repaired_text,
+            thought=thought,
+            substrate_appraisal=substrate_appraisal,
+            repair_overlay=repair_overlay,
+            user_message=user_message,
+            grammar_receipts=grammar_receipts,
+            cortex_client=cortex_client,
+            gpu_lease=gpu_lease,
+            fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
+        )
+        if not has_unsupported_claim(recheck):
+            logger.info("perception_claim_recheck corr=%s result=clean", correlation_id)
+            return repaired_text, UNSUPPORTED_CLAIM_REASON
+        second, _meta = await run_orion_response_repair(
+            correlation_id=correlation_id,
+            draft_text=repaired_text,
+            thought=thought,
+            substrate_appraisal=substrate_appraisal,
+            reflection=recheck,
+            voice_contract=voice_contract,
+            repair_overlay=repair_overlay,
+            user_message=user_message,
+            grammar_receipts=grammar_receipts,
+            cortex_client=cortex_client,
+            gpu_lease=gpu_lease,
+            fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
+        )
+        if not second.strip():
+            raise ValueError("second repair returned empty text")
+        logger.info("perception_claim_recheck corr=%s result=repaired_twice", correlation_id)
+        return second, UNSUPPORTED_CLAIM_TWICE_REASON
+    except Exception as exc:  # noqa: BLE001 -- fail open to the first repair
+        logger.warning("perception_claim_recheck_failed corr=%s err=%s", correlation_id, exc)
+        return repaired_text, UNSUPPORTED_CLAIM_REASON
+
+
 def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
     return (
         reflection.alignment_verdict in {"misaligned", "uncertain"}
@@ -1569,6 +1649,22 @@ async def run_harness_finalize_chain(
                 fcc_model_label=fcc_model_label,
                 situation_notes=situation_notes,
             )
+            if situation_notes and has_unsupported_claim(reflection):
+                final_text, reason = await _recheck_unsupported_claim_repair(
+                    correlation_id=correlation_id,
+                    repaired_text=final_text,
+                    thought=thought,
+                    substrate_appraisal=substrate_appraisal,
+                    repair_overlay=repair_overlay,
+                    user_message=user_message,
+                    grammar_receipts=grammar_receipts,
+                    cortex_client=cortex_client,
+                    gpu_lease=gpu_lease,
+                    fcc_model_label=fcc_model_label,
+                    situation_notes=situation_notes,
+                    voice_contract=voice_contract,
+                )
+                voice_meta = {**voice_meta, "finalize_changed": final_text.strip() != draft_text.strip()}
             voice_meta = {
                 **voice_meta,
                 "response_repair_ran": True,

@@ -928,6 +928,8 @@ def open_jobs(reading: CapacityReadingV1) -> list[tuple[Job, list[str]]]:
     S5 is left out while it is shared with Juniper (decision 3, ``s5_shared_with``): Orion may
     still claim a part for it, but is never told to (turn 00655f13 declined to, on purpose)."""
     held = {r.role for r in reading.roles + reading.confirmed + reading.claimed if r.strength != "candidate"}
+    if reading.s5_shared_with is not None:
+        held.add("S5")
     # a waiting (S5) or failing claim is on its own to-do line, not offered again
     waiting = {c.role for c in reading.claims
                if c.kind == "claim" and c.status in ("unconfirmed", "evidence does not hold")}

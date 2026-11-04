@@ -394,13 +394,11 @@ self-made claim remove one would undo that guard. Juniper's confirmation still c
 `gap:s4-to-s3` still checks only confirmed S4/S3 pairs: it is the one place the printout says what
 I see ahead steers what I do now, the exact wrong self-description the guard is for.
 
-**S5 while it is shared with Juniper.** A claim on S5 is allowed, and it holds like any other
-claim. Section 3 expects S5 claims (`pg:self_concept_history`, `config/physiology/families.yaml`),
-and decision 3 says S5 is *shared* with Juniper, not closed to Orion. But the `dig capacities` tail
-never offers S5 as an open job while `s5_shared_with` is set (`open_jobs` counts it as held), so
-Orion is never told to claim it "without asking first". On turn 00655f13 Orion declined to claim
-S5 on purpose; the prompt no longer pushes against that. With no other open job, the tail prints
-the generic `to claim a job:` line.
+**S5 while it is shared with Juniper.** Orion may write an S5 claim, but code never checks it
+into a role (#3109): only Juniper confirms S5. The `dig capacities` tail never offers S5 as an open
+job while `s5_shared_with` is set (`open_jobs` counts it as held), so Orion is never told to claim it
+"without asking first". On turn 00655f13 Orion declined to claim S5 on purpose; the prompt no longer
+pushes against that. With no other open job, the tail prints the generic `to claim a job:` line.
 
 **Why.** Juniper does not know VSM and will not review the claims. Under the old rule they would
 wait forever and the capacities would stay unwritten: on 2026-11-04 five claims sat unconfirmed

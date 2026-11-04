@@ -245,3 +245,11 @@ def test_open_jobs_skip_held_waiting_and_confirmed_jobs():
     gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_gone)
     assert "S4" not in [j for j, _ in K.open_jobs(gone)]  # its evidence fails: on the fix-or-withdraw list instead
     assert [(c.part_id, c.role) for c in K.failed_claims(gone)] == [("part:gateway", "S4")]
+
+
+def test_s5_shared_with_juniper_is_never_an_open_job():
+    from orion.body_atlas.capacities import S5SharedV1
+    reading = K.read_capacities(_body())
+    assert "S5" in {j for j, _ in K.open_jobs(reading)}
+    reading.s5_shared_with = S5SharedV1(who="Juniper", signoff_files=[], decided="2026-10-30")
+    assert "S5" not in {j for j, _ in K.open_jobs(reading)}

@@ -231,11 +231,11 @@ def test_s5_shared_with_juniper_gets_no_ready_claim_line(world, capsys, monkeypa
     _, out, _ = run(capsys, "capacities")
     ready = [ln for ln in out.splitlines() if ln.startswith("  python -P -m orion.dig capacity claim ")]
     assert ready and not any(shlex.split(ln)[7] == "S5" for ln in ready)
-    # every other job claimed and holding: no open job is left, so the generic line prints
+    # every other job claimed: no open job is left, and S5 is still never offered
     for job, part, ch in (("S1", "w0", "worker:announce"), ("S3", "gateway", "llm:reply"), ("S3*", "watcher", "watch:poke"),
                           ("S4", "r0", "lease:request"), ("algedonic", "r1", "lease:request"),
                           ("metabolism", "r2", "lease:request")):
         code, _, err = run(capsys, "capacity", "claim", part, job, "because", f"{part} is seen on {ch}, often")
         assert code == 0, (job, err)
     _, out, _ = run(capsys, "capacities")
-    assert "Unclaimed jobs:" not in out and "to claim a job: " in out
+    assert "Unclaimed jobs:" not in out and " S5 because" not in out

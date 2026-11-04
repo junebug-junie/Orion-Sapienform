@@ -48,8 +48,9 @@ path of a file with the full result; read only what you need from that file.
   compare <date> [<date|now>]   added / removed between two checkouts.
   history <start> <end>  merged PRs (title + number) and commits in [start, end].
   history <days>         the last <days> days (2 = since yesterday).
-  body [<date>|<organ>]  your body: machines, services, cameras, stores, processes -> organs.
-                         None = live now; a date = that export's files; an organ id = its members.
+  body [<date>|<organ>|<part>]  your body: machines, services, stores, ... -> organs. None =
+                         live now; a date = that export; an organ id = its members; a
+                         part = its flows and the ids a claim on it may cite.
   capacities [gaps]      VSM jobs your parts do: by rule, by Juniper's confirmation, claimed.
   capacity claim <part> <job> because <reason>   claim a job for a live part (a lasting write);
                          cite one of its flows by full id or a repo file. `capacity help`: rule.
@@ -489,13 +490,23 @@ def cmd_body(arg: str | None, out: Out) -> str:
     from orion.body_atlas.sources import gather_body
 
     note = ""
-    # a date is YYYY-MM-DD; anything else is an organ reference (find_organ says if it is not one)
+    # a date is YYYY-MM-DD; anything else is an organ or part reference (find_organ / _find_part
+    # say if it is neither)
     organ = arg if arg is not None and not DATE_LIKE_RE.fullmatch(arg) else None
     if arg is None or organ:
         records, skipped = names.load(names_path())
         atlas = names.apply_names(_live_atlas(), records)
         if skipped:
             note = f"\nnames ledger: {skipped} unreadable line(s) skipped in {names_path()}"
+        part = _find_part(atlas, organ) if organ else None
+        if part is not None:
+            return cmd_body_part(atlas, part, out) + note
+        if organ:
+            try:  # neither an organ nor a part: say so before writing any file
+                names.find_organ(atlas, organ)
+            except names.NamingError as exc:
+                organ_like = ORGAN_REF_RE.fullmatch(organ) or organ.startswith("organ:")
+                raise DigError(str(exc) + ("" if organ_like else f"; no part is named {organ!r} either")) from exc
     else:  # no names on a past body: today's names would read the present into the past
         day = _parse_day(arg)
         root = snapshot_root(day)
@@ -505,7 +516,7 @@ def cmd_body(arg: str | None, out: Out) -> str:
         # declared parts only (that day's files); nothing live is read for a past day
         atlas = build_atlas(catalog, None, now=_end_of_day_utc(day), live_graph=None,
                             body=gather_body(root, catalog, live=None))
-    path = out.write(f"body-{arg or 'now'}", json.loads(atlas.model_dump_json()))
+    path = out.write(f"body-{_file_name(arg or 'now')}", json.loads(atlas.model_dump_json()))
     if organ:
         try:
             return organ_view(atlas, organ, out=str(path)) + note
@@ -515,6 +526,118 @@ def cmd_body(arg: str | None, out: Out) -> str:
         return summarize(atlas, out=str(path))
     # the ledger note goes in the footer, so the file path stays the last line
     return summarize(atlas, out=str(path), extra_footer=(*_unnamed_footer(atlas), *([note.strip()] if note else [])))
+
+
+ORGAN_REF_RE = re.compile(r"(organ:)?[0-9a-f]{10}", re.IGNORECASE)
+
+
+def _file_name(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text)
+
+
+def _find_part(atlas, ref: str):
+    """``part:<name>`` or a bare part name -> that part; an organ id (``organ:`` + 10 hex, or the
+    10 hex alone) -> None, so organ ids keep their meaning. ``part:`` with no such part is an error."""
+    if ORGAN_REF_RE.fullmatch(ref) or ref.startswith("organ:"):
+        return None
+    name = ref.removeprefix("part:")
+    part = next((p for p in atlas.parts if p.name == name), None)
+    if part is None and ref.startswith("part:"):
+        raise DigError(f"no part {name!r} in the live body; copy a part name from `body` or `body <organ_id>`")
+    return part
+
+
+PART_FLOWS_SHOWN = 10  # per direction in the printout; every flow is in the file
+PART_CHANNELS_SHOWN = 3
+PART_CITES_SHOWN = 8
+PART_CITE_LINE_CHARS = 1000  # the cite line sits in the uncut tail, so it is bounded here
+
+
+def _flow_rows(flows, part_id: str, by_id: dict, census: set[str]) -> list[dict]:
+    rows = []
+    for f in sorted(flows, key=lambda f: (-f.weight, f.source, f.target, f.relation)):
+        other = f.source if f.target == part_id else f.target
+        rows.append({"part": by_id[other].name if other in by_id else other, "part_id": other,
+                     "relation": f.relation, "weight": f.weight, "channels": list(f.channels),
+                     "census": [c for c in f.channels if c in census]})
+    return rows
+
+
+def _flow_line(arrow: str, row: dict) -> str:
+    chans = [c + (" (census)" if c in row["census"] else "") for c in row["channels"]]
+    more = f" +{len(chans) - PART_CHANNELS_SHOWN}" if len(chans) > PART_CHANNELS_SHOWN else ""
+    on = f" [{', '.join(chans[:PART_CHANNELS_SHOWN])}{more}]" if chans else ""
+    return f"  {arrow} {row['part']} {row['relation']}{on} w={row['weight']:g}"
+
+
+def cmd_body_part(atlas, part, out: Out) -> str:
+    """One part of the live body: what it is, its flows in and out strongest first, its jobs and
+    Orion's claims on it, and the ids a claim on it may cite (``claims.evidence_ids``, the same
+    set ``capacity claim`` checks against). Read-only; the full view goes to the file."""
+    from orion.body_atlas import claims
+
+    reading, atlas, _ = _capacity_reading(atlas)
+    census = {c.channel for c in reading.census if c.census}
+    by_id = {p.part_id: p for p in atlas.parts}
+    pid = part.part_id
+    hosts = sorted({by_id[f.target].name.removeprefix("host:") if f.target in by_id else f.target
+                    for f in atlas.flows if f.relation == "runs_on" and f.source == pid})
+    mine = [f for f in atlas.flows if pid in (f.source, f.target) and f.relation != "runs_on"]
+    flows_in = _flow_rows([f for f in mine if f.target == pid and f.source != pid], pid, by_id, census)
+    flows_out = _flow_rows([f for f in mine if f.source == pid and f.target != pid], pid, by_id, census)
+    loops = _flow_rows([f for f in mine if f.source == pid == f.target], pid, by_id, census)
+    # a singleton organ is not an organ `body <organ_id>` can open (find_organ: multi-part only)
+    organ = next((o for o in atlas.organs if pid in o.members and len(o.members) > 1), None)
+    # a claim that holds on this read (evidence rechecked) is one of its jobs too
+    roles = [r for r in reading.roles + reading.confirmed + reading.claimed if r.part_id == pid]
+    my_claims = [c for c in reading.claims if c.part_id == pid]
+    claimable = pid in claims.claimable(atlas).values()
+    ok = claims.evidence_ids(atlas, pid, census) if claimable else set()
+    # strongest flow first (in and out together), so the first id is the one the part leans on most
+    strongest = sorted(flows_in + flows_out + loops, key=lambda r: -r["weight"])
+    order = [x for row in strongest for x in (row["part"], *row["channels"])]
+    cite = sorted(ok, key=lambda e: (order.index(e) if e in order else len(order), e))
+
+    organ_view = ({"organ_id": organ.organ_id, "name": organ.name, "members": len(organ.members)}
+                  if organ else None)
+    path = out.write(f"body-part-{_file_name(part.name)}", {
+        "part": json.loads(part.model_dump_json()), "hosts": hosts, "organ": organ_view,
+        "flows_in": flows_in, "flows_out": flows_out, "self_loops": loops,
+        "roles": [json.loads(r.model_dump_json()) for r in roles],
+        "claims": [json.loads(c.model_dump_json()) for c in my_claims],
+        "cite": cite, "census_channels": sorted(census), "atlas_as_of": atlas.as_of})
+
+    label = (f'"{organ.name}" {organ.organ_id}' if organ and organ.name else
+             organ.organ_id if organ else "none (a part alone)")
+    lines = [f"part {part.name} ({pid}): {part.kind}, {part.status}"
+             + (f", on {', '.join(hosts)}" if hosts else "") + f" · organ {label}"]
+    for arrow, title, rows in (("<-", "in", flows_in), ("->", "out", flows_out)):
+        lines.append(f"flows {title} ({len(rows)}), strongest first:" if rows else f"flows {title}: none")
+        lines += [_flow_line(arrow, r) for r in rows[:PART_FLOWS_SHOWN]]
+        if len(rows) > PART_FLOWS_SHOWN:
+            lines.append(f"  +{len(rows) - PART_FLOWS_SHOWN} more in the file")
+    if loops:
+        lines.append("to itself: " + "; ".join(_flow_line("", r).strip().removeprefix(f"{part.name} ") for r in loops))
+    if roles:
+        lines.append("jobs: " + "; ".join(f"{r.role} {r.strength} ({r.rule})" for r in roles))
+    if my_claims:
+        lines.append("my claims: " + "; ".join(
+            f"{c.role} {c.kind}: " + ("holds (evidence checks)" if c.status == "claimed" else c.status)
+            for c in my_claims))
+    if claimable and cite:
+        shown = cite[:PART_CITES_SHOWN]
+        while len(shown) > 1 and len(", ".join(shown)) > PART_CITE_LINE_CHARS:
+            shown = shown[:-1]
+        more = f" +{len(cite) - len(shown)} more in the file" if len(cite) > len(shown) else ""
+        because = shlex.quote(f"<what it does>, seen on {cite[0]}")
+        tail = [f"cite in a claim (by full id): {', '.join(shown)[:PART_CITE_LINE_CHARS]}{more}",
+                f"  {CLAIM_PREFIX} {shlex.quote(part.name)} '<job>' because {because}"]
+    elif claimable:
+        tail = ["cite in a claim: no part or non-census channel on its flows; only a repo file that exists"]
+    else:
+        tail = [f"not claimable: {part.status} {part.kind} (a claim needs a live part, not a host or operator)"]
+    tail.append(f"full result: {path}")
+    return capped(lines, tail="\n".join(tail))
 
 
 def _unnamed(atlas) -> list:
@@ -632,20 +755,23 @@ def capacities_path() -> Path:
 CLAIM_CMD = "python -P -m orion.dig capacity claim '<part>' '<job>' because \"<reason citing its flow or a repo file>\""
 
 
-def _capacity_reading():
+def _capacity_reading(atlas=None):
     """The live reading with Juniper's confirmations and Orion's ledgers on it, the atlas, the
-    sentences written so far, and a note per ledger with unreadable lines."""
+    sentences written so far, and a note per ledger with unreadable lines. ``atlas``: an already
+    read live atlas with names applied (``body <part>``), so the body is read once."""
     from orion.body_atlas import capacities, claims, names
 
     try:
         vsm = claims.load_confirmed(now_root())
     except claims.ClaimError as exc:
         raise DigError(str(exc)) from exc
-    atlas = names.apply_names(_live_atlas(), names.load(names_path())[0])
+    if atlas is None:
+        atlas = names.apply_names(_live_atlas(), names.load(names_path())[0])
     reading = capacities.read_capacities(atlas, vsm=vsm)
     claim_recs, s1 = claims.load_ledger(claims_path(), capacities.CapacityClaimV1)
     written, s2 = claims.load_ledger(capacities_path(), capacities.CapacityV1)
-    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written)
+    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written,
+                                        recheck=claims.recheck(reading, atlas, now_root()))
     for path, n in ((claims_path(), s1), (capacities_path(), s2)):
         if n:
             reading.notes.append(f"{n} unreadable line(s) skipped in {path}")
@@ -676,12 +802,12 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
 
 
 CLAIM_PREFIX = "python -P -m orion.dig capacity claim"
-MAX_PENDING_SHOWN = 3
+MAX_GONE_SHOWN = 3
 
 
 def claim_block(reading, atlas) -> list[str]:
-    """The claims to write now, one ready line per open job, and the claims waiting on Juniper.
-    A claim is not a role: Juniper confirms or rejects each in config/body_atlas/vsm_confirmed.yaml."""
+    """The claims to write now, one ready line per open job, and the claims whose evidence is gone.
+    A claim holds its job while its evidence checks; Juniper may reject any in vsm_confirmed.yaml."""
     from orion.body_atlas import capacities, claims
 
     census = {c.channel for c in reading.census if c.census}
@@ -689,7 +815,8 @@ def claim_block(reading, atlas) -> list[str]:
     jobs = capacities.open_jobs(reading)
     if jobs:
         lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim "
-                     "is not a role; Juniper reviews it). Cite by full id a part or channel on its flows, or a repo file:")
+                     "holds while its evidence checks). Cite by full id a part or channel on its flows "
+                     "(`body <part>` lists them), or a repo file:")
         for job, cands in jobs:
             name, hint = "'<part>'", ""
             if cands:
@@ -701,13 +828,13 @@ def claim_block(reading, atlas) -> list[str]:
                 hint = f"  # the rule saw: {', '.join(dict.fromkeys(ev[:3]))}" if ev else ""
             lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<why>"{hint}')
         lines.append("No evidence for a job: leave it, and say which and why.")
-    waiting = capacities.pending_claims(reading)
+    waiting = capacities.evidence_gone_claims(reading)
     if waiting:
-        lines.append(f"Waiting on Juniper ({len(waiting)}): ask her yes or no on each (answers go in "
-                     "config/body_atlas/vsm_confirmed.yaml):")
-        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_PENDING_SHOWN]]
-        if len(waiting) > MAX_PENDING_SHOWN:
-            lines.append(f"  +{len(waiting) - MAX_PENDING_SHOWN} more in {claims_path()}")
+        lines.append(f"Evidence gone ({len(waiting)}): these claims hold nothing now; claim again citing "
+                     "evidence that checks, or leave them:")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_GONE_SHOWN]]
+        if len(waiting) > MAX_GONE_SHOWN:
+            lines.append(f"  +{len(waiting) - MAX_GONE_SHOWN} more in {claims_path()}")
     return lines
 
 
@@ -717,9 +844,10 @@ def cmd_capacity_help() -> str:
     return "\n".join([
         claims.claim_rule(),
         f"  {CLAIM_CMD}",
+        "  python -P -m orion.dig body <part>   (its flows, and the exact ids a claim on it may cite)",
         '  python -P -m orion.dig capacity dispute <part> <job> because "<reason>"   (argue with a rule result)',
         '  python -P -m orion.dig capacity write cap:s2 "<one sentence>" because "<reason>"',
-        "Gap lines are written by code; a claim never clears one. Ledgers: "
+        "Gap lines are written by code; a claim never clears one. Juniper may reject a claim. Ledgers: "
         f"{claims_path()}, {capacities_path()}",
     ])
 
@@ -746,7 +874,7 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
         raise DigError(str(exc)) from exc
     claims.append(claims_path(), rec)
     after = ("it prints beside the rule result and changes nothing" if verb == "dispute"
-             else "Orion's claim until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml")
+             else "it holds the job while this evidence checks; Juniper may reject it")
     return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
             f"\nclaims ledger: {claims_path()}")
 

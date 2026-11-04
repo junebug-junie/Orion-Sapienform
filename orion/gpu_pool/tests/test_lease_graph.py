@@ -122,7 +122,7 @@ def test_urgent_preempt_requeues_a_retryable_hold_in_place_without_spending_an_a
     assert s["status"] == "granted" and s["generation"] == 2 and s["attempt"] == 1
 
 
-@pytest.mark.parametrize("recall_reason", ["max_hold", "owner_waiting", "card_unlent", "draining"])
+@pytest.mark.parametrize("recall_reason", ["max_hold", "owner_waiting", "card_unlent", "draining", "draining_background"])
 def test_a_recalled_hold_aborted_past_its_grace_requeues_in_place_every_time(recall_reason):
     """Live 2026-09-26..28: each abort of a recalled durable-run hold spent a pool attempt, so the
     third recall (every run longer than gpu2's max_hold_sec) dead-lettered the hold and the run saw

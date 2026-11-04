@@ -706,6 +706,10 @@ class AdmissionRuntime:
         deadline = state["admission"].get("deadline_at")
         if deadline:
             timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
+        # The reason the harness cancel carries (orion/harness/stop_reason.py). A lost/recalled hold,
+        # an operator control or a worker shutdown stops the turn from outside; the attempt's own time
+        # budget running out is the turn being too slow, so it gets its own reason and stays a failure.
+        stop_reason = "durable_attempt_stopped"
         try:
             # Timeout starts only after the hold is confirmed. Each heartbeat re-reads the operator
             # control row and asks the pool whether the hold is still ours at this generation.
@@ -731,6 +735,7 @@ class AdmissionRuntime:
                             if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
                             else steady
         except TimeoutError as exc:
+            stop_reason = "durable_attempt_timeout"
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc
             raise
@@ -739,7 +744,7 @@ class AdmissionRuntime:
                 # Cancel Hub before awaiting the local task's cleanup -- self-sense clears
                 # `_inflight_turn_correlation_ids` in its finally, so this must run while those ids
                 # are still stamped on `state`.
-                await self._cancel_harness(state, "durable_attempt_stopped")
+                await self._cancel_harness(state, stop_reason)
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
         # Outside the turn's time budget: a slow preempt check must not replace the work's own error.

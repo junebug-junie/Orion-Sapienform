@@ -296,3 +296,35 @@ def test_relative_grade_reports_the_within_caller_sorting_score():
             for c in ("self", "chat") for p, h in [(0.7, True), (0.3, False), (0.6, True), (0.4, True)] * 15]
     g = grade_faculty("turn.self.longer_reply_than_usual", rows)
     assert g["sort_auc"] == pytest.approx(1.0) and g["sort_pairs"] == 2 * 45 * 15 and g["sort_p"] < 1e-6
+
+
+@pytest.mark.parametrize("reason", ["user_stop", "client_disconnect", "ws_error", "durable_attempt_stopped",
+                                    "worker_recovery"])
+def test_a_turn_stopped_from_outside_is_interrupted_not_failed(reason):
+    # Live 2026-11-04: ~127 of 262 failed turns in 7 days were GPU recalls or Juniper's stop, all counted
+    # as Orion failing to run. The record now says who stopped the turn.
+    art = dict(_art(text="", code=-9), stop_reason=f"cancel:{reason}")
+    rows = settle(_bet(), art, NOW)
+    assert {r["status"] for r in rows} == {"void"}
+    assert {r["void_reason"] for r in rows} == {"interrupted"}
+    assert all(r["hit"] is None and r["observed"] is None for r in rows)
+
+
+@pytest.mark.parametrize("stop_reason", ["fcc_timeout", "fcc_stream_stalled", "fcc_context_ceiling_exceeded",
+                                         "fcc_nonzero_exit", "cancel:some_new_reason", "cancel:",
+                                         "cancel:durable_attempt_timeout", None, 7])
+def test_the_motors_own_kills_and_unknown_reasons_stay_failed_to_execute(stop_reason):
+    # One direction only: a motor kill is a real failure, and an unknown or absent reason never loosens.
+    art = dict(_art(text="", code=-9), stop_reason=stop_reason)
+    assert {r["void_reason"] for r in settle(_bet(), art, NOW)} == {"failed_to_execute"}
+
+
+def test_an_old_record_without_stop_reason_stays_failed_to_execute():
+    assert "stop_reason" not in _art(code=-9)
+    assert {r["void_reason"] for r in settle(_bet(), _art(code=-9), NOW)} == {"failed_to_execute"}
+
+
+def test_a_cancel_reason_on_a_turn_that_finished_does_not_void_it():
+    # A cancel that lost the race to a finished reply: the turn ran, so it is graded.
+    art = dict(_art(), stop_reason="cancel:user_stop")
+    assert not any(r["void_reason"] in ("interrupted", "failed_to_execute") for r in settle(_bet(), art, NOW))

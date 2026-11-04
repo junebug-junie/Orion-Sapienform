@@ -357,6 +357,12 @@ class HarnessRunV1(BaseModel):
     finalize_degraded_reason: str | None = None
     step_count: int
     exit_code: int | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): "cancel:<reason>" when a
+    # harness cancel killed the process (user_stop, client_disconnect,
+    # durable_attempt_stopped, ...), else the motor's error code (fcc_timeout,
+    # fcc_stream_stalled, fcc_nonzero_exit, ...), else None. None also on records
+    # from governors that predate this field: absent means unknown, never "outside".
+    stop_reason: str | None = None
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]
     grounding_status: str
     grammar_event_ids: list[str] = Field(default_factory=list)

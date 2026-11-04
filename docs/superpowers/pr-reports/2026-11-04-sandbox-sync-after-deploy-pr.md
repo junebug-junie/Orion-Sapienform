@@ -86,7 +86,32 @@ No eval harness: this is deploy plumbing, not cognition. The live check below is
 
 ## Docker/build/smoke checks
 
-LIVE_EVIDENCE_PLACEHOLDER
+Live check of the sync step only (no rebuild run). The Hub image does not have the new CLI yet, so this branch's `orion/fcc/sandbox_sync.py` was piped into the running Hub container. That runs the same code the helper runs, against the real sandbox.
+
+```text
+# before
+$ git -C /mnt/orion-fcc/repo status --porcelain
+(empty: clean)
+$ git -C /mnt/orion-fcc/repo log -1 --oneline
+4e2586c82 Merge pull request #3107 from junebug-junie/feat/claims-hold-when-evidence-checks
+primary checkout / origin/main: 8e139dc5d
+
+# first try, 2 min wait: two agent turns held the sandbox lock (governor pid 372395, claude -p running 40+ min)
+$ docker exec -i orion-athena-hub python3 - --wait-s 120 < orion/fcc/sandbox_sync.py
+result=skipped_turn_in_flight_external workspace=/mnt/orion-fcc/repo     (rc=1, tree untouched)
+
+# the long-wait path (what the detached retry does), started 08:14:40Z
+$ docker exec -i orion-athena-hub python3 - --wait-s 5400 --poll-s 15 < orion/fcc/sandbox_sync.py
+INFO fcc_sandbox_sync_ok workspace=/mnt/orion-fcc/repo rescued=False method=none
+result=synced workspace=/mnt/orion-fcc/repo head=8e139dc5d134 commits_advanced=32
+rc=0, finished 08:55:59Z
+
+# after
+$ git -C /mnt/orion-fcc/repo log -1 --oneline
+8e139dc5d Merge pull request #3114 from junebug-junie/fix/pr-field-note-turn-budget
+```
+
+The first try is the reason for the detached retry. On a real morning, turns held the sandbox for 41 minutes, much longer than a 2-minute wait. The full helper (`docker exec ... python3 -m orion.fcc.sandbox_sync`) is UNVERIFIED live until this PR's deploy rebuilds Hub. The first post-pull run after merge writes the first real `SANDBOX_SYNC` line.
 
 ## Review findings fixed
 
@@ -126,6 +151,6 @@ No restart required. The deploy of this PR rebuilds orion-hub (sandbox_sync.py c
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3117
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

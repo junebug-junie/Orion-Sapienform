@@ -109,6 +109,9 @@ independent signal; it exists for the design's 14-day guard.
 
 ## Live smoke (isolated, one real model call)
 
+Run before the review fixes. The fixes did not touch the reply thought's frame reads or its model call; the
+system prompt's first line changed after it (it no longer says nothing reaches Orion).
+
 The real `ReplicaRuntime` with real reads (Hub's runs API, Postgres read-only, live Redis GET/HGETALL only) and
 one call on route `prime`. Every write went to fakes: Redis SET/HSET/EXPIRE to a dict, bus publishes to a list,
 the Hub refusal RPC faked, the bid faked funded. Nothing reached live Redis, Postgres, the bus or the market.
@@ -166,10 +169,10 @@ replica has not answered Prime yet`.
   `scripts/curiosity_replica_plan.py` (docstring), `README.md`.
 - `config/physiology/contract.yaml`: the replica and plan-consumer rows say what they now do.
 - `scripts/analysis/curiosity_replica_answers_readout.py` (new).
-- Tests: `orion/curiosity/tests/test_replica_answers.py` (new, 9), `test_replica_plan.py` (prompt test updated),
-  `services/orion-mind/tests/test_replica_answers_loop.py` (new, 15), `test_prime_organ_replies.py` (new, 6),
+- Tests: `orion/curiosity/tests/test_replica_answers.py` (new, 10), `test_replica_plan.py` (prompt test updated),
+  `services/orion-mind/tests/test_replica_answers_loop.py` (new, 21), `test_prime_organ_replies.py` (new, 7),
   `prime_replay_scenarios.py` + golden + `test_prime_replay.py`, `services/orion-durable-runs/tests/test_prime_charge_market.py`
-  (+4), `services/orion-hub/tests/test_curiosity_focus_refusal_listener.py` (new, 4),
+  (+4), `services/orion-hub/tests/test_curiosity_focus_refusal_listener.py` (new, 5),
   `scripts/analysis/tests/test_curiosity_replica_answers_readout.py` (new, 2).
 - Workflows: `orion-prime-tests.yml` (answers tests, readout test), `orion-reading-tests.yml` (the Hub refusal
   listener test, and `test_curiosity_replica_plan.py`, which no workflow ran before -- a straightforward follow-up
@@ -185,7 +188,7 @@ replica has not answered Prime yet`.
 - Removed / renamed: none.
 - Behavior changed: stances on Prime's acts take effect; `decide` takes `prime_refusal`; the market records a
   refused signal's effects as `unchanged`; Prime's settle and frame read the replies view.
-- Compatibility: every old reader ignores the new hash field and the new Redis key. No `extra="forbid"` payload
+- Compatibility: every old reader ignores the new hash field and the new Redis key (which expires after 48 h). No `extra="forbid"` payload
   gained a field. Hub old + orion-mind new: a focus refusal times out (10 s) and is recorded as not delivered.
   durable-runs old: a signal refusal is written but not applied (no Prime regulate act exists yet, so no effect
   today). Rollback hazard: the replica's persisted state gained three fields; an older replica would refuse it
@@ -206,8 +209,9 @@ replica has not answered Prime yet`.
 ```text
 orion-static-gates.yml, every step locally          41 of 41 OK (definition drift after the re-lock commit)
 orion-prime-tests.yml, every step locally           10 of 10 OK
-  orion/prime + orion/mindloop + replica pure + readout + refs + orion/physiology   381 passed
-  services/orion-mind/tests                         247 passed
+  orion/prime + orion/mindloop + replica pure + readout + orion/physiology   372 passed
+  services/orion-mind/tests                         254 passed (after the review fixes)
+services/orion-hub refusal listener + replica plan  20 passed
 orion-reading-tests.yml pytest steps                all OK (its "install local PostgreSQL" setup step is CI-only)
 services/orion-durable-runs/tests                   749 passed, 125 skipped (plain run)
   (workflow run: 6 steps fail locally only for "no Postgres at 127.0.0.1:5432", the CI service container;
@@ -220,7 +224,8 @@ check_body_economy_contract.py                      OK
 ## Evals run
 
 ```text
-python orion/curiosity/replica/evals/run_replica_frame_eval.py      all PASS
+python orion/curiosity/replica/evals/run_replica_frame_eval.py      9/9 PASS (frame ~5,318 tokens, cap 6,000;
+                                                                    was ~5,082: the stance rules and the answers section)
 python orion/prime/evals/run_prime_frame_eval.py                    all PASS
 python orion/prime/evals/run_prime_wake_replay.py                   all PASS
 services/orion-mind/tests/test_prime_replay.py                      PASS (golden: 2 scenarios added, 16 unchanged)
@@ -235,7 +240,39 @@ Isolated live smoke: see "Live smoke" above.
 
 ## Review findings fixed
 
-(filled after the review pass)
+A code-review subagent read the whole diff against the design, ran the focused tests and wrote scratch tests.
+It confirmed: held-back answers never reach Prime or the market; Juniper's focus cannot be refused (four
+layers); Hub takes the focus only after the plan answer; the derived act ids match Prime's; the market records
+both arms on the same rule; the golden only gained the two scenarios; env parity holds. Findings, all fixed:
+
+- Finding (must-fix): a reply thought whose bid was not funded re-bid every 15 s for as long as Prime's act was
+  live (reproduced: 10 ticks, 10 bids, 0 thoughts).
+  - Fix: a not-funded or gate-refused reply waits `REPLY_RETRY_SEC` (5 min) before it bids again.
+  - Evidence: `test_an_unfunded_reply_backs_off_instead_of_bidding_every_tick`, `test_a_reply_refused_by_the_act_gate_backs_off_too`.
+- Finding: a focus refusal whose reply was lost could still be applied by Hub, and then Prime would never hear it.
+  - Fix: the request carries `not_after`; Hub writes nothing after it; on a lost or malformed reply the replica
+    reads the focus row (read-only) and counts the refusal delivered only if the row names its act. The RPC uses
+    `require_listener=True`, so a Hub without the listener fails at once instead of eating plan time.
+  - Evidence: `test_a_lost_reply_is_settled_from_the_focus_row_and_the_request_carries_not_after`,
+    `test_a_request_past_its_not_after_writes_nothing`.
+- Finding: one plan with both a focus stance and a signal stance always dropped the second (the 30-min refractory).
+  - Fix: the refractory skips answers made by the same thought; both still count against the daily cap.
+  - Evidence: `test_one_plan_answers_both_the_focus_and_the_signal`, `test_two_answers_of_one_thought_skip_the_refractory_but_count_against_the_cap`.
+- Finding: a reply thought could make a plan request run out of time with no trace of why.
+  - Fix: a request that arrives during a reply thought carries "a reply thought to Prime was running when it
+    arrived" as its fallback reason if it expires.
+  - Evidence: `test_a_plan_request_that_arrives_during_a_reply_names_the_reply_if_it_runs_out_of_time`.
+- Finding: the deploy order and rollback were not documented; an old market with a new replica would tell Prime
+  "the charge no longer applies" while still charging.
+  - Fix: order and rollback in `services/orion-mind/README.md` and below; the replies view now expires after 48 h.
+- Finding: the plan path measured the refusal RPC's time budget before the gate and act-open awaits.
+  - Fix: `_deliver` takes the plan's `deadline_at`; the budget is measured right before the call.
+- Nits fixed: `answer_blocker` returns a code with its words (no control flow on English strings); the prompts no
+  longer say nothing reaches Orion (reasons reach Prime); the market's want-field cap counts the refusal field;
+  Prime's ORGAN REPLIES says when the view is older than 15 minutes; the "no answer to an answer" docstring says
+  real data does not reach that rule yet (the caps bound a loop today).
+- Not changed: the signal refusal's expiry check is `TTL` then `EXPIRE`, not atomic. The reviewer found no
+  realistic clobber (an active signal's key has at least an hour left, and Prime writes its signal in one MULTI).
 
 ## Restart required
 
@@ -258,16 +295,16 @@ No migration: the focus refusal columns were applied with patch 2 (checked live:
     useful to the market than its plans are.
   - Mitigation: at most 3 a day. The three-arm test scores plans from the spend log, not from the family mean.
     Watch the family weight in the 14-day review; if it moves, split the answers' grade out.
-- Severity: medium
-  - Concern: a focus refusal whose reply is lost (Hub applied it, orion-mind timed out) is recorded "not
-    delivered", so Prime is not told and sees only "left the slot".
-  - Mitigation: the delivery note says "answer unknown"; Prime's existing two-read "gone" rule still closes the
-    question 0, in the treated arm.
+- Severity: low
+  - Concern: a focus refusal whose reply is lost AND whose focus row cannot be read is recorded "not delivered
+    (answer unknown)"; if Hub did apply it, Prime sees only "left the slot".
+  - Mitigation: Hub writes nothing past `not_after`, and the row read-back settles every case where Postgres is
+    readable. Prime's two-read "gone" rule still closes the question 0, in the treated arm.
 - Severity: low
   - Concern: a reply thought (seat wait at most 20 s + 40 s generation) can delay a plan request that arrives
     during it.
-  - Mitigation: about 2 replies a day; the plan path gives up with the real reason (`unfunded`) if too little
-    time is left.
+  - Mitigation: about 2 replies a day; such a request, if it runs out of time, names the reply thought as its
+    fallback reason, so the 14-day fallback review sees it.
 
 UNVERIFIED until deploy: a live answer act on the ledger; a live refused focus; Prime's ORGAN REPLIES section in
 a live frame; the regulate side at all (Prime has never sent a regulate act on curiosity).

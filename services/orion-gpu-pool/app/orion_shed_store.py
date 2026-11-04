@@ -2,7 +2,8 @@
 
 One row per ``orion_self_shed`` request (active, settled or refused). Read by the pool at boot (so a
 restart cannot reset the daily cap or orphan an active shed), by execution-dispatch to settle the
-dispatch, and by the feedback runtime for the manipulation check.
+dispatch, and by the world-action settle scorer (orion-sql-writer, orion/autonomy/world_settlement_store.py;
+the feedback runtime until 2026-11-04) for the manipulation check.
 
 The table is created lazily (``CREATE TABLE IF NOT EXISTS`` under a short, transaction-local
 ``lock_timeout``) when the pool starts and again on a set after a ledger failure -- never inside a

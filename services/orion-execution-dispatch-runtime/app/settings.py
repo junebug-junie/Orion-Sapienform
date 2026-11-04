@@ -233,6 +233,10 @@ class Settings(BaseSettings):
     # not a world action, not a visual baseline) -- every other tick is
     # re-proposed seconds later, so withholding it would only delay it.
     # Kill: set 0.0 and restart.
+    #
+    # 2026-11-04: the per-tick draw above was REMOVED with the feedback rung (the only consumer of
+    # its control observations). This value now sets only the proven-effect act holdback
+    # (worker._proven_act_holdback -> substrate_act_episodes).
     orion_dispatch_holdback_fraction: float = Field(
         0.2, alias="ORION_DISPATCH_HOLDBACK_FRACTION", ge=0.0, le=0.5
     )

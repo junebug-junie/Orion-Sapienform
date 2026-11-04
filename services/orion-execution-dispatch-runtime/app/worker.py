@@ -36,7 +36,6 @@ from orion.autonomy.allocator import (
 )
 from orion.autonomy.budget import budget_state, day_elapsed_fraction
 from orion.autonomy.contrast import (
-    HOLDBACK_BLOCK_REASON,
     TreatedCellKey,
     pooled_treated_mean,
 )
@@ -286,21 +285,6 @@ ACTION_OUTCOME_SUMMARY_MAX_CHARS = 280
 # Established self-subject convention across orion/autonomy/* (reducer.py,
 # substrate_metabolism.py, signal_tension.py all default/use this).
 ACTION_OUTCOME_SUBJECT = "orion"
-
-
-def tick_can_yield_control(to_send) -> bool:
-    """Can withholding this tick produce a control observation? (randomized per-tick holdback)
-
-    Only a candidate that declares a field signal (``expected_effect``) gets a control cell when
-    held back (orion/feedback/outcome_resolution.py). A world action already drew its own arm per
-    template (``_world_action_holdback``), and a visual-baseline or act-backed render carries no field
-    signal; for those a held-back tick is re-proposed on the next proposal tick, seconds later, so
-    withholding it would be a delay wearing the word "control". Rung 3 (2026-10-21) turned the
-    fraction on; this keeps the draw to the ticks it can actually learn from."""
-    return any(
-        c.expected_effect is not None and not c.world_action and c.visual_baseline is None
-        for c in to_send
-    )
 
 
 class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDispatchMixin):
@@ -1883,59 +1867,10 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
         if not to_send:
             return self._abandon_tick_without_sending(frame, baseline_fields)
 
-        # RANDOMIZED HOLDBACK. Rolled once per TICK, over candidates that have
-        # already passed every gate -- so the withheld set is a random sample
-        # of what would genuinely have run, which is what makes the resulting
-        # arm causal rather than merely matched.
-        #
-        # Per tick, not per candidate: the field delta is frame-wide, so
-        # withholding one candidate while its siblings run yields a control
-        # observation contaminated by those siblings. That is precisely the
-        # defect that made the capacity-blocked arm unusable, and repeating it
-        # here would produce a worse-than-useless arm wearing the word
-        # "randomized".
-        #
-        # A probe tick is never held back. The holdback exists to buy a causal
-        # control arm out of ticks that would otherwise have acted; withholding
-        # the single action being used to test whether the motor still works
-        # would spend a probe to learn nothing and re-arm strictly slower. The
-        # arm loses nothing real either -- probe ticks are a deliberately
-        # non-random subset of ticks (they only occur while tripped), so they
-        # were never eligible to be a uniform sample of ordinary acting ticks.
-        holdback_fraction = (
-            0.0
-            if self._tripwire_probe_in_flight
-            else self._settings.orion_dispatch_holdback_fraction
-        )
-        if (holdback_fraction > 0.0 and tick_can_yield_control(to_send)
-                and random.random() < holdback_fraction):
-            withheld_ids = {c.dispatch_id for c in to_send}
-            withheld = [
-                c.model_copy(
-                    update={
-                        "dispatch_status": "blocked",
-                        "blocked_by": [HOLDBACK_BLOCK_REASON],
-                        "reasons": list(c.reasons) + [HOLDBACK_BLOCK_REASON],
-                    }
-                )
-                for c in to_send
-            ]
-            logger.info(
-                "execution_dispatch_randomized_holdback withheld=%d fraction=%.3f "
-                "-- this tick deliberately does nothing, to buy a causal control arm",
-                len(withheld),
-                holdback_fraction,
-            )
-            return frame.model_copy(
-                update={
-                    **baseline_fields,
-                    "candidates": [
-                        c for c in frame.candidates if c.dispatch_id not in withheld_ids
-                    ],
-                    "blocked_candidates": list(frame.blocked_candidates) + withheld,
-                    "blocked_count": len(frame.blocked_candidates) + len(withheld),
-                }
-            )
+        # No per-TICK randomized holdback any more: its control observations were folded only by the
+        # feedback runtime, which retired 2026-11-04, so withholding a tick would delay a real act to
+        # feed a control arm nobody reads. Per-template world-action holdback (above) and the
+        # proven-effect act holdback (below, ORION_DISPATCH_HOLDBACK_FRACTION) still have readers.
 
         # Proven-effect act admissions (stage 3 option B): their own control arm, drawn LAST, after
         # every other gate and the per-tick draw, so a precommitted `treated` row is never written

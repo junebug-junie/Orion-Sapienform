@@ -27,7 +27,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SVC))
 
 import app.worker as worker_mod  # noqa: E402
-from app.worker import ExecutionDispatchRuntimeWorker, tick_can_yield_control  # noqa: E402
+from app.worker import ExecutionDispatchRuntimeWorker  # noqa: E402
 from orion.autonomy.act_candidates import ActRef, act_allocator_candidate, act_expectation_reason  # noqa: E402
 from orion.autonomy.allocator import Candidate, allocate, expected_information_gain_nats  # noqa: E402
 from orion.autonomy.contrast import HOLDBACK_BLOCK_REASON  # noqa: E402
@@ -208,12 +208,6 @@ def _field_candidate(dispatch_id: str = "dispatch:proposal:prune_build_cache:t1"
                                          predictor_variance=0.25, predictor_n=0, cold_start=True))
 
 
-def test_tick_can_yield_control_only_with_a_field_signal() -> None:
-    assert tick_can_yield_control([_field_candidate()])
-    assert not tick_can_yield_control([_render()])
-    assert not tick_can_yield_control([_field_candidate().model_copy(update={"world_action": {"template": "shed"}})])
-
-
 def _send_ready_worker(monkeypatch, fraction: float):
     worker = _worker(monkeypatch)
     monkeypatch.setattr(worker._settings, "orion_dispatch_holdback_fraction", fraction, raising=False)
@@ -232,27 +226,13 @@ def _send_ready_worker(monkeypatch, fraction: float):
 
 
 @pytest.mark.asyncio
-async def test_field_signal_tick_records_both_arms(monkeypatch) -> None:
-    """Fraction 0.2 (rung 3, design D3): withheld ticks are recorded as randomized_holdback blocks
-    (the control the feedback runtime turns into control cells), sent ticks as dispatched."""
-    worker = _send_ready_worker(monkeypatch, 0.2)
-    draws = iter([0.1, 0.9])   # first tick drawn into control, second treated
-    monkeypatch.setattr(worker_mod.random, "random", lambda: next(draws))
-    control = await worker._send_prepared_candidates(_frame(_field_candidate("dispatch:a")))
-    treated = await worker._send_prepared_candidates(_frame(_field_candidate("dispatch:b")))
-    assert [c.blocked_by for c in control.blocked_candidates] == [[HOLDBACK_BLOCK_REASON]]
-    assert control.dispatched_candidates == []
-    assert [c.dispatch_id for c in treated.dispatched_candidates] == ["dispatch:b"]
-
-
-@pytest.mark.asyncio
-async def test_a_tick_with_nothing_to_learn_is_never_held_back(monkeypatch) -> None:
-    """A held-back render is re-proposed seconds later: a delay, not a control. Fails on old code."""
-    worker = _send_ready_worker(monkeypatch, 0.5)
+async def test_no_tick_is_withheld_after_the_feedback_rung_retired(monkeypatch) -> None:
+    """The per-tick randomized holdback fed a control arm only the feedback runtime folded (retired
+    2026-11-04). Even at fraction 1.0 and a draw of 0, an ordinary field-signal tick is sent."""
+    worker = _send_ready_worker(monkeypatch, 1.0)
     monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)
-    worker._log_allocator_preview = MagicMock(return_value=None)
-    out = await worker._send_prepared_candidates(_frame(_render()))
-    assert [c.dispatch_id for c in out.dispatched_candidates] == ["dispatch:proposal:render_scene:t1"]
+    out = await worker._send_prepared_candidates(_frame(_field_candidate("dispatch:a")))
+    assert [c.dispatch_id for c in out.dispatched_candidates] == ["dispatch:a"]
     assert not any(HOLDBACK_BLOCK_REASON in c.blocked_by for c in out.blocked_candidates)
 
 
@@ -414,22 +394,6 @@ def _proven_send_worker(monkeypatch):
     monkeypatch.setattr(worker._settings, "orion_dispatch_allocator_enforce", True, raising=False)
     monkeypatch.setattr(worker._policy.limits, "max_dispatches_per_tick", 5, raising=False)
     return worker
-
-
-@pytest.mark.asyncio
-async def test_no_treated_row_for_an_act_the_tick_holdback_then_stopped(monkeypatch) -> None:
-    """Review 2026-10-21: the proven draw runs LAST. Fails when it ran before the per-tick draw."""
-    worker = _proven_send_worker(monkeypatch)
-    worker._store.load_action_cost_estimates.side_effect = lambda lookback_hours=24: (
-        {("express", "host:circe_gpu"): LIVE_COST, ("maintain", "host:docker_images"): 1.0})
-    worker._store.load_effect_posteriors.return_value = {
-        PAINT_CELL: RELIABLE, ("maintain", "host:docker_images", "resource_pressure", 0): EffectPosterior.cold()}
-    rows = []
-    worker._store.insert_act_episode.side_effect = lambda row: rows.append(row) or True
-    monkeypatch.setattr(worker, "_stable_draw", lambda dispatch_id: 0.9)
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)     # per-tick draw withholds
-    out = await worker._send_prepared_candidates(_frame(_render("d:r"), _field_candidate("d:f")))
-    assert out.dispatched_candidates == [] and rows == []
 
 
 @pytest.mark.asyncio

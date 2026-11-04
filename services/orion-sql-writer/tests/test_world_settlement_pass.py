@@ -113,3 +113,28 @@ def test_the_loop_is_on_by_default_and_wired_into_startup():
     tree = ast.parse(main)  # a text match alone passed once while main.py did not even compile
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "world_settlement_loop"]
     assert calls, "world_settlement_loop(...) is never started in app/main.py"
+
+
+def test_the_loop_says_it_is_alive_even_when_nothing_is_due(monkeypatch, caplog):
+    """Most passes score nothing; an hourly 'alive' line tells an idle loop from a dead one."""
+    import asyncio
+    import logging
+
+    from app import world_settlement_loop as loop
+
+    calls = {"n": 0}
+
+    def one_pass():
+        calls["n"] += 1
+        return 0
+
+    async def stop_after_two(_sec):
+        if calls["n"] >= 2:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(loop, "run_one_pass", one_pass)
+    monkeypatch.setattr(loop, "ALIVE_EVERY_SEC", 0.0)
+    monkeypatch.setattr(loop.asyncio, "sleep", stop_after_two)
+    caplog.set_level(logging.INFO, logger="sql-writer.world_settlement_loop")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.world_settlement_loop(SimpleNamespace(sql_writer_world_settlement_interval_sec=30.0)))
+    assert any("[WORLD_SETTLEMENT] alive passes=1 scored=0 failed=0" in r.message for r in caplog.records)

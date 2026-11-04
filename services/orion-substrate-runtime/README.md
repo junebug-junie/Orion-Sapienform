@@ -1417,11 +1417,10 @@ L9    ExecutionDispatchFrameV1       orion-execution-dispatch-   policy+proposal
                                                                     dry_run by default -- L9 has
                                                                     never mutated the real world)
   v
-L10   substrate_feedback_frames      orion-feedback-runtime      scores the dry-run outcome
+L10   (retired 2026-11-04)          the act ledger grades every real act; world-action
+                                                                   scoring runs in orion-sql-writer
   v
-L11   consolidation windows/motifs   orion-consolidation-runtime  folds L6-L10 history into
-                                                                   memory windows; consumed by
-                                                                   orion-dream/compaction_applier.py
+L11   (retired 2026-11-04)          killed outright
 ```
 
 Each layer's own README states its literal `X + Y -> service -> Z` data flow; this

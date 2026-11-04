@@ -163,7 +163,33 @@ scripts/check_migration_required_by.py: OK
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+The code review ran in a subagent at high effort. It found no blocker. It confirmed the moved world
+scorer is line-for-line the old behaviour (same SQL, guards and idempotency), and that the dropped
+NULL-dedup branch is unreachable.
+
+- **Finding:** dispatch still withheld 20% of eligible ticks (`ORION_DISPATCH_HOLDBACK_FRACTION=0.2`)
+  for a control arm only the feedback runtime folded. That made it orphaned behaviour that delays
+  real acts.
+  - **Fix:** the per-tick holdback branch and `tick_can_yield_control` are removed. The key now sets
+    only the proven-effect act holdback, which still has a reader (`substrate_act_episodes`). Its
+    comments in `.env_example`, settings and the README say so.
+  - **Evidence:** `test_no_tick_is_withheld_after_the_feedback_rung_retired`, fraction 1.0, draw 0:
+    the tick is sent. Dispatch suites: 75 + 128 passed.
+- **Finding:** the world settle loop logged only when it scored something, so a dead loop and an
+  idle loop looked the same. No episode has been due since 10-25.
+  - **Fix:** a `[WORLD_SETTLEMENT] alive passes=.. scored=.. failed=..` line once an hour.
+  - **Evidence:** `test_the_loop_says_it_is_alive_even_when_nothing_is_due`.
+- **Finding:** stale text pointed at the retired services. It was in the root README (service list),
+  the substrate-runtime README (ladder table, which also claimed a dream consumer that does not
+  exist), `orion_shed_store.py` and `contrast.py`.
+  - **Fix:** all four now name the new home.
+- **Finding:** the two containers are still up, the leftover local `.env` files remain, and the
+  thought `.env` still has the old key.
+  - **Fix:** each has an exact command in Restart required.
+- **Not changed:** the reviewer suggested `REQUIRED-BY: none` for
+  `manual_migration_feedback_control_reduction.sql`. That is wrong: the same file creates
+  `substrate_execution_dispatch_inflight`, which dispatch writes (`store.py:376,513`). So
+  dispatch-only is the correct header.
 
 Found and fixed during build, before review:
 - **A syntax error that would have crashed sql-writer at boot.** The new loop's start line sat

@@ -768,8 +768,7 @@ Memory / stores / writers:
 Sentience Striving Program / substrate runtime:
   orion-substrate-runtime, orion-substrate-organs, orion-substrate-telemetry,
   orion-attention-runtime, orion-proposal-runtime, orion-policy-runtime,
-  orion-execution-dispatch-runtime, orion-feedback-runtime,
-  orion-consolidation-runtime, orion-field-digester, orion-cocreation-signals,
+  orion-execution-dispatch-runtime, orion-field-digester, orion-cocreation-signals,
   orion-world-model
 
 Reflection / state / sensemaking:

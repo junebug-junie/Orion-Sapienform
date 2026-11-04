@@ -152,6 +152,7 @@ from orion.prime.thought import (
 )
 from orion.refs import RefV1, resolve as resolve_ref
 from orion.schemas.grammar import ActV1
+from orion.schemas.physiology_want import FundedEventWantsV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
     IntrospectResultV1,
@@ -304,6 +305,12 @@ class PrimeRuntime(MindLoopRuntime):
             events, events_err = await self._read(
                 f"{base}/physiology/event-wants?hours={float(self.s.PRIME_EVENT_WANTS_HOURS):g}"
                 f"&limit={int(self.s.PRIME_EVENT_WANTS_LIMIT)}")
+            if events is not None:
+                # Only the documented contract's fields reach the frame (FundedEventWantsV1).
+                try:
+                    events = FundedEventWantsV1.model_validate(events).model_dump(mode="json")
+                except Exception as exc:  # noqa: BLE001
+                    events, events_err = None, f"not a funded event wants payload ({type(exc).__name__})"
             snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
             inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, events=events,
                                  events_error=events_err, event_mode=True, bid_lane=self.s.PRIME_BID_LANE)

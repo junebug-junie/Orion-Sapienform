@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 
-from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, saliences_over_own_history
+from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
 
 logger = logging.getLogger("orion-hub.reading_event_wants")
 
@@ -37,6 +37,7 @@ VERB = "look"
 TIER = 2
 PRODUCER = "orion-hub.reading_events"
 EVENT_PREFIX = "world_pulse_read_seed"
+UNAVAILABLE = "physiology_unavailable"
 
 # Finished reads in [$1, $2) with the links each made (accepted relationship claims).
 READS_SQL = """
@@ -50,7 +51,7 @@ WHERE s.stage2_status = 'done' AND s.stage2_completed_at >= $1 AND s.stage2_comp
 ORDER BY s.stage2_completed_at
 """
 
-POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE want_id = ANY($1::text[]) AND decided_at >= $2"
+POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE reason <> 'physiology_unavailable' AND want_id = ANY($1::text[]) AND decided_at >= $2"
 
 
 def plan_reads(rows: list[Any], *, now: datetime, lookback: timedelta) -> list[dict[str, Any]]:
@@ -59,11 +60,13 @@ def plan_reads(rows: list[Any], *, now: datetime, lookback: timedelta) -> list[d
     reads = sorted(({"seed_id": str(r["seed_id"]), "url": str(r["url"] or ""), "at": r["stage2_completed_at"],
                      "links": int(r["links"] or 0)} for r in rows if r["stage2_completed_at"] is not None),
                    key=lambda r: r["at"])
-    recent = [r for r in reads if now - lookback <= r["at"] <= now]
-    sal = saliences_over_own_history([(r["at"], r["links"]) for r in reads])
-    by_seed = {r["seed_id"]: v for r, v in zip(reads, sal)}
-    return [{**r, "salience": by_seed[r["seed_id"]],
-             "history_n": sum(1 for h in reads if r["at"] - SOURCE_HISTORY <= h["at"] < r["at"])} for r in recent]
+    out = []
+    for r in reads:
+        if not now - lookback <= r["at"] <= now:
+            continue
+        history = [h["links"] for h in reads if r["at"] - SOURCE_HISTORY <= h["at"] < r["at"]]
+        out.append({**r, "salience": source_salience(r["links"], history), "history_n": len(history)})
+    return out
 
 
 class ReadingEventWants:
@@ -142,9 +145,11 @@ class ReadingEventWants:
                               tier=TIER, event_ref=f"{EVENT_PREFIX}:{p['seed_id']}", salience=p["salience"],
                               opened_at=p["at"], object_ref=p["url"] or None)
             decision = await self._abid(want)
-            if decision is None:
-                # No answer (market down, flag off): retried next tick while the read is in its window.
-                logger.info("reading_event_want_unanswered seed=%s", p["seed_id"])
+            if decision is None or decision.reason == UNAVAILABLE:
+                # No answer, or the market could not price it (no fresh body, history unread): not a
+                # decision about the event, so it is bid again next tick while the read is in its window.
+                logger.info("reading_event_want_unanswered seed=%s reason=%s", p["seed_id"],
+                            getattr(decision, "reason", None) or "no_answer")
                 continue
             self._posted.add(want_id)
             summary["posted"] += 1

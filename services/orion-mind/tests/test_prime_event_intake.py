@@ -76,3 +76,20 @@ def test_off_is_the_arc_path_as_before():
 def test_an_empty_menu_says_so():
     frame = build_frame(PrimeStateV1(), FrameInputs(now=T0, event_mode=True, events={"wants": []}))
     assert "(none: nothing the body economy funded is open now)" in frame
+
+
+def test_one_event_holds_one_concern_and_event_mode_refs_name_acts_only():
+    dup = {"reading": "r", "concerns": {"add": [{"text": "first", "event_id": "orion_ask:k1"},
+                                                {"text": "again", "event_id": "orion_ask:k1"}]}, "move": None}
+    rt = _event_runtime(dup)
+    asyncio.run(rt.tick())
+    assert [c.text for c in rt.state.concerns] == ["first"]
+    system = system_prompt(None, events=True)
+    assert '"kind": "arc"' not in system and '"refs": [{"kind": "act", "id": "..."}]' in system
+
+
+def test_a_malformed_menu_is_a_gap_not_a_frame():
+    rt = _event_runtime(ADD_EVENT, events={"wants": [{"event_ref": "x"}]})
+    asyncio.run(rt.tick())
+    [call] = rt.llm.calls
+    assert "(unavailable: not a funded event wants payload" in call["user_prompt"] and rt.state.concerns == []

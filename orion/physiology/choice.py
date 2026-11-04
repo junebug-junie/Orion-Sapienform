@@ -652,9 +652,10 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     if lane_charge <= 0.0 and prime_part <= 0.0:
         # Nothing to pay and nothing wanted: the family just acted (hunger ~0), so its value is 0.
         book.note_deferred(now, want.want_id, chosen, net)
+        sated_why = ("nothing charged, but the event is no bigger than this family's usual events"
+                     if vbasis.startswith("event:") else "nothing charged, but no hunger to fund (the family's last act just closed)")
         return _decision(want, now, tier=tier, outcome="deferred", reason="sated", binding_constraint=None,
-                         retry_after_sec=None, warnings=warnings, **common,
-                         why=f"{head}; nothing charged, but no hunger to fund (the family's last act just closed)")
+                         retry_after_sec=None, warnings=warnings, **common, why=f"{head}; {sated_why}")
     # Deferred on price: the constraint with the largest price x cost binds.
     k = max(parts, key=lambda x: parts[x]) if parts else None
     retry = None

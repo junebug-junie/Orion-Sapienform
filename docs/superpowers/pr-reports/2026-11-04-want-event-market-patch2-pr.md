@@ -45,8 +45,9 @@ Spec: PR #3089 (still open), `docs/superpowers/specs/2026-11-04-attention-as-wan
   patch, no producer sent either field.
 - Prime has a concern source that is the market's own record. 42 of the 43 real moments when Prime added
   a concern in the last 14 days would have had at least one funded event to choose from.
-- An event is ranked against earlier events of its kind. In the replay, this separates unusual events
-  from ordinary ones better than the old rank, for both sources (table below).
+- An event is ranked against earlier events of its kind, as a strict-below share: an event no bigger
+  than the usual ones ranks 0. In the replay, this separates unusual events from ordinary ones better
+  than the old rank, for both sources (table below).
 
 ## Live numbers (replay, 2026-10-21 .. 11-04, read-only)
 
@@ -70,6 +71,9 @@ the first poll interval, most of them low-sighting ones, so they were never open
 | reading | 0.56 -> 0.61 | 0.69 -> 0.85 | 0.166 -> 0.207 |
 | camera asks | 0.61 -> 0.41 | 0.93 -> 0.87 | 0.417 -> 0.463 |
 
+(Separation is reported, not gated: a rank that saturates separates perfectly, so "separates better" would
+reward the bug. The gate is that very salient events are not pinned at 0.95 or more.)
+
 The patch-1 review expected salient events to rank near 1.0 against the clock history. That is **not
 true live** for these two sources. Reading's old rank cannot go above 0.76: it is a graded family, and its
 past acts with outcome 1 and full hunger outrank any event. Only 0% of very salient reads (0.8 or more)
@@ -77,12 +81,18 @@ ranked 0.95 or more under the old rule; 6.5% do under the new rule. The fix stil
 event's rank now says how it compares with other events, and that separates better. Camera asks had no
 act history, so their old rank was simply their intensity.
 
-### The market funds every one of these event wants
+### The market funds almost every one of these event wants
 
 Both families have no GPU lane and no fixed cost, so Choice charges nothing, and every want with a rank
-above 0 is funded (100% in the replay). The filter Prime gets is the **order** (highest net first, top 8),
-not the fund itself. This repeats patch 1's finding 2: the market does not yet make wants compete when
-nothing is charged.
+above 0 is funded. Reading: 565 of 565 funded, including all 441 ordinary reads (salience 0). Camera asks:
+122 of 124; the 2 ordinary ones were deferred as "sated".
+
+Why the ordinary reads are still funded: an ordinary read's intensity is the family's **hunger** (time
+since the last read closed), and hunger is not tied, so it ranks above 0 against earlier events. That is
+the spec's own rule (intensity = max(hunger, salience)), not a defect of the event rank. The filter Prime
+gets is the **order** (highest net first, top 8), not the fund itself. This repeats patch 1's finding 2:
+the market does not make wants compete when nothing is charged. Patch 3 (capacity settled by net) is
+where this gets fixed. I did not add a new "salience must be above 0" rule here.
 
 ### Prime would still get concerns (the flag gate)
 
@@ -224,19 +234,27 @@ counted every self-grade fully.
 ## Tests run
 
 ```text
-REVIEW_TESTS_PLACEHOLDER
+orion/physiology orion/prime orion/schemas orion/self_monitor orion/mindloop: 541 passed
+services/orion-durable-runs/tests: 749 passed, 125 skipped
+services/orion-mind/tests: 233 passed
+services/orion-sql-writer/tests: 1,196 passed, 183 skipped (before review fixes; the new file: 5 passed after)
+services/orion-hub/tests (full suite): 4,527 passed, 146 skipped (before review fixes; the new file: 7 passed after)
+static gates: check_body_economy_contract OK (100 modules), check_env_template_parity PASS, check_metric_lineage
+  --gate / --prompt-semantics PASS, check_definition_drift PASS, check_async_routes_not_blocking OK,
+  check_env_key_single_source OK, check_sentience_instruments --static-only OK, check_verb_physiology OK;
+  tests/test_no_personal_terms + body-economy/settings/verb/metric gate tests: 161 passed
 ```
 
 ## Evals run
 
 ```text
-event_wants_replay.py (fixture): 5/5 checks pass
-event_wants_replay.py --live --days 14: exit 1 by design; checks:
-  hub.world_pulse_read:most_events_low   PASS
-  vision.ask:most_events_low             FAIL (question 3)
-  hub.world_pulse_read:event_rank_separates_better  PASS
-  vision.ask:event_rank_separates_better            PASS
-  concern_moments_covered                PASS (97.7%)
+event_wants_replay.py (fixture): 9/9 checks pass (its own and report()'s)
+event_wants_replay.py --live --days 14: EXIT 1. Checks:
+  hub.world_pulse_read:most_events_low                  PASS (78.1% under 0.5)
+  vision.ask:most_events_low                            FAIL (49.8% under 0.5; question 3)
+  hub.world_pulse_read:very_salient_rank_not_saturated  PASS (6.5% at 0.95 or more)
+  vision.ask:very_salient_rank_not_saturated            PASS (12.1%)
+  concern_moments_covered                               PASS (97.7%; the flag gate)
 want_market_reliability_replay.py --live --days 14 --self-grades all|world_only|half: each 0 flips, no starvation, drift cap holds
 ```
 
@@ -250,7 +268,39 @@ EVENT_HISTORY_SQL (554 ms on 30 days), LATEST_EVENT_DECISIONS_SQL (5 ms on 24 h)
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent. Material findings, all fixed:
+
+- Finding: the event rank used mid-rank, so an ordinary event tied with the usual ones ranked about 0.4,
+  and a free family funded every one; the cold-start "sated" case flipped to funded after 10 events.
+  - Fix: the event rank is now strict-below (the same rest-point-0 rule as salience). The "sated" text
+    names the event case.
+  - Evidence: `test_an_ordinary_event_is_sated_once_there_is_event_history`; the fixture's
+    `ordinary_events_not_all_funded`; live camera asks now defer their 2 ordinary events. Live reading
+    still funds ordinary reads on hunger (explained above).
+- Finding: a `physiology_unavailable` decision (no fresh body, history unread) was treated as final, so a
+  one-shot event was lost to a market blip, and the ledger check would skip it after a restart too.
+  - Fix: both producers bid again next tick; their ledger check ignores `physiology_unavailable` rows.
+  - Evidence: `test_an_unpriced_decision_is_not_final_and_is_bid_again` (Hub),
+    `test_an_unpriced_decision_is_retried` (sql-writer).
+- Finding: the fixture lane replaced report()'s own checks, so a failing one was hidden; the
+  "separates better" check rewarded a saturating rank.
+  - Fix: the fixture merges report()'s checks; separation is a diagnostic; the gate is non-saturation.
+  - Evidence: fixture 9/9; the live failure (camera, question 3) is reported above.
+- Finding: camera salience has no common rest point, and the settings comment said the replay "showed"
+  what it did not fully show.
+  - Fix: the `event_wants.py` docstring, settings comment and this report say so (question 3).
+- Finding: an image rollback with event concerns in Redis starts Prime empty.
+  - Fix: settings comment and "Restart / rollback" note: roll back with the flag, never an image revert.
+- Nits fixed: one event holds at most one concern; event-mode prompt points moves at acts only (no arcs
+  shown); the menu payload is validated as `FundedEventWantsV1` (a bad payload is a frame gap);
+  `Evidence.n` stays an int in the default mode; the producers compute salience only for recent rows;
+  the Hub `.env_example` block moved below the reading-finding block; `--self-grades` says "live lane only";
+  the eval's ask end time is `answered_at or expires_at`, stated as a small overstatement.
+- Not changed, on purpose:
+  - `PrimeConcernsViewV1` does not carry `event_ref`. No reader needs it yet, and the model is forbid,
+    so adding it is a consumer-first change for later.
+  - A camera ask leaves Prime's menu 24 h after its decision (`PRIME_EVENT_WANTS_HOURS`), even if it is
+    still open. That matches the producer's 24 h lookback.
 
 ## Restart required
 
@@ -275,7 +325,7 @@ Order matters: durable-runs first (the menu endpoint and event rank), then the t
 - Severity: low. Concern: about 7% of Prime's thoughts would see no funded event (mostly reading gaps).
   Mitigation: it keeps its held concerns; the frame says "none" plainly; the flag rolls back.
 - Severity: low. Concern: an image rollback with event concerns in Redis starts Prime empty. Mitigation:
-  roll back with the flag.
+  roll back with the flag (`PRIME_CONCERNS_FROM_EVENT_WANTS=false`), never by reverting the image.
 - Live path UNVERIFIED until deploy: the first `reading_event_want` / `ask_event_want` log lines, their
   `want_ledger` rows with `event_ref`, and a `prime_concern_added ... event_ref=` line are the evidence to
   look for. Live check: `select family, count(*) from want_ledger where decision->'want' ? 'event_ref' and

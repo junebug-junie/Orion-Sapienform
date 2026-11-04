@@ -32,7 +32,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Sequence
 
-from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, saliences_over_own_history
+from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
 
 logger = logging.getLogger("sql-writer.ask_event_wants")
 
@@ -41,6 +41,7 @@ FAMILY = "vision.ask"
 VERB = "ask"
 TIER = 2
 PRODUCER = "orion-sql-writer.ask_events"
+UNAVAILABLE = "physiology_unavailable"
 CAMERA_ASK_KINDS = ("vision_individual", "vision_person_confirm", "vision_same_individual")
 
 # Camera asks opened in [:since, :until), each with the moving sightings of its individual up to its open.
@@ -55,7 +56,7 @@ SELECT a.ask_id, a.source_kind, a.status, a.created_at, a.expires_at, a.iid,
   FROM a ORDER BY a.created_at
 """
 
-POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE want_id = ANY(:ids) AND decided_at >= :since"
+POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE reason <> 'physiology_unavailable' AND want_id = ANY(:ids) AND decided_at >= :since"
 
 
 def _utc(v: Any) -> Optional[datetime]:
@@ -71,15 +72,14 @@ def plan_asks(rows: Sequence[Any], *, now: datetime, lookback: timedelta) -> lis
                     "at": _utc(r["created_at"]), "expires_at": _utc(r["expires_at"]), "iid": str(r["iid"] or ""),
                     "sightings": int(r["sightings"] or 0)} for r in rows if r["created_at"] is not None),
                   key=lambda a: a["at"])
-    sal = saliences_over_own_history([(a["at"], a["sightings"]) for a in asks])
     out = []
-    for a, v in zip(asks, sal):
+    for a in asks:
         if a["status"] != "open" or a["at"] < now - lookback or a["at"] > now:
             continue
         if a["expires_at"] is not None and a["expires_at"] <= now:
             continue
-        out.append({**a, "salience": v,
-                    "history_n": sum(1 for h in asks if a["at"] - SOURCE_HISTORY <= h["at"] < a["at"])})
+        history = [h["sightings"] for h in asks if a["at"] - SOURCE_HISTORY <= h["at"] < a["at"]]
+        out.append({**a, "salience": source_salience(a["sightings"], history), "history_n": len(history)})
     return out
 
 
@@ -117,8 +117,8 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
                           event_ref=f"orion_ask:{p['ask_id']}", salience=p["salience"], opened_at=p["at"],
                           latest=p["expires_at"], object_ref=f"vision_individual:{p['iid']}" if p["iid"] else None)
         decision = bid(want)
-        if decision is None:
-            summary["unanswered"] += 1       # market down or client off: retried next cycle
+        if decision is None or decision.reason == UNAVAILABLE:
+            summary["unanswered"] += 1       # no answer, or the market could not price it: retried next cycle
             continue
         posted.add(want_id)
         summary["posted"] += 1

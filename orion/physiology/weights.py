@@ -98,9 +98,8 @@ class Evidence:
 
     @property
     def n(self) -> float:
-        if self.act_ids:
-            return len(self.act_ids) - self.n_discount
-        return self.use_n + self.engagement_n + self.reliability_n - self.n_discount
+        base = len(self.act_ids) if self.act_ids else self.use_n + self.engagement_n + self.reliability_n
+        return base - self.n_discount if self.n_discount else base
 
     @property
     def mean_rate(self) -> Optional[float]:

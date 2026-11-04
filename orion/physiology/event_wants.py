@@ -9,7 +9,9 @@ the source's past events (its last 30 days, before this one) whose magnitude is 
 event's. It is the same strict-below percentile world-first uses for eligibility
 (``orion/attention/world_first.py``). Its rest point is 0: an event no bigger than the source's smallest
 usual event (for reading: a read that made no link, 82% of reads) reads 0, never "a little unusual".
-Fewer than ``MIN_SOURCE_HISTORY`` past events: there is no reference, so salience is unknown (None) and
+The rest point is only REACHED often when many events tie at the bottom (reading: 78% of reads made no
+link). For a near-continuous magnitude (camera sightings) the percentile is close to uniform, so about
+half the events read above 0.5 (patch 2 PR, open question to Juniper). Fewer than ``MIN_SOURCE_HISTORY`` past events: there is no reference, so salience is unknown (None) and
 the source posts nothing for that event (an unknown is not a calm 0, and not a spike either).
 
 Pure and stdlib-only, so Hub and sql-writer both import it.

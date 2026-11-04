@@ -173,6 +173,7 @@ def report(families: FamiliesConfig, events: list[Event], acts: Sequence[ActReco
         lo = [e for e in ranked if e.salience < LOW]
         mean = lambda xs: round(sum(xs) / len(xs), 4) if xs else None  # noqa: E731
         sat = [e for e in ranked if e.salience >= 0.8]
+        ordinary = [e for e in posted if e.salience == 0]
         out["sources"][fam] = {
             "events": len(win), "posted": len(posted),
             "salience_all_events": distribution([e.salience for e in win]),
@@ -189,12 +190,17 @@ def report(families: FamiliesConfig, events: list[Event], acts: Sequence[ActReco
             "very_salient_events": len(sat),
             "very_salient_rank_at_least_0_95_old": round(sum(1 for e in sat if e.rank_old >= 0.95) / len(sat), 4) if sat else None,
             "very_salient_rank_at_least_0_95_new": round(sum(1 for e in sat if e.rank_new >= 0.95) / len(sat), 4) if sat else None,
+            # Does "funded" filter anything? The share of salience-0 (ordinary) event wants the market funds.
+            "ordinary_events": len(ordinary),
+            "ordinary_funded_share": round(sum(e.funded for e in ordinary) / len(ordinary), 4) if ordinary else None,
         }
     out["prime_thoughts"] = prime_cover(events, thoughts)
     out["prime_concern_bets"] = prime_cover(events, concern_bets)
     src = out["sources"]
     checks = {f"{fam}:most_events_low": v["salience_all_events"].get("share_under_0_5", 0) > 0.5 for fam, v in src.items()}
-    checks.update({f"{fam}:event_rank_separates_better": (v["separation_new"] or 0) > (v["separation_old"] or 0)
+    # Separation (old vs new) is a diagnostic only: a saturating rank separates perfectly, so "separates
+    # better" would penalise the fix. The gate is that very salient events are not pinned near 1.0.
+    checks.update({f"{fam}:very_salient_rank_not_saturated": (v["very_salient_rank_at_least_0_95_new"] or 0) <= 0.5
                    for fam, v in src.items()})
     # The flag's gate: at the moments Prime really added a concern, the event list would not have been empty.
     checks["concern_moments_covered"] = ((out["prime_concern_bets"]["share_with_an_event"] or 0) >= COVER_MIN
@@ -220,15 +226,26 @@ def _fixture() -> int:
         acts.append(ActRecord(act_id=f"a{k}", family=READ_FAMILY, opened_at=at - timedelta(minutes=20), closed_at=at))
     start = t0 + timedelta(days=45)
     thoughts = [start + timedelta(minutes=37 * j) for j in range(400)]
+    salient_at = next(e.at for e in events if e.at >= start and e.magnitude > 0)
+    ordinary_at = next(e.at for e in events if e.at >= start and e.magnitude == 0
+                       and not any(0 <= (e.at - x.at).total_seconds() < 4 * 3600 for x in events if x.magnitude > 0))
     r = report(fams, events, acts, start=start, thoughts=thoughts, concern_bets=thoughts[::10])
     s = r["sources"][READ_FAMILY]
     checks = {
         "rest_point_is_zero": s["salience_all_events"]["share_zero"] > 0.75,
         "most_events_low": r["checks"][f"{READ_FAMILY}:most_events_low"],
         "very_salient_rank_not_saturated": s["very_salient_rank_at_least_0_95_new"] < s["very_salient_rank_at_least_0_95_old"],
-        "prime_not_starved": r["diagnostics"]["thoughts_with_an_event"] >= COVER_MIN,
+        "ordinary_events_not_all_funded": (s["ordinary_funded_share"] or 0) < 1.0,
+        # Prime sees exactly the funded, unexpired events: 1 h after a salient read there is one; 1 h after
+        # an ordinary read (tied with the usual ones, so sated) and long after any read there is none.
+        "prime_sees_a_funded_salient_read": prime_cover(events, [salient_at + timedelta(hours=1)])["share_with_an_event"] == 1.0,
+        "prime_sees_no_ordinary_read": prime_cover(events, [ordinary_at + timedelta(hours=1)])["share_with_an_event"] == 0.0,
         "a_gap_starves": prime_cover(events, [t0 + timedelta(days=200)])["share_with_an_event"] == 0.0,
     }
+    # The fixture's own checks AND every check report() made (none may be hidden).
+    # Every check report() made, except the coverage gate: the fixture's synthetic thoughts are not Prime's
+    # rhythm (one salient read in six, by construction); its coverage logic is tested by hand above.
+    checks.update({f"report:{k}": v for k, v in r["checks"].items() if k != "concern_moments_covered"})
     print(json.dumps({"lane": "fixture", **r, "checks": checks}, indent=2, default=str))
     return 0 if all(checks.values()) else 1
 
@@ -271,7 +288,9 @@ def _live(days: int, out_json: Optional[str]) -> int:
     for r in asks:
         at = _ts(r["at"])
         answered, expires = _ts(r.get("answered_at")), _ts(r.get("expires_at"))
-        ends = answered or (expires if r["status"] != "open" else None) or expires
+        # Answered: gone then. Dismissed/withdrawn/expired rows carry no close time, so expiry is the
+        # bound (this can overstate Prime's coverage a little).
+        ends = answered or expires
         events.append(Event(family=ASK_FAMILY, ref=f"orion_ask:{r['ask_id']}", at=at, magnitude=int(r["sightings"] or 0),
                             ends_at=ends, posted=ends is None or ends > at + POLL_DELAY))
     acts = [ActRecord(act_id=str(r["act_id"]), family=str(r["actor"]), opened_at=_ts(r.get("opened_at")),

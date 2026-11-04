@@ -252,7 +252,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--out-json")
     # Patch 2: how source (d) counts producer self-grades (Juniper has not chosen; the default is today's).
-    ap.add_argument("--self-grades", choices=SELF_GRADE_MODES, default="all")
+    ap.add_argument("--self-grades", choices=SELF_GRADE_MODES, default="all", help="live lane only")
     a = ap.parse_args(argv)
     return _live(a.days, a.out_json, a.self_grades) if a.live else _fixture()
 

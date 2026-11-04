@@ -105,3 +105,21 @@ def test_off_means_no_task():
     loop = ReadingEventWants(enabled=False, pool_provider=lambda: None)
     asyncio.run(loop.start())
     assert loop._task is None
+
+
+def test_an_unpriced_decision_is_not_final_and_is_bid_again():
+    """Review finding 2: physiology_unavailable is not a decision about the event; the ledger row it
+    left does not count as posted either (POSTED_SQL skips it)."""
+    from scripts.reading_event_wants import POSTED_SQL
+
+    state = {"rows": _rows(), "ledger": set()}
+    bids = []
+
+    async def bid(want):
+        bids.append(want)
+        return SimpleNamespace(outcome="deferred", reason="physiology_unavailable", value_rank=None)
+
+    loop = ReadingEventWants(enabled=True, pool_provider=lambda: _Pool(state), bid=bid, clock=lambda: NOW)
+    asyncio.run(loop.tick())
+    asyncio.run(loop.tick())
+    assert len(bids) == 4 and "reason <> 'physiology_unavailable'" in POSTED_SQL

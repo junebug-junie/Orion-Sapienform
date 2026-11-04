@@ -160,6 +160,13 @@ EVENT_CONCERN_RULE = ("- Every concern you add must name an event_id listed unde
 _ARC_RULE = '- arc_id must be an arc_id listed under ATTENTION (the hex id after "arc_id"), or null.\n'
 _ARC_JSON = '''"add": [{"text": "...", "arc_id": null}]'''
 _EVENT_JSON = '''"add": [{"text": "...", "event_id": "<event_id>"}]'''
+# Event mode shows no arcs, so a move may point only at an act.
+_ARC_REFS = '''To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
+  {"kind": "act", "id": "<act_...>"})'''
+_EVENT_REFS = '''To point it at an act, put it in "refs" ({"kind": "act", "id": "<act_...>"}); describe the
+  event in words'''
+_ARC_REFS_JSON = '''"refs": [{"kind": "arc" | "act", "id": "..."}]'''
+_EVENT_REFS_JSON = '''"refs": [{"kind": "act", "id": "..."}]'''
 
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False) -> str:
@@ -167,7 +174,8 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
     ``events``: concerns come from funded event wants (event_id), not arcs."""
     base = SYSTEM_PROMPT
     if events:
-        base = base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
+        base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
+                .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
     if receptors and any(receptors.values()):
         return base + REGULATE_PROMPT
     return base
@@ -431,6 +439,9 @@ def apply_answer(
             if add.event_id not in event_ids:
                 warnings.append(f"concern not added, it names no funded event shown in the frame "
                                 f"(event_id {add.event_id!r}): {add.text[:80]!r}")
+                continue
+            if any(c.event_ref == add.event_id for c in concerns):
+                warnings.append(f"concern not added, a concern already holds event {add.event_id!r}: {add.text[:80]!r}")
                 continue
             concern = PrimeConcernV1(concern_id=new_id(), text=add.text, event_ref=add.event_id, opened_at=now,
                                      last_evidence_at=now)

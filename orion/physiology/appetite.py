@@ -19,7 +19,7 @@ clock is due, and a want with no event is hunger alone (attention as the want co
 
 **Event rank (patch 2).** An event want is ranked against the family's own EVENT history: the
 intensities the market recorded for the family's past event wants (``want_ledger``, 30 days, one
-per want), not against the hunger-only act history. Against hunger history a salient event ranked
+per want), not against the hunger-only act history, as a strict-below share (rest point 0). Against hunger history a salient event ranked
 near 1.0 almost every time (patch 1 review). Fewer than ``EVENT_HISTORY_MIN`` past events: there is
 no reference yet, so the want is ranked as every want was before (basis ``event_cold:<basis>``).
 
@@ -248,8 +248,14 @@ def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Option
     if event and len(app.event_values) >= EVENT_HISTORY_MIN:
         # Past events carry no producer outcome of their own here: each is scaled by the family's
         # expected outcome (the mean, or 1 ungraded), the same multiplier a want without one gets.
+        # (A producer outcome_value on the current want is not applied to the history: neither event
+        # family is graded today, so both sides use the same multiplier.)
         ref_out = app.mean_outcome if app.graded and app.mean_outcome is not None else 1.0
-        return mid_rank(x, [v * ref_out for v in app.event_values]), f"event:{basis}", out
+        ref = [v * ref_out for v in app.event_values]
+        # Strict-below, the rule salience itself uses: an event no bigger than the smallest usual one
+        # ranks 0 (its rest point). Mid-rank gave tied ordinary events half credit (~0.4), so a free
+        # family funded every one of them (patch 2 review).
+        return sum(1 for v in ref if v < x) / len(ref), f"event:{basis}", out
     # Cold start: too few past events to rank against, so the rule every want had before (patch 1).
     cold = "event_cold:" if event else ""
     if not app.values:

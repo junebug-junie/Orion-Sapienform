@@ -109,3 +109,18 @@ def test_the_family_exists_and_is_tier_2_with_no_charge():
     fams, err = load_families(REPO / "config" / "physiology" / "families.yaml")
     cfg = fams.get(FAMILY)
     assert err is None and cfg is not None and cfg.tier == 2 and cfg.bids and not cfg.lanes and not cfg.fixed_cost
+
+
+def test_an_unpriced_decision_is_retried():
+    from app.ask_event_wants import POSTED_SQL
+
+    calls = []
+    posted: set[str] = set()
+
+    def bid(w):
+        calls.append(w)
+        return SimpleNamespace(outcome="deferred", reason="physiology_unavailable", value_rank=None)
+
+    for _ in range(2):
+        run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=posted, bid=bid, now=NOW, engine=_Engine())
+    assert len(calls) == 4 and not posted and "reason <> 'physiology_unavailable'" in POSTED_SQL

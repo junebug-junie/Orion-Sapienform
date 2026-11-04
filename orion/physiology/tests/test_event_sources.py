@@ -83,7 +83,7 @@ def test_an_event_ranks_against_past_events_not_hunger_history():
     old, old_basis, _ = rank_value(hunger_only, 0.9, None)
     new, new_basis, _ = rank_value(app, 0.9, None, event=True)
     assert old_basis == "ungraded" and old == 1.0           # against hunger: always the top
-    assert new_basis == "event:ungraded" and new == pytest.approx((30 + 5) / 40)
+    assert new_basis == "event:ungraded" and new == pytest.approx(30 / 40)   # strict-below: ties count 0
     # A want without an event is ranked exactly as before.
     assert rank_value(app, 0.9, None) == rank_value(hunger_only, 0.9, None)
 
@@ -106,7 +106,7 @@ def test_decide_reads_the_markets_event_history():
     ev = WantV1(want_id="w1", family="reading", producer="p", verb="look", tier=2, opened_at=NOW,
                 event_ref="world_pulse_read_seed:s", salience=0.9)
     d = decide(ev, _state(), ctx, ReservationBook(), NOW)
-    assert d.value_basis == "event:ungraded" and d.value_rank == pytest.approx(0.875) and d.outcome == "funded"
+    assert d.value_basis == "event:ungraded" and d.value_rank == pytest.approx(0.75) and d.outcome == "funded"
     clock = WantV1(want_id="w2", family="reading", producer="p", verb="look", tier=2, opened_at=NOW)
     d2 = decide(clock, _state(), ctx, ReservationBook(), NOW)
     assert d2.value_basis == "ungraded"
@@ -159,3 +159,22 @@ def test_half_counts_a_self_grade_as_half_a_grade():
 def test_an_unknown_mode_refuses():
     with pytest.raises(ValueError):
         reliability_grades("reading", _closes(), since=SINCE, until=UNTIL, self_grades="sometimes")
+
+
+def test_an_ordinary_event_is_sated_once_there_is_event_history():
+    """Review finding 1: with mid-rank, a salience-0 event tied with the usual events ranked ~0.4 and a
+    free family funded every one. Strict-below: no bigger than the usual -> rank 0 -> deferred (sated)."""
+    acts = [ActRecord(act_id="a", family="camera", opened_at=NOW, closed_at=NOW)]
+    ctx = build_context(FAMS, acts, [], _state(), NOW, event_history={"camera": [0.0] * 30 + [0.9] * 5})
+    ev = WantV1(want_id="w", family="camera", producer="p", verb="ask", tier=2, opened_at=NOW,
+                event_ref="orion_ask:x", salience=0.0)
+    d = decide(ev, _state(), ctx, ReservationBook(), NOW)
+    assert d.value_basis == "event:ungraded" and d.value_rank == 0.0
+    assert d.outcome == "deferred" and d.reason == "sated" and "usual events" in d.why
+    big = decide(ev.model_copy(update={"want_id": "w2", "salience": 0.95}), _state(), ctx, ReservationBook(), NOW)
+    assert big.outcome == "funded" and big.value_rank == 1.0
+
+
+def test_n_stays_an_integer_in_the_default_mode():
+    ev = evidence_for("reading", _closes(), [], since=SINCE, until=UNTIL, reliability=True)
+    assert isinstance(ev.n, int)

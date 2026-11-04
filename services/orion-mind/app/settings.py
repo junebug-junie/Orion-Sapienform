@@ -161,8 +161,10 @@ class Settings(BaseSettings):
     # Attention as the want competition, patch 2: Prime's concerns come from the events Orion's body economy
     # FUNDED (durable-runs GET /physiology/event-wants, from want_ledger: reading and camera-ask event wants)
     # instead of Temporal Self attention arcs. A new concern must name one of those events. false: arcs, as
-    # before (instant rollback). Shipped ON after the 14-day replay showed Prime would still get concerns
-    # (services/orion-durable-runs/evals/event_wants_replay.py).
+    # before. ROLL BACK WITH THIS FLAG, not an image revert: an older image cannot read a saved concern that
+    # carries event_ref and starts Prime empty. Shipped ON: in the 14-day replay 42 of 43 real concern bets had a
+    # funded event to name (services/orion-durable-runs/evals/event_wants_replay.py; that eval exits 1 on a
+    # separate check, camera salience is not mostly low; see the patch 2 PR report).
     PRIME_CONCERNS_FROM_EVENT_WANTS: bool = Field(default=True, alias="PRIME_CONCERNS_FROM_EVENT_WANTS")
     # Event wants decided in this many hours are considered; at most this many are shown (highest net first).
     PRIME_EVENT_WANTS_HOURS: float = Field(default=24.0, gt=0.0, le=72.0, alias="PRIME_EVENT_WANTS_HOURS")

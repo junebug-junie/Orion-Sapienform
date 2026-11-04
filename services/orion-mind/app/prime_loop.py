@@ -125,6 +125,7 @@ from orion.prime.acts import (
 )
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
+    PRIME_CONCERNS_KEY,
     PrimeNominationV1,
     PrimeRegulationOpenV1,
     PrimeSnapshotV1,
@@ -132,6 +133,7 @@ from orion.prime.state import (
     new_id,
     note_outcome,
     observe,
+    concerns_view,
     trim_record,
     wants_to_think,
 )
@@ -209,6 +211,18 @@ class PrimeRuntime(MindLoopRuntime):
         # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
         self._bet_refused_at: dict[str, datetime] = {}
         self._last_settle: Optional[datetime] = None
+
+    # --- persistence: Prime's first published call ------------------------------------------
+    async def save(self) -> None:
+        """Save the state, then publish the read-only concerns view (curiosity replica design section 2):
+        ids, words, age and arc of the open concerns, for another loop instance to read without touching
+        Prime's state. Written on every save, so its ``as_of`` doubles as Prime's liveness: a reader that
+        finds it old knows Prime stopped."""
+        await super().save()
+        try:
+            await self.bus.redis.set(PRIME_CONCERNS_KEY, concerns_view(self.state, now=self.clock()).model_dump_json())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prime_concerns_view_publish_failed err=%s", type(exc).__name__)
 
     # --- loop hooks (orion/mindloop/runtime.py) ----------------------------------------------
     def _log_started(self) -> None:

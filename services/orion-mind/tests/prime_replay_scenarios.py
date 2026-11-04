@@ -6,7 +6,8 @@ the code that draws it lives in. Prints one JSON document: per scenario, every b
 release, model call, the saved state and every log line of the ``orion-mind.*`` loggers.
 
 ``tests/test_prime_replay.py`` runs this and compares it with ``fixtures/prime_replay_golden.json``, which
-was recorded from the loop BEFORE it moved into ``orion/mindloop/`` (2026-11-04). Regenerate only when a
+was recorded from the loop BEFORE it moved into ``orion/mindloop/`` (2026-11-04), then re-recorded once when Prime
+started publishing its concerns view (patch 3: only ``save orion:prime:concerns`` lines were added). Regenerate only when a
 behavior change is intended: ``python tests/prime_replay_scenarios.py > tests/fixtures/prime_replay_golden.json``.
 """
 

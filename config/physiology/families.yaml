@@ -96,7 +96,7 @@ families:
     # 2026-11-04): when it is unfunded the rule order runs and curiosity loses nothing. 90 s: the kickoff
     # will not wait longer for a plan. Lane chat: the warm lane Prime already uses (route prime). No
     # receptors: a planner that thinks under 2 times a day has nothing for a charge to bind on. Declared
-    # in patch 2 (contracts); the instance that bids with it lands in patch 3.
+    # in patch 2 (contracts); the instance that bids with it is services/orion-mind/app/replica_loop.py (patch 3).
     tier: 2
     deferrable_window_s: 90
     lanes: [chat]

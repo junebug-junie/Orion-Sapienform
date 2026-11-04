@@ -105,6 +105,7 @@ from .energy_stakes_gate import (
     energy_stakes_hold,
     hold_attention_row,
 )
+from .curiosity_replica_plan import plan_offer
 from .curiosity_offer_decisions import (
     load_prior_test_history,
     load_turn_snapshot,
@@ -214,6 +215,7 @@ from orion.curiosity.self_question_pool import (
 )
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.value import (
+    ARM_REPLICA_ORDER,
     ARM_VALUE_ORDER,
     YieldModel,
     build_yield_model,
@@ -968,6 +970,12 @@ class CuriosityInvestigation:
         spend_log_enabled: bool = True,
         value_order_enabled: bool = False,
         value_order_propensity: float = 0.5,
+        # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
+        # orion-mind plans the top of the offer for this share of runs; Hub waits at most
+        # replica_plan_deadline_sec for the plan, then uses the uncertainty order.
+        replica_arm_enabled: bool = False,
+        replica_arm_propensity: float = 0.0,
+        replica_plan_deadline_sec: float = 90.0,
         yield_window: int = 3,
         yield_pseudo_tests: float = 2.0,
         # --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED, default off) ---
@@ -1190,6 +1198,12 @@ class CuriosityInvestigation:
         self.spend_log_enabled = bool(spend_log_enabled)
         self.value_order_enabled = bool(value_order_enabled)
         self.value_order_propensity = float(value_order_propensity)
+        self.replica_arm_enabled = bool(replica_arm_enabled)
+        self.replica_arm_propensity = float(replica_arm_propensity)
+        self.replica_plan_deadline_sec = float(replica_plan_deadline_sec)
+        # The scored history the last yield model was built from (the replica's candidates show each
+        # prior's last move from it). Set by _load_yield_model.
+        self._last_prior_history: list = []
         self.yield_window = int(yield_window)
         self.yield_pseudo_tests = float(yield_pseudo_tests)
         # Energy as a stake: a fresh orion-energy snapshot at/over RMP's
@@ -1413,6 +1427,7 @@ class CuriosityInvestigation:
             history = await load_prior_test_history(
                 self._pool_provider(), days=SPEND_HISTORY_DAYS
             )
+        self._last_prior_history = list(history)
         return build_yield_model(
             history, window=self.yield_window, pseudo_tests=self.yield_pseudo_tests
         )
@@ -2457,14 +2472,16 @@ class CuriosityInvestigation:
         # first, or expected belief change (entropy x measured learning
         # yield). A per-run random arm, so the two can be compared; with the
         # switch off every run is the uncertainty arm. See orion/curiosity/value.py.
-        # The draw is three-way (value / replica / uncertainty), but no replica propensity is passed:
-        # the curiosity replica cannot answer a plan request yet (patch 3 of
-        # docs/superpowers/specs/2026-11-04-curiosity-replica-design.md), so no run is drawn onto it
-        # and every run gets exactly the two-arm draw it got before.
+        # The draw is three-way (value / replica / uncertainty): on the replica arm orion-mind's
+        # curiosity replica writes the top of the order (docs/superpowers/specs/2026-11-04-curiosity-
+        # replica-design.md). The arm is drawn BEFORE any plan exists, so every replica-arm run counts
+        # as replica, fallback or not (intention to treat).
         draw = draw_offer_arm(
             run_id,
             value_enabled=self.value_order_enabled,
             value_propensity=self.value_order_propensity,
+            replica_enabled=self.replica_arm_enabled,
+            replica_propensity=self.replica_arm_propensity,
         )
         arm, value_arm_propensity = draw.arm, draw.value_arm_propensity
         yield_model = await self._load_yield_model()
@@ -2482,6 +2499,24 @@ class CuriosityInvestigation:
         view = await self._read_worldview(
             last_run_id, rotate_seed=run_id, expected_nats_for=expected_nats_for
         )
+        if arm == ARM_REPLICA_ORDER:
+            # After the arm draw and the worldview read, before the offer row: the row records the
+            # order this run is really shown. `view` is the uncertainty order (the fallback); a good
+            # plan only re-orders its top. The plan's reasons go to the plan row, never into `view`.
+            view = (await plan_offer(
+                bus=self._bus,
+                pool=self._pool_provider(),
+                run_id=run_id,
+                view=view,
+                yield_model=yield_model,
+                history=self._last_prior_history,
+                sample=self.prior_sample,
+                stale_after=self.stale_prior_tests,
+                coverage_slots=self.prior_coverage_slots,
+                deadline_sec=self.replica_plan_deadline_sec,
+                source=self._source_ref,
+                focus_enabled=self.focus_enabled,
+            )).view
         await self._record_offer(
             run_id=run_id,
             arm=arm,

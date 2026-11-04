@@ -182,7 +182,7 @@ def test_a_tick_records_the_offer_the_start_snapshot_and_what_the_run_moved() ->
     run_id, decision = next(iter(conn.decisions.items()))
     assert decision["arm"] == ARM_UNCERTAINTY_ORDER  # the value switch is off by default
     assert decision["value_arm_propensity"] == 0.0
-    # The whole draw is recorded, all three arms; the replica arm is never drawn by Hub yet.
+    # The whole draw is recorded, all three arms (the loop's own defaults leave both switches off).
     assert decision["arm_propensities"] == {
         ARM_VALUE_ORDER: 0.0, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 1.0,
     }
@@ -632,16 +632,17 @@ def test_offered_rows_record_which_slot_each_prior_came_from() -> None:
     assert [(r["prior_id"], r["slot"]) for r in rows] == [("a", "order"), ("b", "coverage")]
 
 
-def test_live_config_draws_two_arms_and_records_the_replica_at_zero() -> None:
-    """Patch 2 of the curiosity replica: the draw is three-way, but Hub passes no replica
-    propensity until the replica can answer (patch 3). With the live config (value arm on at
-    0.5) a run is value or uncertainty, exactly as before, and its row says P(replica) = 0."""
+def test_with_the_replica_arm_off_the_draw_is_the_old_two_arm_draw() -> None:
+    """Rollback (HUB_CURIOSITY_REPLICA_ARM_ENABLED=false): the draw is three-way but the replica band
+    has width 0, so a run is value or uncertainty exactly as before patch 3, and its row says
+    P(replica) = 0. The live config (three equal arms) is tested in test_curiosity_replica_plan.py."""
     bus = _FakeBus()
     conn = _SpendConn()
     states = [_state("half", 0.5, 0), _state("lean", 0.7, 0)]
     reader = _reader(states)
     loop = _graph_loop(
-        bus, reader=reader, conn=conn, value_order_enabled=True, value_order_propensity=0.5
+        bus, reader=reader, conn=conn, value_order_enabled=True, value_order_propensity=0.5,
+        replica_arm_enabled=False, replica_arm_propensity=0.3333,
     )
     _moves_during_turn(loop, reader, lambda rid: states)
     assert asyncio.run(loop.tick()) is None

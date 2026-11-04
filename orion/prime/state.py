@@ -208,7 +208,8 @@ class PrimeSnapshotV1(BaseModel):
 # Prime's first published call (curiosity replica design 2026-11-04, section 2): a read-only view of its
 # open concerns, so another loop instance (the curiosity replica) can read what Prime is concerned about
 # without touching Prime's private state. Written to this Redis key as JSON; the writer lands with the
-# replica that reads it (patch 3), so nothing writes or reads the key yet.
+# replica that reads it (patch 3): PrimeRuntime.save (services/orion-mind/app/prime_loop.py) writes it after every
+# state save, and the replica (services/orion-mind/app/replica_loop.py) reads it.
 PRIME_CONCERNS_KEY = "orion:prime:concerns"
 
 

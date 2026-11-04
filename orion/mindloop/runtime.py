@@ -27,9 +27,10 @@ NotImplementedError here):
 * ``_upkeep() -> (inputs, now)``; ``_wants_to_think(now)``; ``_pending_count()``; ``_tell(text)`` (a line in
   the next frame that is NOT a reason to think); ``_thought_act(thought_id, horizon_sec)``; ``_woke_note()``;
   ``_ask(inputs, now) -> ModelReply``; ``_parse_answer(parsed) -> (answer, error)``;
-  ``_conclude(act, thought_id, inputs, now, reply, answer) -> (produced, note)``; ``_after_think()``*;
+  ``_conclude(act, thought_id, inputs, now, reply, answer) -> (produced, note)`` (``produced`` None: the
+  instance keeps the thought act open and closes it itself later); ``_after_think()``*;
   ``_log_started()``*; ``_new_thought_id()``*; ``_want_extras()``* (more ``WantV1`` fields, e.g. a request's
-  ``object_ref``); ``_on_not_funded(decision)``* and ``_on_no_model(reply)``* (an instance that answers a
+  ``object_ref``); ``_may_retry_5xx()``* (default True); ``_on_not_funded(decision)``* and ``_on_no_model(reply)``* (an instance that answers a
   requester can tell it why no thought happened). ``wake()`` ends the current tick wait early (a request
   arrived); Prime never calls it.
 
@@ -378,6 +379,10 @@ class MindLoopRuntime:
         except Exception as exc:  # noqa: BLE001 -- the act always closes
             self.log.exception(f"{self.identity.name}_thought_crashed thought=%s", thought_id)
             produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
+        if produced is None:
+            # The instance holds the act open and closes it itself later (the curiosity replica grades a
+            # plan on the run it ordered). Prime's _conclude never returns None.
+            return
         await self._close(act, component, produced=produced, note=f"{woke} | {note}")
 
     async def _settle_reply(self, act: ActV1, thought_id: str, inputs: Any, now: datetime,
@@ -428,7 +433,7 @@ class MindLoopRuntime:
         route = self._route()
         started = time.monotonic()
         reply = await self._call(route, system, frame)
-        if reply.kind == "upstream_5xx":
+        if reply.kind == "upstream_5xx" and self._may_retry_5xx():
             self.log.info(f"{self.identity.name}_upstream_5xx_retry route=%s err=%s", route, (reply.err or "-")[:160])
             started = time.monotonic()
             reply = await self._call(route, system, frame)
@@ -486,7 +491,7 @@ class MindLoopRuntime:
         raise NotImplementedError
 
     async def _conclude(self, act: ActV1, thought_id: str, inputs: Any, now: datetime, reply: ModelReply,
-                        answer: Any) -> tuple[bool, str]:
+                        answer: Any) -> tuple[Optional[bool], str]:
         raise NotImplementedError
 
     async def _after_think(self) -> None:
@@ -494,6 +499,11 @@ class MindLoopRuntime:
 
     def _want_extras(self) -> dict[str, Any]:
         return {}
+
+    def _may_retry_5xx(self) -> bool:
+        """Whether the one immediate retry after an upstream 5xx may run (an instance with a deadline says no
+        when a second full call would end past it). Prime: always."""
+        return True
 
     async def _on_not_funded(self, decision: Any) -> None:
         return None

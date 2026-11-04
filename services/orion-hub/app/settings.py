@@ -1007,8 +1007,23 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
     )
+    # 1/3 since the replica arm went on (patch 3, 2026-11-04): value, replica and uncertainty each get
+    # an equal share (uncertainty is the rest, 0.3334).
     HUB_CURIOSITY_VALUE_ORDER_PROPENSITY: float = Field(
-        default=0.5, ge=0.0, le=1.0, alias="HUB_CURIOSITY_VALUE_ORDER_PROPENSITY"
+        default=0.3333, ge=0.0, le=1.0, alias="HUB_CURIOSITY_VALUE_ORDER_PROPENSITY"
+    )
+    # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
+    # on this share of investigate runs orion-mind's replica plans the top of the offer. Hub waits
+    # at most PLAN_DEADLINE_SEC for the plan, then uses the uncertainty order and records why.
+    # false: no run is drawn onto the arm (rule arms only, as before). Shipped ON.
+    HUB_CURIOSITY_REPLICA_ARM_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_REPLICA_ARM_ENABLED"
+    )
+    HUB_CURIOSITY_REPLICA_ARM_PROPENSITY: float = Field(
+        default=0.3333, ge=0.0, le=1.0, alias="HUB_CURIOSITY_REPLICA_ARM_PROPENSITY"
+    )
+    HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC: float = Field(
+        default=90.0, gt=0.0, le=300.0, alias="HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC"
     )
     HUB_CURIOSITY_YIELD_WINDOW: int = Field(
         default=3, ge=1, alias="HUB_CURIOSITY_YIELD_WINDOW"

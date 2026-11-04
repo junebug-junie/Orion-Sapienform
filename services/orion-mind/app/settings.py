@@ -168,6 +168,32 @@ class Settings(BaseSettings):
     # memo alone decides (a restart may then probe once early).
     SELF_MONITOR_LEDGER_PG_DSN: str = Field(default="", alias="SELF_MONITOR_LEDGER_PG_DSN")
 
+    # The curiosity replica (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md; app/replica_loop.py):
+    # instance #2 of the loop library. Answers Hub's plan requests on the replica arm: one model call per plan,
+    # family curiosity.replica (tier 2, lane chat). Off: no listener, no bids; Hub's replica-arm runs then time
+    # out to the uncertainty order. Shipped ON.
+    CURIOSITY_REPLICA_ENABLED: bool = Field(default=True, alias="CURIOSITY_REPLICA_ENABLED")
+    # The wait between ticks; a plan request wakes the loop at once.
+    CURIOSITY_REPLICA_TICK_SEC: float = Field(default=15.0, gt=0.0, alias="CURIOSITY_REPLICA_TICK_SEC")
+    # The no-model backoff's base (the library floors it at 60 s). A request's own deadline bounds retries.
+    CURIOSITY_REPLICA_REFRACTORY_SEC: float = Field(default=0.0, ge=0.0, alias="CURIOSITY_REPLICA_REFRACTORY_SEC")
+    # How often open plans are checked against their run's score (Postgres, read-only).
+    CURIOSITY_REPLICA_SETTLE_INTERVAL_SEC: float = Field(default=300.0, gt=0.0, alias="CURIOSITY_REPLICA_SETTLE_INTERVAL_SEC")
+    # The warm chat lane Prime uses (config/gpu_pool.yaml route `prime`); no new allocation.
+    CURIOSITY_REPLICA_LLM_ROUTE: str = Field(default="prime", alias="CURIOSITY_REPLICA_LLM_ROUTE")
+    # Most a try may wait for a seat; cut further so seat wait + generation end before Hub's deadline.
+    CURIOSITY_REPLICA_SEAT_WAIT_SEC: float = Field(default=45.0, ge=0.0, le=300.0, alias="CURIOSITY_REPLICA_SEAT_WAIT_SEC")
+    CURIOSITY_REPLICA_BID_LANE: str = Field(default="chat", alias="CURIOSITY_REPLICA_BID_LANE")
+    CURIOSITY_REPLICA_MAX_TOKENS: int = Field(default=500, gt=0, alias="CURIOSITY_REPLICA_MAX_TOKENS")
+    # Generation budget per plan (also the bid's cost ceiling). A request with less time left than this
+    # (minus a 5 s answer margin) is answered "unfunded"/"model_failed" instead of tried.
+    CURIOSITY_REPLICA_LLM_TIMEOUT_SEC: float = Field(default=40.0, gt=0.0, alias="CURIOSITY_REPLICA_LLM_TIMEOUT_SEC")
+    # Hub (host network on athena): recent investigate runs for the frame (/curiosity/api/runs).
+    CURIOSITY_REPLICA_HUB_URL: str = Field(default="http://100.92.216.81:8080", alias="CURIOSITY_REPLICA_HUB_URL")
+    # Read-only Postgres: Hub's plan rows, the runs' spend-log scores, the newest chat-history digest.
+    # Empty: those frame sections show as unavailable and open plans are never graded.
+    CURIOSITY_REPLICA_PG_DSN: str = Field(default="", alias="CURIOSITY_REPLICA_PG_DSN")
+
     # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
     ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")
 

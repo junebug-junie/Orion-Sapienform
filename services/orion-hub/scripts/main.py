@@ -738,6 +738,9 @@ async def startup_event():
                 spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
                 value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,
                 value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
+                replica_arm_enabled=settings.HUB_CURIOSITY_REPLICA_ARM_ENABLED,
+                replica_arm_propensity=settings.HUB_CURIOSITY_REPLICA_ARM_PROPENSITY,
+                replica_plan_deadline_sec=settings.HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC,
                 yield_window=settings.HUB_CURIOSITY_YIELD_WINDOW,
                 yield_pseudo_tests=settings.HUB_CURIOSITY_YIELD_PSEUDO_TESTS,
                 # Energy as a stake (default off): reads the latest

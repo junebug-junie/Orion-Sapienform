@@ -403,6 +403,9 @@ SYNC_PREFIXES = (
     # Orion Prime 2A resident loop (orion-mind, 2026-10-30). Same blind spot: without the prefix the
     # eleven PRIME_* keys never reach the live .env.
     "PRIME_",
+    # The curiosity replica (orion-mind, 2026-11-04 patch 3): loop-library instance #2. Hub's side
+    # (HUB_CURIOSITY_REPLICA_ARM_*) is already covered by HUB_CURIOSITY_.
+    "CURIOSITY_REPLICA_",
     # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
     # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
     # (sql-writer since 2026-11-04; was the feedback runtime) and the cabinet attention bridge

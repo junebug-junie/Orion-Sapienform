@@ -149,7 +149,7 @@ Add on `HarnessRunV1` (and outcome molecule if consumers need it):
 | Field | Meaning |
 |-------|---------|
 | `response_repair_ran: bool` | Repair LLM was invoked |
-| `response_repair_reason: str \| None` | Why: e.g. `misaligned`, `uncertain`, `strain_unresolved`, or `null` when skipped |
+| `response_repair_reason: str \| None` | Why: e.g. `misaligned`, `uncertain`, `strain_unresolved`, or `null` when skipped. Since 2026-11-04 a repair that 5b asked for because of an `unsupported claim:` note (with Situation notes) replaces the verdict reason with the perception re-check's outcome: `unsupported_claim` (re-check passed), `unsupported_claim_repaired_twice` (re-check still found one; repaired again), `unsupported_claim_unchecked` (re-check failed, degraded, or no reply budget left). Count all four with `misaligned` when watching how often 5b rejects drafts. |
 | `finalize_changed: bool` | Draft text ≠ final text (still useful; no longer the surprise proxy) |
 
 Passthrough: `finalize_ran=true`, `response_repair_ran=false`, `finalize_changed=false`.  

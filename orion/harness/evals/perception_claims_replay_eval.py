@@ -19,8 +19,9 @@ Cases, each run --repeats times:
 - fabricated_arrival / invented_name_origin: real drafts + fixed notes -> must be misaligned
 - honest_control: the second turn's question + a draft the notes support -> must be aligned
 - supported_street_control: the first turn's question + a supported street reply -> must be aligned
-- every misaligned verdict on a gated case is repaired with orion_response_repair.j2
-  and re-checked: the repair must come back aligned (5b -> 5c -> 5b)
+- every misaligned verdict on a gated case follows the live 5c path: repair, and for an
+  unsupported claim one re-check plus at most one more repair; then an extra 5b judges
+  the text that would be sent, which must come back aligned
 - recorded_notes_baseline: second draft + notes exactly as recorded (report only)
 
 Writes raw verdicts and notes to --out; pass = every gated case meets its
@@ -32,6 +33,7 @@ import argparse
 import json
 import re
 import sys
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,7 +41,7 @@ import httpx
 from jinja2 import Environment
 from sqlalchemy import create_engine, text
 
-from orion.harness.finalize import build_finalize_reflect_context
+from orion.harness.finalize import build_finalize_reflect_context, has_unsupported_claim
 from orion.harness.tests.fixtures import make_repair_overlay
 from orion.schemas.harness_finalize import SubstrateFinalizeAppraisalV1
 from orion.schemas.thought import ThoughtEventV1
@@ -89,6 +91,12 @@ def _turn(conn, corr: str, name: str) -> dict:
         "notes_recorded": notes,
         "notes_fixed": _RHYTHM_RE.sub(lambda _m: FIXED_RHYTHM.format(name=name), notes, count=1),
     }
+
+
+def _as_reflection(raw: dict) -> SimpleNamespace:
+    """Just enough of FinalizeReflectionV1 for has_unsupported_claim."""
+    notes = raw.get("alignment_notes") if isinstance(raw, dict) else None
+    return SimpleNamespace(alignment_notes=notes if isinstance(notes, list) else [])
 
 
 def _chat(url: str, prompt: str, max_tokens: int) -> str:
@@ -155,15 +163,30 @@ def main() -> int:
         runs = [_reflect(args.llm_url, turn, **kw) for _ in range(args.repeats)]
         ok = None if want is None else all(r["verdict"] == want for r in runs)
         if want == "misaligned":
-            # Close the loop: 5c repairs from 5b's notes, then 5b re-checks the repair.
+            # The live 5c path (finalize._recheck_unsupported_claim_repair): repair from
+            # 5b's notes; when 5b listed an unsupported claim, re-check the repair once and
+            # repair once more if the claim is still there. Then one extra 5b judges what
+            # would be sent (measurement only -- live sends without it).
             for r in runs:
-                if r["verdict"] == "misaligned":
-                    r["repaired"] = _repair(args.llm_url, turn, draft=kw["draft"], reflection=r["reflection"], notes=kw["notes"])
-                    r["repaired_verdict"] = _reflect(args.llm_url, turn, draft=r["repaired"], notes=kw["notes"])["verdict"]
-                    ok = ok and r["repaired_verdict"] == "aligned"
+                # Live repairs any misaligned/uncertain verdict, and re-checks whenever an
+                # unsupported claim was listed (not only on misaligned).
+                if r["verdict"] not in ("misaligned", "uncertain") and not has_unsupported_claim(_as_reflection(r["reflection"])):
+                    continue
+                notes = kw["notes"]
+                reply = _repair(args.llm_url, turn, draft=kw["draft"], reflection=r["reflection"], notes=notes)
+                r["first_repair"] = reply
+                if has_unsupported_claim(_as_reflection(r["reflection"])):
+                    recheck = _reflect(args.llm_url, turn, draft=reply, notes=notes)
+                    r["recheck_verdict"] = recheck["verdict"]
+                    if has_unsupported_claim(_as_reflection(recheck["reflection"])):
+                        reply = _repair(args.llm_url, turn, draft=reply, reflection=recheck["reflection"], notes=notes)
+                        r["second_repair"] = True
+                r["repaired"] = reply
+                r["repaired_verdict"] = _reflect(args.llm_url, turn, draft=reply, notes=notes)["verdict"]
+                ok = ok and r["repaired_verdict"] == "aligned"
         passed = passed and ok is not False
         report["cases"][name] = {"expect": want, "pass": ok, "runs": runs}
-        repaired = [r["repaired_verdict"] for r in runs if "repaired_verdict" in r]
+        repaired = [r["repaired_verdict"] + ("*" if r.get("second_repair") else "") for r in runs if "repaired_verdict" in r]
         print(f"{name:26s} expect={want!s:10s} got={[r['verdict'] for r in runs]}"
               + (f" repaired->{repaired}" if repaired else "") + f" pass={ok}")
     report["passed"] = passed

@@ -124,3 +124,29 @@ async def test_finalize_gets_the_situation_block_the_motor_saw() -> None:
         except AssertionError:
             pass
     assert seen["situation_notes"] == "Situation:\n- Walkway rhythm: x."
+
+
+@pytest.mark.asyncio
+async def test_finalize_gets_the_reply_deadline_for_the_perception_recheck() -> None:
+    from app import bus_listener
+
+    seen = {}
+
+    async def chain(**kw):
+        seen.update(kw)
+        raise AssertionError("stop after capture")
+
+    for budget, expect_none in ((120.0, False), (None, True)):
+        req = _request(budget)
+        before = time.monotonic()
+        with patch.object(bus_listener, "HarnessRunner",
+                          return_value=AsyncMock(run=AsyncMock(return_value=_motor(req.thought_event)))), \
+                patch.object(bus_listener, "run_harness_finalize_chain", chain):
+            try:
+                await bus_listener.handle_harness_run_request(AsyncMock(), req, reply_to="r")
+            except AssertionError:
+                pass
+        if expect_none:
+            assert seen["deadline_monotonic"] is None
+        else:
+            assert before < seen["deadline_monotonic"] <= time.monotonic() + budget

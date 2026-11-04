@@ -38,7 +38,7 @@ NOTE_ID = f"fn:{PR}:0123456789"
 
 def note_line(pr, note_id, *, note="[pr_text] A real note about the change in my body here."):
     """A ledger line in the PrFieldNoteV1 shape (written as JSON: tests outside the atlas and dig do
-    not import the ledger module, tests/test_organ_names_partition.py)."""
+    not import the ledger module: the repo-wide partition test under tests/)."""
     return json.dumps({"schema_version": "pr_field_note.v1", "note_id": note_id, "pr_number": pr,
                        "merge_sha": "a" * 40, "merged_at": "2026-11-05T10:00:00+00:00", "title": "t",
                        "flags": {}, "body_map": [], "note": note, "written_at": "2026-11-05T11:00:00+00:00"})

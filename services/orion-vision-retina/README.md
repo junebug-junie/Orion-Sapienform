@@ -194,8 +194,9 @@ unpadded it ran on into `p256ecdsa` and produced 137 bytes instead of a
 `salt`) parameter, in any order, `;`- or `,`-separated. A skip line now
 also prints the header layout (parameter names and value lengths, never
 values), e.g. `headers crypto-key=[dh:87 p256ecdsa:87] encryption=[salt:22]`.
-Live check after a restart: `ring_events_seen` grows and
-`journalctl CONTAINER_NAME=orion-vision-retina-doorbell -o cat | grep -c "Incorrect padding"`
+Live check after a restart: `ring_events_seen` grows,
+`ring_push_messages_skipped` stays 0, and
+`docker logs orion-vision-retina-doorbell 2>&1 | grep -cE "Incorrect padding|Invalid EC key"`
 stops growing. Each live view is
 registered with Ring before it starts, so every exit path (no answer, error,
 shutdown) closes it -- an orphaned session keeps a battery camera streaming.

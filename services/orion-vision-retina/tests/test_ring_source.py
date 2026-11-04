@@ -1001,10 +1001,10 @@ def _vapid_pub() -> bytes:
 
 def _fcm_push(payload: dict, *, crypto_key_override: str | None = None,
               crypto_key_header: str | None = None, encryption_header: str | None = None):
-    """``crypto_key_header``/``encryption_header``: format strings with ``{dh}``,
-    ``{vapid}`` / ``{salt}`` for the whole header (default ``dh={dh}`` / ``salt={salt}``)."""
     """A real aesgcm-encrypted FCM data message the way FCM sends it since
-    2026-10-28: crypto-key and salt WITHOUT base64 padding."""
+    2026-10-28: crypto-key and salt WITHOUT base64 padding.
+    ``crypto_key_header``/``encryption_header``: format strings with ``{dh}``,
+    ``{vapid}`` / ``{salt}`` for the whole header (default ``dh={dh}`` / ``salt={salt}``)."""
     import json as _json
 
     import http_ece
@@ -1248,6 +1248,7 @@ def test_padding_the_whole_header_value_gives_invalid_ec_key():
     ("p256ecdsa={vapid};dh={dh}", None),
     (" dh={dh} ; p256ecdsa={vapid} ", "salt={salt};rs=4096"),
     ("keyid=p256dh;dh={dh};p256ecdsa={vapid}", "rs=4096;salt={salt}"),
+    ('dh="{dh}";p256ecdsa="{vapid}"', 'salt="{salt}"'),
 ])
 def test_patched_client_delivers_multi_parameter_headers(fcm_client_class, crypto_key_header, encryption_header):
     rs.ensure_fcm_push_tolerance()
@@ -1267,6 +1268,13 @@ def test_header_param():
     assert rs._header_param("DH=AAA=", "dh") == "AAA="
     assert rs._header_param("p256ecdsa=BBB", "dh") is None
     assert rs._header_param("", "dh") is None
+    assert rs._header_param('dh="AAA";p256ecdsa=BBB', "dh") == "AAA"
+
+
+def test_header_shape_never_prints_a_bare_value():
+    msg = SimpleNamespace(app_data=[SimpleNamespace(key="crypto-key", value="BAREKEYVALUE"),
+                                    SimpleNamespace(key="encryption", value="salt=SSSS")])
+    assert rs._header_shape(msg) == "crypto-key=[?:12] encryption=[salt:4]"
 
 
 def test_skip_log_shows_header_layout_but_not_values(fcm_client_class):

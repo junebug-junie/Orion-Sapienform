@@ -104,7 +104,7 @@ def _header_param(header: str, name: str) -> str | None:
         for part in entry.split(";"):
             key, sep, value = part.strip().partition("=")
             if sep and key.strip().casefold() == want:
-                return value.strip()
+                return value.strip().strip('"')
     return None
 
 
@@ -114,8 +114,9 @@ def _header_shape(msg: Any) -> str:
     out = []
     for ad in getattr(msg, "app_data", []) or []:
         if ad.key in _PUSH_HEADER_PARAMS:
-            parts = [f"{k.strip()}:{len(v.strip())}" for entry in ad.value.split(",")
-                     for k, _, v in (p.partition("=") for p in entry.split(";"))]
+            parts = [f"{k.strip() if sep else '?'}:{len(v.strip()) if sep else len(k.strip())}"
+                     for entry in ad.value.split(",")
+                     for k, sep, v in (p.partition("=") for p in entry.split(";"))]
             out.append(f"{ad.key}=[{' '.join(parts)}]")
     return " ".join(out) or "no push headers"
 
@@ -181,9 +182,11 @@ def ensure_fcm_push_tolerance() -> None:
         return decrypt(credentials, _b64url_padded(crypto_key_str), _b64url_padded(salt_str), *args, **kwargs)
 
     def _handle_data_message(self, msg, *args, **kwargs):
-        shape = "?"
         try:
             shape = _header_shape(msg)
+        except Exception:  # noqa: BLE001 -- logging must never drop a message
+            shape = "?"
+        try:
             _normalize_push_headers(msg)
             out = handle(self, msg, *args, **kwargs)
         except Exception as exc:  # noqa: BLE001 -- one bad message must not kill the listener

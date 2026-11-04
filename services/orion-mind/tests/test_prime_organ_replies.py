@@ -113,3 +113,11 @@ def test_organ_refusal_reads_only_refusals_of_that_act():
                                 stance="challenge", reason="r", at=T0)])
     assert organ_refusal("p1", v) is None and organ_refusal("p1", None) is None
     assert SETTINGS.PRIME_TICK_SEC == 15   # the shared fake settings carry no replica switch (off by default)
+
+
+def test_an_old_view_says_the_organ_may_not_be_running():
+    rt = answers_on(runtime(answer={"reading": "ok"}))
+    put_view(rt.bus, "act_somebody", at=T0 - timedelta(hours=2))
+    asyncio.run(rt.tick())
+    frame = rt.llm.calls[0]["user_prompt"]
+    assert "curiosity.replica may not be running, so a recent reply may be missing" in frame

@@ -9,7 +9,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.replica_loop import PENDING_FOCUS_SQL, ReplicaRuntime
+from app.replica_loop import FOCUS_REFUSED_SQL, PENDING_FOCUS_SQL, REPLY_RETRY_SEC, ReplicaRuntime
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.curiosity.replica.answers import question_act_id
 from orion.mindloop.turns import JuniperTurns
@@ -75,9 +75,10 @@ class ABus(Bus):
         self.timeline.append(("publish", channel))
         await super().publish(channel, envelope)
 
-    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, require_listener=False):
         self.timeline.append(("rpc", channel))
         self.rpcs.append((channel, envelope, timeout_sec))
+        assert require_listener, "a refusal RPC must fail fast when Hub is not listening"
         if self.hub_silent:
             raise TimeoutError("no reply")
         req = CuriosityFocusRefusalRequestV1.model_validate(envelope.payload)
@@ -89,14 +90,18 @@ class ABus(Bus):
 
 
 class APG(PG):
-    def __init__(self, focus_rows=None, **kw):
+    def __init__(self, focus_rows=None, refused_act_id=None, **kw):
         super().__init__(**kw)
         self.focus_rows = focus_rows or []
+        self.refused_act_id = refused_act_id
 
     def __call__(self, sql, params=None):
         if sql == PENDING_FOCUS_SQL:
             self.calls.append((sql, params))
             return list(self.focus_rows)
+        if sql == FOCUS_REFUSED_SQL:
+            self.calls.append((sql, params))
+            return [{"refused_act_id": self.refused_act_id}]
         return super().__call__(sql, params)
 
 
@@ -262,11 +267,36 @@ def test_juniper_focus_or_orions_own_never_wakes_the_replica():
 
 def test_hub_refusing_the_refusal_or_not_answering_is_not_delivered_and_prime_is_not_told():
     for bus, words in ((ABus(hub_error="the focus is taken, not waiting in the slot"), "Hub refused: the focus is taken"),
-                       (ABus(hub_silent=True), "answer unknown")):
+                       (ABus(hub_silent=True), "the focus row shows no refusal of mine")):
         rt = answers_runtime(REFUSE, pg=APG(focus_rows=[prime_focus_row()]), bus=bus)
         asyncio.run(rt.tick())
         [rec] = rt.state.answers
         assert rec.delivered is False and words in rec.delivery_note and view(rt).replies == []
+
+
+def test_a_lost_reply_is_settled_from_the_focus_row_and_the_request_carries_not_after():
+    """Review finding: Hub could apply a refusal whose reply was lost; Prime then never heard it. The request now
+    carries not_after (Hub writes nothing past it) and the replica reads the row back."""
+    pg = APG(focus_rows=[prime_focus_row()])
+    rt = answers_runtime(REFUSE, pg=pg, bus=ABus(hub_silent=True))
+    act_id = None
+
+    real_open = rt._open
+
+    async def remember(act, component, *, at=None):
+        nonlocal act_id
+        if act.verb == "ask":
+            act_id = act.act_id
+            pg.refused_act_id = act_id          # Hub applied it before the reply was lost
+        return await real_open(act, component, at=at)
+
+    rt._open = remember
+    asyncio.run(rt.tick())
+    [(_, env, timeout)] = rt.bus.rpcs
+    req = CuriosityFocusRefusalRequestV1.model_validate(env.payload)
+    assert req.not_after is not None and abs((req.not_after - T0).total_seconds() - timeout) < 1.0
+    [rec] = rt.state.answers
+    assert rec.delivered is True and len(view(rt).replies) == 1
 
 
 # --- the caps -------------------------------------------------------------------------------------------------
@@ -289,7 +319,7 @@ def test_one_answer_per_prime_act_a_refractory_and_a_daily_cap():
     put_signal(rt, signal_id="sig3", act_id="act_r3")
     asyncio.run(rt.tick())
     assert len(rt.state.answers) == 2 and len(rt.llm.calls) == 2
-    assert "at most 2" in rt._blocker(rt.state.pending_targets[0], rt.clock())
+    assert "at most 2" in rt._blocker(rt.state.pending_targets[0], rt.clock()).why
 
 
 def test_never_an_answer_to_an_act_whose_parent_is_an_answer():
@@ -300,7 +330,56 @@ def test_never_an_answer_to_an_act_whose_parent_is_an_answer():
     from orion.curiosity.replica.answers import TargetV1
 
     loop = TargetV1(kind="signal", target_id="sigX", prime_act_id="act_prime_x", parent_act_id=mine)
-    assert rt._blocker(loop, rt.clock() + timedelta(hours=2)) == "its parent is one of my answers (no answer to an answer)"
+    assert rt._blocker(loop, rt.clock() + timedelta(hours=2)).code == "answer_parent"
+
+
+def test_an_unfunded_reply_backs_off_instead_of_bidding_every_tick():
+    """Review must-fix: a deferred reply bid re-bid every 15 s for as long as Prime's act was live."""
+    rt = answers_runtime(REFUSE, outcome="deferred")
+    put_signal(rt)
+    for _ in range(10):
+        asyncio.run(rt.tick())
+        advance(rt, 15)
+    assert len(rt.bids) == 1 and rt.llm.calls == []
+    advance(rt, REPLY_RETRY_SEC)
+    asyncio.run(rt.tick())
+    assert len(rt.bids) == 2
+
+
+def test_a_reply_refused_by_the_act_gate_backs_off_too():
+    rt = answers_runtime(REFUSE)
+    put_signal(rt)
+
+    from orion.mindloop.runtime import MindLoopRuntime
+
+    async def gate_refuses(self, now):
+        return False
+
+    orig = MindLoopRuntime._thought_gate_admits
+    MindLoopRuntime._thought_gate_admits = gate_refuses
+    try:
+        for _ in range(5):
+            asyncio.run(rt.tick())
+            advance(rt, 15)
+    finally:
+        MindLoopRuntime._thought_gate_admits = orig
+    assert rt.bids == [] and rt._reply_retry_at is not None and rt._reply_retry_at > rt.clock()
+
+
+def test_a_plan_request_that_arrives_during_a_reply_names_the_reply_if_it_runs_out_of_time():
+    rt = answers_runtime(REFUSE)
+    put_signal(rt)
+    env = plan_request(from_prime=False, origin="juniper")
+    real = rt.llm.request_json
+
+    def arrive_then_answer(**kw):
+        rt.accept(env)
+        return real(**kw)
+
+    rt.llm.request_json = arrive_then_answer
+    asyncio.run(rt.tick())
+    [pending] = rt.requests
+    assert pending.miss_why == "a reply thought to Prime was running when it arrived"
 
 
 def test_answers_off_means_no_watch_no_reply_no_view():
@@ -345,6 +424,34 @@ def test_a_plan_stance_on_juniper_focus_is_recorded_on_the_plan_row_only():
     rt.accept(plan_request(from_prime=False, origin="juniper"))
     asyncio.run(rt.tick())
     assert rt.bus.rpcs == [] and answer_acts(rt) == [] and rt.state.answers == []
+
+
+def test_one_plan_answers_both_the_focus_and_the_signal():
+    """Review finding: the second stance of one plan was dropped by the 30-minute refractory."""
+    plan = {**PLAN, "focus_stance": {"stance": "challenge", "reason": "it repeats yesterday's question"},
+            "signal_stance": {"signal_id": "sig1", "stance": "refuse", "reason": "curiosity is not running hot"}}
+    rt = answers_runtime(plan)
+    put_signal(rt)
+    rt.accept(plan_request())
+    asyncio.run(rt.tick())
+    assert sorted((a.kind, a.stance) for a in rt.state.answers) == [("focus", "challenge"), ("signal", "refuse")]
+    assert pc.parse_refusal(rt.bus.redis.h[pc.key(CURIOSITY)][pc.REFUSAL_FIELD]).signal_id == "sig1"
+    assert len({a.thought_id for a in rt.state.answers}) == 1
+
+
+def test_the_replies_view_expires_with_its_window():
+    rt = answers_runtime(CHALLENGE)
+    put_signal(rt)
+    seen = {}
+    real = rt.bus.redis.set
+
+    async def spy(key, value, ex=None):
+        seen[key] = ex
+        return await real(key, value, ex=ex)
+
+    rt.bus.redis.set = spy
+    asyncio.run(rt.tick())
+    assert seen[REPLIES_KEY] == 48 * 3600
 
 
 def test_a_plan_signal_stance_on_the_live_signal_is_an_answer_to_prime():

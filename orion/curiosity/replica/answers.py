@@ -17,9 +17,12 @@ Every answer is an act: actor ``curiosity.replica``, verb ``ask``, ``parent_act_
 Prime's act (so a second answer to the same act is the same act id), ``test_before = holdback:<arm>``. It
 closes at once; its note starts with the stance (``refuse: <reason>``), which is how the readout reads it.
 
-The rules (``answer_blocker``): one answer per Prime act; at most ``per_day`` answers in any 24 h; at least
-``refractory_sec`` between two answers; never an answer to an act whose parent is itself an answer (no
-Prime-replica argument loop).
+The rules (``answer_blocker``, which returns a ``Block`` with a code and plain words): one answer per Prime act;
+at most ``per_day`` answers in any 24 h; at least ``refractory_sec`` between two answers made by DIFFERENT
+thoughts (one plan may answer both the focus and the signal; both count against the daily cap); never an
+answer to an act whose parent is itself an answer (no Prime-replica argument loop). Today Prime's acts are
+parented to Prime's own thought acts, never to an answer, so that last rule is a standing guard that real data
+does not reach yet; the caps are what bound a loop now.
 
 Holdback (``draw_answer_arm``): a deterministic draw per (Prime act, stance), like Prime's ``draw_arm``.
 ``control``: a refusal is recorded but not applied (the focus is still shown, the charge still applies); a
@@ -36,6 +39,7 @@ the signal was gone or replaced, a write failed). Same rule both arms, so the ho
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Literal, Optional, Sequence
 
@@ -117,6 +121,8 @@ class AnswerRecordV1(BaseModel):
     delivery_note: str = ""
     about: str = ""
     source: AnswerSource = "reply"
+    # The thought that made it (a plan or reply thought id): two answers of one thought skip the refractory.
+    thought_id: Optional[str] = None
     at: AwareDatetime
 
 
@@ -202,24 +208,40 @@ def answer_produced(record: AnswerRecordV1) -> bool:
     return True if record.arm == "control" or record.stance == "support" else bool(record.delivered)
 
 
+@dataclass(frozen=True)
+class Block:
+    """Why an answer may not be made. ``code``: ``own`` | ``answer_parent`` | ``answered`` (never answerable:
+    the target leaves the queue) or ``daily_cap`` | ``refractory`` (not now: it waits)."""
+
+    code: str
+    why: str
+
+    @property
+    def final(self) -> bool:
+        return self.code in ("own", "answer_parent", "answered")
+
+
 def answer_blocker(answers: Sequence[AnswerRecordV1], target: TargetV1, now: datetime, *, per_day: int,
-                   refractory_sec: float, own_answer_ids: Iterable[str] = ()) -> Optional[str]:
-    """Why the replica may NOT answer ``target`` now, or None."""
+                   refractory_sec: float, own_answer_ids: Iterable[str] = (),
+                   thought_id: Optional[str] = None) -> Optional[Block]:
+    """Why the replica may NOT answer ``target`` now, or None. ``thought_id``: the thought asking; its own earlier
+    answers do not start the refractory (they still count against the daily cap)."""
     own = set(own_answer_ids) | {a.answer_act_id for a in answers}
     if target.actor == REPLICA_ACTOR or target.prime_act_id in own:
-        return "it is one of my own answers"
+        return Block("own", "it is one of my own answers")
     if target.parent_act_id and target.parent_act_id in own:
-        return "its parent is one of my answers (no answer to an answer)"
+        return Block("answer_parent", "its parent is one of my answers (no answer to an answer)")
     if any(a.prime_act_id == target.prime_act_id for a in answers):
-        return "I already answered it"
+        return Block("answered", "I already answered it")
     recent = [a for a in answers if (now - a.at) < timedelta(hours=24)]
     if len(recent) >= max(0, int(per_day)):
-        return f"I already answered Prime {len(recent)} times in the last 24 h (at most {int(per_day)})"
-    if answers:
-        last = max(a.at for a in answers)
+        return Block("daily_cap", f"I already answered Prime {len(recent)} times in the last 24 h (at most {int(per_day)})")
+    others = [a for a in answers if thought_id is None or a.thought_id != thought_id]
+    if others:
+        last = max(a.at for a in others)
         if (now - last).total_seconds() < float(refractory_sec):
-            return (f"my last answer was {int((now - last).total_seconds() // 60)} min ago "
-                    f"(at least {int(float(refractory_sec) // 60)} min between answers)")
+            return Block("refractory", f"my last answer was {int((now - last).total_seconds() // 60)} min ago "
+                                       f"(at least {int(float(refractory_sec) // 60)} min between answers)")
     return None
 
 
@@ -293,6 +315,7 @@ __all__ = [
     "ANSWER_COMPONENT",
     "ANSWER_HORIZON_SEC",
     "AnswerRecordV1",
+    "Block",
     "REFUSAL_ALARM_DAYS",
     "REFUSAL_RATE_ALARM",
     "REFUSAL_RATE_WINDOW",

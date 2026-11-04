@@ -312,6 +312,8 @@ def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
 
 
 ORGAN_REPLIES_WINDOW_H = 48
+# The replica writes its view on every 15 s save; older than this, it has probably stopped.
+ORGAN_REPLIES_STALE_SEC = 900.0
 
 
 def _organ_reply_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
@@ -324,6 +326,10 @@ def _organ_reply_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
         return [f"(unavailable: {REPLICA_ACTOR} has published no replies view)"]
     asked = {n.act_id: n.question for n in state.open_nominations}
     lines = []
+    age = (inputs.now - view.as_of).total_seconds()
+    if age > ORGAN_REPLIES_STALE_SEC:
+        lines.append(f"(the organ's view was last written {_age(inputs.now, view.as_of.isoformat())}: "
+                     f"{REPLICA_ACTOR} may not be running, so a recent reply may be missing)")
     for r in sorted(view.replies, key=lambda r: r.at, reverse=True):
         if (inputs.now - r.at).total_seconds() > ORGAN_REPLIES_WINDOW_H * 3600:
             continue
@@ -334,7 +340,9 @@ def _organ_reply_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
                else "challenged it (it still went ahead)")
         lines.append(f"- {_age(inputs.now, r.at.isoformat())}, {REPLICA_ACTOR} {did}; your {what} "
                      f"{about[:160]!r} (act {r.prime_act_id}). Its reason: {r.reason}")
-    return lines or [f"(no challenge or refusal from an organ in the last {ORGAN_REPLIES_WINDOW_H} h)"]
+    if not any(line.startswith("- ") for line in lines):
+        lines.append(f"(no challenge or refusal from an organ in the last {ORGAN_REPLIES_WINDOW_H} h)")
+    return lines
 
 
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:

@@ -12,7 +12,9 @@ run is shown it. A focus Juniper asked for, or one Orion chose in a conversation
 in ``organ_refusal_blocker``, in the UPDATE's own WHERE, and in the table's CHECK. ``ok`` false means nothing
 was written. Same reply rule as the introspect responders: only to exactly ``...:result:<correlation_id>``.
 
-Only APPLIED refusals reach here; the replica keeps its held-back ones (the holdback arm) on its own act.
+Only APPLIED refusals reach here; the replica keeps its held-back ones (the holdback arm) on its own act. A
+request past its ``not_after`` (the replica stopped waiting) is refused without writing, so a replica that lost
+the reply can trust the focus row.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from orion.schemas.curiosity_replica import (
 logger = logging.getLogger("orion-hub.curiosity_focus_refusal")
 
 UNAVAILABLE = "the focus table could not be written; nothing was refused"
+EXPIRED = "the refusal request arrived after the replica stopped waiting (not_after); nothing was refused"
 DISABLED = "the curiosity focus queue is switched off (HUB_CURIOSITY_FOCUS_ENABLED=false)"
 _UNDEFINED_COLUMN = "42703"
 _UNDEFINED_TABLE = "42P01"
@@ -75,6 +78,9 @@ class CuriosityFocusRefusalListener:
         await self._publish(reply, envelope, result)
 
     async def refuse(self, req: CuriosityFocusRefusalRequestV1) -> CuriosityFocusRefusalResultV1:
+        if req.not_after is not None and datetime.now(timezone.utc) > req.not_after:
+            # The replica has stopped waiting and reads the row instead: writing now would make its record wrong.
+            return CuriosityFocusRefusalResultV1(focus_id=req.focus_id, ok=False, error=EXPIRED)
         if not self.enabled:
             return CuriosityFocusRefusalResultV1(focus_id=req.focus_id, ok=False, error=DISABLED)
         pool = self.pool_provider()
@@ -130,4 +136,4 @@ class CuriosityFocusRefusalListener:
             self.task = None
 
 
-__all__ = ["CuriosityFocusRefusalListener", "DISABLED", "UNAVAILABLE"]
+__all__ = ["CuriosityFocusRefusalListener", "DISABLED", "EXPIRED", "UNAVAILABLE"]

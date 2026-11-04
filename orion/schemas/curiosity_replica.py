@@ -211,6 +211,9 @@ class CuriosityFocusRefusalRequestV1(BaseModel):
     act_id: str = Field(min_length=1)
     # Prime's question act it answers (stable_act_id("prime", "ask", focus_id)).
     prime_act_id: str = Field(min_length=1)
+    # The replica stops waiting at this time; Hub writes nothing after it, so after a lost reply the focus row
+    # (refused_act_id) says for certain whether this refusal was applied. None: no limit.
+    not_after: Optional[AwareDatetime] = None
 
 
 class CuriosityFocusRefusalResultV1(BaseModel):

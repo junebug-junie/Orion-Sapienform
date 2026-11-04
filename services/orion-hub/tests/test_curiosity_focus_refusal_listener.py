@@ -113,3 +113,19 @@ def test_switched_off_no_pool_a_db_error_or_a_bad_request_write_nothing_and_say_
     asyncio.run(lis.handle(envelope(focus.focus_id, reason="")))
     assert answer(lis)[2].error.startswith("invalid refusal request")
     assert asyncio.run(cf.read_pending(FocusPool(table))) is not None
+
+
+def test_a_request_past_its_not_after_writes_nothing():
+    """The replica stopped waiting and reads the row instead: a late write would make its record wrong."""
+    from datetime import datetime, timedelta, timezone
+
+    table = FocusTable()
+    focus = queued(table)
+    lis = listener(table)
+    env = envelope(focus.focus_id)
+    env = env.model_copy(update={"payload": {**env.payload,
+                                             "not_after": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}})
+    asyncio.run(lis.handle(env))
+    _, _, result = answer(lis)
+    assert not result.ok and result.error == rl.EXPIRED
+    assert asyncio.run(cf.read_pending(FocusPool(table))) is not None

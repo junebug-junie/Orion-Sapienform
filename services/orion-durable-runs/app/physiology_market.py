@@ -320,7 +320,7 @@ class Market:
         k, field_name = pc.key(sig.family), f"{pc.WANT_FIELD_PREFIX}{want.want_id}"
         try:
             prev = await redis.hget(k, field_name)
-            if prev is None and await redis.hlen(k) >= pc.MAX_WANT_FIELDS + 1:      # + the signal field
+            if prev is None and await redis.hlen(k) >= pc.MAX_WANT_FIELDS + 2:      # + the signal and refusal fields
                 return
             prev_m = None
             if prev is not None:

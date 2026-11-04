@@ -103,6 +103,16 @@ settings `CURIOSITY_REPLICA_*`, logs `curiosity_replica_*`.
 - **Guard:** its frames show its own refusal rate over its last 20 answers;
   `scripts/analysis/curiosity_replica_answers_readout.py` reports it daily (above 50% for 14 days: back to Juniper).
 - Off: `CURIOSITY_REPLICA_ANSWERS_ENABLED=false` (stances recorded on the plan row only; Prime shows no section).
+- **Deploy order:** orion-durable-runs (the market must read a signal refusal before one is written; an old market
+  keeps charging while the replica records the refusal as delivered), then orion-hub (the focus refusal
+  listener; without it a refusal fails fast as not delivered), then orion-mind.
+- **Rollback:** switch answering off first (above). Rolling orion-mind code back past this patch makes the older
+  replica refuse its saved state (three new fields, `extra="forbid"`): it starts empty, and its open plan acts
+  expire at the ledger horizon ungraded. The replies view expires on its own after 48 h.
+- A reply thought that is not funded, or that its act gate refuses, waits 5 minutes before it bids again. A plan
+  request that arrives during a reply thought and runs out of time says so in its fallback reason.
+- A focus refusal whose reply is lost is settled from the focus row (read-only): the request carries `not_after`
+  and Hub writes nothing after it.
 
 ## Orion Prime 2A: the resident loop (2026-10-30)
 

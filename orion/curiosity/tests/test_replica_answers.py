@@ -69,16 +69,28 @@ def test_one_act_per_prime_act_whatever_the_stance():
 def test_the_blocker_rules():
     caps = dict(per_day=3, refractory_sec=1800)
     assert answer_blocker([], SIG, NOW, **caps) is None
-    assert answer_blocker([rec()], SIG, NOW + timedelta(hours=5), **caps) == "I already answered it"
+    b = answer_blocker([rec()], SIG, NOW + timedelta(hours=5), **caps)
+    assert (b.code, b.why, b.final) == ("answered", "I already answered it", True)
     other = SIG.model_copy(update={"prime_act_id": "act_r2"})
-    assert "min between answers" in answer_blocker([rec(at=NOW - timedelta(minutes=10))], other, NOW, **caps)
+    b = answer_blocker([rec(at=NOW - timedelta(minutes=10))], other, NOW, **caps)
+    assert b.code == "refractory" and not b.final and "min between answers" in b.why
     three = [rec(f"act_{i}", at=NOW - timedelta(hours=h)) for i, h in enumerate((1, 5, 20))]
-    assert "at most 3" in answer_blocker(three, other, NOW, **caps)
+    b = answer_blocker(three, other, NOW, **caps)
+    assert b.code == "daily_cap" and "at most 3" in b.why and not b.final
     assert answer_blocker(three, other, NOW + timedelta(hours=4, minutes=1), **caps) is None   # oldest is 24 h+ old
     loop = other.model_copy(update={"parent_act_id": "ans_act_r1"})
-    assert answer_blocker([rec(at=NOW - timedelta(hours=3))], loop, NOW, **caps).startswith("its parent is one of my")
+    assert answer_blocker([rec(at=NOW - timedelta(hours=3))], loop, NOW, **caps).code == "answer_parent"
     mine = TargetV1(kind="signal", target_id="x", prime_act_id="act_x", actor="curiosity.replica")
-    assert answer_blocker([], mine, NOW, **caps) == "it is one of my own answers"
+    assert answer_blocker([], mine, NOW, **caps).code == "own"
+
+
+def test_two_answers_of_one_thought_skip_the_refractory_but_count_against_the_cap():
+    """Review finding: one plan answering both the focus and the signal had its second stance dropped."""
+    first = rec("act_focus", kind="focus", at=NOW).model_copy(update={"thought_id": "th1"})
+    other = SIG.model_copy(update={"prime_act_id": "act_r2"})
+    assert answer_blocker([first], other, NOW, per_day=3, refractory_sec=1800, thought_id="th1") is None
+    assert answer_blocker([first], other, NOW, per_day=3, refractory_sec=1800, thought_id="th2").code == "refractory"
+    assert answer_blocker([first], other, NOW, per_day=1, refractory_sec=1800, thought_id="th1").code == "daily_cap"
 
 
 def test_prime_hears_only_delivered_challenges_and_refusals_of_the_last_48_h():

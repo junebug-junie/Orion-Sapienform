@@ -65,6 +65,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.curiosity.replica.answers import (
     ANSWER_COMPONENT,
     AnswerRecordV1,
+    Block,
     TargetV1,
     answer_act,
     answer_blocker,
@@ -124,6 +125,7 @@ from orion.schemas.curiosity_replica import (
     REPLICA_ACTOR,
     REPLICA_FAMILY,
     REPLIES_KEY,
+    REPLIES_WINDOW_SEC,
     CuriosityFocusRefusalRequestV1,
     CuriosityFocusRefusalResultV1,
     CuriosityOfferPlanRequestV1,
@@ -154,6 +156,9 @@ WATCH_INTERVAL_SEC = 60.0
 FOCUS_REFUSAL_RPC_TIMEOUT_SEC = 10.0
 # A reply thought waits at most this long for a seat, so a plan request that arrives meanwhile still has time.
 REPLY_SEAT_WAIT_MAX_SEC = 20.0
+# A reply thought whose bid was not funded, or whose thought the act gate refused, is tried again only after
+# this long (a reply has no deadline; without it the loop would bid every tick for as long as the act is live).
+REPLY_RETRY_SEC = 300.0
 _PG_CONNECT_TIMEOUT_SEC = 3
 _PG_STATEMENT_TIMEOUT_MS = 5000
 
@@ -193,6 +198,10 @@ SELECT focus_id::text AS focus_id, origin, question, chat_correlation_id, create
 FROM curiosity_focus_request
 WHERE status = 'pending' AND expires_at > now()
 ORDER BY created_at DESC LIMIT 1
+"""
+# After a focus refusal RPC with no usable reply: did Hub apply it anyway? (read-only; the row names the act)
+FOCUS_REFUSED_SQL = """
+SELECT refused_act_id FROM curiosity_focus_request WHERE focus_id::text = %(id)s
 """
 # The newest chat-history compactor digest (orion/cognition/chat_history_compactor; services/orion-cortex-orch
 # chat_history_compactor_memory.py writes the card, workflow_runtime.py the journal entry): the card's summary
@@ -279,6 +288,10 @@ class ReplicaRuntime(MindLoopRuntime):
         self._last_watch: Optional[datetime] = None
         # The Prime focus last seen pending (None: none, or not read yet); a target only while it is pending.
         self._pending_prime_focus: Optional[TargetV1] = None
+        # No reply thought before this (in memory: a restart costs at most one early bid).
+        self._reply_retry_at: Optional[datetime] = None
+        # A reply thought is between its bid and its end (a plan request that arrives now has to wait).
+        self._replying = False
         self._listener: Optional[asyncio.Task] = None
 
     # --- answers to Prime: settings ----------------------------------------------------------
@@ -292,9 +305,10 @@ class ReplicaRuntime(MindLoopRuntime):
         per_day, refractory = self._caps()
         return {"per_day": per_day, "refractory_min": int(refractory // 60)}
 
-    def _blocker(self, target: TargetV1, now: datetime) -> Optional[str]:
+    def _blocker(self, target: TargetV1, now: datetime, *, thought_id: Optional[str] = None) -> Optional[Block]:
         per_day, refractory = self._caps()
-        return answer_blocker(self.state.answers, target, now, per_day=per_day, refractory_sec=refractory)
+        return answer_blocker(self.state.answers, target, now, per_day=per_day, refractory_sec=refractory,
+                              thought_id=thought_id)
 
     # --- persistence: the replica's first published call -------------------------------------
     async def save(self) -> None:
@@ -305,7 +319,9 @@ class ReplicaRuntime(MindLoopRuntime):
         if not self._answers_on():
             return
         try:
-            await self.bus.redis.set(REPLIES_KEY, replies_view(self.state.answers, self.clock()).model_dump_json())
+            # Expires with its window: a replica switched off leaves nothing behind for Prime to read past 48 h.
+            await self.bus.redis.set(REPLIES_KEY, replies_view(self.state.answers, self.clock()).model_dump_json(),
+                                     ex=int(REPLIES_WINDOW_SEC))
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_replica_replies_publish_failed err=%s", type(exc).__name__)
 
@@ -324,8 +340,13 @@ class ReplicaRuntime(MindLoopRuntime):
             logger.info("curiosity_replica_request_duplicate run=%s (already planning it)", req.run_id)
             return False
         self.requests = [r for r in self.requests if r.request.run_id != req.run_id]
-        self.requests.append(PendingRequest(request=req, correlation_id=envelope.correlation_id, reply_to=reply,
-                                            received_at=self.clock()))
+        pending = PendingRequest(request=req, correlation_id=envelope.correlation_id, reply_to=reply,
+                                 received_at=self.clock())
+        if self._replying:
+            # The loop is busy answering Prime: if this request runs out of time, that is why (the fallback
+            # reasons are how a replica losing by starvation is seen, design section 8).
+            pending.miss_status, pending.miss_why = "unfunded", "a reply thought to Prime was running when it arrived"
+        self.requests.append(pending)
         logger.info("curiosity_replica_request run=%s candidates=%d stale=%d focus=%s deadline=%s",
                     req.run_id, len(req.candidates), len(req.stale_ids),
                     req.pending_focus.origin if req.pending_focus else "-", req.deadline_at.isoformat())
@@ -451,7 +472,8 @@ class ReplicaRuntime(MindLoopRuntime):
                 keep.append(t)
         self.state = self.state.model_copy(update={"pending_targets": keep})
         for t in targets:
-            if t.prime_act_id in self.state.woken_for or self._blocker(t, now) == "I already answered it":
+            block = self._blocker(t, now)
+            if t.prime_act_id in self.state.woken_for or (block is not None and block.code == "answered"):
                 continue
             self.state = note_woken(self.state, t)
             logger.info("curiosity_replica_woken kind=%s target=%s prime_act=%s", t.kind, t.target_id, t.prime_act_id)
@@ -461,25 +483,27 @@ class ReplicaRuntime(MindLoopRuntime):
         """The first queued Prime act the replica may still answer now. One that can never be answered (already
         answered, an answer itself) leaves the queue; one waiting on the daily cap or the refractory stays."""
         for t in list(self.state.pending_targets):
-            why = self._blocker(t, now)
-            if why is None:
+            block = self._blocker(t, now)
+            if block is None:
                 return t
-            if why in ("I already answered it", "it is one of my own answers") or why.startswith("its parent"):
+            if block.final:
                 self.state = drop_target(self.state, t.prime_act_id)
         return None
 
     # --- answers to Prime: delivering one ----------------------------------------------------
     async def _deliver(self, target: TargetV1, stance: str, reason: str, *, source: str, now: datetime,
-                       time_left_sec: Optional[float] = None) -> Optional[AnswerRecordV1]:
+                       thought_id: Optional[str] = None,
+                       deadline_at: Optional[datetime] = None) -> Optional[AnswerRecordV1]:
         """One answer to one Prime act: checked, drawn, applied (treated refusal) and recorded as a closed act.
-        None when it may not be made (the reason is a note in the next frame). Never raises."""
+        None when it may not be made (the reason is a note in the next frame). Never raises. ``deadline_at``:
+        the plan's deadline (a focus refusal RPC must end ANSWER_MARGIN_SEC before it)."""
         if not self._answers_on():
             return None
-        why = self._blocker(target, now)
-        if why is not None:
+        block = self._blocker(target, now, thought_id=thought_id)
+        if block is not None:
             logger.info("curiosity_replica_answer_skipped kind=%s target=%s stance=%s why=%s", target.kind,
-                        target.target_id, stance, why)
-            self.state = add_note(self.state, f"I did not answer Prime's {target.kind} {target.target_id}: {why}")
+                        target.target_id, stance, block.code)
+            self.state = add_note(self.state, f"I did not answer Prime's {target.kind} {target.target_id}: {block.why}")
             return None
         arm = draw_answer_arm(target.prime_act_id, stance,
                               refusal_fraction=float(self.cfg("REFUSAL_HOLDBACK_FRACTION", 0.2)),
@@ -496,14 +520,15 @@ class ReplicaRuntime(MindLoopRuntime):
         delivered, note = False, ""
         if arm == "treated" and stance == "refuse":
             if target.kind == "focus":
-                delivered, note = await self._refuse_focus(target, reason, act.act_id, time_left_sec=time_left_sec)
+                delivered, note = await self._refuse_focus(target, reason, act.act_id, deadline_at=deadline_at)
             else:
                 delivered, note = await self._refuse_signal(target, reason, act.act_id, now)
         elif arm == "treated":
             delivered = True   # a challenge reaches Prime through the replies view (saved next); a support changes nothing
         record = AnswerRecordV1(answer_act_id=act.act_id, prime_act_id=target.prime_act_id, kind=target.kind,
                                 target_id=target.target_id, stance=stance, reason=reason, arm=arm, delivered=delivered,
-                                delivery_note=note[:300], about=target.about[:200], source=source, at=now)
+                                delivery_note=note[:300], about=target.about[:200], source=source,
+                                thought_id=thought_id, at=now)
         self.state = drop_target(self.state.model_copy(update={"answers": keep_answers(self.state.answers, record)}),
                                  target.prime_act_id)
         await self._close(act, ANSWER_COMPONENT, produced=answer_produced(record), note=answer_note(record), at=now)
@@ -513,31 +538,46 @@ class ReplicaRuntime(MindLoopRuntime):
         return record
 
     async def _refuse_focus(self, target: TargetV1, reason: str, act_id: str, *,
-                            time_left_sec: Optional[float]) -> tuple[bool, str]:
-        """Hub applies the refusal (orion/curiosity/focus.py refuse_focus). (delivered, why not)."""
-        timeout = FOCUS_REFUSAL_RPC_TIMEOUT_SEC if time_left_sec is None else min(FOCUS_REFUSAL_RPC_TIMEOUT_SEC,
-                                                                                  time_left_sec)
+                            deadline_at: Optional[datetime]) -> tuple[bool, str]:
+        """Hub applies the refusal (orion/curiosity/focus.py refuse_focus). (delivered, why not). The request
+        carries ``not_after`` (Hub writes nothing past it), so after a lost reply the focus row is the truth."""
+        timeout = FOCUS_REFUSAL_RPC_TIMEOUT_SEC
+        if deadline_at is not None:
+            # Measured right before the call: the gate and the act open already spent some of it.
+            timeout = min(timeout, (deadline_at - self.clock()).total_seconds() - ANSWER_MARGIN_SEC)
         if timeout < 1.0:
             return False, "no time left before Hub's plan deadline to ask Hub"
         corr = uuid4()
         reply = f"{FOCUS_REFUSAL_RESULT_CHANNEL_PREFIX}{corr}"
         req = CuriosityFocusRefusalRequestV1(focus_id=target.target_id, reason=reason, act_id=act_id,
-                                             prime_act_id=target.prime_act_id)
+                                             prime_act_id=target.prime_act_id,
+                                             not_after=self.clock() + timedelta(seconds=timeout))
         try:
             raw = await self.bus.rpc_request(
                 FOCUS_REFUSAL_REQUEST_CHANNEL,
                 BaseEnvelope(kind=FOCUS_REFUSAL_REQUEST_KIND, correlation_id=corr, reply_to=reply, source=self.source,
                              payload=req.model_dump(mode="json")),
-                reply_channel=reply, timeout_sec=timeout)
+                reply_channel=reply, timeout_sec=timeout, require_listener=True)
             decoded = self.bus.codec.decode(raw.get("data"))
             if not decoded.ok or decoded.envelope.kind != FOCUS_REFUSAL_RESULT_KIND:
-                return False, "Hub's reply was malformed (answer unknown)"
+                return await self._refusal_on_row(target, act_id, "Hub's reply was malformed")
             result = CuriosityFocusRefusalResultV1.model_validate(decoded.envelope.payload)
         except Exception as exc:  # noqa: BLE001
-            return False, f"no answer from Hub ({type(exc).__name__}; answer unknown)"
+            return await self._refusal_on_row(target, act_id, f"no answer from Hub ({type(exc).__name__})")
         if result.focus_id != target.target_id:
             return False, f"Hub answered for another focus ({result.focus_id})"
         return (True, "") if result.ok else (False, f"Hub refused: {result.error or 'no reason given'}")
+
+    async def _refusal_on_row(self, target: TargetV1, act_id: str, what: str) -> tuple[bool, str]:
+        """No usable reply: read the focus row (read-only). Hub writes nothing past the request's ``not_after``,
+        so the row now says whether THIS refusal (its act id) was applied."""
+        try:
+            rows = await asyncio.to_thread(self.pg_rows, FOCUS_REFUSED_SQL, {"id": target.target_id})
+        except Exception as exc:  # noqa: BLE001
+            return False, f"{what}; the focus row could not be read ({_err(exc)}): answer unknown"
+        if rows and rows[0].get("refused_act_id") == act_id:
+            return True, ""
+        return False, f"{what}; the focus row shows no refusal of mine"
 
     async def _refuse_signal(self, target: TargetV1, reason: str, act_id: str, now: datetime) -> tuple[bool, str]:
         """The refusal goes next to the signal in its own hash; the market reads it from the next bid."""
@@ -570,6 +610,8 @@ class ReplicaRuntime(MindLoopRuntime):
         if not self._answers_on() or not self.state.pending_targets:
             return False
         if self.state.retry_not_before is not None and now < self.state.retry_not_before:
+            return False
+        if self._reply_retry_at is not None and now < self._reply_retry_at:
             return False
         self._current_reply = self._next_reply_target(now)
         return self._current_reply is not None
@@ -617,6 +659,8 @@ class ReplicaRuntime(MindLoopRuntime):
         ok = await super()._thought_gate_admits(now)
         if not ok and self._current is not None:
             self._current.miss_status, self._current.miss_why = "unfunded", "my own act gate refused the thought"
+        elif not ok and self._current_reply is not None:
+            self._reply_retry_at = now + timedelta(seconds=REPLY_RETRY_SEC)
         return ok
 
     async def tick(self) -> None:
@@ -625,6 +669,9 @@ class ReplicaRuntime(MindLoopRuntime):
         await super().tick()
 
     async def _on_not_funded(self, decision: Any) -> None:
+        if self._current is None and self._current_reply is not None:
+            self._reply_retry_at = self.clock() + timedelta(seconds=REPLY_RETRY_SEC)
+            return
         if self._current is not None:
             self._current.miss_status = "unfunded"
             self._current.miss_why = (f"bid {getattr(decision, 'outcome', None) or 'unanswered'}"
@@ -645,6 +692,7 @@ class ReplicaRuntime(MindLoopRuntime):
         reached the model used its one wake, answered or not."""
         cur, self._current = self._current, None
         target, self._current_reply = self._current_reply, None
+        self._replying = False
         reached, self._reached_model = self._reached_model, False
         if cur is None:
             if target is not None and reached:
@@ -664,6 +712,7 @@ class ReplicaRuntime(MindLoopRuntime):
 
     async def _ask(self, inputs: Any, now: datetime) -> ModelReply:
         if self._current is None and self._current_reply is not None:
+            self._replying = True
             reply_inputs = ReplyFrameInputs(now=now, target=self._current_reply, notes=list(self.state.notes),
                                             answers=list(self.state.answers), answers_on=self._answers_on())
             await self._read_world(reply_inputs, now)
@@ -701,7 +750,8 @@ class ReplicaRuntime(MindLoopRuntime):
                         answer: Any) -> tuple[Optional[bool], str]:
         if self._current is None and self._current_reply is not None:
             target = self._current_reply
-            record = await self._deliver(target, answer.stance, answer.reason, source="reply", now=self.clock())
+            record = await self._deliver(target, answer.stance, answer.reason, source="reply", now=self.clock(),
+                                         thought_id=thought_id)
             what = (f"{record.stance} ({record.arm}{', delivered' if record.delivered else ''})" if record is not None
                     else "no answer made (see notes)")
             logger.info("curiosity_replica_reply prime_act=%s kind=%s %s route=%s", target.prime_act_id, target.kind,
@@ -712,7 +762,7 @@ class ReplicaRuntime(MindLoopRuntime):
         req = pending.request
         # Stances on Prime's acts are delivered BEFORE the plan result: a refused focus must have left the slot
         # before Hub takes it (Hub takes the focus after this answer).
-        await self._deliver_plan_stances(answer, req, reply)
+        await self._deliver_plan_stances(answer, req, reply, thought_id)
         if answer.abstain:
             status = "abstain"
         elif not answer.picks:
@@ -743,7 +793,8 @@ class ReplicaRuntime(MindLoopRuntime):
         # The act stays open: it closes on Hub's plan row and the run's score (_maybe_settle).
         return None, "plan sent; graded on its run"
 
-    async def _deliver_plan_stances(self, answer: Any, req: CuriosityOfferPlanRequestV1, reply: ModelReply) -> None:
+    async def _deliver_plan_stances(self, answer: Any, req: CuriosityOfferPlanRequestV1, reply: ModelReply,
+                                    thought_id: str) -> None:
         """A plan's stance on a PRIME focus or signal is an answer to Prime (one per Prime act). A stance on
         Juniper's focus, or on one Orion chose in a conversation, is not: it stays on Hub's plan row only."""
         if not self._answers_on():
@@ -752,9 +803,8 @@ class ReplicaRuntime(MindLoopRuntime):
         if answer.focus_stance is not None and f is not None and f.from_prime:
             target = TargetV1(kind="focus", target_id=f.focus_id, prime_act_id=question_act_id(f.focus_id),
                               about=" ".join(f.question.split())[:600])
-            left = (req.deadline_at - self.clock()).total_seconds() - ANSWER_MARGIN_SEC
             await self._deliver(target, answer.focus_stance.stance, answer.focus_stance.reason, source="plan",
-                                now=self.clock(), time_left_sec=left)
+                                now=self.clock(), thought_id=thought_id, deadline_at=req.deadline_at)
         sig = reply.context.get("signal") or {}
         if (answer.signal_stance is not None and sig.get("act_id")
                 and answer.signal_stance.signal_id == sig.get("signal_id")):
@@ -762,7 +812,7 @@ class ReplicaRuntime(MindLoopRuntime):
                               about=f"{sig.get('direction')} curiosity: {' '.join(str(sig.get('why') or '').split())}"[:600],
                               direction=sig.get("direction"), expires_at=sig.get("expires_at"))
             await self._deliver(target, answer.signal_stance.stance, answer.signal_stance.reason, source="plan",
-                                now=self.clock())
+                                now=self.clock(), thought_id=thought_id)
 
     # --- reads -------------------------------------------------------------------------------
     async def _read_frame_inputs(self, req: CuriosityOfferPlanRequestV1, now: datetime) -> ReplicaFrameInputs:

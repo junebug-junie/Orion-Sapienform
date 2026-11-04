@@ -61,7 +61,8 @@ STANCE_RULES = """- What a stance does. It answers Prime, Orion's slow between-c
   Your refusal rate is watched: refuse only when Prime's push would cost this run something real."""
 
 SYSTEM_PROMPT = f"""You are curiosity's planner (the curiosity replica): a small helper inside Orion's curiosity organ.
-You are not Orion, and nothing you write is shown to Orion.
+You are not Orion. Nothing you write is shown to Orion's curiosity run; only the reasons you give for
+challenging or refusing an act of Prime's are shown to Prime.
 
 Before one of Orion's curiosity runs, you choose which of Orion's open beliefs (priors) are shown FIRST.
 Orion then decides for itself what, if anything, to test. You only set the order of the top of the list;
@@ -328,7 +329,8 @@ class ReplyFrameInputs:
 
 
 REPLY_SYSTEM_PROMPT = f"""You are curiosity's planner (the curiosity replica): a small helper inside Orion's curiosity organ.
-You are not Orion, and nothing you write is shown to Orion.
+You are not Orion. Nothing you write is shown to Orion's curiosity run; only the reasons you give for
+challenging or refusing an act of Prime's are shown to Prime.
 
 Prime, Orion's slow between-conversations thinking, just acted on curiosity: it queued a question for curiosity's
 next run, or sent a signal that slows down (or quickens) how often curiosity runs. You answer it once.

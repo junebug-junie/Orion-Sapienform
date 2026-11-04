@@ -50,7 +50,7 @@ class Redis:
     async def get(self, key):
         return self.kv.get(key)
 
-    async def set(self, key, value):
+    async def set(self, key, value, ex=None):
         self.kv[key] = value
 
     async def hgetall(self, key):

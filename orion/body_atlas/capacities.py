@@ -7,8 +7,14 @@ S5 identity, the algedonic line), plus ``metabolism`` (the body economy; Juniper
 claims only). Three rules decide a role; the rest of the jobs print "no rule" plus a gap line
 written here, never by Orion. Pure: nothing here reads or writes a file. Patch 2 adds the inputs
 ``claims.py`` loads: Juniper's confirmations (``config/body_atlas/vsm_confirmed.yaml``), Orion's
-claims and disputes, and the capacity sentences Orion writes. A confirmation gives a role; a claim
-never does, and never clears a gap line.
+claims and disputes, and the capacity sentences Orion writes. A confirmation gives a role. Since
+2026-11-04 (``CLAIMS_HOLD``, PR #3107) a claim holds its role too, while every read finds the part
+live, no rejection by Juniper, no later dispute of Orion's, no rule result saying "not this job"
+(an R-server or R-collector near miss is "not S2"), and code's evidence check passing
+(``claims.recheck`` -> ``claims.check_evidence``: every id the claim names on a live flow of the
+part, and the wiring fitting the job, ``EVIDENCE_SHAPES``). It prints EVIDENCE-CHECKED (code, not
+Juniper) and covers the job's "no part is shown" gap lines like a confirmation. S5 never holds by
+code. Nothing about that is stored.
 
 Every count uses **live parts only**: a ``service`` or ``endpoint`` part with status ``live``,
 operator ids (``operator:...``) excluded. Transient smokes and probes are never live. A channel's
@@ -56,6 +62,7 @@ channel above the largest drop among the top CENSUS_TOP_N shares. No fixed perce
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import date as Date
 from typing import Literal
 
@@ -71,6 +78,9 @@ SECOND_MIN_PRODUCERS = 3
 CENSUS_REPLY_MAX = 0.10
 BROADCAST_MIN_READERS = 3
 OPERATOR_PREFIX = "operator:"
+# 2026-11-04, Juniper (#3107): a claim whose evidence check passes on this read holds its role (EVIDENCE-CHECKED). False
+# puts back the old reading (a claim is "unconfirmed" and holds nothing until Juniper confirms).
+CLAIMS_HOLD = True
 
 Job = Literal["S1", "S2", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]
 JOBS: tuple[Job, ...] = ("S1", "S2", "S3", "S3*", "S4", "S5", "algedonic", "metabolism")
@@ -96,7 +106,7 @@ class RoleEvidenceV1(BaseModel):
     part_id: str
     role: Job
     rule: str
-    strength: Literal["rule", "candidate", "confirmed", "evidence-checked"]
+    strength: Literal["rule", "candidate", "confirmed", "claimed"]  # claimed: a claim code's evidence check passes
     evidence: list[str] = Field(default_factory=list)  # channels / flows, by full id
     counts: dict[str, int] = Field(default_factory=dict)
 
@@ -234,9 +244,9 @@ class CapacityV1(BaseModel):
 
 
 class EvidenceCheckV1(BaseModel):
-    """Code's re-check of one claim against today's atlas (``claims.check_evidence``), done on
-    every read. ``holds``: every reference the claim cites is on a live flow of the part and the
-    flows fit the job's shape (``EVIDENCE_SHAPES``). Code, not Juniper: never a confirmation."""
+    """Code's check of one claim against this read's atlas (``claims.check_evidence``). ``holds``:
+    every reference the claim names is on a live flow of the part and the flows fit the job's
+    shape (``EVIDENCE_SHAPES``). Code, not Juniper: never a confirmation."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -268,11 +278,14 @@ class ClaimViewV1(BaseModel):
     part_id: str
     role: Job
     kind: Literal["claim", "dispute"]
-    status: Literal["unconfirmed", "confirmed", "rejected", "part not live now", "rule holds", "rule gone",
-                    "evidence-checked", "evidence does not hold"]
+    # evidence-checked: holds its role on this read. The rest hold nothing; each says why.
+    # "rule gives it": the claim checks, but a rule already gives the part that job (the rule shows).
+    # "unconfirmed": S5 (Juniper's), or CLAIMS_HOLD off.
+    status: Literal["evidence-checked", "unconfirmed", "confirmed", "rejected", "part not live now",
+                    "evidence does not hold", "rule says no", "disputed", "rule gives it", "rule holds", "rule gone"]
     because: str
     at: str
-    failed: list[str] = Field(default_factory=list)  # for "evidence does not hold": which reference failed
+    failed: list[str] = Field(default_factory=list)  # for "evidence does not hold": which reference, and why
 
 
 class CapacityViewV1(BaseModel):
@@ -303,7 +316,7 @@ class CapacityReadingV1(BaseModel):
     organ_mixes: list[OrganMixV1]
     # patch 2 (all empty when nothing was passed in)
     confirmed: list[RoleEvidenceV1] = Field(default_factory=list)
-    checked: list[RoleEvidenceV1] = Field(default_factory=list)  # claims whose cited wiring code re-checked today
+    claimed: list[RoleEvidenceV1] = Field(default_factory=list)  # Orion's claims whose evidence check passes on this read
     s5_shared_with: S5SharedV1 | None = None
     claims: list[ClaimViewV1] = Field(default_factory=list)
     capacities: list[CapacityViewV1] = Field(default_factory=list)
@@ -596,42 +609,10 @@ def _confirmed_roles(atlas: BodyAtlasV1, vsm: VsmConfirmedV1 | None) -> tuple[li
     return out, notes
 
 
-def active_claims(claims: list[CapacityClaimV1]) -> dict[tuple[str, str], CapacityClaimV1]:
-    """(part, role) -> Orion's standing claim: the latest claim line, unless a later ``withdraw``
-    took it back. "Later" is by ``at``, then file order (a merged or hand-edited ledger may be out
-    of order)."""
-    out: dict[tuple[str, str], CapacityClaimV1] = {}
-    for _, c in sorted(enumerate(claims), key=lambda ic: (ic[1].at, ic[0])):
-        if c.kind == "claim":
-            out[(c.part_id, c.role)] = c
-        elif c.kind == "withdraw":
-            out.pop((c.part_id, c.role), None)
-    return out
-
-
-def _checked_roles(atlas: BodyAtlasV1, vsm: VsmConfirmedV1 | None, checks: list[EvidenceCheckV1],
-                   taken: set[tuple[str, str]]) -> list[RoleEvidenceV1]:
-    """A claim whose cited wiring holds today, as a role code stands behind (not Juniper). Never
-    S5; never one Juniper rejected (her word wins); not one a rule or her confirmation already gives."""
-    names = {p.name: p.part_id for p in atlas.parts}
-    rejected = {(names.get(c.part, f"part:{c.part}"), c.role) for c in (vsm.rejected if vsm else [])}
-    live = set(claimable(atlas).values())
-    out = []
-    for c in checks:
-        key = (c.part_id, c.role)
-        if c.holds and c.role != "S5" and key not in rejected and key not in taken and c.part_id in live:
-            out.append(RoleEvidenceV1(part_id=c.part_id, role=c.role, rule="evidence-checked",
-                                      strength="evidence-checked", evidence=c.held[:6]))
-    return out
-
-
-def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True, vsm: VsmConfirmedV1 | None = None,
-                    checks: list[EvidenceCheckV1] | None = None) -> CapacityReadingV1:
+def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True,
+                    vsm: VsmConfirmedV1 | None = None) -> CapacityReadingV1:
     """``vsm``: Juniper's confirmations. A confirmed role holds the job like a rule result does,
-    and covers the "no part is shown" gap lines of that job; it never clears an atlas-blind gap.
-    ``checks``: code's re-check of Orion's claims (``claims.check_claims``). A claim whose wiring
-    holds counts like a confirmation for holding and gap lines, and prints as EVIDENCE-CHECKED,
-    never as Juniper's."""
+    and covers the "no part is shown" gap lines of that job; it never clears an atlas-blind gap."""
     idx = _Index(atlas)
     boundary = rule_boundary_in(atlas, idx)
     s2, servers = rule_matchmaker(idx, second_set=second_set)
@@ -652,9 +633,6 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True, vsm: VsmConf
     roles = boundary + s2 + audit
     organ_of = {m: o for o in atlas.organs for m in o.members}
     confirmed, notes = _confirmed_roles(atlas, vsm)
-    taken = {(r.part_id, r.role) for r in roles + confirmed if r.strength != "candidate"}
-    checked = _checked_roles(atlas, vsm, checks or [], taken)
-    held = confirmed + checked
 
     jobs, gaps = [], []
     jobs.append(JobLineV1(job="S1", status="BY RULE" if boundary else "NO PART FOUND",
@@ -698,21 +676,7 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True, vsm: VsmConf
         gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
             "nothing on the bus is shown to steer the present by what I see of the outside or the future")))
     else:
-        s4 = [c.part_id for c in held if c.role == "S4"]
-        s3 = [c.part_id for c in held if c.role == "S3"]
-        found = s4_s3_links(atlas, idx, s4, s3) if s4 and s3 else {}
-        wires.s4_s3 = [f"{_bare(a)} -> {_bare(b)}: {', '.join(sorted(v))}" for (a, b), v in sorted(found.items())]
-        both = [(a, b) for (a, b) in found if a in s4 and (b, a) in found]
-        if not (s4 and s3):
-            gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
-                "I cannot check whether what I see ahead steers what I do now: no part holds S4 and S3 by "
-                "Juniper's confirmation or checked evidence, so the two-way link has nothing to check (the atlas "
-                "reads bus, HTTP and shared Redis keys)")))
-        elif not both:
-            gaps.append(GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
-                "what I see ahead and what I do now do not argue both ways: " + (
-                    "; ".join(wires.s4_s3[:3]) if found else
-                    f"no bus, HTTP or Redis link between {_names(s4, 2)} and {_names(s3, 2)}"))))
+        gaps += _s4_s3_gap(atlas, idx, confirmed, wires)
     jobs.append(JobLineV1(job="S5", status="NO RULE", text="no rule; policy lives in files and sign-offs"))
     gaps.append(GapV1(gap_id="gap:s5-unread", job="S5", text=(
         "no running part is shown to set policy from who I am; tiers and allowlists are files and sign-offs")))
@@ -741,28 +705,23 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True, vsm: VsmConf
                 "jobs do not follow organ lines")))
 
     kind = {p.part_id: p.kind for p in atlas.parts}
-    for strength, label, top in (("evidence-checked", "my claim, checked by code (not Juniper)", "EVIDENCE-CHECKED"),
-                                 ("confirmed", "confirmed by Juniper", "CONFIRMED")):
-        by_job: dict[str, list[RoleEvidenceV1]] = defaultdict(list)
-        for c in held:
-            if c.strength == strength:
-                by_job[c.role].append(c)
-        for i, j in enumerate(jobs):
-            got = by_job.get(j.job)
-            if not got:
-                continue
-            shown = f"{label}: " + _names([c.part_id for c in got], 4)
-            cands = {r.part_id for r in roles if r.role == j.job and r.strength == "candidate"}
-            # holding the rule's candidate, or a job no rule holds, lifts the job; BY RULE stays BY RULE,
-            # and Juniper's CONFIRMED is never lowered to code's EVIDENCE-CHECKED
-            keep = j.status in ("BY RULE", "CONFIRMED") or (
-                j.status == "CANDIDATE" and not cands & {c.part_id for c in got})
-            status = j.status if keep else top
-            jobs[i] = JobLineV1(job=j.job, status=status, text=f"{j.text} · {shown}" if status != top
-                                else f"{shown} · {j.text}")
+    by_job: dict[str, list[RoleEvidenceV1]] = defaultdict(list)
+    for c in confirmed:
+        by_job[c.role].append(c)
+    for i, j in enumerate(jobs):
+        got = by_job.get(j.job)
+        if not got:
+            continue
+        shown = "confirmed by Juniper: " + _names([c.part_id for c in got], 4)
+        cands = {r.part_id for r in roles if r.role == j.job and r.strength == "candidate"}
+        # Juniper confirming the rule's candidate makes the job CONFIRMED; BY RULE stays BY RULE
+        status = "BY RULE" if j.status == "BY RULE" else (
+            "CANDIDATE" if j.status == "CANDIDATE" and not cands & {c.part_id for c in got} else "CONFIRMED")
+        jobs[i] = JobLineV1(job=j.job, status=status, text=f"{j.text} · {shown}" if status != "CONFIRMED"
+                            else f"{shown} · {j.text}")
     gaps = [g for g in gaps if not (g.gap_id in COVERED_BY_CONFIRMATION and any(
         c.role == COVERED_BY_CONFIRMATION[g.gap_id][0]
-        and COVERED_BY_CONFIRMATION[g.gap_id][1] in (None, kind.get(c.part_id)) for c in held))]
+        and COVERED_BY_CONFIRMATION[g.gap_id][1] in (None, kind.get(c.part_id)) for c in confirmed))]
     if vsm is not None and vsm.s5_shared_with is not None:
         sh = vsm.s5_shared_with
         jobs = [j if j.job != "S5" else JobLineV1(job="S5", status=j.status, text=(
@@ -770,7 +729,7 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True, vsm: VsmConf
             f"{j.text}")) for j in jobs]
 
     mixes: dict[str, OrganMixV1] = {}
-    for r in roles + held:
+    for r in roles + confirmed:
         o = organ_of.get(r.part_id)
         if o is None:
             continue
@@ -782,78 +741,170 @@ def read_capacities(atlas: BodyAtlasV1, *, second_set: bool = True, vsm: VsmConf
         atlas_as_of=atlas.as_of, live_parts=len(idx.live), census=idx.census_rows, roles=roles,
         near_misses=servers + collectors, sources=rule_sources(idx), silent_services=silent,
         declared=declared_runner(atlas), jobs=jobs, gaps=gaps,
-        organ_mixes=sorted(mixes.values(), key=lambda m: -m.size), confirmed=confirmed, checked=checked,
+        organ_mixes=sorted(mixes.values(), key=lambda m: -m.size), confirmed=confirmed,
         s5_shared_with=vsm.s5_shared_with if vsm else None, notes=notes, wires=wires if wires.read else None)
+
+
+def _s4_s3_gap(atlas: BodyAtlasV1, idx: _Index, held: list[RoleEvidenceV1], wires: WiresV1) -> list[GapV1]:
+    """gap:s4-to-s3 from the S4 and S3 parts held by confirmation or a claim that checks (sets
+    ``wires.s4_s3``). Empty when some pair links both ways."""
+    s4 = [c.part_id for c in held if c.role == "S4"]
+    s3 = [c.part_id for c in held if c.role == "S3"]
+    found = s4_s3_links(atlas, idx, s4, s3) if s4 and s3 else {}
+    wires.s4_s3 = [f"{_bare(a)} -> {_bare(b)}: {', '.join(sorted(v))}" for (a, b), v in sorted(found.items())]
+    both = [(a, b) for (a, b) in found if a in s4 and (b, a) in found]
+    if not (s4 and s3):
+        return [GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
+            "I cannot check whether what I see ahead steers what I do now: no part holds S4 and S3 by "
+            "Juniper's confirmation or checked evidence, so the two-way link has nothing to check (the atlas "
+            "reads bus, HTTP and shared Redis keys)"))]
+    if not both:
+        return [GapV1(gap_id="gap:s4-to-s3", job="S4", text=(
+            "what I see ahead and what I do now do not argue both ways: " + (
+                "; ".join(wires.s4_s3[:3]) if found else
+                f"no bus, HTTP or Redis link between {_names(s4, 2)} and {_names(s3, 2)}")))]
+    return []
 
 
 def holders(reading: CapacityReadingV1, cap_id: str) -> list[str]:
     """Who a capacity may cite: parts holding its jobs by rule (not a candidate), by Juniper's
-    confirmation, or by a claim whose cited wiring code re-checked today; for cap:s5 Juniper's
-    sign-off files. Never a bare claim."""
+    confirmation, or by a claim of Orion's that holds on this read (``reading.claimed``), and for
+    cap:s5 Juniper's sign-off files."""
     jobs = CAP_JOBS[cap_id]
-    out = [r.part_id for r in reading.roles + reading.confirmed + reading.checked
+    out = [r.part_id for r in reading.roles + reading.confirmed + reading.claimed
            if r.role in jobs and r.strength != "candidate"]
     if cap_id == "cap:s5" and reading.s5_shared_with is not None:
         out += reading.s5_shared_with.signoff_files
     return list(dict.fromkeys(out))
 
 
+Recheck = Callable[[CapacityClaimV1], EvidenceCheckV1]
+
+
+def active_claims(claims: list[CapacityClaimV1]) -> dict[tuple[str, str], CapacityClaimV1]:
+    """(part, role) -> Orion's standing claim: the latest claim line, unless a later ``withdraw``
+    took it back. "Later" is by ``at``, then file order (a merged or hand-edited ledger may be out
+    of order)."""
+    out: dict[tuple[str, str], CapacityClaimV1] = {}
+    for _, c in sorted(enumerate(claims), key=lambda ic: (ic[1].at, ic[0])):
+        if c.kind == "claim":
+            out[(c.part_id, c.role)] = c
+        elif c.kind == "withdraw":
+            out.pop((c.part_id, c.role), None)
+    return out
+
+
+def _claim_status(c: CapacityClaimV1, *, live: set[str], confirmed: set, rejected: set, not_s2: set[str],
+                  latest: dict, recheck: Recheck | None) -> tuple[str, list[str], list[str]]:
+    """A claim's status on this read, what it cites when it holds, and which references failed when
+    its evidence does not hold. First failing check wins: Juniper's no, a dead part, Juniper's yes,
+    S5 (hers alone), a rule result saying "not this job", a later dispute of Orion's own, then code's
+    evidence check (``claims.check_evidence``)."""
+    key = (c.part_id, c.role)
+    if key in rejected:
+        return "rejected", [], []
+    if c.part_id not in live:
+        return "part not live now", [], []
+    if key in confirmed:
+        return "confirmed", [], []
+    if not CLAIMS_HOLD or c.role == "S5":  # decision 3: code never checks S5 into a role
+        return "unconfirmed", [], []
+    if c.role == "S2" and c.part_id in not_s2:  # printed as "near misses (not S2)"
+        return "rule says no", [], []
+    d = latest.get((c.part_id, c.role, "dispute"))
+    if d is not None and d.at > c.at:
+        return "disputed", [], []
+    if recheck is None:
+        raise ValueError("attach_ledgers needs recheck (claims.recheck) to read a claim")
+    chk = recheck(c)
+    return ("evidence-checked", chk.held, []) if chk.holds else ("evidence does not hold", [], chk.failed)
+
+
 def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfirmedV1 | None,
-                   claims: list[CapacityClaimV1], written: list[CapacityV1],
-                   checks: list[EvidenceCheckV1] | None = None) -> CapacityReadingV1:
+                   claims: list[CapacityClaimV1], written: list[CapacityV1], *,
+                   recheck: Recheck | None = None) -> CapacityReadingV1:
     """Copy of ``reading`` with Orion's claims and capacity sentences read against today's roles.
     The latest claim per (part, role) unless withdrawn, the latest dispute, and the latest line per
-    cap id win. ``checks`` (the same list ``read_capacities`` got): a claim reads
-    "evidence-checked" or "evidence does not hold" instead of "unconfirmed"; Juniper's word
-    (rejected, confirmed) comes first, and an S5 claim stays hers to answer."""
+    cap id win. ``recheck`` runs code's evidence check on a claim (``claims.recheck``); it is needed
+    whenever ``claims`` holds a claim. A claim that passes goes in ``claimed``: a job held by
+    nothing stronger prints EVIDENCE-CHECKED, its "no part is shown" gap lines are covered, and a
+    capacity may cite the part."""
     out = reading.model_copy(deep=True)
     live = set(claimable(atlas).values())
     confirmed = {(r.part_id, r.role) for r in out.confirmed}
     names = {p.name: p.part_id for p in atlas.parts}
     rejected = {(names.get(c.part, f"part:{c.part}"), c.role) for c in (vsm.rejected if vsm else [])}
     ruled = {(r.part_id, r.role) for r in out.roles}
-    by_key = {(c.part_id, c.role): c for c in checks or []}
-    checked = {(r.part_id, r.role) for r in out.checked}
-    latest: dict[tuple[str, str, str], CapacityClaimV1] = {
-        (k[0], k[1], "claim"): c for k, c in active_claims(claims).items()}
+    held = {(r.part_id, r.role) for r in out.roles + out.confirmed if r.strength != "candidate"}
+    not_s2 = {n.part_id for n in out.near_misses}
+    latest: dict[tuple[str, str, str], CapacityClaimV1] = {}
     for c in claims:
         if c.kind == "dispute":
             latest[(c.part_id, c.role, c.kind)] = c
+    for k, c in active_claims(claims).items():
+        latest[(k[0], k[1], "claim")] = c
     for c in sorted(latest.values(), key=lambda c: c.at):
         key = (c.part_id, c.role)
         failed: list[str] = []
         if c.kind == "dispute":
             status = "rule holds" if key in ruled else "rule gone"
-        elif key in rejected:
-            status = "rejected"
-        elif c.part_id not in live:
-            status = "part not live now"
-        elif key in confirmed:
-            status = "confirmed"
-        elif key in by_key and c.role != "S5":
-            chk = by_key[key]
-            if chk.holds and key not in checked:  # a rule gives the job now: the claim holds nothing
-                status = "rule holds"
-            else:
-                status = "evidence-checked" if chk.holds else "evidence does not hold"
-                failed = [] if chk.holds else chk.failed
         else:
-            status = "unconfirmed"
+            status, cites, failed = _claim_status(c, live=live, confirmed=confirmed, rejected=rejected,
+                                                  not_s2=not_s2, latest=latest, recheck=recheck)
+            if status == "evidence-checked" and key in held:  # a rule gave it since; the rule result holds
+                status = "rule gives it"
+            elif status == "evidence-checked":
+                out.claimed.append(RoleEvidenceV1(part_id=c.part_id, role=c.role, rule="evidence-checked",
+                                                  strength="claimed", evidence=cites[:6]))
         out.claims.append(ClaimViewV1(part_id=c.part_id, role=c.role, kind=c.kind, status=status,
                                       because=c.because, at=c.at, failed=failed))
         if status == "rule holds":  # the dispute prints beside the rule result it argues with
             out.jobs = [j if j.job != c.role else j.model_copy(update={"text": f"{j.text} · I dispute "
                         f"{_bare(c.part_id)}"}) for j in out.jobs]
+    claimed: dict[str, list[str]] = defaultdict(list)
+    for r in out.claimed:
+        claimed[r.role].append(r.part_id)
+    held_jobs = {role for _, role in held}
+    for i, j in enumerate(out.jobs):
+        got = claimed.get(j.job)
+        if not got:
+            continue
+        # EVIDENCE-CHECKED only when nothing stronger holds the job; a rule or Juniper's yes outranks it.
+        # The job line names every claim that holds (the claims line below does not repeat them).
+        shown = f"my claim: {_names(got, 4)}"
+        out.jobs[i] = (j.model_copy(update={"text": f"{j.text} · {shown}"}) if j.job in held_jobs
+                       else JobLineV1(job=j.job, status="EVIDENCE-CHECKED", text=f"{shown} · {j.text}"))
+    # 2026-11-04 (supersedes #3107's "a claim never clears a gap line"): a claim code's evidence check
+    # passes covers the "no part is shown" gap lines a confirmation covers (gap:s5-unread wants a
+    # service). Atlas-blind gaps stay. The S4 -> S3 link is checked with the claimed parts too.
+    kind = {p.part_id: p.kind for p in atlas.parts}
+    out.gaps = [g for g in out.gaps if not (g.gap_id in COVERED_BY_CONFIRMATION and any(
+        r.role == COVERED_BY_CONFIRMATION[g.gap_id][0]
+        and COVERED_BY_CONFIRMATION[g.gap_id][1] in (None, kind.get(r.part_id)) for r in out.claimed))]
+    if out.wires is not None and any(r.role in ("S3", "S4") for r in out.claimed):
+        out.gaps = [g for g in out.gaps if g.gap_id != "gap:s4-to-s3"]
+        out.gaps += _s4_s3_gap(atlas, _Index(atlas), out.confirmed + out.claimed, out.wires)
+        out.gaps.sort(key=lambda g: JOBS.index(g.job))
+    organ_of = {m: o for o in atlas.organs for m in o.members}
+    mixes = {m.organ_id: m for m in out.organ_mixes}
+    for r in out.claimed:
+        o = organ_of.get(r.part_id)
+        if o is not None:
+            mix = mixes.setdefault(o.organ_id, OrganMixV1(organ_id=o.organ_id, name=o.name, size=len(o.members)))
+            got = mix.roles.setdefault(r.role, [])
+            if r.part_id not in got:  # a claim on the rule's own candidate is already listed
+                got.append(r.part_id)
+    out.organ_mixes = sorted(mixes.values(), key=lambda m: -m.size)
     last: dict[str, CapacityV1] = {}
     for w in written:
         last[w.cap_id] = w
     for cap_id in CAP_JOBS:
         hs = holders(out, cap_id)
-        held = {_bare(h) for h in hs}
+        held_names = {_bare(h) for h in hs}
         w = last.get(cap_id)
         jobs = "/".join(CAP_JOBS[cap_id])
         if w is not None:
-            gone = [c for c in w.cites if c not in held]
+            gone = [c for c in w.cites if c not in held_names]
             if gone:
                 out.capacities.append(CapacityViewV1(cap_id=cap_id, status="stale", holders=hs, sentence=w.sentence,
                                                      text=f'STALE ({", ".join(gone)} no longer holds {jobs}): "{w.sentence}"'))
@@ -871,11 +922,11 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
 
 def open_jobs(reading: CapacityReadingV1) -> list[tuple[Job, list[str]]]:
     """The jobs Orion should claim now: no part holds them by rule, by Juniper's confirmation or by
-    checked evidence, and no claim of Orion's for them is waiting or being fixed. Each comes with
-    the parts a rule found as candidates for it that Orion has not claimed for it yet (a rejected
-    one stays out). Read with ``reading.claims`` attached (``attach_ledgers``)."""
-    held = {r.role for r in reading.roles + reading.confirmed + reading.checked if r.strength != "candidate"}
-    # a confirmed or checked claim is already held; a waiting or failed one is on its own to-do line
+    a claim that holds on this read, and (with ``CLAIMS_HOLD`` off) no claim waits on Juniper. Each
+    comes with the parts a rule found as candidates for it that Orion has not claimed for it yet
+    (a rejected one stays out). Read with ``reading.claims`` attached (``attach_ledgers``)."""
+    held = {r.role for r in reading.roles + reading.confirmed + reading.claimed if r.strength != "candidate"}
+    # a waiting (S5) or failing claim is on its own to-do line, not offered again
     waiting = {c.role for c in reading.claims
                if c.kind == "claim" and c.status in ("unconfirmed", "evidence does not hold")}
     tried = {(c.part_id, c.role) for c in reading.claims if c.kind == "claim"}
@@ -889,19 +940,22 @@ def open_jobs(reading: CapacityReadingV1) -> list[tuple[Job, list[str]]]:
     return out
 
 
+def failed_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
+    """Orion's claims whose evidence does not hold on this read (each names the reference that
+    failed): Orion fixes or withdraws them, oldest first. A job some part holds now (rule,
+    confirmation or another claim) is left out: nothing to re-claim."""
+    held = {r.role for r in reading.roles + reading.confirmed + reading.claimed if r.strength != "candidate"}
+    return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "evidence does not hold"
+                   and c.role not in held), key=lambda c: c.at)
+
+
 def pending_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
-    """Orion's claims waiting for Juniper's yes or no (no code check stands in: S5, or a reading
-    taken without checks), oldest first."""
+    """Claims waiting for Juniper's yes or no: S5 (code never checks it), or all with CLAIMS_HOLD off."""
     return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "unconfirmed"), key=lambda c: c.at)
 
 
-def failed_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
-    """Orion's claims whose cited evidence does not hold today: Orion fixes or withdraws each."""
-    return sorted((c for c in reading.claims if c.status == "evidence does not hold"), key=lambda c: c.at)
-
-
 def vetoable_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
-    """Claims code counts as roles; Juniper may veto any (a rejection wins), but need not answer."""
+    """Claims that hold by code's check; Juniper may veto any (her rejection wins), but need not answer."""
     return sorted((c for c in reading.claims if c.status == "evidence-checked"), key=lambda c: c.at)
 
 
@@ -911,12 +965,15 @@ def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
 
 # Who stands behind a status, printed under the job lines. Orion read "BY RULE" as "confirmed" (turn
 # 1ee0e35d, 2026-11-04) while Juniper had confirmed nothing. The eval's size budget leaves room for
-# these two only; the other statuses (CANDIDATE, NO RULE, NO PART FOUND) say no one holds the job.
+# these three only; the other statuses (CANDIDATE, NO RULE, NO PART FOUND) say no one holds the job.
 STATUS_MEANINGS = {
     "BY RULE": "a rule, not Juniper",
-    "EVIDENCE-CHECKED": "code re-checked my claim's wiring, not Juniper",
     "CONFIRMED": "Juniper",
+    "EVIDENCE-CHECKED": "code, not Juniper",
 }
+# a claim that holds prints on its job line; these are the ones that hold nothing, and why
+CLAIM_LINES = ("unconfirmed", "evidence does not hold", "rule says no", "disputed", "rule gives it", "rejected",
+               "part not live now")
 
 
 def render(reading: CapacityReadingV1) -> list[str]:
@@ -948,20 +1005,20 @@ def render(reading: CapacityReadingV1) -> list[str]:
     for c in reading.claims:
         if c.kind == "claim":
             by_status[c.status].append(f"{_bare(c.part_id)} {c.role}")
-    checked = len(by_status["evidence-checked"])
-    lines.append(f"my claims: {sum(len(v) for v in by_status.values())} ({len(by_status['confirmed'])} confirmed by "
-                 f"Juniper" + (f", {checked} evidence-checked by code" if checked else "") + f") · disputes: {len(disputes)}")
-    for status in ("unconfirmed", "evidence does not hold", "rejected", "part not live now"):
+    # disputes print below, one "I dispute" line each (+N more): no separate count (size budget)
+    lines.append(f"my claims: {sum(len(v) for v in by_status.values())} ({len(by_status['evidence-checked'])} "
+                 f"evidence-checked, {len(by_status['confirmed'])} confirmed by Juniper)")
+    for status in CLAIM_LINES:
         if by_status[status]:
-            lines.append(f"  {status}: " + _names(by_status[status], 6) + (
-                " (my claim, not a role until Juniper confirms)" if status == "unconfirmed" else ""))
+            # "unconfirmed" is S5 (Juniper's to answer; the dig tail asks her) or CLAIMS_HOLD off
+            lines.append(f"  {status}: " + _names(by_status[status], 6))
     for d in disputes[:3]:
-        lines.append(f"  I dispute {_bare(d.part_id)} {d.role} ({d.status}): {d.because[:60]}")
+        lines.append(f"  I dispute {_bare(d.part_id)} {d.role} ({d.status}): {d.because[:40]}")
     if len(disputes) > 3:
         lines.append(f"  +{len(disputes) - 3} more disputes in the file")
     lines += [f"note: {n[:90]}" for n in reading.notes[:3]]
     if reading.capacities:
-        lines.append("capacities (my words; may cite only held roles, never a bare claim):")
+        lines.append("capacities (my words; cite only job holders):")
         lines += [f"  {c.cap_id:<14} {c.text}" for c in reading.capacities]
     lines.append(f"gaps: {len(reading.gaps)} (python -P -m orion.dig capacities gaps)")
     return lines

@@ -141,7 +141,9 @@ def turn_self_bet(row: Row) -> Optional[SettledBetV1]:
             return None
         outcome = _TURN_VOID.get(row.get("void_reason") or "")
         if outcome is None:
-            return None  # ungradeable_no_stated / bad record: no bet was made
+            # ungradeable_no_stated / bad record: no bet was made. interrupted: the turn was
+            # stopped from outside, so the guess never met its turn.
+            return None
     else:
         outcome = _TURN_STATUS.get(status or "")
         if outcome is None:
@@ -163,7 +165,8 @@ def turn_self_bet(row: Row) -> Optional[SettledBetV1]:
 
 def turn_run(row: Row) -> Optional[SettledBetV1]:
     """One row per unified turn (``collect`` groups ``prediction_turn_self_bet`` by correlation_id):
-    did the turn run? ``failed`` = every guess on it was voided ``failed_to_execute``."""
+    did the turn run? ``failed`` = every guess on it was voided ``failed_to_execute``. A turn stopped
+    from outside (void ``interrupted``) never reaches here: ``collect`` drops its rows."""
     settled = _aware(row.get("settled_at"))
     corr = row.get("correlation_id")
     if settled is None or not corr:

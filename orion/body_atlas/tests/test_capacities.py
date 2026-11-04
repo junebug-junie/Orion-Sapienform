@@ -14,6 +14,16 @@ from orion.body_atlas.model import (
 HEALTH = "orion:system:health"
 
 
+def _ok(*held):
+    """A recheck whose evidence check passes, citing ``held``."""
+    return lambda c: K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=True, held=list(held))
+
+
+def _gone(c):
+    """A recheck whose evidence check fails."""
+    return K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=False, failed=["x: gone"])
+
+
 def _atlas(parts: dict[str, tuple[str, str]], sig: list[tuple[str, str, str]], *, organs: dict[str, list[str]],
            other: list[FlowV1] = ()) -> BodyAtlasV1:
     """parts: name -> (kind, status). sig: (source, target, channel) signals flows."""
@@ -228,7 +238,10 @@ def test_open_jobs_skip_held_waiting_and_confirmed_jobs():
     claim = K.CapacityClaimV1(part_id="part:gateway", role="S4", kind="claim", because="b" * 20, cites=["r0"],
                               at="2026-11-04T00:00:00+00:00", dig="t")
     vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="gateway", role="S3", date="2026-11-04")])
-    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [])
+    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_ok("r0"))
     jobs = [j for j, _ in K.open_jobs(after)]
-    assert "S3" not in jobs and "S4" not in jobs  # confirmed by Juniper; Orion's claim waits on her
-    assert [(c.part_id, c.role) for c in K.pending_claims(after)] == [("part:gateway", "S4")]
+    assert "S3" not in jobs and "S4" not in jobs  # confirmed by Juniper; Orion's claim holds (evidence checks)
+    assert K.failed_claims(after) == []
+    gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_gone)
+    assert "S4" not in [j for j, _ in K.open_jobs(gone)]  # its evidence fails: on the fix-or-withdraw list instead
+    assert [(c.part_id, c.role) for c in K.failed_claims(gone)] == [("part:gateway", "S4")]

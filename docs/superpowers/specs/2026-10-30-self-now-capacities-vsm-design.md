@@ -176,8 +176,9 @@ the job lines do not follow organ lines (substrate holds S1, S2, S4 and S5 parts
 ### 6. What Orion sees
 
 `python -P -m orion.dig capacities` (read-only, ≤ 40 lines, ≤ 4,000 chars; full JSON to
-`$ORION_DIG_HOME/dig/<dig>/capacities-<n>.json`). Only rule results and confirmed claims carry a
-role; unconfirmed claims print on their own line.
+`$ORION_DIG_HOME/dig/<dig>/capacities-<n>.json`). Rule results, confirmed claims and (since
+2026-11-04) claims whose evidence check passes (EVIDENCE-CHECKED) carry a role; claims that hold
+nothing print on their own line by reason (see the two "Decision change 2026-11-04" sections below).
 
 ```text
 capacities (VSM lens) · body atlas 2026-10-30T08:48Z · 90 live services/endpoints · rules v1
@@ -305,34 +306,6 @@ partition test, `tests/test_organ_names_partition.py` (allowlist `orion/body_atl
    kept offering claims and wrote none, so `dig capacities` now ends with one ready claim line
    per open job and says to write each claim it can back now; Juniper's review stays the gate.
 
-**Decision note, 2026-11-04 (changes decision 1; Juniper accepted).** Orion wrote the first five
-claims on 2026-11-04 (05:29-05:33Z). Juniper does not want to hand-judge each one. Now code checks
-the cited evidence against the live atlas on every `dig capacities` read, and a claim that holds
-counts as a role without her yes:
-
-- **Passes** when every id the because names (part names, channels, `pg:`/`redis:`/... ids, matched
-  against the atlas's own ids, no word lists) and every id cited at write time is on a live flow
-  of the claimed part that carries more than the census; every repo path cited exists; at least one
-  cite is atlas wiring; and the wiring fits the job (S2 in and out; S3 and S4 out; S3* is an
-  R-census-reader hit with a flow out; algedonic writes a key R-broadcast-key finds; S1 and
-  metabolism any flow). `orion/body_atlas/claims.py` (`check_claims`, `EVIDENCE_SHAPES`).
-- **Prints as EVIDENCE-CHECKED** (code, not Juniper), never as "confirmed by Juniper". It holds
-  the job, covers that job's "no part is shown" gap lines like a confirmation, and a capacity
-  sentence may cite it. "Out" for S3, S3* and S4 means reaching a live part (a service or
-  endpoint, or a channel a live part reads); writing a table is not acting on a part. A checked
-  algedonic part is a cap:s5 holder (cap:s5 reports S5 and the pain line), so cap:s5 can be
-  written without Juniper acting; the sentence must still name her (decision 3). Juniper's rejection wins over a pass; her confirmation outranks it.
-- **S5 never passes** (decision 3): S5 claims still wait for Juniper.
-- **Fails** print "evidence does not hold" with the reference that failed, in a "Fix or withdraw"
-  block for Orion (`capacity withdraw <part> <job>` is new). Juniper's list is one "may veto"
-  line, not a queue to answer.
-- **Nothing stored**: the check reruns on every read, so a claim whose wiring leaves the atlas
-  drops back. Live result on the 11-04 atlas: 4 of 5 pass; `orion-energy` metabolism fails
-  because its because names `pg:energy_bill_forecast`, a dormant table (0 rows).
-- Limit: id matching checks that each cited thing is wired to the part, not that the sentence
-  about it is true (e.g. "orion-dream fetches that key" passes because orion-dream is on a
-  durable-runs flow, not because the check read the key relation the sentence names).
-
 **Recorded 2026-10-30:** Juniper answered "hit it" to all five. Decided: (1) Juniper confirms by PR
 to `config/body_atlas/vsm_confirmed.yaml`; (2) `cap:metabolism` is kept, through claims; (3) S5
 says it is shared with Juniper, citing her sign-off files; (4) rules first, the HTTP/Redis atlas
@@ -385,3 +358,121 @@ false shapes the scan refuses: `orion/body_atlas/README.md`. Choices made while 
   so a claim can cite them (e.g. the callers of orion-durable-runs).
 - **Organs:** Q 0.3447 → 0.3426, largest 31.5% → 31.2%, 10 organs, all 10 names carry (Jaccard
   0.75–1.00; a name given before Redis keys existed is compared without them).
+
+## Decision change 2026-11-04: a claim holds when its evidence checks
+
+**What changed.** Before, a claim never held a role until Juniper confirmed it in
+`config/body_atlas/vsm_confirmed.yaml` (decision 1, section 3). Now a claim holds its role, with
+a new strength `claimed`, when every read finds all of these (computed fresh, never stored):
+
+1. the part is live in the current atlas;
+2. the claim's because still passes the write-time floor (`claims.cites_in`: a full id on one of
+   the part's live flows, or a repo file that exists), run again by `claims.recheck`;
+3. Juniper has not rejected it (`rejected` in the YAML);
+4. no rule result or later word of Orion's says otherwise. The code has two explicit "no"
+   results, and only these count: an R-server or R-collector near miss (printed as "near misses
+   (not S2)") stops an S2 claim on that part; a dispute of Orion's on the same part and job, written
+   after the claim, stops it (a claim written after the dispute holds again). A rule holder of the
+   same job on another part is not a contradiction: a job may have several holders (S1 has five).
+
+A job held only by claims prints CLAIMED; the legend says "CLAIMED = me, evidence checked". A rule
+result or a confirmation outranks a claim: that job keeps BY RULE or CONFIRMED and the claim is
+appended ("my claim: X"). A capacity sentence may cite a part whose claim holds. A claim that fails
+a check falls back with its reason printed: `evidence gone`, `part not live now`, `rejected`,
+`rule says no`, `disputed`, `rule gives it` (a rule now gives that part the job). The
+`dig capacities` tail lists claims whose evidence is gone (the one
+failure Orion can fix) in place of "Waiting on Juniper".
+
+**Gaps.** A claim still never clears a gap line, atlas-blind or not. The "no part is shown" gaps
+(`COVERED_BY_CONFIRMATION`) stay true with a claim (no *rule* shows the part doing the job), so
+they stay, and say "I claim X; no rule shows it". Reason: gap lines are the guard against the
+dangerous failure mode below, and they are code-written so Orion cannot remove them; letting a
+self-made claim remove one would undo that guard. Juniper's confirmation still covers them.
+`gap:s4-to-s3` still checks only confirmed S4/S3 pairs: it is the one place the printout says what
+I see ahead steers what I do now, the exact wrong self-description the guard is for.
+
+**Why.** Juniper does not know VSM and will not review the claims. Under the old rule they would
+wait forever and the capacities would stay unwritten: on 2026-11-04 five claims sat unconfirmed
+(gpu-lane-controller S3, equilibrium-service S3*, durable-runs algedonic, energy metabolism,
+world-pulse S4), confirmed: none. Juniper approved the change ("dealer's choice") on 2026-11-04.
+
+**Trace that proves it.** `dig capacities` on the live atlas (2026-11-04, worktree code, real
+ledgers read-only) prints `my claims: 5 (5 hold, 0 confirmed by Juniper)`, and S3, S3*, S4,
+algedonic and metabolism each print CLAIMED with the claimed part; `cap:s3`, `cap:s4` and
+`cap:metabolism` now say "not written yet; may cite ..." in place of the "I cannot yet say" gap.
+
+**Dangerous failure mode.** Orion self-certifies a wrong role and then writes a capacity sentence
+on it. Mitigations: the evidence is re-checked on every read (a cited flow or file that goes away
+takes the role with it, and a sentence citing it prints STALE); Juniper can veto any claim with
+one `rejected` line; Orion can dispute; a confirmation outranks a claim; gap lines stay.
+
+**Rollback.** One constant: `CLAIMS_HOLD = False` in `orion/body_atlas/capacities.py`. Claims
+read `unconfirmed` again and hold nothing. No stored state to unwind (holding is computed on
+read; the ledgers did not change shape).
+
+**Eval.** The mutation "unconfirmed claims hold roles" was the old premise and is replaced by six
+that must each be CAUGHT by their own check: a claim with gone evidence, a rejected claim, a claim
+on a dead part, a claim a rule says no to, and a claim Orion later disputed each hold a role; and
+a held claim clears `gap:s3star-unconfirmed`. The organ-structure gates are unchanged (Q >= 0.3, largest organ <= 35%).
+
+## Decision change 2026-11-04 (second): code's evidence check is the recheck (upgrade of #3107)
+
+Same day, after PR #3107 merged. Juniper had accepted the recommendation that code checks the
+cited evidence against the live atlas instead of her yes or no; #3107 built the hold seam with the
+write-time floor as its recheck. This change keeps #3107's one mechanism and makes it stricter.
+
+**Kept from #3107.** `CLAIMS_HOLD` (rollback), `claims.recheck` as the seam `attach_ledgers` calls,
+`_claim_status`'s order (Juniper's no, a dead part, Juniper's yes, a near miss saying "not S2", a
+later dispute of Orion's, then the evidence), `reading.claimed` with strength `claimed`,
+`rule gives it`, a confirmation outranking a claim, a held claim being a capacity holder,
+`body <part>`.
+
+**Replaced.**
+
+- **The recheck.** `claims.recheck` now runs `claims.check_evidence`, not the write-time floor
+  (`cites_in`, which passes if *any one* id still checks). It passes only when every id the because
+  names (part names with `-` or `:`, channels, ids with an atlas prefix such as `pg:`/`redis:`;
+  matched against the atlas's own ids, no word lists) and every id cited at write time is on a live
+  flow of the claimed part carrying more than the census (a flow to a dormant part does not count);
+  every repo path cited exists; at least one cite is atlas wiring (files alone are not); and the
+  wiring fits the job (`EVIDENCE_SHAPES`: S2 a flow in and out; S3 and S4 a flow out reaching a live
+  part or a channel a live part reads, so a table write is not control; S3* an R-census-reader hit
+  that reports out; algedonic writes a key R-broadcast-key finds; S1 and metabolism any live flow).
+- **S5 never holds by code** (decision 3). An S5 claim reads `unconfirmed` and waits for Juniper.
+- **Vocabulary (one set).** Job status CLAIMED becomes EVIDENCE-CHECKED, legend "code, not
+  Juniper"; claim status `claimed` becomes `evidence-checked`; `evidence gone` becomes `evidence
+  does not hold`, and the view now names the reference that failed (`ClaimViewV1.failed`). A held
+  claim is never printed as "confirmed by Juniper".
+- **Gap lines.** #3107 said a claim never clears a gap line. Now a claim that passes the evidence
+  check covers the same "no part is shown" gap lines a confirmation covers
+  (`COVERED_BY_CONFIRMATION`), never an atlas-blind one, and `gap:s4-to-s3` checks S4/S3 parts held
+  by confirmation or a passing claim. Reason: the check is the review Juniper delegated to code; the
+  label stays distinct (EVIDENCE-CHECKED, code not Juniper), so the printout never says a person
+  confirmed it, and the guard against a wrong self-description is now the evidence check plus
+  Juniper's veto, not the gap line. A checked algedonic part is a `cap:s5` holder (cap:s5 reports
+  S5 and the pain line); the sentence must still name Juniper.
+- **The dig tail.** "Evidence gone" becomes "Fix or withdraw" (with the failing reference), and
+  `capacity withdraw <part> <job>` is new (a `withdraw` ledger line; claims and withdraws fold by
+  `at`, then file order). "Waiting on Juniper" lists only S5 claims. One line, "Juniper may veto",
+  names the claims that hold; she need not answer it. A failing claim's job is not offered again as
+  an open job until Orion withdraws it.
+
+**Trace.** On the live atlas of 2026-11-04 05:56Z (read-only copies of the atlas and ledger from
+`orion-athena-harness-governor`), 4 of the 5 live claims pass: gpu-lane-controller S3 (sends
+`orion:gpu_pool:actuate:result` to orion-gpu-pool and orion-mesh-guardian), equilibrium-service S3*
+(R-census-reader hit; sends `orion:equilibrium:snapshot` to orion-cortex-orch), durable-runs
+algedonic (writes `redis:orion:regulation:latest` and `redis:orion:self_monitor:latest`, both
+broadcast keys), world-pulse S4 (sends `orion:world_context:daily_capsule` to orion-cortex-exec).
+orion-energy metabolism fails: its because names `pg:energy_bill_forecast`, a dormant table
+(0 rows); #3107's floor passed it because the other four ids check. `gap:s3star-unconfirmed` and
+`gap:algedonic-none` close; `gap:s4-to-s3` now runs and says no link joins world-pulse and
+gpu-lane-controller.
+
+**Limit.** Id matching checks that each cited thing is wired to the part, not that the sentence
+about it is true.
+
+**Eval.** Mutations added: an S5 claim holds; a held claim clears an atlas-blind gap (replaces
+#3107's "a held claim clears gap:s3star-unconfirmed", which is now intended); a check that passes
+when *any* reference holds (the five live claims, frozen, must pass or fail as reviewed by hand).
+
+**Rollback.** `CLAIMS_HOLD = False` still turns every claim back to `unconfirmed`.

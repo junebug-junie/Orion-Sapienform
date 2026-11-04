@@ -34,6 +34,16 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 `GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
 silently is visible immediately rather than inferred later from turns going unanswered.
 
+## Why a turn stopped (`stop_reason`)
+
+`HarnessRunV1.stop_reason` (on the reply and the `orion:harness:run:artifact` record, stored in
+`harness_turn_trace.run_artifact`) says why the motor stopped: `cancel:<reason>` when a
+`harness.run.cancel.v1` killed the process (the cancel listener passes `HarnessRunCancelV1.reason`
+to `cancel_fcc_turn`), else the motor's error code (`fcc_timeout`, `fcc_stream_stalled`,
+`fcc_nonzero_exit`, ...), else null. orion-prediction voids a turn's self-bets `interrupted`
+(not `failed_to_execute`) only for the known outside cancels in `orion/harness/stop_reason.py`.
+Records written before 2026-11-04 have no `stop_reason` and stay as they are.
+
 ## Draft-first display (spec L8)
 
 When the Hub sets `HarnessRunRequestV1.draft_preview` (interactive chat only,

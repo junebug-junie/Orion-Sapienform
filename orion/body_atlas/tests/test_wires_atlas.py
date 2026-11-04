@@ -15,6 +15,16 @@ NOW = datetime(2026, 10, 31, tzinfo=timezone.utc)
 HEALTH = "orion:system:health"
 
 
+def _ok(*held):
+    """A recheck whose evidence check passes, citing ``held``."""
+    return lambda c: K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=True, held=list(held))
+
+
+def _gone(c):
+    """A recheck whose evidence check fails."""
+    return K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=False, failed=["x: gone"])
+
+
 def _observed(names: list[str], extra: list[tuple[str, str]] = ()):
     from orion.body_atlas.build import ObservedBus
 
@@ -133,7 +143,7 @@ def test_s4_s3_gap_clears_only_with_confirmed_parts_linked_both_ways():
     assert both.wires.s4_s3 == ["orion-r1 -> orion-w: http", "orion-w -> orion-r1: redis:orion:regulation:latest"]
 
 
-def test_a_confirmed_algedonic_part_covers_the_algedonic_gap_and_a_claim_does_not():
+def test_a_confirmed_or_checked_algedonic_part_covers_the_algedonic_gap():
     atlas = _built(_wire())
     atlas.parts = [p.model_copy(update={"status": "live"}) if p.name.startswith("redis:") else p for p in atlas.parts]
     yes = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="redis:orion:regulation:latest", role="algedonic",
@@ -141,8 +151,10 @@ def test_a_confirmed_algedonic_part_covers_the_algedonic_gap_and_a_claim_does_no
     assert not any(g.gap_id == "gap:algedonic-none" for g in K.read_capacities(atlas, vsm=yes).gaps)
     claim = K.CapacityClaimV1(part_id="part:redis:orion:regulation:latest", role="algedonic", kind="claim",
                               because="b", cites=[], at="t", dig="d")
-    r = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [claim], [])
-    assert any(g.gap_id == "gap:algedonic-none" for g in r.gaps)
+    r = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [claim], [], recheck=_ok("orion-w"))
+    assert [c.status for c in r.claims] == ["evidence-checked"]  # the claim holds the job ...
+    # ... and since 2026-11-04 (evidence check) covers the "no part is shown" gap, as a confirmation does
+    assert not any(g.gap_id == "gap:algedonic-none" for g in r.gaps)
 
 
 def test_printout_with_wires_still_fits():

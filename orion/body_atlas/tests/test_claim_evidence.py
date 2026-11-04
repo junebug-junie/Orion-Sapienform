@@ -1,5 +1,5 @@
 """Code re-checks Orion's capacity claims against the live atlas on every read (rung 4 decision
-note, 2026-11-04): a claim counts as a role, EVIDENCE-CHECKED and never Juniper's, only while
+notes, 2026-11-04: #3107's hold seam, with this check as its recheck): a claim counts as a role, EVIDENCE-CHECKED and never Juniper's, only while
 every reference it cites is on a live flow of the claimed part and the flows fit the job."""
 from __future__ import annotations
 
@@ -46,6 +46,12 @@ def _check(atlas, claim):
     return C.check_claims(atlas, [claim], _REPO)[0]
 
 
+def _view(atlas, claims, vsm=None, recheck=None):
+    """The reading ``dig capacities`` shows: #3107's hold seam with code's evidence check as recheck."""
+    r = K.read_capacities(atlas, vsm=vsm)
+    return K.attach_ledgers(r, atlas, vsm, claims, [], recheck=recheck or C.recheck(r, atlas, _REPO))
+
+
 S3_OK = "orion-ctl takes orion:ctl:cmd from orion-ask-a and sets orion-lanes on orion:lanes:set"
 
 
@@ -65,8 +71,9 @@ def test_wiring_that_disappears_drops_the_claim_back_on_the_next_read():
     assert _check(_wired(), claim).holds
     gone = _check(_wired(cmd_live=False), claim)
     assert not gone.holds and "orion:ctl:cmd: in no part or channel of my atlas" in gone.failed
-    r = K.read_capacities(_wired(cmd_live=False), checks=[gone])
-    assert r.checked == [] and K.holders(r, "cap:s3") == []
+    r = _view(_wired(cmd_live=False), [claim])
+    assert r.claimed == [] and K.holders(r, "cap:s3") == []
+    assert [c.status for c in r.claims] == ["evidence does not hold"] and K.failed_claims(r)[0].failed == gone.failed
 
 
 def test_evidence_on_a_different_part_fails():
@@ -88,9 +95,8 @@ def test_s5_never_passes_even_with_good_wiring():
     chk = _check(_wired(), _c("orion-ctl", "S5", S3_OK))
     assert not chk.holds and chk.failed == ["shape: S5 is shared with Juniper; code cannot check it into a role"]
     forced = chk.model_copy(update={"holds": True, "failed": []})  # even a forged pass is not a role
-    r = K.read_capacities(_wired(), checks=[forced])
-    assert r.checked == [] and next(j for j in r.jobs if j.job == "S5").status == "NO RULE"
-    view = K.attach_ledgers(r, _wired(), None, [_c("orion-ctl", "S5", S3_OK)], [], [forced])
+    view = _view(_wired(), [_c("orion-ctl", "S5", S3_OK)], recheck=lambda c: forced)
+    assert view.claimed == [] and next(j for j in view.jobs if j.job == "S5").status == "NO RULE"
     assert [c.status for c in view.claims] == ["unconfirmed"] and K.pending_claims(view)
 
 
@@ -120,12 +126,11 @@ def test_files_must_exist_and_cannot_carry_a_claim_alone():
 def test_a_checked_claim_holds_the_job_prints_as_code_not_juniper_and_covers_a_none_gap():
     atlas = _wired()
     claims = [_c("orion-strain", "algedonic", "orion-strain writes redis:orion:strain:latest")]
-    checks = C.check_claims(atlas, claims, _REPO)
     base = K.read_capacities(atlas)
     assert any(g.gap_id == "gap:algedonic-none" for g in base.gaps)
-    r = K.attach_ledgers(K.read_capacities(atlas, checks=checks), atlas, None, claims, [], checks)
+    r = _view(atlas, claims)
     line = next(j for j in r.jobs if j.job == "algedonic")
-    assert line.status == "EVIDENCE-CHECKED" and "my claim, checked by code (not Juniper): orion-strain" in line.text
+    assert line.status == "EVIDENCE-CHECKED" and "my claim: orion-strain" in line.text
     assert "Juniper" not in line.text.replace("(not Juniper)", "")
     assert not any(g.gap_id == "gap:algedonic-none" for g in r.gaps)
     assert K.holders(r, "cap:s5") == ["part:orion-strain"]
@@ -136,15 +141,14 @@ def test_a_checked_claim_holds_the_job_prints_as_code_not_juniper_and_covers_a_n
 def test_juniper_reject_overrides_a_passing_check_and_her_confirm_outranks_it():
     atlas = _wired()
     claims = [_c("orion-ctl", "S3", S3_OK)]
-    checks = C.check_claims(atlas, claims, _REPO)
-    assert checks[0].holds
+    assert C.check_claims(atlas, claims, _REPO)[0].holds
     no = K.VsmConfirmedV1(rejected=[K.ConfirmationV1(part="orion-ctl", role="S3", date="2026-11-04")])
-    r = K.attach_ledgers(K.read_capacities(atlas, vsm=no, checks=checks), atlas, no, claims, [], checks)
-    assert r.checked == [] and [c.status for c in r.claims] == ["rejected"] and K.holders(r, "cap:s3") == []
+    r = _view(atlas, claims, vsm=no)
+    assert r.claimed == [] and [c.status for c in r.claims] == ["rejected"] and K.holders(r, "cap:s3") == []
     assert next(j for j in r.jobs if j.job == "S3").status == "NO RULE"
     yes = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="orion-ctl", role="S3", date="2026-11-04")])
-    r = K.attach_ledgers(K.read_capacities(atlas, vsm=yes, checks=checks), atlas, yes, claims, [], checks)
-    assert r.checked == [] and [c.status for c in r.claims] == ["confirmed"]
+    r = _view(atlas, claims, vsm=yes)
+    assert r.claimed == [] and [c.status for c in r.claims] == ["confirmed"]
     assert next(j for j in r.jobs if j.job == "S3").status == "CONFIRMED"
 
 
@@ -188,12 +192,10 @@ def test_s3star_on_the_census_reader_needs_a_flow_out():
 def test_a_passing_claim_on_a_job_a_rule_now_holds_is_not_a_vetoable_role():
     atlas = _wired()
     claim = _c("orion-ctl", "S3", S3_OK)
-    checks = C.check_claims(atlas, [claim], _REPO)
-    reading = K.read_capacities(atlas, checks=checks)
+    reading = K.read_capacities(atlas)
     reading.roles.append(K.RoleEvidenceV1(part_id="part:orion-ctl", role="S3", rule="R-test", strength="rule"))
-    reading.checked = []  # what read_capacities does when a rule holds the job (``taken``)
-    view = K.attach_ledgers(reading, atlas, None, [claim], [], checks)
-    assert [c.status for c in view.claims] == ["rule holds"] and K.vetoable_claims(view) == []
+    view = K.attach_ledgers(reading, atlas, None, [claim], [], recheck=C.recheck(reading, atlas, _REPO))
+    assert [c.status for c in view.claims] == ["rule gives it"] and K.vetoable_claims(view) == []
 
 
 def test_a_withdraw_written_before_its_claim_in_the_file_is_read_by_time():

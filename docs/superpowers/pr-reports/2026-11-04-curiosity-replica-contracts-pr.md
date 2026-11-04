@@ -22,7 +22,15 @@ sends a plan request.
 - **A body-economy family for the replica**: `curiosity.replica`, tier 2, lane chat, 90 s, no receptors.
 
 ## Outcome moved
-Nothing live moves on purpose. This patch is the contract layer the replica (patch 3) will plug into.
+This patch is the contract layer the replica (patch 3) will plug into. Two things DO change live when
+Hub deploys:
+- **The kickoff's order sentence changes on both live arms at once.** The design (section 5) says to ship
+  it the day the three-arm test starts; the build order puts it in this patch, and this patch follows the
+  build order. Both arms change at the same moment, so the value-vs-uncertainty comparison between
+  concurrent runs is not biased. But **the Hub deploy time is an analysis boundary**: do not pool runs
+  from before and after it.
+- Every new offer row records the chance each arm had.
+
 What a reviewer can check today:
 - The two-arm 50/50 experiment is unchanged run for run (a test re-derives 3,000 run ids with the old
   formula and the new one).
@@ -36,7 +44,9 @@ Hub calls `draw_offer_arm(run_id, value_enabled=..., value_propensity=...)` and 
 propensity. The replica band then has width 0, so no run can land in it. There is no new env key: the
 switch (`HUB_CURIOSITY_REPLICA_ARM_ENABLED`, `..._PROPENSITY`) arrives in patch 3 together with the code
 that answers a plan request, and ships on then. The value band comes first and uses the same hash as
-before, so turning the replica on later does not move any run that was on the value arm.
+before, so with the value propensity unchanged, turning the replica on does not move any run that was on
+the value arm. (The design lowers the value propensity to 1/3 when the replica turns on; that does move
+some ids from value to replica, by design.)
 
 ## Current architecture
 - `offer_arm(run_id, enabled, propensity)` was a two-way hash draw (value / uncertainty).
@@ -105,20 +115,54 @@ before, so turning the replica on later does not move any run that was on the va
 
 ## Tests run
 ```text
-(filled in below)
+orion/curiosity/tests + tests/test_curiosity_worldview.py + orion/prime + orion/mindloop   454 passed, 29 skipped
+orion/curiosity/tests/test_focus_lifecycle.py against a throwaway Postgres 16              75 passed
+services/orion-hub/tests (whole folder, before review fixes)                                 4517 passed, 2 failed
+  -> both were this branch's (old sentence text; migration-column test); fixed, now green
+services/orion-hub curiosity spend-log / investigation / focus tests + hub evals            287 passed, 3 skipped
+services/orion-mind/tests                                                                    203 passed
+orion/physiology/tests, orion/dig refs contract                                              passed
+orion-static-gates.yml, every step run locally                                               40/40 PASS (after the re-lock)
 ```
+Both migrations also applied by hand to the throwaway Postgres: a Juniper-origin refusal row is rejected
+by the table CHECK, a `timeout` plan row without a fallback reason is rejected, `invalid:<reason>` and
+`ok` rows are accepted, and the plan migration re-runs cleanly.
 
 ## Evals run
 ```text
-(filled in below)
+services/orion-hub/evals                       passed (part of the 287 above)
+orion/prime/evals/run_prime_frame_eval.py      PASS
+orion/prime/evals/run_prime_wake_replay.py     3/3 PASS
 ```
+No new eval: nothing in this patch produces cognition yet. The three-arm replay is patch 5.
 
 ## Docker/build/smoke checks
 No Docker build: no dependency, Dockerfile or compose change. Hub and its migrations deploy through the
 normal post-pull path.
 
 ## Review findings fixed
-(filled in below)
+A code-review subagent found nothing must-fix: the two-arm draw is unchanged, no path refuses a
+Juniper focus, both migrations pass the allowlist, both registries resolve.
+- Finding: the new order sentence goes live now, not on the three-arm start day; the report said
+  nothing live moves.
+  - Fix: kept the sentence (the build order puts it here) and said so plainly above, with the deploy
+    time as the analysis boundary; same note in `kickoff_prompt.py`.
+  - Evidence: "Outcome moved" section.
+- Finding: "turning the replica on does not move any value-arm run" is only true at an unchanged value
+  propensity.
+  - Fix: reworded.
+- Finding: a pending focus could claim `origin="juniper", from_prime=True`.
+  - Fix: model validator rejects it.
+  - Evidence: `test_a_prime_focus_is_never_juniper_origin_in_the_request`.
+- Finding: Prime's settle note for a vanished focus does not name a refusal.
+  - Fix: `treated_focus_gone`'s docstring names refusal and states that patch 4 must give Prime the
+    reason before anything applies a refusal. The note text itself is unchanged: orion-mind's recorded
+    tick replay pins it, and changing it would mean an orion-mind restart for a path nothing uses yet.
+- Finding: `ArmDraw` is frozen but its dict was editable.
+  - Fix: the map is a read-only `MappingProxyType`.
+  - Evidence: `test_the_arm_draw_cannot_be_edited_after_the_fact`.
+- Finding: the deploy gate checks the focus migration's columns, not its constraints.
+  - Fix: header says to apply it in one transaction (the post-pull applier does).
 
 ## Restart required
 ```bash

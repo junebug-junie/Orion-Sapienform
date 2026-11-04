@@ -174,21 +174,26 @@ Why not revive the ladder whole: its frames carry references, not events. Its po
 Every real loop already routes around it. Reviving it would mean rebuilding the producer path inside
 it, which is a second shadow. Retiring it saves about 200k frames a day of writes and reads.
 
-## Missing questions (defaults in brackets)
+## Decided questions (Juniper, 2026-11-04)
 
-1. **Binding order.** [Prime → curiosity → reading → camera asks → outreach → journals →
-   painting/dreams → play]
-2. **Does a binding refusal tell the loop "not now" or "not this"?** [not now: the want stays open
-   until its event expires]
-3. **Juniper's turns as event wants:** do they ever compete, or always win? [always fund. Juniper is
-   never priced out; the event exists so others can see it]
-4. **Consolidation after the ladder.** [repoint to act-ledger episodes, a separate proposal]
-5. **When does the ladder retire?** [each rung's retirement is its own PR, after the binding market
-   has replaced its job for 2 weeks]
+1. **Binding order:** the default. Prime → curiosity → reading → camera asks → outreach → journals →
+   painting/dreams → play. Each family binds only after its 14-day replay passes.
+2. **A binding refusal means "not now".** The want stays open until its event expires.
+3. **Juniper's turns always fund.** She is never priced out. The event exists so other loops can
+   see the turn.
+4. **Consolidation is killed outright, not repointed.** Its retirement needs its own proposal
+   first (consumer audit, what stops reading it).
+5. **When each rung retires:** not asked yet; the default stands (its own PR, after the binding
+   market has replaced its job for 2 weeks).
+
+Patch 1 finding that changes the schema line below: `affordance` is dropped. A want already
+carries the act it would run (`family`, `verb`, `object_ref`, `cost`), so a separate field would
+say the same thing twice.
 
 ## Proposed schema / API changes
 
-- `orion/schemas/physiology_want.py` `WantV1`: add `event_ref`, `salience`, `affordance`. This is
+- `orion/schemas/physiology_want.py` `WantV1`: add `event_ref`, `salience` (`affordance` dropped:
+  the want's own family/verb/object_ref/cost already name the act). This is
   additive; consumers go first, because the schema is `extra=forbid`.
 - `orion/physiology/appetite.py`: intensity = `max(hunger, salience)` for event wants.
 - `orion/physiology/weights.py`: evidence source (d), self-monitor reliability per family.

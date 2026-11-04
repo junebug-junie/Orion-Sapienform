@@ -444,7 +444,9 @@ runs the automatic half.
   (`app/harness_step.py`; source tag `pr_field_note`, session `pr-field-notes`). Its fixed prompt
   spells out the two dig commands, says code checks are only for a sentence that claims something the
   packet does not state, and asks for about 3 tool calls (never more than 6). The hard bound is the
-  turn time, `PR_FIELD_NOTES_TURN_TIMEOUT_SEC`=420 s.
+  turn time, `PR_FIELD_NOTES_TURN_TIMEOUT_SEC`=900 s. Hub keeps its finalize reserve
+  (`HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC`=330) out of that, so the motor gets 540 s; at 420 it got
+  60 s and the first live run timed out. `tests/test_pr_field_note_budget.py` gates the arithmetic.
 - **Done only with a receipt.** `verify_receipt` (code, inside the step, before the checkpoint) needs
   `field-note #<n> saved fn:<n>:<hex>` for THIS PR in the reply AND that id as a note for this PR in
   the ledger. Anything else is a failed attempt (the shared retry policy), never a completed run.

@@ -37,6 +37,10 @@ Two lanes:
   exploration floor's share (the floor would fund it anyway, but a drop under it is a starvation flag).
 
     PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/want_market_reliability_replay.py [--live --days 14]
+        [--self-grades all|world_only|half]
+
+``--self-grades`` (patch 2): how source (d) counts a producer's grade of its own act. ``all`` (today),
+``world_only`` (only expired closes, the world's grade), ``half`` (a self-grade is half a grade).
 """
 from __future__ import annotations
 
@@ -57,6 +61,7 @@ from orion.physiology.families import FamiliesConfig, load_families, parse_famil
 from orion.physiology.weights import (  # noqa: E402
     EVIDENCE_WINDOW,
     MAX_DRIFT_PER_DAY,
+    SELF_GRADE_MODES,
     UseRecord,
     max_daily_move,
     weight_series,
@@ -77,9 +82,10 @@ def _ts(v: Any) -> Optional[datetime]:
 
 
 def replay(families: FamiliesConfig, decisions: Sequence[Mapping[str, Any]], acts: Sequence[ActRecord],
-           uses: Sequence[UseRecord]) -> dict:
+           uses: Sequence[UseRecord], *, self_grades: str = "all") -> dict:
     """Pure core. ``decisions``: want_ledger rows with decided_at, family, tier, outcome, reason,
-    family_weight, value_rank, charge."""
+    family_weight, value_rank, charge. ``self_grades``: how source (d) counts producer self-grades
+    (``orion.physiology.weights``: all | world_only | half; patch 2, Juniper decides)."""
     if not decisions:
         return {"decisions": 0, "families": {}, "repro_share": None, "starved": [], "max_daily_move_on": 0.0}
     days = sorted({_ts(d["decided_at"]).date() for d in decisions})
@@ -96,7 +102,7 @@ def replay(families: FamiliesConfig, decisions: Sequence[Mapping[str, Any]], act
         seen = [a for a in acts if (a.closed_at or a.opened_at) is not None and (a.closed_at or a.opened_at) < hr]
         seen_uses = [u for u in uses if u.started_at is not None and u.started_at < hr]
         off[hr] = weights_now(families, seen, seen_uses, hr)
-        on[hr] = weights_now(families, seen, seen_uses, hr, reliability=True)
+        on[hr] = weights_now(families, seen, seen_uses, hr, reliability=True, self_grades=self_grades)
     fam: dict[str, dict] = defaultdict(lambda: {"n": 0, "weight_dependent": 0, "funded_before": 0, "funded_after": 0,
                                                 "gained": 0, "lost": 0, "w_ledger": [], "w_off": [], "w_on": [], "w_new": []})
     repro_ok = repro_n = 0
@@ -144,11 +150,13 @@ def replay(families: FamiliesConfig, decisions: Sequence[Mapping[str, Any]], act
             if v["funded_before"] and row["t2_share_after"] < FLOOR_SHARE <= row["t2_share_before"]:
                 starved.append(f)
         out[f] = row
-    return {"decisions": len(decisions), "days": [start.isoformat(), end.isoformat()], "families": out,
+    return {"decisions": len(decisions), "days": [start.isoformat(), end.isoformat()], "self_grades": self_grades,
+            "families": out,
             "repro_share": round(repro_ok / repro_n, 4) if repro_n else None, "repro_n": repro_n,
             "starved": starved,
+            "flips": sum(v["gained"] + v["lost"] for v in fam.values()),
             "max_daily_move_on": round(max_daily_move(weight_series(families, acts, uses, start=start, end=end,
-                                                                    reliability=True)), 6),
+                                                                    reliability=True, self_grades=self_grades)), 6),
             "priced_weight_dependent": sum(1 for d in decisions if d["reason"] in WEIGHT_DEPENDENT
                                            and (d.get("charge") or 0) > 0),
             "event_wants_in_window": sum(1 for d in decisions if d.get("salience") is not None)}
@@ -197,7 +205,7 @@ def _fixture() -> int:
 
 # --- live lane -----------------------------------------------------------------------------------
 
-def _live(days: int, out_json: Optional[str]) -> int:
+def _live(days: int, out_json: Optional[str], self_grades: str = "all") -> int:
     import _body_economy_data as data_mod
 
     q = data_mod.run_query
@@ -225,7 +233,7 @@ def _live(days: int, out_json: Optional[str]) -> int:
                       link_status=str(r["link_status"]), used=r.get("used"), window_closed=bool(r.get("window_closed")))
             for r in use_rows]
     families, _ = load_families(ROOT / "config" / "physiology" / "families.yaml")
-    r = replay(families, decisions, acts, uses)
+    r = replay(families, decisions, acts, uses, self_grades=self_grades)
     checks = {
         "no_tier2_family_starved": not r["starved"],
         "within_drift_cap": r["max_daily_move_on"] <= MAX_DRIFT_PER_DAY + 1e-9,
@@ -243,8 +251,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--out-json")
+    # Patch 2: how source (d) counts producer self-grades (Juniper has not chosen; the default is today's).
+    ap.add_argument("--self-grades", choices=SELF_GRADE_MODES, default="all", help="live lane only")
     a = ap.parse_args(argv)
-    return _live(a.days, a.out_json) if a.live else _fixture()
+    return _live(a.days, a.out_json, a.self_grades) if a.live else _fixture()
 
 
 if __name__ == "__main__":

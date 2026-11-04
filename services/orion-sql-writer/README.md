@@ -448,6 +448,15 @@ caps in orion-memory-consolidation) from `orion_ask.created_at` since local
 midnight (restart-proof). Opened asks are rows only (no bus event);
 the Hub's ask card reads `orion_ask`.
 
+**Camera-ask event wants** (2026-11-04, attention as the want competition patch 2, docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Each OPEN
+camera ask (`vision_individual`, `vision_person_confirm`, `vision_same_individual`) posts one SHADOW event
+want to the body economy: family `vision.ask` (Tier 2, awaiting Juniper's sign-off), verb `ask`,
+`event_ref` `orion_ask:<ask_id>`, window end = the ask's `expires_at`, salience = the moving sightings of
+the asked-about individual when the ask opened, as a strict-below percentile of the previous 30 days of
+camera asks. An ask answered before the poll saw it open is not posted. Log: `ask_event_want ask=...
+sightings=... salience=... outcome=...`. Code: `app/ask_event_wants.py`. Env:
+`ASK_EVENT_WANTS_INTERVAL_SEC` (300; 0 disables), `ASK_EVENT_WANTS_LOOKBACK_HOURS` (24).
+
 **Visual confirmation asks** (2026-10-15, Juniper: "have Orion ask to confirm
 visual things to help them learn"). Two more kinds of ask, opened first each
 tick under their own cap `VISION_CONFIRM_ASK_DAILY_CAP` (6; counted by

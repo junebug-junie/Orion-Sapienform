@@ -160,6 +160,19 @@ families:
     tier: 2
     deferrable_window_s: 3600
     lanes: []
+  vision.ask:
+    # 2026-11-04, attention as the want competition patch 2 (docs/superpowers/specs/2026-11-04-attention-as-
+    # want-competition-design.md): an open camera ask (orion_ask: vision_individual, vision_person_confirm,
+    # vision_same_individual) posts an EVENT want (event_ref orion_ask:<ask_id>, salience = how many times the
+    # camera had seen that individual, as a percentile of the last 30 days of camera asks). Producer:
+    # services/orion-sql-writer/app/ask_event_wants.py. Shadow: no caller obeys it; Prime reads the funded ones as
+    # concerns (PRIME_CONCERNS_FROM_EVENT_WANTS). TIER 2 IS A PROPOSAL: Juniper signs off in PR review.
+    # No act-ledger actor yet (asks open no grammar act), so hunger counts from the want's own opened_at.
+    # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost.
+    # 86400: asks are opened in a daily batch; the want's own window ends when the ask expires.
+    tier: 2
+    deferrable_window_s: 86400
+    lanes: []
   aitown.session:
     # 2026-10-30 (Juniper): an AI Town session Orion chooses (orion-embodiment session controller,
     # act play:aitown.session). New family, tier 2 like the other leisure wants; Juniper signs off on

@@ -1224,6 +1224,15 @@ async def lifespan(app: FastAPI):
         vision_handoff_task = asyncio.create_task(vision_handoff_loop(settings))
     else:
         logger.info("vision handoff loop DISABLED (VISION_HANDOFF_ENABLED=false or interval 0)")
+    # Attention as the want competition, patch 2: each open camera ask posts an event want to the
+    # body economy (app/ask_event_wants.py). Shadow; Prime reads the funded ones.
+    ask_event_wants_task: asyncio.Task | None = None
+    if float(getattr(settings, "ask_event_wants_interval_sec", 0.0) or 0.0) > 0:
+        from app.ask_event_wants import ask_event_wants_loop
+
+        ask_event_wants_task = asyncio.create_task(ask_event_wants_loop(settings))
+    else:
+        logger.info("ask event wants loop DISABLED (ASK_EVENT_WANTS_INTERVAL_SEC=0)")
 
     try:
         yield
@@ -1233,7 +1242,7 @@ async def lifespan(app: FastAPI):
                         vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task, world_settlement_task,
                         vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task,
                         orion_energy_attribution_task, vision_hourly_frames_task,
-                        act_downstream_use_task)
+                        act_downstream_use_task, ask_event_wants_task)
             if t is not None
         ]
         for background in pending:

@@ -1,6 +1,7 @@
 """Orion's self ledgers stay out of recall until battle-tested (design PR #2888, decision 7): the
-organ names (rung 3) and the capacity claims and capacity sentences (rung 4, design
-``docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md``, section 6).
+organ names (rung 3), the capacity claims and capacity sentences (rung 4, design
+``docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md``, section 6), and the PR
+field notes (``docs/superpowers/specs/2026-11-04-pr-field-notes-design.md``, "Storage and partition").
 
 Runs in the repo-wide static gates, not the body-atlas workflow: a new reader added anywhere else
 in the repo must fail CI even when no body-atlas file changed.
@@ -35,7 +36,13 @@ def test_only_the_atlas_and_dig_read_the_capacity_ledgers():
     assert [h for h in hits if not h.startswith(ALLOWED)] == []
 
 
-LEDGER_MODULES = ("names", "claims")  # orion.body_atlas.<module> reads a self ledger
+def test_only_the_atlas_and_dig_read_the_pr_field_notes_ledger():
+    hits = _readers("pr_field_notes", "body_atlas.field_notes", "body_atlas import field_notes", "field_notes_path")
+    assert "orion/body_atlas/field_notes.py" in hits and "orion/dig/__main__.py" in hits  # the grep really ran
+    assert [h for h in hits if not h.startswith(ALLOWED)] == []
+
+
+LEDGER_MODULES = ("names", "claims", "field_notes")  # orion.body_atlas.<module> reads a self ledger
 
 
 def _ledger_imports(tree) -> list[str]:
@@ -81,4 +88,5 @@ def test_the_ast_check_sees_every_import_form():
     for src in ("from orion.body_atlas import capacities, claims", "from orion.body_atlas import (\n    names,\n)",
                 "import orion.body_atlas.claims", "from orion.body_atlas.names import load"):
         assert _ledger_imports(ast.parse(src)), src
+    assert _ledger_imports(ast.parse("from orion.body_atlas import field_notes as fn"))
     assert not _ledger_imports(ast.parse("from orion.body_atlas import capacities"))

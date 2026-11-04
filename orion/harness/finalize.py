@@ -27,6 +27,7 @@ from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
+    REFLECTION_SOURCE_JUDGE_FAILED,
     FinalizeReflectionV1,
     GrammarReceiptV1,
     HarnessDraftMoleculeV1,
@@ -656,7 +657,7 @@ async def run_finalize_reflection(
                 alignment_verdict="misaligned",
                 alignment_notes=[f"reflect_llm_failed: {_excerpt(str(exc), max_len=200)}"],
                 strain_unresolved=False,
-                reflection_source="degraded_llm_failure_fallback",
+                reflection_source=REFLECTION_SOURCE_JUDGE_FAILED,
                 quick_lane_skipped_llm=False,
                 finalize_changed=False,
             ),
@@ -1220,6 +1221,9 @@ def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
 def response_repair_reason_for(reflection: FinalizeReflectionV1) -> str | None:
     if not needs_response_repair(reflection):
         return None
+    if reflection.reflection_source == REFLECTION_SOURCE_JUDGE_FAILED:
+        # The repair still runs (unchanged), but the reason says the judge failed, not the draft.
+        return "reflection_failed"
     if reflection.alignment_verdict == "misaligned":
         return "misaligned"
     if reflection.alignment_verdict == "uncertain":

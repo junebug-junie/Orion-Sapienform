@@ -35,9 +35,10 @@ constraint's budget (a 1,800 slot-s hold on a 1-slot lane with a 3,600 s window 
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchemaHandler, SerializerFunctionWrapHandler,
+                      model_serializer)
 
 from orion.schemas.grammar import ActCostV2
 
@@ -111,8 +112,16 @@ class WantV1(BaseModel):
     # family's clock is due. None: no event, hunger alone.
     salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        # The wrap serializer below would blank the serialization JSON schema (FastAPI's OpenAPI for
+        # /physiology/bid). Its output is the validation shape minus unset event fields: publish that.
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
     @model_serializer(mode="wrap")
-    def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> dict:
+    def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
         out = handler(self)
         for key in _EVENT_FIELDS:
             if key in out and out[key] is None:

@@ -114,6 +114,9 @@ def evidence_for(family: str, acts: Sequence[ActRecord], uses: Sequence[UseRecor
          and x.used is not None and x.started_at is not None and since <= x.started_at < until]
     e = [a for a in acts if a.family == family and a.signal_id == ENGAGEMENT_SIGNAL and a.outcome_source == RESOLVER_SOURCE
          and a.outcome_value is not None and a.closed_at is not None and since <= a.closed_at < until]
+    if reliability and any(a.closed_at is not None for a in acts) and all(a.outcome_note is None for a in acts):
+        # Without grammar_acts.outcome_note a run that never happened reads as a refuted one.
+        raise ValueError("reliability=True needs ActRecord.outcome_note read from grammar_acts")
     r = reliability_grades(family, acts, since=since, until=until) if reliability else []
     ids = frozenset([x.act_id for x in u] + [a.act_id for a in e] + [i for i, _ in r])
     return Evidence(use_rate=(sum(1 for x in u if x.used) / len(u)) if u else None, use_n=len(u),

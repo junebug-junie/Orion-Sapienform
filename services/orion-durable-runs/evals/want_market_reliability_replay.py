@@ -31,7 +31,8 @@ Two lanes:
 
 * ``--fixture`` (default; deterministic, no database): a reliable and an unreliable family with equal
   priors. Gates: off reproduces the recorded weights; on raises the reliable family and lowers the other,
-  each within the drift cap; with no graded closes on equals off.
+  each within the drift cap. A family with no graded closes still moves when the source is on, because
+  weights are normalized to a tier mean of 1 (``spillover``); with no graded closes anywhere, on equals off.
 * ``--live``: the real ledger and act history. Gates: no Tier 2 family that had funded wants drops under the 5%
   exploration floor's share (the floor would fund it anyway, but a drop under it is a starvation flag).
 
@@ -83,21 +84,24 @@ def replay(families: FamiliesConfig, decisions: Sequence[Mapping[str, Any]], act
         return {"decisions": 0, "families": {}, "repro_share": None, "starved": [], "max_daily_move_on": 0.0}
     days = sorted({_ts(d["decided_at"]).date() for d in decisions})
     start, end = days[0], days[-1]
-    # Exactly what the market computes on each day (weights_now replays the 30 days ending that day),
-    # with acts known by that day's end only, so a later close never leaks into an earlier weight.
-    off: dict[date, dict] = {}
-    on: dict[date, dict] = {}
-    for day in days:
-        cut = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-        seen = [a for a in acts if (a.closed_at or a.opened_at) is not None and (a.closed_at or a.opened_at) < cut]
-        noon = cut - timedelta(hours=12)
-        off[day] = weights_now(families, seen, uses, noon)
-        on[day] = weights_now(families, seen, uses, noon, reliability=True)
+    # What the market computes at each decision (weights_now), with only the acts closed and the uses
+    # started before the decision's hour, so a later close never leaks into an earlier weight (at most
+    # one hour of look-ahead). A use row's used/window_closed is today's state: a known limitation.
+    def hour_of(t: datetime) -> datetime:
+        return t.replace(minute=0, second=0, microsecond=0)
+
+    off: dict[datetime, dict] = {}
+    on: dict[datetime, dict] = {}
+    for hr in sorted({hour_of(_ts(d["decided_at"])) for d in decisions}):
+        seen = [a for a in acts if (a.closed_at or a.opened_at) is not None and (a.closed_at or a.opened_at) < hr]
+        seen_uses = [u for u in uses if u.started_at is not None and u.started_at < hr]
+        off[hr] = weights_now(families, seen, seen_uses, hr)
+        on[hr] = weights_now(families, seen, seen_uses, hr, reliability=True)
     fam: dict[str, dict] = defaultdict(lambda: {"n": 0, "weight_dependent": 0, "funded_before": 0, "funded_after": 0,
                                                 "gained": 0, "lost": 0, "w_ledger": [], "w_off": [], "w_on": [], "w_new": []})
     repro_ok = repro_n = 0
     for d in decisions:
-        f, day = d["family"], _ts(d["decided_at"]).date()
+        f, day = d["family"], hour_of(_ts(d["decided_at"]))
         x = fam[f]
         x["n"] += 1
         before = d["outcome"] == "funded"
@@ -125,7 +129,7 @@ def replay(families: FamiliesConfig, decisions: Sequence[Mapping[str, Any]], act
     t2_after = sum(v["funded_after"] for f, v in fam.items() if tier_of[f] == 2)
     out: dict[str, dict] = {}
     starved = []
-    last_on = on[end]
+    last_on = on[max(on)]
     for f, v in sorted(fam.items()):
         mean = lambda xs: round(sum(xs) / len(xs), 4) if xs else None  # noqa: E731
         ev = last_on[f].evidence if f in last_on else None
@@ -163,9 +167,9 @@ def _fixture() -> int:
     for i in range(80):
         t = now - timedelta(days=20) + timedelta(hours=6 * i)
         acts.append(ActRecord(act_id=f"s{i}", family="steady", opened_at=t - timedelta(minutes=5), closed_at=t,
-                              outcome_value=1.0, outcome_source="producer"))
+                              outcome_value=1.0, outcome_source="producer", outcome_note=""))
         acts.append(ActRecord(act_id=f"f{i}", family="flaky", opened_at=t - timedelta(minutes=5), closed_at=t,
-                              outcome_value=0.0 if i % 5 else 1.0, outcome_source="producer"))
+                              outcome_value=0.0 if i % 5 else 1.0, outcome_source="producer", outcome_note=""))
     decisions = []
     for k in range(14):
         t = now - timedelta(days=13 - k)
@@ -179,8 +183,14 @@ def _fixture() -> int:
         "reliable_family_gains_weight": fs["steady"]["w_on"] > 1.0,
         "unreliable_family_loses_weight_and_funding": fs["flaky"]["w_on"] < 1.0 and fs["flaky"]["lost"] > 0,
         "within_drift_cap": r["max_daily_move_on"] <= MAX_DRIFT_PER_DAY + 1e-9,
-        "no_evidence_equals_off": fs["quiet"]["reliability_n"] == 0,
+        "spillover_is_normalization_only": fs["quiet"]["reliability_n"] == 0,
     }
+    # With no graded closes anywhere, turning the source on changes nothing.
+    ungraded = [ActRecord(act_id=a.act_id, family=a.family, opened_at=a.opened_at, closed_at=a.closed_at,
+                          outcome_value=None, outcome_source="producer", outcome_note="") for a in acts]
+    r0 = replay(fams, decisions, ungraded, [])
+    checks["no_evidence_on_equals_off"] = all(v["w_on"] == v["w_off"] and v["gained"] == v["lost"] == 0
+                                              for v in r0["families"].values())
     print(json.dumps({"lane": "fixture", "checks": checks, "families": fs}, indent=2, default=str))
     return 0 if all(checks.values()) else 1
 

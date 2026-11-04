@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from orion.physiology.appetite import ActRecord, want_intensity
 from orion.physiology.choice import ReservationBook, decide
 from orion.physiology.families import parse_families
-from orion.physiology.tests.test_choice import NOW, body, ctx_for, history, lane, want
+from orion.physiology.tests.test_choice import NOW, STARVED, body, ctx_for, history, lane, seeded_book, want
 from orion.physiology.weights import UseRecord, evidence_for, shrunk_target, weight_series
 from orion.schemas.physiology_want import WantDecisionV1, WantV1
 
@@ -84,6 +84,26 @@ def test_a_dull_event_adds_nothing_over_hunger():
     assert a.intensity == b.intensity and a.net == b.net and "event salience" not in b.why
 
 
+def test_a_tiny_salience_does_not_open_the_exploration_floor():
+    """The floor funds families with a drive; an event on a family that just acted competes on its net."""
+    fresh = history("durable.self_inquiry", slot={"agent": 600.0}, last_h=0.0)
+    st = body(lane("agent", p=5.0, state="binding"))
+    d = decide(want(salience=0.01), st, ctx_for(fresh, st), seeded_book(STARVED), NOW)
+    assert d.outcome == "deferred" and d.reason != "exploration_floor"
+
+
+def test_a_producer_intensity_overrides_salience_and_says_so():
+    st = body(lane("agent"))
+    d = decide(want(intensity=0.4, salience=0.9), st, ctx_for(history("durable.self_inquiry", slot={"agent": 600.0}), st),
+               ReservationBook(), NOW)
+    assert d.intensity == pytest.approx(0.4) and "salience_ignored:producer_intensity" in d.warnings
+
+
+def test_the_serialization_schema_keeps_the_wants_shape():
+    props = WantV1.model_json_schema(mode="serialization").get("properties") or {}
+    assert "family" in props and "salience" in props
+
+
 # --- Weights: source (d), the self-monitor's reliability ----------------------------------------------
 
 FAMS = parse_families({"version": 1, "families": {
@@ -94,10 +114,17 @@ FAMS = parse_families({"version": 1, "families": {
 SINCE, UNTIL = NOW - timedelta(days=30), NOW
 
 
-def closes(family, n, *, value=1.0, source="producer", note=None, signal=None, start=NOW - timedelta(days=10)):
+def closes(family, n, *, value=1.0, source="producer", note="", signal=None, start=NOW - timedelta(days=10)):
     return [ActRecord(act_id=f"{family}-{source}-{start:%j%H}-{i}", family=family, opened_at=start + timedelta(hours=i) - timedelta(minutes=1),
                       closed_at=start + timedelta(hours=i), outcome_value=value, outcome_source=source,
                       outcome_note=note, signal_id=signal) for i in range(n)]
+
+
+def test_reliability_without_outcome_notes_refuses():
+    """Without the note a run that never happened would read as a refuted one."""
+    acts = closes("bad", 20, value=0.0, note=None)
+    with pytest.raises(ValueError):
+        evidence_for("bad", acts, [], since=SINCE, until=UNTIL, reliability=True)
 
 
 def test_reliability_is_off_unless_asked():

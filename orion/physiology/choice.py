@@ -385,6 +385,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     h = hunger(app, now, opened_at=want.opened_at, seed_sec=seed, seed_lane=seed_lane)
     if want.intensity is not None:
         inten, ibasis = want.intensity, "producer"
+        if want.salience is not None:
+            warnings.append("salience_ignored:producer_intensity")
     else:
         inten, ibasis = want_intensity(h.intensity, want.salience)
     rank, vbasis, _out = rank_value(app, inten, want.outcome_value)
@@ -602,9 +604,11 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     # (want_ledger + this process's own), counted only once the ledger was read...
     floor_share = book.funded_share(want.family, tier, now) if book.funded_seeded else None
     # ...and only for a want with some hunger: the floor guarantees a share to families that want,
-    # it does not fund a family whose drive just discharged (intensity 0). Each floor fund raises
-    # the family's share, so the quota limits itself (no per-window rate limit).
-    under_floor = (tier == FLOOR_TIER and book.funded_seeded and inten > 0
+    # it does not fund a family whose drive just discharged (intensity 0). An event's salience is
+    # not hunger: an event on a family that just acted competes on its net, it does not open the
+    # floor. Each floor fund raises the family's share, so the quota limits itself.
+    drive = inten if ibasis == "producer" else h.intensity
+    under_floor = (tier == FLOOR_TIER and book.funded_seeded and drive > 0
                    and (floor_share is None or floor_share < EXPLORATION_FLOOR))
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"

@@ -981,7 +981,9 @@ def cmd_body_economy(args: list[str], out: Out) -> str:
 # --- PR field notes (spec docs/superpowers/specs/2026-11-04-pr-field-notes-design.md) ------------
 
 def field_notes_path() -> Path:
-    return home() / "self" / "pr_field_notes.jsonl"
+    from orion.body_atlas import field_notes as fn
+
+    return fn.ledger_path(home() / "self")
 
 
 def _gh_repo() -> str:

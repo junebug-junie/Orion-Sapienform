@@ -77,6 +77,17 @@ families:
     deferrable_window_s: 1800
     lanes: [chat]
     placement: one_of
+  durable.pr_field_note:
+    # 2026-11-04, PR field notes Patch 2 (docs/superpowers/specs/2026-11-04-pr-field-notes-design.md):
+    # one durable run per merged PR in which Orion writes its field note (act make:durable.pr_field_note,
+    # services/orion-durable-runs/app/run_acts.py). Tier 1 and the 24 h window are JUNIPER'S DECISION 1
+    # ("yes to all 4", 2026-11-04): critical upkeep, she accepts 1-2 h/day of reserved agent-lane time.
+    # Past the window a note is overdue, not dropped (the poller submits a later run inside its 72 h
+    # lookback). Bids are shadow (not a binding family in app/run_bids.py). No receptors.
+    tier: 1
+    deferrable_window_s: 86400
+    lanes: [agent, agent-gpu2]
+    placement: one_of
 
   # --- Tier 2: discretionary, the open market. ---
   curiosity.replica:

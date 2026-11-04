@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import Field, field_validator
@@ -297,6 +298,12 @@ class Settings(BaseSettings):
     physiology_report_gpu_pool_path: str = Field(
         "/app/config/gpu_pool.yaml", alias="ORION_PHYSIOLOGY_REPORT_GPU_POOL_PATH")
 
+    @field_validator("field_note_not_before")
+    @classmethod
+    def _not_before_is_utc(cls, v: datetime) -> datetime:
+        # An env value with no offset means UTC; every comparison with it is then aware (review 2026-11-04).
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+
     @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
     @classmethod
     def _empty_envelope_is_none(cls, v):
@@ -316,6 +323,25 @@ class Settings(BaseSettings):
     # vector-host /embedding (bge-large, compute only). durable-runs and vector-host share app-net.
     personality_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
                                        alias="PERSONALITY_EMBED_URL")
+    # PR field notes, Patch 2 (docs/superpowers/specs/2026-11-04-pr-field-notes-design.md): every
+    # PR_FIELD_NOTES_POLL_SEC this process asks GitHub's PUBLIC API (no token) for PRs merged in the last
+    # PR_FIELD_NOTES_LOOKBACK_H hours, writes the code record of a dependency-only / tiny docs-only PR, and
+    # submits one pr.field_note run (one harness turn) for any other PR with no record yet. Needs admission
+    # (DURABLE_RUNS_ADMISSION_ENABLED). false -> no poll, no runs (rollback: set false, restart).
+    field_note_poll_enabled: bool = Field(True, alias="PR_FIELD_NOTES_ENABLED")
+    field_note_poll_sec: float = Field(900.0, ge=60.0, alias="PR_FIELD_NOTES_POLL_SEC")
+    field_note_lookback_hours: float = Field(72.0, gt=0.0, le=720.0, alias="PR_FIELD_NOTES_LOOKBACK_H")
+    field_note_github_repo: str = Field("junebug-junie/Orion-Sapienform", alias="PR_FIELD_NOTES_GITHUB_REPO")
+    # Juniper's decision 3 (2026-11-04): new merges only, no backfill. A PR merged before this instant
+    # never gets a run or a code record, whatever the lookback says.
+    field_note_not_before: datetime = Field(datetime(2026, 11, 4, 6, 0, tzinfo=timezone.utc),
+                                            alias="PR_FIELD_NOTES_NOT_BEFORE")
+    # The directory holding Orion's field-notes ledger, inside this container (compose mounts the
+    # host's dig self dir, PR_FIELD_NOTES_SELF_HOST, here; the harness governor's dig writes the same files).
+    field_note_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="PR_FIELD_NOTES_LEDGER_DIR")
+    # One note turn's hard time bound (Hub's turn limit is this minus a 30 s reply grace). With ~24 PRs
+    # a day and a typical turn well under it, this keeps notes inside the spec's 1-2 h/day of agent lane.
+    field_note_turn_timeout_sec: float = Field(420.0, ge=60.0, le=3600.0, alias="PR_FIELD_NOTES_TURN_TIMEOUT_SEC")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

@@ -877,6 +877,10 @@ class Settings(BaseSettings):
     # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
+    # Settle-time scoring of world-action episodes (attend-to-act loop; app/world_settlement_loop.py),
+    # moved here from orion-feedback-runtime 2026-11-04. Record-only. 0 disables (episodes then stay
+    # unscored and the world action learns nothing).
+    sql_writer_world_settlement_interval_sec: float = Field(30.0, alias="SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC")
     # Hourly kWh per Orion power source (app/orion_energy_rollup.py), kept after raw watts are
     # pruned. 0 disables, and months of Orion energy history are then lost after 30 days.
     orion_energy_rollup_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ROLLUP_INTERVAL_SEC")

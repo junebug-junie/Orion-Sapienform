@@ -1,7 +1,9 @@
 """Score a world-action episode at SETTLE time, on the world sensor, on one clock for both arms.
 
 Spec: docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md -- D3 and "Amendment
-2026-09-29" ("Settle rule", "Clean learning"). Pure: the feedback runtime supplies the episode row,
+2026-09-29" ("Settle rule", "Clean learning"). Pure: the caller (orion-sql-writer's world settlement
+loop, ``orion/autonomy/world_settlement_store.py``; the feedback runtime until it retired 2026-11-04)
+supplies the episode row,
 the cabinet readings, the hardware-watch incidents that opened in the window, and the current priors;
 it persists whatever comes back.
 
@@ -33,9 +35,25 @@ from orion.autonomy.cabinet_heat import CABINET_HEAT_SIGNAL, cabinet_heat_pressu
 from orion.autonomy.contrast import ControlCell, baseline_bin
 from orion.autonomy.prediction import EffectPosterior, score_observation
 from orion.autonomy.thermal_gate import DEFAULT_HOT_C
-from orion.feedback.outcome_resolution import NO_CHANGE_EPSILON, claim_upheld
 from orion.hardware_watch.rules import TempPoint
 from orion.schemas.action_prediction import ActionOutcomeRecordV1
+
+# Below this, a pressure delta is not a movement (moved here from orion/feedback/extractors.py when the
+# feedback rung retired, 2026-11-04; the one definition of "moved" for these channels).
+PRESSURE_DELTA_EPSILON = 1e-6
+NO_CHANGE_EPSILON = PRESSURE_DELTA_EPSILON
+
+
+def claim_upheld(direction: str, observed_delta: float) -> bool | None:
+    """Did the signal do what the action said it would? None only for a directional claim whose
+    delta landed inside the dead band (undecidable, not a soft pass). ``no_change`` is always decidable.
+    Moved unchanged from orion/feedback/outcome_resolution.py (feedback rung retired 2026-11-04)."""
+    moved = abs(observed_delta) >= NO_CHANGE_EPSILON
+    if direction == "no_change":
+        return not moved
+    if not moved:
+        return None
+    return observed_delta > 0 if direction == "increase" else observed_delta < 0
 
 SETTLE_TAIL_SEC = 300.0
 DEFAULT_TTL_SEC = 900.0

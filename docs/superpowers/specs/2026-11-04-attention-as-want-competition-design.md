@@ -48,6 +48,35 @@ ladder is retired in stages, after it is replaced. It is not revived.
   - **The gap:** it is **shadow everywhere except Prime**. Its menu is loop *families* on a clock, not
     *events* that just happened.
 
+## Prior audit (2026-09-22): same verdict, cleanup did not change it
+
+`docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md` audited the transport lane
+(M1–L11) and reached this proposal's verdict six weeks earlier:
+- the lattice is "mostly a pipe carrying nothing";
+- the top (L7–L11) "fires on a timer regardless of what the bottom says";
+- the one learning step (an L11 motif) could not fire at any threshold, because it read attention
+  targets' `dominant_channels`, which are always empty;
+- "config being present was standing in for behavior".
+
+Its fixes deleted dead templates, edges, motifs and unread config, lane by lane, and ranked new
+lanes to add. Live today (11-04) the top still binds 0 attention winners a day. Three lessons follow:
+
+1. **The split is the lattice's own.** M1–M5 (atoms → reducer → field → attention frame) is a working
+   sensor, and it stays as the salience source for body signals. L6–L11 (self-state, proposal,
+   policy, dispatch, feedback, consolidation) is the part that never decides, and it is what moves
+   or retires.
+2. **Adding lanes to the ladder is the "revive" path.** It was the audit's next step, and it would
+   route more organs into a top that does not act.
+3. **No flag counts as done until the live path moves** (acceptance check 7). The audit found
+   configured behaviour that nothing read; binding families must show funded event wants becoming
+   acts with outcomes.
+
+The audit also found that freed proposal slots went to "templates with a declared signal". That is
+the template → want-producer move in this proposal.
+
+Still open from that audit, not blocking here: `BUS_OBSERVER_STREAMS` covers two streams, and
+three vocabularies name one transport signal.
+
 ## Current architecture (verified live 2026-11-04 ~04:30Z)
 
 | Level | Today | Event identity? | Real output |
@@ -227,6 +256,8 @@ it, which is a second shadow. Retiring it saves about 200k frames a day of write
    days.
 5. Attention-originated work: at least 1 act a day traces back to an unusual body-signal want (today 0).
 6. With binding off, decisions equal today's shadow decisions.
+7. **The live path moved:** for each family switched to binding, a live week shows funded event wants
+   that became acts with settled outcomes (counts in the PR report). A flag set to on is not evidence.
 
 ## Recommended next patch
 

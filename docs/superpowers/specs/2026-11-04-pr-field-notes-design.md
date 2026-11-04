@@ -366,7 +366,8 @@ the text above, or settles what the text left open:
   `precheck` again: if an earlier attempt already saved the note, the run finishes as
   `already_recorded` without a second turn.
 - **Bounds.** One note run in flight at a time. At most 2 runs per PR (the second an hour after the first
-  failed). Each run has 3 attempts of a 420 s turn and a 20 h deadline. The prompt asks for about 3
+  failed). Each run has 3 attempts of a 900 s turn (raised from 420 s after the first live run: Hub keeps 330 s of
+  it for finalize, so 420 gave the harness motor 60 s) and a 20 h deadline. The prompt asks for about 3
   tool calls and at most 6. Hub's turn request has no step-limit field, so the time is the hard bound.
 - **New merges only.** `PR_FIELD_NOTES_NOT_BEFORE=2026-11-04T06:00:00+00:00`. A manual `since=` re-poll
   before that time is refused.

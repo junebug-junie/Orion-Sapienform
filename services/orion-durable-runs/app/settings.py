@@ -339,9 +339,11 @@ class Settings(BaseSettings):
     # The directory holding Orion's field-notes ledger, inside this container (compose mounts the
     # host's dig self dir, PR_FIELD_NOTES_SELF_HOST, here; the harness governor's dig writes the same files).
     field_note_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="PR_FIELD_NOTES_LEDGER_DIR")
-    # One note turn's hard time bound (Hub's turn limit is this minus a 30 s reply grace). With ~24 PRs
-    # a day and a typical turn well under it, this keeps notes inside the spec's 1-2 h/day of agent lane.
-    field_note_turn_timeout_sec: float = Field(420.0, ge=60.0, le=3600.0, alias="PR_FIELD_NOTES_TURN_TIMEOUT_SEC")
+    # One note turn's hard time bound (Hub's turn limit is this minus a 30 s reply grace). Hub gives the
+    # harness motor only (turn limit - HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC=330), so 420 left the
+    # motor 60 s and the first live run timed out (pr-field-note-3104, 2026-11-04). 900 -> 540 s of motor.
+    # A cap, not a cost: a typical note ends long before it. tests/test_pr_field_note_budget.py gates it.
+    field_note_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="PR_FIELD_NOTES_TURN_TIMEOUT_SEC")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

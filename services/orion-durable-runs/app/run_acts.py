@@ -100,13 +100,13 @@ FAMILIES: dict[str, RunActFamily] = {
         "completed journal.compose runs p99 26s, max 27s (n=26, measured 2026-10-23)"),
     # PR field notes Patch 2 (2026-11-04). Tier 1 by Juniper's decision (config/physiology/families.yaml).
     # No pr.field_note run has ever completed, so the horizon is a bound from the run's own limits, not a
-    # measurement: 3 attempts x the 420 s turn + backoff (<= 300 s each) is under an hour; 7200 s doubles it.
+    # measurement: 3 attempts x the 900 s turn + backoff (<= 300 s each) is about an hour; 7200 s doubles it.
     # A run with a deadline gets deadline + 600 s instead (_horizon_sec), whichever is later.
     "pr_field_note": RunActFamily(
         "pr_field_note", "durable.pr_field_note", "make", 7200.0,
         "artifact_produced (the durable run ends completed: a field note saved and its receipt found in the "
         "ledger) by 7200s after its first GPU pool grant, or by the run's own admission deadline + 600s when "
-        "that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-04): 3 attempts x 420s turn + "
+        "that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-04): 3 attempts x 900s turn + "
         "backoff fits in 3600s"),
 }
 

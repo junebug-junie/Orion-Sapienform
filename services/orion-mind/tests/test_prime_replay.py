@@ -26,11 +26,16 @@ def test_recorded_tick_sequences_replay_identically():
     concerns view after every state save. The ONLY difference from the pre-extraction golden was one
     ``save orion:prime:concerns`` timeline line after each ``save orion:prime:state`` (59 in all); every act,
     bid, model call, saved state and log line was unchanged (checked by diffing the two recordings).
+    Re-recorded again 2026-11-04 (energy money section): the ONLY change is the new "ENERGY MONEY:" section in
+    each model call's user prompt (an unavailable gap here, since the fake has no /physiology/report); with that
+    section stripped, all 12 changed parts were identical to the previous golden.
 
     Re-recorded again for curiosity replica patch 4 (organs answer Prime): the recording made on the pre-patch
     tree equalled the golden; the new recording differs from it ONLY by two added scenarios recorded last
     (``organ_challenge_in_frame``, ``organ_refusal_settles_question``). Every older scenario is byte-identical:
-    with the replica's answering switch absent (as in all of them) Prime reads no view section and shows none."""
+    with the replica's answering switch absent (as in all of them) Prime reads no view section and shows none.
+    Re-recorded after merging main's energy money section: against main's golden every part of every older
+    scenario is identical; the only difference is the two organ scenarios (which show both sections)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

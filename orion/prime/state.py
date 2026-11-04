@@ -48,10 +48,11 @@ answers "is there anything to think about at all".
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchemaHandler, SerializerFunctionWrapHandler,
+                      model_serializer)
 
 # Tries that never reached the model: the loop library's, re-exported here so Prime's callers and tests keep
 # their imports (moved to orion/mindloop/backoff.py on 2026-11-04, unchanged).
@@ -95,6 +96,9 @@ class PrimeConcernV1(BaseModel):
     text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
     # The Temporal Self arc the model said this concern is about. A reference only, never evidence.
     arc_id: Optional[str] = None
+    # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS, attention as the want competition patch 2): the funded
+    # event want (its event_ref) this concern came from. Left out of the saved state when None.
+    event_ref: Optional[str] = Field(default=None, max_length=500)
     opened_at: AwareDatetime
     # When a thought last kept it (or opened it). Name kept for the persisted state's schema.
     last_evidence_at: AwareDatetime
@@ -103,6 +107,20 @@ class PrimeConcernV1(BaseModel):
     # still holds it ("settled" or "lapsed"; None = still open). Defaults keep old persisted state loading.
     act_opened_at: Optional[AwareDatetime] = None
     graded: Optional[Literal["settled", "lapsed"]] = None
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A concern with no event saves byte-for-byte as before (a rollback still loads the state).
+        out = handler(self)
+        if out.get("event_ref", 0) is None:
+            del out["event_ref"]
+        return out
 
 
 ConcernEnd = Literal["settled", "dropped", "faded", "lapsed"]

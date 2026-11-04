@@ -11,7 +11,9 @@ the actor, act ids, family, Redis key and env keys did not change.
 Two clocks:
 
 * **tick** (every PRIME_TICK_SEC, CPU only): read the body (durable-runs GET /physiology/state) and
-  attention (GET /temporal-self/frame), record what changed (orion.prime.state.observe), settle any
+  attention (GET /temporal-self/frame; with PRIME_CONCERNS_FROM_EVENT_WANTS, the funded event wants
+  instead, GET /physiology/event-wants, Prime's only concern source then), record what changed
+  (orion.prime.state.observe), settle any
   open question, save the state to Redis. Most ticks stop here.
 * **thought** (only when something changed, the refractory interval has passed, no Juniper turn is
   running, and the body economy FUNDS the bid): one model call on route PRIME_LLM_ROUTE (circe chat
@@ -151,6 +153,7 @@ from orion.prime.thought import (
     RegulateMoveV1,
     apply_answer,
     build_frame,
+    event_ids,
     parse_answer,
     shows_organ_replies,
     summary_note,
@@ -160,6 +163,7 @@ from orion.prime.thought import (
 from orion.refs import RefV1, resolve as resolve_ref
 from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaRepliesViewV1
 from orion.schemas.grammar import ActV1
+from orion.schemas.physiology_want import FundedEventWantsV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
     IntrospectResultV1,
@@ -298,6 +302,9 @@ class PrimeRuntime(MindLoopRuntime):
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
         curiosity, curiosity_err = await self._read_curiosity()
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        # Once per thought, never per tick: the report takes ~1.5 s to build.
+        inputs.energy, inputs.energy_error = await self._read(
+            f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/physiology/report")
         inputs.organ_replies_on = self._organ_replies_on()
         if inputs.organ_replies_on:
             inputs.organ_replies, inputs.organ_replies_error = await self._read_organ_replies()
@@ -309,7 +316,8 @@ class PrimeRuntime(MindLoopRuntime):
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
         frame = build_frame(self.state, inputs)
-        reply = await self._ask_model(system_prompt(receptors, organ_replies=shows_organ_replies(inputs)), frame)
+        reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
+                                                    organ_replies=shows_organ_replies(inputs)), frame)
         reply.context.update(curiosity=curiosity, receptors=receptors)
         return reply
 
@@ -328,19 +336,40 @@ class PrimeRuntime(MindLoopRuntime):
         body, body_err = await self._read(f"{base}/physiology/state")
         if body is not None and not body.get("ok", False):
             body, body_err = None, "body state not ok"
-        # Attention is read for the frame (background), never as a change that wakes Prime.
+        # Attention is read for the frame (background), never as a change that wakes Prime. Event mode
+        # (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants replace the Temporal Self arcs.
+        if self._event_mode():
+            events, events_err = await self._read(
+                f"{base}/physiology/event-wants?hours={float(self.s.PRIME_EVENT_WANTS_HOURS):g}"
+                f"&limit={int(self.s.PRIME_EVENT_WANTS_LIMIT)}")
+            if events is not None:
+                # Only the documented contract's fields reach the frame (FundedEventWantsV1).
+                try:
+                    events = FundedEventWantsV1.model_validate(events).model_dump(mode="json")
+                except Exception as exc:  # noqa: BLE001
+                    events, events_err = None, f"not a funded event wants payload ({type(exc).__name__})"
+            snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
+            inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, events=events,
+                                 events_error=events_err, event_mode=True, bid_lane=self.s.PRIME_BID_LANE)
+            return snap, inputs
         temporal, temporal_err = await self._read(f"{base}/temporal-self/frame")
         active = (temporal or {}).get("active_arc") or {}
-        prices = (body or {}).get("prices")
-        binding = (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
-                   if isinstance(prices, dict) else None)
-        snap = PrimeSnapshotV1(binding=binding, body_ok=body is not None)
+        snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
         arc_ids = [a.get("arc_id") for a in (temporal or {}).get("arcs_today") or [] if a.get("arc_id")]
         if active.get("arc_id"):
             arc_ids.append(active["arc_id"])
         inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, temporal=temporal,
                              temporal_error=temporal_err, arc_ids=arc_ids, bid_lane=self.s.PRIME_BID_LANE)
         return snap, inputs
+
+    def _event_mode(self) -> bool:
+        return bool(getattr(self.s, "PRIME_CONCERNS_FROM_EVENT_WANTS", False))
+
+    @staticmethod
+    def _binding(body: Optional[dict[str, Any]]) -> Optional[list[str]]:
+        prices = (body or {}).get("prices")
+        return (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
+                if isinstance(prices, dict) else None)
 
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         base = self.s.PRIME_HUB_URL.rstrip("/")
@@ -443,7 +472,12 @@ class PrimeRuntime(MindLoopRuntime):
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
-                               receptors=receptors)
+                               receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None)
+        if inputs.event_mode:
+            new = set(applied.added)
+            for c in applied.state.concerns:
+                if c.concern_id in new:
+                    logger.info("prime_concern_added concern=%s event_ref=%s", c.concern_id, c.event_ref)
         self.state = applied.state
         if applied.move is not None and applied.refs:
             unopened = await self._unresolved(applied.refs)

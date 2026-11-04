@@ -17,6 +17,12 @@ The R2 drive template applied to every want family:
 its source) has ``intensity = max(hunger, salience)``: an unusual event can win before the family's
 clock is due, and a want with no event is hunger alone (attention as the want competition, patch 1).
 
+**Event rank (patch 2).** An event want is ranked against the family's own EVENT history: the
+intensities the market recorded for the family's past event wants (``want_ledger``, 30 days, one
+per want), not against the hunger-only act history, as a strict-below share (rest point 0). Against hunger history a salient event ranked
+near 1.0 almost every time (patch 1 review). Fewer than ``EVENT_HISTORY_MIN`` past events: there is
+no reference yet, so the want is ranked as every want was before (basis ``event_cold:<basis>``).
+
 **value_rank** is the market's one common unit: this want's ``intensity x outcome_value`` as a
 percentile (mid-rank) of the SAME family's last 30 days of acts, each act's intensity
 reconstructed from its own gap since the previous close. Families are never compared on their
@@ -49,6 +55,7 @@ TAU_MIN_GAPS = 5
 TAU_FLOOR_SEC = 60.0
 GRADED_SOURCES = frozenset({"producer", "resolver"})
 COST_QUANTILE = 0.9
+EVENT_HISTORY_MIN = 10
 SCALAR_COST_FIELDS = ("seconds", "gpu_seconds", "tokens", "watts", "juniper_msgs", "claude_limit_events")
 
 
@@ -114,10 +121,14 @@ class FamilyAppetite:
     lane_slot_s_q: Mapping[str, float] = field(default_factory=dict)  # lane -> p90 slot-s (acts that used it)
     total_slot_s_q: Optional[float] = None                            # p90 of per-act slot-s summed over lanes
     n_costed: int = 0
+    # Intensities of the family's past event wants (want_ledger, 30 days): an event want's reference.
+    event_values: tuple[float, ...] = ()
 
 
-def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: datetime) -> FamilyAppetite:
-    """The family's appetite state from its last 30 days of acts (acts of other families ignored)."""
+def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: datetime, *,
+                          event_intensities: Sequence[float] = ()) -> FamilyAppetite:
+    """The family's appetite state from its last 30 days of acts (acts of other families ignored).
+    ``event_intensities``: the intensities of the family's past event wants (event rank)."""
     since = now - WINDOW
     mine = [a for a in acts if a.family == cfg.family]
     closes = sorted(a.closed_at for a in mine if a.closed_at is not None and a.closed_at <= now)
@@ -174,7 +185,8 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
         n_graded=len(graded_acts), graded=graded, mean_outcome=mean_out, values=tuple(values),
         cost_q={k: _quantile(v, COST_QUANTILE) for k, v in scal.items()},
         lane_slot_s_q={k: _quantile(v, COST_QUANTILE) for k, v in lanes.items()},
-        total_slot_s_q=_quantile(totals, COST_QUANTILE) if totals else None, n_costed=n_costed)
+        total_slot_s_q=_quantile(totals, COST_QUANTILE) if totals else None, n_costed=n_costed,
+        event_values=tuple(float(v) for v in event_intensities if isinstance(v, (int, float)) and math.isfinite(v)))
 
 
 @dataclass(frozen=True)
@@ -221,19 +233,34 @@ def want_intensity(hunger_intensity: float, salience: Optional[float]) -> tuple[
     return (s, "salience") if s > hunger_intensity else (hunger_intensity, "hunger")
 
 
-def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Optional[float]
-               ) -> tuple[float, str, float]:
+def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Optional[float], *,
+               event: bool = False) -> tuple[float, str, float]:
     """(value_rank, value_basis, outcome used). Graded: rank of intensity x expected outcome (the
-    producer's, else the family mean). Ungraded: outcome 1. No history: rank = intensity."""
+    producer's, else the family mean). Ungraded: outcome 1. No history: rank = intensity.
+    ``event``: the want carries an event, so it ranks against the family's past event wants
+    (basis ``event:<graded|ungraded>``); under EVENT_HISTORY_MIN of them, as before (``event_cold:<basis>``)."""
     if app.graded:
         out = outcome_value if outcome_value is not None else (app.mean_outcome if app.mean_outcome is not None else 1.0)
         basis = "graded"
     else:
         out, basis = 1.0, "ungraded"
     x = want_intensity * out
+    if event and len(app.event_values) >= EVENT_HISTORY_MIN:
+        # Past events carry no producer outcome of their own here: each is scaled by the family's
+        # expected outcome (the mean, or 1 ungraded), the same multiplier a want without one gets.
+        # (A producer outcome_value on the current want is not applied to the history: neither event
+        # family is graded today, so both sides use the same multiplier.)
+        ref_out = app.mean_outcome if app.graded and app.mean_outcome is not None else 1.0
+        ref = [v * ref_out for v in app.event_values]
+        # Strict-below, the rule salience itself uses: an event no bigger than the smallest usual one
+        # ranks 0 (its rest point). Mid-rank gave tied ordinary events half credit (~0.4), so a free
+        # family funded every one of them (patch 2 review).
+        return sum(1 for v in ref if v < x) / len(ref), f"event:{basis}", out
+    # Cold start: too few past events to rank against, so the rule every want had before (patch 1).
+    cold = "event_cold:" if event else ""
     if not app.values:
-        return min(1.0, max(0.0, want_intensity)), "no_history", out
-    return mid_rank(x, app.values), basis, out
+        return min(1.0, max(0.0, want_intensity)), f"{cold}no_history", out
+    return mid_rank(x, app.values), f"{cold}{basis}", out
 
 
 @dataclass(frozen=True)
@@ -288,6 +315,7 @@ def estimate_cost(want_cost: Optional[Mapping[str, Any]], cfg: FamilyConfig, app
 __all__ = [
     "ActRecord",
     "CostEstimate",
+    "EVENT_HISTORY_MIN",
     "FamilyAppetite",
     "GRADED_MIN_CLOSES",
     "Hunger",

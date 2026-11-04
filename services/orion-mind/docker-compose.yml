@@ -74,6 +74,10 @@ services:
       PRIME_HUB_URL: ${PRIME_HUB_URL:-http://100.92.216.81:8080}
       PRIME_REGULATE_ENABLED: ${PRIME_REGULATE_ENABLED:-true}
       PRIME_FAMILIES_PATH: ${PRIME_FAMILIES_PATH:-/repo/config/physiology/families.yaml}
+      # Prime's concerns from funded event wants (app/prime_loop.py); see .env_example.
+      PRIME_CONCERNS_FROM_EVENT_WANTS: ${PRIME_CONCERNS_FROM_EVENT_WANTS:-true}
+      PRIME_EVENT_WANTS_HOURS: ${PRIME_EVENT_WANTS_HOURS:-24}
+      PRIME_EVENT_WANTS_LIMIT: ${PRIME_EVENT_WANTS_LIMIT:-8}
       # Self-monitor E1 act gate on Prime's acts (app/prime_loop.py); see .env_example.
       SELF_MONITOR_ACT_GATE_ENABLED: ${SELF_MONITOR_ACT_GATE_ENABLED:-true}
       SELF_MONITOR_PROBE_INTERVAL_SEC: ${SELF_MONITOR_PROBE_INTERVAL_SEC:-21600}

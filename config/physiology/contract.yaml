@@ -154,6 +154,18 @@ readers:
     role: display
     reason: SHADOW bids (painting and dream-hop generate step) logged beside the real gate; never obeyed.
     note: Patch C3b; becomes the bid site when Patch D cuts each producer over
+  - module: services/orion-hub/scripts/reading_event_wants.py
+    role: display
+    reason: SHADOW event wants (one per finished read, salience = links made) posted to the market; nothing in Hub obeys the decision.
+    note: attention as the want competition, patch 2; Prime reads the funded ones (orion-mind PRIME_CONCERNS_FROM_EVENT_WANTS)
+  - module: services/orion-sql-writer/app/ask_event_wants.py
+    role: display
+    reason: SHADOW event wants (one per open camera ask, salience = sightings) posted to the market; nothing in sql-writer obeys the decision.
+    note: attention as the want competition, patch 2
+  - module: services/orion-durable-runs/app/event_wants_menu.py
+    role: display
+    reason: read-only menu of the market's funded event wants from want_ledger (GET /physiology/event-wants); gates nothing.
+    note: attention as the want competition, patch 2; Prime's concern source
   - module: services/orion-hub/scripts/temporal_self_routes.py
     role: display
     reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.

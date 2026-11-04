@@ -158,6 +158,17 @@ class Settings(BaseSettings):
     PRIME_REGULATE_ENABLED: bool = Field(default=True, alias="PRIME_REGULATE_ENABLED")
     # Where Prime reads the receptors: the read-only repo mount (docker-compose volumes).
     PRIME_FAMILIES_PATH: str = Field(default="/repo/config/physiology/families.yaml", alias="PRIME_FAMILIES_PATH")
+    # Attention as the want competition, patch 2: Prime's concerns come from the events Orion's body economy
+    # FUNDED (durable-runs GET /physiology/event-wants, from want_ledger: reading and camera-ask event wants)
+    # instead of Temporal Self attention arcs. A new concern must name one of those events. false: arcs, as
+    # before. ROLL BACK WITH THIS FLAG, not an image revert: an older image cannot read a saved concern that
+    # carries event_ref and starts Prime empty. Shipped ON: in the 14-day replay 42 of 43 real concern bets had a
+    # funded event to name (services/orion-durable-runs/evals/event_wants_replay.py; that eval exits 1 on a
+    # separate check, camera salience is not mostly low; see the patch 2 PR report).
+    PRIME_CONCERNS_FROM_EVENT_WANTS: bool = Field(default=True, alias="PRIME_CONCERNS_FROM_EVENT_WANTS")
+    # Event wants decided in this many hours are considered; at most this many are shown (highest net first).
+    PRIME_EVENT_WANTS_HOURS: float = Field(default=24.0, gt=0.0, le=72.0, alias="PRIME_EVENT_WANTS_HOURS")
+    PRIME_EVENT_WANTS_LIMIT: int = Field(default=8, ge=1, le=50, alias="PRIME_EVENT_WANTS_LIMIT")
     # Self-monitor E1 act gate on Prime's own acts (orion/self_monitor/gate.py; app/prime_loop.py): an act
     # whose faculty (act.prime.<verb>, e.g. act.prime.predict) is held broken/unreliable in a fresh
     # orion:self_monitor:latest is not opened (track_record_failing), except one re-test probe per faculty

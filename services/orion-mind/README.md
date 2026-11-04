@@ -268,3 +268,13 @@ for slack by design.
 | `PRIME_HUB_URL` | `http://100.92.216.81:8080` | curiosity runs + pending focus |
 | `PRIME_REGULATE_ENABLED` | `true` | offer the regulate move; off = not offered, answers using it refused (open signals still graded) |
 | `PRIME_FAMILIES_PATH` | `/repo/config/physiology/families.yaml` | where Prime reads the receptors (read-only repo mount) |
+
+### Prime's concerns from funded event wants (2026-11-04, patch 2)
+
+`PRIME_CONCERNS_FROM_EVENT_WANTS` (default true): the frame's ATTENTION section (Temporal Self arcs,
+`GET /temporal-self/frame`) is replaced by EVENTS WORTH EFFORT: the event wants the body economy funded
+and that have not expired (durable-runs `GET /physiology/event-wants?hours=PRIME_EVENT_WANTS_HOURS&limit=
+PRIME_EVENT_WANTS_LIMIT`, highest net first). A new concern must name one of those `event_id`s
+(`PrimeConcernV1.event_ref`); a concern without one is not added, and Prime sees why. Log:
+`prime_concern_added concern=... event_ref=...`. An unread menu is a frame gap, never calm. false = the
+arc path, unchanged. Replay: `services/orion-durable-runs/evals/event_wants_replay.py`. Spec: docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md.

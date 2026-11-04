@@ -1,0 +1,35 @@
+{
+ "money": {
+  "mtd_usd": 16.3,
+  "forecast_usd": 135.96,
+  "envelope_usd": 100.0,
+  "floor_usd": 111.03,
+  "rate_usd_per_kwh": 0.1255,
+  "daily_kwh": [
+   {
+    "d": "2026-11-03",
+    "kwh": 14.469,
+    "partial": true
+   },
+   {
+    "d": "2026-11-04",
+    "kwh": 21.308,
+    "partial": true
+   }
+  ]
+ },
+ "hosts": [
+  {
+   "host": "circe",
+   "rest_usd_per_month": 49.56,
+   "usd_per_month_at_this_rate": 8.7,
+   "above_rest_w": 95.0
+  },
+  {
+   "host": "athena",
+   "rest_usd_per_month": 31.15,
+   "usd_per_month_at_this_rate": 7.97,
+   "above_rest_w": 87.0
+  }
+ ]
+}

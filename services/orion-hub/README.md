@@ -2779,6 +2779,15 @@ reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADO
 (default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
 host port `http://127.0.0.1:8124/physiology/bid`.
 
+**Reading event wants** (2026-11-04, attention as the want competition patch 2, docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Each finished
+read (`world_pulse_read_seed`, `stage2_status = 'done'`) posts one SHADOW event want: family
+`hub.world_pulse_read`, verb `look`, `event_ref` `world_pulse_read_seed:<seed_id>`, salience = the links
+the read made (accepted relationship claims) as a strict-below percentile of the previous 30 days of
+reads (a read with no link reads 0). Deterministic want id; a read already in `want_ledger` is not
+reposted. Log: `reading_event_want seed=... links=... salience=... outcome=...`. Code:
+`scripts/reading_event_wants.py`. Switches: `HUB_READING_EVENT_WANTS_ENABLED` (default true),
+`HUB_READING_EVENT_WANTS_TICK_SEC` (300), `HUB_READING_EVENT_WANTS_LOOKBACK_SEC` (10800 = the family window).
+
 Known gaps, on purpose:
 
 - When outreach's agent lane times out and the chat lane retries, the act opens on the retry's

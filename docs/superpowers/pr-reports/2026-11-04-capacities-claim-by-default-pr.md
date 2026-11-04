@@ -32,6 +32,8 @@ On 2026-11-04 01:47Z (harness transcript `1f8aaec3`), Juniper asked "Would you p
 - `orion/dig/tests/test_capacities_cmd.py`: regression and lifecycle tests.
 - `orion/dig/tests/test_dig.py`: brief line assertion.
 - `orion/body_atlas/tests/test_capacities.py`: `open_jobs` / `pending_claims` unit test.
+- `orion/body_atlas/claims.py`: a because that still holds a `<...>` placeholder is refused.
+- `orion/body_atlas/evals/run_capacity_roles_eval.py`: size check on what Orion actually reads (render plus the dig tail).
 - `orion/dig/README.md`, `orion/body_atlas/README.md`: describe the block.
 - `docs/superpowers/specs/2026-10-30-self-now-capacities-vsm-design.md`: note under decision 5 (Juniper's ask is any capacities question, in any words).
 - `docs/superpowers/pr-reports/2026-11-04-capacities-claim-by-default-pr.md`: this report.
@@ -41,8 +43,8 @@ On 2026-11-04 01:47Z (harness transcript `1f8aaec3`), Juniper asked "Would you p
 - Added: none
 - Removed: none
 - Renamed: none
-- Behavior changed: the `dig capacities` printout ends with the claim block and the waiting list. The generic `to claim a job:` line prints only when there is no open job and nothing waiting.
-- Compatibility notes: none. #3091 (open) adds a `status:` legend line inside `render()`; this patch does not touch `render()`.
+- Behavior changed: `capacity claim`/`dispute`/`write` refuse a because with a `<...>` placeholder. The `dig capacities` printout ends with the claim block and the waiting list. The generic `to claim a job:` line prints only when there is no open job and nothing waiting.
+- Compatibility notes: a because containing `<word...>` is now refused. #3091 (merged) is in the base; this patch does not touch `render()`.
 
 ## Env/config changes
 
@@ -51,30 +53,30 @@ On 2026-11-04 01:47Z (harness transcript `1f8aaec3`), Juniper asked "Would you p
 ## Tests run
 
 ```text
-.venv/bin/python -m pytest orion/dig/tests orion/body_atlas/tests tests/test_organ_names_partition.py tests/test_report_dig_kit_usage.py -q   -> 262 passed
+.venv/bin/python -m pytest orion/dig/tests orion/body_atlas/tests tests/test_organ_names_partition.py tests/test_report_dig_kit_usage.py -q   -> 268 passed
 ```
 
-Regression test: `test_capacities_output_tells_orion_to_write_claims_now_not_offer_them` (fails on main: no `Unclaimed jobs:` line). Lifecycle: `test_a_ready_claim_line_runs_once_its_because_is_filled_and_then_waits_on_juniper` runs a printed line through the CLI, then checks the job leaves the block and joins the waiting list. Also: a rejected claim reopens the job without its part; the block survives a cut printout.
+Regression test: `test_capacities_output_tells_orion_to_write_claims_now_not_offer_them` (fails on main: no `Unclaimed jobs:` line; the reviewer ran the new tests on an origin/main tree: all fail). Lifecycle: `test_a_ready_claim_line_runs_once_its_because_is_filled_and_then_waits_on_juniper` runs a printed line through the CLI, then checks the job leaves the block and joins the waiting list. Also: a rejected claim reopens the job without its part; the block survives a cut printout; every printed line run as is is refused and writes nothing; a candidate line shows only the rule's own citable evidence.
 
-Live atlas (FalkorDB read-only, scratch `ORION_DIG_HOME`, real ledger untouched), 2026-11-04:
+Live atlas (FalkorDB read-only, scratch `ORION_DIG_HOME`, real ledger untouched), 2026-11-04, rebased on main with #3091:
 
 ```text
-Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim is not a role; Juniper reviews it). The because cites, by full id, a part or channel on that part's flows, or a repo file:
-  python -P -m orion.dig capacity claim <part> S3 because "<why>"
-  python -P -m orion.dig capacity claim orion-equilibrium-service 'S3*' because "<why; e.g. atlas-worker-1, atlas-worker-2, atlas-worker-agent-1>"
-  python -P -m orion.dig capacity claim <part> S4 because "<why>"
-  python -P -m orion.dig capacity claim <part> S5 because "<why>"
-  python -P -m orion.dig capacity claim <part> algedonic because "<why>"
-  python -P -m orion.dig capacity claim <part> metabolism because "<why>"
+Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim is not a role; Juniper reviews it). Cite by full id a part or channel on its flows, or a repo file:
+  python -P -m orion.dig capacity claim '<part>' S3 because "<why>"
+  python -P -m orion.dig capacity claim orion-equilibrium-service 'S3*' because "<why>"
+  python -P -m orion.dig capacity claim '<part>' S4 because "<why>"
+  python -P -m orion.dig capacity claim '<part>' S5 because "<why>"
+  python -P -m orion.dig capacity claim '<part>' algedonic because "<why>"
+  python -P -m orion.dig capacity claim '<part>' metabolism because "<why>"
 No evidence for a job: leave it, and say which and why.
 ```
 
-32 lines, 3254 chars (cap 40 / 4000). After a scratch claim on `orion-equilibrium-service S3*`, the S3* line left the block and `Waiting on Juniper (1)` listed it.
+33 lines, 3221 chars (cap 40 / 4000). After a scratch claim on `orion-equilibrium-service S3*`, the S3* line left the block and `Waiting on Juniper (1)` listed it.
 
 ## Evals run
 
 ```text
-run_capacity_roles_eval.py        -> exit 0 (render() size floor unchanged: the block is outside render())
+run_capacity_roles_eval.py        -> exit 0 (new: render + dig tail with two claims waiting is not cut; with every ledger full the tail stays <= 12 lines / 900 chars and every job line shows. Raising MAX_PENDING_SHOWN to 10 makes it FAIL: checked)
 run_organ_structure_eval.py       -> exit 0
 run_store_direction_eval.py       -> exit 0
 run_wire_eval.py                  -> exit 0
@@ -89,7 +91,22 @@ Live check after deploy: Juniper asks about capacities in plain words. Expected:
 
 ## Review findings fixed
 
-(filled after review)
+- Finding (must): a printed line run unchanged wrote a junk claim; the example cites inside the quoted because passed `check_claim`.
+  - Fix: `claims._because` refuses any `<...>` placeholder; example cites moved out of the quotes.
+  - Evidence: `test_a_printed_claim_line_run_as_is_is_refused_and_writes_nothing`.
+- Finding (should): the example cites were the alphabetically first flow peers (live: `atlas-worker-1, ...` for an audit claim), not evidence.
+  - Fix: a candidate line shows only the rule's own evidence that is citable (`# the rule saw: ...`), else nothing. Live S3* shows none, because its rule evidence is the census.
+  - Evidence: `test_a_candidate_line_shows_only_the_rules_own_citable_evidence`; live block above.
+- Finding (should): the eval's size floor measured `render()` alone, assuming a one-line tail; full ledgers would silently cut the printout.
+  - Fix: eval now measures render + tail (see Evals). Waiting list shows 3 claims (was 4), becauses cut at 60 chars, shorter header.
+  - Evidence: eval exit 0; FAIL when the tail is allowed to grow.
+- Finding (should): `<part>` unquoted is a bash redirect, so Orion got a shell error, not dig's teaching error.
+  - Fix: `'<part>'` quoted in the block and in `CLAIM_CMD`; dig answers "not a live part ... copy a part name".
+  - Evidence: same run-as-is test.
+- Finding (nit): `capped()` broke if the tail alone exceeded the cap. Fix: `room` clamped.
+- Finding (nit): the brief-pointer test pinned only the rarely-taken generic line. Fix: also asserts the `Unclaimed jobs:` text in `claim_block`.
+- Finding (nit): `open_jobs` counted confirmed claims as waiting (redundant). Fix: only unconfirmed; comment says why.
+- Reviewer confirmed: no conflict with #3091 (merged; branch rebased on it).
 
 ## Restart required
 

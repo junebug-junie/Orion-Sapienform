@@ -313,3 +313,4 @@ def test_capacities_output_carries_the_line_the_brief_points_at():
     from orion.dig import __main__ as dig_main
 
     assert 'f"to claim a job: {CLAIM_CMD}' in inspect.getsource(dig_main.cmd_capacities)
+    assert "Unclaimed jobs: claim each you can back with evidence now" in inspect.getsource(dig_main.claim_block)

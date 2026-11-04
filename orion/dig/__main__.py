@@ -172,9 +172,9 @@ def capped(lines: list[str], *, tail: str | None) -> str:
     if len(body) > keep:
         body = body[: keep - 1] + [f"(showing {keep - 1} of {len(lines)} lines; the rest is in the file)"]
     text = "\n".join(body)
-    room = MAX_CHARS - (len(tail) + 1 if tail else 0)
+    note = "(cut at 4000 chars; the rest is in the file)"
+    room = max(MAX_CHARS - (len(tail) + 1 if tail else 0), len(note) + 1)
     if len(text) > room:
-        note = "(cut at 4000 chars; the rest is in the file)"
         text = text[: room - len(note) - 1].rsplit("\n", 1)[0] + "\n" + note
     return text + ("\n" + tail if tail else "")
 
@@ -603,7 +603,7 @@ def capacities_path() -> Path:
     return home() / "self" / "capacities.jsonl"
 
 
-CLAIM_CMD = 'python -P -m orion.dig capacity claim <part> <job> because "<reason citing its flow or a repo file>"'
+CLAIM_CMD = "python -P -m orion.dig capacity claim '<part>' '<job>' because \"<reason citing its flow or a repo file>\""
 
 
 def _capacity_reading():
@@ -650,7 +650,7 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
 
 
 CLAIM_PREFIX = "python -P -m orion.dig capacity claim"
-MAX_PENDING_SHOWN = 4
+MAX_PENDING_SHOWN = 3
 
 
 def claim_block(reading, atlas) -> list[str]:
@@ -662,24 +662,24 @@ def claim_block(reading, atlas) -> list[str]:
     lines: list[str] = []
     jobs = capacities.open_jobs(reading)
     if jobs:
-        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first "
-                     "(a claim is not a role; Juniper reviews it). The because cites, by full id, a part or "
-                     "channel on that part's flows, or a repo file:")
+        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim "
+                     "is not a role; Juniper reviews it). Cite by full id a part or channel on its flows, or a repo file:")
         for job, cands in jobs:
+            name, hint = "'<part>'", ""
             if cands:
                 part = cands[0]
-                cites = sorted(claims.evidence_ids(atlas, part, census))[:3]
-                hint = "why; e.g. " + ", ".join(cites) if cites else "why; a repo file"
+                ok = claims.evidence_ids(atlas, part, census)
+                # the rule's own evidence for this candidate, never an arbitrary flow peer
+                ev = [e for r in reading.roles if r.part_id == part and r.role == job for e in r.evidence if e in ok]
                 name = shlex.quote(part.removeprefix("part:"))
-            else:
-                name, hint = "<part>", "why"
-            lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<{hint}>"')
+                hint = f"  # the rule saw: {', '.join(dict.fromkeys(ev[:3]))}" if ev else ""
+            lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<why>"{hint}')
         lines.append("No evidence for a job: leave it, and say which and why.")
     waiting = capacities.pending_claims(reading)
     if waiting:
-        lines.append(f"Waiting on Juniper ({len(waiting)}): ask her yes or no on each; her answer goes in "
-                     "config/body_atlas/vsm_confirmed.yaml:")
-        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:70]}" for c in waiting[:MAX_PENDING_SHOWN]]
+        lines.append(f"Waiting on Juniper ({len(waiting)}): ask her yes or no on each (answers go in "
+                     "config/body_atlas/vsm_confirmed.yaml):")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_PENDING_SHOWN]]
         if len(waiting) > MAX_PENDING_SHOWN:
             lines.append(f"  +{len(waiting) - MAX_PENDING_SHOWN} more in {claims_path()}")
     return lines

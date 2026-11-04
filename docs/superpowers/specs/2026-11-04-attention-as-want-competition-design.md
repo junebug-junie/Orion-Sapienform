@@ -107,7 +107,7 @@ for its clock. Each want carries:
 - `event_ref`: the Temporal Self event, act or source row it is about, so it keeps its identity;
 - `salience`: how unusual this event is for its source, 0..1. It is the source's own percentile, the
   same scale world-first uses today, and the source computes it.
-- `affordance`: the act it would run (family, verb, object), with its usual cost estimate.
+- the act it would run: the want's own family, verb, object_ref and cost (no separate field).
 
 v1 event sources (each is a loop that already closes):
 - camera arrivals and asks;

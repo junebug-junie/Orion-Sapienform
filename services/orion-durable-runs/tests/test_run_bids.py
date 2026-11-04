@@ -79,6 +79,7 @@ def test_a_run_becomes_a_want_that_joins_its_act():
     ("curiosity.investigate", "self_inquiry", "durable.self_inquiry"),
     ("self_sense_eval", None, "durable.self_sense_eval"),
     ("journal.compose", None, "durable.journal_compose"),
+    ("pr.field_note", None, "durable.pr_field_note"),   # tier 1, Juniper 2026-11-04
 ])
 def test_every_want_family_run_bids_once_at_its_families_yaml_tier(workflow, line, family):
     async def go():
@@ -205,3 +206,10 @@ def test_a_run_refused_before_any_grant_still_releases_its_reservation():
         assert m.opened == [] and m.released == [req.run_id]
         await rt.close()
     asyncio.run(with_database(scenario))
+
+
+def test_pr_field_note_is_tier_one_with_a_day_to_wait():
+    """Juniper's decision 1 (2026-11-04): critical upkeep, a ~24 h deferrable window, the agent lanes."""
+    fam = FAMS.get("durable.pr_field_note")
+    assert fam is not None and fam.tier == 1 and fam.deferrable_window_s == 86400
+    assert set(fam.lanes) == {"agent", "agent-gpu2"} and fam.receptors == ()

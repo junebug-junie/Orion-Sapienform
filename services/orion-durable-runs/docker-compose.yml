@@ -13,6 +13,11 @@ services:
       - app-net
     ports:
       - "${DURABLE_RUNS_PORT:-8124}:8121"
+    volumes:
+      # PR field notes Patch 2: Orion's dig self dir (the same host dir orion-harness-governor's dig writes),
+      # so the poller can write code records and verify a note turn's save receipt. Only
+      # app/pr_field_note_ledger.py touches it, and only the field-notes ledger in it.
+      - ${PR_FIELD_NOTES_SELF_HOST:-/mnt/orion-fcc/self}:${PR_FIELD_NOTES_LEDGER_DIR:-/mnt/orion-fcc/self}
     environment:
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME:-orion-durable-runs}
@@ -137,6 +142,13 @@ services:
       - PERSONALITY_TICK_SEC=${PERSONALITY_TICK_SEC:-600}
       - PERSONALITY_NAMING_APPLY_ENABLED=${PERSONALITY_NAMING_APPLY_ENABLED:-true}
       - PERSONALITY_EMBED_URL=${PERSONALITY_EMBED_URL:-http://${PROJECT}-vector-host:8320/embedding}
+      - PR_FIELD_NOTES_ENABLED=${PR_FIELD_NOTES_ENABLED:-true}
+      - PR_FIELD_NOTES_POLL_SEC=${PR_FIELD_NOTES_POLL_SEC:-900}
+      - PR_FIELD_NOTES_LOOKBACK_H=${PR_FIELD_NOTES_LOOKBACK_H:-72}
+      - PR_FIELD_NOTES_GITHUB_REPO=${PR_FIELD_NOTES_GITHUB_REPO:-junebug-junie/Orion-Sapienform}
+      - PR_FIELD_NOTES_NOT_BEFORE=${PR_FIELD_NOTES_NOT_BEFORE:-2026-11-04T06:00:00+00:00}
+      - PR_FIELD_NOTES_LEDGER_DIR=${PR_FIELD_NOTES_LEDGER_DIR:-/mnt/orion-fcc/self}
+      - PR_FIELD_NOTES_TURN_TIMEOUT_SEC=${PR_FIELD_NOTES_TURN_TIMEOUT_SEC:-420}
 
 networks:
   app-net:

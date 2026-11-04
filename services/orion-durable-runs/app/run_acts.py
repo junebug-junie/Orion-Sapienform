@@ -46,6 +46,7 @@ from orion.grammar.acts import act_closed_event, act_opened_event, build_act
 from orion.grammar.publish import GRAMMAR_EVENT_CHANNEL
 from orion.schemas.grammar import ActCostV1, ActV1, ActVerb, GrammarEventV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
+from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,16 @@ FAMILIES: dict[str, RunActFamily] = {
         "artifact_produced (the durable run ends completed) by 3600s after its first GPU pool grant, or by "
         "the run's own admission deadline + 600s when that is later: first-grant->terminal over 30d for "
         "completed journal.compose runs p99 26s, max 27s (n=26, measured 2026-10-23)"),
+    # PR field notes Patch 2 (2026-11-04). Tier 1 by Juniper's decision (config/physiology/families.yaml).
+    # No pr.field_note run has ever completed, so the horizon is a bound from the run's own limits, not a
+    # measurement: 3 attempts x the 420 s turn + backoff (<= 300 s each) is under an hour; 7200 s doubles it.
+    # A run with a deadline gets deadline + 600 s instead (_horizon_sec), whichever is later.
+    "pr_field_note": RunActFamily(
+        "pr_field_note", "durable.pr_field_note", "make", 7200.0,
+        "artifact_produced (the durable run ends completed: a field note saved and its receipt found in the "
+        "ledger) by 7200s after its first GPU pool grant, or by the run's own admission deadline + 600s when "
+        "that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-04): 3 attempts x 420s turn + "
+        "backoff fits in 3600s"),
 }
 
 
@@ -104,7 +115,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
     """The want family of a run, or None for a run that is not one of Orion's own wants.
 
     Included: curiosity.investigate (line investigate -> infer, self_inquiry -> ask),
-    self_sense_eval (sense), journal.compose (make). Excluded on purpose:
+    self_sense_eval (sense), journal.compose (make), pr.field_note (make; tier-1 upkeep, Juniper
+    2026-11-04 -- named here so each note is an act with a measured cost). Excluded on purpose:
 
     * urgent curiosity runs (``brief.urgent`` set): an incident report a sensor alarm forced
       (cabinet AC, GPU heat), a reflex rather than a want;
@@ -128,6 +140,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
         return FAMILIES["self_sense_eval"]
     if workflow == JOURNAL_COMPOSE_WORKFLOW:
         return FAMILIES["journal_compose"]
+    if workflow == PR_FIELD_NOTE_WORKFLOW:
+        return FAMILIES["pr_field_note"]
     return None
 
 

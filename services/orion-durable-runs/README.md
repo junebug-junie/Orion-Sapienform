@@ -1105,6 +1105,22 @@ four-cell shadow-vs-real table per family; `--source replay` re-decides the real
 Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
 scripts/analysis/smoke_body_economy_prices.py --hours 24`.
 
+### Event wants and Prime's menu: `GET /physiology/event-wants` (2026-11-04, patch 2, read-only)
+
+Attention as the want competition (docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Two producers post SHADOW **event wants** (`WantV1.event_ref`
++ `salience`): Hub reading (one per finished read) and sql-writer camera asks (one per open ask).
+
+- **Event rank.** An event want ranks against the family's own past event wants (their recorded
+  intensities, `want_ledger`, 30 days, first decision per want, read with the act history:
+  `app/physiology_market.py` `EVENT_HISTORY_SQL`), not against the hunger-only act history. Under 10
+  past events it is ranked as before (`value_basis` `event_cold:<basis>`); otherwise `event:<basis>`.
+- **The menu.** `GET /physiology/event-wants?hours=24&limit=8` returns `FundedEventWantsV1`
+  (`orion/schemas/physiology_want.py`): every event want whose LATEST decision is funded and whose event
+  has not expired (window end, or an answered camera ask), highest net first, each labelled from its
+  source row. Code: `app/event_wants_menu.py`. Reader: Orion Prime (`PRIME_CONCERNS_FROM_EVENT_WANTS`).
+- **Replay.** `evals/event_wants_replay.py [--live --days 14]`: salience per source, the event rank vs
+  the old rank, and how often Prime's frame would have had a funded event.
+
 ### Body-economy report: `GET /physiology/report` (2026-10-29, read-only)
 
 One `PhysiologyReportV1` (`orion/schemas/physiology_report.py`, `schema_version: physiology.report.v1`)

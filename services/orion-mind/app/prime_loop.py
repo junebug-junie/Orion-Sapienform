@@ -11,7 +11,9 @@ the actor, act ids, family, Redis key and env keys did not change.
 Two clocks:
 
 * **tick** (every PRIME_TICK_SEC, CPU only): read the body (durable-runs GET /physiology/state) and
-  attention (GET /temporal-self/frame), record what changed (orion.prime.state.observe), settle any
+  attention (GET /temporal-self/frame; with PRIME_CONCERNS_FROM_EVENT_WANTS, the funded event wants
+  instead, GET /physiology/event-wants, Prime's only concern source then), record what changed
+  (orion.prime.state.observe), settle any
   open question, save the state to Redis. Most ticks stop here.
 * **thought** (only when something changed, the refractory interval has passed, no Juniper turn is
   running, and the body economy FUNDS the bid): one model call on route PRIME_LLM_ROUTE (circe chat

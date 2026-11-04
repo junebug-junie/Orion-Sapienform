@@ -176,8 +176,12 @@ readers:
     reason: act energy cost (2026-10-29; whole machine 2026-10-30); reads the heat fit and the pinned rest (rest_body.yaml) to price an act's wh_by_host / heat_c_by_host in grammar_acts.cost_json and the hourly attribution rows. Records a cost, gates nothing.
   - module: services/orion-mind/app/prime_loop.py
     role: bidder
-    reason: Orion Prime bids (family prime, Tier 1) for each thought and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. No arousal/thermal veto of its own. Step 3 (2026-10-30) also writes regulate signals (a bounded charge on another family's bids) and reads back the market's record; it vetoes nothing.
+    reason: Orion Prime (family prime, Tier 1); since 2026-11-04 its bid and obey run in the loop library (orion/mindloop/runtime.py, below). No arousal/thermal veto of its own. Step 3 (2026-10-30) also writes regulate signals (a bounded charge on another family's bids) and reads back the market's record; it vetoes nothing.
     note: 2026-10-30, Orion Prime 2A; the first binding bid (already the Patch D shape), so nothing left to cut over
+  - module: orion/mindloop/runtime.py
+    role: bidder
+    reason: the loop library every resident loop in orion-mind runs on (Prime is instance #1). Bids once per thought with the instance's family, tier and lane at its cost ceiling, and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. Reads no arousal/thermal/price state itself; it vetoes nothing.
+    note: 2026-11-04, moved out of services/orion-mind/app/prime_loop.py unchanged (curiosity replica design section 10)
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.

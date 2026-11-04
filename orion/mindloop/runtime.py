@@ -19,15 +19,19 @@ One tick (every ``<prefix>TICK_SEC``):
    the answer is parsed (``_parse_answer``) and applied (``_conclude``), and the act closes at once.
 6. Release the bid, ``_after_think()``, save.
 
-What an instance supplies (subclass hooks, each raises NotImplementedError here):
+What an instance supplies (subclass hooks; the ones marked * have a no-op default, the rest raise
+NotImplementedError here):
 
 * ``identity`` (``LoopIdentity``) and ``state_model``: a pydantic model with ``last_thought_at``,
   ``no_model_streak``, ``no_model_tries_total``, ``last_try_kind`` and ``retry_not_before``;
 * ``_upkeep() -> (inputs, now)``; ``_wants_to_think(now)``; ``_pending_count()``; ``_tell(text)`` (a line in
   the next frame that is NOT a reason to think); ``_thought_act(thought_id, horizon_sec)``; ``_woke_note()``;
   ``_ask(inputs, now) -> ModelReply``; ``_parse_answer(parsed) -> (answer, error)``;
-  ``_conclude(act, thought_id, inputs, now, reply, answer) -> (produced, note)``; ``_after_think()``;
-  ``_log_started()``.
+  ``_conclude(act, thought_id, inputs, now, reply, answer) -> (produced, note)``; ``_after_think()``*;
+  ``_log_started()``*; ``_new_thought_id()``*; ``_want_extras()``* (more ``WantV1`` fields, e.g. a request's
+  ``object_ref``); ``_on_not_funded(decision)``* and ``_on_no_model(reply)``* (an instance that answers a
+  requester can tell it why no thought happened). ``wake()`` ends the current tick wait early (a request
+  arrived); Prime never calls it.
 
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on. Every
 blocking call runs in a worker thread.
@@ -59,6 +63,8 @@ from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
 NO_MODEL_BACKOFF_FLOOR_SEC = 60.0
 
 _MISSING = object()
+# Every instance's state model carries these (the runtime reads and writes them; orion/mindloop/backoff.py).
+LOOP_STATE_FIELDS = ("last_thought_at", "no_model_streak", "no_model_tries_total", "last_try_kind", "retry_not_before")
 
 
 def utcnow() -> datetime:
@@ -105,6 +111,9 @@ class MindLoopRuntime:
         self.bid, self.release = bid, release
         self.clock = clock
         self.turns = turns
+        missing = [f for f in LOOP_STATE_FIELDS if f not in getattr(self.state_model, "model_fields", {})]
+        if missing:
+            raise TypeError(f"{self.state_model.__name__} lacks the loop state fields {missing}")
         self.state = self.state_model()
         self.gate = build_act_gate(settings)
         self.log = logging.getLogger(self.identity.logger_name)
@@ -113,6 +122,7 @@ class MindLoopRuntime:
         self._infer_refusal_told = False
         self._infer_refused_at: Optional[datetime] = None
         self._stop = asyncio.Event()
+        self._wake = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self.source = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
 
@@ -144,6 +154,21 @@ class MindLoopRuntime:
             delay = min(delay * 2, 60.0)
         return False
 
+    def wake(self) -> None:
+        """End the current wait between ticks now (call from the loop's own event loop)."""
+        self._wake.set()
+
+    async def _wait_tick(self) -> None:
+        """Sleep TICK_SEC, or less if stopped or woken."""
+        stop = asyncio.ensure_future(self._stop.wait())
+        wake = asyncio.ensure_future(self._wake.wait())
+        try:
+            await asyncio.wait({stop, wake}, timeout=float(self.cfg("TICK_SEC")), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in (stop, wake):
+                t.cancel()
+            self._wake.clear()
+
     async def stop(self) -> None:
         self._stop.set()
         if self._task is not None:
@@ -166,10 +191,7 @@ class MindLoopRuntime:
                 raise
             except Exception:  # noqa: BLE001
                 self.log.exception(f"{self.identity.name}_tick_failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=float(self.cfg("TICK_SEC")))
-            except asyncio.TimeoutError:
-                pass
+            await self._wait_tick()
 
     # --- persistence -----------------------------------------------------------------------
     async def load(self) -> None:
@@ -288,7 +310,7 @@ class MindLoopRuntime:
 
         want = WantV1(want_id=f"{name}-think-{uuid4().hex[:12]}", family=self.identity.family,
                       producer=self.identity.producer, verb=self.identity.verb, tier=self.identity.tier,
-                      lanes=[self.cfg("BID_LANE")], cost=self._cost_ceiling())
+                      lanes=[self.cfg("BID_LANE")], cost=self._cost_ceiling(), **self._want_extras())
         decision = await self.bid(want)
         outcome = getattr(decision, "outcome", None)
         if outcome != "funded":
@@ -296,6 +318,7 @@ class MindLoopRuntime:
             self.log.info(f"{name}_bid_not_funded outcome=%s reason=%s binding=%s pending=%d",
                           outcome or "none", getattr(decision, "reason", None) or "-",
                           getattr(decision, "binding_constraint", None) or "-", self._pending_count())
+            await self._on_not_funded(decision)
             return
         try:
             await self.think(inputs)
@@ -306,6 +329,7 @@ class MindLoopRuntime:
 
     def _cost_ceiling(self) -> Any:
         """One thought's lane cost at its enforced maximum: the model call's timeout, on the loop's lane.
+        (The history below is Prime's, the first instance; the rule holds for every instance.)
 
         Without it a family with no measured slot time is priced at a whole lane window
         (orion/physiology/choice.py "priced_at_one_window"). Live 10-30, every Prime bid was then
@@ -346,6 +370,7 @@ class MindLoopRuntime:
             return
         if reply.kind != "model":
             self._note_no_model(reply, self.clock())   # the backoff counts from the end of the try
+            await self._on_no_model(reply)
             return
         await self._open_thought(act, now)
         try:
@@ -467,8 +492,17 @@ class MindLoopRuntime:
     async def _after_think(self) -> None:
         return None
 
+    def _want_extras(self) -> dict[str, Any]:
+        return {}
+
+    async def _on_not_funded(self, decision: Any) -> None:
+        return None
+
+    async def _on_no_model(self, reply: ModelReply) -> None:
+        return None
+
     def _log_started(self) -> None:
         self.log.info(f"{self.identity.name}_started tick_sec=%s route=%s", self.cfg("TICK_SEC"), self.cfg("LLM_ROUTE"))
 
 
-__all__ = ["NO_MODEL_BACKOFF_FLOOR_SEC", "MindLoopRuntime", "ModelReply", "utcnow"]
+__all__ = ["LOOP_STATE_FIELDS", "NO_MODEL_BACKOFF_FLOOR_SEC", "MindLoopRuntime", "ModelReply", "utcnow"]

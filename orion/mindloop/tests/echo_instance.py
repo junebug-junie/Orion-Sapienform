@@ -61,7 +61,7 @@ class EchoRuntime(MindLoopRuntime):
         self.state = self.state.model_copy(update={"told": [*self.state.told, text]})
 
     def _thought_act(self, thought_id: str, horizon_sec: float):
-        return build_act(actor=self.identity.actor, verb="infer", key=thought_id, signal_id="artifact_produced",
+        return build_act(actor=self.identity.actor, verb=self.identity.verb, key=thought_id, signal_id="artifact_produced",
                          horizon_sec=horizon_sec, basis="test", object_ref=f"echo_thought:{thought_id}")
 
     def _woke_note(self) -> str:

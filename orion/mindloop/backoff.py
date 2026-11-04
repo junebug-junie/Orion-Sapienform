@@ -6,8 +6,8 @@ thought. ``note_no_model`` records it without starting the refractory interval, 
 2^n, capped at ``NO_MODEL_BACKOFF_CAP``), and a gateway shed answer's own ``retry_after_sec`` is always
 honoured. A no-seat try also sends the next one on the ``starved`` pool priority (``wants_starved_route``).
 
-The functions work on any loop state model with the four try fields (``orion/mindloop/instance.py``
-``LoopState``): ``no_model_streak``, ``no_model_tries_total``, ``last_try_kind``, ``retry_not_before``.
+The functions work on any loop state model with the four try fields (``orion/mindloop/runtime.py``
+``LOOP_STATE_FIELDS``, checked when an instance is built): ``no_model_streak``, ``no_model_tries_total``, ``last_try_kind``, ``retry_not_before``.
 """
 
 from __future__ import annotations

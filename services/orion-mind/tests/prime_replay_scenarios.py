@@ -75,7 +75,50 @@ def _dump(rt, cap: _Capture) -> dict:
         "saved_state": rt.bus.redis.kv.get("orion:prime:state"),
         "hashes": getattr(rt.bus.redis, "h", None),
         "logs": list(cap.lines),
+        "timeline": list(getattr(rt, "timeline", [])),
     })
+
+
+def _instrument(rt, timeline=None):
+    """One ordered list across channels: every publish, save, bid, release and model call, in the order they
+    happened (the per-channel lists above cannot show order between channels, nor how often state is saved)."""
+    tl = timeline if timeline is not None else []
+    rt.timeline = tl
+    bus = rt.bus
+    if not getattr(bus, "_timeline_wrapped", False):
+        bus._timeline_wrapped = True
+        publish, rset = bus.publish, bus.redis.set
+
+        async def pub(channel, envelope):
+            p = envelope.payload if isinstance(envelope.payload, dict) else {}
+            act = p.get("act") or {}
+            tl.append(f"publish {channel} {p.get('event_kind', '-')} {act.get('verb', '-')}")
+            return await publish(channel, envelope)
+
+        async def save(key, value):
+            tl.append(f"save {key}")
+            return await rset(key, value)
+
+        bus.publish, bus.redis.set = pub, save
+    bid, release = rt.bid, rt.release
+
+    async def b(want):
+        tl.append(f"bid {want.family}")
+        return await bid(want)
+
+    async def r(want_id):
+        tl.append("release")
+        return await release(want_id)
+
+    rt.bid, rt.release = b, r
+    call = rt.llm.request_json
+
+    def llm(**kw):
+        tl.append(f"llm {kw.get('route')}")
+        return call(**kw)
+
+    rt.llm.request_json = llm
+    return rt
 
 
 def _ticks(rt, minutes: list[float]) -> None:
@@ -93,7 +136,7 @@ def scenarios() -> dict:
         cap = _Capture()
         root.addHandler(cap)
         try:
-            rt = build()
+            rt = _instrument(build())
             _ticks(rt, minutes)
             out[name] = _dump(rt, cap)
         finally:
@@ -128,7 +171,7 @@ def scenarios() -> dict:
     cap = _Capture()
     root.addHandler(cap)
     try:
-        rt = yielding()
+        rt = _instrument(yielding())
         with yield_turns.turn():
             asyncio.run(rt.tick())
         out["juniper_yield"] = _dump(rt, cap)
@@ -153,7 +196,7 @@ def scenarios() -> dict:
     cap = _Capture()
     root.addHandler(cap)
     try:
-        rt = regulate()
+        rt = _instrument(regulate())
         asyncio.run(rt.tick())
         rt.llm.answer = {"reading": "watching", "concerns": {}, "move": None}
         _ticks(rt, [10, 125, 130])
@@ -165,13 +208,14 @@ def scenarios() -> dict:
     cap = _Capture()
     root.addHandler(cap)
     try:
-        rt = tpl.runtime(answer=tpl.MOVE)
+        rt = _instrument(tpl.runtime(answer=tpl.MOVE))
         asyncio.run(rt.tick())
         nom = rt.state.open_nominations[0]
         run_row = {"run_id": "r1", "line": "investigate",
                    "started_at_iso": (tpl.T0 + timedelta(hours=1)).isoformat(), "outcome_kind": "finished",
                    "focus": {"focus_id": nom.focus_id, "disposition": "explored"}}
         rt2 = tpl.runtime(answer={"reading": "ok"}, bus=rt.bus, runs=[run_row], now=tpl.T0 + timedelta(hours=3))
+        _instrument(rt2, rt.timeline)
         asyncio.run(rt2.load())
         asyncio.run(rt2.tick())
         rt2.bids[:0] = rt.bids
@@ -179,7 +223,44 @@ def scenarios() -> dict:
         out["settle_across_restart"] = _dump(rt2, cap)
     finally:
         root.removeHandler(cap)
+    # The self-monitor act gate ON (view and ledger faked): the infer gate now lives in the loop library.
+    for name, faculty, ledger_rows, minutes in (
+        ("gate_infer_refused", "act.prime.infer",
+         [{"verb": "infer", "object_ref": "prime_thought:", "test_before": None, "opened_at": tpl.T0 - timedelta(hours=1)}],
+         [0, 0.25, 2]),
+        ("gate_infer_probe_spent", "act.prime.infer", [], [0, 3]),
+        ("gate_predict_refused", "act.prime.predict",
+         [{"verb": "predict", "object_ref": "prime_concern:", "test_before": None, "opened_at": tpl.T0 - timedelta(hours=1)}],
+         [0, 0.25, 3]),
+    ):
+        run(name, lambda f=faculty, rows=ledger_rows: _gated(f, rows), minutes)
     return out
+
+
+def _gated(faculty: str, rows: list):
+    """A runtime whose gate is the real build_act_gate with its view read and ledger read replaced, wherever
+    build_act_gate lives (app/prime_loop.py before the loop library, orion/mindloop/gate.py after)."""
+    from types import SimpleNamespace
+
+    from app import prime_loop
+    from orion.self_monitor.view import self_monitor_view
+
+    at = tpl.T0
+    raw = json.dumps({"kind": "self_monitor.state.v1", "computed_at": at.isoformat(), "window_days": 7.0,
+                      "faculties": [{
+                          "faculty": faculty, "gradeability": "graded",
+                          "window_start": (at - timedelta(days=7)).isoformat(), "window_end": at.isoformat(),
+                          "n_bets": 42, "n_graded": 41, "n_failed_to_execute": 0, "n_expired": 0,
+                          "weight_graded": 41.0, "reliability": 0.05, "candidate_status": "unreliable",
+                          "status": "unreliable", "status_since": (at - timedelta(days=1)).isoformat()}]})
+    g = prime_loop.build_act_gate.__globals__
+    g["read_view_sync"] = lambda url, now: self_monitor_view(raw, now=now)
+    g["_ledger_rows"] = lambda dsn, actor, verb, secs: [dict(r) for r in rows if r.get("verb") == verb]
+    rt = tpl.runtime(answer=tpl.MOVE)
+    rt.gate = prime_loop.build_act_gate(SimpleNamespace(**{
+        **vars(tpl.SETTINGS), "SELF_MONITOR_ACT_GATE_ENABLED": True, "SELF_MONITOR_PROBE_INTERVAL_SEC": 21600.0,
+        "SELF_MONITOR_LEDGER_PG_DSN": "postgresql://x/y", "ORION_BUS_URL": "redis://x:6379/0"}))
+    return rt
 
 
 if __name__ == "__main__":

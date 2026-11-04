@@ -76,11 +76,19 @@ def test_the_library_imports_no_instance():
     root = Path(__file__).resolve().parents[1]
     for path in root.glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
-            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
-                     else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:  # relative: resolve against orion.mindloop
+                    pkg = "orion.mindloop".split(".")[: max(0, 2 - (node.level - 1))]
+                    base = ".".join([*pkg, base] if base else pkg)
+                names = [base]
+            else:
+                continue
             for name in names:
-                assert not name.startswith("orion.prime"), f"{path.name} imports {name}"
-                assert not name.startswith("orion.curiosity"), f"{path.name} imports {name}"
+                for banned in ("orion.prime", "orion.curiosity", "app"):
+                    assert not (name == banned or name.startswith(banned + ".")), f"{path.name} imports {name}"
 
 
 def test_prime_state_re_exports_the_library_backoff():
@@ -89,3 +97,58 @@ def test_prime_state_re_exports_the_library_backoff():
 
     for name in backoff.__all__:
         assert getattr(state, name) is getattr(backoff, name)
+
+
+def test_instance_hooks_see_why_no_thought_happened_and_shape_the_want():
+    from orion.mindloop.tests.echo_instance import EchoRuntime
+
+    seen = []
+
+    class Asking(EchoRuntime):
+        def _want_extras(self):
+            return {"object_ref": "echo_request:1"}
+
+        async def _on_not_funded(self, decision):
+            seen.append(("not_funded", decision.outcome))
+
+        async def _on_no_model(self, reply):
+            seen.append(("no_model", reply.kind))
+
+    rt = echo_runtime([NO_SEAT])
+    rt.__class__ = Asking
+    asyncio.run(rt.tick())
+    assert rt.bids[0].object_ref == "echo_request:1" and seen == [("no_model", "no_seat")]
+    deferred = echo_runtime([], outcome="deferred")
+    deferred.__class__ = Asking
+    asyncio.run(deferred.tick())
+    assert seen[-1] == ("not_funded", "deferred")
+
+
+def test_wake_ends_the_tick_wait_early():
+    rt = echo_runtime([])
+    rt.s.ECHO_TICK_SEC = 60
+
+    async def go():
+        waiter = asyncio.create_task(rt._wait_tick())
+        await asyncio.sleep(0)
+        rt.wake()
+        await asyncio.wait_for(waiter, timeout=2)
+        assert not rt._wake.is_set()
+
+    asyncio.run(go())
+
+
+def test_a_state_model_without_the_loop_fields_is_refused_at_build():
+    import pytest
+    from pydantic import BaseModel
+
+    from orion.mindloop.tests.echo_instance import EchoRuntime
+
+    class Bare(BaseModel):
+        requests: list[str] = []
+
+    class Broken(EchoRuntime):
+        state_model = Bare
+
+    with pytest.raises(TypeError, match="no_model_streak"):
+        Broken(settings=echo_runtime([]).s, bus=Bus(), llm=None, bid=lambda w: None, release=lambda i: None)

@@ -22,7 +22,7 @@ faculty the replay also counts jobs: ``jobs_worked`` (a real attempt of the job 
 config/execution_dispatch/execution_dispatch_policy.v1.yaml (for hub.world_pulse_read only the
 reading PULL passes it; Hub's own scheduled read lane opens the same act without it);
 ``actions_journal`` = orion-actions' ``_dispatch_journal``; ``prime`` = Prime's own act opener in
-orion-mind (services/orion-mind/app/prime_loop.py); everything else is ``not_gated``.
+orion-mind (services/orion-mind/app/prime_loop.py and its loop library orion/mindloop/runtime.py); everything else is ``not_gated``.
 """
 
 from __future__ import annotations

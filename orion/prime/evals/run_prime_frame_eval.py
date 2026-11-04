@@ -170,7 +170,7 @@ def run() -> list[tuple[str, bool, str]]:
                     and (not active_id or active_id in bg_frame),
                     f"changes after an attention-only tick: {ticked.pending_changes}; active arc {active_id} in frame"))
 
-    # starved_try: the line a no-seat try leaves (prime_loop._note_no_model) reaches the next frame.
+    # starved_try: the line a no-seat try leaves (orion/mindloop/runtime.py _note_no_model) reaches the next frame.
     line = "a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again"
     starved = note_no_model(PrimeStateV1(pending_changes=["quiet: nothing has woken me for 6 hours"]), "no_seat",
                             inputs.now, base=timedelta(seconds=300))

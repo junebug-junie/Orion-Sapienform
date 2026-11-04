@@ -11,10 +11,12 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
+# One tracker per process: every loop instance (orion/mindloop/) yields to the same Juniper turn.
+from orion.mindloop.turns import JUNIPER_TURNS
 
 from .engine import carries_live_turn, run_mind
 from .llm_client import RPC_HEALTH_SINK, MindLLMClient
-from .prime_loop import JUNIPER_TURNS, PrimeRuntime
+from .prime_loop import PrimeRuntime
 from .settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))

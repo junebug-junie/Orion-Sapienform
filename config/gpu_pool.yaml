@@ -208,7 +208,7 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # chat class (the harness held the role ~16 h of 4 days) and 74 of 254 thoughts lost their whole 60 s
   # to the queue. Juniper's turn (interactive) still goes first; the heat reflex still sheds it.
   # prime_starved: the same call one level up (`starved`), used only when Prime's previous try got no
-  # seat at all (services/orion-mind/app/prime_loop.py). Both system-only (orion/llm/routes.py).
+  # seat at all (orion/mindloop/runtime.py, Prime's loop). Both system-only (orion/llm/routes.py).
   prime: {class: chat, priority: system}
   prime_starved: {class: chat, priority: starved}
 

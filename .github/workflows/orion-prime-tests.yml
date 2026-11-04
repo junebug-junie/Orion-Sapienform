@@ -1,7 +1,7 @@
 name: orion-prime-tests
 
 # Orion Prime 2A (docs/superpowers/specs/2026-10-29-orion-prime-design.md): the resident loop in
-# orion-mind (app/prime_loop.py) and its pure logic (orion/prime/): the tick, the thought's answer,
+# orion-mind (app/prime_loop.py, an instance of the loop library orion/mindloop/) and its pure logic (orion/prime/): the tick, the thought's answer,
 # Prime's acts, how a question settles, the narrator readout's arithmetic, and the frame eval on live
 # inputs captured 2026-10-30. Fake bus, model and market; no DB, Redis or LLM.
 
@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "orion/prime/**"
+      - "orion/mindloop/**"
       - "orion/refs.py"
       - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
@@ -27,6 +28,7 @@ on:
     branches: [main]
     paths:
       - "orion/prime/**"
+      - "orion/mindloop/**"
       - "orion/refs.py"
       - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
@@ -63,6 +65,8 @@ jobs:
           python -m pip install httpx
       - name: Prime pure logic + readout arithmetic
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/prime
+      - name: Loop library (orion/mindloop; a second instance runs on it with its own key, family and actor)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/mindloop
       - name: References contract (every kind has a resolver, a dig command and a test)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/dig/tests/test_refs_contract.py
       - name: Frame eval on live inputs (grounded, bounded, honest gaps, settles)

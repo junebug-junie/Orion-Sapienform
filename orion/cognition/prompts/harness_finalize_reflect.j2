@@ -23,7 +23,8 @@ INPUTS
 
 INTEGRATIVE CHECK
 alignment_verdict answers two questions, and only these two:
-1. Does draft_text respond to what user_message asked?
+1. Does draft_text respond to what user_message asked? A draft that is a tool call, or tool-call
+   markup, instead of a reply to Juniper does not respond, however well-chosen the call is.
 2. Is what draft_text says grounded in what this turn actually saw: grammar_receipts{% if situation_notes %},
    tool_execution, and situation_notes{% else %} and
    tool_execution{% endif %}?

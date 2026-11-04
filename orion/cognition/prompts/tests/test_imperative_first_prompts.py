@@ -57,3 +57,9 @@ def test_reflect_prompt_world_contact_rule_keys_on_the_answer() -> None:
     assert "when imperative required world-contact" not in rendered
     assert "imperative commanded" not in rendered
     assert "when answering user_message needed world contact" in rendered
+
+
+def test_reflect_prompt_says_a_tool_call_draft_is_not_a_reply() -> None:
+    # A2 replay 11-04: 7 of 14 marked-down turns had a raw tool call as the draft, and the new prompt
+    # once called such a draft aligned because the call "addresses" the question.
+    assert "A draft that is a tool call, or tool-call\n   markup, instead of a reply" in _render_reflect()

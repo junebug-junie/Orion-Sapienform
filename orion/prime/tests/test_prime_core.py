@@ -412,11 +412,11 @@ def test_energy_money_splits_idle_from_activity_and_never_invents_per_organ_cost
     live = json.loads((Path(__file__).resolve().parents[1] / "evals" / "fixtures"
                        / "energy_report_live_2026-11-04.json").read_text())
     lines = _energy_lines(FrameInputs(now=T0, energy=live))
-    assert "Idling alone (the always-on floor) costs $111" in lines[0] and "a $100 limit" in lines[0]
-    assert any(l.startswith("- circe: idling costs $") for l in lines)
+    assert lines[0].startswith("- circe: idling costs about $50 a month")
+    assert not any("floor" in l and "$111" in l for l in lines)   # never recomputed from money.floor_usd
     assert lines[-1] == NO_PER_ORGAN_COST
     gap = _energy_lines(FrameInputs(now=T0, energy_error="URLError: refused"))
     assert gap == ["(unavailable: URLError: refused)"]
-    assert "this month's money: (unavailable" in _energy_lines(FrameInputs(now=T0, energy={"money": {}}))[0]
+    assert _energy_lines(FrameInputs(now=T0, energy={"money": {}}))[0] == "(no machine figures in the report)"
     frame = build_frame(PrimeStateV1(pending_changes=["x"]), FrameInputs(now=T0, energy=live))
     assert "ENERGY MONEY:" in frame and "attention:juniper" not in frame.split("ENERGY MONEY:")[1].split("\n\n")[0]

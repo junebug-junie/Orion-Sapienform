@@ -229,32 +229,24 @@ NO_PER_ORGAN_COST = ("per-organ cost is not measured: acts carry only a few perc
 
 
 def _energy_lines(inputs: FrameInputs) -> list[str]:
-    """The month's energy money split into what idling costs and what activity adds, and each machine's
-    draw now, all from what the body measures (GET /physiology/report)."""
+    """Each machine's idle cost and its draw above idle now (GET /physiology/report ``hosts``), plus why there
+    is no per-organ cost. The month's totals (always-on body per month, activity pace) are NOT repeated here:
+    the BODY section's energy line already states them, computed by the producer (orion/physiology/budget.py).
+    Recomputing them from ``money.floor_usd`` is wrong: that is month-to-date plus idling for the hours left,
+    not a month of idling (review of PR #3120)."""
     if inputs.energy is None:
         return [f"(unavailable: {inputs.energy_error or 'not read'})"]
-    money = inputs.energy.get("money") or {}
     lines: list[str] = []
-    floor, forecast, envelope = (money.get(k) for k in ("floor_usd", "forecast_usd", "envelope_usd"))
-    if all(isinstance(v, (int, float)) for v in (floor, forecast, envelope)):
-        lines.append(f"this month: forecast ${forecast:.0f} against a ${envelope:.0f} limit. Idling alone (the "
-                     f"always-on floor) costs ${floor:.0f}; activity on top of idling adds about "
-                     f"${max(0.0, forecast - floor):.0f}")
-    else:
-        lines.append("this month's money: (unavailable: missing from the report)")
-    host_rest = 0.0
     for h in inputs.energy.get("hosts") or []:
         if not isinstance(h, dict) or not h.get("host"):
             continue
         rest, now = h.get("rest_usd_per_month"), h.get("usd_per_month_at_this_rate")
         if isinstance(rest, (int, float)) and isinstance(now, (int, float)):
-            host_rest += rest
-            lines.append(f"- {h['host']}: idling costs ${rest:.0f}/month; right now it runs "
-                         f"{_num(h.get('above_rest_w')):.0f} W above idle, about ${now:.1f}/month at this rate")
-    if isinstance(floor, (int, float)) and host_rest and floor - host_rest >= 1:
-        # Live 11-04: hosts' idle $81 vs floor $111. Shown, not hidden, and not attributed.
-        lines.append(f"- the rest of the floor, about ${floor - host_rest:.0f}/month, is always-on draw not split "
-                     "by machine in this report")
+            lines.append(f"- {h['host']}: idling costs about ${rest:.0f} a month; right now it runs "
+                         f"{_num(h.get('above_rest_w')):.0f} W above idle, about ${now:.1f} a month at this rate")
+    if not lines:
+        lines.append("(no machine figures in the report)")
+    lines.append("the month's totals (always-on body vs activity pace) are in the energy line under BODY")
     lines.append(NO_PER_ORGAN_COST)
     return lines
 

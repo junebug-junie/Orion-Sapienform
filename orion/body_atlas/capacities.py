@@ -247,8 +247,9 @@ class ClaimViewV1(BaseModel):
     role: Job
     kind: Literal["claim", "dispute"]
     # claimed: holds its role on this read. The rest hold nothing; each says why.
+    # "rule gives it": the claim checks, but a rule already gives the part that job (the rule shows).
     status: Literal["claimed", "unconfirmed", "confirmed", "rejected", "part not live now", "evidence gone",
-                    "rule says no", "disputed", "rule holds", "rule gone"]
+                    "rule says no", "disputed", "rule gives it", "rule holds", "rule gone"]
     because: str
     at: str
 
@@ -790,7 +791,9 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
         else:
             status, cites = _claim_status(c, live=live, confirmed=confirmed, rejected=rejected, not_s2=not_s2,
                                           latest=latest, recheck=recheck)
-            if status == "claimed" and key not in held:
+            if status == "claimed" and key in held:  # a rule gave it since; the rule result is what holds
+                status = "rule gives it"
+            elif status == "claimed":
                 out.claimed.append(RoleEvidenceV1(part_id=c.part_id, role=c.role, rule="claimed", strength="claimed",
                                                   evidence=cites))
         out.claims.append(ClaimViewV1(part_id=c.part_id, role=c.role, kind=c.kind, status=status,
@@ -812,15 +815,26 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
                        else JobLineV1(job=j.job, status="CLAIMED", text=f"{_names(got, 4)} · {j.text}"))
     # a claim never clears a gap line (code writes them from what the atlas shows); a "no part is
     # shown" gap whose job holds a claim says so
-    out.gaps = [g.model_copy(update={"text": f"{g.text} · I claim {_names(claimed[g.job], 2)}; no rule shows it"})
-                if g.gap_id in COVERED_BY_CONFIRMATION and claimed.get(g.job) else g for g in out.gaps]
+    # (only the parts a confirmation would cover: gap:s5-unread wants a service)
+    kind = {p.part_id: p.kind for p in atlas.parts}
+
+    def covering(g: GapV1) -> list[str]:
+        if g.gap_id not in COVERED_BY_CONFIRMATION:
+            return []
+        want = COVERED_BY_CONFIRMATION[g.gap_id][1]
+        return [p for p in claimed.get(g.job, []) if want in (None, kind.get(p))]
+
+    out.gaps = [g.model_copy(update={"text": f"{g.text} · I claim {_names(ps, 2)}; no rule shows it"})
+                if (ps := covering(g)) else g for g in out.gaps]
     organ_of = {m: o for o in atlas.organs for m in o.members}
     mixes = {m.organ_id: m for m in out.organ_mixes}
     for r in out.claimed:
         o = organ_of.get(r.part_id)
         if o is not None:
             mix = mixes.setdefault(o.organ_id, OrganMixV1(organ_id=o.organ_id, name=o.name, size=len(o.members)))
-            mix.roles.setdefault(r.role, []).append(r.part_id)
+            got = mix.roles.setdefault(r.role, [])
+            if r.part_id not in got:  # a claim on the rule's own candidate is already listed
+                got.append(r.part_id)
     out.organ_mixes = sorted(mixes.values(), key=lambda m: -m.size)
     last: dict[str, CapacityV1] = {}
     for w in written:
@@ -867,8 +881,11 @@ def open_jobs(reading: CapacityReadingV1) -> list[tuple[Job, list[str]]]:
 
 def evidence_gone_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
     """Orion's claims that stopped holding because the evidence they cite is gone from the atlas
-    (the one failure Orion can fix, by claiming again with evidence that checks), oldest first."""
-    return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "evidence gone"), key=lambda c: c.at)
+    (the one failure Orion can fix, by claiming again with evidence that checks), oldest first.
+    A job some part holds now (rule, confirmation or claim) is left out: nothing to re-claim."""
+    held = {r.role for r in reading.roles + reading.confirmed + reading.claimed if r.strength != "candidate"}
+    return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "evidence gone"
+                   and c.role not in held), key=lambda c: c.at)
 
 
 def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
@@ -884,7 +901,8 @@ STATUS_MEANINGS = {
     "CLAIMED": "me, evidence checked",
 }
 # a claim that holds prints on its job line; these are the ones that hold nothing, and why
-CLAIM_LINES = ("unconfirmed", "evidence gone", "rule says no", "disputed", "rejected", "part not live now")
+CLAIM_LINES = ("unconfirmed", "evidence gone", "rule says no", "disputed", "rule gives it", "rejected",
+               "part not live now")
 
 
 def render(reading: CapacityReadingV1) -> list[str]:

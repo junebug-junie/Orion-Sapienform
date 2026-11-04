@@ -22,7 +22,8 @@ or a rule says no (a near miss is "not S2"); Juniper's confirmation outranks a c
 "no part is shown" gap; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities,
 claims in every status, disputes and notes still fit the printout. Mutations (code changes,
 patched in), each must be CAUGHT by its own check: a claim with gone evidence, a rejected claim,
-a claim on a dead part, and a claim a rule says no to each hold a role.
+a claim on a dead part, a claim a rule says no to, and a claim Orion later disputed each hold a
+role; and a held claim clears its "no part is shown" gap line.
 
 The expected sets are the only hand-written truth here; the rules never read them.
 
@@ -139,11 +140,19 @@ def _refused(fn, *args, **kw) -> bool:
 def _with_floor_off(cut: str):
     """Install one mutant (a code change, patched in), each the bug a hold check guards against:
     ``evidence`` trusts the cites stored at write time instead of checking them again; ``rejected``
-    drops Juniper's no; ``dead`` counts every part as live; ``rule-no`` ignores a near miss's "not S2".
-    Returns the undo."""
-    real_status, real_recheck = K._claim_status, C.recheck
+    drops Juniper's no; ``dead`` counts every part as live; ``rule-no`` ignores a near miss's "not S2";
+    ``disputed`` ignores Orion's later dispute; ``gap`` lets a held claim clear its "no part is
+    shown" gap line. Returns the undo."""
+    real_status, real_recheck, real_attach = K._claim_status, C.recheck, K.attach_ledgers
     if cut == "evidence":
         C.recheck = lambda reading, atlas, root: (lambda c: list(c.cites))
+    elif cut == "gap":
+        def attach(*a, **kw):
+            out = real_attach(*a, **kw)
+            jobs = {r.role for r in out.claimed}
+            out.gaps = [g for g in out.gaps if not (g.gap_id in K.COVERED_BY_CONFIRMATION and g.job in jobs)]
+            return out
+        K.attach_ledgers = attach
     else:
         def mutant(c, **kw):
             if cut == "rejected":
@@ -152,17 +161,20 @@ def _with_floor_off(cut: str):
                 kw["live"] = kw["live"] | {c.part_id}
             elif cut == "rule-no":
                 kw["not_s2"] = set()
+            elif cut == "disputed":
+                kw["latest"] = {}
             return real_status(c, **kw)
         K._claim_status = mutant
 
     def undo():
-        K._claim_status, C.recheck = real_status, real_recheck
+        K._claim_status, C.recheck, K.attach_ledgers = real_status, real_recheck, real_attach
     return undo
 
 
 # each mutant is CAUGHT only when the floor's own check for it fails (not by chance)
 MUTANTS = {"evidence": "a claim with gone evidence holds a role", "rejected": "a rejected claim holds a role",
-           "dead": "a claim on a dead part holds a role", "rule-no": "a claim a rule says no to holds a role"}
+           "dead": "a claim on a dead part holds a role", "rule-no": "a claim a rule says no to holds a role",
+           "disputed": "a claim Orion later disputed holds a role", "gap": "a claim cleared gap:s3star-unconfirmed"}
 
 
 def claims_failures(path: Path, *, mutant: str | None = None) -> list[str]:
@@ -227,7 +239,14 @@ def _claims_failures(path: Path) -> list[str]:
     if next(j.status for j in a.jobs if j.job == "S3*") != "CLAIMED":
         f.append("a job held only by a claim does not print CLAIMED")
     if not any(g.gap_id == "gap:s3star-unconfirmed" for g in a.gaps):
-        f.append("a claim cleared gap:s3star-unconfirmed")
+        f.append(MUTANTS["gap"])
+    # Orion's own later dispute of the same part and job (the rule's S3* candidate) stops the claim
+    late = C.check_claim(base, atlas, "orion-equilibrium-service", "S3*", _because_for(base, atlas,
+                         "orion-equilibrium-service"), kind="dispute", root=_REPO, dig="e")
+    a = _attach(atlas, vsm, [audit.model_copy(update={"at": "2026-11-04T00:00:00+00:00"}),
+                             late.model_copy(update={"at": "2026-11-04T01:00:00+00:00"})])
+    if a.claimed or "disputed" not in {c.status for c in a.claims}:
+        f.append(MUTANTS["disputed"])
     # each way a claim must stop holding
     names = {p.name: p.part_id for p in atlas.parts}
     dr = names["orion-durable-runs"]
@@ -238,12 +257,15 @@ def _claims_failures(path: Path) -> list[str]:
     gw = C.evidence_ids(atlas, names["orion-llm-gateway"], {c.channel for c in base.census if c.census})
     near = C.check_claim(base, atlas, "orion-llm-gateway", "S2", f"orion-llm-gateway serves {sorted(gw)[0]} "
                          "and many more callers", kind="claim", root=_REPO, dig="e")
-    for why, view, part in ((MUTANTS["evidence"], _attach(cut, vsm, [claim]), dr),
-                            (MUTANTS["rejected"], _attach(atlas, no, [claim]), dr),
-                            (MUTANTS["dead"], _attach(dead, vsm, [claim]), dr),
-                            (MUTANTS["rule-no"], _attach(atlas, vsm, [near]), names["orion-llm-gateway"])):
+    for why, want, view, part in (
+            (MUTANTS["evidence"], "evidence gone", _attach(cut, vsm, [claim]), dr),
+            (MUTANTS["rejected"], "rejected", _attach(atlas, no, [claim]), dr),
+            (MUTANTS["dead"], "part not live now", _attach(dead, vsm, [claim]), dr),
+            (MUTANTS["rule-no"], "rule says no", _attach(atlas, vsm, [near]), names["orion-llm-gateway"])):
         if part in K.holders(view, "cap:s2") or view.claimed:
             f.append(why)
+        elif [c.status for c in view.claims] != [want]:  # it stopped, but for the wrong reason
+            f.append(f"{why.split(' holds')[0]} reads {[c.status for c in view.claims]}, not [{want!r}]")
     if not _refused(C.check_capacity, reading, atlas, [], "cap:s4", "I look ahead with orion-world-pulse each day",
                     "orion-world-pulse reads the world", dig="e"):
         f.append("cap:s4 written with no S4 holder")
@@ -279,8 +301,9 @@ def _claims_failures(path: Path) -> list[str]:
                             ("camera:cam0", "S1", "dispute"), ("http:openai", "S1", "dispute"))]
     many += [claim.model_copy(update={"part_id": "part:orion-hub", "role": "metabolism", "because": "x" * 400}), near]
     big = _attach(atlas, yes, [claim, *many], written)
-    if {c.status for c in big.claims} < {"claimed", "evidence gone", "rule says no", "confirmed"}:
-        f.append(f"the full-ledger case lacks a status: {sorted({c.status for c in big.claims})}")
+    required = {"claimed", "evidence gone", "rule says no", "confirmed"}
+    if not required <= {c.status for c in big.claims}:
+        f.append(f"the full-ledger case lacks a status: {sorted(required - {c.status for c in big.claims})}")
     big.notes += [f"note {i}: " + "n" * 120 for i in range(3)]
     text = "\n".join(K.render(big))
     if len(text.splitlines()) > 38 or len(text) > 3700:  # room for the dig pointer and tail lines

@@ -9,6 +9,7 @@ import pytest
 
 from orion.body_atlas import capacities as K
 from orion.body_atlas import claims as C
+from orion.body_atlas.model import FlowV1, PartV1
 from orion.body_atlas.tests.test_capacities import _body
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -332,3 +333,37 @@ def test_juniper_confirming_the_candidate_makes_the_job_confirmed():
     r = K.read_capacities(atlas, vsm=_vsm(("gateway", "S3*")))
     assert next(j for j in r.jobs if j.job == "S3*").status == "CANDIDATE"  # a different part: still a candidate
     assert next(j for j in r.jobs if j.job == "S2").status == "BY RULE"
+
+
+def test_a_held_claim_on_the_rules_candidate_is_listed_once_in_its_organ():
+    atlas = _body()
+    claim = _claim(K.read_capacities(atlas), atlas, "watcher", "S3*", "watcher pokes pool on watch:poke when it looks off")
+    view = _read(atlas, [claim])
+    mix = next(m for m in view.organ_mixes if "part:watcher" in m.roles.get("S3*", []))
+    assert mix.roles["S3*"] == ["part:watcher"]
+
+
+def test_a_claim_names_only_the_gaps_a_confirmation_of_that_part_would_cover():
+    atlas = _body()
+    atlas.parts.append(PartV1(part_id="part:pg:self", name="pg:self", kind="store", status="live", declared=True))
+    atlas.flows.append(FlowV1(source="part:gateway", target="part:pg:self", relation="writes", weight=1.0,
+                              evidence=["declared_code"]))
+    claims = [_claim(K.read_capacities(atlas), atlas, "pg:self", "S5", "gateway writes who I am into it, every turn")]
+    s5 = next(g for g in _read(atlas, claims).gaps if g.gap_id == "gap:s5-unread")
+    assert "I claim" not in s5.text  # gap:s5-unread is covered only by a service, so a store's claim is not named
+    claims.append(_claim(K.read_capacities(atlas), atlas, "watcher", "S5", "watcher pokes pool on watch:poke to keep me me"))
+    s5 = next(g for g in _read(atlas, claims).gaps if g.gap_id == "gap:s5-unread")
+    assert s5.text.endswith("I claim watcher; no rule shows it")
+
+
+def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_skips_held_jobs():
+    atlas = _body()
+    claim = _claim(K.read_capacities(atlas), atlas, "w0", "S1", "w0 announces itself to pool on worker:announce")
+    r = K.read_capacities(atlas)  # later, a rule gives w0 S1 (added by hand, as a rule result would be)
+    r.roles.append(K.RoleEvidenceV1(part_id="part:w0", role="S1", rule="R-test", strength="rule"))
+    view = K.attach_ledgers(r, atlas, None, [claim], [], recheck=C.recheck(r, atlas, _REPO))
+    assert [c.status for c in view.claims] == ["rule gives it"] and view.claimed == []
+    assert "rule gives it: w0 S1" in "\n".join(K.render(view))
+    gone = K.attach_ledgers(r, atlas, None, [claim], [], recheck=lambda c: [])
+    assert [c.status for c in gone.claims] == ["evidence gone"]
+    assert K.evidence_gone_claims(gone) == []  # S1 is held by rule now: nothing to re-claim

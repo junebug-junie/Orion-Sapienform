@@ -176,8 +176,9 @@ the job lines do not follow organ lines (substrate holds S1, S2, S4 and S5 parts
 ### 6. What Orion sees
 
 `python -P -m orion.dig capacities` (read-only, ≤ 40 lines, ≤ 4,000 chars; full JSON to
-`$ORION_DIG_HOME/dig/<dig>/capacities-<n>.json`). Only rule results and confirmed claims carry a
-role; unconfirmed claims print on their own line.
+`$ORION_DIG_HOME/dig/<dig>/capacities-<n>.json`). Rule results, confirmed claims and (since
+2026-11-04) claims whose evidence checks (CLAIMED) carry a role; claims that hold nothing print on
+their own line by reason (see "Decision change 2026-11-04" below).
 
 ```text
 capacities (VSM lens) · body atlas 2026-10-30T08:48Z · 90 live services/endpoints · rules v1

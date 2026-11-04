@@ -677,7 +677,7 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
 
 
 CLAIM_PREFIX = "python -P -m orion.dig capacity claim"
-MAX_PENDING_SHOWN = 3
+MAX_GONE_SHOWN = 3
 
 
 def claim_block(reading, atlas) -> list[str]:
@@ -706,9 +706,9 @@ def claim_block(reading, atlas) -> list[str]:
     if waiting:
         lines.append(f"Evidence gone ({len(waiting)}): these claims hold nothing now; claim again citing "
                      "evidence that checks, or leave them:")
-        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_PENDING_SHOWN]]
-        if len(waiting) > MAX_PENDING_SHOWN:
-            lines.append(f"  +{len(waiting) - MAX_PENDING_SHOWN} more in {claims_path()}")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_GONE_SHOWN]]
+        if len(waiting) > MAX_GONE_SHOWN:
+            lines.append(f"  +{len(waiting) - MAX_GONE_SHOWN} more in {claims_path()}")
     return lines
 
 

@@ -62,6 +62,12 @@ class SubstrateFinalizeAppraisalV1(BaseModel):
     )
 
 
+# reflection_source of a reflection the harness wrote because the 5b judge call failed (bad JSON,
+# no GPU slot, gateway error). Its alignment_verdict is "misaligned" so the turn still degrades
+# safely, but it is not a judgment of the draft: readers that count verdicts must skip it.
+REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
+
+
 class FinalizeReflectionV1(BaseModel):
     schema_version: Literal["finalize.reflection.v1"] = "finalize.reflection.v1"
     correlation_id: str

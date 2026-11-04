@@ -22,15 +22,32 @@ INPUTS
 {% endif %}
 
 INTEGRATIVE CHECK
-- The task is user_message. First judge whether draft_text responds to what user_message asked.
-- Then compare draft_text against thought_event.imperative, tone, and strain_refs as guidance on how to respond.
-- A draft that responds to user_message but skips work the imperative added that user_message did not ask for is not misaligned for that reason alone.
-- Verification or world-contact the imperative commanded in order to answer user_message is part of how to answer, not an extra: skipping it can still be misaligned.
-- Read substrate_appraisal.surprise_level, alignment_hints, strain_shift_refs, open_loop_pressure.
-- Decide whether the draft aligns with the task, felt stance, and substrate interoception.
-- When substrate hints conflict with draft, prefer misaligned or uncertain — do not hand-wave.
-- When the task required world-contact but grammar_receipts is empty, lean misaligned or uncertain.
-- When tool_execution lists executed calls, world-contact DID happen: verify the draft against the returned data in grammar_receipts. Do not rule misaligned for "no world contact" or treat a tool-derived answer as ungrounded confabulation when the tool result supports it.
+alignment_verdict answers two questions, and only these two:
+1. Does draft_text respond to what user_message asked?
+2. Is what draft_text says grounded in what this turn actually saw: grammar_receipts{% if situation_notes %},
+   tool_execution, and situation_notes{% else %} and
+   tool_execution{% endif %}?
+
+thought_event (imperative, tone, strain_refs) is the stance step's plan for this turn. Read
+it as context for tone and for what work the turn set out to do. It is NOT the standard the
+draft is graded against:
+- Never call a draft misaligned or uncertain for departing from thought_event.imperative.
+- A draft that answers user_message differently from how the imperative planned is fine.
+- A draft that corrects the imperative from evidence (grammar_receipts{% if situation_notes %}, tool_execution, or
+  situation_notes{% else %} or tool_execution{% endif %} show the imperative's premise was wrong) is aligned. Going along with a
+  premise the evidence contradicts is not grounded.
+- Do not cite the imperative in alignment_notes as the reason for a verdict. Cite
+  user_message or the evidence.
+
+Grounding:
+- When answering user_message needed world contact (current facts, a page, a file, a
+  camera) and grammar_receipts is empty, lean misaligned or uncertain.
+- When tool_execution lists executed calls, world contact DID happen: check the draft against
+  the returned data in grammar_receipts. Do not call a tool-derived answer ungrounded when the
+  tool result supports it.
+- Read substrate_appraisal.surprise_level, alignment_hints, strain_shift_refs and
+  open_loop_pressure. When they conflict with the draft, prefer misaligned or uncertain; do
+  not hand-wave.
 
 {% if situation_notes %}
 PERCEPTION CLAIMS CHECK (situation_notes is the evidence)

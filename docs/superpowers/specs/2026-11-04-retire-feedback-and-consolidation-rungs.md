@@ -168,14 +168,15 @@ Readers, each cut:
 - No change to the act ledger, the want ledger, or the allocator.
 - No change to proposal, policy or dispatch code.
 
-## Missing questions (defaults in brackets)
+## Decided (Juniper, 2026-11-04)
 
-1. **Drop the old tables later?** [Keep them 30 days after PR 2, then a separate drop PR with a
-   `pg_dump` of each table to `/mnt/storage-warm` first.]
-2. **Dispatch next?** The audit found that dispatch's LLM work (516 summarize calls in 14 days)
-   produces boilerplate. [Yes: dispatch is the next proposal, ahead of proposal/policy.]
-3. **Hub lattice page:** show retired rungs as "retired", or drop the rows? [Show "retired" until
-   the whole ladder is gone, so the page tells the story.]
+1. **Drop the old tables 2 days after the retirement deploys**, with a `pg_dump` of each table to
+   `/mnt/storage-warm` first. The drop is a separate, hand-applied `-- DESTRUCTIVE` migration.
+2. **Dispatch is the next rung to retire.**
+3. **The Hub lattice page shows retired rungs as "retired"** until the whole ladder is gone.
+4. **No orphans.** Everything whose only writer or only reader was these two rungs goes in the same
+   change: tables, columns, config, env keys, scripts, CI steps and routes. Both rungs ship in one PR
+   with one commit each, so the shared files (liveness, lattice page, contracts) change once.
 
 ## Files likely to touch
 

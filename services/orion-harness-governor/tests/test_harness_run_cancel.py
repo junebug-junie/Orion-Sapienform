@@ -45,3 +45,13 @@ def test_cancel_fcc_turn_missing_arms_pending() -> None:
         assert "no-such-corr" in motor._PENDING_CANCEL
     finally:
         motor._unregister_process("no-such-corr")
+
+
+def test_a_cancel_that_names_no_reason_is_not_read_as_a_disconnect(monkeypatch: Any) -> None:
+    from app.cancel_listener import apply_harness_run_cancel
+
+    calls: list = []
+    monkeypatch.setattr("app.cancel_listener.cancel_fcc_turn",
+                        lambda corr, reason=None: calls.append(reason) or True)
+    apply_harness_run_cancel({"correlation_id": "corr-z"})
+    assert calls == [None]  # the motor records "unspecified", which stays a failure

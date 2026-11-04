@@ -2189,10 +2189,10 @@ async def _drive_fcc_turn(
             correlation_id, io.mode, init_ms, first_event_ms, steps_seen,
         )
 
-    if io.mode == "warm" and io.died_before_output and steps_seen == 0 and cancel_reason is None:
+    if io.mode == "warm" and io.died_before_output and steps_seen == 0:
         # The borrowed process died after the prompt went in but before it said
         # anything: no tool can have run, so the turn is retried as a spawn.
-        # Not when a cancel killed it: the caller asked for the turn to stop.
+        # A cancel's kill is not a death here (WarmTurn.died_unexpectedly).
         outcome["retry_spawn"] = True
         return
 

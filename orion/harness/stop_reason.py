@@ -30,8 +30,10 @@ OUTSIDE_CANCEL_REASONS = frozenset(
         "worker_recovery",          # durable-runs recovering a dead worker's turn
     }
 )
-# Deliberately NOT outside: "durable_attempt_timeout" (the attempt's own time budget ran out -- the
-# turn was too slow, like the motor's fcc_timeout).
+# Deliberately NOT outside (the turn was too slow, like the motor's fcc_timeout):
+#   "durable_attempt_timeout"       durable-runs: the attempt's own time budget ran out
+#   "outreach_agent_lane_timeout"   Hub endogenous outreach gave up waiting on the agent lane
+#   "unspecified"                   a cancel that named no reason (cancel_listener)
 
 
 def turn_stop_reason(*, cancel_reason: str | None, error_code: str | None) -> str | None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import typing
 from pathlib import Path
 
 from orion.body_atlas import capacities as K
@@ -129,6 +130,32 @@ def test_printout_is_small_and_names_every_job():
     assert len(text.splitlines()) <= 39 and len(text) <= 3900
     for job in K.JOBS:
         assert f"\n{job} " in f"\n{text}"
+
+
+def test_printout_says_by_rule_is_not_juniper_confirmed():
+    # turn 1ee0e35d (2026-11-04): Orion reported S1/S2 "BY RULE" as "Confirmed" with 0 confirmations
+    reading = K.read_capacities(_body())
+    assert "BY RULE" in {j.status for j in reading.jobs}
+    legend = next(ln for ln in K.render(reading) if ln.startswith("status: "))
+    assert legend == "status: BY RULE = a rule, not Juniper"
+    assert set(K.STATUS_MEANINGS) <= set(typing.get_args(K.JobLineV1.model_fields["status"].annotation))
+
+
+def test_by_rule_line_names_juniper_confirmation_and_legend_allows_it():
+    # Juniper confirming a rule-held job keeps BY RULE and names her on the line; the legend says
+    # who found the status, so it does not contradict that line
+    vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="pool", role="S2", date="2026-11-04")])
+    lines = K.render(K.read_capacities(_body(), vsm=vsm))
+    s2 = next(ln for ln in lines if ln.startswith("S2 "))
+    assert "BY RULE" in s2 and "confirmed by Juniper: pool" in s2
+    legend = next(ln for ln in lines if ln.startswith("status: "))
+    assert "not confirmed" not in legend
+
+
+def test_no_legend_when_no_status_needs_one():
+    reading = K.read_capacities(_body())
+    reading.jobs = [j.model_copy(update={"status": "NO RULE"}) for j in reading.jobs]
+    assert not any(ln.startswith("status: ") for ln in K.render(reading))
 
 
 _SPEC = importlib.util.spec_from_file_location(

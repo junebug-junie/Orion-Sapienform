@@ -780,6 +780,15 @@ def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
     return {r.part_id for r in reading.roles if r.rule == rule}
 
 
+# Who stands behind a status, printed under the job lines. Orion read "BY RULE" as "confirmed" (turn
+# 1ee0e35d, 2026-11-04) while Juniper had confirmed nothing. The eval's size budget leaves room for
+# these two only; the other statuses (CANDIDATE, NO RULE, NO PART FOUND) say no one holds the job.
+STATUS_MEANINGS = {
+    "BY RULE": "a rule, not Juniper",
+    "CONFIRMED": "Juniper",
+}
+
+
 def render(reading: CapacityReadingV1) -> list[str]:
     """The printout (the caller caps it and adds the file path)."""
     lines = [f"capacities (VSM lens) · body atlas {reading.atlas_as_of[:16]}Z · {reading.live_parts} live "
@@ -787,6 +796,10 @@ def render(reading: CapacityReadingV1) -> list[str]:
     for j in reading.jobs:
         label = f"{j.job} {JOB_TITLES[j.job]}"
         lines.append(f"{label:<21} {j.status:<13} {j.text}")
+    shown = {j.status for j in reading.jobs}
+    legend = [f"{s} = {m}" for s, m in STATUS_MEANINGS.items() if s in shown]
+    if legend:
+        lines.append("status: " + " · ".join(legend))
     servers = sorted({_bare(n.part_id) for n in reading.near_misses if n.rule == "R-server"})
     collectors = sorted({_bare(n.part_id) for n in reading.near_misses if n.rule == "R-collector"})
     lines.append("near misses (not S2): servers " + (", ".join(servers) or "none")

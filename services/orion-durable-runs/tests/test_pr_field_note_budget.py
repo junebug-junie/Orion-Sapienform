@@ -37,10 +37,10 @@ def _compose_default(service: str, key: str) -> float:
     return float(re.search(rf"\${{{key}:-([0-9.]+)}}", text).group(1))
 
 
-def motor_budget(timeout_sec: float, reserve_sec: float) -> float:
-    """Hub's arithmetic for a held turn, from the request durable-runs sends."""
+def motor_budget(timeout_sec: float, reserve_sec: float, overhead_sec: float = HUB_OVERHEAD_SEC) -> float:
+    """Hub's arithmetic for a held turn, from the request durable-runs sends, less ``overhead_sec``."""
     turn = timeout_sec - TURN_REPLY_GRACE_SEC
-    budget = turn - reserve_sec - HUB_OVERHEAD_SEC
+    budget = turn - reserve_sec - overhead_sec
     return budget if budget > 0 else turn
 
 
@@ -57,4 +57,4 @@ def test_the_shipped_field_note_turn_leaves_the_motor_a_real_budget():
 
 def test_the_old_default_is_exactly_the_live_failure():
     # the "fcc turn timed out after 59.99s" of pr-field-note-3104: 390 - 330 = 60 before any overhead
-    assert motor_budget(420.0, 330.0) + HUB_OVERHEAD_SEC == 60.0
+    assert motor_budget(420.0, 330.0, overhead_sec=0.0) == 60.0

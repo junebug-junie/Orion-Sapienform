@@ -62,7 +62,7 @@ def test_targets_name_primes_own_acts_and_only_primes_focus_is_one():
 
 def test_one_act_per_prime_act_whatever_the_stance():
     a, b = answer_act(SIG, arm="treated"), answer_act(SIG, arm="control")
-    assert a.act_id == b.act_id and a.parent_act_id == "act_r1" and a.actor == "curiosity.replica" and a.verb == "ask"
+    assert a.act_id == b.act_id and a.parent_act_id == "act_r1" and a.actor == "curiosity.replica.answer" and a.verb == "ask"
     assert (a.test_before, b.test_before) == ("holdback:treated", "holdback:control")
 
 
@@ -82,6 +82,8 @@ def test_the_blocker_rules():
     assert answer_blocker([rec(at=NOW - timedelta(hours=3))], loop, NOW, **caps).code == "answer_parent"
     mine = TargetV1(kind="signal", target_id="x", prime_act_id="act_x", actor="curiosity.replica")
     assert answer_blocker([], mine, NOW, **caps).code == "own"
+    theirs = mine.model_copy(update={"actor": "curiosity.replica.answer"})
+    assert answer_blocker([], theirs, NOW, **caps).code == "own"
 
 
 def test_two_answers_of_one_thought_skip_the_refractory_but_count_against_the_cap():
@@ -142,3 +144,29 @@ def test_the_reply_frame_and_prompt():
     assert err is None and ans.stance == "refuse"
     assert parse_reply({"stance": "veto", "reason": "r"})[1].startswith("invalid_answer")
     assert parse_reply({"stance": "refuse", "reason": ""})[1].startswith("invalid_answer")
+
+
+def test_answer_acts_stay_out_of_the_replica_familys_history_in_the_body_economy():
+    """The answer actor is never a want family: no families.yaml entry, and Appetite, the learned weights and
+    Choice's Tier 1 lane use all skip its acts, so delivered answers (graded 1) cannot lift curiosity.replica."""
+    from pathlib import Path
+
+    from orion.physiology.appetite import ActRecord, build_family_appetite
+    from orion.physiology.choice import build_context
+    from orion.physiology.families import load_families
+    from orion.physiology.weights import weights_now
+    from orion.schemas.curiosity_replica import ANSWER_ACTOR, REPLICA_FAMILY
+
+    fams, err = load_families(Path(__file__).resolve().parents[3] / "config" / "physiology" / "families.yaml")
+    assert err is None and ANSWER_ACTOR not in fams.families and REPLICA_FAMILY in fams.families
+    plans = [ActRecord(act_id=f"p{i}", family=REPLICA_FAMILY, opened_at=NOW - timedelta(hours=10 - i),
+                       closed_at=NOW - timedelta(hours=10 - i, minutes=-1), outcome_value=0.0, outcome_source="producer",
+                       signal_id="artifact_produced") for i in range(4)]
+    answers = [ActRecord(act_id=f"a{i}", family=ANSWER_ACTOR, opened_at=NOW - timedelta(hours=1, minutes=i),
+                         closed_at=NOW - timedelta(hours=1, minutes=i), outcome_value=1.0, outcome_source="producer",
+                         signal_id="artifact_produced") for i in range(6)]
+    cfg = fams.families[REPLICA_FAMILY]
+    assert build_family_appetite(cfg, plans + answers, NOW) == build_family_appetite(cfg, plans, NOW)
+    assert weights_now(fams, plans + answers, [], NOW)[REPLICA_FAMILY] == weights_now(fams, plans, [], NOW)[REPLICA_FAMILY]
+    ctx = build_context(fams, plans + answers, [], None, NOW)
+    assert ANSWER_ACTOR not in ctx.appetite and ANSWER_ACTOR not in ctx.weights

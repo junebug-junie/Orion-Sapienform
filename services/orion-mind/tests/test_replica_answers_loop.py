@@ -178,7 +178,9 @@ def test_a_new_prime_signal_wakes_one_reply_thought_and_a_refusal_lifts_the_char
     assert rt.bus.redis.ttls[pc.key(CURIOSITY)] == int(3 * 3600 + pc.GRACE_SEC)
     # The answer is an act parented to Prime's regulate act, closed at once with the stance first.
     [(k1, opened), (k2, closed)] = answer_acts(rt)
-    assert (k1, k2) == ("act_opened", "act_closed") and opened["actor"] == "curiosity.replica"
+    assert (k1, k2) == ("act_opened", "act_closed") and opened["actor"] == "curiosity.replica.answer"
+    # The thought behind the answer stays on the replica's own family; nothing ever bids as the answer actor.
+    assert {a["actor"] for k, a in rt.bus.acts() if a["verb"] == "infer"} == {"curiosity.replica"}
     assert opened["parent_act_id"] == "act_prime_regulate" and opened["test_before"] == "holdback:treated"
     assert opened["object_ref"] == "prime_signal:sig1" and ref.act_id == opened["act_id"]
     assert closed["outcome"]["note"].startswith("refuse: the last three runs died")
@@ -479,3 +481,22 @@ def test_the_plan_frame_shows_the_replicas_refusal_rate():
     assert len(rt.llm.calls) == 2
     frame = rt.llm.calls[-1]["user_prompt"]
     assert "YOUR ANSWERS TO PRIME" in frame and "1 of your last 1 answers to Prime were refusals (100%)" in frame
+
+
+def test_answers_are_gated_and_recorded_under_their_own_actor_and_never_bid():
+    """Answers must not share the curiosity.replica family's history (the market reads grammar_acts.actor as the
+    family): their own actor, gated on its own track record, and no want is ever of that family."""
+    rt = answers_runtime(CHALLENGE)
+    put_signal(rt)
+    asked = []
+    real = rt._gate_decide
+
+    async def spy(verb, object_ref, **kw):
+        asked.append((verb, kw.get("actor")))
+        return await real(verb, object_ref, **kw)
+
+    rt._gate_decide = spy
+    asyncio.run(rt.tick())
+    assert ("ask", "curiosity.replica.answer") in asked
+    assert {w.family for w in rt.bids} == {"curiosity.replica"}
+    assert {a["actor"] for _, a in answer_acts(rt)} == {"curiosity.replica.answer"}

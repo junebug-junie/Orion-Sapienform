@@ -35,7 +35,8 @@ answer each of Prime's acts on curiosity once -- a focus question Prime queued, 
   WATCH_INTERVAL_SEC, read-only Postgres). Each one wakes ONE reply thought (bid, one short model call, the
   REPLY frame), even with no plan request.
 
-Every answer is an act (actor curiosity.replica, verb ask, parent = Prime's act) that closes at once with the
+Every answer is an act (actor curiosity.replica.answer -- its own actor, so answers stay out of the
+curiosity.replica family's history in the body economy; nothing bids as it -- verb ask, parent = Prime's act) that closes at once with the
 stance and reason as its note. At most CURIOSITY_REPLICA_ANSWERS_PER_DAY in 24 h, CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC
 apart, never to an answer. A deterministic share is held back (CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION,
 CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION): recorded, not applied, never shown to Prime. Applied:
@@ -510,7 +511,8 @@ class ReplicaRuntime(MindLoopRuntime):
                               challenge_fraction=float(self.cfg("CHALLENGE_HOLDBACK_FRACTION", 0.2)))
         act = answer_act(target, arm=arm)
         # The self-monitor gate on the answer, asked before anything is applied (both arms alike).
-        d = await self._gate_decide("ask", act.object_ref or "")
+        # Under the answer's own actor (curiosity.replica.answer): its track record, not the plans'.
+        d = await self._gate_decide("ask", act.object_ref or "", actor=act.actor)
         if not self._admit(d):
             logger.info("curiosity_replica_act_refused verb=ask gate=%s", d.label() if d else "-")
             self.state = add_note(self.state, f"my answer to Prime's {target.kind} {target.target_id} was not "

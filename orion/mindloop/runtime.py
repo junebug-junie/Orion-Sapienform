@@ -236,16 +236,18 @@ class MindLoopRuntime:
 
     # --- self-monitor act gate (E1) ---------------------------------------------------------
     async def _gate_decide(self, verb: str, object_ref: str, *, job_key: Optional[str] = None,
-                           recheck_soon: bool = False) -> Optional[GateDecision]:
+                           recheck_soon: bool = False, actor: Optional[str] = None) -> Optional[GateDecision]:
         """The gate's answer, or None (gate off, or a gate fault: one direction only, nothing changes).
         Runs in a worker thread: the view read is Redis, the ledger read Postgres. ``recheck_soon``: this
         act was refused under GATE_RECHECK_SEC ago; while the fresh view still holds the faculty failing
         it stays refused without a ledger read. The view is always read, so an unknown, stale or healed
-        view admits at once, exactly like the gate being off."""
+        view admits at once, exactly like the gate being off. ``actor``: the act's own actor when it is not
+        the instance's (the curiosity replica's answers are actor ``curiosity.replica.answer``), so the gate
+        reads that actor's track record. Default: the instance's actor (Prime never passes one)."""
         if not self.gate.enabled:
             return None
         now = self.clock()
-        actor = self.identity.actor
+        actor = actor or self.identity.actor
 
         def run() -> GateDecision:
             view = self.gate.begin(now)

@@ -49,12 +49,30 @@ curiosity), and the question half has about 2 chances a day.
    - Refuse a signal: the replica writes `PrimeChargeRefusalV1` next to the signal in the same hash. The market
      reads it on each bid and does not apply the charge.
    - Challenge: Prime is told (next step).
-6. **The answer is an act.** Actor `curiosity.replica`, verb `ask`, parent = Prime's act, `test_before =
+6. **The answer is an act.** Actor `curiosity.replica.answer` (its own actor, see "Answers keep their own
+   history" below), verb `ask`, parent = Prime's act, `test_before =
    holdback:<arm>`, opened and closed at once. Its note starts with the stance:
    `refuse: <reason> | focus <id> | delivered`.
 7. **Prime hears it.** Delivered challenges and refusals go into a small published view, Redis
    `orion:curiosity:replica:replies`, written on every save. Prime reads only that view (never the replica's
    state): for the ORGAN REPLIES section, and when it settles a question or a signal.
+
+## Answers keep their own history
+
+The body economy reads an act's actor as its family (`orion/physiology/appetite.py`, `weights.py`). A delivered
+answer grades 1 almost always, so answers on actor `curiosity.replica` would have lifted the planner's graded
+mean with something that says nothing about its plans. Answer acts are therefore actor
+`curiosity.replica.answer`. The plan and reply thoughts (`infer`) stay on `curiosity.replica`, the family that bids.
+
+- Nothing bids as `curiosity.replica.answer`, so it needs no `families.yaml` entry. Appetite, the learned weights
+  and Choice's Tier 1 lane use all skip acts whose actor is not a family (test:
+  `test_answer_acts_stay_out_of_the_replica_familys_history_in_the_body_economy` -- the family's appetite and
+  weight are identical with and without six answers graded 1).
+- The self-monitor gate on an answer now reads the answer actor's own track record: the loop library's
+  `_gate_decide` takes an optional `actor` (Prime never passes one; its replay is unchanged).
+- The readout filters on the new actor. The organ's name on a refusal (`refused_by`, the market's `why`, Prime's
+  note "refused by curiosity.replica") is still the organ, `curiosity.replica`.
+- The producer catalog is per service (orion-mind already emits grammar events), so it is unchanged.
 
 ## Holdback and caps chosen
 
@@ -92,8 +110,8 @@ Checked on 4,000 act ids: the draw lands 18-22% control for each stance (`test_r
    challenge went into the view; control: recorded held back); 0 when a treated answer could not be delivered.
    Written by `ReplicaRuntime._deliver` (`services/orion-mind/app/replica_loop.py`).
 2. **Independence.** Not a new signal about the world. It is a delivery check, like Prime's "treated not queued"
-   close. It shares the `curiosity.replica` family with the plan acts, so it does feed that family's graded mean
-   in the body economy. See the risk below.
+   close. It is on its own actor, `curiosity.replica.answer`, which is not a want family, so it never enters the
+   planner family's graded mean (see "Answers keep their own history").
 3. **Theory anchor.** A call to another organ is graded on whether it reached its target (the act ledger's own
    rule for `ask` acts, e.g. Prime's nomination closing 0 when Hub refused to queue it). It does NOT claim the
    answer was right: that is the holdback comparison's job, later.
@@ -210,7 +228,7 @@ replica has not answered Prime yet`.
 orion-static-gates.yml, every step locally          41 of 41 OK (definition drift after the re-lock commit)
 orion-prime-tests.yml, every step locally           10 of 10 OK
   orion/prime + orion/mindloop + replica pure + readout + orion/physiology   372 passed
-  services/orion-mind/tests                         254 passed (after the review fixes)
+  services/orion-mind/tests                         255 passed (after the review fixes and the actor split)
 services/orion-hub refusal listener + replica plan  20 passed
 orion-reading-tests.yml pytest steps                all OK (its "install local PostgreSQL" setup step is CI-only)
 services/orion-durable-runs/tests                   749 passed, 125 skipped (plain run)
@@ -267,6 +285,12 @@ both arms on the same rule; the golden only gained the two scenarios; env parity
   - Fix: order and rollback in `services/orion-mind/README.md` and below; the replies view now expires after 48 h.
 - Finding: the plan path measured the refusal RPC's time budget before the gate and act-open awaits.
   - Fix: `_deliver` takes the plan's `deadline_at`; the budget is measured right before the call.
+- Follow-up from the orchestrator (was the report's medium risk): answers shared the `curiosity.replica` family
+  history with plans.
+  - Fix: answer acts are actor `curiosity.replica.answer`, never a want family; the gate reads that actor.
+  - Evidence: `test_answer_acts_stay_out_of_the_replica_familys_history_in_the_body_economy`,
+    `test_answers_are_gated_and_recorded_under_their_own_actor_and_never_bid`; readout re-run on live Postgres
+    (read-only): `NO DATA`.
 - Nits fixed: `answer_blocker` returns a code with its words (no control flow on English strings); the prompts no
   longer say nothing reaches Orion (reasons reach Prime); the market's want-field cap counts the refusal field;
   Prime's ORGAN REPLIES says when the view is older than 15 minutes; the "no answer to an answer" docstring says
@@ -289,12 +313,6 @@ No migration: the focus refusal columns were applied with patch 2 (checked live:
 
 ## Risks / concerns
 
-- Severity: medium
-  - Concern: answer acts share the `curiosity.replica` family with plan acts. Delivered answers grade 1 almost
-    always, so they lift the family's graded mean in the body economy, which can make the planner look more
-    useful to the market than its plans are.
-  - Mitigation: at most 3 a day. The three-arm test scores plans from the spend log, not from the family mean.
-    Watch the family weight in the 14-day review; if it moves, split the answers' grade out.
 - Severity: low
   - Concern: a focus refusal whose reply is lost AND whose focus row cannot be read is recorded "not delivered
     (answer unknown)"; if Hub did apply it, Prime sees only "left the slot".

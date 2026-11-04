@@ -40,6 +40,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 # The act-ledger actor and body-economy family (config/physiology/families.yaml, tier 2, lane chat).
 REPLICA_ACTOR = "curiosity.replica"
 REPLICA_FAMILY = "curiosity.replica"
+# The actor of the replica's ANSWERS to Prime (verb ask). Its own actor, so the answers -- graded 1 whenever they
+# are delivered -- never enter the curiosity.replica family's history (orion/physiology/appetite.py and
+# weights.py read grammar_acts.actor as the family): that history is the plans' and reply thoughts' alone. It is
+# never a want family: nothing bids as it, so it has no entry in config/physiology/families.yaml, and the
+# market skips acts of an actor that is not a family.
+ANSWER_ACTOR = "curiosity.replica.answer"
 
 PLAN_REQUEST_CHANNEL = "orion:curiosity:replica:plan:request"
 PLAN_RESULT_CHANNEL_PREFIX = "orion:curiosity:replica:plan:result:"
@@ -289,6 +295,7 @@ class CuriosityOfferPlanResultV1(BaseModel):
 
 
 __all__ = [
+    "ANSWER_ACTOR",
     "AnswerTargetKind",
     "CLAIM_MAX",
     "CuriosityFocusRefusalRequestV1",

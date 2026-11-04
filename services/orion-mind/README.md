@@ -87,7 +87,8 @@ settings `CURIOSITY_REPLICA_*`, logs `curiosity_replica_*`.
 - **When:** inside a plan (its `focus_stance` / `signal_stance`), or between runs: the tick watches the signal
   hash (every tick) and Hub's pending focus row (every 60 s, read-only Postgres); a new Prime act wakes ONE reply
   thought (bid, one short call, a stance-only frame) even with no plan request.
-- **Every answer is an act:** actor `curiosity.replica`, verb `ask`, parent = Prime's act, `test_before =
+- **Every answer is an act:** actor `curiosity.replica.answer` (its own actor: answers stay out of the
+  `curiosity.replica` family's history; nothing bids as it, so it has no families.yaml entry), verb `ask`, parent = Prime's act, `test_before =
   holdback:<arm>`, closed at once; the note starts with the stance (`refuse: <reason> | ...`).
 - **What it does:** refuse a focus -> the RPC `orion:curiosity:replica:focus_refusal:request` (Hub runs
   `refuse_focus`; the focus is not shown to the run). Refuse a signal -> `PrimeChargeRefusalV1` next to the

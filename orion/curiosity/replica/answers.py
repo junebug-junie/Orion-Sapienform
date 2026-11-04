@@ -13,7 +13,9 @@ What the replica may answer (a ``TargetV1``): one of Prime's acts on curiosity -
 * **a regulate signal on durable.curiosity_investigate** (Redis ``orion:prime:regulate:<family>``): Prime's act is
   the signal's ``act_id``. The replica cannot tell Prime's treated signals from its controls, by design.
 
-Every answer is an act: actor ``curiosity.replica``, verb ``ask``, ``parent_act_id`` = Prime's act, keyed on
+Every answer is an act: actor ``curiosity.replica.answer`` (``ANSWER_ACTOR``: its own actor, so answers stay out
+of the ``curiosity.replica`` family's history in the body economy; the thought behind a reply stays on
+``curiosity.replica``), verb ``ask``, ``parent_act_id`` = Prime's act, keyed on
 Prime's act (so a second answer to the same act is the same act id), ``test_before = holdback:<arm>``. It
 closes at once; its note starts with the stance (``refuse: <reason>``), which is how the readout reads it.
 
@@ -47,6 +49,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from orion.grammar.acts import build_act, stable_act_id
 from orion.schemas.curiosity_replica import (
+    ANSWER_ACTOR,
     REPLICA_ACTOR,
     REPLIES_MAX,
     REPLIES_WINDOW_SEC,
@@ -176,7 +179,7 @@ def draw_answer_arm(prime_act_id: str, stance: str, *, refusal_fraction: float, 
 def answer_act(target: TargetV1, *, arm: Arm) -> ActV1:
     """Keyed on Prime's act: one answer per Prime act, whatever the stance."""
     return build_act(
-        actor=REPLICA_ACTOR, verb="ask", key=f"answer:{target.prime_act_id}", signal_id="artifact_produced",
+        actor=ANSWER_ACTOR, verb="ask", key=f"answer:{target.prime_act_id}", signal_id="artifact_produced",
         horizon_sec=ANSWER_HORIZON_SEC, basis=ANSWER_BASIS,
         object_ref=(f"curiosity_focus:{target.target_id}" if target.kind == "focus"
                     else f"prime_signal:{target.target_id}"),
@@ -227,7 +230,7 @@ def answer_blocker(answers: Sequence[AnswerRecordV1], target: TargetV1, now: dat
     """Why the replica may NOT answer ``target`` now, or None. ``thought_id``: the thought asking; its own earlier
     answers do not start the refractory (they still count against the daily cap)."""
     own = set(own_answer_ids) | {a.answer_act_id for a in answers}
-    if target.actor == REPLICA_ACTOR or target.prime_act_id in own:
+    if target.actor in (REPLICA_ACTOR, ANSWER_ACTOR) or target.prime_act_id in own:
         return Block("own", "it is one of my own answers")
     if target.parent_act_id and target.parent_act_id in own:
         return Block("answer_parent", "its parent is one of my answers (no answer to an answer)")

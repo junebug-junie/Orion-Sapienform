@@ -1,6 +1,6 @@
 """Readout of the curiosity replica's answers to Prime (design 2026-11-04 section 9, patch 4). Read-only.
 
-Reads the replica's answer acts from ``grammar_acts`` (actor ``curiosity.replica``, verb ``ask``). Each act's close
+Reads the replica's answer acts from ``grammar_acts`` (actor ``curiosity.replica.answer``, verb ``ask``). Each act's close
 note starts with its stance (``refuse: <reason> | ...``, orion/curiosity/replica/answers.py ``answer_note``) and its
 ``test_before`` names its holdback arm. Reports:
 
@@ -41,11 +41,13 @@ from orion.curiosity.replica.answers import (  # noqa: E402
     stance_from_note,
 )
 
+from orion.schemas.curiosity_replica import ANSWER_ACTOR  # noqa: E402
+
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
 PG_SQL = """
 SELECT act_id, parent_act_id, test_before, opened_at, outcome_value, outcome_note
 FROM grammar_acts
-WHERE actor = 'curiosity.replica' AND verb = 'ask' AND opened_at > now() - interval '120 days'
+WHERE actor = %(actor)s AND verb = 'ask' AND opened_at > now() - interval '120 days'
 ORDER BY opened_at ASC
 """
 
@@ -95,7 +97,7 @@ def read_pg(dsn: str) -> Optional[list[dict[str, Any]]]:
         return None
     try:
         with conn.cursor() as cur:
-            cur.execute(PG_SQL)
+            cur.execute(PG_SQL, {"actor": ANSWER_ACTOR})
             cols = [c[0] for c in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:

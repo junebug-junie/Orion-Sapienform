@@ -835,9 +835,10 @@ leaves transport reliability unmeasured (absent).
 - **Decision 4:** `observer_failure_pressure` retired end to end (bus observer atom, reducer field,
   node channel, topology edge mapping, glossary, lattice row, hub card). Transport reliability has one
   source, the RPC delivery bridge, and reads unmeasured when it stops reporting.
-- **Decisions 1 and 2** live outside this service: the feedback credit guard
-  (`orion/field/credit_integrity.py::before_winner_went_unmeasured`) and attention novelty
-  (`orion/attention/field_attention/selectors.py`), both reading the absent-key convention above.
+- **Decision 2** lives outside this service: attention novelty
+  (`orion/attention/field_attention/selectors.py`), reading the absent-key convention above.
+  Decision 1, the feedback credit guard (`orion/field/credit_integrity.py`), retired with the
+  feedback rung on 2026-11-04.
 - Replay: `scripts/eval_field_decisions_replay.py`.
 
 ## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)

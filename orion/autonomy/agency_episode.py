@@ -135,7 +135,7 @@ def reconstruct(bundle: dict) -> dict:
     conflicts: dict[str, list[str]] = {}
     keys = {"asks": "help_id", "graph_briefs": "brief_id", "sql_briefs": "brief_id",
             "results": "result_id", "outcomes": "id", "dispatch_frames": "frame_id",
-            "proposal_frames": "frame_id", "feedback_frames": "frame_id",
+            "proposal_frames": "frame_id",
             "result_sample": "result_id", "outcome_sample": "dispatch_id"}
     # Older captures predate these sources: retain their original report shape,
     # without interpreting missing capture fields as empty live queries.
@@ -236,11 +236,8 @@ def reconstruct(bundle: dict) -> dict:
         for outcome in outcomes:
             if expected and (outcome.get("signal_id") != expected.get("signal_id") or outcome.get("predicted_delta") != expected.get("predicted_delta")):
                 issues.append("outcome_prediction_mismatch:" + str(outcome["id"]))
-            feedback = next((f for f in sources["feedback_frames"] if f["frame_id"] == outcome.get("feedback_frame_id")), None)
-            if feedback is None:
-                issues.append("feedback_frame_not_loaded:" + str(outcome["id"]))
-            elif feedback.get("source_execution_dispatch_frame_id") != outcome.get("dispatch_frame_id"):
-                issues.append("feedback_dispatch_mismatch:" + str(outcome["id"]))
+            # No feedback-frame cross-check: the feedback rung retired 2026-11-04 and its frames are
+            # dropped. An outcome row carries its own dispatch_frame_id.
             sent, observed = stamp(candidate.get("dispatched_at")), stamp(outcome.get("observed_at"))
             if sent and observed and observed < sent:
                 issues.append("outcome_precedes_dispatch:" + str(outcome["id"]))

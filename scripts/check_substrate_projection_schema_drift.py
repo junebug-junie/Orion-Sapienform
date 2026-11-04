@@ -38,8 +38,8 @@ directly against each model class in orion/schemas/*.py, not assumed) -- see the
 PROJECTIONS tuple below for the full list of (table, projection_id, model).
 
 Other services with a `store.py` that persists projections (orion-attention-runtime,
-orion-consolidation-runtime, orion-execution-dispatch-runtime, orion-feedback-
-runtime, orion-field-digester, orion-policy-runtime, orion-proposal-runtime) all use
+orion-execution-dispatch-runtime, orion-field-digester, orion-policy-runtime,
+orion-proposal-runtime) all use
 a genuinely different shape: an append-only log table, loaded via
 `ORDER BY generated_at DESC LIMIT 1` ("latest row"), not a fixed-projection_id UPSERT
 target. That shape could in principle hit the same extra="forbid" + stale-field

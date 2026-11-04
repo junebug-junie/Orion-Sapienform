@@ -14,7 +14,8 @@ and the control arm's rate" -- it can revoke a claim when not acting turns out a
 but for a producer-reported signal (control 0 by construction) the arm carries no information.
 
 Separate from substrate_world_action_episodes on purpose: that ledger's scorer
-(orion-feedback-runtime) scores every due row as a cabinet shed, so an act row there would be
+(orion/autonomy/world_settlement_store.py, run by orion-sql-writer) scores every due row as a
+cabinet shed, so an act row there would be
 mis-scored as one.
 
 Which acts are held back at all (``holdback_rule``, rung 3 follow-up 2026-10-21): a control arm is

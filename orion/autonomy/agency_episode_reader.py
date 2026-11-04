@@ -69,7 +69,7 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
     sql("result_sample", "SELECT result_id,dispatch_id,frame_id,status,created_at FROM substrate_dispatch_results "
         "ORDER BY created_at DESC,result_id LIMIT %s", (limit,))
     # Act-ledger rows (dispatch_kind 'act:<verb>', orion/grammar/act_ledger.py) have no
-    # dispatch or feedback frame by design; they are not motor episodes.
+    # dispatch frame by design; they are not motor episodes.
     sql("outcome_sample", "SELECT dispatch_id FROM substrate_action_outcomes WHERE dispatch_kind NOT LIKE 'act:%%' "
         "ORDER BY observed_at DESC,id DESC LIMIT %s", (limit,))
     dispatch_ids = sorted({r["dispatch_id"] for key in ("result_sample", "outcome_sample") for r in bundle[key]["rows"] if r.get("dispatch_id")})
@@ -96,8 +96,6 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
     for row in bundle["proposal_frames"]["rows"]:
         payload = row.pop("proposal_frame_json")
         row["proposal_ids"] = [c["proposal_id"] for c in payload.get("candidates", []) if c.get("proposal_id")]
-    feedback_ids = sorted({r["feedback_frame_id"] for r in bundle["outcomes"]["rows"]})
-    sql("feedback_frames", "SELECT frame_id,source_execution_dispatch_frame_id FROM substrate_feedback_frames WHERE frame_id = ANY(%s)", (feedback_ids,))
     # Attend-to-act loop (2026-10-01): world-action episodes for the sampled dispatches, the broadcast
     # rows they bound to, and the loop verdicts. Metadata only. The ledger table only exists once a
     # world action has been decided; until then the source is "unavailable", never "empty".

@@ -761,14 +761,6 @@ from orion.schemas.execution_dispatch_frame import (
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
 )
-from orion.schemas.consolidation_frame import (
-    ConsolidationFrameV1,
-    ExpectationV1,
-    MotifObservationV1,
-    SchemaCandidateV1,
-    SparseTensorSliceV1,
-)
-from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.brain_frame import (
     BrainEdgeSampleV1,
     BrainNodeSampleV1,
@@ -1482,13 +1474,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ProposalFrameV1": ProposalFrameV1,
     "ExecutionDispatchCandidateV1": ExecutionDispatchCandidateV1,
     "ExecutionDispatchFrameV1": ExecutionDispatchFrameV1,
-    "ConsolidationFrameV1": ConsolidationFrameV1,
-    "MotifObservationV1": MotifObservationV1,
-    "ExpectationV1": ExpectationV1,
-    "SparseTensorSliceV1": SparseTensorSliceV1,
-    "SchemaCandidateV1": SchemaCandidateV1,
-    "FeedbackFrameV1": FeedbackFrameV1,
-    "OutcomeObservationV1": OutcomeObservationV1,
     "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
     "CausalGeometryEdgeV1": CausalGeometryEdgeV1,
     "CausalGeometryDivergenceEntryV1": CausalGeometryDivergenceEntryV1,

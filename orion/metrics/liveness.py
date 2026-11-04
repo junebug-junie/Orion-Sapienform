@@ -78,9 +78,7 @@ Why these two:
 Cadences confirmed live 2026-08-19 (500 most-recent rows, avg inter-row gap):
     substrate_proposal_frames         2.12s
     substrate_policy_decision_frames  2.12s
-    substrate_feedback_frames         2.06s
     substrate_attention_frames        2.13s
-    substrate_consolidation_frames    5761.49s (~96min)
 
 The classifier math is never reimplemented here -- only the data source is
 new. See `orion.field.channel_glossary.classify_channel_series` for the
@@ -545,26 +543,11 @@ _LADDER_STAGES: dict[str, ThroughputSource] = {
         window_hours=1.0,
         bucket_hours=1.0 / 60,
     ),
-    "substrate_feedback_frames": ThroughputSource(
-        table="substrate_feedback_frames",
-        ts_column="generated_at",
-        window_hours=1.0,
-        bucket_hours=1.0 / 60,
-    ),
     "substrate_attention_frames": ThroughputSource(
         table="substrate_attention_frames",
         ts_column="generated_at",
         window_hours=1.0,
         bucket_hours=1.0 / 60,
-    ),
-    "substrate_consolidation_frames": ThroughputSource(
-        table="substrate_consolidation_frames",
-        ts_column="generated_at",
-        window_hours=48.0,  # matches this repo's own measure_attention_self_model
-        # precedent (DEFAULT_SINCE_HOURS=48) for a slow-cadence table
-        bucket_hours=3.0,  # ~96min cadence -> ~1.9 rows/bucket healthy; a
-        # 1h bucket would read ~0.6 rows/bucket on a HEALTHY table -- false
-        # "dead" territory. 3h clears that with margin.
     ),
 }
 

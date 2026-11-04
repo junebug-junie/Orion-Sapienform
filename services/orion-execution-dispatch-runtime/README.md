@@ -652,7 +652,8 @@ Before the treated/control draw, `_world_admission_refusal` drops (records, neve
 still in flight or that the pool would refuse (`pool_gap`, `pool_daily_cap`, `pool_refusing:*`, using
 `ORION_SHED_MIN_GAP_SEC` / `ORION_SHED_MAX_SEC_PER_DAY`, which must mirror the pool's caps), so both
 arms come from one population. The draw is a hash of `dispatch_id` (a replay lands in the same arm).
-Dependencies: the feedback runtime's `ORION_WORLD_SETTLEMENT_SCORING_ENABLED` must be on -- an unscored
+Dependencies: orion-sql-writer's settle scoring (`SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC` > 0; moved
+there from the retired feedback runtime 2026-11-04) must be on -- an unscored
 episode stays "in flight" (6 h horizon), so with scoring off the action fires at most once per 6 h.
 The global per-tick `ORION_DISPATCH_HOLDBACK_FRACTION` (live 0.0) still applies after the per-template
 draw and writes no world control row; the real treated rate is 0.5 x (1 - that fraction).

@@ -17,7 +17,7 @@ noticed for ~48h.
 Two deterministic checks, both pure over already-fetched readings so they can
 be replayed from a fixture:
 
-1. Ladder freshness -- ``evaluate_rung`` / ``evaluate_consolidation_empty``.
+1. Ladder freshness -- ``evaluate_rung`` (feedback and consolidation retired 2026-11-04: ``RETIRED_RUNGS``).
 2. Schema/image skew -- every (schema file, writer, readers) triple found by
    ``orion.schema_skew_discovery.discover`` (an AST scan of call sites, not a
    hand list) + ``evaluate_skew`` over each container's own copy of the file.
@@ -119,8 +119,14 @@ RUNGS: tuple[Rung, ...] = (
     Rung("proposal", "substrate_proposal_frames", "generated_at", _CHAIN),
     Rung("policy", "substrate_policy_decision_frames", "generated_at", _CHAIN),
     Rung("dispatch", "substrate_execution_dispatch_frames", "generated_at", _CHAIN),
-    Rung("feedback", "substrate_feedback_frames", "generated_at", _CHAIN),
-    Rung("consolidation", "substrate_consolidation_frames", "generated_at", timedelta(hours=2)),
+)
+
+#: Rungs that no longer run, listed so the check says "retired" instead of silently
+#: skipping them (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md).
+#: (name, retired on, what does its job now).
+RETIRED_RUNGS: tuple[tuple[str, str, str], ...] = (
+    ("feedback", "2026-11-04", "act ledger grades every real act; world-action scoring runs in orion-sql-writer"),
+    ("consolidation", "2026-11-04", "killed outright (Juniper, 2026-11-04)"),
 )
 
 #: Every freshness query is bounded to this window so Postgres does an index
@@ -182,36 +188,6 @@ def evaluate_rung(rung: Rung, newest: Optional[datetime], now: datetime) -> Rung
     return RungResult(rung.name, status, _as_utc(newest), round(age, 1), max_age_sec)
 
 
-#: Consolidation keeps writing hourly frames even when everything under it is
-#: dead -- it just writes them empty. Over 60 days of live frames the longest
-#: run of consecutive empty frames outside the incident was 1; the incident was
-#: 52. Three in a row is therefore both quiet in normal operation and catches an
-#: outage within ~3 hours.
-CONSOLIDATION_EMPTY_RUN = 3
-
-CONSOLIDATION_MOTIF_SQL = (
-    "SELECT CASE WHEN jsonb_typeof(consolidation_frame_json->'motif_observations') = 'array' "
-    "THEN jsonb_array_length(consolidation_frame_json->'motif_observations') ELSE 0 END "
-    "FROM substrate_consolidation_frames "
-    "WHERE generated_at > now() - make_interval(secs => %s) "
-    "ORDER BY generated_at DESC LIMIT %s"
-)
-
-
-def evaluate_consolidation_empty(
-    recent_motif_counts: Sequence[int], run: int = CONSOLIDATION_EMPTY_RUN
-) -> RungResult:
-    """``recent_motif_counts``: motif_observations lengths, newest first."""
-    empty = len(recent_motif_counts) >= run and all(n == 0 for n in recent_motif_counts[:run])
-    return RungResult(
-        "consolidation:motifs",
-        "empty" if empty else "fresh",
-        None,
-        None,
-        float(run),
-    )
-
-
 # ---------------------------------------------------------------------------
 # 2. Schema / image skew
 # ---------------------------------------------------------------------------
@@ -263,8 +239,8 @@ class StrictSchema:
 #: Pinned: (file, class, writer) facts discovery must keep finding. A test
 #: fails if any of these falls out of ``discover()``'s output.
 STRICT_SCHEMAS: tuple[StrictSchema, ...] = (
-    # orion-field-digester writes substrate_field_state; attention, proposal,
-    # feedback runtimes and the hub read it back with model_validate.
+    # orion-field-digester writes substrate_field_state; the attention and proposal
+    # runtimes and the hub read it back with model_validate.
     StrictSchema("orion/schemas/field_state.py", "FieldStateV1", "orion-field-digester", models=("FieldStateV1",)),
 )
 
@@ -529,19 +505,16 @@ class LadderReport:
 
     def severity(self) -> str:
         """critical when anything that stops cognition is red; warning when the
-        only findings are empty consolidation (a symptom, usually of a red rung)
-        or a blind detector (perception degraded, nothing stopped)."""
+        only findings are a blind detector (perception degraded, nothing stopped)."""
         keys = self.red_keys()
-        warning_only = all(k == "rung:consolidation:motifs" or k.startswith("rung:detection_rate:") for k in keys)
+        warning_only = all(k.startswith("rung:detection_rate:") for k in keys)
         return "warning" if keys and warning_only else "critical"
 
     def alert_message(self) -> str:
         lines = []
         if self.red_rungs:
             lines.append("Part of the substrate ladder has stopped writing:")
-            lines += [f"- {r.summary()}" if r.rung != "consolidation:motifs" else
-                      f"- consolidation: last {int(r.max_age_sec)} frames have zero motif observations (running, but on nothing)"
-                      for r in self.red_rungs]
+            lines += [f"- {r.summary()}" for r in self.red_rungs]
         if self.red_skew:
             lines.append("Containers cannot read a schema another service is writing (their copy is older or incompatible):")
             seen = set()
@@ -563,6 +536,7 @@ class LadderReport:
             "red": self.red,
             "red_keys": self.red_keys(),
             "cannot_check": list(self.cannot_check),
+            "retired_rungs": [{"rung": n, "retired_on": d, "replaced_by": why} for n, d, why in RETIRED_RUNGS],
             "rungs": [
                 {
                     "rung": r.rung,
@@ -617,10 +591,6 @@ def evaluate_ladder(
     newest_by_rung: Mapping[str, Optional[datetime]],
     now: datetime,
     *,
-    consolidation_motif_counts: Optional[Sequence[int]] = None,
     rungs: Sequence[Rung] = RUNGS,
 ) -> list[RungResult]:
-    out = [evaluate_rung(r, newest_by_rung.get(r.name), now) for r in rungs if r.name in newest_by_rung]
-    if consolidation_motif_counts is not None:
-        out.append(evaluate_consolidation_empty(consolidation_motif_counts))
-    return out
+    return [evaluate_rung(r, newest_by_rung.get(r.name), now) for r in rungs if r.name in newest_by_rung]

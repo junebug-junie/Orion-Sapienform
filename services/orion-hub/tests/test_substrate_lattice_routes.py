@@ -181,7 +181,7 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
     m3 = result["transport"]["m3"]
     assert m3["status"] in ("fresh", "stale", "missing")
     assert m3["values"]["buses"] == {}
-    assert result["transport"]["l11"]["values"].get("motifs", []) == []
+    assert result["transport"]["l11"]["status"] == "retired"
 
 
 # ── /transport/gates ─────────────────────────────────────────────
@@ -311,20 +311,8 @@ def _sample_proof_chain_for_gates(
                 "age_sec": bus_age_sec,
                 "values": {"dispatch_mode": dispatch_mode, "dispatch_count": 0, "blocked_count": 0},
             },
-            "l10": {
-                "status": "fresh",
-                "source_table": "substrate_feedback_frames",
-                "timestamp": ts,
-                "age_sec": bus_age_sec,
-                "values": {"outcome_status": "dry_run_only", "feedback_kind": None},
-            },
-            "l11": {
-                "status": "fresh",
-                "source_table": "substrate_consolidation_frames",
-                "timestamp": ts,
-                "age_sec": bus_age_sec,
-                "values": {"frame_id": "cons:1", "motifs": []},
-            },
+            "l10": substrate_lattice_routes._retired_layer("substrate_feedback_frames", note="x"),
+            "l11": substrate_lattice_routes._retired_layer("substrate_consolidation_frames", note="x"),
         },
         "freshness_threshold_sec": freshness_threshold_sec,
         "verdict": "Transport lane live and fresh through all layers.",
@@ -970,8 +958,9 @@ def test_load_chain_stale_status_when_age_above_threshold(monkeypatch) -> None:
     assert result["transport"]["m3"]["age_sec"] > 60
 
 
-def test_load_chain_missing_layer_when_no_row(monkeypatch) -> None:
-    """L11 status is 'missing' when consolidation frames table has no rows."""
+def test_retired_rungs_read_retired_and_never_query_their_tables(monkeypatch) -> None:
+    """L10 feedback and L11 consolidation retired 2026-11-04: shown 'retired' (not stale or
+    missing), and the chain loader never reads their frame tables (dropped 2 days later)."""
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import json as _json
     from datetime import datetime, timedelta, timezone
@@ -983,11 +972,23 @@ def test_load_chain_missing_layer_when_no_row(monkeypatch) -> None:
         None, None, None, None, None, None, None,
         None,  # L11 returns None
     )
-    with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
+    tables: list[str] = []
+    real = substrate_lattice_routes._first_json_with_ts
+
+    def spy(engine, table, *a, **kw):
+        tables.append(table)
+        return real(engine, table, *a, **kw)
+
+    with patch.object(substrate_lattice_routes, "_engine", return_value=fake), \
+            patch.object(substrate_lattice_routes, "_first_json_with_ts", side_effect=spy):
         result = substrate_lattice_routes._load_transport_proof_chain(freshness_threshold_sec=60)
     assert result is not None
-    assert result["transport"]["l11"]["status"] == "missing"
-    assert result["transport"]["l11"]["values"] == {}
+    assert "substrate_execution_dispatch_frames" in tables, "spy saw no queries: this check would be vacuous"
+    assert "substrate_feedback_frames" not in tables and "substrate_consolidation_frames" not in tables
+    for key, table in (("l10", "substrate_feedback_frames"), ("l11", "substrate_consolidation_frames")):
+        layer = result["transport"][key]
+        assert layer["status"] == "retired" and layer["source_table"] == table
+        assert layer["values"]["retired_on"] == "2026-11-04" and layer["values"]["note"]
 
 
 # ── New V1.1 tests: M5 capability:transport detection ────────────

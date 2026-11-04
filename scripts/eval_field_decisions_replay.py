@@ -15,15 +15,10 @@ novelty has a real consecutive prior):
       join substrate_field_state s using (tick_id) where ids.rn % 60 in (59, 0)
       order by ids.rn" > field_pairs.jsonl
 
-Feedback pairs: real feedback frames, before = the dispatch's source field
-tick, after = the first field tick within 30 s of the dispatch (the feedback
-runtime's own load_latest_field_after rule). See the PR report for the SQL.
-
 Usage:
     python scripts/eval_field_decisions_replay.py run --tree <repo> --pairs field_pairs.jsonl --out main.jsonl
     python scripts/eval_field_decisions_replay.py run --tree . --pairs field_pairs.jsonl --out branch.jsonl
     python scripts/eval_field_decisions_replay.py compare main.jsonl branch.jsonl
-    python scripts/eval_field_decisions_replay.py feedback --tree . --pairs feedback_pairs.jsonl
 
 Per tick and scenario the tree's own reconcile -> capability decay ->
 apply_diffusion runs on the stored pre-diffusion state. Scenarios drop the live
@@ -48,7 +43,6 @@ SCENARIOS: dict[str, dict[str, tuple[str, ...]]] = {
     "outage:rpc": {"node:substrate.rpc_delivery": ("rpc_timeout_pressure",)},
 }
 SCENARIOS["outage:all"] = {k: v for s in list(SCENARIOS.values()) for k, v in s.items()}
-CREDIT_DIMS = ("resource_pressure", "reliability_pressure", "execution_pressure")
 DECAY_RATE = 0.92  # BIOMETRICS_FIELD_DECAY_RATE, live value
 # Names this branch changed on purpose: compared after mapping, not as diffs.
 RENAMED = {"contract_pressure": "catalog_drift_pressure"}
@@ -65,7 +59,6 @@ def _load_tree(tree: Path):
     from app.tensor.reconcile import reconcile_field_state_with_lattice
     from orion.attention.field_attention.builder import build_attention_frame
     from orion.attention.field_attention.policy import load_attention_policy
-    import orion.field.credit_integrity as ci
     from orion.field.pressure import collect_field_channel_pressures, field_pressures_with_provenance
     from orion.schemas.field_state import FieldStateV1
 
@@ -100,7 +93,6 @@ def _load_tree(tree: Path):
         "attention": attention,
         "merge": collect_field_channel_pressures,
         "dims": field_pressures_with_provenance,
-        "ci": ci,
     }
 
 
@@ -131,11 +123,7 @@ def _measure(T, prev, cur) -> dict:
         "top_capability": max(caps, key=lambda k: (caps[k]["salience"], k)) if caps else None,
         "dominant": [t.target_id for t in frame.dominant_targets],
         "transport_reliability_measured": "reliability_pressure" in (cur.capability_vectors.get("capability:transport") or {}),
-        "backed": {d: T["ci"].channel_write_backed(cur, d, max_staleness_seconds=120.0) for d in CREDIT_DIMS},
     }
-    guard = getattr(T["ci"], "before_winner_went_unmeasured", None)
-    if guard is not None:
-        rec["guard"] = {d: guard(prev, cur, d, max_staleness_seconds=120.0) for d in CREDIT_DIMS}
     return rec
 
 
@@ -217,14 +205,10 @@ def cmd_compare(args) -> int:
         px = {k: v["pressure"] for k, v in x["targets"].items()}
         py = {k: v["pressure"] for k, v in y["targets"].items()}
         diff("attention_pressure_proxy", px, py)
-        diff("credit_backed", x["backed"], y["backed"])
         if x["transport_reliability_measured"]:
             c[(sc, "transport_reliability_measured_before")] += 1
         if y["transport_reliability_measured"]:
             c[(sc, "transport_reliability_measured_after")] += 1
-        for d, fired in (y.get("guard") or {}).items():
-            if fired:
-                c[(sc, f"guard_fired:{d}")] += 1
     for sc in SCENARIOS:
         row = {lab: n for (s, lab), n in sorted(c.items()) if s == sc}
         print(sc, json.dumps(row, sort_keys=True))
@@ -238,45 +222,15 @@ def cmd_compare(args) -> int:
     gated = (
         "dims", "dim_winner_channel", "dim_winner_source", "merged_values",
         "merged_keys_unexpected", "attention_top_capability", "attention_dominant",
-        "novelty_any", "attention_pressure_proxy", "credit_backed",
+        "novelty_any", "attention_pressure_proxy",
     )
     bad = {lab: c[("natural", lab)] for lab in gated if c[("natural", lab)]}
-    bad.update({f"guard_fired:{d}": c[("natural", f"guard_fired:{d}")] for d in CREDIT_DIMS if c[("natural", f"guard_fired:{d}")]})
     if only_a or only_b:
         bad["unpaired_rows"] = len(only_a) + len(only_b)
     if bad:
         print("GATE FAIL (natural data moved):", json.dumps(bad, sort_keys=True))
         return 1
     print("GATE PASS: natural data -- no consumer-visible change beyond the rename/retirement")
-    return 0
-
-
-def cmd_feedback(args) -> int:
-    """Decision 1 on real feedback frames: how often would the guard withhold?"""
-    T = _load_tree(Path(args.tree).resolve())
-    FS = T["FieldStateV1"]
-    ci = T["ci"]
-    c: Counter = Counter()
-    for line in Path(args.pairs).read_text().splitlines():
-        r = json.loads(line)
-        if not r.get("before") or not r.get("after"):
-            c["missing_window"] += 1
-            continue
-        c["frames"] += 1
-        for mode in ("stored", "redigested"):
-            if mode == "stored":
-                before, after = FS.model_validate(r["before"]), FS.model_validate(r["after"])
-            else:
-                before, after = T["digest"](r["before"], {}), T["digest"](r["after"], {})
-            for d in CREDIT_DIMS:
-                backed = ci.channel_write_backed(after, d, max_staleness_seconds=120.0)
-                if backed is not True:
-                    c[f"{mode}:r5b_withheld:{d}"] += 1
-                elif ci.before_winner_went_unmeasured(before, after, d, max_staleness_seconds=120.0):
-                    c[f"{mode}:guard_withheld:{d}"] += 1
-                    holder = ci.dimension_winner_holder(before, d)
-                    c[f"{mode}:guard_holder:{d}:{holder}"] += 1
-    print(json.dumps(dict(sorted(c.items())), indent=1))
     return 0
 
 
@@ -291,11 +245,8 @@ def main() -> int:
     c.add_argument("before")
     c.add_argument("after")
     c.add_argument("--examples", type=int, default=0)
-    f = sub.add_parser("feedback")
-    f.add_argument("--tree", required=True)
-    f.add_argument("--pairs", required=True)
     args = ap.parse_args()
-    return {"run": cmd_run, "compare": cmd_compare, "feedback": cmd_feedback}[args.cmd](args)
+    return {"run": cmd_run, "compare": cmd_compare}[args.cmd](args)
 
 
 if __name__ == "__main__":

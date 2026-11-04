@@ -14,7 +14,6 @@ from app.result_status import status_for_stored_settlement
 from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 from app.store import ExecutionDispatchRuntimeStore
 from app.worker import ExecutionDispatchRuntimeWorker
-from orion.feedback.builder import _cortex_status_to_outcome
 from orion.schemas.aitown_session import AITownSessionStartResultV1
 from orion.schemas.retro_leisure import RetroLeisureStartResultV1
 from orion.schemas.world_pulse_read_pull import WorldPulseReadPullResultV1
@@ -153,11 +152,6 @@ def test_legacy_replay_repairs_durable_status_before_feedback(
         "status": expected,
     }
     assert recorded == [expected]
-
-
-@pytest.mark.parametrize(("status", "outcome"), [("success", "completed"), ("empty", "failed")])
-def test_feedback_understands_canonical_custom_route_status(status: str, outcome: str) -> None:
-    assert _cortex_status_to_outcome(status) == outcome
 
 
 def test_durable_repair_only_overwrites_legacy_succeeded_status() -> None:

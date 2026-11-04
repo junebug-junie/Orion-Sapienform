@@ -63,6 +63,7 @@ function _statusBadge(status) {
     stale: "bg-amber-900/40 text-amber-300 border-amber-700",
     missing: "bg-gray-800/40 text-gray-500 border-gray-700",
     inconsistent: "bg-red-900/40 text-red-300 border-red-700",
+    retired: "bg-slate-800/40 text-slate-400 border-slate-600",
   };
   const cls = map[status] || map.missing;
   return `<span class="text-[9px] border rounded px-1 py-0.5 ${cls}">${_esc(status || "—")}</span>`;
@@ -256,53 +257,16 @@ function _renderProofChain(chain) {
     `dispatch_mode: <b>${_esc(disp.dispatch_mode)}</b> dispatched: <b>${_fmt(disp.dispatch_count)}</b> blocked: <b>${_fmt(disp.blocked_count)}</b>`
   );
 
-  // L10
-  const l10 = chain.transport?.l10 || {};
-  const fb = l10.values || {};
-  _setText("l10Status", `${_statusBadge(l10.status)} ${_ts(l10.timestamp)}`);
-  _setText(
-    "l10Body",
-    `outcome_status: <b>${_esc(fb.outcome_status)}</b> feedback_kind: <b>${_esc(fb.feedback_kind)}</b>`
-  );
-
-  // L11
-  const l11 = chain.transport?.l11 || {};
-  const motifs = (l11.values || {}).motifs || [];
-  _setText("l11Status", `${_statusBadge(l11.status)} ${_ts(l11.timestamp)}`);
-  if (l11.status === "stale") {
+  // L10 and L11 retired 2026-11-04: one line each saying when and what replaced them.
+  for (const key of ["l10", "l11"]) {
+    const layer = chain.transport?.[key] || {};
+    const v = layer.values || {};
+    _setText(`${key}Status`, _statusBadge(layer.status));
     _setText(
-      "l11Body",
-      `<span class="text-amber-400">stale (${_ts(l11.timestamp)})</span> — ${motifs.length} motif(s) from last consolidation: ${
-        motifs
-          .map((m) => `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>`)
-          .join(" ")
-      }`
-    );
-  } else if (motifs.length === 0) {
-    _setText(
-      "l11Body",
-      l11.status === "missing"
-        ? '<span class="text-gray-500">no consolidation frame found</span>'
-        : "— no motifs observed"
-    );
-  } else {
-    _setText(
-      "l11Body",
-      motifs
-        .map((m) => {
-          const strength =
-            m.strength !== null && m.strength !== undefined
-              ? ` strength=${m.strength.toFixed(2)}`
-              : "";
-          const recurrence = m.recurrence_count ? ` ×${m.recurrence_count}` : "";
-          const ts = m.timestamp ? ` (${_ts(m.timestamp)})` : "";
-          const evid =
-            m.evidence && _asList(m.evidence).length
-              ? ` [${_asList(m.evidence).map(_esc).join(", ")}]`
-              : "";
-          return `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>${strength}${recurrence}${ts}${evid}`;
-        })
-        .join(" ")
+      `${key}Body`,
+      layer.status === "retired"
+        ? `<span class="text-slate-400">retired ${_esc(v.retired_on)}</span> — ${_esc(v.note)}`
+        : '<span class="text-gray-500">—</span>'
     );
   }
 }

@@ -167,6 +167,20 @@ def _layer_meta(payload: dict | None, source_table: str, timestamp_str: str | No
     }
 
 
+RUNG_RETIRED_ON = "2026-11-04"
+
+
+def _retired_layer(source_table: str, *, note: str) -> dict:
+    """A rung that no longer runs: status ``retired`` (not stale, not missing), with what replaced it."""
+    return {
+        "status": "retired",
+        "source_table": source_table,
+        "timestamp": None,
+        "age_sec": None,
+        "values": {"retired_on": RUNG_RETIRED_ON, "note": note},
+    }
+
+
 def _coerce_str_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -339,39 +353,12 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
         }
     l9 = _layer_meta(l9_values, "substrate_execution_dispatch_frames", disp_ts, freshness_threshold_sec)
 
-    # L10 feedback
-    fb_raw, fb_ts = _first_json_with_ts(engine, "substrate_feedback_frames", "feedback_frame_json", "generated_at")
-    l10_values = None
-    if fb_raw:
-        l10_values = {
-            "frame_id": fb_raw.get("frame_id"),
-            "outcome_status": fb_raw.get("outcome_status"),
-            "feedback_kind": fb_raw.get("feedback_kind"),
-        }
-    l10 = _layer_meta(l10_values, "substrate_feedback_frames", fb_ts, freshness_threshold_sec)
-
-    # L11 consolidation motifs
-    consol_raw, consol_ts = _first_json_with_ts(engine, "substrate_consolidation_frames", "consolidation_frame_json", "generated_at")
-    l11_values = None
-    if consol_raw:
-        obs = consol_raw.get("motif_observations", [])
-        motifs = [
-            {
-                "motif_id": m.get("motif_id"),
-                "label": m.get("label") or m.get("motif_label") or m.get("motif_id"),
-                "strength": m.get("strength"),
-                "recurrence_count": m.get("recurrence_count", 0),
-                "timestamp": consol_ts,
-                "reasons": m.get("reasons") or [],
-                "evidence": m.get("evidence") or [],
-            }
-            for m in obs
-        ]
-        l11_values = {
-            "frame_id": consol_raw.get("frame_id"),
-            "motifs": motifs,
-        }
-    l11 = _layer_meta(l11_values, "substrate_consolidation_frames", consol_ts, freshness_threshold_sec)
+    # L10 feedback and L11 consolidation: retired 2026-11-04
+    # (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md). Shown as
+    # "retired", never as stale or missing, so the page tells the truth until the whole ladder is gone.
+    l10 = _retired_layer("substrate_feedback_frames", note="act ledger grades every real act; "
+                         "world-action scoring moved to orion-sql-writer")
+    l11 = _retired_layer("substrate_consolidation_frames", note="killed outright (Juniper, 2026-11-04)")
 
     # L6 (SelfStateV1 "transport_integrity" dimension) removed 2026-07-22, SelfStateV1
     # burn: orion-self-state-runtime (the substrate_self_state producer) is deleted, so

@@ -16,14 +16,21 @@ FAIL (the shared servers become S2). An eval that cannot fail is not a gate.
 Patch 2, **claims floor** on the 2026-10-30 body (``orion/body_atlas/claims.py``): a claim citing
 one of the part's flows passes; one citing an unrelated part, only the census, or taking a job a
 rule already gives is refused; a capacity with no holder, or naming a part that holds no such
-job, is refused; a claim whose evidence checks holds its role (CLAIMED, citable, 2026-11-04) but
-never clears a gap; it stops holding when its evidence is gone, its part dies, Juniper rejects it
-or a rule says no (a near miss is "not S2"); Juniper's confirmation outranks a claim and covers the
-"no part is shown" gap; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities,
-claims in every status, disputes and notes still fit the printout. Mutations (code changes,
-patched in), each must be CAUGHT by its own check: a claim with gone evidence, a rejected claim,
-a claim on a dead part, a claim a rule says no to, and a claim Orion later disputed each hold a
-role; and a held claim clears its "no part is shown" gap line.
+job, is refused; a claim whose evidence check passes holds its role (EVIDENCE-CHECKED, citable,
+#3107 + the evidence check, 2026-11-04) and covers its job's "no part is shown" gap, never an
+atlas-blind one; it stops holding when its evidence does not hold, its part dies, Juniper rejects
+it or a rule says no (a near miss is "not S2"); an S5 claim never holds; Juniper's confirmation
+outranks a claim; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities, claims
+in every status, disputes and notes still fit the printout. Mutations (code changes, patched in),
+each must be CAUGHT by its own check: a claim whose stored cites are trusted, a rejected claim, a
+claim on a dead part, a claim a rule says no to, a claim Orion later disputed, and an S5 claim
+each hold a role; and a held claim clears an atlas-blind gap line.
+
+**Evidence check** (2026-11-04): Orion's first five live claims (frozen in
+``fixtures/capacity_claims_2026-11-04.jsonl``) checked against the 2026-10-31 body. Each must pass or
+fail as reviewed by hand, with the reason named; the same claims relabelled S5 must all fail; and
+the printout with them plus the dig tail must fit uncut. Mutation: a check that passes a claim when
+*any* reference holds, instead of every one (the shape gate kept); the eval must FAIL.
 
 The expected sets are the only hand-written truth here; the rules never read them.
 
@@ -141,16 +148,17 @@ def _with_floor_off(cut: str):
     """Install one mutant (a code change, patched in), each the bug a hold check guards against:
     ``evidence`` trusts the cites stored at write time instead of checking them again; ``rejected``
     drops Juniper's no; ``dead`` counts every part as live; ``rule-no`` ignores a near miss's "not S2";
-    ``disputed`` ignores Orion's later dispute; ``gap`` lets a held claim clear its "no part is
-    shown" gap line. Returns the undo."""
+    ``disputed`` ignores Orion's later dispute; ``s5`` lets an S5 claim hold; ``gap`` lets a held
+    claim clear every gap line of its job, atlas-blind ones too. Returns the undo."""
     real_status, real_recheck, real_attach = K._claim_status, C.recheck, K.attach_ledgers
     if cut == "evidence":
-        C.recheck = lambda reading, atlas, root: (lambda c: list(c.cites))
+        C.recheck = lambda reading, atlas, root: (lambda c: K.EvidenceCheckV1(
+            part_id=c.part_id, role=c.role, at=c.at, holds=bool(c.cites), held=list(c.cites)))
     elif cut == "gap":
         def attach(*a, **kw):
             out = real_attach(*a, **kw)
             jobs = {r.role for r in out.claimed}
-            out.gaps = [g for g in out.gaps if not (g.gap_id in K.COVERED_BY_CONFIRMATION and g.job in jobs)]
+            out.gaps = [g for g in out.gaps if g.job not in jobs]
             return out
         K.attach_ledgers = attach
     else:
@@ -163,6 +171,8 @@ def _with_floor_off(cut: str):
                 kw["not_s2"] = set()
             elif cut == "disputed":
                 kw["latest"] = {}
+            elif cut == "s5" and c.role == "S5":
+                return "evidence-checked", ["x"], []
             return real_status(c, **kw)
         K._claim_status = mutant
 
@@ -174,7 +184,8 @@ def _with_floor_off(cut: str):
 # each mutant is CAUGHT only when the floor's own check for it fails (not by chance)
 MUTANTS = {"evidence": "a claim with gone evidence holds a role", "rejected": "a rejected claim holds a role",
            "dead": "a claim on a dead part holds a role", "rule-no": "a claim a rule says no to holds a role",
-           "disputed": "a claim Orion later disputed holds a role", "gap": "a claim cleared gap:s3star-unconfirmed"}
+           "disputed": "a claim Orion later disputed holds a role", "s5": "an S5 claim holds a role",
+           "gap": "a checked claim cleared an atlas-blind gap"}
 
 
 def claims_failures(path: Path, *, mutant: str | None = None) -> list[str]:
@@ -225,10 +236,10 @@ def _claims_failures(path: Path) -> list[str]:
     for why, (fn, *args) in refusals.items():
         if not _refused(fn, *args, kind="claim", root=_REPO, dig="e"):
             f.append(f"claim not refused: {why}")
-    # 2026-11-04: a claim whose evidence checks on this read holds its role (CLAIMED)
+    # 2026-11-04: a claim whose evidence check passes on this read holds its role (EVIDENCE-CHECKED)
     reading = _attach(atlas, vsm, [claim])
-    if [c.status for c in reading.claims] != ["claimed"]:
-        f.append(f"a claim whose evidence checks reads {[c.status for c in reading.claims]}, not ['claimed']")
+    if [c.status for c in reading.claims] != ["evidence-checked"]:
+        f.append(f"a claim whose evidence checks reads {[c.status for c in reading.claims]}, not ['evidence-checked']")
     if "part:orion-durable-runs" not in K.holders(reading, "cap:s2"):
         f.append("a claim whose evidence checks is not a cap:s2 holder")
     if [g.gap_id for g in reading.gaps] != [g.gap_id for g in base.gaps]:
@@ -236,10 +247,10 @@ def _claims_failures(path: Path) -> list[str]:
     audit = C.check_claim(base, atlas, "orion-equilibrium-service", "S3*",
                           _because_for(base, atlas, "orion-equilibrium-service"), kind="claim", root=_REPO, dig="e")
     a = _attach(atlas, vsm, [audit])
-    if next(j.status for j in a.jobs if j.job == "S3*") != "CLAIMED":
-        f.append("a job held only by a claim does not print CLAIMED")
-    if not any(g.gap_id == "gap:s3star-unconfirmed" for g in a.gaps):
-        f.append(MUTANTS["gap"])
+    if next(j.status for j in a.jobs if j.job == "S3*") != "EVIDENCE-CHECKED":
+        f.append("a job held only by a claim does not print EVIDENCE-CHECKED")
+    if any(g.gap_id == "gap:s3star-unconfirmed" for g in a.gaps):  # covered like a confirmation
+        f.append("a checked S3* claim did not cover gap:s3star-unconfirmed")
     # Orion's own later dispute of the same part and job (the rule's S3* candidate) stops the claim
     late = C.check_claim(base, atlas, "orion-equilibrium-service", "S3*", _because_for(base, atlas,
                          "orion-equilibrium-service"), kind="dispute", root=_REPO, dig="e")
@@ -258,7 +269,7 @@ def _claims_failures(path: Path) -> list[str]:
     near = C.check_claim(base, atlas, "orion-llm-gateway", "S2", f"orion-llm-gateway serves {sorted(gw)[0]} "
                          "and many more callers", kind="claim", root=_REPO, dig="e")
     for why, want, view, part in (
-            (MUTANTS["evidence"], "evidence gone", _attach(cut, vsm, [claim]), dr),
+            (MUTANTS["evidence"], "evidence does not hold", _attach(cut, vsm, [claim]), dr),
             (MUTANTS["rejected"], "rejected", _attach(atlas, no, [claim]), dr),
             (MUTANTS["dead"], "part not live now", _attach(dead, vsm, [claim]), dr),
             (MUTANTS["rule-no"], "rule says no", _attach(atlas, vsm, [near]), names["orion-llm-gateway"])):
@@ -294,16 +305,25 @@ def _claims_failures(path: Path) -> list[str]:
     written = [K.CapacityV1(cap_id=c, sentence=long, because="b" * 20, cites=["orion-gpu-pool"], at="t", dig="e")
                for c in K.CAP_JOBS]
     # holding claims (real evidence), one whose evidence is gone, one a rule says no to, disputes
-    many = [claim.model_copy(update={"part_id": f"part:{p}", "role": r, "kind": k, "because": _because_for(base, atlas, p)})
+    many = [claim.model_copy(update={"part_id": f"part:{p}", "role": r, "kind": k, "because": _because_for(base, atlas, p),
+                                     "cites": []})
             for p, r, k in (("orion-world-pulse", "S4", "claim"), ("orion-prediction", "S4", "claim"),
                             ("orion-hub", "S3", "claim"), ("orion-hardware-watch", "algedonic", "claim"),
                             ("pg:self_concept_history", "S5", "claim"), ("orion-gpu-pool", "S2", "dispute"),
                             ("camera:cam0", "S1", "dispute"), ("http:openai", "S1", "dispute"))]
     many += [claim.model_copy(update={"part_id": "part:orion-hub", "role": "metabolism", "because": "x" * 400}), near]
     big = _attach(atlas, yes, [claim, *many], written)
-    required = {"claimed", "evidence gone", "rule says no", "confirmed"}
+    required = {"evidence-checked", "evidence does not hold", "rule says no", "confirmed", "unconfirmed"}
     if not required <= {c.status for c in big.claims}:
         f.append(f"the full-ledger case lacks a status: {sorted(required - {c.status for c in big.claims})}")
+    if any(r.role == "S5" for r in big.claimed):
+        f.append(MUTANTS["s5"])
+    # a held S4 (orion-world-pulse) must leave every atlas-blind gap standing (on this bus-only body,
+    # gap:s4-to-s3 is the bus line no claim can answer; with wires it is rechecked, not a blind gap)
+    blind = {g.gap_id for g in base.gaps if g.gap_id not in K.COVERED_BY_CONFIRMATION
+             and not (big.wires is not None and g.gap_id == "gap:s4-to-s3")}
+    if not any(r.role == "S4" for r in big.claimed) or not blind <= {g.gap_id for g in big.gaps}:
+        f.append(MUTANTS["gap"])
     big.notes += [f"note {i}: " + "n" * 120 for i in range(3)]
     text = "\n".join(K.render(big))
     if len(text.splitlines()) > 38 or len(text) > 3700:  # room for the dig pointer and tail lines
@@ -328,6 +348,73 @@ def _claims_failures(path: Path) -> list[str]:
     return f
 
 
+LIVE_CLAIMS = _HERE / "fixtures" / "capacity_claims_2026-11-04.jsonl"
+# Reviewed by hand against the 2026-10-31 body (fixture WIRES) on 2026-11-04. The reason for each
+# failure is a real atlas fact on that day, not a rule tuned to get it.
+EVIDENCE_EXPECTED = {
+    ("part:orion-gpu-lane-controller", "S3"): (True, None),  # sends actuate:result to gpu-pool, mesh-guardian
+    ("part:orion-equilibrium-service", "S3*"): (True, None),  # R-census-reader hit; sends equilibrium:snapshot
+    # on 10-31 the atlas had no redis:orion:self_monitor:latest part (it is live by 11-04)
+    ("part:orion-durable-runs", "algedonic"): (False, "redis:orion:self_monitor:latest: in no part or channel"),
+    ("part:orion-energy", "metabolism"): (False, "pg:energy_bill_forecast: dormant"),  # 0 rows
+    ("part:orion-world-pulse", "S4"): (True, None),  # sends world_context:daily_capsule to cortex-exec
+}
+
+
+def _any_ref_holds(real):
+    """The mutant: a claim passes when any reference holds, not every one (the shape gate stays)."""
+    def mutant(atlas, claim, root, **kw):
+        got = real(atlas, claim, root, **kw)
+        shape = [x for x in got.failed if x.startswith("shape:")]
+        return got.model_copy(update={"holds": bool(got.held) and not shape, "failed": shape})
+    return mutant
+
+
+def evidence_failures(path: Path, *, any_ref: bool = False) -> list[str]:
+    real = C.check_evidence
+    if any_ref:
+        C.check_evidence = _any_ref_holds(real)
+    try:
+        return _evidence_failures(path)
+    finally:
+        C.check_evidence = real
+
+
+def _evidence_failures(path: Path) -> list[str]:
+    catalog, observed, now, body = _structure._fixture_inputs(path)
+    atlas = build_atlas(catalog, observed, now=now, body=body)
+    recs, skipped = C.load_ledger(LIVE_CLAIMS, K.CapacityClaimV1)
+    f: list[str] = [f"{skipped} unreadable claim lines"] if skipped else []
+    checks = C.check_claims(atlas, recs, _REPO)
+    got = {(c.part_id, c.role): c for c in checks}
+    for key, (holds, why) in EVIDENCE_EXPECTED.items():
+        c = got.get(key)
+        if c is None:
+            f.append(f"evidence: {key} not checked")
+        elif c.holds != holds:
+            f.append(f"evidence: {key} holds={c.holds}, expected {holds} ({c.failed})")
+        elif why and not any(x.startswith(why) for x in c.failed):
+            f.append(f"evidence: {key} failed for {c.failed}, expected {why!r}")
+    s5 = C.check_claims(atlas, [r.model_copy(update={"role": "S5"}) for r in recs], _REPO)
+    if any(c.holds for c in s5):
+        f.append("evidence: an S5 claim passed the code check")
+    # Juniper's real S5 line, but none of her confirmations: any "confirmed by Juniper" is then a leak
+    vsm = C.load_confirmed(_REPO).model_copy(update={"confirmed": [], "rejected": []})
+    reading = _attach(atlas, vsm, recs)
+    if {(c.part_id, c.role) for c in reading.claims if c.status == "evidence-checked"} != {
+            k for k, (h, _) in EVIDENCE_EXPECTED.items() if h}:
+        f.append("evidence: the reading's held claims differ from the check's passes")
+    if any("confirmed by Juniper:" in j.text for j in reading.jobs):
+        f.append("evidence: a checked claim printed as Juniper's confirmation")
+    from orion.dig.__main__ import capped, claim_block
+
+    shown = capped(K.render(reading), tail="\n".join(claim_block(reading, atlas)
+                                                    + ["full result: /mnt/orion-fcc/dig/2026-11-04/capacities-99.json"]))
+    if "the rest is in the file" in shown:
+        f.append(f"evidence: dig capacities with the five live claims is cut: {len(shown)} chars")
+    return f
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="also print the live reading (no expected set)")
@@ -346,6 +433,13 @@ def main(argv: list[str] | None = None) -> int:
         caught = why in claims_failures(TODAY, mutant=cut)  # caught by the floor's own check, not by chance
         print(f"mutation ({why}): " + ("CAUGHT" if caught else "NOT CAUGHT"))
         failed += not caught
+    ev_fails = evidence_failures(WIRES)
+    for f in ev_fails:
+        print(f"FAIL {f}")
+    print(f"evidence check (5 live claims on {WIRES.name}): " + ("PASS" if not ev_fails else f"FAIL ({len(ev_fails)})"))
+    ev_mutant = any(f.startswith("evidence: ") for f in evidence_failures(WIRES, any_ref=True))
+    print("mutation (any reference holds, not every one): " + ("CAUGHT" if ev_mutant else "NOT CAUGHT"))
+    failed += bool(ev_fails) + (not ev_mutant)
     if args.live:
         catalog, observed, now, body = _structure._live_inputs(_REPO)
         reading = K.read_capacities(build_atlas(catalog, observed, now=now, body=body))

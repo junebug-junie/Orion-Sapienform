@@ -21,7 +21,7 @@ def apply_harness_run_cancel(payload: dict[str, Any] | HarnessRunCancelV1) -> bo
         cancel = payload
     else:
         cancel = HarnessRunCancelV1.model_validate(payload)
-    killed = cancel_fcc_turn(cancel.correlation_id)
+    killed = cancel_fcc_turn(cancel.correlation_id, reason=cancel.reason)
     logger.info(
         "harness_run_cancel corr=%s reason=%s killed=%s",
         cancel.correlation_id,

@@ -31,7 +31,13 @@ Status: a probability bet records the event (``happened`` / ``not_happened``); i
 low-p event that did not happen -- the Brier score grades the number. A range bet is ``upheld`` (the
 outcome fell inside) or ``broken``. Void rows never count toward a grade:
     failed_to_execute       the turn ran but errored or was cut short (exit_code != 0, no final_text, or
-                            the harness's cut-short notice in place of a reply)
+                            the harness's cut-short notice in place of a reply). Includes the motor's own
+                            kills (timeout, stall, context ceiling), a nonzero exit with no cancel, and
+                            every old record with no ``stop_reason``.
+    interrupted             the turn was stopped from outside before it finished: its record's
+                            ``stop_reason`` is a known harness cancel (Juniper's stop, a client disconnect,
+                            durable-runs stopping the attempt on a GPU recall, worker recovery; see
+                            orion/harness/stop_reason.py). Not Orion failing, so not a failed turn.
     ungradeable_bad_record  the bet or the turn record is not a JSON object (one bad row must not stall
                             every later pass, so it settles void instead of raising)
     expired_unsettled       no turn record EXPIRY after the bet
@@ -63,6 +69,7 @@ from typing import Callable, Iterable
 
 from orion.prediction.grading import grade, sorting_score
 from orion.harness.cut_short import CUT_SHORT_MARKER
+from orion.harness.stop_reason import is_outside_stop
 
 logger = logging.getLogger("orion-prediction.turn_self_bets")
 
@@ -122,7 +129,10 @@ def observe(artifact: dict | None) -> tuple[str | None, dict]:
     code = artifact.get("exit_code")
     if (code not in (0, None) or not isinstance(text, str) or not text.strip()
             or text.lstrip().startswith(CUT_SHORT_MARKER)):
-        return "failed_to_execute", {"exit_code": code}
+        # Only a known outside cancel is "interrupted"; a missing or unknown stop_reason
+        # stays a failure (old records have none and are not backfilled).
+        void = "interrupted" if is_outside_stop(artifact.get("stop_reason")) else "failed_to_execute"
+        return void, {"exit_code": code}
     fetches = artifact.get("source_fetches")
     steps = _num(artifact.get("step_count"))
     return None, {
@@ -178,7 +188,7 @@ def settle(bet: dict, artifact: dict | None, now: datetime,
         if void:
             # Voids every faculty of the turn, stated or not: the self-monitor reads "all rows
             # failed_to_execute" as one failed turn (orion/self_monitor/collect.py, turn.run, #3078)
-            # and never as a failed guess.
+            # and never as a failed guess; "interrupted" rows are no turn.run bet at all.
             row["void_reason"] = void
         elif not stated:
             row["void_reason"] = "ungradeable_no_stated"

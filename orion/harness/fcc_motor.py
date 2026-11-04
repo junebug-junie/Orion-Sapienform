@@ -56,6 +56,12 @@ DEFAULT_STREAM_STALL_TIMEOUT_SEC = 420.0
 _ACTIVE: Dict[str, asyncio.subprocess.Process] = {}
 # Cancel arrived before spawn finished — kill immediately on register.
 _PENDING_CANCEL: set[str] = set()
+# Why each cancel was sent (HarnessRunCancelV1.reason), by correlation_id. The turn
+# takes its entry when it ends, so the -9 exit frame can say who stopped it
+# (orion/harness/stop_reason.py). Bounded: a cancel for a turn that never runs here
+# would otherwise stay forever.
+_CANCEL_REASONS: Dict[str, str] = {}
+_CANCEL_REASONS_MAX = 512
 
 
 def _register_process(correlation_id: str, proc: asyncio.subprocess.Process) -> None:
@@ -81,13 +87,28 @@ def active_fcc_turns() -> list[dict[str, str]]:
     return [{"correlation_id": cid} for cid in sorted(_ACTIVE.keys())]
 
 
-def cancel_fcc_turn(correlation_id: str) -> bool:
+def _remember_cancel_reason(cid: str, reason: Optional[str]) -> None:
+    _CANCEL_REASONS.pop(cid, None)
+    _CANCEL_REASONS[cid] = str(reason or "").strip() or "unspecified"
+    while len(_CANCEL_REASONS) > _CANCEL_REASONS_MAX:
+        _CANCEL_REASONS.pop(next(iter(_CANCEL_REASONS)))
+
+
+def _take_cancel_reason(correlation_id: str) -> Optional[str]:
+    return _CANCEL_REASONS.pop(str(correlation_id), None)
+
+
+def cancel_fcc_turn(correlation_id: str, reason: Optional[str] = None) -> bool:
     """SIGKILL a live FCC claude subprocess for this correlation_id, if any.
 
     If the process is not registered yet, arm a pending cancel so spawn registration
     kills immediately (covers Hub disconnect during preflight/spawn).
+
+    ``reason`` (HarnessRunCancelV1.reason) is kept until the turn ends; its exit
+    frame then carries it as ``metadata.cancel_reason``.
     """
     cid = str(correlation_id)
+    _remember_cancel_reason(cid, reason)
     proc = _ACTIVE.get(cid)
     if proc is None:
         _PENDING_CANCEL.add(cid)
@@ -2139,6 +2160,9 @@ async def _drive_fcc_turn(
         return
     finally:
         _unregister_process(correlation_id)
+        # Taken on every exit path (the motor's own kills return early), so a
+        # finished turn never leaves its entry behind.
+        cancel_reason = _take_cancel_reason(correlation_id)
         _turn_lock.__exit__(None, None, None)
         if stamper is not None:
             # Every exit path, including kills and timeouts: a write the
@@ -2165,9 +2189,10 @@ async def _drive_fcc_turn(
             correlation_id, io.mode, init_ms, first_event_ms, steps_seen,
         )
 
-    if io.mode == "warm" and io.died_before_output and steps_seen == 0:
+    if io.mode == "warm" and io.died_before_output and steps_seen == 0 and cancel_reason is None:
         # The borrowed process died after the prompt went in but before it said
         # anything: no tool can have run, so the turn is retried as a spawn.
+        # Not when a cancel killed it: the caller asked for the turn to stop.
         outcome["retry_spawn"] = True
         return
 
@@ -2209,6 +2234,10 @@ async def _drive_fcc_turn(
             # agent lane's 32768 reported "context window full (~131072 tokens)".
             accumulated = apply_context_overflow_hint(accumulated, n_ctx=lane_n_ctx)
             err_msg = apply_context_overflow_hint(err_msg, n_ctx=lane_n_ctx)
+        if cancel_reason is not None:
+            # A harness cancel killed it: say who, so the turn record does not read
+            # as Orion failing (orion/harness/stop_reason.py).
+            metadata["cancel_reason"] = cancel_reason
         yield {
             "type": "error",
             "error": err_msg,

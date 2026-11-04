@@ -9,10 +9,10 @@ def test_apply_harness_run_cancel_kills_registered(monkeypatch: Any) -> None:
     from app.cancel_listener import apply_harness_run_cancel
     from orion.schemas.harness_finalize import HarnessRunCancelV1
 
-    calls: list[str] = []
+    calls: list[tuple[str, str | None]] = []
 
-    def fake_cancel(corr: str) -> bool:
-        calls.append(corr)
+    def fake_cancel(corr: str, reason: str | None = None) -> bool:
+        calls.append((corr, reason))
         return True
 
     monkeypatch.setattr("orion.harness.fcc_motor.cancel_fcc_turn", fake_cancel)
@@ -21,7 +21,8 @@ def test_apply_harness_run_cancel_kills_registered(monkeypatch: Any) -> None:
         HarnessRunCancelV1(correlation_id="corr-x", reason="client_disconnect")
     )
     assert killed is True
-    assert calls == ["corr-x"]
+    # The reason rides along so the killed turn's record can say who stopped it.
+    assert calls == [("corr-x", "client_disconnect")]
 
 
 def test_apply_harness_run_cancel_dict_payload(monkeypatch: Any) -> None:
@@ -29,7 +30,7 @@ def test_apply_harness_run_cancel_dict_payload(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(
         "app.cancel_listener.cancel_fcc_turn",
-        lambda corr: corr == "corr-y",
+        lambda corr, reason=None: corr == "corr-y" and reason == "ws_disconnect",
     )
     assert apply_harness_run_cancel(
         {"correlation_id": "corr-y", "reason": "ws_disconnect"}

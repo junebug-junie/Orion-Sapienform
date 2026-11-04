@@ -78,3 +78,44 @@ async def test_real_frames_through_the_runner_decide_interrupted_vs_motor_verdic
 
     timed_out = await run_with({"type": "error", "error": "t", "error_code": "fcc_timeout", "llm_response": "partial"})
     assert interrupted_for_resume(_request("run-1"), timed_out) is False
+
+
+@pytest.mark.asyncio
+async def test_the_runner_carries_who_stopped_the_turn_onto_the_motor_result():
+    """stop_reason: the cancel's reason when a cancel killed it, else the motor's own code."""
+    from orion.harness.runner import HarnessRunner
+
+    async def run_with(frame):
+        async def motor(**_kw):
+            yield {"type": "step", "step": {"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}}}
+            yield frame
+
+        return await HarnessRunner(AsyncMock(), fcc_runner=motor, fcc_timeout_sec=999).run(_request(None))
+
+    cancelled = await run_with({"type": "error", "error": "claude exited with code -9", "error_code": "fcc_nonzero_exit",
+                                "metadata": {"exit_code": -9, "cancel_reason": "user_stop"}, "llm_response": ""})
+    assert cancelled.stop_reason == "cancel:user_stop" and cancelled.exit_code == -9
+    killed = await run_with({"type": "error", "error": "claude exited with code -9", "error_code": "fcc_nonzero_exit",
+                             "metadata": {"exit_code": -9}, "llm_response": ""})
+    assert killed.stop_reason == "fcc_nonzero_exit"
+    stalled = await run_with({"type": "error", "error": "s", "error_code": "fcc_stream_stalled", "llm_response": "x"})
+    assert stalled.stop_reason == "fcc_stream_stalled"
+
+    async def finished(**_kw):
+        yield {"type": "final", "llm_response": "done", "metadata": {"exit_code": 0}}
+
+    ok = await HarnessRunner(AsyncMock(), fcc_runner=finished, fcc_timeout_sec=999).run(_request(None))
+    assert ok.stop_reason is None
+
+
+@pytest.mark.asyncio
+async def test_the_turn_record_carries_stop_reason():
+    # The reply and run_artifact (harness_turn_trace.run_artifact) are this HarnessRunV1.
+    run = await _run(_request("run-1"), _motor(exit_code=-9, grounding_status="fcc_nonzero_exit",
+                                               stop_reason="cancel:durable_attempt_stopped"))
+    assert run.stop_reason == "cancel:durable_attempt_stopped"
+    assert run.model_dump(mode="json")["stop_reason"] == "cancel:durable_attempt_stopped"
+    no_draft = HarnessMotorResult(draft_text="", grammar_receipts=[], step_count=3, exit_code=-9,
+                                  compliance_verdict="failed", grounding_status="fcc_nonzero_exit",
+                                  stop_reason="cancel:user_stop")
+    assert (await _run(_request(None), no_draft)).stop_reason == "cancel:user_stop"

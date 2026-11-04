@@ -402,6 +402,15 @@ def _field_note_marks() -> dict[int, str]:
     return {n: " (noted)" if r.note else " (code record)" for n, r in recs.items()}
 
 
+def _field_notes_since() -> str | None:
+    """mergedAt of the earliest PR with a record. No backfill (Juniper, 2026-11-04): an older PR
+    with no note is not missing one, so it gets no mark."""
+    from orion.body_atlas import field_notes as fn
+
+    recs = fn.load(field_notes_path())[0]
+    return min((r.merged_at for r in recs), default=None)
+
+
 def cmd_history(start: date, end: date, out: Out) -> str:
     if end < start:
         raise DigError("end is before start")
@@ -418,9 +427,15 @@ def cmd_history(start: date, end: date, out: Out) -> str:
     if capped_days:
         lines.append(f"INCOMPLETE: GitHub search returned its {GH_SEARCH_CAP}-result cap on "
                      f"{', '.join(capped_days)}; PRs beyond it are missing")
-    marks = _field_note_marks()
+    marks, since = _field_note_marks(), _field_notes_since()
+
+    def mark(pr: dict) -> str:
+        if pr["number"] in marks:
+            return marks[pr["number"]]
+        return " (no note)" if since and pr["mergedAt"] >= since else ""
+
     for pr in prs[:25]:
-        lines.append(f"#{pr['number']} {pr['mergedAt'][:10]} {pr['title'][:110]}{marks.get(pr['number'], ' (no note)')}")
+        lines.append(f"#{pr['number']} {pr['mergedAt'][:10]} {pr['title'][:110]}{mark(pr)}")
     if len(prs) > 25:
         lines.append(f"... {len(prs) - 25} more PRs")
     if not prs:
@@ -819,20 +834,33 @@ PR_FIELDS = ("number,title,body,state,mergedAt,mergeCommit,labels,files,addition
              "headRefName,commits")
 
 
+GH_TIMEOUT_S = 60
+
+
 def _gh_pr(number: int) -> dict:
-    proc = subprocess.run(["gh", "pr", "view", str(number), "--repo", _gh_repo(), "--json", PR_FIELDS],
-                          capture_output=True, text=True)
+    try:
+        proc = subprocess.run(["gh", "pr", "view", str(number), "--repo", _gh_repo(), "--json", PR_FIELDS],
+                              capture_output=True, text=True, timeout=GH_TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        raise DigError(f"gh pr view {number} gave no answer in {GH_TIMEOUT_S} s") from exc
     if proc.returncode != 0:
         raise DigError(f"gh pr view {number} failed: {proc.stderr.strip()[:300]}")
-    return json.loads(proc.stdout)
+    try:
+        return json.loads(proc.stdout)
+    except ValueError as exc:
+        raise DigError(f"gh pr view {number} returned no JSON: {proc.stdout[:200]!r}") from exc
 
 
 def _gh_file_at(sha: str, path: str) -> str | None:
     """One file's text at the merge, through GitHub: nothing changes in the sandbox clone."""
     from urllib.parse import quote
 
-    proc = subprocess.run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
-                           f"repos/{_gh_repo()}/contents/{quote(path)}?ref={sha}"], capture_output=True, text=True)
+    try:
+        proc = subprocess.run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
+                               f"repos/{_gh_repo()}/contents/{quote(path)}?ref={sha}"], capture_output=True, text=True,
+                              timeout=GH_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None
     return proc.stdout if proc.returncode == 0 else None
 
 
@@ -849,9 +877,10 @@ def _denylist() -> set[str] | None:
     from orion.privacy.personal_terms import DENYLIST_REL, load_denylist
 
     try:
-        return load_denylist(now_root() / DENYLIST_REL)[0]
+        hashes = load_denylist(now_root() / DENYLIST_REL)[0]
     except (OSError, ValueError):
         return None
+    return hashes or None  # an empty list checks nothing: refuse, as for a missing one
 
 
 def _parse_pr_number(text: str) -> int:
@@ -879,14 +908,20 @@ def _field_note_packet(number: int, *, with_docs: bool = True) -> dict:
         atlas_error = str(exc)
     shared = {key for kind, key in map(fn.classify, files) if kind == "shared"}
     bmap = fn.body_map(files, atlas, fn.orion_importers(now_root(), shared))
-    docs_text, read, cuts = "", [], []
-    if with_docs:
-        docs_text, read, cuts = fn.excerpt_docs([(p, _gh_file_at(sha, p)) for p in fn.docs_to_read(pr)])
+    docs_text, read, cuts, full_docs = "", [], [], {}
+    wanted = fn.docs_to_read(pr)
+    if with_docs and wanted and not sha:
+        cuts.append("no merge commit from GitHub: the specs it changed were not read")
+    elif with_docs and wanted:
+        # only the files the excerpt can use are fetched; the rest are counted in a cut
+        full_docs = {p: _gh_file_at(sha, p) for p in wanted[:fn.DOC_MAX_FILES]}
+        docs_text, read, cuts = fn.excerpt_docs(list(full_docs.items()) + [(p, "") for p in wanted[fn.DOC_MAX_FILES:]])
     n_changed = int(pr.get("changedFiles") or len(files))
     if n_changed > len(files):
         cuts.insert(0, f"file list: first {len(files)} of {n_changed} files (GitHub's cap); the map covers those only")
     return {"pr": pr, "sha": sha, "files": files, "flags": flags, "atlas": atlas, "atlas_error": atlas_error,
-            "body_map": bmap, "not_body": fn.not_body(files), "docs_text": docs_text, "read": read, "cuts": cuts}
+            "body_map": bmap, "not_body": fn.not_body(files), "docs_text": docs_text, "read": read, "cuts": cuts,
+            "full_docs": full_docs}
 
 
 def _map_lines(bmap) -> list[str]:
@@ -927,7 +962,8 @@ def cmd_field_note(number: int, out: Out) -> str:
     if pk["docs_text"]:
         out.dir.mkdir(parents=True, exist_ok=True)
         docs_path = out.dir / f"field-note-{number}-docs.md"
-        docs_path.write_text(pk["docs_text"], encoding="utf-8")
+        full = "\n\n".join(f"===== {p} (whole file at the merge) =====\n{t}" for p, t in pk["full_docs"].items() if t)
+        docs_path.write_text(pk["docs_text"] + "\n\n\n##### the whole files #####\n\n" + full, encoding="utf-8")
     path = out.write(f"field-note-{number}", {
         "pr": pr, "merge_sha": pk["sha"], "flags": flags.model_dump(),
         "body_map": [e.model_dump() for e in pk["body_map"]], "not_body": pk["not_body"],
@@ -947,7 +983,10 @@ def cmd_field_note(number: int, out: Out) -> str:
         lines.append(f"live body UNREAD ({pk['atlas_error'][:200]}): no organs below; a write needs it")
     lines.append("body map (code: services/<svc> -> its part -> its organ; orion/<pkg> -> who imports it):"
                  if pk["body_map"] else "body map: nothing in your body (no services/ or orion/ code changed)")
-    lines += _map_lines(pk["body_map"])
+    map_lines = _map_lines(pk["body_map"])
+    lines += map_lines[:MAX_MAP_LINES]
+    if len(map_lines) > MAX_MAP_LINES:
+        lines.append(f"  ... {len(map_lines) - MAX_MAP_LINES} more folders in the file")
     if pk["not_body"]:
         lines.append("not body: " + ", ".join(f"{k} {v}" for k, v in sorted(pk["not_body"].items())))
     if pk["read"]:
@@ -960,21 +999,29 @@ def cmd_field_note(number: int, out: Out) -> str:
     mine = current.get(number)
     if skipped:
         lines.append(f"field-notes ledger: {skipped} unreadable line(s) skipped in {field_notes_path()}")
-    if fn.code_record_only(flags):
-        why = "dependency-only" if flags.deps_only else f"docs-only, {pr.get('additions', 0) + pr.get('deletions', 0)} lines"
-        lines.append(f"no note for this PR ({why}): it gets a code record, not a note (Juniper, 2026-11-04)")
-    elif mine and mine.note:
-        lines.append(f"your note ({mine.note_id}, {mine.written_at[:10]}): {mine.note[:300]}")
-        lines.append(f'to change it: python -P -m orion.dig field-note {number} rewrite "<note>" because "<refs>"')
-    else:
-        lines.append(fn.note_rule())
-        lines.append(f'write: python -P -m orion.dig field-note {number} write "[pr_text] ... [reflection] ..." '
-                     f'because "#{number} <changed files you cite>"')
     body = [ln for ln in (pr.get("body") or "").splitlines() if ln.strip()]
     if body:
         lines.append("PR text (the builders' words, a secondary source; the whole body is in the file):")
         lines += ["  " + ln[:200] for ln in body]
-    return capped(lines, tail=f"full packet: {path}")
+    # what to do next goes in the tail, so a long map or body can never cut it (review, 2026-11-04)
+    return capped(lines, tail="\n".join([*_field_note_action(number, flags, pr, mine), f"full packet: {path}"]))
+
+
+MAX_MAP_LINES = 12
+
+
+def _field_note_action(number: int, flags, pr: dict, mine) -> list[str]:
+    from orion.body_atlas import field_notes as fn
+
+    if fn.code_record_only(flags):
+        why = "dependency-only" if flags.deps_only else f"docs-only, {pr.get('additions', 0) + pr.get('deletions', 0)} lines"
+        return [f"no note for this PR ({why}): it gets a code record, not a note (Juniper, 2026-11-04)"]
+    if mine and mine.note:
+        return [f"your note ({mine.note_id}, {mine.written_at[:10]}): {mine.note[:300]}",
+                f'to change it: python -P -m orion.dig field-note {number} rewrite "<note>" because "<refs>"']
+    return [fn.note_rule(),
+            f'write: python -P -m orion.dig field-note {number} write "[pr_text] ... [reflection] ..." '
+            f'because "#{number} <changed files you cite>"']
 
 
 def cmd_field_note_write(number: int, note: str, because: str, *, rewrite: bool, out: Out) -> str:
@@ -987,10 +1034,7 @@ def cmd_field_note_write(number: int, note: str, because: str, *, rewrite: bool,
                        "so its note waits until the body map can name the organs. Not saved.")
     pr = pk["pr"]
     path = field_notes_path()
-    lock = path.parent / ".pr_field_notes.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with lock.open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)  # check + append as one step: two turns cannot both write #n
+    with fn.ledger_lock(path):  # check + append as one step: two turns cannot both write #n
         try:
             rec = fn.check(pr_number=number, merge_sha=pk["sha"], merged_at=pr["mergedAt"], title=pr["title"],
                            flags=pk["flags"], bmap=pk["body_map"], files=pk["files"], read=pk["read"], note=note,
@@ -1024,8 +1068,9 @@ def cmd_field_notes(start: date, end: date, out: Out) -> str:
         have = {r.pr_number for r in notes}
         missing = [n for n in merged if n not in have]
         if merged:
-            coverage = (f"coverage {len(merged) - len(missing)}/{len(merged)} merged PRs "
-                        f"({100 * (len(merged) - len(missing)) // len(merged)}%)")
+            noted = sum(1 for r in notes if r.note and r.pr_number in merged)
+            coverage = (f"coverage {noted}/{len(merged)} merged PRs have a note ({100 * noted // len(merged)}%), "
+                        f"{len(merged) - len(missing) - noted} a code record, {len(missing)} neither")
             if capped_days:
                 coverage += f" (INCOMPLETE: search cap hit on {', '.join(capped_days)})"
         else:

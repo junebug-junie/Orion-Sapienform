@@ -24,8 +24,11 @@ def test_flags_docs_deps_huge_revert():
     assert fn.flags_for(_pr(["services/a/x.py"], adds=4000, dels=1001)).huge
     rev = fn.flags_for(_pr(["services/a/x.py"], title='Revert "feat: y"', body="Reverts junebug-junie/Orion-Sapienform#123"))
     assert rev.revert_of == "#123"
-    assert fn.flags_for(_pr(["a.py"], title="Revert something")).revert_of == "unknown"
+    assert fn.flags_for(_pr(["a.py"], title="Revert something (#99)")).revert_of == "unknown"  # title #N is not trusted
     assert fn.flags_for(_pr(["a.py"])).revert_of is None
+    assert fn.flags_for(_pr(["a.py"], title="Reverting heat gate default (#2958 follow-up to #2900)")).revert_of is None
+    assert fn.flags_for(_pr(["a.py"], body="this reverts the habit of waiting")).revert_of is None
+    assert fn.flags_for(_pr(["a.py"], body="x\nThis reverts commit abc1234.")).revert_of == "unknown"
 
 
 def test_authored_by_me_is_yes_only_with_a_sandbox_marker_never_no():
@@ -112,11 +115,15 @@ def _check(note=GOOD, because="#7", *, records=(), rewrite=False, flags=None, de
 
 def test_a_good_note_is_labelled_per_sentence():
     rec = _check()
-    assert rec.note == "The builders moved the plan step into the executor. I may plan a little faster now."
+    assert rec.note == GOOD  # stored labelled, so claims[i] resolves to its own sentence
     assert [(c.label, c.refs) for c in rec.claims] == [("pr_text", ["#7"]), ("reflection", [])]
     rec = _check("[code_then services/orion-cortex-exec/app/x.py] The executor now runs the plan step itself.",
                  "#7")
     assert rec.claims[0].refs == ["services/orion-cortex-exec/app/x.py"]
+    assert rec.note == "[code_then] The executor now runs the plan step itself."
+    rec = _check("[code_then services/orion-cortex-exec/app/x.py:12] The executor now runs the plan step itself.",
+                 "services/orion-cortex-exec/app/x.py#L3-L9")  # a line number is still that file
+    assert rec.claims[0].refs == ["services/orion-cortex-exec/app/x.py:12"]
 
 
 @pytest.mark.parametrize("note,because,words", [
@@ -142,6 +149,8 @@ def test_an_organ_outside_the_body_map_is_refused_and_one_inside_passes():
     eyes.name, cortex.name = "eyes", "planner"
     with pytest.raises(fn.FieldNoteError, match="does not touch"):
         _check("[reflection] My eyes organ will see the plan step differently now.", atlas=atlas)
+    with pytest.raises(fn.FieldNoteError, match="does not touch"):
+        _check("[reflection] My eyes organs will see the plan step differently now.", atlas=atlas)
     with pytest.raises(fn.FieldNoteError, match="does not touch"):
         _check(f"[reflection] Something in {eyes.organ_id} changed with the plan step.", atlas=atlas)
     assert _check("[reflection] My planner organ runs the plan step in one place now.", atlas=atlas).note
@@ -182,6 +191,19 @@ def test_one_live_note_per_pr_and_a_rewrite_supersedes(tmp_path):
     records, skipped = fn.load(path)
     assert len(records) == 2 and skipped == 0  # the old line is kept
     assert fn.live(records)[7].note_id == second.note_id
+
+
+def test_a_same_second_identical_rewrite_never_hides_the_pr():
+    first = _check()
+    second = _check(GOOD, records=[first], rewrite=True)
+    assert second.note_id != first.note_id and fn.live([first, second])[7] is second
+
+
+def test_ledger_lock_serialises_writers(tmp_path):
+    path = tmp_path / "self" / "pr_field_notes.jsonl"
+    with fn.ledger_lock(path):
+        fn.append(path, _check())
+    assert len(fn.load(path)[0]) == 1
 
 
 def test_a_bad_ledger_line_is_skipped_not_fatal(tmp_path):

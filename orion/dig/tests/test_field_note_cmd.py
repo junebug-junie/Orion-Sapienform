@@ -55,16 +55,31 @@ def test_a_huge_pr_packet_stays_inside_the_caps_and_says_so(gh, capsys):
     assert code == 0
     assert len(out.splitlines()) <= dig.MAX_LINES and len(out) <= dig.MAX_CHARS + 1
     assert "huge: say in the note what you could not read" in out
-    assert "file list: first 100 of 130 files" in out or "the rest is in the file" in out
+    assert "file list: first 100 of 130 files" in out and "... 88 more folders in the file" in out
+    # the next step is in the tail: a long map or body never cuts it (review finding, 2026-11-04)
+    assert "Start every sentence with its source label" in out and "field-note 7 write" in out
+    assert out.strip().splitlines()[-1].startswith("full packet: ")
+
+
+def test_a_map_of_many_long_shared_lines_still_ends_with_the_write_line(gh, capsys, monkeypatch):
+    from orion.body_atlas import field_notes as fn
+
+    pkgs = [f"pkg{i}" for i in range(12)]
+    monkeypatch.setattr(fn, "orion_importers", lambda root, p: {k: [f"orion-service-{j:02d}" for j in range(8)] for k in p})
+    gh[7] = _pr(paths=tuple(f"orion/{k}/m.py" for k in pkgs))
+    code, out, _ = run(capsys, "field-note", "7")
+    assert code == 0 and len(out) <= dig.MAX_CHARS + 1
+    assert 'field-note 7 write "[pr_text]' in out
 
 
 def test_write_saves_one_line_and_prints_the_receipt_then_refuses_a_second(gh, capsys):
     note = "[pr_text] The builders moved the plan step into the executor, because it was split. [reflection] I may plan faster."
-    code, out, err = run(capsys, "field-note", "7", "write", note, "because", "#7")
+    # unquoted, as separate words: the note's own "because" must not be taken as the separator
+    code, out, err = run(capsys, "field-note", "7", "write", *note.split(), "because", "#7")
     assert code == 0, err
     assert out.startswith("field-note #7 saved fn:7:")
     lines = dig.field_notes_path().read_text().splitlines()
-    assert len(lines) == 1 and json.loads(lines[0])["note"].startswith("The builders moved")  # last `because` splits
+    assert len(lines) == 1 and json.loads(lines[0])["note"] == note  # last `because` splits; stored labelled
     code, _, err = run(capsys, "field-note", "7", "write", note, "because", "#7")
     assert code == 1 and "already has a note" in err
     code, out, err = run(capsys, "field-note", "7", "rewrite", "[reflection] On a second look the plan step move is small.",
@@ -114,10 +129,37 @@ def test_field_notes_and_history_marks_show_coverage(gh, capsys, monkeypatch):
     run(capsys, "field-note", "7", "write", "[pr_text] The builders moved the plan step into the executor.", "because", "#7")
     code, out, err = run(capsys, "field-notes", "2025-07-03", "2025-07-03")
     assert code == 0, err
-    assert "1 field notes, 0 code records; coverage 1/2 merged PRs (50%)" in out
-    assert "#7 2025-07-03 The builders moved" in out and "no note yet: #10" in out
+    assert "coverage 1/2 merged PRs have a note (50%), 0 a code record, 1 neither" in out
+    assert "#7 2025-07-03 [pr_text] The builders moved" in out and "no note yet: #10" in out
     code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
     assert "#7 2025-07-03 feat: pr 7 (noted)" in out and "#10 2025-07-03 feat: pr 10 (no note)" in out
+
+
+def test_history_marks_nothing_before_the_first_record_no_backfill(gh, capsys, monkeypatch):
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [
+        {"number": 5, "title": "old", "mergedAt": "2025-07-02T18:00:00Z", "body": ""}])
+    code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
+    assert "#5 2025-07-02 old\n" in out + "\n" and "(no note)" not in out  # empty ledger: no marks
+    run(capsys, "field-note", "7", "write", "[pr_text] The builders moved the plan step into the executor.", "because", "#7")
+    code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
+    assert "#5 2025-07-02 old" in out and "(no note)" not in out  # merged before the first noted PR
+
+
+def test_an_empty_denylist_refuses_the_write(gh, world, capsys):  # noqa: F811
+    (world / "repo" / "config" / "privacy" / "personal_terms.sha256").write_text("# nothing\n")
+    code, _, err = run(capsys, "field-note", "7", "write", "[pr_text] The builders moved the plan step into the executor.",
+                       "because", "#7")
+    assert code == 1 and "could not be read" in err and not dig.field_notes_path().exists()
+
+
+def test_only_the_docs_the_excerpt_uses_are_fetched_and_whole_files_are_kept(gh, capsys, monkeypatch):
+    seen = []
+    monkeypatch.setattr(dig, "_gh_file_at", lambda sha, p: seen.append(p) or "\n".join(f"l{i}" for i in range(80)))
+    gh[7] = _pr(paths=tuple(f"docs/superpowers/specs/{i}.md" for i in range(5)) + ("services/orion-cortex-exec/app/x.py",))
+    code, out, _ = run(capsys, "field-note", "7")
+    assert code == 0 and len(seen) == 3 and "cut: 2 more spec/report file(s) not read (cap 3)" in out
+    docs = next(dig.Out("t").dir.glob("field-note-7-docs.md")).read_text()
+    assert "l79" in docs and "whole file at the merge" in docs
 
 
 def test_help_lists_the_commands_and_bad_numbers_are_refused(world, capsys):  # noqa: F811

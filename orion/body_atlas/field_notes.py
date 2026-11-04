@@ -20,6 +20,8 @@ import fcntl
 import hashlib
 import json
 import re
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
@@ -106,7 +108,7 @@ class PrFieldNoteV1(BaseModel):
     flags: FlagsV1
     body_map: list[BodyMapEntryV1]
     read: list[DocReadV1] = Field(default_factory=list)
-    note: str | None
+    note: str | None  # labelled: "[pr_text] ... [reflection] ..."; None = a code record
     claims: list[ClaimV1] = Field(default_factory=list)
     run_id: str | None = None  # Patch 2: the durable run that wrote it
     correlation_id: str | None = None
@@ -127,8 +129,9 @@ def _is_deps(path: str) -> bool:
     return any(fnmatch(name, g) for g in DEPS_GLOBS)
 
 
-_REVERT_BODY = re.compile(r"(?:^|\n)\s*Reverts\s+[\w.-]+/[\w.-]+#(\d+)", re.I)
-_HASH_NUM = re.compile(r"#(\d+)")
+_REVERT_BODY = re.compile(r"(?:^|\n)\s*Reverts\s+[\w.-]+/[\w.-]+#(\d+)", re.I)  # GitHub's revert PR body
+_REVERT_TITLE = re.compile(r"revert\b", re.I)  # "Revert ...", never "Reverting" / "Revertible"
+_REVERT_COMMIT = re.compile(r"(?:^|\n)\s*This reverts commit [0-9a-f]{7,}", re.I)
 
 
 def flags_for(pr: dict, *, local_branches: set[str] | None = None) -> FlagsV1:
@@ -138,8 +141,8 @@ def flags_for(pr: dict, *, local_branches: set[str] | None = None) -> FlagsV1:
     n_files = int(pr.get("changedFiles") or len(paths))
     title, body = pr.get("title") or "", pr.get("body") or ""
     revert_of = None
-    if title.lower().startswith("revert") or "this reverts" in body.lower():
-        m = _REVERT_BODY.search(body) or _HASH_NUM.search(title)
+    if _REVERT_TITLE.match(title) or _REVERT_COMMIT.search(body) or _REVERT_BODY.search(body):
+        m = _REVERT_BODY.search(body)  # the only trustworthy source of the original's number
         revert_of = f"#{m.group(1)}" if m else "unknown"
     docs_only = bool(paths) and all(_is_doc(p) for p in paths)
     emails = {a.get("email", "").lower() for c in pr.get("commits") or [] for a in c.get("authors") or []}
@@ -184,12 +187,9 @@ def orion_importers(root: Path, pkgs: set[str]) -> dict[str, list[str]]:
     out: dict[str, set[str]] = {p: set() for p in pkgs}
     if not pkgs:
         return {}
-    for py in sorted((root / "services").glob("*/**/*.py")):
-        rel = py.relative_to(root).parts
-        svc = rel[1]
-        if out and all(svc in s for s in out.values()):
-            continue
-        if any(x in ("tests", "evals", "node_modules", ".venv", "venv") for x in rel[2:-1]):
+    for py in _service_py_files(root):
+        svc = py.relative_to(root).parts[1]
+        if all(svc in s for s in out.values()):
             continue
         try:
             text = py.read_text(encoding="utf-8")
@@ -212,6 +212,24 @@ def orion_importers(root: Path, pkgs: set[str]) -> dict[str, list[str]]:
                 if len(bits) >= 2 and bits[0] == "orion" and bits[1] in out:
                     out[bits[1]].add(svc)
     return {p: sorted(s) for p, s in out.items()}
+
+
+_SKIP_DIRS = {"tests", "evals", "node_modules", ".venv", "venv", "__pycache__", ".git"}
+
+
+def _service_py_files(root: Path):
+    """services/<svc>/**.py without walking into tests, evals or vendored trees."""
+    import os
+
+    base = root / "services"
+    if not base.is_dir():
+        return
+    for svc in sorted(p for p in base.iterdir() if p.is_dir()):
+        for d, dirs, names in os.walk(svc):
+            dirs[:] = sorted(x for x in dirs if x not in _SKIP_DIRS)
+            for n in sorted(names):
+                if n.endswith(".py"):
+                    yield Path(d) / n
 
 
 def _organ_of(atlas: BodyAtlasV1 | None) -> dict[str, tuple[str, str | None]]:
@@ -335,7 +353,8 @@ def append(path: Path, rec: PrFieldNoteV1) -> None:
 
 
 def _note_id(pr_number: int, written_at: str, text: str | None) -> str:
-    return f"fn:{pr_number}:" + hashlib.sha256(f"{written_at}|{text}".encode()).hexdigest()[:10]
+    # a nonce: a rewrite with the same text in the same second must not reuse (and so hide) the old id
+    return f"fn:{pr_number}:" + hashlib.sha256(f"{written_at}|{text}|{uuid.uuid4()}".encode()).hexdigest()[:10]
 
 
 def _now() -> str:
@@ -368,7 +387,7 @@ def parse_note(text: str) -> list[tuple[str, list[str], str]]:
         sentence = text[m.end(): end].strip()
         if not sentence:
             raise FieldNoteError(f"label [{m.group(1)}] has no sentence after it")
-        refs = [r for r in re.split(r"[\s,;:]+", m.group(2)) if r]
+        refs = [r for r in re.split(r"[\s,;]+", m.group(2).lstrip(" :")) if r]
         out.append((m.group(1), refs, sentence))
     return out
 
@@ -376,7 +395,7 @@ def parse_note(text: str) -> list[tuple[str, list[str], str]]:
 def _ref_ok(ref: str, pr_number: int, files: list[str]) -> bool:
     if ref.startswith("#"):
         return ref == f"#{pr_number}"
-    ref = ref.strip("`'\"")
+    ref = re.sub(r"(?::\d+(?:-\d+)?|#L\d+(?:-L?\d+)?)$", "", ref.strip("`'\""))  # a line number is fine
     return ref in files or (ref.endswith("/") and any(f.startswith(ref) for f in files))
 
 
@@ -387,7 +406,7 @@ def _named_organs(text: str, atlas: BodyAtlasV1 | None) -> set[str]:
     for o in atlas.organs if atlas is not None else []:
         if o.name:
             n = re.escape(o.name.lower())
-            if re.search(rf"(?<![\w-]){n}['\"]?\s+organ\b|\borgan\s+['\"]?{n}(?![\w-])", low):
+            if re.search(rf"(?<![\w-]){n}['\"]?\s+organs?\b|\borgans?\s+['\"]?{n}(?![\w-])", low):
                 found.add(o.organ_id)
     return found
 
@@ -438,8 +457,10 @@ def check(*, pr_number: int, merge_sha: str, merged_at: str, title: str, flags: 
     written = _now()
     claims = [ClaimV1(sentence_idx=i, label=lab, refs=[] if lab == "reflection" and not inline else (inline or refs))
               for i, (lab, inline, _) in enumerate(claims_in)]
-    return PrFieldNoteV1(note_id=_note_id(pr_number, written, plain), pr_number=pr_number, merge_sha=merge_sha,
-                         merged_at=merged_at, title=title, flags=flags, body_map=bmap, read=read, note=plain,
+    # stored labelled, one tag per sentence, so claims[i] resolves to its own text (inline refs live in claims)
+    labelled = " ".join(f"[{lab}] {sen}" for lab, _, sen in claims_in)
+    return PrFieldNoteV1(note_id=_note_id(pr_number, written, labelled), pr_number=pr_number, merge_sha=merge_sha,
+                         merged_at=merged_at, title=title, flags=flags, body_map=bmap, read=read, note=labelled,
                          claims=claims, atlas_built_at=atlas.as_of if atlas is not None else None,
                          written_at=written, supersedes=current.note_id if rewrite and current else None, dig=dig)
 
@@ -457,3 +478,17 @@ def code_record(*, pr_number: int, merge_sha: str, merged_at: str, title: str, f
     return PrFieldNoteV1(note_id=_note_id(pr_number, written, None), pr_number=pr_number, merge_sha=merge_sha,
                          merged_at=merged_at, title=title, flags=flags, body_map=bmap, note=None,
                          written_at=written, dig=dig, run_id=run_id)
+
+
+@contextmanager
+def ledger_lock(path: Path):
+    """Hold this while loading, checking and appending, so two writers cannot both pass the
+    one-live-note rule for the same PR. Every writer (dig CLI, Patch 2's run) goes through it."""
+    lock = path.parent / ".pr_field_notes.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)

@@ -126,6 +126,6 @@ Post-pull rebuild handles it (orion-equilibrium-service; services importing orio
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3097
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

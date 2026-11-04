@@ -619,7 +619,9 @@ def cmd_body_part(atlas, part, out: Out) -> str:
     if loops:
         lines.append("to itself: " + "; ".join(_flow_line("", r).strip().removeprefix(f"{part.name} ") for r in loops))
     if roles:
-        lines.append("jobs: " + "; ".join(f"{r.role} {r.strength} ({r.rule})" for r in roles))
+        # the rule only when it says more than the strength ("S2 rule (R-matchmaker)", "S3 claimed")
+        lines.append("jobs: " + "; ".join(f"{r.role} {r.strength}" + (f" ({r.rule})" if r.rule != r.strength else "")
+                                          for r in roles))
     if my_claims:
         lines.append("my claims: " + "; ".join(
             f"{c.role} {c.kind}: " + ("holds (evidence checks)" if c.status == "claimed" else c.status)

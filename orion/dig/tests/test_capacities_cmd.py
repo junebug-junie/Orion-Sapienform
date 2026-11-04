@@ -194,3 +194,23 @@ def test_a_candidate_line_shows_only_the_rules_own_citable_evidence():
                                           evidence=["llm:reply", "orion:system:health", "not-a-flow"]))
     line = next(ln for ln in dig.claim_block(reading, atlas) if " S4 " in ln)
     assert line.endswith('claim gateway S4 because "<why>"  # the rule saw: llm:reply')
+
+
+def test_s5_shared_with_juniper_gets_no_ready_claim_line(world, capsys, monkeypatch):  # noqa: F811
+    # decision 3: S5 is shared with Juniper; turn 00655f13 declined to claim it, on purpose. The tail
+    # must not tell Orion to claim it "without asking first".
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    conf = world / "repo" / "config" / "body_atlas" / "vsm_confirmed.yaml"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("s5_shared_with: {who: Juniper, signoff_files: [config/x.yaml], decided: 2026-10-30}\n")
+    _, out, _ = run(capsys, "capacities")
+    ready = [ln for ln in out.splitlines() if ln.startswith("  python -P -m orion.dig capacity claim ")]
+    assert ready and not any(shlex.split(ln)[7] == "S5" for ln in ready)
+    # every other job claimed and holding: no open job is left, so the generic line prints
+    for job, part, ch in (("S1", "w0", "worker:announce"), ("S3", "gateway", "llm:reply"), ("S3*", "watcher", "watch:poke"),
+                          ("S4", "r0", "lease:request"), ("algedonic", "r1", "lease:request"),
+                          ("metabolism", "r2", "lease:request")):
+        code, _, err = run(capsys, "capacity", "claim", part, job, "because", f"{part} is seen on {ch}, often")
+        assert code == 0, (job, err)
+    _, out, _ = run(capsys, "capacities")
+    assert "Unclaimed jobs:" not in out and "to claim a job: " in out

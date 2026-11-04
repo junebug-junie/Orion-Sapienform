@@ -117,7 +117,7 @@ def summarize(atlas: BodyAtlasV1, *, out: str | None, extra_footer: tuple[str, .
     if atlas.known_gaps:
         footer.append(f"not seen (no source yet): {len(atlas.known_gaps)} gaps, listed in the full atlas")
     if multi:
-        footer.append("every member of one organ: python -P -m orion.dig body <organ_id>")
+        footer.append("every member of one organ: python -P -m orion.dig body <organ_id>; one part's flows: body <part>")
     footer += list(extra_footer)
     budget = MAX_LINES - len(lines) - len(footer) - 2
     for i, organ in enumerate(multi[: max(budget, 0)], start=1):

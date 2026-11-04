@@ -17,19 +17,19 @@ Juniper's answers to its open questions were recorded there on 11-04.
 The market can now carry events with identity and weigh families by whether their acts work. Both
 are prerequisites for patch 2 (the first event sources) and patch 3 (binding curiosity and reading).
 
-Replay, live, 14 days (2026-10-27..11-04, 5,171 decisions):
+Replay, live, 14 days (2026-10-27..11-04, 5,172 decisions):
 
 | family | recorded weight | with track record | track record (graded closes) |
 |---|---|---|---|
-| prime | 1.01 | 0.88 | 0.83 (248) |
+| prime | 1.01 | 0.90 | 0.83 (248) |
 | hub.world_pulse_read | 1.02 | 0.81 | 0.84 (692) |
-| aitown.session | 1.10 | 1.00 | 0.68 (19) |
-| topic_foundry.run | 1.06 | 0.97 | 0.88 (41) |
-| thought.painting | 0.73 | 0.96 | 1.00 (116) |
-| dream.cycle | 0.98 | 1.05 | 1.00 (23) |
+| aitown.session | 1.10 | 1.02 | 0.68 (19) |
+| topic_foundry.run | 1.06 | 0.98 | 0.88 (40) |
+| thought.painting | 0.73 | 0.96 | 1.00 (115) |
+| dream.cycle | 0.98 | 1.04 | 1.00 (23) |
 | hub.outreach, hub.retro_leisure | unchanged | unchanged | none (Juniper-settled, or no graded closes) |
 
-**0 of 5,171 decisions flip.** Only 172 weight-dependent decisions had any price charge, and all of
+**0 of 5,172 decisions flip.** Only 172 weight-dependent decisions had any price charge, and all of
 them stayed positive. No Tier 2 family drops under the 5% floor. Weights move at most 0.1 a day.
 
 ## Findings worth Juniper's attention
@@ -49,7 +49,7 @@ them stayed positive. No Tier 2 family drops under the 5% floor. Weights move at
    already lists `displaced`/`displaced_by`.
 3. **Old weights can't be rebuilt exactly from today's tables.** Use windows that were open then are
    closed now. Closes arrived later. On 10-30 the family list gained `prime`, which changed the
-   normalization. Recomputed "off" weights match the recorded weight within 0.02 for only 41% of
+   normalization. Recomputed "off" weights match the recorded weight within 0.02 for only 46% of
    decisions. So the replay's counterfactual is recorded weight + (on − off) on the same history.
    It does not use a recomputed weight. This is stated in the eval's docstring.
 
@@ -95,7 +95,7 @@ engagement. Wants carried no event identity.
 - `orion/physiology/choice.py`: uses `want_intensity`; `why` names the event salience when it wins.
 - `orion/physiology/weights.py`: source (d) (`reliability_grades`, `reliability=` flag); `n` counts distinct acts.
 - `orion/self_monitor/adapters.py`: `act_outcome` public.
-- `orion/physiology/tests/test_event_wants.py`: 15 tests.
+- `orion/physiology/tests/test_event_wants.py`: 19 tests.
 - `services/orion-durable-runs/evals/want_market_reliability_replay.py`: fixture and live replay.
 
 ## Schema / bus / API changes
@@ -116,8 +116,8 @@ engagement. Wants carried no event identity.
 ## Tests run
 
 ```text
-pytest orion/physiology orion/self_monitor orion/schemas + durable-runs physiology tests: 476 passed, 2 skipped
-orion/physiology/tests/test_event_wants.py: 15 passed
+pytest orion/physiology orion/self_monitor orion/schemas + durable-runs physiology tests: 439 passed after review fixes
+orion/physiology/tests/test_event_wants.py: 19 passed
 service suites touching WantV1 (sql-writer, durable-runs, dream, actions, cortex-orch, hub): 10/65/30/7/24/26 passed
 tests/test_act_ledger_contract.py: 20 passed
 ```
@@ -125,8 +125,8 @@ tests/test_act_ledger_contract.py: 20 passed
 ## Evals run
 
 ```text
-want_market_reliability_replay.py (fixture): all 5 checks pass
-want_market_reliability_replay.py --live --days 14: no_tier2_family_starved, within_drift_cap pass; 0 flips / 5,171
+want_market_reliability_replay.py (fixture): all 6 checks pass
+want_market_reliability_replay.py --live --days 14: no_tier2_family_starved, within_drift_cap pass; 0 flips / 5,172
 ```
 
 ## Docker/build/smoke checks
@@ -137,7 +137,38 @@ None: no service code or runtime path changes. Live callers do not pass reliabil
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent (high). Material findings, all fixed:
+
+- Finding: the fixture gate `no_evidence_equals_off` only checked that a family had no graded closes.
+  Its weight still moved, through tier normalization.
+  - Fix: a new gate replays with no graded closes anywhere and requires on == off. The spill-over is
+    its own reported effect.
+  - Evidence: fixture lane passes 6/6.
+- Finding: the replay could see up to a day of later closes and uses.
+  - Fix: weights are computed per decision hour, from acts closed and uses started before it (at most
+    1 h of look-ahead). A use row's later `used` state is a documented limitation.
+  - Evidence: live rerun, same verdict.
+- Finding: a tiny salience (0.01) on a family that just acted opened the 5% exploration floor.
+  - Fix: the floor reads hunger, not salience.
+  - Evidence: `test_a_tiny_salience_does_not_open_the_exploration_floor`. It fails when the fix is
+    mutated back.
+- Finding: the wrap serializer blanked the serialization JSON schema (FastAPI OpenAPI for
+  `/physiology/bid`).
+  - Fix: a `__get_pydantic_json_schema__` hook.
+  - Evidence: `test_the_serialization_schema_keeps_the_wants_shape`.
+- Finding: `reliability=True` without `outcome_note` would read failed runs as refuted.
+  - Fix: it raises.
+  - Evidence: `test_reliability_without_outcome_notes_refuses`.
+- Finding: a producer's intensity silently overrode salience.
+  - Fix: the decision warns `salience_ignored:producer_intensity`.
+  - Evidence: a new test.
+- Finding: the old "(a) and (b) never share an act" comment was wrong.
+  - Fix: `n` counts distinct acts.
+  - Evidence: 105 shared acts in 30 days, all `hub.chat_reply` (Tier 0, never bids), so live bidding
+    weights are unchanged.
+- Not fixed, a design note for patch 2: salience is ranked against a history of hunger values only,
+  so a high-salience event ranks near 1.0 almost every time. Patch 2's sources should rank event
+  wants against their own event history.
 
 ## Restart required
 

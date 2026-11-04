@@ -26,6 +26,10 @@ Either way the market writes what the charge did to this want back into the same
 Off, unreadable, expired or not received: no charge, exactly as before. A Redis error never fails a bid.
 Only bids from ``orion.physiology.binding.BINDING_PRODUCERS`` (the obeyed ones) read the signal: a shadow bid of
 the same family (its producer rolled back to shadow, or a forced dream sleep) is never charged or recorded.
+The receiving organ may REFUSE the signal (curiosity replica patch 4: field ``refusal`` of the same hash,
+``prime_charge.PrimeChargeRefusalV1``). From the next bid on the charge is not applied on either arm; the
+decision's ``why`` names the refusal (treated arm), and each want's record is ``unchanged`` -- what really
+happened -- with what the charge would have done in its ``why``.
 
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
@@ -161,6 +165,7 @@ class Market:
         # signal is never read; bids are exactly as before.
         self.prime_regulation = bool(prime_regulation)
         self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0, "prime_applied": 0, "prime_control": 0,
+                       "prime_refused": 0,
                        "prime_read_failed": 0}
 
     async def _history(self, now: datetime) -> _Cached:
@@ -220,16 +225,24 @@ class Market:
         else:
             # Only an OBEYED bid takes Prime's charge (a shadow bid would grade Prime on holds that never happened).
             sig = await self._prime_signal(want.family, now) if want.producer in BINDING_PRODUCERS else None
-            applied = sig if sig is not None and sig.arm == "treated" else None
+            refusal = await self._prime_refusal(sig) if sig is not None else None
+            applied = sig if sig is not None and sig.arm == "treated" and refusal is None else None
             other = None
             if sig is not None:
                 # The same bid decided the other way, on a throwaway copy of the book (it must not reserve or
                 # count anything): what the charge changed is read from two real decisions, both arms alike.
+                # Refused: the "other way" is the charge as Prime sent it (what the refusal took away).
                 other = decide(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
                                prime=None if applied is not None else sig)
-            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
+            if refusal is not None and sig.arm == "treated":
+                # Not applied, and the decision says why (the refusal names the charge it removed).
+                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
+                                  prime_refusal=refusal)
+            else:
+                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
             if sig is not None and other is not None:
-                await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None)
+                await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None,
+                                                refusal=refusal)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
         try:
             await self._publish(decision)
@@ -267,16 +280,39 @@ class Market:
             return None
         return sig
 
+    async def _prime_refusal(self, sig: pc.PrimeRegulationV1) -> Optional[pc.PrimeChargeRefusalV1]:
+        """The organ's refusal of exactly ``sig`` (curiosity replica patch 4), or None. Never raises: an
+        unread refusal is no refusal, so the charge applies as Prime sent it."""
+        redis = self._redis_getter()
+        if redis is None:
+            return None
+        try:
+            raw = await redis.hget(pc.key(sig.family), pc.REFUSAL_FIELD)
+        except Exception:  # noqa: BLE001
+            self.counts["prime_read_failed"] += 1
+            logger.warning("prime_refusal_read_failed family=%s", sig.family, exc_info=True)
+            return None
+        return pc.refusal_for(sig, pc.parse_refusal(raw))
+
     async def _record_prime_effect(self, sig: pc.PrimeRegulationV1, want: WantV1, decision: WantDecisionV1,
-                                   other: WantDecisionV1, now: datetime, *, applied: bool) -> None:
+                                   other: WantDecisionV1, now: datetime, *, applied: bool,
+                                   refusal: Optional[pc.PrimeChargeRefusalV1] = None) -> None:
         """Write what the charge did (treated) or would have done (control) to this want. Best-effort.
-        ``decision`` is the one the market made; ``other`` the same bid decided the other way."""
+        ``decision`` is the one the market made; ``other`` the same bid decided the other way. Refused by the
+        organ: the charge did nothing (``unchanged``), whatever the arm; what it would have done is in ``why``."""
         if decision.net is None or other.net is None:
             return          # the market could not price the want: nothing to say about the charge
         with_c, without_c = (decision, other) if applied else (other, decision)
         eff = pc.effect_between(sig.direction, with_c, without_c)
-        self.counts["prime_applied" if applied else "prime_control"] += 1
-        why = decision.why if applied else f"held back (control, not applied): with it, {with_c.why}"
+        if refusal is not None:
+            self.counts["prime_refused"] += 1
+            arm = "" if sig.arm == "treated" else " (a control signal: never applied either way)"
+            why = (f"refused by {refusal.by}{arm}: {refusal.reason[:160]}; without the refusal it would have "
+                   f"been {eff}: {with_c.why}")
+            eff = "unchanged"
+        else:
+            self.counts["prime_applied" if applied else "prime_control"] += 1
+            why = decision.why if applied else f"held back (control, not applied): with it, {with_c.why}"
         net_with, net_without = with_c.net, without_c.net
         redis = self._redis_getter()
         if redis is None:

@@ -1218,8 +1218,13 @@ gets one `curiosity_offer_plans` row with its status and fallback reason, and on
 log line (`curiosity_replica_plan_used` or `curiosity_replica_fallback run=<id>
 reason=<reason>`). The run counts as a replica-arm run whatever happened
 (intention to treat). The replica's reasons stay on the plan row: the kickoff
-prompt shows only the order. Its stances on Prime's focus or signal are recorded
-on the row and have no effect yet (patch 4). Rollback:
+prompt shows only the order. Its stances are recorded on the row; a stance on a
+PRIME focus or signal is also an answer to Prime, delivered by the replica
+itself (patch 4): a refused Prime focus reaches Hub on
+`orion:curiosity:replica:focus_refusal:request`
+(`scripts/curiosity_focus_refusal_listener.py`, which runs
+`orion/curiosity/focus.py refuse_focus`; Juniper's focus is never refused) before
+the plan answer, so the run is not shown it. Rollback:
 `HUB_CURIOSITY_REPLICA_ARM_ENABLED=false`. The offer
 row records the whole draw in `arm_propensities` (all three arms; needs
 `services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql`). With no scored history the

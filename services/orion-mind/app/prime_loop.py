@@ -46,6 +46,13 @@ record and closes the act (1 = the charge changed at least one decision). A shar
 (PRIME_HOLDBACK_FRACTION): written as ``control``, never applied, graded the same way. PRIME_REGULATE_ENABLED
 false: the move is not offered and any regulate answer is refused (signals already sent are still graded).
 
+Organs answer (curiosity replica patch 4, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9).
+Curiosity's planner (app/replica_loop.py, same process, separate state) may challenge or refuse a question or
+signal of Prime's. Prime reads only the replica's published replies view (Redis ``orion:curiosity:replica:replies``):
+in its frame (ORGAN REPLIES, while answering is on) and when it settles -- a treated question the organ refused
+closes 0 at once with ``refused by curiosity.replica: <reason>`` (still the treated arm: intention to treat); a
+regulate act's note names a refusal of its signal (the market's record already shows the charge did nothing).
+
 Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tracked by JUNIPER_TURNS.
 Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
 all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
@@ -101,6 +108,8 @@ from orion.mindloop.turns import JUNIPER_TURNS, JuniperTurns
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import (
     ACTOR,
+    organ_refusal,
+    refusal_words,
     CONCERN_COMPONENT,
     REGULATE_COMPONENT,
     regulate_act,
@@ -143,11 +152,13 @@ from orion.prime.thought import (
     apply_answer,
     build_frame,
     parse_answer,
+    shows_organ_replies,
     summary_note,
     woke_note,
     system_prompt,
 )
 from orion.refs import RefV1, resolve as resolve_ref
+from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaRepliesViewV1
 from orion.schemas.grammar import ActV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
@@ -264,10 +275,32 @@ class PrimeRuntime(MindLoopRuntime):
     async def _after_think(self) -> None:
         await self._flush_concern_acts()
 
+    # --- organ replies (curiosity replica patch 4) --------------------------------------------
+    def _organ_replies_on(self) -> bool:
+        """The replica answers Prime in this process (its own two switches)."""
+        return bool(getattr(self.s, "CURIOSITY_REPLICA_ENABLED", False)) and bool(
+            getattr(self.s, "CURIOSITY_REPLICA_ANSWERS_ENABLED", False))
+
+    async def _read_organ_replies(self) -> tuple[Optional[CuriosityReplicaRepliesViewV1], Optional[str]]:
+        """The replica's published replies view; (None, None) when none was ever published."""
+        try:
+            raw = await self.bus.redis.get(REPLIES_KEY)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {str(exc)[:120]}"
+        if not raw:
+            return None, None
+        try:
+            return CuriosityReplicaRepliesViewV1.model_validate_json(raw), None
+        except Exception as exc:  # noqa: BLE001
+            return None, f"the replies view is unreadable ({str(exc)[:120]})"
+
     async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
         curiosity, curiosity_err = await self._read_curiosity()
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        inputs.organ_replies_on = self._organ_replies_on()
+        if inputs.organ_replies_on:
+            inputs.organ_replies, inputs.organ_replies_error = await self._read_organ_replies()
         receptors, receptors_err = self._receptors()
         inputs.receptors, inputs.receptors_error = receptors, receptors_err
         if receptors is not None or receptors_err:
@@ -276,7 +309,7 @@ class PrimeRuntime(MindLoopRuntime):
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
         frame = build_frame(self.state, inputs)
-        reply = await self._ask_model(system_prompt(receptors), frame)
+        reply = await self._ask_model(system_prompt(receptors, organ_replies=shows_organ_replies(inputs)), frame)
         reply.context.update(curiosity=curiosity, receptors=receptors)
         return reply
 
@@ -598,6 +631,11 @@ class PrimeRuntime(MindLoopRuntime):
                 continue
             market_on = None if rec[1] else await self._market_regulation_on()
             produced, note = settle_regulation(reg, rec[1], market_on=market_on)
+            replies, _ = await self._read_organ_replies()
+            refused = organ_refusal(reg.act_id, replies)
+            if refused is not None:
+                # The market already graded what happened (unchanged from the refusal on); name who and why.
+                note = f"{note}; {refusal_words(refused)} (at {refused.at.strftime('%H:%MZ')})"
             if not await self._close(act, REGULATE_COMPONENT, produced=produced, note=note):
                 keep.append(reg)
                 continue
@@ -619,10 +657,17 @@ class PrimeRuntime(MindLoopRuntime):
         if not isinstance(runs, list):
             logger.info("prime_settle_skipped err=%s", err or "no runs list")
             return
+        replies = None
+        if any(n.arm == "treated" for n in self.state.open_nominations):
+            replies, _ = await self._read_organ_replies()
         keep: list[PrimeNominationV1] = []
         for nom in self.state.open_nominations:
             settled = settle_nomination(arm=nom.arm, focus_id=nom.focus_id, opened_at=nom.opened_at, queued=nom.queued,
                                         queue_error=nom.queue_error, runs=runs, now=now)
+            refused = organ_refusal(nom.act_id, replies) if settled is None and nom.arm == "treated" else None
+            if refused is not None:
+                # The organ refused it: no run was shown it. Still the treated arm (intention to treat).
+                settled = Settlement(False, refusal_words(refused))
             if settled is None and nom.arm == "treated":
                 gone = treated_focus_gone(nom.focus_id, curiosity)
                 nom = nom.model_copy(update={"gone_reads": nom.gone_reads + 1 if gone else 0})

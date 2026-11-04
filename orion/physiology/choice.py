@@ -64,6 +64,11 @@ include Prime's part; ``cost_frac`` and ``prices_seen`` do not (it is not a post
 The caller passes only a signal in force for the want's family (the market process checks the family's
 receptors, the arm and the flag); ``decide`` itself applies whatever it is handed.
 
+The organ's refusal (curiosity replica patch 4, ``prime_charge.PrimeChargeRefusalV1``). ``decide(...,
+prime=sig, prime_refusal=r)`` with ``r`` refusing exactly ``sig``: the charge is NOT applied (0, so the
+decision is the one without the signal) and ``why`` says "Prime's slow charge refused by curiosity.replica:
+<reason>" with the amount it would have been. A refusal of another signal is ignored.
+
 Pure apart from the ``ReservationBook`` it is handed (in-memory; durable-runs owns one).
 """
 
@@ -85,8 +90,10 @@ from orion.physiology.appetite import (
     want_intensity,
 )
 from orion.physiology.families import FamiliesConfig, FamilyConfig
-from orion.physiology.prime_charge import PrimeRegulationV1
+from orion.physiology.prime_charge import PrimeChargeRefusalV1, PrimeRegulationV1
 from orion.physiology.prime_charge import amount as prime_amount
+from orion.physiology.prime_charge import refusal_for as prime_refusal_for
+from orion.physiology.prime_charge import refused_clause as prime_refused_clause
 from orion.physiology.prime_charge import why_clause as prime_why_clause
 from orion.physiology.weights import FamilyWeight
 from orion.schemas.physiology import (
@@ -345,9 +352,11 @@ def unavailable(want: WantV1, now: datetime, *, why: str, state: Optional[Physio
 
 def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
            now: datetime, *, reserve_at_open: bool = False,
-           prime: Optional[PrimeRegulationV1] = None) -> WantDecisionV1:
+           prime: Optional[PrimeRegulationV1] = None,
+           prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
     """One shadow bid. Never raises on market data: every unknown is a named deferral or warning.
-    ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring)."""
+    ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring).
+    ``prime_refusal``: the organ refused ``prime``; the charge is then not applied, and ``why`` says so."""
     cfg: Optional[FamilyConfig] = ctx.families.get(want.family)
     if cfg is None:
         return _decision(want, now, tier=want.tier, outcome="deferred", reason="unknown_family",
@@ -560,7 +569,12 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     charge, parts = charge_of(items)
     lane_charge = charge
     prime_part = 0.0
-    if prime is not None:
+    refused = prime_refusal_for(prime, prime_refusal)
+    refused_would_be = 0.0
+    if prime is not None and refused is not None:
+        # Refused by the organ: not applied (no part, no charge); only named in ``why``.
+        refused_would_be = prime_amount(prime, weight, value_rank=rank)
+    elif prime is not None:
         prime_part = prime_amount(prime, weight, value_rank=rank)
         parts[f"prime:{prime.direction}"] = prime_part
         charge += prime_part
@@ -575,7 +589,9 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
         hunger_s = f"event salience {inten:.2f} over {hunger_s}"
     head = (f"{want.family}: weight {weight:.2f} ({wbasis}) x rank {rank:.2f} ({vbasis}; intensity {inten:.2f}, "
             f"{hunger_s}) - charge {charge:.3f} = net {net:+.3f}")
-    if prime is not None:
+    if prime is not None and refused is not None:
+        head += "; " + prime_refused_clause(prime, refused, would_be=refused_would_be)
+    elif prime is not None:
         head += "; " + prime_why_clause(prime, value=value, lane_charge=lane_charge, prime=prime_part, net=net)
 
     over = capacity_overflow(items)

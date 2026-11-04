@@ -16,8 +16,9 @@ shown.
    ``curiosity_replica_plan_used`` or ``curiosity_replica_fallback run=<id> reason=<reason>``.
 
 The replica's reasons (``why``, ``reading``, stance reasons) are written to the plan row only. Nothing here
-returns them to the caller, so they cannot reach the kickoff prompt. Stances are recorded on the row and have
-no effect (answering Prime is patch 4 of the design).
+returns them to the caller, so they cannot reach the kickoff prompt. Stances are recorded on the row. A stance on
+a PRIME focus or signal is also an answer to Prime (patch 4), but the replica delivers it itself (a focus refusal
+through scripts/curiosity_focus_refusal_listener.py, before this answer arrives); nothing here applies a stance.
 
 Never raises into the kickoff: every failure is a fallback.
 """

@@ -29,6 +29,8 @@ on:
       - "orion/schemas/physiology_want.py"
       - "services/orion-mind/**"
       - "orion/self_monitor/**"
+      - "scripts/analysis/curiosity_replica_answers_readout.py"
+      - "scripts/analysis/tests/test_curiosity_replica_answers_readout.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -53,6 +55,8 @@ on:
       - "orion/schemas/physiology_want.py"
       - "services/orion-mind/**"
       - "orion/self_monitor/**"
+      - "scripts/analysis/curiosity_replica_answers_readout.py"
+      - "scripts/analysis/tests/test_curiosity_replica_answers_readout.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:
@@ -78,8 +82,10 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/prime
       - name: Loop library (orion/mindloop; a second instance runs on it with its own key, family and actor)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/mindloop
-      - name: Curiosity replica pure parts and contracts (candidates, plan check, frame, grading)
-        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_replica_plan.py orion/curiosity/tests/test_replica_contracts.py
+      - name: Curiosity replica pure parts and contracts (candidates, plan check, frame, grading, answers to Prime)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_replica_plan.py orion/curiosity/tests/test_replica_contracts.py orion/curiosity/tests/test_replica_answers.py
+      - name: Curiosity replica answers readout (stance from the act note, the 14-day refusal-rate alarm)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_curiosity_replica_answers_readout.py
       - name: Curiosity replica frame eval on live inputs (candidates, grounded, bounded, honest gaps, plan layout)
         run: PYTHONPATH=${{ github.workspace }} python orion/curiosity/replica/evals/run_replica_frame_eval.py
       - name: References contract (every kind has a resolver, a dig command and a test)

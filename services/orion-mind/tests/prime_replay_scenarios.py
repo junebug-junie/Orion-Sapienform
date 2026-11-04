@@ -7,7 +7,8 @@ release, model call, the saved state and every log line of the ``orion-mind.*`` 
 
 ``tests/test_prime_replay.py`` runs this and compares it with ``fixtures/prime_replay_golden.json``, which
 was recorded from the loop BEFORE it moved into ``orion/mindloop/`` (2026-11-04), then re-recorded once when Prime
-started publishing its concerns view (patch 3: only ``save orion:prime:concerns`` lines were added). Regenerate only when a
+started publishing its concerns view (patch 3: only ``save orion:prime:concerns`` lines were added), and once more
+when organs could answer Prime (patch 4: only the two ``organ_*`` scenarios were added). Regenerate only when a
 behavior change is intended: ``python tests/prime_replay_scenarios.py > tests/fixtures/prime_replay_golden.json``.
 """
 
@@ -235,6 +236,32 @@ def scenarios() -> dict:
          [0, 0.25, 3]),
     ):
         run(name, lambda f=faculty, rows=ledger_rows: _gated(f, rows), minutes)
+    # Curiosity replica patch 4 (recorded LAST, so the id counter of every older scenario is unchanged): the organ answers. Answering on, a published replies view: the frame's ORGAN
+    # REPLIES section and its prompt paragraph; then a refused question settles with the organ's reason.
+    def organ_view(bus, prime_act_id, stance):
+        from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaRepliesViewV1, CuriosityReplicaReplyV1
+
+        at = tpl.T0 + timedelta(minutes=5)
+        bus.redis.kv[REPLIES_KEY] = CuriosityReplicaRepliesViewV1(as_of=at, replies=[CuriosityReplicaReplyV1(
+            answer_act_id="act_answer_replay", prime_act_id=prime_act_id, target_kind="focus", target_id="f1",
+            stance=stance, reason="three runs died on this kind of question", about="the cabinet question",
+            at=at)]).model_dump_json()
+
+    for name, stance in (("organ_challenge_in_frame", "challenge"), ("organ_refusal_settles_question", "refuse")):
+        cap = _Capture()
+        root.addHandler(cap)
+        try:
+            rt = _instrument(tpl.runtime(answer=tpl.MOVE))
+            rt.s.CURIOSITY_REPLICA_ENABLED = True
+            rt.s.CURIOSITY_REPLICA_ANSWERS_ENABLED = True
+            asyncio.run(rt.tick())
+            organ_view(rt.bus, rt.state.open_nominations[0].act_id, stance)
+            rt.llm.answer = {"reading": "the organ answered", "concerns": {}, "move": None}
+            rt.state = rt.state.model_copy(update={"pending_changes": ["the organ answered"]})
+            _ticks(rt, [6, 10])
+            out[name] = _dump(rt, cap)
+        finally:
+            root.removeHandler(cap)
     return out
 
 

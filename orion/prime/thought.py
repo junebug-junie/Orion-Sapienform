@@ -16,6 +16,13 @@ receptor for that direction (design section 4.2: an unhandled signal is a visibl
 Prime's to the same family has not been graded yet (refractory per receiver, section 11), or when regulation
 is off.
 
+Organ replies (curiosity replica patch 4, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9).
+Curiosity's own planner may answer a question or signal of Prime's: challenge it (it still happens) or refuse it
+(the question is not shown to the run; the signal stops charging curiosity). The frame's ORGAN REPLIES section
+lists those of the last 48 h with the organ's reason (``_organ_reply_lines``), from the replica's published view
+(Redis ``orion:curiosity:replica:replies``). Held-back answers are never in the view, so never shown. The section
+and its prompt paragraph appear when answering is on (``FrameInputs.organ_replies_on``) or the view holds a reply.
+
 References (orion/refs.py): a move cites ids only through ``refs`` (``[{kind, id}]``, kinds arc and
 act). Refused here when a ref is malformed, or when the question or why contains an id-looking word
 (``orion.refs.ID_TOKEN_RE``) that is not one of the refs; refused by the runtime when a ref does not
@@ -43,6 +50,7 @@ from orion.prime.state import (
     track_record,
 )
 from orion.refs import RefV1, id_tokens_not_in, parse_refs
+from orion.schemas.curiosity_replica import REPLICA_ACTOR, CuriosityReplicaRepliesViewV1
 from orion.schemas.introspect import FOCUS_TEXT_CAP
 
 READING_CAP = 600
@@ -150,11 +158,23 @@ runs. Only one move per thought, so a regulate move replaces a question:
          "why": "...", "hours": 1-6}"""
 
 
-def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]]) -> str:
-    """The base prompt, plus the regulate move only when regulation is on and some family receives it."""
+ORGAN_REPLIES_PROMPT = """
+
+Organs can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,
+and you see its reason) or refuse it (the question is not shown to the run and counts as not settled; the
+signal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal is information about the
+organ, not a command: you may ask differently, wait, or drop the concern."""
+
+
+def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, organ_replies: bool = False) -> str:
+    """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
+    the organ-replies paragraph when that section is in the frame."""
+    out = SYSTEM_PROMPT
     if receptors and any(receptors.values()):
-        return SYSTEM_PROMPT + REGULATE_PROMPT
-    return SYSTEM_PROMPT
+        out += REGULATE_PROMPT
+    if organ_replies:
+        out += ORGAN_REPLIES_PROMPT
+    return out
 
 
 @dataclass
@@ -176,6 +196,15 @@ class FrameInputs:
     receptors_error: Optional[str] = None
     # signal_id -> the market's record so far (None: unread).
     regulation_effects: dict[str, Optional[list[pc.PrimeChargeEffectV1]]] = field(default_factory=dict)
+    # Organ replies (curiosity replica patch 4): the replica's published view; None = none published or unread.
+    organ_replies: Optional[CuriosityReplicaRepliesViewV1] = None
+    organ_replies_error: Optional[str] = None
+    # Answering is on in this process (CURIOSITY_REPLICA_ENABLED and CURIOSITY_REPLICA_ANSWERS_ENABLED).
+    organ_replies_on: bool = False
+
+
+def shows_organ_replies(inputs: "FrameInputs") -> bool:
+    return bool(inputs.organ_replies_on or (inputs.organ_replies is not None and inputs.organ_replies.replies))
 
 
 def _num(value: Any) -> float:
@@ -282,6 +311,32 @@ def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
     return lines
 
 
+ORGAN_REPLIES_WINDOW_H = 48
+
+
+def _organ_reply_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
+    """Challenges and refusals of Prime's acts in the last 48 h, with the organ's reason. Held-back ones are
+    never in the view. A view that could not be read, or was never published, is a gap, not calm."""
+    if inputs.organ_replies_error:
+        return [f"(unavailable: {inputs.organ_replies_error})"]
+    view = inputs.organ_replies
+    if view is None:
+        return [f"(unavailable: {REPLICA_ACTOR} has published no replies view)"]
+    asked = {n.act_id: n.question for n in state.open_nominations}
+    lines = []
+    for r in sorted(view.replies, key=lambda r: r.at, reverse=True):
+        if (inputs.now - r.at).total_seconds() > ORGAN_REPLIES_WINDOW_H * 3600:
+            continue
+        what = "question" if r.target_kind == "focus" else "signal"
+        about = asked.get(r.prime_act_id) or r.about
+        did = ("refused it: the question was not shown to the run" if r.stance == "refuse" and r.target_kind == "focus"
+               else "refused it: the charge no longer applies" if r.stance == "refuse"
+               else "challenged it (it still went ahead)")
+        lines.append(f"- {_age(inputs.now, r.at.isoformat())}, {REPLICA_ACTOR} {did}; your {what} "
+                     f"{about[:160]!r} (act {r.prime_act_id}). Its reason: {r.reason}")
+    return lines or [f"(no challenge or refusal from an organ in the last {ORGAN_REPLIES_WINDOW_H} h)"]
+
+
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
@@ -301,6 +356,9 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     if inputs.receptors is not None or inputs.receptors_error:
         sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
                         + "\n".join(_regulation_lines(state, inputs)))
+    if shows_organ_replies(inputs):
+        sections.append(f"ORGAN REPLIES (last {ORGAN_REPLIES_WINDOW_H} h, newest first):\n"
+                        + "\n".join(_organ_reply_lines(state, inputs)))
     return f"Now: {inputs.now.isoformat()}\n\n" + "\n\n".join(sections)
 
 

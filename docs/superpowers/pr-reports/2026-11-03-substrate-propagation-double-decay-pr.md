@@ -184,6 +184,6 @@ Only orion-substrate-runtime runs the dynamics tick, so it is the one restart th
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3102
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -2,7 +2,7 @@
 
 Live 2026-11-03: ``act.prime.predict`` (Prime's concern bets) is held unreliable, works about 2-6%.
 Driven through the real loop with the fake bus, model and market of test_prime_loop; the gate is the
-real ``build_act_gate`` with only its Redis view read and its ledger read faked.
+real ``build_act_gate`` (orion/mindloop/gate.py) with only its Redis view read and its ledger read faked.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import prime_loop
+from orion.mindloop import gate as mindloop_gate  # the gate builder moved here (2026-11-04)
 from orion.prime.state import close_concern
 from orion.self_monitor.view import self_monitor_view
 from test_prime_loop import MOVE, SETTINGS, T0, Bus, runtime
@@ -52,8 +53,8 @@ def _recent(verb: str = "predict", ref: str = "prime_concern:0a1b2c3d4e5f6a7b", 
 def gated(monkeypatch, raw, ledger=None, *, enabled=True, **kw):
     """A runtime whose gate is the real build_act_gate, view and ledger faked."""
     ledger = ledger if ledger is not None else _Ledger()
-    monkeypatch.setattr(prime_loop, "read_view_sync", lambda url, now: self_monitor_view(raw, now=now))
-    monkeypatch.setattr(prime_loop, "_ledger_rows", ledger)
+    monkeypatch.setattr(mindloop_gate, "read_view_sync", lambda url, now: self_monitor_view(raw, now=now))
+    monkeypatch.setattr(mindloop_gate, "_ledger_rows", ledger)
     rt = runtime(**kw)
     rt.gate = prime_loop.build_act_gate(SimpleNamespace(**{**vars(SETTINGS), **GATE_ON,
                                                            "SELF_MONITOR_ACT_GATE_ENABLED": enabled}))
@@ -246,7 +247,7 @@ def test_view_read_fault_is_unknown_for_every_verb(monkeypatch):
     def boom(url, now):
         raise RuntimeError("redis down")
 
-    monkeypatch.setattr(prime_loop, "read_view_sync", boom)
+    monkeypatch.setattr(mindloop_gate, "read_view_sync", boom)
     asyncio.run(rt.tick())
     assert ("act_opened", "infer") in _kinds(rt) and ("act_opened", "predict") in _kinds(rt)
 
@@ -257,7 +258,7 @@ def test_a_refused_concern_that_ends_after_the_state_goes_unknown_or_heals_gets_
     closes this concern's act when it ends; so must the gate once the view no longer says failing."""
     box = {"raw": _state()}
     rt = gated(monkeypatch, None, _Ledger([_recent()]), answer=MOVE)
-    monkeypatch.setattr(prime_loop, "read_view_sync", lambda url, now: self_monitor_view(box["raw"], now=now))
+    monkeypatch.setattr(mindloop_gate, "read_view_sync", lambda url, now: self_monitor_view(box["raw"], now=now))
     asyncio.run(rt.tick())
     [concern] = rt.state.concerns
     assert concern.act_opened_at is None
@@ -273,7 +274,7 @@ def test_a_refused_concern_that_ends_after_the_state_goes_unknown_or_heals_gets_
 def test_the_recheck_throttle_never_outlives_the_failing_state(monkeypatch, later):
     box = {"raw": _state()}
     rt = gated(monkeypatch, None, _Ledger([_recent()]), answer=MOVE)
-    monkeypatch.setattr(prime_loop, "read_view_sync", lambda url, now: self_monitor_view(box["raw"], now=now))
+    monkeypatch.setattr(mindloop_gate, "read_view_sync", lambda url, now: self_monitor_view(box["raw"], now=now))
     asyncio.run(rt.tick())
     assert rt.state.concerns[0].act_opened_at is None
     box["raw"] = {"RELIABLE": _state("reliable")}.get(later, later)

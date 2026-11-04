@@ -1,7 +1,12 @@
 """Orion Prime's resident loop (rollout step 2A): orion-mind keeps thinking between conversations.
 
 Design: docs/superpowers/specs/2026-10-29-orion-prime-design.md, sections 7.2 and 8. Pure logic is in
-orion/prime/; this module does the I/O.
+orion/prime/; this module does Prime's I/O. Since 2026-11-04 (curiosity replica design, section 10) Prime is
+instance #1 of the loop library ``orion/mindloop/``: the tick, the Juniper-first yield, the bid, the model call
+with its seat wait, no-model backoff and starved route, the thought act, act publishing and the state in Redis
+are ``orion/mindloop/runtime.py``; this module keeps what only Prime does (its reads, concerns, frame, answer,
+moves and how they settle). Log line names (``prime_thought``, ``prime_try_no_model``, ``prime_started`` ...),
+the actor, act ids, family, Redis key and env keys did not change.
 
 Two clocks:
 
@@ -77,24 +82,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
-import time
 import urllib.request
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Iterator, Optional
+from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.grammar.acts import act_closed_event, act_opened_event
-from orion.grammar.publish import GRAMMAR_EVENT_CHANNEL
+from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.introspect.transport import (
     QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL,
     REQUEST_KIND,
     RESULT_KIND,
     RESULT_PREFIX,
 )
+from orion.mindloop.gate import GATE_RECHECK_SEC, build_act_gate, gate_why
+from orion.mindloop.instance import LoopIdentity
+from orion.mindloop.runtime import MindLoopRuntime, ModelReply, utcnow
+from orion.mindloop.turns import JUNIPER_TURNS, JuniperTurns
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import (
     ACTOR,
@@ -126,15 +129,10 @@ from orion.prime.state import (
     PrimeRegulationOpenV1,
     PrimeSnapshotV1,
     PrimeStateV1,
-    TryKind,
-    classify_try,
     new_id,
-    note_model_reached,
-    note_no_model,
     note_outcome,
     observe,
     trim_record,
-    wants_starved_route,
     wants_to_think,
 )
 from orion.prime.thought import (
@@ -155,9 +153,7 @@ from orion.schemas.introspect import (
     IntrospectToolBindingV1,
     QueueCuriosityFocusArguments,
 )
-from orion.self_monitor.adapters import act_faculty
-from orion.self_monitor.gate import FAILING_STATUSES, ActGate, GateDecision, last_attempt_sql, read_view_sync
-from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
+from orion.self_monitor.gate import GateDecision
 
 logger = logging.getLogger("orion-mind.prime")
 
@@ -169,90 +165,20 @@ FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
-# The no-model backoff's base never drops below this, even with PRIME_REFRACTORY_SEC=0 (no tick-rate loop).
-NO_MODEL_BACKOFF_FLOOR_SEC = 60.0
 
+# Prime on the bus, in the body economy, the ledger, Redis and the logs (orion/mindloop/instance.py).
+PRIME_IDENTITY = LoopIdentity(
+    name="prime", family=FAMILY, actor=ACTOR, producer=PRODUCER, state_key=STATE_KEY, settings_prefix="PRIME_",
+    source_service=SOURCE_SERVICE, thought_component=THOUGHT_COMPONENT, thought_ref="prime_thought:", tier=1,
+    logger_name=logger.name, verb="infer", temperature=0.4, thinking=False, cost_unit="thought",
+)
 
-class JuniperTurns:
-    """Juniper's live turns through run_mind. Thread-safe: run_mind runs on the request path."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._active = 0
-        self._last_started = 0.0
-
-    @contextmanager
-    def turn(self) -> Iterator[None]:
-        with self._lock:
-            self._active += 1
-            self._last_started = time.monotonic()
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._active -= 1
-
-    def active(self) -> bool:
-        with self._lock:
-            return self._active > 0
-
-    def started_since(self, mono: float) -> bool:
-        with self._lock:
-            return self._active > 0 or self._last_started >= mono
-
-
-JUNIPER_TURNS = JuniperTurns()
+__all__ = ["JUNIPER_TURNS", "JuniperTurns", "PRIME_IDENTITY", "PrimeRuntime", "STATE_KEY", "build_act_gate"]
 
 
 def _get_json(url: str) -> Any:
     with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_SEC) as resp:  # noqa: S310 -- internal service URL
         return json.loads(resp.read())
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-# A refused concern bet is asked again at most this often (the tick is 15 s; the answer changes at most
-# hourly, when the self-monitor publishes).
-GATE_RECHECK_SEC = 60.0
-_LEDGER_CONNECT_TIMEOUT_SEC = 3
-_LEDGER_STATEMENT_TIMEOUT_MS = 5000
-
-
-def _ledger_rows(dsn: str, actor: str, verb: str, secs: float) -> list[dict[str, Any]]:
-    """grammar_acts rows for the gate's probe and same-job bookkeeping. Raises on failure; the gate
-    then lets its in-process memo decide (never "no attempt")."""
-    import psycopg2  # inside: a missing driver degrades to an unreadable ledger
-    import psycopg2.extras
-
-    conn = psycopg2.connect(dsn, connect_timeout=_LEDGER_CONNECT_TIMEOUT_SEC,
-                            options=f"-c statement_timeout={_LEDGER_STATEMENT_TIMEOUT_MS}")
-    try:
-        conn.set_session(readonly=True, autocommit=True)
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(last_attempt_sql("pyformat"), {"actor": actor, "verb": verb, "secs": float(secs)})
-            return [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def build_act_gate(settings: Any) -> ActGate:
-    """Prime's E1 gate. No DSN: the ledger is unreadable and the memo alone decides. A concern act's job
-    is its concern (``object_ref prime_concern:<id>``): a retry of a started open is the same job."""
-    dsn = str(getattr(settings, "SELF_MONITOR_LEDGER_PG_DSN", "") or "").strip()
-    return ActGate(
-        enabled=bool(getattr(settings, "SELF_MONITOR_ACT_GATE_ENABLED", False)),
-        probe_interval_sec=float(getattr(settings, "SELF_MONITOR_PROBE_INTERVAL_SEC", 21600.0)),
-        read_view=lambda now: read_view_sync(str(getattr(settings, "ORION_BUS_URL", "") or ""), now=now),
-        ledger_rows=lambda actor, verb, secs: _ledger_rows(dsn, actor, verb, secs) if dsn else None,
-        job_key_of=lambda row: row.get("object_ref"),
-    )
-
-
-def _gate_why(d: GateDecision, interval_sec: float) -> str:
-    return (f"my own record says these have been {d.status} lately (self-monitor: track_record_failing); "
-            f"one is re-tested every {interval_sec / 3600:g} h")
 
 
 def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
@@ -261,22 +187,10 @@ def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
     return state.model_copy(update={"recent_outcomes": [*state.recent_outcomes, text][-MAX_RECENT_OUTCOMES:]})
 
 
-@dataclass
-class _Reply:
-    """One model call's result, and whether it reached the model (orion/prime/state.py classify_try)."""
+class PrimeRuntime(MindLoopRuntime):
+    identity = PRIME_IDENTITY
+    state_model = PrimeStateV1
 
-    route: str
-    parsed: Optional[dict[str, Any]]
-    err: Optional[str]
-    gateway_error: Optional[dict[str, Any]]
-    kind: TryKind
-    pool_wait_sec: Optional[float] = None
-    started_mono: float = 0.0
-    curiosity: Optional[dict[str, Any]] = None
-    receptors: Optional[dict[str, tuple[str, ...]]] = None
-
-
-class PrimeRuntime:
     def __init__(
         self,
         *,
@@ -286,102 +200,71 @@ class PrimeRuntime:
         get_json: Callable[[str], Any] = _get_json,
         bid: Optional[Callable[[Any], Awaitable[Any]]] = None,
         release: Optional[Callable[[str], Awaitable[Any]]] = None,
-        clock: Callable[[], datetime] = _utcnow,
+        clock: Callable[[], datetime] = utcnow,
         turns: JuniperTurns = JUNIPER_TURNS,
     ) -> None:
-        self.s = settings
-        self.bus = bus
-        self.llm = llm
+        super().__init__(settings=settings, bus=bus, llm=llm, bid=bid, release=release, clock=clock, turns=turns)
+        self.state: PrimeStateV1
         self.get_json = get_json
-        if bid is None or release is None:
-            from orion.physiology.client import abid, arelease
-
-            bid, release = bid or abid, release or arelease
-        self.bid, self.release = bid, release
-        self.clock = clock
-        self.turns = turns
-        self.state = PrimeStateV1()
-        self.gate = build_act_gate(settings)
         # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
         self._bet_refused_at: dict[str, datetime] = {}
-        # The offered infer probe, spent only when the model is reached (_open_thought).
-        self._infer_probe: Optional[str] = None
-        self._infer_refusal_told = False
-        self._infer_refused_at: Optional[datetime] = None
         self._last_settle: Optional[datetime] = None
-        self._stop = asyncio.Event()
-        self._task: Optional[asyncio.Task] = None
-        self.source = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
 
-    # --- lifecycle -------------------------------------------------------------------------
-    async def start(self, *, connect: bool = False) -> None:
-        """Start the loop task. ``connect``: the task connects the bus first, retrying with backoff,
-        so a bus blip at boot delays Prime instead of disabling it for the process lifetime."""
-        self._task = asyncio.create_task(self._run(connect=connect), name="orion-prime")
-
-    async def _connect(self) -> bool:
-        delay = 1.0
-        while not self._stop.is_set():
-            try:
-                await self.bus.connect()
-                return True
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("prime_bus_connect_failed err=%s retry_in=%.0fs", type(exc).__name__, delay)
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=delay)
-            except asyncio.TimeoutError:
-                pass
-            delay = min(delay * 2, 60.0)
-        return False
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._task = None
-
-    async def _run(self, *, connect: bool = False) -> None:
-        if connect and not await self._connect():
-            return
-        await self.load()
+    # --- loop hooks (orion/mindloop/runtime.py) ----------------------------------------------
+    def _log_started(self) -> None:
         logger.info("prime_started tick_sec=%s route=%s holdback=%s concerns=%d open_questions=%d",
                     self.s.PRIME_TICK_SEC, self.s.PRIME_LLM_ROUTE, self.s.PRIME_HOLDBACK_FRACTION,
                     len(self.state.concerns), len(self.state.open_nominations))
-        while not self._stop.is_set():
-            try:
-                await self.tick()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                logger.exception("prime_tick_failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=float(self.s.PRIME_TICK_SEC))
-            except asyncio.TimeoutError:
-                pass
 
-    # --- persistence -----------------------------------------------------------------------
-    async def load(self) -> None:
-        try:
-            raw = await self.bus.redis.get(STATE_KEY)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_state_load_failed err=%s (starting empty)", type(exc).__name__)
-            return
-        if not raw:
-            return
-        try:
-            self.state = PrimeStateV1.model_validate_json(raw)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_state_unreadable err=%s (starting empty)", str(exc)[:200])
+    async def _upkeep(self) -> tuple[FrameInputs, datetime]:
+        """Read the body and attention, record what changed, settle what is due, publish concern acts."""
+        snap, inputs = await self._read_body_and_attention()
+        now = self.clock()
+        self.state = lapse_concerns(observe(self.state, snap, now), now)
+        await self._maybe_settle(now)
+        await self._settle_regulations(now)
+        await self._flush_concern_acts()
+        return inputs, now
 
-    async def save(self) -> None:
-        try:
-            await self.bus.redis.set(STATE_KEY, self.state.model_dump_json())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_state_save_failed err=%s", type(exc).__name__)
+    def _wants_to_think(self, now: datetime) -> bool:
+        return wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC)))
+
+    def _pending_count(self) -> int:
+        return len(self.state.pending_changes)
+
+    def _tell(self, text: str) -> None:
+        self.state = _with_outcome_line(self.state, text)
+
+    def _thought_act(self, thought_id: str, horizon_sec: float) -> ActV1:
+        return thought_act(thought_id, llm_timeout_sec=horizon_sec)
+
+    def _woke_note(self) -> str:
+        return woke_note(list(self.state.pending_changes))
+
+    def _new_thought_id(self) -> str:
+        return new_id()
+
+    def _parse_answer(self, parsed: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
+        return parse_answer(parsed)
+
+    async def _after_think(self) -> None:
+        await self._flush_concern_acts()
+
+    async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
+        """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
+        curiosity, curiosity_err = await self._read_curiosity()
+        inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        receptors, receptors_err = self._receptors()
+        inputs.receptors, inputs.receptors_error = receptors, receptors_err
+        if receptors is not None or receptors_err:
+            for reg in self.state.open_regulations:
+                rec = await self._read_regulation(reg.family, reg.signal_id)
+                inputs.regulation_effects[reg.signal_id] = (
+                    None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
+        frame = build_frame(self.state, inputs)
+        reply = await self._ask_model(system_prompt(receptors), frame)
+        reply.context.update(curiosity=curiosity, receptors=receptors)
+        return reply
 
     # --- reads -----------------------------------------------------------------------------
     async def _read(self, url: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -416,61 +299,7 @@ class PrimeRuntime:
         base = self.s.PRIME_HUB_URL.rstrip("/")
         return await self._read(f"{base}/curiosity/api/runs?days={CURIOSITY_RUNS_DAYS}&line=investigate")
 
-    # --- acts ------------------------------------------------------------------------------
-    async def _publish(self, event: Any) -> bool:
-        try:
-            await self.bus.publish(GRAMMAR_EVENT_CHANNEL, BaseEnvelope(
-                kind="grammar.event.v1", source=self.source, payload=event.model_dump(mode="json")))
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_act_publish_failed act=%s err=%s", event.act.act_id if event.act else "-",
-                           type(exc).__name__)
-            return False
-
-    async def _open(self, act: ActV1, component: str, *, at: Optional[datetime] = None) -> bool:
-        return await self._publish(act_opened_event(act, source_service=SOURCE_SERVICE, source_component=component,
-                                                    at=at))
-
-    async def _close(self, act: ActV1, component: str, *, produced: bool, note: str,
-                     at: Optional[datetime] = None) -> bool:
-        return await self._publish(act_closed_event(act, produced=produced, source_service=SOURCE_SERVICE,
-                                                    source_component=component, note=note, at=at))
-
-    # --- self-monitor act gate (E1) ---------------------------------------------------------
-    async def _gate_decide(self, verb: str, object_ref: str, *, job_key: Optional[str] = None,
-                           recheck_soon: bool = False) -> Optional[GateDecision]:
-        """The gate's answer, or None (gate off, or a gate fault: one direction only, nothing changes).
-        Runs in a worker thread: the view read is Redis, the ledger read Postgres. ``recheck_soon``: this
-        act was refused under GATE_RECHECK_SEC ago; while the fresh view still holds the faculty failing
-        it stays refused without a ledger read. The view is always read, so an unknown, stale or healed
-        view admits at once, exactly like the gate being off."""
-        if not self.gate.enabled:
-            return None
-        now = self.clock()
-
-        def run() -> GateDecision:
-            view = self.gate.begin(now)
-            faculty = act_faculty(ACTOR, verb, object_ref)
-            if recheck_soon and view.known and view.status(faculty) in FAILING_STATUSES:
-                return GateDecision(faculty, False, False, view.status(faculty), TRACK_RECORD_FAILING_REASON)
-            return self.gate.decide(ACTOR, verb, object_ref, now=now, job_key=job_key)
-
-        try:
-            return await asyncio.to_thread(run)
-        except Exception:  # noqa: BLE001
-            logger.warning("prime_self_monitor_gate_failed verb=%s", verb, exc_info=True)
-            return None
-
-    def _admit(self, d: Optional[GateDecision], *, job_key: Optional[str] = None) -> bool:
-        """Spend an offered probe now (the act is about to open). Prime is one loop, so a claim only
-        fails if something else already started this window's probe: then the act is refused."""
-        if d is None or not d.admit:
-            return d is None
-        if d.probe:
-            return self.gate.claim_probe(d.faculty, now=self.clock(), job_key=job_key)
-        self.gate.note_job_started(d.faculty, job_key, now=self.clock())
-        return True
-
+    # --- self-monitor act gate (E1): Prime's own acts -------------------------------------
     async def _concern_bet(self, concern_id: str, text: str, now: datetime) -> tuple[bool, Optional[GateDecision]]:
         """(may open, the decision). The probe is spent by the caller only after the open was published,
         so a failed publish spends nothing (and leaves no in-process memo a restart could lose)."""
@@ -484,7 +313,7 @@ class PrimeRuntime:
         if refused_at is None:
             # Once per concern: a frame line, not a change (a refusal must not wake Prime by itself).
             self.state = _with_outcome_line(self.state, f"my bet that the concern {text[:120]!r} leads somewhere "
-                                                        f"was not placed: {_gate_why(d, self.gate.probe_interval_sec)}")
+                                                        f"was not placed: {gate_why(d, self.gate.probe_interval_sec)}")
             logger.info("prime_act_refused verb=predict concern=%s gate=%s", concern_id, d.label())
             self._bet_refused_at[concern_id] = now
         elif (now - refused_at).total_seconds() >= GATE_RECHECK_SEC:
@@ -522,31 +351,7 @@ class PrimeRuntime:
             return None
         logger.info("prime_act_refused verb=%s gate=%s", verb, d.label() if d else "-")
         what = "signals" if verb == "regulate" else "questions"
-        return _gate_why(d, self.gate.probe_interval_sec).replace("these", f"my {what}", 1)
-
-    async def _thought_gate_admits(self, now: datetime) -> bool:
-        """Before the bid. A probe is only offered here; it is spent when the model is reached. A refusal
-        is re-checked against the ledger at most every GATE_RECHECK_SEC (the view every tick)."""
-        self._infer_probe = None
-        last = self._infer_refused_at
-        d = await self._gate_decide("infer", "prime_thought:", recheck_soon=(
-            last is not None and (now - last).total_seconds() < GATE_RECHECK_SEC))
-        if d is None or (d.admit and not d.probe):
-            self._infer_refusal_told = False
-            self._infer_refused_at = None
-            return True
-        if d.probe:
-            self._infer_probe = d.faculty
-            self._infer_refused_at = None
-            return True
-        if last is None or (now - last).total_seconds() >= GATE_RECHECK_SEC:
-            self._infer_refused_at = now
-        logger.info("prime_act_refused verb=infer gate=%s pending=%d", d.label(), len(self.state.pending_changes))
-        if not self._infer_refusal_told:
-            self._infer_refusal_told = True
-            self.state = _with_outcome_line(self.state, f"at {now:%H:%M} UTC I did not start a thought: "
-                                                        f"{_gate_why(d, self.gate.probe_interval_sec)}")
-        return False
+        return gate_why(d, self.gate.probe_interval_sec).replace("these", f"my {what}", 1)
 
     async def _flush_concern_acts(self) -> None:
         """Open the act of every concern that has none yet (new, or held from before concern acts), then
@@ -584,175 +389,9 @@ class PrimeRuntime:
         for cid in [k for k in self._bet_refused_at if k not in live]:
             del self._bet_refused_at[cid]
 
-    # --- the tick --------------------------------------------------------------------------
-    async def tick(self) -> None:
-        snap, inputs = await self._read_body_and_attention()
-        now = self.clock()
-        self.state = lapse_concerns(observe(self.state, snap, now), now)
-        await self._maybe_settle(now)
-        await self._settle_regulations(now)
-        await self._flush_concern_acts()
-        await self.save()
-        if self.turns.active():
-            logger.info("prime_yield reason=juniper_turn pending=%d", len(self.state.pending_changes))
-            return
-        if not wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC))):
-            return
-        if not await self._thought_gate_admits(now):
-            await self.save()
-            return
-        from orion.schemas.physiology_want import WantV1
-
-        want = WantV1(want_id=f"prime-think-{uuid4().hex[:12]}", family=FAMILY, producer=PRODUCER, verb="infer",
-                      tier=1, lanes=[self.s.PRIME_BID_LANE], cost=self._cost_ceiling())
-        decision = await self.bid(want)
-        outcome = getattr(decision, "outcome", None)
-        if outcome != "funded":
-            # Never fail open: no answer is "not funded" (orion/physiology/client.py).
-            logger.info("prime_bid_not_funded outcome=%s reason=%s binding=%s pending=%d",
-                        outcome or "none", getattr(decision, "reason", None) or "-",
-                        getattr(decision, "binding_constraint", None) or "-", len(self.state.pending_changes))
-            return
-        try:
-            await self.think(inputs)
-        finally:
-            await self.release(want.want_id)
-            await self._flush_concern_acts()
-            await self.save()
-
-    def _cost_ceiling(self) -> Any:
-        """One thought's lane cost at its enforced maximum: the model call's timeout, on Prime's lane.
-
-        Without it a family with no measured slot time is priced at a whole lane window
-        (orion/physiology/choice.py "priced_at_one_window"). Live 10-30, every Prime bid was then
-        deferred capacity_reserved on lane:chat (24/24), so Prime could never think and never build the
-        history that would price it. Same rule as a dispatch route's cold_cost_ceiling_sec: charge the
-        doer's enforced maximum while nothing is on record."""
-        from orion.schemas.grammar import ActCostV2
-
-        ceiling = float(self.s.PRIME_LLM_TIMEOUT_SEC)
-        return ActCostV2(gpu_slot_s_by_lane={self.s.PRIME_BID_LANE: ceiling},
-                         basis={"gpu_slot_s_by_lane": f"ceiling: PRIME_LLM_TIMEOUT_SEC {ceiling:g} s per thought"})
-
-    # --- the thought -----------------------------------------------------------------------
-    def _route(self) -> str:
-        if wants_starved_route(self.state):
-            return str(getattr(self.s, "PRIME_STARVED_LLM_ROUTE", "") or self.s.PRIME_LLM_ROUTE)
-        return self.s.PRIME_LLM_ROUTE
-
-    def _seat_wait_sec(self) -> float:
-        return float(getattr(self.s, "PRIME_SEAT_WAIT_SEC", 0.0) or 0.0)
-
-    async def think(self, inputs: FrameInputs) -> None:
-        now = self.clock()
-        thought_id = new_id()
-        # The act's horizon covers the whole try: the seat wait plus the generation budget.
-        act = thought_act(thought_id, llm_timeout_sec=self._seat_wait_sec() + float(self.s.PRIME_LLM_TIMEOUT_SEC))
-        # Captured before anything can clear pending changes: every close of this act says why it woke.
-        woke = woke_note(list(self.state.pending_changes))
-        try:
-            reply = await self._ask(inputs, now)
-        except Exception as exc:  # noqa: BLE001 -- a crash is a failed thought (refractory holds: no hot loop)
-            logger.exception("prime_thought_crashed thought=%s", thought_id)
-            await self._open_thought(act, now)
-            await self._close(act, THOUGHT_COMPONENT, produced=False,
-                              note=f"{woke} | failed: {type(exc).__name__}: {str(exc)[:160]}")
-            return
-        if reply.kind != "model":
-            self._note_no_model(reply, self.clock())   # the backoff counts from the end of the try
-            return
-        await self._open_thought(act, now)
-        try:
-            produced, note = await self._conclude(act, thought_id, inputs, now, reply)
-        except Exception as exc:  # noqa: BLE001 -- the act always closes
-            logger.exception("prime_thought_crashed thought=%s", thought_id)
-            produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
-        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=f"{woke} | {note}")
-
-    async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
-        """The model was reached: the thought happened. Opened stamped with the try's start; counts for
-        the refractory interval from then (a failed or preempted thought must not retry every tick)."""
-        if self._infer_probe is not None:
-            # The model was reached: the offered probe is a real attempt now. Prime is one loop, so the
-            # claim cannot lose a race; the thought already happened either way.
-            self.gate.claim_probe(self._infer_probe, now=self.clock())
-            self._infer_probe = None
-        await self._open(act, THOUGHT_COMPONENT, at=started_at)
-        self.state = note_model_reached(self.state).model_copy(update={"last_thought_at": started_at})
-
-    def _note_no_model(self, reply: "_Reply", now: datetime) -> None:
-        gw = reply.gateway_error or {}
-        first = self.state.no_model_streak == 0
-        self.state = note_no_model(self.state, reply.kind, now,
-                                   base=timedelta(seconds=max(float(self.s.PRIME_REFRACTORY_SEC),
-                                                              NO_MODEL_BACKOFF_FLOOR_SEC)),
-                                   retry_after_sec=gw.get("retry_after_sec"))
-        if first:
-            # Once per streak, so the next real thought knows its last try was starved (not a change:
-            # it must not wake Prime by itself).
-            self.state = _with_outcome_line(
-                self.state, f"a try to think at {now:%H:%M} UTC never reached the model ({reply.kind}"
-                            f"{': ' + str(gw.get('reason')) if gw.get('reason') else ''}); I tried again")
-        logger.info("prime_try_no_model kind=%s route=%s reason=%s err=%s streak=%d retry_not_before=%s pending=%d",
-                    reply.kind, reply.route, gw.get("reason") or "-", (reply.err or "-")[:160],
-                    self.state.no_model_streak,
-                    self.state.retry_not_before.isoformat() if self.state.retry_not_before else "-",
-                    len(self.state.pending_changes))
-
-    async def _ask(self, inputs: FrameInputs, now: datetime) -> "_Reply":
-        """Build the frame and call the model; one immediate retry on an upstream 5xx."""
-        curiosity, curiosity_err = await self._read_curiosity()
-        inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
-        receptors, receptors_err = self._receptors()
-        inputs.receptors, inputs.receptors_error = receptors, receptors_err
-        if receptors is not None or receptors_err:
-            for reg in self.state.open_regulations:
-                rec = await self._read_regulation(reg.family, reg.signal_id)
-                inputs.regulation_effects[reg.signal_id] = (
-                    None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
-        frame = build_frame(self.state, inputs)
-        route = self._route()
-        started = time.monotonic()
-        reply = await self._call(route, system_prompt(receptors), frame)
-        if reply.kind == "upstream_5xx":
-            logger.info("prime_upstream_5xx_retry route=%s err=%s", route, (reply.err or "-")[:160])
-            started = time.monotonic()
-            reply = await self._call(route, system_prompt(receptors), frame)
-        # Juniper-first preemption counts from the GRANT: a Juniper turn during the seat wait went ahead
-        # of Prime in the pool and is over or running beside it, not overlapped by generation. When the
-        # gateway did not report its wait, count from the start (the conservative old rule).
-        reply.started_mono = started + (reply.pool_wait_sec or 0.0)
-        reply.curiosity, reply.receptors = curiosity, receptors
-        return reply
-
-    async def _call(self, route: str, system: str, frame: str) -> "_Reply":
-        seat = self._seat_wait_sec()
-        try:
-            parsed, err, meta = await asyncio.to_thread(
-                self.llm.request_json,
-                system_prompt=system, user_prompt=frame, route=route,
-                max_tokens=int(self.s.PRIME_MAX_TOKENS), temperature=0.4, thinking=False,
-                timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC), pool_wait_sec=seat if seat > 0 else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            parsed, err, meta = None, f"{type(exc).__name__}: {str(exc)[:160]}", {}
-        gw = (meta or {}).get("gateway_error") if isinstance(meta, dict) else None
-        gw = gw if isinstance(gw, dict) else None
-        kind = "model" if parsed is not None and not err else classify_try(err, gw)
-        wait_ms = (meta or {}).get("pool_wait_ms") if isinstance(meta, dict) else None
-        return _Reply(route=route, parsed=parsed, err=err, gateway_error=gw, kind=kind,
-                      pool_wait_sec=float(wait_ms) / 1000.0 if isinstance(wait_ms, (int, float)) else None)
-
     async def _conclude(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime,
-                        reply: "_Reply") -> tuple[bool, str]:
-        if self.turns.started_since(reply.started_mono):
-            logger.info("prime_thought_preempted thought=%s", thought_id)
-            return False, "preempted: a Juniper turn started"
-        answer, perr = (None, reply.err) if reply.err else parse_answer(reply.parsed)
-        if answer is None:
-            logger.info("prime_thought_failed thought=%s err=%s", thought_id, perr)
-            return False, f"failed: {perr}"
-        curiosity, receptors = reply.curiosity, reply.receptors
+                        reply: ModelReply, answer: Any) -> tuple[bool, str]:
+        curiosity, receptors = reply.context.get("curiosity"), reply.context.get("receptors")
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None

@@ -54,7 +54,13 @@ this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 ## Orion Prime 2A: the resident loop (2026-10-30)
 
 orion-mind keeps thinking between conversations. Design: `docs/superpowers/specs/2026-10-29-orion-prime-design.md`
-(PR #2980), rollout step 2A. Code: `app/prime_loop.py` (I/O) and `orion/prime/` (pure logic).
+(PR #2980), rollout step 2A. Code: `app/prime_loop.py` (Prime's I/O), `orion/prime/` (pure logic) and, since
+2026-11-04, the loop library `orion/mindloop/` (the tick, Juniper-first yield, the bid, the model call with seat
+wait, no-model backoff and starved route, the thought act, act publishing, state in Redis). Prime is the library's
+instance #1 (`PrimeRuntime(MindLoopRuntime)`); the curiosity replica will be #2
+(`docs/superpowers/specs/2026-11-04-curiosity-replica-design.md` section 10). The move changed no behavior:
+`tests/test_prime_replay.py` replays recorded tick sequences against a golden recorded before the move, and loads
+the live persisted state captured from Redis on 2026-11-04.
 
 **What it does.** Every `PRIME_TICK_SEC` a CPU-only tick reads the body (durable-runs `GET /physiology/state`)
 and attention (`GET /temporal-self/frame`) and records what changed: one of Prime's own questions settled, a concern
@@ -97,7 +103,8 @@ Juniper turn overlapped the call), `ask` per question (`test_before = holdback:<
 thought, `goal_ref = prime_concern:<id>`), `predict` per concern (below).
 
 **Self-monitor act gate (2026-11-03).** Prime opens its acts itself, so the self-monitor's act gate
-(`orion/self_monitor/gate.py`, PR #3062) sits in `app/prime_loop.py` too. When the self-monitor (Redis
+(`orion/self_monitor/gate.py`, PR #3062) sits in the loop too: the thought (`infer`) in `orion/mindloop/runtime.py`,
+concern bets and moves in `app/prime_loop.py`, the gate builder in `orion/mindloop/gate.py`. When the self-monitor (Redis
 `orion:self_monitor:latest`, fresh) holds a Prime faculty `broken` or `unreliable` (today `act.prime.predict`,
 the concern bets, works about 2-6% of the time), the act is not opened (`track_record_failing`), except one
 re-test probe per faculty per `SELF_MONITOR_PROBE_INTERVAL_SEC` (21600). What a refusal means:

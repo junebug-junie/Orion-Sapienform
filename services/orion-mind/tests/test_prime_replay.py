@@ -43,3 +43,22 @@ def test_the_live_persisted_state_loads_and_saves_back_unchanged():
     assert bus.redis.kv[STATE_KEY] == raw
     assert STATE_KEY == "orion:prime:state"
     assert PrimeStateV1.model_validate_json(raw).model_dump_json() == raw
+
+
+def test_a_second_instance_beside_prime_keeps_its_own_key_family_and_actor():
+    """Two instances on one bus and one Redis (as they will run in orion-mind): neither touches the other."""
+    from orion.mindloop.tests.echo_instance import ECHO_KEY, EchoStateV1, echo_runtime
+    from test_prime_loop import MOVE
+
+    bus = Bus()
+    prime = runtime(answer=MOVE, bus=bus)
+    echo = echo_runtime([({"echo": "hi"}, None, {})], bus=bus, turns=prime.turns)
+    asyncio.run(prime.tick())
+    prime_saved = bus.redis.kv[STATE_KEY]
+    asyncio.run(echo.tick())
+    assert set(bus.redis.kv) == {STATE_KEY, ECHO_KEY} and bus.redis.kv[STATE_KEY] == prime_saved
+    assert EchoStateV1.model_validate_json(bus.redis.kv[ECHO_KEY]).answers == ["hi"]
+    assert [w.family for w in prime.bids] == ["prime"] and [w.family for w in echo.bids] == ["test.echo"]
+    actors = [a["actor"] for _, a in bus.acts()]
+    assert set(actors) == {"prime", "echo"} and actors[-2:] == ["echo", "echo"]
+    assert prime.state is not echo.state and prime.gate is not echo.gate

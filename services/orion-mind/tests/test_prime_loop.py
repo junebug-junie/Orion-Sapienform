@@ -615,7 +615,7 @@ class _TurnDuringCall:
 
     def request_json(self, **kw):
         self.calls.append(kw)
-        import app.prime_loop as pl
+        import orion.mindloop.runtime as pl  # the loop library reads time.monotonic (2026-11-04)
 
         base = pl.time.monotonic()
         # The turn starts 1 s into the call; the reply arrives 30 s later.
@@ -629,7 +629,7 @@ class _TurnDuringCall:
 def test_a_juniper_turn_during_the_seat_wait_does_not_discard_the_thought(monkeypatch):
     """Review 2026-11-03: with a 10 min seat wait, counting preemption from the start of the try would
     throw away most thoughts. A turn that went first in the pool, during the wait, did not overlap."""
-    import app.prime_loop as pl
+    import orion.mindloop.runtime as pl  # the loop library reads time.monotonic (2026-11-04)
 
     turns = JuniperTurns()
     rt = runtime(answer=MOVE, turns=turns)
@@ -642,7 +642,7 @@ def test_a_juniper_turn_during_the_seat_wait_does_not_discard_the_thought(monkey
 
 
 def test_a_juniper_turn_during_generation_still_preempts(monkeypatch):
-    import app.prime_loop as pl
+    import orion.mindloop.runtime as pl  # the loop library reads time.monotonic (2026-11-04)
 
     turns = JuniperTurns()
     rt = runtime(answer=MOVE, turns=turns)

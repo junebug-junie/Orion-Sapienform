@@ -268,6 +268,9 @@ class PrimeRuntime(MindLoopRuntime):
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
         curiosity, curiosity_err = await self._read_curiosity()
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        # Once per thought, never per tick: the report takes ~1.5 s to build.
+        inputs.energy, inputs.energy_error = await self._read(
+            f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/physiology/report")
         receptors, receptors_err = self._receptors()
         inputs.receptors, inputs.receptors_error = receptors, receptors_err
         if receptors is not None or receptors_err:

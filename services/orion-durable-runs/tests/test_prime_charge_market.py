@@ -226,3 +226,68 @@ def test_a_shadow_bid_of_a_receiving_family_is_never_charged_or_recorded():
     assert shadow.producer not in BINDING_PRODUCERS
     d = asyncio.run(market(r).bid(shadow, NOW))
     assert "Prime" not in d.why and effects(r) == {} and r.reads == 0
+
+
+# --- the organ's refusal (curiosity replica patch 4, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md
+# section 9): written next to the signal, read from the next bid, never applied on either arm. ---
+
+def refuse(redis, sig, *, signal_id=None, reason="curiosity was idle all morning; a slower pace would starve it"):
+    ref = pc.PrimeChargeRefusalV1(signal_id=signal_id or sig.signal_id, act_id="act_answer", by="curiosity.replica",
+                                  reason=reason, at=NOW - timedelta(minutes=5))
+    redis.h.setdefault(pc.key(sig.family), {})[pc.REFUSAL_FIELD] = pc.dumps(ref)
+
+
+def test_a_refused_treated_signal_is_not_applied_and_the_decision_says_who_refused_it():
+    r = Redis(_state().model_dump_json())
+    sig = signal()
+    put(r, sig)
+    refuse(r, sig)
+    m = market(r)
+    d = asyncio.run(m.bid(cwant(), NOW))
+    # Without the refusal this bid is held (test above); refused, it goes ahead and says why.
+    assert d.outcome == "funded" and d.binding_constraint is None and "prime:slow" not in (d.why or "").split(";")[0]
+    assert "Prime's slow charge refused by curiosity.replica: curiosity was idle all morning" in d.why
+    assert "would have been 0." in d.why
+    e = effects(r)["run0"]
+    # What really happened: the charge changed nothing. What it would have done is in the why.
+    assert e.effect == "unchanged" and e.why.startswith("refused by curiosity.replica:")
+    assert "without the refusal it would have been held" in e.why
+    assert m.health(NOW)["prime_refused"] == 1 and m.health(NOW)["prime_applied"] == 0
+    # Graded on what happened: the regulate act reads 0 (nothing changed).
+    assert not pc.changed_any(pc.parse_effects(r.h[pc.key(C)], signal_id="sig1"))
+
+
+def test_a_refusal_counts_from_the_next_bid_so_earlier_holds_stay_on_record():
+    r = Redis(_state().model_dump_json())
+    sig = signal()
+    put(r, sig)
+    m = market(r)
+    assert asyncio.run(m.bid(cwant(), NOW)).outcome == "deferred"
+    refuse(r, sig)
+    d = asyncio.run(m.bid(cwant(), NOW + timedelta(minutes=2)))
+    assert d.outcome == "funded"
+    e = effects(r)["run0"]
+    assert (e.effect, e.last, e.bids) == ("held", "unchanged", 2)   # the hold really happened once
+
+
+def test_a_refused_control_signal_records_unchanged_on_the_same_rule():
+    r = Redis(_state().model_dump_json())
+    sig = signal(arm="control")
+    put(r, sig)
+    refuse(r, sig)
+    d = asyncio.run(market(r).bid(cwant(), NOW))
+    assert d.outcome == "funded" and "Prime" not in d.why           # a control signal never shows in a decision
+    e = effects(r)["run0"]
+    assert e.effect == "unchanged" and "a control signal" in e.why and "would have been held" in e.why
+
+
+def test_a_refusal_of_an_earlier_signal_or_an_unreadable_one_never_lifts_the_charge():
+    for write in (lambda r, s: refuse(r, s, signal_id="older_signal"),
+                  lambda r, s: r.h.setdefault(pc.key(C), {}).__setitem__(pc.REFUSAL_FIELD, "{not json")):
+        r = Redis(_state().model_dump_json())
+        sig = signal()
+        put(r, sig)
+        write(r, sig)
+        d = asyncio.run(market(r).bid(cwant(), NOW))
+        assert d.outcome == "deferred" and d.binding_constraint == "prime:slow" and "refused" not in d.why
+        assert effects(r)["run0"].effect == "held"

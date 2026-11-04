@@ -12,7 +12,13 @@ frame). Sections:
   on curiosity, Redis ``orion:prime:regulate:durable.curiosity_investigate``; never Prime's private state);
 * PENDING FOCUS (from the request), and WHAT JUNIPER HAS BEEN TALKING ABOUT (the newest chat-history compactor
   digest: its card summary and journal title, with its age; no raw chat text);
-* TRACK RECORD (its own last plans, ``orion/curiosity/replica/track_record.py``).
+* TRACK RECORD (its own last plans, ``orion/curiosity/replica/track_record.py``);
+* YOUR ANSWERS TO PRIME (patch 4): its refusal rate over its last 20 answers, and its last answers
+  (``orion/curiosity/replica/answers.py``).
+
+A second frame, the REPLY frame (``build_reply_frame``), is for a thought woken by a new Prime act with no plan
+request (design section 9, "between runs"): what Prime did, Prime's concerns, recent runs, the digest and its
+own answers; the answer is one stance (``ReplyAnswerV1``).
 
 A regulate signal is shown without its holdback arm: the replica must not be able to tell Prime's treated
 signals from its controls.
@@ -26,6 +32,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
+from orion.curiosity.replica.answers import AnswerRecordV1, ReplyAnswerV1, TargetV1, answer_lines
 from orion.curiosity.replica.track_record import record_lines, tested_nats
 from orion.prime.state import PrimeConcernsViewV1
 from orion.schemas.curiosity_replica import (
@@ -42,8 +49,20 @@ STALE_IDS_SHOWN = 20
 # Prime saves its state (and this view) every 15 s tick. Older than this: Prime is probably not running.
 CONCERNS_STALE_SEC = 900.0
 
+# What a stance does (design section 9, patch 4). Shared by the plan prompt and the reply prompt.
+STANCE_RULES = """- What a stance does. It answers Prime, Orion's slow between-conversations thinking, and Prime is told.
+  "support": you agree; nothing changes. "challenge": you disagree, but it still happens; Prime is shown your
+  reason. "refuse": a question Prime queued is NOT shown to the run; a signal from Prime stops charging
+  curiosity's bids from the next bid on. Every challenge and refusal must carry a one-sentence reason.
+- You can only refuse what PRIME did. A focus Juniper asked for, or one Orion chose in a conversation, can be
+  challenged but never refused.
+- You answer each act of Prime's once, at most <PER_DAY> times a day, with at least <REFRACTORY_MIN> minutes between answers. Some
+  challenges and refusals are held back at random (recorded, not applied), so Orion can tell whether they help.
+  Your refusal rate is watched: refuse only when Prime's push would cost this run something real."""
+
 SYSTEM_PROMPT = f"""You are curiosity's planner (the curiosity replica): a small helper inside Orion's curiosity organ.
-You are not Orion, and nothing you write is shown to Orion.
+You are not Orion. Nothing you write is shown to Orion's curiosity run; only the reasons you give for
+challenging or refusing an act of Prime's are shown to Prime.
 
 Before one of Orion's curiosity runs, you choose which of Orion's open beliefs (priors) are shown FIRST.
 Orion then decides for itself what, if anything, to test. You only set the order of the top of the list;
@@ -66,15 +85,21 @@ Rules:
 - "why": one sentence, at most 200 characters.
 - "abstain": true (with "picks": []) means nothing here is worth reordering; the rule order is used.
 - "focus_stance": your view of the PENDING FOCUS, if there is one: {{"stance": "support" | "challenge" |
-  "refuse", "reason": "one sentence"}}. "refuse" only means something for a focus Prime queued, never for
-  one Juniper asked for. "signal_stance": the same for PRIME'S SIGNAL ON CURIOSITY, with its "signal_id".
-  Both are optional. For now they are recorded only; nothing acts on them yet.
+  "refuse", "reason": "one sentence"}}. "signal_stance": the same for PRIME'S SIGNAL ON CURIOSITY, with its
+  "signal_id". Both are optional; null is a normal answer.
+{STANCE_RULES}
 - A section marked "(unavailable: ...)" could not be read. Do not treat it as empty.
 """
 
 
-def system_prompt() -> str:
-    return SYSTEM_PROMPT
+def _caps(text: str, per_day: int, refractory_min: int) -> str:
+    return text.replace("<PER_DAY>", str(int(per_day))).replace("<REFRACTORY_MIN>", str(int(refractory_min)))
+
+
+def system_prompt(*, per_day: int = 3, refractory_min: int = 30) -> str:
+    """The plan prompt; the answer caps are the live settings (CURIOSITY_REPLICA_ANSWERS_PER_DAY,
+    CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC)."""
+    return _caps(SYSTEM_PROMPT, per_day, refractory_min)
 
 
 @dataclass
@@ -102,6 +127,10 @@ class ReplicaFrameInputs:
     fallback_counts: Optional[dict[str, int]] = None
     plans_total: Optional[int] = None
     notes: list[str] = field(default_factory=list)
+    # Its own answers to Prime (orion/curiosity/replica/answers.py), from its own state.
+    answers: list[AnswerRecordV1] = field(default_factory=list)
+    # Whether answering Prime is on (CURIOSITY_REPLICA_ANSWERS_ENABLED); off, the section says stances are recorded only.
+    answers_on: bool = True
 
 
 def _aware(value: Any) -> Optional[datetime]:
@@ -263,11 +292,104 @@ def build_frame(inp: ReplicaFrameInputs) -> str:
         lines.append(f"(unavailable: {inp.record_error or 'not read'})")
     else:
         lines += record_lines(inp.record_rows, fallback_counts=inp.fallback_counts, plans_total=inp.plans_total)
+    lines.append("")
+    lines += _answers_section(inp)
     if inp.notes:
         lines.append("")
         lines.append("NOTES:")
         lines += [f"- {n}" for n in inp.notes[-3:]]
     return "\n".join(lines)
+
+
+def _answers_section(inp: "ReplicaFrameInputs | ReplyFrameInputs") -> list[str]:
+    if not inp.answers_on:
+        return ["YOUR ANSWERS TO PRIME: answering Prime is switched off; a stance is recorded only, nothing acts on it."]
+    return ["YOUR ANSWERS TO PRIME (newest first):", *answer_lines(inp.answers, inp.now)]
+
+
+@dataclass
+class ReplyFrameInputs:
+    """A reply thought: no plan request, one Prime act to answer."""
+
+    now: datetime
+    target: TargetV1
+    runs: Optional[list[dict[str, Any]]] = None
+    runs_error: Optional[str] = None
+    outcomes: Optional[dict[str, Mapping[str, Any]]] = None
+    outcomes_error: Optional[str] = None
+    concerns: Optional[PrimeConcernsViewV1] = None
+    concerns_error: Optional[str] = None
+    signal: Optional[dict[str, Any]] = None
+    signal_error: Optional[str] = None
+    digest: Optional[dict[str, Any]] = None
+    digest_error: Optional[str] = None
+    notes: list[str] = field(default_factory=list)
+    answers: list[AnswerRecordV1] = field(default_factory=list)
+    answers_on: bool = True
+
+
+REPLY_SYSTEM_PROMPT = f"""You are curiosity's planner (the curiosity replica): a small helper inside Orion's curiosity organ.
+You are not Orion. Nothing you write is shown to Orion's curiosity run; only the reasons you give for
+challenging or refusing an act of Prime's are shown to Prime.
+
+Prime, Orion's slow between-conversations thinking, just acted on curiosity: it queued a question for curiosity's
+next run, or sent a signal that slows down (or quickens) how often curiosity runs. You answer it once.
+
+Answer with ONE JSON object and nothing else:
+{{"reading": "one sentence: how you read curiosity's situation now",
+ "stance": "support" | "challenge" | "refuse",
+ "reason": "one sentence, at most 200 characters"}}
+
+Rules:
+{STANCE_RULES}
+- Judge by what curiosity has been finding and failing (RECENT RUNS), what Prime is concerned about, and what
+  Juniper has been talking about. "support" is a normal, good answer.
+- A section marked "(unavailable: ...)" could not be read. Do not treat it as empty.
+"""
+
+
+def reply_system_prompt(*, per_day: int = 3, refractory_min: int = 30) -> str:
+    return _caps(REPLY_SYSTEM_PROMPT, per_day, refractory_min)
+
+
+def _target_lines(inp: ReplyFrameInputs) -> list[str]:
+    t = inp.target
+    if t.kind == "focus":
+        return ["WHAT PRIME DID: queued a question for curiosity's next regular run (the run is shown it first "
+                f"unless you refuse it): {_one_line(t.about, 500)!r}"]
+    until = f", until {t.expires_at:%H:%M} UTC" if t.expires_at else ""
+    return [f"WHAT PRIME DID: sent a {t.direction or '?'} signal to curiosity (signal_id {t.target_id}{until}): "
+            f"{_one_line(t.about, 500)!r}",
+            "A slow signal is a temporary charge on curiosity's bids in Orion's body economy: a hungry run still "
+            "outbids it. Refusing it lifts the charge from the next bid on."]
+
+
+def build_reply_frame(inp: ReplyFrameInputs) -> str:
+    lines = [f"NOW: {inp.now:%Y-%m-%d %H:%M} UTC. Answer one act of Prime's.", ""]
+    lines += _target_lines(inp)
+    lines.append("")
+    lines.append("RECENT RUNS (newest first):")
+    lines += _runs_lines(inp)  # type: ignore[arg-type]  -- the same fields as a plan's inputs
+    lines.append("")
+    lines += _prime_lines(inp)  # type: ignore[arg-type]
+    lines.append("")
+    lines += _digest_lines(inp)  # type: ignore[arg-type]
+    lines.append("")
+    lines += _answers_section(inp)
+    if inp.notes:
+        lines.append("")
+        lines.append("NOTES:")
+        lines += [f"- {n}" for n in inp.notes[-3:]]
+    return "\n".join(lines)
+
+
+def parse_reply(parsed: Optional[dict[str, Any]]) -> tuple[Optional[ReplyAnswerV1], Optional[str]]:
+    if not isinstance(parsed, dict):
+        return None, "no_json_object"
+    try:
+        return ReplyAnswerV1.model_validate(parsed), None
+    except ValidationError as exc:
+        return None, f"invalid_answer: {str(exc)[:200]}"
 
 
 def parse_answer(parsed: Optional[dict[str, Any]]) -> tuple[Optional[CuriosityOfferPlanAnswerV1], Optional[str]]:
@@ -286,9 +408,15 @@ def frame_tokens(system: str, frame: str) -> int:
 
 __all__ = [
     "CONCERNS_STALE_SEC",
+    "REPLY_SYSTEM_PROMPT",
     "ReplicaFrameInputs",
+    "ReplyFrameInputs",
+    "STANCE_RULES",
     "SYSTEM_PROMPT",
     "build_frame",
+    "build_reply_frame",
+    "parse_reply",
+    "reply_system_prompt",
     "frame_tokens",
     "parse_answer",
     "system_prompt",

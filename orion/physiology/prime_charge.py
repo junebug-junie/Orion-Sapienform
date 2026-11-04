@@ -39,6 +39,16 @@ market decides the bid both ways (the second decision on a throwaway copy of its
 compares the two real decisions (``effect_between``), so the exploration floor and the capacity line count
 the same in both arms. The treated-minus-control difference in curiosity's real starts is the effect.
 
+Refusal (curiosity replica patch 4, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9).
+The organ's own planner (``curiosity.replica``) may refuse a signal on its family, with a one-sentence reason.
+It writes ``PrimeChargeRefusalV1`` in the field ``refusal`` of the same hash, next to the signal. From the next
+bid on, the market does not apply that signal's charge (``orion.physiology.choice.decide(..., prime_refusal=)``,
+whose ``why`` says "Prime's slow charge refused by curiosity.replica: <reason>"), and records each want's
+effect as ``unchanged`` -- what really happened -- with what the charge would have done in the effect's
+``why``. Same rule on both of Prime's arms. A refusal names its ``signal_id``: one left over from an earlier
+signal never applies (Prime's next signal deletes the hash anyway). Only APPLIED refusals are written; a
+refusal the replica holds back (its own control arm) is on its act only.
+
 Pure: no I/O. The market (services/orion-durable-runs/app/physiology_market.py) and Prime
 (services/orion-mind/app/prime_loop.py) do the Redis reads and writes.
 """
@@ -56,6 +66,9 @@ from orion.physiology.families import RECEPTORS
 
 KEY_PREFIX = "orion:prime:regulate:"
 SIGNAL_FIELD = "signal"
+# The organ's refusal of the signal in force (curiosity replica patch 4): ``PrimeChargeRefusalV1`` JSON.
+REFUSAL_FIELD = "refusal"
+REFUSAL_REASON_MAX = 200
 WANT_FIELD_PREFIX = "w:"
 # The charge never exceeds half the family's weight: a want ranked above the middle of its family's own
 # history still beats it (before lane prices). Live 7 days to 2026-10-30, curiosity's bid values ran
@@ -119,6 +132,20 @@ class PrimeChargeEffectV1(BaseModel):
     first_at: AwareDatetime
     last_at: AwareDatetime
     why: str = ""                # the latest decision's own why (names the charge)
+
+
+class PrimeChargeRefusalV1(BaseModel):
+    """The receiving organ refused one signal (written by the organ's planner, read by the market and Prime)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["prime.regulation.refusal.v1"] = "prime.regulation.refusal.v1"
+    signal_id: str = Field(min_length=1)
+    # The refusal's own act (actor ``by``, verb ask, parent = Prime's regulate act).
+    act_id: str = Field(min_length=1)
+    by: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=REFUSAL_REASON_MAX)
+    at: AwareDatetime
 
 
 def key(family: str) -> str:
@@ -185,6 +212,29 @@ def parse_signal(raw: object) -> Optional[PrimeRegulationV1]:
         return None
 
 
+def parse_refusal(raw: object) -> Optional[PrimeChargeRefusalV1]:
+    if raw is None:
+        return None
+    try:
+        return PrimeChargeRefusalV1.model_validate_json(raw.decode() if isinstance(raw, bytes) else str(raw))
+    except Exception:  # noqa: BLE001 -- an unreadable refusal is no refusal: the charge applies as Prime sent it
+        return None
+
+
+def refusal_for(sig: Optional[PrimeRegulationV1], refusal: Optional[PrimeChargeRefusalV1]) -> Optional[PrimeChargeRefusalV1]:
+    """``refusal`` when it refuses exactly ``sig`` (a refusal of an earlier signal never applies), else None."""
+    if sig is None or refusal is None or refusal.signal_id != sig.signal_id:
+        return None
+    return refusal
+
+
+def refused_clause(sig: PrimeRegulationV1, refusal: PrimeChargeRefusalV1, *, would_be: float) -> str:
+    """The sentence a decision's ``why`` carries when the organ refused the signal."""
+    word = "charge" if sig.direction == "slow" else "credit"
+    return (f"Prime's {sig.direction} {word} refused by {refusal.by}: {refusal.reason[:200]} "
+            f"(not applied; it would have been {abs(would_be):.2f})")
+
+
 def parse_effects(fields: Mapping[object, object], *, signal_id: Optional[str] = None) -> list[PrimeChargeEffectV1]:
     """The market's per-want records; with ``signal_id``, only those written under that signal."""
     out = []
@@ -242,7 +292,10 @@ __all__ = [
     "MAX_WANT_FIELDS",
     "MIN_HOURS",
     "PrimeChargeEffectV1",
+    "PrimeChargeRefusalV1",
     "PrimeRegulationV1",
+    "REFUSAL_FIELD",
+    "REFUSAL_REASON_MAX",
     "SIGNAL_FIELD",
     "WANT_FIELD_PREFIX",
     "active",
@@ -254,8 +307,11 @@ __all__ = [
     "key",
     "merge",
     "parse_effects",
+    "parse_refusal",
     "parse_signal",
     "receives",
+    "refusal_for",
+    "refused_clause",
     "tally",
     "why_clause",
 ]

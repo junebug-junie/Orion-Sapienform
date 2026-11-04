@@ -4010,6 +4010,30 @@ channels:
     since: "2026-11-04"
     description: "Curiosity replica plan reply, one per request, keyed by the request's correlation_id. status ok (picks) | abstain | unfunded | model_failed | unparseable; Hub adds timeout and invalid:<reason> on its own plan row. Every replica-arm run counts as replica whatever the status (intention to treat)."
 
+  # Curiosity replica patch 4 (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9): the replica
+  # refuses a focus Prime queued. Producer services/orion-mind/app/replica_loop.py, consumer
+  # services/orion-hub/scripts/curiosity_focus_refusal_listener.py.
+  - name: "orion:curiosity:replica:focus_refusal:request"
+    kind: "request"
+    schema_id: "CuriosityFocusRefusalRequestV1"
+    message_kind: "curiosity.replica.focus_refusal.request.v1"
+    producer_services: ["orion-mind"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica focus refusal RPC. orion-mind's curiosity.replica refuses a pending focus PRIME queued, with a one-sentence reason and its answer act id. Hub applies orion/curiosity/focus.py refuse_focus: the row leaves the slot as refused_by_organ, so no run is shown it. A focus Juniper asked for, or one Orion chose in a conversation, is never refused (code, SQL guard, table CHECK). Only applied refusals are sent; held-back ones stay on the replica's act. Reply on orion:curiosity:replica:focus_refusal:result:<correlation_id>."
+
+  - name: "orion:curiosity:replica:focus_refusal:result:*"
+    kind: "result"
+    schema_id: "CuriosityFocusRefusalResultV1"
+    message_kind: "curiosity.replica.focus_refusal.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-mind"]
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica focus refusal reply, one per request, keyed by the request's correlation_id. ok true: the focus was refused (refused_at). ok false: nothing was written; error says why (Juniper's focus, not Prime's, no longer pending, table unreadable)."
+
   - name: "orion:introspect:node_history:request"
     kind: "request"
     schema_id: "IntrospectRequestV1"

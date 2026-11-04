@@ -68,6 +68,8 @@ jobs:
             services/orion-hub/tests/test_curiosity_introspect_listener.py \
             services/orion-hub/tests/test_curiosity_routes_runs.py \
             services/orion-hub/tests/test_curiosity_focus.py \
+            services/orion-hub/tests/test_curiosity_focus_refusal_listener.py \
+            services/orion-hub/tests/test_curiosity_replica_plan.py \
             services/orion-hub/evals/test_curiosity_focus_eval.py \
             services/orion-hub/tests/test_power_attribution_introspect_listener.py \
             services/orion-hub/evals/test_power_attribution_eval.py \

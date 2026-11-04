@@ -18,6 +18,7 @@ from typing import Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from orion.curiosity.replica.answers import WOKEN_KEPT, AnswerRecordV1, TargetV1
 from orion.grammar.acts import build_act
 from orion.mindloop.backoff import TryKind
 from orion.schemas.curiosity_replica import REPLICA_ACTOR
@@ -56,6 +57,12 @@ class CuriosityReplicaStateV1(BaseModel):
     # Lines for the next frame that are not reasons to think (a gate refusal, a request given up on).
     notes: list[str] = Field(default_factory=list)
     plans_total: int = 0
+    # Answers to Prime (patch 4, orion/curiosity/replica/answers.py). Defaults keep older persisted state loading.
+    answers: list[AnswerRecordV1] = Field(default_factory=list)
+    # Prime acts that woke a reply thought already (each wakes the replica once), newest last.
+    woken_for: list[str] = Field(default_factory=list)
+    # Prime acts waiting for a reply thought (no plan request needed).
+    pending_targets: list[TargetV1] = Field(default_factory=list)
     # The loop library's fields (orion/mindloop/runtime.py LOOP_STATE_FIELDS).
     last_thought_at: Optional[AwareDatetime] = None
     no_model_streak: int = 0
@@ -66,6 +73,21 @@ class CuriosityReplicaStateV1(BaseModel):
 
 def add_note(state: CuriosityReplicaStateV1, text: str) -> CuriosityReplicaStateV1:
     return state.model_copy(update={"notes": [*state.notes, text][-MAX_NOTES:]})
+
+
+def note_woken(state: CuriosityReplicaStateV1, target: TargetV1) -> CuriosityReplicaStateV1:
+    """``target`` wakes one reply thought (queued) and never wakes another."""
+    if target.prime_act_id in state.woken_for:
+        return state
+    return state.model_copy(update={
+        "woken_for": [*state.woken_for, target.prime_act_id][-WOKEN_KEPT:],
+        "pending_targets": [*[t for t in state.pending_targets if t.prime_act_id != target.prime_act_id], target][-5:],
+    })
+
+
+def drop_target(state: CuriosityReplicaStateV1, prime_act_id: str) -> CuriosityReplicaStateV1:
+    return state.model_copy(update={"pending_targets": [t for t in state.pending_targets
+                                                        if t.prime_act_id != prime_act_id]})
 
 
 def plan_act(thought_id: str, run_id: str) -> ActV1:
@@ -95,7 +117,9 @@ __all__ = [
     "SOURCE_SERVICE",
     "STATE_KEY",
     "add_note",
+    "drop_target",
     "hold_plan",
+    "note_woken",
     "opened_before",
     "plan_act",
 ]

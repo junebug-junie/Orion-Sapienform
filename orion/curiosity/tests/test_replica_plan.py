@@ -229,10 +229,15 @@ def test_an_old_concerns_view_reads_as_prime_maybe_down():
     assert "STALE, Prime may not be running" in frame
 
 
-def test_the_system_prompt_states_the_score_and_keeps_stances_record_only():
-    text = system_prompt()
-    assert "3 to 5 picks" in text and "nothing you write is shown to Orion" in text
-    assert "recorded only; nothing acts on them yet" in text
+def test_the_system_prompt_states_the_score_and_what_a_stance_now_does():
+    """Patch 4: stances take effect, so the prompt says what each one does and the live caps."""
+    text = system_prompt(per_day=2, refractory_min=45)
+    assert "3 to 5 picks" in text and "Nothing you write is shown to Orion's curiosity run" in text
+    assert "recorded only; nothing acts on them yet" not in text
+    assert '"refuse": a question Prime queued is NOT shown to the run' in text
+    assert "can be\n  challenged but never refused" in text
+    assert "at most 2 times a day, with at least 45 minutes between answers" in text
+    assert "<PER_DAY>" not in system_prompt() and "<REFRACTORY_MIN>" not in system_prompt()
 
 
 def test_the_answer_parse_is_lenient_on_extras_and_strict_on_shape():

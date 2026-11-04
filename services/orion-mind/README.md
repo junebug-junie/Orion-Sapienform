@@ -70,13 +70,50 @@ settings `CURIOSITY_REPLICA_*`, logs `curiosity_replica_*`.
   (card summary + journal title, with its age; no raw chat); its own last plans (picks tested, nats moved,
   fallbacks). A failed read is a named gap. Postgres reads use `CURIOSITY_REPLICA_PG_DSN`, read-only.
 - **Answers** on `orion:curiosity:replica:plan:result:<correlation_id>` with 3-5 picks, checked first with the
-  same `validate_plan` Hub runs. Stances on Prime's focus or signal are sent and recorded only (patch 4).
+  same `validate_plan` Hub runs. A stance on a PRIME focus or signal is an answer to Prime (below), delivered
+  before the plan result so a refused focus has left the slot before Hub takes it.
 - **Its act** (`infer`) opens when the model is reached. A plan that cannot be used closes 0 at once. A used plan
   stays open and closes on its run's score: 1 when the run moved at least one belief (`realized_nats > 0` on a
   completed turn), the number the three-arm test scores.
 - **Never reads Prime's state** (a test checks the module has no reference to it).
 - Off: `CURIOSITY_REPLICA_ENABLED=false` (Hub's replica-arm runs then time out to the rule order).
 - Eval: `orion/curiosity/replica/evals/run_replica_frame_eval.py` (live inputs captured 2026-11-04).
+
+### The replica answers Prime (patch 4, design section 9)
+
+- **What it answers:** each of Prime's acts on curiosity, once: a focus question Prime queued (never Juniper's,
+  never one Orion chose in a conversation), or a regulate signal on `durable.curiosity_investigate`. With
+  **support**, **challenge** or **refuse**, always with a one-sentence reason.
+- **When:** inside a plan (its `focus_stance` / `signal_stance`), or between runs: the tick watches the signal
+  hash (every tick) and Hub's pending focus row (every 60 s, read-only Postgres); a new Prime act wakes ONE reply
+  thought (bid, one short call, a stance-only frame) even with no plan request.
+- **Every answer is an act:** actor `curiosity.replica.answer` (its own actor: answers stay out of the
+  `curiosity.replica` family's history; nothing bids as it, so it has no families.yaml entry), verb `ask`, parent = Prime's act, `test_before =
+  holdback:<arm>`, closed at once; the note starts with the stance (`refuse: <reason> | ...`).
+- **What it does:** refuse a focus -> the RPC `orion:curiosity:replica:focus_refusal:request` (Hub runs
+  `refuse_focus`; the focus is not shown to the run). Refuse a signal -> `PrimeChargeRefusalV1` next to the
+  signal in `orion:prime:regulate:durable.curiosity_investigate`; the market stops applying the charge from the
+  next bid. Challenge -> Prime is shown the reason. Delivered challenges and refusals go in Redis
+  `orion:curiosity:replica:replies` (written on every save), which Prime reads for its frame's ORGAN REPLIES
+  section and its settle notes.
+- **Caps:** `CURIOSITY_REPLICA_ANSWERS_PER_DAY` (3) in any 24 h, `CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC` (1800)
+  apart, never an answer to an answer.
+- **Holdback:** `CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION` (0.2) of refusals are recorded but not applied;
+  `CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION` (0.2) of challenges are never shown to Prime. Deterministic per
+  Prime act. Held-back answers are never in the replies view.
+- **Guard:** its frames show its own refusal rate over its last 20 answers;
+  `scripts/analysis/curiosity_replica_answers_readout.py` reports it daily (above 50% for 14 days: back to Juniper).
+- Off: `CURIOSITY_REPLICA_ANSWERS_ENABLED=false` (stances recorded on the plan row only; Prime shows no section).
+- **Deploy order:** orion-durable-runs (the market must read a signal refusal before one is written; an old market
+  keeps charging while the replica records the refusal as delivered), then orion-hub (the focus refusal
+  listener; without it a refusal fails fast as not delivered), then orion-mind.
+- **Rollback:** switch answering off first (above). Rolling orion-mind code back past this patch makes the older
+  replica refuse its saved state (three new fields, `extra="forbid"`): it starts empty, and its open plan acts
+  expire at the ledger horizon ungraded. The replies view expires on its own after 48 h.
+- A reply thought that is not funded, or that its act gate refuses, waits 5 minutes before it bids again. A plan
+  request that arrives during a reply thought and runs out of time says so in its fallback reason.
+- A focus refusal whose reply is lost is settled from the focus row (read-only): the request carries `not_after`
+  and Hub writes nothing after it.
 
 ## Orion Prime 2A: the resident loop (2026-10-30)
 

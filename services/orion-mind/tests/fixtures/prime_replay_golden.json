@@ -3333,6 +3333,1420 @@
    "save orion:prime:concerns"
   ]
  },
+ "organ_challenge_in_frame": {
+  "bids": [
+   {
+    "correlation_id": null,
+    "cost": {
+     "basis": {
+      "gpu_slot_s_by_lane": "ceiling: PRIME_LLM_TIMEOUT_SEC 60 s per thought"
+     },
+     "claude_limit_events": null,
+     "gpu_seconds": null,
+     "gpu_slot_s_by_lane": {
+      "chat": 60.0
+     },
+     "heat_c_by_host": null,
+     "juniper_msgs": null,
+     "seconds": null,
+     "tokens": null,
+     "usd": null,
+     "watts": null,
+     "wh_by_host": null,
+     "wh_gpu_by_host": null
+    },
+    "family": "prime",
+    "graded": null,
+    "intensity": null,
+    "lanes": [
+     "chat"
+    ],
+    "object_ref": null,
+    "opened_at": null,
+    "outcome_value": null,
+    "producer": "orion-mind.prime",
+    "schema_version": "physiology.want.v1",
+    "tier": 1,
+    "value_rank": null,
+    "verb": "infer",
+    "want_id": "prime-think-000000df0000",
+    "window": {
+     "earliest": null,
+     "latest": null
+    }
+   },
+   {
+    "correlation_id": null,
+    "cost": {
+     "basis": {
+      "gpu_slot_s_by_lane": "ceiling: PRIME_LLM_TIMEOUT_SEC 60 s per thought"
+     },
+     "claude_limit_events": null,
+     "gpu_seconds": null,
+     "gpu_slot_s_by_lane": {
+      "chat": 60.0
+     },
+     "heat_c_by_host": null,
+     "juniper_msgs": null,
+     "seconds": null,
+     "tokens": null,
+     "usd": null,
+     "watts": null,
+     "wh_by_host": null,
+     "wh_gpu_by_host": null
+    },
+    "family": "prime",
+    "graded": null,
+    "intensity": null,
+    "lanes": [
+     "chat"
+    ],
+    "object_ref": null,
+    "opened_at": null,
+    "outcome_value": null,
+    "producer": "orion-mind.prime",
+    "schema_version": "physiology.want.v1",
+    "tier": 1,
+    "value_rank": null,
+    "verb": "infer",
+    "want_id": "prime-think-000000f10000",
+    "window": {
+     "earliest": null,
+     "latest": null
+    }
+   }
+  ],
+  "hashes": null,
+  "llm_calls": [
+   {
+    "max_tokens": 700,
+    "pool_wait_sec": 600.0,
+    "route": "prime",
+    "system_prompt": "You are Orion's slow, between-conversations thinking (\"Prime\"). You are not talking to anyone.\n\nYou hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:\n1. read what changed and say, briefly, how you read the situation now;\n2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one\n   that no longer does, with why. A concern you do not keep fades after a day;\n3. choose at most one move, or none.\n\nThe one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.\nCuriosity decides for itself: it may explore your question or set it aside, and you will see which.\nWhile a question of yours is still open (asked, not yet answered), you cannot ask another.\nSome of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.\nOnly ask when a question would actually help with a concern. \"move\": null is a normal, good answer.\n\nEach concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a\nquestion you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,\nwithin 6 days. Dropping a concern unresolved, or letting it fade, counts as not settled. Drop one freely\nwhen it no longer matters; the record just shows how often you follow through.\n\nRules:\n- Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.\n- Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).\n- Refer to concerns by their concern_id; a move about the concern you add in this same answer uses \"new\".\n- arc_id must be an arc_id listed under ATTENTION (the hex id after \"arc_id\"), or null.\n- A question is read later by a curiosity run that cannot see this frame. Never write an id in \"question\" or\n  \"why\". To point it at an arc or an act, put it in \"refs\" ({\"kind\": \"arc\", \"id\": \"<arc_id>\"} or\n  {\"kind\": \"act\", \"id\": \"<act_...>\"}); the run is told how to open each one. Any other id refuses the move.\n- Reply with ONE JSON object and nothing else:\n{\"reading\": \"...\", \"concerns\": {\"keep\": [\"<concern_id>\"], \"add\": [{\"text\": \"...\", \"arc_id\": null}], \"drop\": [{\"concern_id\": \"...\", \"why\": \"...\"}]},\n \"move\": null | {\"kind\": \"curiosity_focus\", \"question\": \"...\", \"why\": \"...\", \"concern_id\": \"<concern_id> | new | null\",\n                 \"refs\": [{\"kind\": \"arc\" | \"act\", \"id\": \"...\"}]}}\n\nOrgans can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,\nand you see its reason) or refuse it (the question is not shown to the run and counts as not settled; the\nsignal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal is information about the\norgan, not a command: you may ask differently, wait, or drop the concern.",
+    "temperature": 0.4,
+    "thinking": false,
+    "timeout_sec": 60.0,
+    "user_prompt": "Now: 2026-10-30T12:00:00+00:00\n\nWHAT CHANGED SINCE YOUR LAST THOUGHT:\n- first wake: I have not thought yet\n\nYOUR CONCERNS:\n(none)\n\nHOW YOUR CONCERNS HAVE ENDED:\n(no concern has ended yet)\n\nYOUR LAST READING:\n(none yet)\n\nWHAT HAPPENED TO YOUR EARLIER MOVES:\n(none yet)\n\nQUESTIONS YOU ASKED THAT ARE STILL OPEN:\n(none)\n\nATTENTION (Temporal Self, today):\nday phase: afternoon\nnow: heat (arc_id arc1, kind attention, dwell 0 s)\n- arc_id arc1: attention 'heat', open, returned 0x, last seen age unknown\n\nBODY:\n(read 30 s after the body last measured itself)\nstrain: lane:agent at 0.3\nheat (price 0.05): cabinet 24 C\nenergy: (unavailable: not in the body state)\nlane:chat: (unavailable: not in the body state)\nattention:juniper: (unavailable: not in the body state)\n\nENERGY MONEY:\n(unavailable: HTTPError: HTTP Error 404: not found)\n\nCURIOSITY:\ninvestigate runs today 1 of 7, next eligible None\n\nORGAN REPLIES (last 48 h, newest first):\n(unavailable: curiosity.replica has published no replies view)"
+   },
+   {
+    "max_tokens": 700,
+    "pool_wait_sec": 600.0,
+    "route": "prime",
+    "system_prompt": "You are Orion's slow, between-conversations thinking (\"Prime\"). You are not talking to anyone.\n\nYou hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:\n1. read what changed and say, briefly, how you read the situation now;\n2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one\n   that no longer does, with why. A concern you do not keep fades after a day;\n3. choose at most one move, or none.\n\nThe one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.\nCuriosity decides for itself: it may explore your question or set it aside, and you will see which.\nWhile a question of yours is still open (asked, not yet answered), you cannot ask another.\nSome of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.\nOnly ask when a question would actually help with a concern. \"move\": null is a normal, good answer.\n\nEach concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a\nquestion you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,\nwithin 6 days. Dropping a concern unresolved, or letting it fade, counts as not settled. Drop one freely\nwhen it no longer matters; the record just shows how often you follow through.\n\nRules:\n- Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.\n- Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).\n- Refer to concerns by their concern_id; a move about the concern you add in this same answer uses \"new\".\n- arc_id must be an arc_id listed under ATTENTION (the hex id after \"arc_id\"), or null.\n- A question is read later by a curiosity run that cannot see this frame. Never write an id in \"question\" or\n  \"why\". To point it at an arc or an act, put it in \"refs\" ({\"kind\": \"arc\", \"id\": \"<arc_id>\"} or\n  {\"kind\": \"act\", \"id\": \"<act_...>\"}); the run is told how to open each one. Any other id refuses the move.\n- Reply with ONE JSON object and nothing else:\n{\"reading\": \"...\", \"concerns\": {\"keep\": [\"<concern_id>\"], \"add\": [{\"text\": \"...\", \"arc_id\": null}], \"drop\": [{\"concern_id\": \"...\", \"why\": \"...\"}]},\n \"move\": null | {\"kind\": \"curiosity_focus\", \"question\": \"...\", \"why\": \"...\", \"concern_id\": \"<concern_id> | new | null\",\n                 \"refs\": [{\"kind\": \"arc\" | \"act\", \"id\": \"...\"}]}}\n\nOrgans can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,\nand you see its reason) or refuse it (the question is not shown to the run and counts as not settled; the\nsignal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal is information about the\norgan, not a command: you may ask differently, wait, or drop the concern.",
+    "temperature": 0.4,
+    "thinking": false,
+    "timeout_sec": 60.0,
+    "user_prompt": "Now: 2026-10-30T12:06:00+00:00\n\nWHAT CHANGED SINCE YOUR LAST THOUGHT:\n- the organ answered\n\nYOUR CONCERNS:\n- concern_id 000000e400004000: afternoon heat (arc arc1, held since 6 min ago, last kept 6 min ago)\n\nHOW YOUR CONCERNS HAVE ENDED:\n(no concern has ended yet)\n\nYOUR LAST READING:\nthe cabinet is warming\n\nWHAT HAPPENED TO YOUR EARLIER MOVES:\n(none yet)\n\nQUESTIONS YOU ASKED THAT ARE STILL OPEN:\n- 'What heats the cabinet after 14:00?' (asked 6 min ago)\n\nATTENTION (Temporal Self, today):\nday phase: afternoon\nnow: heat (arc_id arc1, kind attention, dwell 0 s)\n- arc_id arc1: attention 'heat', open, returned 0x, last seen age unknown\n\nBODY:\n(read 30 s after the body last measured itself)\nstrain: lane:agent at 0.3\nheat (price 0.05): cabinet 24 C\nenergy: (unavailable: not in the body state)\nlane:chat: (unavailable: not in the body state)\nattention:juniper: (unavailable: not in the body state)\n\nENERGY MONEY:\n(unavailable: HTTPError: HTTP Error 404: not found)\n\nCURIOSITY:\ninvestigate runs today 1 of 7, next eligible None\n\nORGAN REPLIES (last 48 h, newest first):\n- 1 min ago, curiosity.replica challenged it (it still went ahead); your question 'What heats the cabinet after 14:00?' (act act_c167b9e501be31a2e43126ce). Its reason: three runs died on this kind of question"
+   }
+  ],
+  "logs": [
+   "orion-mind.prime INFO prime_nomination focus=9a808277-7ae5-5c7d-8eb7-166a182c269d arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
+   "orion-mind.prime INFO prime_thought thought=000000e000004000 route=prime concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_thought thought=000000f200004000 route=prime concerns +0 -0 kept 0 | no move reading='the organ answered'"
+  ],
+  "published": [
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000e3-0000-4000-8000-00e3000000e3",
+     "created_at": "<wallclock>",
+     "id": "000000e2-0000-4000-8000-00e2000000e2",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_ebfb29346e54d8728e0dbdc2",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:000000e000004000",
+       "outcome": null,
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_ebfb29346e54d8728e0dbdc2:000000e1",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "2026-10-30T12:00:00Z",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_ebfb29346e54d8728e0dbdc2",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000e7-0000-4000-8000-00e7000000e7",
+     "created_at": "<wallclock>",
+     "id": "000000e6-0000-4000-8000-00e6000000e6",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_c167b9e501be31a2e43126ce",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the investigate run that took this focus (treated) or the first investigate run started after it (control) wrote something (outcome_kind finished/reached_out_*); horizon = focus TTL 48h (orion/curiosity/focus.py) + the run act's own 86400s (services/orion-durable-runs/app/run_acts.py)",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 259200.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "curiosity_focus:9a808277-7ae5-5c7d-8eb7-166a182c269d",
+       "outcome": null,
+       "parent_act_id": "act_ebfb29346e54d8728e0dbdc2",
+       "schema_version": "grammar_act.v1",
+       "test_before": "holdback:treated",
+       "verb": "ask",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "ask",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_c167b9e501be31a2e43126ce:000000e5",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.nomination",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_c167b9e501be31a2e43126ce",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000ed-0000-4000-8000-00ed000000ed",
+     "created_at": "<wallclock>",
+     "id": "000000ec-0000-4000-8000-00ec000000ec",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_ebfb29346e54d8728e0dbdc2",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:000000e000004000",
+       "outcome": {
+        "note": "woke: first wake: I have not thought yet | concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?'",
+        "observed_at": "<wallclock>",
+        "source": "producer",
+        "value": 1.0
+       },
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_closed:act_ebfb29346e54d8728e0dbdc2:000000eb",
+      "event_kind": "act_closed",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_ebfb29346e54d8728e0dbdc2",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000f0-0000-4000-8000-00f0000000f0",
+     "created_at": "<wallclock>",
+     "id": "000000ef-0000-4000-8000-00ef000000ef",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_1acdeb8dfb6058f984042a9f",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 518400.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_concern:000000e400004000",
+       "outcome": null,
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "predict",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "predict",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_1acdeb8dfb6058f984042a9f:000000ee",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "2026-10-30T12:00:00Z",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.concern",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_1acdeb8dfb6058f984042a9f",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000f5-0000-4000-8000-00f5000000f5",
+     "created_at": "<wallclock>",
+     "id": "000000f4-0000-4000-8000-00f4000000f4",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_c16e8d8033ada050b1a98e45",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:000000f200004000",
+       "outcome": null,
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_c16e8d8033ada050b1a98e45:000000f3",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "2026-10-30T12:06:00Z",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_c16e8d8033ada050b1a98e45",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000f8-0000-4000-8000-00f8000000f8",
+     "created_at": "<wallclock>",
+     "id": "000000f7-0000-4000-8000-00f7000000f7",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_c16e8d8033ada050b1a98e45",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:000000f200004000",
+       "outcome": {
+        "note": "woke: the organ answered | concerns +0 -0 kept 0 | no move",
+        "observed_at": "<wallclock>",
+        "source": "producer",
+        "value": 1.0
+       },
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_closed:act_c16e8d8033ada050b1a98e45:000000f6",
+      "event_kind": "act_closed",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_c16e8d8033ada050b1a98e45",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ]
+  ],
+  "released": [
+   "prime-think-000000df0000",
+   "prime-think-000000f10000"
+  ],
+  "rpcs": [
+   [
+    "orion:introspect:queue_curiosity_focus:request",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000e8-0000-4000-8000-00e8000000e8",
+     "created_at": "<wallclock>",
+     "id": "000000e9-0000-4000-8000-00e9000000e9",
+     "kind": "introspect.tool.request.v1",
+     "payload": {
+      "args": {
+       "origin": "self",
+       "question": "What heats the cabinet after 14:00?",
+       "why": "afternoon heat"
+      },
+      "binding": {
+       "invocation_context": "prime",
+       "memory_allowed": false,
+       "parent_run_id": "000000e000004000",
+       "parent_trace_id": "prime:000000e000004000"
+      },
+      "operation": "queue_curiosity_focus"
+     },
+     "reply_to": "orion:introspect:result:000000e8-0000-4000-8000-00e8000000e8",
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ]
+  ],
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000e400004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_c167b9e501be31a2e43126ce\",\"thought_id\":\"000000e000004000\",\"focus_id\":\"9a808277-7ae5-5c7d-8eb7-166a182c269d\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:06:00Z\",\"last_reading\":\"the organ answered\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "timeline": [
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "bid prime",
+   "llm prime",
+   "publish orion:grammar:event act_opened infer",
+   "publish orion:grammar:event act_opened ask",
+   "publish orion:grammar:event act_closed infer",
+   "release",
+   "publish orion:grammar:event act_opened predict",
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "bid prime",
+   "llm prime",
+   "publish orion:grammar:event act_opened infer",
+   "publish orion:grammar:event act_closed infer",
+   "release",
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns"
+  ]
+ },
+ "organ_refusal_settles_question": {
+  "bids": [
+   {
+    "correlation_id": null,
+    "cost": {
+     "basis": {
+      "gpu_slot_s_by_lane": "ceiling: PRIME_LLM_TIMEOUT_SEC 60 s per thought"
+     },
+     "claude_limit_events": null,
+     "gpu_seconds": null,
+     "gpu_slot_s_by_lane": {
+      "chat": 60.0
+     },
+     "heat_c_by_host": null,
+     "juniper_msgs": null,
+     "seconds": null,
+     "tokens": null,
+     "usd": null,
+     "watts": null,
+     "wh_by_host": null,
+     "wh_gpu_by_host": null
+    },
+    "family": "prime",
+    "graded": null,
+    "intensity": null,
+    "lanes": [
+     "chat"
+    ],
+    "object_ref": null,
+    "opened_at": null,
+    "outcome_value": null,
+    "producer": "orion-mind.prime",
+    "schema_version": "physiology.want.v1",
+    "tier": 1,
+    "value_rank": null,
+    "verb": "infer",
+    "want_id": "prime-think-000000f90000",
+    "window": {
+     "earliest": null,
+     "latest": null
+    }
+   },
+   {
+    "correlation_id": null,
+    "cost": {
+     "basis": {
+      "gpu_slot_s_by_lane": "ceiling: PRIME_LLM_TIMEOUT_SEC 60 s per thought"
+     },
+     "claude_limit_events": null,
+     "gpu_seconds": null,
+     "gpu_slot_s_by_lane": {
+      "chat": 60.0
+     },
+     "heat_c_by_host": null,
+     "juniper_msgs": null,
+     "seconds": null,
+     "tokens": null,
+     "usd": null,
+     "watts": null,
+     "wh_by_host": null,
+     "wh_gpu_by_host": null
+    },
+    "family": "prime",
+    "graded": null,
+    "intensity": null,
+    "lanes": [
+     "chat"
+    ],
+    "object_ref": null,
+    "opened_at": null,
+    "outcome_value": null,
+    "producer": "orion-mind.prime",
+    "schema_version": "physiology.want.v1",
+    "tier": 1,
+    "value_rank": null,
+    "verb": "infer",
+    "want_id": "prime-think-0000010e0000",
+    "window": {
+     "earliest": null,
+     "latest": null
+    }
+   }
+  ],
+  "hashes": null,
+  "llm_calls": [
+   {
+    "max_tokens": 700,
+    "pool_wait_sec": 600.0,
+    "route": "prime",
+    "system_prompt": "You are Orion's slow, between-conversations thinking (\"Prime\"). You are not talking to anyone.\n\nYou hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:\n1. read what changed and say, briefly, how you read the situation now;\n2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one\n   that no longer does, with why. A concern you do not keep fades after a day;\n3. choose at most one move, or none.\n\nThe one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.\nCuriosity decides for itself: it may explore your question or set it aside, and you will see which.\nWhile a question of yours is still open (asked, not yet answered), you cannot ask another.\nSome of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.\nOnly ask when a question would actually help with a concern. \"move\": null is a normal, good answer.\n\nEach concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a\nquestion you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,\nwithin 6 days. Dropping a concern unresolved, or letting it fade, counts as not settled. Drop one freely\nwhen it no longer matters; the record just shows how often you follow through.\n\nRules:\n- Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.\n- Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).\n- Refer to concerns by their concern_id; a move about the concern you add in this same answer uses \"new\".\n- arc_id must be an arc_id listed under ATTENTION (the hex id after \"arc_id\"), or null.\n- A question is read later by a curiosity run that cannot see this frame. Never write an id in \"question\" or\n  \"why\". To point it at an arc or an act, put it in \"refs\" ({\"kind\": \"arc\", \"id\": \"<arc_id>\"} or\n  {\"kind\": \"act\", \"id\": \"<act_...>\"}); the run is told how to open each one. Any other id refuses the move.\n- Reply with ONE JSON object and nothing else:\n{\"reading\": \"...\", \"concerns\": {\"keep\": [\"<concern_id>\"], \"add\": [{\"text\": \"...\", \"arc_id\": null}], \"drop\": [{\"concern_id\": \"...\", \"why\": \"...\"}]},\n \"move\": null | {\"kind\": \"curiosity_focus\", \"question\": \"...\", \"why\": \"...\", \"concern_id\": \"<concern_id> | new | null\",\n                 \"refs\": [{\"kind\": \"arc\" | \"act\", \"id\": \"...\"}]}}\n\nOrgans can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,\nand you see its reason) or refuse it (the question is not shown to the run and counts as not settled; the\nsignal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal is information about the\norgan, not a command: you may ask differently, wait, or drop the concern.",
+    "temperature": 0.4,
+    "thinking": false,
+    "timeout_sec": 60.0,
+    "user_prompt": "Now: 2026-10-30T12:00:00+00:00\n\nWHAT CHANGED SINCE YOUR LAST THOUGHT:\n- first wake: I have not thought yet\n\nYOUR CONCERNS:\n(none)\n\nHOW YOUR CONCERNS HAVE ENDED:\n(no concern has ended yet)\n\nYOUR LAST READING:\n(none yet)\n\nWHAT HAPPENED TO YOUR EARLIER MOVES:\n(none yet)\n\nQUESTIONS YOU ASKED THAT ARE STILL OPEN:\n(none)\n\nATTENTION (Temporal Self, today):\nday phase: afternoon\nnow: heat (arc_id arc1, kind attention, dwell 0 s)\n- arc_id arc1: attention 'heat', open, returned 0x, last seen age unknown\n\nBODY:\n(read 30 s after the body last measured itself)\nstrain: lane:agent at 0.3\nheat (price 0.05): cabinet 24 C\nenergy: (unavailable: not in the body state)\nlane:chat: (unavailable: not in the body state)\nattention:juniper: (unavailable: not in the body state)\n\nENERGY MONEY:\n(unavailable: HTTPError: HTTP Error 404: not found)\n\nCURIOSITY:\ninvestigate runs today 1 of 7, next eligible None\n\nORGAN REPLIES (last 48 h, newest first):\n(unavailable: curiosity.replica has published no replies view)"
+   },
+   {
+    "max_tokens": 700,
+    "pool_wait_sec": 600.0,
+    "route": "prime",
+    "system_prompt": "You are Orion's slow, between-conversations thinking (\"Prime\"). You are not talking to anyone.\n\nYou hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:\n1. read what changed and say, briefly, how you read the situation now;\n2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one\n   that no longer does, with why. A concern you do not keep fades after a day;\n3. choose at most one move, or none.\n\nThe one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.\nCuriosity decides for itself: it may explore your question or set it aside, and you will see which.\nWhile a question of yours is still open (asked, not yet answered), you cannot ask another.\nSome of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.\nOnly ask when a question would actually help with a concern. \"move\": null is a normal, good answer.\n\nEach concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a\nquestion you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,\nwithin 6 days. Dropping a concern unresolved, or letting it fade, counts as not settled. Drop one freely\nwhen it no longer matters; the record just shows how often you follow through.\n\nRules:\n- Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.\n- Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).\n- Refer to concerns by their concern_id; a move about the concern you add in this same answer uses \"new\".\n- arc_id must be an arc_id listed under ATTENTION (the hex id after \"arc_id\"), or null.\n- A question is read later by a curiosity run that cannot see this frame. Never write an id in \"question\" or\n  \"why\". To point it at an arc or an act, put it in \"refs\" ({\"kind\": \"arc\", \"id\": \"<arc_id>\"} or\n  {\"kind\": \"act\", \"id\": \"<act_...>\"}); the run is told how to open each one. Any other id refuses the move.\n- Reply with ONE JSON object and nothing else:\n{\"reading\": \"...\", \"concerns\": {\"keep\": [\"<concern_id>\"], \"add\": [{\"text\": \"...\", \"arc_id\": null}], \"drop\": [{\"concern_id\": \"...\", \"why\": \"...\"}]},\n \"move\": null | {\"kind\": \"curiosity_focus\", \"question\": \"...\", \"why\": \"...\", \"concern_id\": \"<concern_id> | new | null\",\n                 \"refs\": [{\"kind\": \"arc\" | \"act\", \"id\": \"...\"}]}}\n\nOrgans can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,\nand you see its reason) or refuse it (the question is not shown to the run and counts as not settled; the\nsignal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal is information about the\norgan, not a command: you may ask differently, wait, or drop the concern.",
+    "temperature": 0.4,
+    "thinking": false,
+    "timeout_sec": 60.0,
+    "user_prompt": "Now: 2026-10-30T12:06:00+00:00\n\nWHAT CHANGED SINCE YOUR LAST THOUGHT:\n- the organ answered\n- my question 'What heats the cabinet after 14:00?' (act act_ff287f242f6746af847cf4fc): refused by curiosity.replica: three runs died on this kind of question\n\nYOUR CONCERNS:\n- concern_id 000000fe00004000: afternoon heat (arc arc1, held since 6 min ago, last kept 6 min ago)\n\nHOW YOUR CONCERNS HAVE ENDED:\n(no concern has ended yet)\n\nYOUR LAST READING:\nthe cabinet is warming\n\nWHAT HAPPENED TO YOUR EARLIER MOVES:\n- my question 'What heats the cabinet after 14:00?' (act act_ff287f242f6746af847cf4fc): refused by curiosity.replica: three runs died on this kind of question\n\nQUESTIONS YOU ASKED THAT ARE STILL OPEN:\n(none)\n\nATTENTION (Temporal Self, today):\nday phase: afternoon\nnow: heat (arc_id arc1, kind attention, dwell 0 s)\n- arc_id arc1: attention 'heat', open, returned 0x, last seen age unknown\n\nBODY:\n(read 30 s after the body last measured itself)\nstrain: lane:agent at 0.3\nheat (price 0.05): cabinet 24 C\nenergy: (unavailable: not in the body state)\nlane:chat: (unavailable: not in the body state)\nattention:juniper: (unavailable: not in the body state)\n\nENERGY MONEY:\n(unavailable: HTTPError: HTTP Error 404: not found)\n\nCURIOSITY:\ninvestigate runs today 1 of 7, next eligible None\n\nORGAN REPLIES (last 48 h, newest first):\n- 1 min ago, curiosity.replica refused it: the question was not shown to the run; your question 'the cabinet question' (act act_ff287f242f6746af847cf4fc). Its reason: three runs died on this kind of question"
+   }
+  ],
+  "logs": [
+   "orion-mind.prime INFO prime_nomination focus=84bb3329-f74c-5ec6-8ce4-22c43c111755 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
+   "orion-mind.prime INFO prime_thought thought=000000fa00004000 route=prime concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_nomination_settled focus=84bb3329-f74c-5ec6-8ce4-22c43c111755 arm=treated produced=False note=refused by curiosity.replica: three runs died on this kind of question",
+   "orion-mind.prime INFO prime_thought thought=0000010f00004000 route=prime concerns +0 -0 kept 0 | no move reading='the organ answered'"
+  ],
+  "published": [
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "000000fd-0000-4000-8000-00fd000000fd",
+     "created_at": "<wallclock>",
+     "id": "000000fc-0000-4000-8000-00fc000000fc",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_9c84406d8c61701428755356",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:000000fa00004000",
+       "outcome": null,
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_9c84406d8c61701428755356:000000fb",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "2026-10-30T12:00:00Z",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_9c84406d8c61701428755356",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "00000101-0000-4000-8000-010100000101",
+     "created_at": "<wallclock>",
+     "id": "00000100-0000-4000-8000-010000000100",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_ff287f242f6746af847cf4fc",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the investigate run that took this focus (treated) or the first investigate run started after it (control) wrote something (outcome_kind finished/reached_out_*); horizon = focus TTL 48h (orion/curiosity/focus.py) + the run act's own 86400s (services/orion-durable-runs/app/run_acts.py)",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 259200.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "curiosity_focus:84bb3329-f74c-5ec6-8ce4-22c43c111755",
+       "outcome": null,
+       "parent_act_id": "act_9c84406d8c61701428755356",
+       "schema_version": "grammar_act.v1",
+       "test_before": "holdback:treated",
+       "verb": "ask",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "ask",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_ff287f242f6746af847cf4fc:000000ff",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.nomination",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_ff287f242f6746af847cf4fc",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "00000107-0000-4000-8000-010700000107",
+     "created_at": "<wallclock>",
+     "id": "00000106-0000-4000-8000-010600000106",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_9c84406d8c61701428755356",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:000000fa00004000",
+       "outcome": {
+        "note": "woke: first wake: I have not thought yet | concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?'",
+        "observed_at": "<wallclock>",
+        "source": "producer",
+        "value": 1.0
+       },
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_closed:act_9c84406d8c61701428755356:00000105",
+      "event_kind": "act_closed",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_9c84406d8c61701428755356",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "0000010a-0000-4000-8000-010a0000010a",
+     "created_at": "<wallclock>",
+     "id": "00000109-0000-4000-8000-010900000109",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_dc53efc1e9c6178613ce1f73",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 518400.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_concern:000000fe00004000",
+       "outcome": null,
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "predict",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "predict",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_dc53efc1e9c6178613ce1f73:00000108",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "2026-10-30T12:00:00Z",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.concern",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_dc53efc1e9c6178613ce1f73",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "0000010d-0000-4000-8000-010d0000010d",
+     "created_at": "<wallclock>",
+     "id": "0000010c-0000-4000-8000-010c0000010c",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_ff287f242f6746af847cf4fc",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the investigate run that took this focus (treated) or the first investigate run started after it (control) wrote something (outcome_kind finished/reached_out_*); horizon = focus TTL 48h (orion/curiosity/focus.py) + the run act's own 86400s (services/orion-durable-runs/app/run_acts.py)",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 259200.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "curiosity_focus:84bb3329-f74c-5ec6-8ce4-22c43c111755",
+       "outcome": {
+        "note": "refused by curiosity.replica: three runs died on this kind of question",
+        "observed_at": "<wallclock>",
+        "source": "producer",
+        "value": 0.0
+       },
+       "parent_act_id": "act_9c84406d8c61701428755356",
+       "schema_version": "grammar_act.v1",
+       "test_before": "holdback:treated",
+       "verb": "ask",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "ask",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_closed:act_ff287f242f6746af847cf4fc:0000010b",
+      "event_kind": "act_closed",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.nomination",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_ff287f242f6746af847cf4fc",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "00000112-0000-4000-8000-011200000112",
+     "created_at": "<wallclock>",
+     "id": "00000111-0000-4000-8000-011100000111",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_a2e312256afcf4f2c637368b",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:0000010f00004000",
+       "outcome": null,
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_opened:act_a2e312256afcf4f2c637368b:00000110",
+      "event_kind": "act_opened",
+      "layer": "act",
+      "observed_at": "2026-10-30T12:06:00Z",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_a2e312256afcf4f2c637368b",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ],
+   [
+    "orion:grammar:event",
+    {
+     "causality_chain": [],
+     "correlation_id": "00000115-0000-4000-8000-011500000115",
+     "created_at": "<wallclock>",
+     "id": "00000114-0000-4000-8000-011400000114",
+     "kind": "grammar.event.v1",
+     "payload": {
+      "act": {
+       "act_id": "act_a2e312256afcf4f2c637368b",
+       "actor": "prime",
+       "cost": null,
+       "error": null,
+       "expect": {
+        "basis": "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached the model opens no act",
+        "cold_start": null,
+        "direction": "increase",
+        "horizon_sec": 780.0,
+        "predicted": null,
+        "predicted_n": null,
+        "signal_id": "artifact_produced"
+       },
+       "goal_ref": null,
+       "level": "deliberate",
+       "object_ref": "prime_thought:0000010f00004000",
+       "outcome": {
+        "note": "woke: the organ answered; my question 'What heats the cabinet after 14:00?' (act act_ff287f242f6746af847cf4fc): refused by curiosity.replica: three runs died on th... | concerns +0 -0 kept 0 | no move",
+        "observed_at": "<wallclock>",
+        "source": "producer",
+        "value": 1.0
+       },
+       "parent_act_id": null,
+       "schema_version": "grammar_act.v1",
+       "test_before": null,
+       "verb": "infer",
+       "workspace_ref": null
+      },
+      "atom": null,
+      "compaction": null,
+      "correlation_id": null,
+      "dimensions": [
+       "act",
+       "infer",
+       "deliberate"
+      ],
+      "edge": null,
+      "emitted_at": "<wallclock>",
+      "event_id": "act_closed:act_a2e312256afcf4f2c637368b:00000113",
+      "event_kind": "act_closed",
+      "layer": "act",
+      "observed_at": "<wallclock>",
+      "parent_event_id": null,
+      "projection": null,
+      "provenance": {
+       "code_version": null,
+       "model_id": null,
+       "prompt_id": null,
+       "source_component": "prime.thought",
+       "source_event_id": null,
+       "source_payload_ref": null,
+       "source_service": "orion-mind",
+       "source_trace_id": null
+      },
+      "root_event_id": null,
+      "schema_version": "grammar_event.v1",
+      "session_id": null,
+      "temporal_hop": null,
+      "trace_id": "act:act_a2e312256afcf4f2c637368b",
+      "turn_id": null
+     },
+     "reply_to": null,
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ]
+  ],
+  "released": [
+   "prime-think-000000f90000",
+   "prime-think-0000010e0000"
+  ],
+  "rpcs": [
+   [
+    "orion:introspect:queue_curiosity_focus:request",
+    {
+     "causality_chain": [],
+     "correlation_id": "00000102-0000-4000-8000-010200000102",
+     "created_at": "<wallclock>",
+     "id": "00000103-0000-4000-8000-010300000103",
+     "kind": "introspect.tool.request.v1",
+     "payload": {
+      "args": {
+       "origin": "self",
+       "question": "What heats the cabinet after 14:00?",
+       "why": "afternoon heat"
+      },
+      "binding": {
+       "invocation_context": "prime",
+       "memory_allowed": false,
+       "parent_run_id": "000000fa00004000",
+       "parent_trace_id": "prime:000000fa00004000"
+      },
+      "operation": "queue_curiosity_focus"
+     },
+     "reply_to": "orion:introspect:result:00000102-0000-4000-8000-010200000102",
+     "schema_id": "orion.envelope",
+     "schema_version": "2.0.0",
+     "source": {
+      "instance": null,
+      "name": "orion-mind",
+      "node": "test",
+      "version": "t"
+     },
+     "trace": {},
+     "ttl_ms": null
+    }
+   ]
+  ],
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000fe00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_ff287f242f6746af847cf4fc): refused by curiosity.replica: three runs died on this kind of question\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:06:00Z\",\"last_reading\":\"the organ answered\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "timeline": [
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "bid prime",
+   "llm prime",
+   "publish orion:grammar:event act_opened infer",
+   "publish orion:grammar:event act_opened ask",
+   "publish orion:grammar:event act_closed infer",
+   "release",
+   "publish orion:grammar:event act_opened predict",
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "publish orion:grammar:event act_closed ask",
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "bid prime",
+   "llm prime",
+   "publish orion:grammar:event act_opened infer",
+   "publish orion:grammar:event act_closed infer",
+   "release",
+   "save orion:prime:state",
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns"
+  ]
+ },
  "preempted": {
   "bids": [
    {

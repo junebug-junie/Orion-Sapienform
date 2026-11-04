@@ -121,12 +121,19 @@ from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDec
 from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
 from orion.schemas.physiology_report import PHYSIOLOGY_REPORT_KIND, PhysiologyReportV1
 from orion.schemas.curiosity_replica import (
+    FOCUS_REFUSAL_REQUEST_KIND as CURIOSITY_REPLICA_FOCUS_REFUSAL_REQUEST_KIND,
+    FOCUS_REFUSAL_RESULT_KIND as CURIOSITY_REPLICA_FOCUS_REFUSAL_RESULT_KIND,
     PLAN_REQUEST_KIND as CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
     PLAN_RESULT_KIND as CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    REPLIES_VIEW_KIND as CURIOSITY_REPLICA_REPLIES_VIEW_KIND,
+    CuriosityFocusRefusalRequestV1,
+    CuriosityFocusRefusalResultV1,
     CuriosityOfferPlanAnswerV1,
     CuriosityOfferPlanRequestV1,
     CuriosityOfferPlanResultV1,
+    CuriosityReplicaRepliesViewV1,
 )
+from orion.physiology.prime_charge import PrimeChargeRefusalV1
 from orion.prime.state import PrimeConcernsViewV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
@@ -1606,6 +1613,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CuriosityOfferPlanResultV1": CuriosityOfferPlanResultV1,
     "CuriosityOfferPlanAnswerV1": CuriosityOfferPlanAnswerV1,
     "PrimeConcernsViewV1": PrimeConcernsViewV1,
+    # Curiosity replica patch 4 (answers to Prime). Also in SCHEMA_REGISTRY below.
+    "CuriosityFocusRefusalRequestV1": CuriosityFocusRefusalRequestV1,
+    "CuriosityFocusRefusalResultV1": CuriosityFocusRefusalResultV1,
+    "CuriosityReplicaRepliesViewV1": CuriosityReplicaRepliesViewV1,
+    "PrimeChargeRefusalV1": PrimeChargeRefusalV1,
     "DispositionV1": DispositionV1,
     "ChoiceStyleV1": ChoiceStyleV1,
     "PersonalityCueV1": PersonalityCueV1,
@@ -2202,6 +2214,25 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PrimeConcernsViewV1": SchemaRegistration(
         model=PrimeConcernsViewV1,
         kind="prime.concerns.view.v1",
+    ),
+    # Curiosity replica patch 4: the focus refusal RPC (orion-mind -> Hub), the replica's replies view (Redis
+    # orion:curiosity:replica:replies, read by Prime) and the refusal written next to a regulate signal (Redis
+    # orion:prime:regulate:<family> field refusal, read by the market). Also in `_REGISTRY` above.
+    "CuriosityFocusRefusalRequestV1": SchemaRegistration(
+        model=CuriosityFocusRefusalRequestV1,
+        kind=CURIOSITY_REPLICA_FOCUS_REFUSAL_REQUEST_KIND,
+    ),
+    "CuriosityFocusRefusalResultV1": SchemaRegistration(
+        model=CuriosityFocusRefusalResultV1,
+        kind=CURIOSITY_REPLICA_FOCUS_REFUSAL_RESULT_KIND,
+    ),
+    "CuriosityReplicaRepliesViewV1": SchemaRegistration(
+        model=CuriosityReplicaRepliesViewV1,
+        kind=CURIOSITY_REPLICA_REPLIES_VIEW_KIND,
+    ),
+    "PrimeChargeRefusalV1": SchemaRegistration(
+        model=PrimeChargeRefusalV1,
+        kind="prime.regulation.refusal.v1",
     ),
     "DispositionNamingV1": SchemaRegistration(
         model=DispositionNamingV1,

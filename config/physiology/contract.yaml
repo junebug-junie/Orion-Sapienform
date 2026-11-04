@@ -196,11 +196,11 @@ readers:
     note: 2026-11-04, moved out of services/orion-mind/app/prime_loop.py unchanged (curiosity replica design section 10)
   - module: services/orion-mind/app/replica_loop.py
     role: display
-    reason: the curiosity replica (family curiosity.replica, Tier 2), loop-library instance #2; its bid and obey are orion/mindloop/runtime.py. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) only to SHOW it in its frame (arm hidden) and to check a signal stance names a live signal. Gates nothing.
+    reason: the curiosity replica (family curiosity.replica, Tier 2), loop-library instance #2; its bid and obey are orion/mindloop/runtime.py. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) to SHOW it in its frame (arm hidden), to check a signal stance names a live signal, and (patch 4) to answer it -- an applied refusal writes prime_charge.PrimeChargeRefusalV1 next to the signal, so the market stops applying Prime's charge (it lifts a charge Prime added; it can never add one or veto a want). Its answers are acts of actor curiosity.replica.answer, which is never a want family (no bids, no families.yaml entry), so they stay out of curiosity.replica's history. Gates nothing.
     note: 2026-11-04, curiosity replica patch 3 (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md)
   - module: services/orion-hub/scripts/curiosity_replica_plan.py
     role: display
-    reason: Hub's replica plan consumer. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) only to check a plan's signal stance names a live signal (validate_plan). Stances are recorded, never applied (patch 4); gates no work.
+    reason: Hub's replica plan consumer. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) only to check a plan's signal stance names a live signal (validate_plan). Stances are recorded here; the replica itself delivers answers to Prime (patch 4). Gates no work.
     note: 2026-11-04, curiosity replica patch 3
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display

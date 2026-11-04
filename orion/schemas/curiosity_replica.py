@@ -12,6 +12,23 @@ at most ``PLAN_DEADLINE_SEC`` for ``CuriosityOfferPlanResultV1`` on
 focus RPC). Everything the replica writes stays on Hub's ``curiosity_offer_plans`` row
 (services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql); its reasons (``why``, ``reading``,
 stance reasons) never reach Orion's prompt.
+
+Answers to Prime (patch 4, design section 9). The replica answers each of Prime's acts on curiosity -- a focus
+question Prime queued, a regulate signal on ``durable.curiosity_investigate`` -- at most once, with support,
+challenge or refuse and a one-sentence reason. Two more contracts carry that:
+
+* the focus refusal RPC: orion-mind publishes ``CuriosityFocusRefusalRequestV1`` on
+  ``orion:curiosity:replica:focus_refusal:request``; Hub (services/orion-hub/scripts/curiosity_focus_refusal_listener.py)
+  applies orion/curiosity/focus.py ``refuse_focus`` and answers ``CuriosityFocusRefusalResultV1`` on
+  ``orion:curiosity:replica:focus_refusal:result:<correlation_id>``;
+* the replies view: the replica writes ``CuriosityReplicaRepliesViewV1`` to Redis ``orion:curiosity:replica:replies``
+  on every save -- the challenges and refusals that reached Prime in the last 48 h (held-back ones are never in
+  it). Prime reads it for its frame's ORGAN REPLIES section and to name a refusal in its settle notes
+  (services/orion-mind/app/prime_loop.py). It is the replica's first published call, the mirror of Prime's
+  ``orion:prime:concerns``.
+
+A refused regulate signal is written next to the signal itself (orion/physiology/prime_charge.py
+``PrimeChargeRefusalV1``), where the market reads it.
 """
 
 from __future__ import annotations
@@ -23,6 +40,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 # The act-ledger actor and body-economy family (config/physiology/families.yaml, tier 2, lane chat).
 REPLICA_ACTOR = "curiosity.replica"
 REPLICA_FAMILY = "curiosity.replica"
+# The actor of the replica's ANSWERS to Prime (verb ask). Its own actor, so the answers -- graded 1 whenever they
+# are delivered -- never enter the curiosity.replica family's history (orion/physiology/appetite.py and
+# weights.py read grammar_acts.actor as the family): that history is the plans' and reply thoughts' alone. It is
+# never a want family: nothing bids as it, so it has no entry in config/physiology/families.yaml, and the
+# market skips acts of an actor that is not a family.
+ANSWER_ACTOR = "curiosity.replica.answer"
 
 PLAN_REQUEST_CHANNEL = "orion:curiosity:replica:plan:request"
 PLAN_RESULT_CHANNEL_PREFIX = "orion:curiosity:replica:plan:result:"
@@ -43,6 +66,18 @@ READING_MAX = 600  # "one or two sentences"
 # A parse bound, not the rule: a plan with more than PICKS_MAX picks parses, and Hub's validation
 # rejects it as invalid (a reason recorded), rather than the answer reading as unparseable.
 PICKS_PARSE_MAX = 20
+
+# Answers to Prime (design section 9, patch 4).
+FOCUS_REFUSAL_REQUEST_CHANNEL = "orion:curiosity:replica:focus_refusal:request"
+FOCUS_REFUSAL_RESULT_CHANNEL_PREFIX = "orion:curiosity:replica:focus_refusal:result:"
+FOCUS_REFUSAL_REQUEST_KIND = "curiosity.replica.focus_refusal.request.v1"
+FOCUS_REFUSAL_RESULT_KIND = "curiosity.replica.focus_refusal.result.v1"
+REPLIES_KEY = "orion:curiosity:replica:replies"
+REPLIES_VIEW_KIND = "curiosity.replica.replies.view.v1"
+# Prime's frame shows the organ's replies of the last 48 h (the focus TTL: a question is open at most that long).
+REPLIES_WINDOW_SEC = 48 * 3600.0
+# At most 3 answers a day (design section 9): 48 h holds at most 6; the bound is a parse guard.
+REPLIES_MAX = 20
 
 Stance = Literal["support", "challenge", "refuse"]
 
@@ -129,8 +164,9 @@ class CuriosityOfferPickV1(BaseModel):
 
 class CuriosityFocusStanceV1(BaseModel):
     """The replica's answer to the pending focus. ``refuse`` applies only to a Prime focus
-    (``CuriosityPendingFocusV1.from_prime``); on any other focus it is not applied (Hub's check, and
-    orion/curiosity/focus.py refuse_focus refuses it a second time, the table a third)."""
+    (``CuriosityPendingFocusV1.from_prime``); on any other focus it is recorded on the plan row only (the
+    replica answers only Prime's acts: orion/curiosity/replica/answers.py; orion/curiosity/focus.py refuse_focus
+    refuses it a second time, its SQL guard a third, the table's CHECK a fourth)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -169,6 +205,69 @@ class CuriosityOfferPlanAnswerV1(BaseModel):
         return self
 
 
+class CuriosityFocusRefusalRequestV1(BaseModel):
+    """orion-mind -> Hub: refuse this pending Prime focus (an APPLIED refusal; a held-back one is never sent)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["curiosity.replica.focus_refusal.request.v1"] = "curiosity.replica.focus_refusal.request.v1"
+    focus_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=STANCE_REASON_MAX)
+    # The replica's answer act (actor curiosity.replica, verb ask), stored on the focus row (refused_act_id).
+    act_id: str = Field(min_length=1)
+    # Prime's question act it answers (stable_act_id("prime", "ask", focus_id)).
+    prime_act_id: str = Field(min_length=1)
+    # The replica stops waiting at this time; Hub writes nothing after it, so after a lost reply the focus row
+    # (refused_act_id) says for certain whether this refusal was applied. None: no limit.
+    not_after: Optional[AwareDatetime] = None
+
+
+class CuriosityFocusRefusalResultV1(BaseModel):
+    """Hub -> orion-mind on ``orion:curiosity:replica:focus_refusal:result:<correlation_id>``. ``ok`` false:
+    nothing was written (``error`` says why in plain words: Juniper's focus, not Prime's, no longer pending,
+    the table unreadable)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["curiosity.replica.focus_refusal.result.v1"] = "curiosity.replica.focus_refusal.result.v1"
+    focus_id: str = Field(min_length=1)
+    ok: bool
+    error: Optional[str] = Field(default=None, max_length=400)
+    refused_at: Optional[AwareDatetime] = None
+
+
+AnswerTargetKind = Literal["focus", "signal"]
+
+
+class CuriosityReplicaReplyV1(BaseModel):
+    """One answer of the replica that reached Prime (a challenge, or an applied refusal)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer_act_id: str = Field(min_length=1)
+    # Prime's act it answers: the question act (focus) or the regulate act (signal).
+    prime_act_id: str = Field(min_length=1)
+    target_kind: AnswerTargetKind
+    # The focus_id or the signal_id.
+    target_id: str = Field(min_length=1)
+    stance: Literal["challenge", "refuse"]
+    reason: str = Field(min_length=1, max_length=STANCE_REASON_MAX)
+    # What Prime asked or signalled, in a few words (for Prime's frame).
+    about: str = Field(default="", max_length=200)
+    at: AwareDatetime
+
+
+class CuriosityReplicaRepliesViewV1(BaseModel):
+    """What the replica publishes to Prime (Redis ``REPLIES_KEY``): its delivered challenges and refusals of
+    the last ``REPLIES_WINDOW_SEC``. Never a held-back answer, never a support, never a plan reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["curiosity.replica.replies.view.v1"] = "curiosity.replica.replies.view.v1"
+    as_of: AwareDatetime
+    replies: list[CuriosityReplicaReplyV1] = Field(default_factory=list, max_length=REPLIES_MAX)
+
+
 class CuriosityOfferPlanResultV1(BaseModel):
     """orion-mind -> Hub on ``orion:curiosity:replica:plan:result:<correlation_id>``."""
 
@@ -196,7 +295,21 @@ class CuriosityOfferPlanResultV1(BaseModel):
 
 
 __all__ = [
+    "ANSWER_ACTOR",
+    "AnswerTargetKind",
     "CLAIM_MAX",
+    "CuriosityFocusRefusalRequestV1",
+    "CuriosityFocusRefusalResultV1",
+    "CuriosityReplicaRepliesViewV1",
+    "CuriosityReplicaReplyV1",
+    "FOCUS_REFUSAL_REQUEST_CHANNEL",
+    "FOCUS_REFUSAL_REQUEST_KIND",
+    "FOCUS_REFUSAL_RESULT_CHANNEL_PREFIX",
+    "FOCUS_REFUSAL_RESULT_KIND",
+    "REPLIES_KEY",
+    "REPLIES_MAX",
+    "REPLIES_VIEW_KIND",
+    "REPLIES_WINDOW_SEC",
     "CuriosityFocusStanceV1",
     "CuriosityOfferCandidateV1",
     "CuriosityOfferPickV1",

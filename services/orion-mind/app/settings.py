@@ -204,6 +204,19 @@ class Settings(BaseSettings):
     # Read-only Postgres: Hub's plan rows, the runs' spend-log scores, the newest chat-history digest.
     # Empty: those frame sections show as unavailable and open plans are never graded.
     CURIOSITY_REPLICA_PG_DSN: str = Field(default="", alias="CURIOSITY_REPLICA_PG_DSN")
+    # Answers to Prime (design section 9, patch 4; orion/curiosity/replica/answers.py): support / challenge /
+    # refuse a focus Prime queued or a regulate signal on curiosity, each an act. Off: stances are recorded on
+    # the plan row only. Shipped ON.
+    CURIOSITY_REPLICA_ANSWERS_ENABLED: bool = Field(default=True, alias="CURIOSITY_REPLICA_ANSWERS_ENABLED")
+    # Holdback: refusals recorded but not applied; challenges recorded but not shown to Prime (deterministic draw).
+    CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION: float = Field(default=0.2, ge=0.0, le=1.0,
+                                                               alias="CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION")
+    CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION: float = Field(default=0.2, ge=0.0, le=1.0,
+                                                                 alias="CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION")
+    # Caps: answers in any 24 h, and the least time between two answers (the Prime-replica loop guard).
+    CURIOSITY_REPLICA_ANSWERS_PER_DAY: int = Field(default=3, ge=0, alias="CURIOSITY_REPLICA_ANSWERS_PER_DAY")
+    CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC: float = Field(default=1800.0, ge=0.0,
+                                                           alias="CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC")
 
     # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
     ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")

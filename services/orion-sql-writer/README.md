@@ -169,11 +169,13 @@ of traces expanded into empty graphs.
 `substrate_proposal_frames` (2026-08-20) is the first stage of the substrate pipeline
 (proposal -> policy decision -> execution dispatch -> feedback) and had **no bound at all**:
 474,230 rows / 1,758 MB live, oldest 2026-07-23, growing ~27k rows and ~105 MB a day. It
-uses its own floor, `_substrate_chain_floor`, not the grammar cursor floor -- three later
-stages can reach back into it by `frame_id`, so the floor asks each stage's **pending
-marker** (`policy_pending` / `dispatch_pending` / `feedback_pending`, from
-`manual_migration_substrate_pending_markers.sql`) for the oldest row still owed work.
-Anything at or above that timestamp survives regardless of age.
+uses its own floor, `_substrate_chain_floor`, not the grammar cursor floor -- later stages
+can reach back into it by `frame_id`, so the floor asks each stage's **pending marker**
+(`policy_pending` / `dispatch_pending`, from `manual_migration_substrate_pending_markers.sql`)
+for the oldest row still owed work. Anything at or above that timestamp survives regardless
+of age. The feedback stage and its `feedback_pending` probe were removed when the feedback
+rung retired (2026-11-04): that marker defaults TRUE and nothing clears it any more, so a
+probe on it would pin the floor forever.
 
 Two details in that floor are load-bearing and were both wrong in the first draft:
 
@@ -204,7 +206,7 @@ above).
 **The window is 10 days, and the reason is consumer windows, not disk.** Two live readers
 reach back further than a week: `orion/autonomy/evals/run_attention_bound_proposal_eval.py`
 uses `WINDOW_DAYS = 7`, and `scripts/analysis/measure_proposal_feedback_correlation.py`
-defaults to 200 hours (8.33 days). A 7-day retention window would tie exactly to the first
+(deleted with the feedback rung, 2026-11-04) defaulted to 200 hours (8.33 days). A 7-day retention window would tie exactly to the first
 and sit *inside* the second, racing both at their oldest edge -- and both degrade quietly to
 "insufficient data" rather than failing loudly. 10 days clears the longer of the two with a
 ~1.7-day margin. Live: 10 days keeps 202,276 of 474,861 rows; 7 days would have kept 113,060.
@@ -1155,6 +1157,15 @@ decision within 72 h? Read-only over its sources; writes only `act_downstream_us
 - Log: `[ACT_DOWNSTREAM_USE] tick_complete rows_upserted=N`. Per-family report:
   `docker exec orion-athena-sql-writer python -m app.act_downstream_use 14`.
 
+## World-action settle scoring (moved here 2026-11-04)
+
+`app/world_settlement_loop.py` scores each attend-to-act world-action episode (the
+`shed_background_gpu` trial, treated or randomized-holdback control) on the cabinet sensor once its
+settle window closes. It writes the outcome row and posterior (treated) or the control cell, Orion's
+non-final `acted` loop verdict, and the episode's score
+(`orion/autonomy/world_settlement_store.py`). It moved here unchanged from orion-feedback-runtime when
+the feedback rung retired. `SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC` (30 s; 0 disables).
+
 ## Act ledger (rung 2, 2026-10-16)
 
 "Doing on one track" from `docs/superpowers/specs/2026-10-14-orion-thinking-architecture-design.md`.
@@ -1166,7 +1177,7 @@ Producers publish `act_opened` / `act_closed` grammar events (`ActV1` on `Gramma
   (`act:<verb>`, actor, signal) -- producers never type a magnitude;
 - grades every close through the existing L10 path: one `substrate_action_outcomes` row
   (`dispatch_kind = act:<verb>`, `target_id = actor`) plus the posterior upsert, with the same
-  two double-count guards as orion-feedback-runtime (`orion/grammar/act_ledger.py`);
+  two double-count guards the retired orion-feedback-runtime used (`orion/grammar/act_ledger.py`);
 - runs a horizon resolver every `SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC` (60 s): `juniper_replied`
   acts close 1 when Juniper's next chat turn STARTS (its hub ingress hop in
   `cockpit_turn_sighting`, so a slow or errored turn still counts; a logged `chat_history_log`

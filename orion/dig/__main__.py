@@ -907,15 +907,25 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
              else "S5 waits for Juniper's yes or no" if rec.role == "S5"
              else "code re-checks its wiring on every `capacities` read; while it holds, so does the job; "
              "Juniper may reject it")
-    if verb == "claim" and rec.role != "S5":
-        # the write takes any one cite; every read runs the stricter check. Say its verdict now, so a
-        # claim that fails is never found only on the next read (turn 14cc4d06, 2026-11-04: a re-claim
-        # that said "I drop pg:energy_bill_forecast" still named the dormant table and failed)
-        chk = claims.check_evidence(atlas, rec, now_root())
-        after = (after + "; it holds now" if chk.holds else
-                 "written, but it does NOT hold on today's atlas: " + "; ".join(chk.failed[:3])
-                 + ". Every id the because names counts, even one you mention to drop. Claim it again "
-                 "naming only what holds, or `capacity withdraw`")
+    if verb == "claim":
+        # the write takes any one cite; every read runs stricter gates (Juniper's no, a near miss, the
+        # evidence check). Say the read's verdict now, from the read's own code, so a claim that fails is
+        # never found only on the next read (turn 14cc4d06, 2026-11-04: a re-claim that said "I drop
+        # pg:energy_bill_forecast" still named the dormant table and failed)
+        again, _, _ = _capacity_reading(atlas)
+        view = next((c for c in again.claims if (c.part_id, c.role, c.kind) == (rec.part_id, rec.role, "claim")), None)
+        status = view.status if view else "unknown"
+        if status in ("evidence-checked", "confirmed", "rule gives it"):  # the job is held
+            after += "; it holds now"
+        elif status == "evidence does not hold":
+            failed = view.failed
+            after = ("written, but it does NOT hold on today's atlas: " + "; ".join(failed[:MAX_FAILED_SHOWN])
+                     + (f" (+{len(failed) - MAX_FAILED_SHOWN} more)" if len(failed) > MAX_FAILED_SHOWN else "")
+                     + (". Every id the because names counts, even one you mention to drop"
+                        if any(not f.startswith("shape:") for f in failed) else "")
+                     + ". Claim it again naming only what holds, or `capacity withdraw`")
+        elif rec.role != "S5":
+            after = f"written, but the next read shows it as \"{status}\", so it does not hold the job"
     return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
             f"\nclaims ledger: {claims_path()}")
 

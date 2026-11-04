@@ -242,14 +242,38 @@ def test_s5_shared_with_juniper_gets_no_ready_claim_line(world, capsys, monkeypa
 
 
 
-def test_claim_write_says_at_once_when_the_read_check_fails(world, capsys, monkeypatch):  # noqa: F811
+def test_claim_write_says_at_once_what_the_next_read_shows(world, capsys, monkeypatch):  # noqa: F811
     # turn 14cc4d06 (2026-11-04): the write took a claim the next read failed, and nothing said so
     monkeypatch.setattr(dig, "_live_atlas", _body)
     code, out, err = run(capsys, "capacity", "claim", "watcher", "S3", "because",
                          "watcher is seen on watch:poke, and llm:reply which is not its flow")
     assert code == 0, err
     assert "does NOT hold" in out and "llm:reply" in out and "capacity withdraw" in out
+    _, read, _ = run(capsys, "capacities")
+    assert "evidence does not hold: watcher S3" in read
     code, out, err = run(capsys, "capacity", "claim", "watcher", "S3*", "because",
                          "watcher reads the health census and pokes on watch:poke")
     assert code == 0, err
     assert "it holds now" in out, out
+    _, read, _ = run(capsys, "capacities")
+    assert "my claim: watcher" in read
+
+
+def test_claim_write_never_says_holds_when_juniper_rejected_it(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    conf = world / "repo" / "config" / "body_atlas" / "vsm_confirmed.yaml"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("rejected: [{part: watcher, role: 'S3*', date: 2026-11-04}]\n")
+    code, out, err = run(capsys, "capacity", "claim", "watcher", "S3*", "because",
+                         "watcher reads the health census and pokes on watch:poke")
+    assert code == 0, err
+    assert "it holds now" not in out and '"rejected"' in out, out
+
+
+def test_claim_write_never_says_holds_when_a_rule_says_no(world, capsys, monkeypatch):  # noqa: F811
+    # gateway is an R-server near miss: the read prints "rule says no" for an S2 claim on it
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    code, out, err = run(capsys, "capacity", "claim", "gateway", "S2", "because",
+                         "gateway takes llm:request and sends llm:reply to r0 and w0")
+    assert code == 0, err
+    assert "it holds now" not in out and '"rule says no"' in out, out

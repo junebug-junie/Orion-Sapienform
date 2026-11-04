@@ -376,3 +376,49 @@ def test_beside_prime_on_one_bus_neither_touches_the_other():
     assert [w.family for w in prime.bids] == ["prime"] and [w.family for w in rt.bids] == ["curiosity.replica"]
     # The replica read the concerns view Prime just published.
     assert "PRIME'S CONCERNS (Prime's published view" in rt.llm.calls[0]["user_prompt"]
+
+
+def test_lifespan_starts_the_replica_on_its_own_bus_and_stops_it(monkeypatch):
+    """A bus that cannot connect at boot delays the replica (retry in its task); it never blocks the lifespan.
+    Off: no bus, no task. Prime is off here (its own lifespan test is in test_prime_loop.py)."""
+    import app.main as main
+    from fastapi import FastAPI
+
+    made = []
+
+    class FailingBus:
+        def __init__(self, **kw):
+            made.append(self)
+            self.closed = False
+
+        async def connect(self):
+            raise ConnectionError("bus down")
+
+        async def close(self):
+            self.closed = True
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(main, "OrionBusAsync", FailingBus)
+    monkeypatch.setattr(main, "build_heartbeat_chassis", lambda: SimpleNamespace(start_background=_noop, stop=_noop))
+    monkeypatch.setattr(main.settings, "RPC_HEALTH_PUBLISH_ENABLED", False)
+    monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", True)
+    monkeypatch.setattr(main.settings, "PRIME_ENABLED", False)
+    monkeypatch.setattr(main.settings, "CURIOSITY_REPLICA_ENABLED", True)
+
+    async def go():
+        async with main.lifespan(FastAPI()):
+            assert isinstance(main.replica_runtime, main.ReplicaRuntime)
+            await asyncio.sleep(0)
+        assert main.replica_runtime is None and made[0].closed
+
+    asyncio.run(go())
+    monkeypatch.setattr(main.settings, "CURIOSITY_REPLICA_ENABLED", False)
+    made.clear()
+
+    async def off():
+        async with main.lifespan(FastAPI()):
+            assert main.replica_runtime is None and made == []
+
+    asyncio.run(off())

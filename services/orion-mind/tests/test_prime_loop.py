@@ -300,6 +300,8 @@ def test_lifespan_starts_prime_on_its_own_bus_without_blocking_and_stops_it(monk
     monkeypatch.setattr(main.settings, "RPC_HEALTH_PUBLISH_ENABLED", False)
     monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", True)
     monkeypatch.setattr(main.settings, "PRIME_ENABLED", True)
+    # The curiosity replica has its own bus and its own lifespan test (tests/test_replica_loop.py).
+    monkeypatch.setattr(main.settings, "CURIOSITY_REPLICA_ENABLED", False)
 
     async def go():
         async with main.lifespan(FastAPI()):

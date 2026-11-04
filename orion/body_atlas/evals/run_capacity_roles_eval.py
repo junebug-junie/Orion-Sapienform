@@ -21,6 +21,12 @@ confirmation does both; the checked-in ``vsm_confirmed.yaml`` reads; six full-le
 several claims, disputes and notes still fit the printout. Mutation (a code change, patched in):
 ``holders`` also returns parts with an unconfirmed claim; the floor must FAIL.
 
+**Evidence check** (2026-11-04 decision note): Orion's first five live claims (frozen in
+``fixtures/capacity_claims_2026-11-04.jsonl``) re-checked against the 2026-10-31 body. Each must
+pass or fail as reviewed by hand (below), with the reason named; the same claims relabelled S5 must
+all fail; and the printout with them plus the dig tail must fit uncut. Mutation (patched in): a
+check that passes a claim when *any* reference holds, instead of every one; the eval must FAIL.
+
 The expected sets are the only hand-written truth here; the rules never read them.
 
     python orion/body_atlas/evals/run_capacity_roles_eval.py
@@ -244,6 +250,68 @@ def _claims_failures(path: Path) -> list[str]:
     return f
 
 
+LIVE_CLAIMS = _HERE / "fixtures" / "capacity_claims_2026-11-04.jsonl"
+# Reviewed by hand against the 2026-10-31 body (fixture WIRES) on 2026-11-04. The reason for each
+# failure is a real atlas fact on that day, not a rule tuned to get it.
+EVIDENCE_EXPECTED = {
+    ("part:orion-gpu-lane-controller", "S3"): (True, None),  # sends actuate:result to gpu-pool, mesh-guardian
+    ("part:orion-equilibrium-service", "S3*"): (True, None),  # R-census-reader hit; sends equilibrium:snapshot
+    # on 10-31 the atlas had no redis:orion:self_monitor:latest part (it is live by 11-04)
+    ("part:orion-durable-runs", "algedonic"): (False, "redis:orion:self_monitor:latest: in no part or channel"),
+    ("part:orion-energy", "metabolism"): (False, "pg:energy_bill_forecast: dormant"),  # 0 rows
+    ("part:orion-world-pulse", "S4"): (True, None),  # sends world_context:daily_capsule to cortex-exec
+}
+
+
+def _any_ref_holds(real):
+    """The mutant: a claim passes when any reference holds, not every one."""
+    def mutant(atlas, claim, root, **kw):
+        got = real(atlas, claim, root, **kw)
+        return got.model_copy(update={"holds": bool(got.held), "failed": []})
+    return mutant
+
+
+def evidence_failures(path: Path, *, any_ref: bool = False) -> list[str]:
+    real = C.check_evidence
+    if any_ref:
+        C.check_evidence = _any_ref_holds(real)
+    try:
+        return _evidence_failures(path)
+    finally:
+        C.check_evidence = real
+
+
+def _evidence_failures(path: Path) -> list[str]:
+    catalog, observed, now, body = _structure._fixture_inputs(path)
+    atlas = build_atlas(catalog, observed, now=now, body=body)
+    recs, skipped = C.load_ledger(LIVE_CLAIMS, K.CapacityClaimV1)
+    f: list[str] = [f"{skipped} unreadable claim lines"] if skipped else []
+    checks = C.check_claims(atlas, recs, _REPO)
+    got = {(c.part_id, c.role): c for c in checks}
+    for key, (holds, why) in EVIDENCE_EXPECTED.items():
+        c = got.get(key)
+        if c is None:
+            f.append(f"evidence: {key} not checked")
+        elif c.holds != holds:
+            f.append(f"evidence: {key} holds={c.holds}, expected {holds} ({c.failed})")
+        elif why and not any(x.startswith(why) for x in c.failed):
+            f.append(f"evidence: {key} failed for {c.failed}, expected {why!r}")
+    s5 = C.check_claims(atlas, [r.model_copy(update={"role": "S5"}) for r in recs], _REPO)
+    if any(c.holds for c in s5):
+        f.append("evidence: an S5 claim passed the code check")
+    vsm = C.load_confirmed(_REPO)
+    reading = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm, checks=checks), atlas, vsm, recs, [], checks)
+    if any("confirmed by Juniper:" in j.text for j in reading.jobs):
+        f.append("evidence: a checked claim printed as Juniper's confirmation")
+    from orion.dig.__main__ import capped, claim_block
+
+    shown = capped(K.render(reading), tail="\n".join(claim_block(reading, atlas)
+                                                    + ["full result: /mnt/orion-fcc/dig/2026-11-04/capacities-99.json"]))
+    if "the rest is in the file" in shown:
+        f.append(f"evidence: dig capacities with the five live claims is cut: {len(shown)} chars")
+    return f
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="also print the live reading (no expected set)")
@@ -261,6 +329,13 @@ def main(argv: list[str] | None = None) -> int:
     claims_mutant = any("unconfirmed claim" in f for f in mutant_fails)  # caught by the floor, not by chance
     print("mutation (unconfirmed claims hold roles): " + ("CAUGHT" if claims_mutant else "NOT CAUGHT"))
     failed += bool(claim_fails) + (not claims_mutant)
+    ev_fails = evidence_failures(WIRES)
+    for f in ev_fails:
+        print(f"FAIL {f}")
+    print(f"evidence check (5 live claims on {WIRES.name}): " + ("PASS" if not ev_fails else f"FAIL ({len(ev_fails)})"))
+    ev_mutant = any(f.startswith("evidence: ") for f in evidence_failures(WIRES, any_ref=True))
+    print("mutation (any reference holds, not every one): " + ("CAUGHT" if ev_mutant else "NOT CAUGHT"))
+    failed += bool(ev_fails) + (not ev_mutant)
     if args.live:
         catalog, observed, now, body = _structure._live_inputs(_REPO)
         reading = K.read_capacities(build_atlas(catalog, observed, now=now, body=body))

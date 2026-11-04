@@ -3,7 +3,10 @@
 # Read by orion/body_atlas/claims.py (load_confirmed); `python -P -m orion.dig capacities` prints it.
 #
 # Orion claims a job for a part with `python -P -m orion.dig capacity claim <part> <job> because ...`.
-# A claim is not a role. Juniper confirms or rejects one here, by PR; the PR is the review.
+# Since 2026-11-04 code re-checks each claim's cited wiring against the live atlas on every read;
+# a claim that holds counts as a role (EVIDENCE-CHECKED, never printed as Juniper's), S5 excepted.
+# Juniper need not answer each one: a rejection here wins over a passing check, and a confirmation
+# here outranks it. S5 claims still wait for her.
 # A confirmed role holds the job like a rule result: a capacity sentence may cite it, and it
 # covers the "no part is shown doing this" gap line of that job. Only Juniper edits this file.
 #

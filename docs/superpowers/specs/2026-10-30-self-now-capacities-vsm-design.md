@@ -305,6 +305,31 @@ partition test, `tests/test_organ_names_partition.py` (allowlist `orion/body_atl
    kept offering claims and wrote none, so `dig capacities` now ends with one ready claim line
    per open job and says to write each claim it can back now; Juniper's review stays the gate.
 
+**Decision note, 2026-11-04 (changes decision 1; Juniper accepted).** Orion wrote the first five
+claims on 2026-11-04 (05:29-05:33Z). Juniper does not want to hand-judge each one. Now code checks
+the cited evidence against the live atlas on every `dig capacities` read, and a claim that holds
+counts as a role without her yes:
+
+- **Passes** when every id the because names (part names, channels, `pg:`/`redis:`/... ids, matched
+  against the atlas's own ids, no word lists) and every id cited at write time is on a live flow
+  of the claimed part that carries more than the census; every repo path cited exists; at least one
+  cite is atlas wiring; and the wiring fits the job (S2 in and out; S3 and S4 out; S3* is an
+  R-census-reader hit with a flow out; algedonic writes a key R-broadcast-key finds; S1 and
+  metabolism any flow). `orion/body_atlas/claims.py` (`check_claims`, `EVIDENCE_SHAPES`).
+- **Prints as EVIDENCE-CHECKED** (code, not Juniper), never as "confirmed by Juniper". It holds
+  the job, covers that job's "no part is shown" gap lines like a confirmation, and a capacity
+  sentence may cite it. Juniper's rejection wins over a pass; her confirmation outranks it.
+- **S5 never passes** (decision 3): S5 claims still wait for Juniper.
+- **Fails** print "evidence does not hold" with the reference that failed, in a "Fix or withdraw"
+  block for Orion (`capacity withdraw <part> <job>` is new). Juniper's list is one "may veto"
+  line, not a queue to answer.
+- **Nothing stored**: the check reruns on every read, so a claim whose wiring leaves the atlas
+  drops back. Live result on the 11-04 atlas: 4 of 5 pass; `orion-energy` metabolism fails
+  because its because names `pg:energy_bill_forecast`, a dormant table (0 rows).
+- Limit: id matching checks that each cited thing is wired to the part, not that the sentence
+  about it is true (e.g. "orion-dream fetches that key" passes because orion-dream is on a
+  durable-runs flow, not because the check read the key relation the sentence names).
+
 **Recorded 2026-10-30:** Juniper answered "hit it" to all five. Decided: (1) Juniper confirms by PR
 to `config/body_atlas/vsm_confirmed.yaml`; (2) `cap:metabolism` is kept, through claims; (3) S5
 says it is shared with Juniper, citing her sign-off files; (4) rules first, the HTTP/Redis atlas

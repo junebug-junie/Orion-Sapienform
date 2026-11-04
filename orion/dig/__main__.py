@@ -52,7 +52,7 @@ path of a file with the full result; read only what you need from that file.
                          None = live now; a date = that export's files; an organ id = its members.
   capacities [gaps]      VSM jobs your parts do: by rule, by Juniper's confirmation, claimed.
   capacity claim <part> <job> because <reason>   claim a job for a live part (a lasting write);
-                         cite one of its flows by full id or a repo file. `capacity help`: rule.
+                         cite one of its flows by full id or a repo file. `capacity help`: rule, withdraw.
   capacity write cap:<job> <sentence> because <reason>   a capacity, in your words.
   body-economy [<section>...]   what spins each machine, what it costs, binds, wants, waste.
                          `body-economy --help`: sections, flags.
@@ -642,14 +642,16 @@ def _capacity_reading():
     except claims.ClaimError as exc:
         raise DigError(str(exc)) from exc
     atlas = names.apply_names(_live_atlas(), names.load(names_path())[0])
-    reading = capacities.read_capacities(atlas, vsm=vsm)
     claim_recs, s1 = claims.load_ledger(claims_path(), capacities.CapacityClaimV1)
     written, s2 = claims.load_ledger(capacities_path(), capacities.CapacityV1)
-    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written)
+    # every read re-checks each claim's cited wiring against today's atlas: nothing is stored
+    checks = claims.check_claims(atlas, claim_recs, now_root())
+    reading = capacities.read_capacities(atlas, vsm=vsm, checks=checks)
+    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written, checks)
     for path, n in ((claims_path(), s1), (capacities_path(), s2)):
         if n:
             reading.notes.append(f"{n} unreadable line(s) skipped in {path}")
-    return reading, atlas, written
+    return reading, atlas, written, claim_recs
 
 
 def cmd_capacities(arg: str | None, out: Out) -> str:
@@ -658,7 +660,7 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
     ``gaps``: the code-written gap lines. Writes nothing but the dig result file."""
     from orion.body_atlas import capacities
 
-    reading, atlas, _ = _capacity_reading()
+    reading, atlas, _, _ = _capacity_reading()
     path = out.write("capacities", json.loads(reading.model_dump_json()))
     tail = [f"full result: {path}"]
     if arg == "gaps":
@@ -701,13 +703,26 @@ def claim_block(reading, atlas) -> list[str]:
                 hint = f"  # the rule saw: {', '.join(dict.fromkeys(ev[:3]))}" if ev else ""
             lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<why>"{hint}')
         lines.append("No evidence for a job: leave it, and say which and why.")
+    failed = capacities.failed_claims(reading)
+    if failed:
+        lines.append(f"Fix or withdraw ({len(failed)}): my cited evidence does not hold in today's atlas. Claim it "
+                     "again citing only what holds, or `capacity withdraw <part> <job>`:")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {'; '.join(c.failed)[:110]}"
+                  for c in failed[:MAX_PENDING_SHOWN]]
+        if len(failed) > MAX_PENDING_SHOWN:
+            lines.append(f"  +{len(failed) - MAX_PENDING_SHOWN} more in the full result")
     waiting = capacities.pending_claims(reading)
     if waiting:
-        lines.append(f"Waiting on Juniper ({len(waiting)}): ask her yes or no on each (answers go in "
-                     "config/body_atlas/vsm_confirmed.yaml):")
+        lines.append(f"Waiting on Juniper ({len(waiting)}; S5 is hers, code cannot check it): ask her yes or no "
+                     "(answers go in config/body_atlas/vsm_confirmed.yaml):")
         lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_PENDING_SHOWN]]
         if len(waiting) > MAX_PENDING_SHOWN:
             lines.append(f"  +{len(waiting) - MAX_PENDING_SHOWN} more in {claims_path()}")
+    veto = capacities.vetoable_claims(reading)
+    if veto:
+        lines.append("Juniper may veto (no need to ask; her rejection wins): "
+                     + ", ".join(f"{c.part_id.removeprefix('part:')} {c.role}" for c in veto[:6])
+                     + (f" +{len(veto) - 6}" if len(veto) > 6 else ""))
     return lines
 
 
@@ -718,6 +733,7 @@ def cmd_capacity_help() -> str:
         claims.claim_rule(),
         f"  {CLAIM_CMD}",
         '  python -P -m orion.dig capacity dispute <part> <job> because "<reason>"   (argue with a rule result)',
+        "  python -P -m orion.dig capacity withdraw <part> <job>   (take back a claim)",
         '  python -P -m orion.dig capacity write cap:s2 "<one sentence>" because "<reason>"',
         "Gap lines are written by code; a claim never clears one. Ledgers: "
         f"{claims_path()}, {capacities_path()}",
@@ -729,7 +745,14 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
     <reason>. Lasting appends to the two ledgers under $ORION_DIG_HOME/self/."""
     from orion.body_atlas import claims
 
-    reading, atlas, written = _capacity_reading()
+    reading, atlas, written, claim_recs = _capacity_reading()
+    if verb == "withdraw":
+        try:
+            rec = claims.withdraw_claim(atlas, claim_recs, a[0], a[1], dig=out.dig)
+        except claims.ClaimError as exc:
+            raise DigError(str(exc)) from exc
+        claims.append(claims_path(), rec)
+        return f"withdrew my claim {rec.part_id.removeprefix('part:')} {rec.role}\nclaims ledger: {claims_path()}"
     cut = a.index("because", 2)
     try:
         if verb == "write":
@@ -746,7 +769,8 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
         raise DigError(str(exc)) from exc
     claims.append(claims_path(), rec)
     after = ("it prints beside the rule result and changes nothing" if verb == "dispute"
-             else "Orion's claim until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml")
+             else "S5 waits for Juniper's yes or no" if rec.role == "S5"
+             else "code re-checks its wiring on every `capacities` read; Juniper may still reject it")
     return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
             f"\nclaims ledger: {claims_path()}")
 
@@ -1168,6 +1192,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_capacity_help()
         elif ns.command == "capacity" and a[0] in ("claim", "dispute", "write") and len(a) >= 5 and "because" in a[3:]:
             text = cmd_capacity(a[0], a[1:], out)
+        elif ns.command == "capacity" and a[0] == "withdraw" and len(a) == 3:
+            text = cmd_capacity("withdraw", a[1:], out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)
         elif ns.command == "name-organs" and not a:

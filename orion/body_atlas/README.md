@@ -159,7 +159,7 @@ claims a job for a live part (`dig capacity claim <part> <job> because ...`); th
 by full id, the other end or a non-census channel of one of that part's flows (a host does not
 count), or a repo file that exists. A claim cannot take a job a rule already gives; `capacity
 dispute` argues with one and prints beside it. A claim is never a role: it never clears a gap
-line and no capacity may cite it. Juniper confirms or rejects claims by PR to
+line and no capacity may cite it (until code checks its wiring; see below). Juniper confirms or rejects claims by PR to
 `config/body_atlas/vsm_confirmed.yaml`; a confirmed role holds the job like a rule result and
 covers that job's "no part is shown" gap lines (`COVERED_BY_CONFIRMATION`), never an atlas-blind
 one. Capacities (`cap:s1`..`cap:s5`, `cap:metabolism`) are one sentence each in Orion's words
@@ -172,6 +172,21 @@ the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must f
 `open_jobs` / `pending_claims` (2026-11-04) feed the `dig capacities` tail: the jobs to claim now
 (no rule or confirmed holder, no claim waiting) and the claims waiting for Juniper's yes or no. A
 capacities turn ends with claims written, not offered; a claim is still never a role.
+
+**Evidence-checked claims (2026-11-04).** Juniper does not hand-judge each claim. On every
+`dig capacities` read, `claims.check_claims` re-checks each standing claim (latest per part and
+job, not withdrawn) against today's atlas: every id its because names (part names with `-` or
+`:`, channels, `pg:`/`redis:`/... ids, using the atlas's own id prefixes, never a word list), and
+every id it cited when written, must be on a live flow of the claimed part that carries more than
+the census; a repo path with an extension must exist; at least one cite must be atlas wiring; and
+the wiring must fit the job (`EVIDENCE_SHAPES`: S2 in and out, S3/S4 out, S3* an R-census-reader
+hit that reports out, algedonic writes a key R-broadcast-key finds, S1/metabolism any). A claim
+that passes is a role with `strength="evidence-checked"` (`reading.checked`): it holds the job,
+covers that job's "no part is shown" gap lines and may be cited by a capacity, and prints as
+EVIDENCE-CHECKED, never as Juniper's. One that fails prints "evidence does not hold" with the
+reference that failed, in a "Fix or withdraw" block (`dig capacity withdraw <part> <job>`). S5
+never passes (decision 3); Juniper's rejection beats a pass, and her confirmation outranks it.
+Nothing is stored: a claim whose wiring leaves the atlas drops back on the next read.
 
 **HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
 *HTTP:* a service calls another when its code names that service's URL: a string constant that is

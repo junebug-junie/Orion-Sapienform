@@ -10,7 +10,7 @@ it is the review surface (design decision 1). Code checks a floor, as names do:
   repo file that exists. A claim cannot take a job a rule already gives the part; a **dispute**
   argues with one, and prints beside it.
 * a **capacity** (``cap:s1`` .. ``cap:s5``, ``cap:metabolism``) may cite only parts that hold its
-  job by rule or by Juniper's confirmation (for ``cap:s5``, also her sign-off files), and its
+  job by rule, by Juniper's confirmation or by checked evidence (for ``cap:s5``, also her sign-off files), and its
   sentence may not name any other live part. With no holder there is nothing to write: the gap
   line stands. cap:s5 names Juniper (decision 3).
 
@@ -28,7 +28,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from orion.body_atlas.capacities import (
-    CAP_JOBS, JOBS, CapacityClaimV1, CapacityReadingV1, CapacityV1, VsmConfirmedV1, claimable, holders,
+    CAP_JOBS, JOBS, CapacityClaimV1, CapacityReadingV1, CapacityV1, EvidenceCheckV1, VsmConfirmedV1, _Index,
+    active_claims, claimable, holders, rule_broadcast_keys, rule_census_reader,
 )
 from orion.body_atlas.model import BodyAtlasV1
 from orion.body_atlas.names import BECAUSE_MAX_CHARS, BECAUSE_MIN_CHARS, _cited
@@ -111,19 +112,35 @@ def _plain(text: str) -> str:
     return re.sub(r"(?<![\w:-])part:", "", text.lower())
 
 
-def evidence_ids(atlas: BodyAtlasV1, part_id: str, census: set[str]) -> set[str]:
-    """What a claim on this part may cite: the live other end of each of its flows, and each
-    non-census channel on them. A host (``runs_on``) is placement, not evidence of a job."""
+def flow_dirs(atlas: BodyAtlasV1, part_id: str, census: set[str]) -> dict[str, set[str]]:
+    """What a claim on this part may cite, each with the part's own direction on it: the live other
+    end of each of its flows that carries more than the census, and each non-census channel on them. "out": the part sends, calls,
+    writes (or is the store a part reads); "in": the reverse; "?": a ``uses`` flow (direction
+    unknown). A host (``runs_on``) is placement, not evidence of a job."""
     names = {pid: n for n, pid in claimable(atlas).items()}
-    out: set[str] = set()
+    out: dict[str, set[str]] = {}
     for f in atlas.flows:
         if part_id not in (f.source, f.target) or f.relation == "runs_on":
             continue
+        if f.channels and set(f.channels) <= census:  # a health heartbeat links everyone to everyone
+            continue
         other = f.target if f.source == part_id else f.source
+        if f.relation == "uses":
+            d = "?"
+        elif f.relation == "reads":  # source reads target: the data flows target -> source
+            d = "in" if f.source == part_id else "out"
+        else:
+            d = "out" if f.source == part_id else "in"
         if other != part_id and other in names:
-            out.add(names[other])
-        out.update(ch for ch in f.channels if ch not in census)
+            out.setdefault(names[other], set()).add(d)
+        for ch in f.channels:
+            if ch not in census:
+                out.setdefault(ch, set()).add(d)
     return out
+
+
+def evidence_ids(atlas: BodyAtlasV1, part_id: str, census: set[str]) -> set[str]:
+    return set(flow_dirs(atlas, part_id, census))
 
 
 def repo_files(text: str, root: Path) -> list[str]:
@@ -173,6 +190,131 @@ def check_claim(reading: CapacityReadingV1, atlas: BodyAtlasV1, ref: str, role: 
     return CapacityClaimV1(part_id=part_id, role=job, kind=kind, because=because, cites=cites, at=_now(), dig=dig)
 
 
+# a file reference: a repo path whose last segment has an extension (``orion/x/y.py``), so
+# "and/or" or "watts/dollars" in prose is not read as a path
+_EXT_RE = re.compile(r"\.\w{1,8}$")
+
+
+def _id_prefixes(atlas: BodyAtlasV1) -> set[str]:
+    """The id prefixes the atlas itself uses (``pg``, ``redis``, ``orion`` ...): read from its parts
+    and channels, never a hand list."""
+    ids = [p.name for p in atlas.parts] + [ch for f in atlas.flows for ch in f.channels]
+    return {i.split(":", 1)[0].lower() for i in ids if ":" in i and i.split(":", 1)[0]}
+
+
+def because_refs(atlas: BodyAtlasV1, part_id: str, because: str) -> tuple[list[str], list[str], list[str]]:
+    """What a because points at, by id matching only: (atlas ids it names, id-shaped tokens that
+    are in no part or channel of the atlas, repo-path tokens with an extension). A part name counts
+    only when it is id-shaped (has ``-`` or ``:``), so a part called ``debug`` is not read out of prose.
+    The claimed part's own name is not a reference."""
+    low = _plain(because)
+    self_name = part_id.removeprefix("part:").lower()
+    names = {p.name.lower() for p in atlas.parts if "-" in p.name or ":" in p.name}
+    channels = {ch.lower() for f in atlas.flows for ch in f.channels}
+    known = (names | channels) - {self_name}
+    found = sorted(i for i in known if _cited(i, low))
+    unknown: list[str] = []
+    prefixes = _id_prefixes(atlas)
+    if prefixes:
+        alt = "|".join(sorted(map(re.escape, prefixes), key=len, reverse=True))
+        for m in re.finditer(rf"(?<![\w:/.-])((?:{alt}):[\w:.*/-]*[\w*])", low):
+            tok = m.group(1)
+            if tok != self_name and tok not in known and not any(_cited(k, tok) for k in found):
+                unknown.append(tok)
+    files = [m.group(1) for m in _PATH_RE.finditer(because) if _EXT_RE.search(m.group(1))]
+    return found, list(dict.fromkeys(unknown)), list(dict.fromkeys(files))
+
+
+def check_evidence(atlas: BodyAtlasV1, claim: CapacityClaimV1, root: Path, *, idx: _Index | None = None,
+                   audit: set[str] | None = None, broadcast: set[str] | None = None) -> EvidenceCheckV1:
+    """Re-check one claim against today's atlas (rung 4, 2026-11-04 decision note): every reference
+    its because names (and every id it cited when written) must be on a live, non-census flow of the
+    claimed part, or a repo file that exists; at least one must be atlas wiring; and the wiring must
+    fit the job's shape (``EVIDENCE_SHAPES``). S5 never passes: it is Juniper's to confirm."""
+    idx = idx or _Index(atlas)
+    census = idx.census
+    dirs = flow_dirs(atlas, claim.part_id, census)
+    by_low = {k.lower(): k for k in dirs}
+    parts = {p.name.lower(): p for p in atlas.parts}
+    found, unknown, files = because_refs(atlas, claim.part_id, claim.because)
+    cited_files = [c for c in claim.cites if "/" in c and _EXT_RE.search(c)]
+    refs = list(dict.fromkeys(found + unknown + [c.lower() for c in claim.cites if c not in cited_files]))
+    channels = {ch.lower() for f in atlas.flows for ch in f.channels}
+    held: list[str] = []
+    failed: list[str] = []
+    wiring: dict[str, set[str]] = {}
+    for ref in refs:
+        if ref == claim.part_id.removeprefix("part:").lower():
+            continue
+        if ref in by_low:
+            wiring[by_low[ref]] = dirs[by_low[ref]]
+            held.append(f"{by_low[ref]} ({'/'.join(sorted(dirs[by_low[ref]]))})")
+        elif ref in census:
+            failed.append(f"{ref}: the census, which every part sends")
+        elif ref in parts and parts[ref].status != "live":
+            rows = parts[ref].facts.get("rows_est")
+            failed.append(f"{ref}: {parts[ref].status}, not live" + (f" ({rows} rows)" if rows is not None else ""))
+        elif ref not in parts and ref not in channels:
+            failed.append(f"{ref}: in no part or channel of my atlas")
+        else:
+            failed.append(f"{ref}: not on a live flow of {claim.part_id.removeprefix('part:')}")
+    for rel in dict.fromkeys(files + cited_files):
+        if repo_files(rel, root) == [rel]:
+            held.append(f"{rel} (file)")
+        else:
+            failed.append(f"{rel}: no such file in the repo")
+    shape_miss = None
+    if claim.role == "S5":
+        shape_miss = "S5 is shared with Juniper; code cannot check it into a role"
+    elif not wiring:
+        shape_miss = "it cites no wiring of the part (files alone are not checked as a role)"
+    else:
+        ins = any("in" in d for d in wiring.values())
+        outs = any("out" in d for d in wiring.values())
+        if claim.role == "S2" and not (ins and outs):
+            shape_miss = "S2 needs a cited flow in and one out"
+        elif claim.role in ("S3", "S4") and not outs:
+            shape_miss = f"{claim.role} needs a cited flow out to another part"
+        elif claim.role == "S3*":
+            audit = audit if audit is not None else {r.part_id for r in rule_census_reader(idx)}
+            if claim.part_id not in audit:
+                shape_miss = "S3* needs R-census-reader to find it listening to the whole body"
+            elif not outs:
+                shape_miss = "S3* needs a cited flow out (it reports back)"
+        elif claim.role == "algedonic":
+            broadcast = broadcast if broadcast is not None else {b.part_id for b in rule_broadcast_keys(atlas, idx)}
+            hit = [w for w in wiring if f"part:{w}" in broadcast and "out" in wiring[w]]
+            if not hit:
+                shape_miss = "algedonic needs a cited Redis key it writes that R-broadcast-key finds"
+    if shape_miss:
+        failed.append(f"shape: {shape_miss}")
+    return EvidenceCheckV1(part_id=claim.part_id, role=claim.role, at=claim.at, holds=not failed,
+                           held=held, failed=failed)
+
+
+def check_claims(atlas: BodyAtlasV1, claims: list[CapacityClaimV1], root: Path) -> list[EvidenceCheckV1]:
+    """Each standing claim (latest per part and job, not withdrawn), re-checked against today's
+    atlas. Deterministic; stores nothing: run on every read, so a claim whose wiring is gone drops back."""
+    standing = active_claims(claims)
+    if not standing:
+        return []
+    idx = _Index(atlas)
+    audit = {r.part_id for r in rule_census_reader(idx)}
+    broadcast = {b.part_id for b in rule_broadcast_keys(atlas, idx)}
+    return [check_evidence(atlas, c, root, idx=idx, audit=audit, broadcast=broadcast) for c in standing.values()]
+
+
+def withdraw_claim(atlas: BodyAtlasV1, claims: list[CapacityClaimV1], ref: str, role: str, *,
+                   dig: str) -> CapacityClaimV1:
+    """Take back a standing claim (any status; a part that is no longer live included)."""
+    job = parse_role(role)
+    name = ref.strip().removeprefix("part:")
+    part_id = {p.name: p.part_id for p in atlas.parts}.get(name, f"part:{name}")
+    if (part_id, job) not in active_claims(claims):
+        raise ClaimError(f"I have no standing claim of {job} for {name} to withdraw")
+    return CapacityClaimV1(part_id=part_id, role=job, kind="withdraw", because="withdrawn", cites=[], at=_now(), dig=dig)
+
+
 def check_capacity(reading: CapacityReadingV1, atlas: BodyAtlasV1, written: list[CapacityV1], cap_id: str,
                    sentence: str, because: str, *, dig: str) -> CapacityV1:
     cap_id = cap_id.strip().lower()
@@ -186,8 +328,8 @@ def check_capacity(reading: CapacityReadingV1, atlas: BodyAtlasV1, written: list
     hs = holders(reading, cap_id)
     jobs = "/".join(CAP_JOBS[cap_id])
     if not hs:
-        raise ClaimError(f"no part holds {jobs} by rule or by Juniper's confirmation, so there is nothing to "
-                         "cite; the gap line stands (`capacity claim` a part, then Juniper confirms)")
+        raise ClaimError(f"no part holds {jobs} by rule, by Juniper's confirmation or by checked evidence, so "
+                         "there is nothing to cite; the gap line stands (`capacity claim` a part with wiring that holds)")
     held = [h.removeprefix("part:") for h in hs]
     s_low = _plain(sentence)
     others = sorted(n for n in claimable(atlas) if n not in held and _cited(n, s_low))
@@ -210,6 +352,8 @@ def claim_rule() -> str:
     """The floor ``check_claim`` and ``check_capacity`` enforce, from the same constants."""
     return (f"Claim: a live part, a job ({', '.join(JOBS)}), and a because ({BECAUSE_MIN_CHARS}-"
             f"{BECAUSE_MAX_CHARS} chars) citing by full id a part or channel on one of its flows, or a repo "
-            "file that exists. Not a role until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml. Capacity "
+            "file that exists. On every read, code re-checks the cited wiring against the atlas: it counts "
+            "as a role (EVIDENCE-CHECKED, not Juniper's) while it holds and fits the job; S5 waits for Juniper, "
+            "and her rejection in config/body_atlas/vsm_confirmed.yaml wins. Capacity "
             f"(cap:s1..s5, cap:metabolism): one sentence ({SENTENCE_MIN_CHARS}-{SENTENCE_MAX_CHARS} chars) "
-            "naming only parts that hold the job by rule or confirmation.")
+            "naming only parts that hold the job by rule, confirmation or checked evidence.")

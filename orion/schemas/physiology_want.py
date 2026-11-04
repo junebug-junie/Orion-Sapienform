@@ -19,6 +19,14 @@ current gate. It never treats "no answer" as "funded".
 
 Tier 0 (Juniper's turns, perception) NEVER bids: ``WantV1.tier`` is 1 or 2 only.
 
+Event wants (attention as the want competition, docs/superpowers/specs/2026-11-04-attention-as-
+want-competition-design.md, patch 1). A loop that sees something worth effort can attach the event:
+``event_ref`` names the row it is about and ``salience`` says how unusual it is for its source. The
+want's own family/verb/object_ref/cost already say which act it would run, so there is no separate
+"affordance" field. Both fields are left out of the serialized want when None, so a want without
+an event is byte-for-byte what it was before (consumers on ``extra=forbid`` keep parsing it while
+they roll forward).
+
 Cost unit. Prices on ``PhysiologyStateV1`` come from dual ascent on the NORMALIZED excess
 ``(use - budget) / budget`` (``orion/physiology/prices.py``), so a price is want-value per unit
 of budget. ``WantDecisionV1.cost_frac`` is therefore each constraint's cost as a FRACTION of that
@@ -29,7 +37,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 from orion.schemas.grammar import ActCostV2
 
@@ -95,6 +103,24 @@ class WantV1(BaseModel):
     # Acceptable lanes (pool roles, without the "lane:" prefix). Empty: the family config's.
     lanes: List[str] = Field(default_factory=list)
     correlation_id: Optional[str] = Field(default=None, max_length=200)
+    # The event this want is about, as ``<table>:<id>`` (``temporal_self_event:<id>``,
+    # ``grammar_acts:<act_id>``, ...). None: a clock want (hunger only).
+    event_ref: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    # How unusual the event is for its own source, 0..1 (the source's percentile, computed by the
+    # source). Appetite reads intensity = max(hunger, salience): an unusual event can win before the
+    # family's clock is due. None: no event, hunger alone.
+    salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> dict:
+        out = handler(self)
+        for key in _EVENT_FIELDS:
+            if key in out and out[key] is None:
+                del out[key]
+        return out
+
+
+_EVENT_FIELDS = ("event_ref", "salience")
 
 
 class WantDecisionV1(BaseModel):

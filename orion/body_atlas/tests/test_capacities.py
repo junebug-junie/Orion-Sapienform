@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import typing
 from pathlib import Path
 
 from orion.body_atlas import capacities as K
@@ -133,14 +134,24 @@ def test_printout_is_small_and_names_every_job():
 
 def test_printout_says_by_rule_is_not_juniper_confirmed():
     # turn 1ee0e35d (2026-11-04): Orion reported S1/S2 "BY RULE" as "Confirmed" with 0 confirmations
-    lines = K.render(K.read_capacities(_body()))
-    statuses = {j.status for j in K.read_capacities(_body()).jobs}
-    legend = next(ln for ln in lines if ln.startswith("status: "))
+    reading = K.read_capacities(_body())
+    statuses = {j.status for j in reading.jobs}
+    assert "BY RULE" in statuses
+    legend = next(ln for ln in K.render(reading) if ln.startswith("status: "))
     for status in statuses:
         assert f"{status} = " in legend
-    if "BY RULE" in statuses:
-        assert "not confirmed by Juniper" in legend
-    assert set(K.STATUS_MEANINGS) >= statuses
+    assert "not Juniper's confirmation" in legend
+    # every status the model allows has a meaning, so a new one cannot print unexplained
+    assert set(K.STATUS_MEANINGS) == set(typing.get_args(K.JobLineV1.model_fields["status"].annotation))
+
+
+def test_by_rule_line_names_juniper_confirmation_and_legend_allows_it():
+    vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="pool", role="S2", date="2026-11-04")])
+    lines = K.render(K.read_capacities(_body(), vsm=vsm))
+    s2 = next(ln for ln in lines if ln.startswith("S2 "))
+    assert "BY RULE" in s2 and "confirmed by Juniper: pool" in s2
+    legend = next(ln for ln in lines if ln.startswith("status: "))
+    assert "not confirmed by Juniper" not in legend and "named on its line" in legend
 
 
 _SPEC = importlib.util.spec_from_file_location(

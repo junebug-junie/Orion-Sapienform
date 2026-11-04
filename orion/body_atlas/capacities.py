@@ -783,10 +783,10 @@ def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
 # What each status means, printed under the job lines. Orion read "BY RULE" as "confirmed" (turn
 # 1ee0e35d, 2026-11-04) while Juniper had confirmed nothing; the line keeps the two apart.
 STATUS_MEANINGS = {
-    "BY RULE": "the atlas rule found it, not confirmed by Juniper",
+    "BY RULE": "the atlas rule found it; not Juniper's confirmation (a confirmation is named on its line)",
     "CONFIRMED": "Juniper confirmed it",
     "CANDIDATE": "the rule fits but cannot show the whole job; Juniper must confirm",
-    "NO RULE": "no rule holds it; a claim may",
+    "NO RULE": "no rule tests this job; a claim can name a part, Juniper confirms it",
     "NO PART FOUND": "the rule exists, no live part fits",
 }
 

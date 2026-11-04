@@ -82,11 +82,42 @@ def test_ok_runs_the_sync_inside_the_hub_container(tmp_path: Path) -> None:
 
 def test_declined_sync_is_reported_failed_with_exit_zero(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-    completed, _ = _run(tmp_path, repo, out="result=skipped_turn_in_flight_external workspace=x", rc=1)
+    completed, _ = _run(tmp_path, repo, out="result=error_fetch workspace=x", rc=1)
     assert completed.returncode == 0
+    assert completed.stdout.strip() == "failed reason=sync_declined rc=1 result=error_fetch workspace=x"
+
+
+def test_turn_in_flight_reads_as_deferred_not_failed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    completed, _ = _run(tmp_path, repo, out="result=skipped_turn_in_flight_external workspace=x", rc=1)
     assert completed.stdout.strip() == (
-        "failed reason=sync_declined rc=1 result=skipped_turn_in_flight_external workspace=x"
+        "skipped reason=turn_in_flight result=skipped_turn_in_flight_external workspace=x"
     )
+
+
+def test_docker_client_timeout_is_named(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    completed, _ = _run(tmp_path, repo, out="", rc=124)
+    assert completed.stdout.strip() == "failed reason=timeout rc=124 container=orion-athena-hub"
+
+
+def test_second_pending_retry_is_skipped(tmp_path: Path) -> None:
+    """Several pulls during one long turn must not stack 90-minute waiters."""
+    repo = _repo(tmp_path)
+    log = tmp_path / "rebuild.log"
+    holder = subprocess.Popen(["flock", str(log) + ".sandbox-retry.lock", "sleep", "5"])
+    try:
+        for _ in range(100):
+            if Path(str(log) + ".sandbox-retry.lock").exists():
+                break
+            __import__("time").sleep(0.05)
+        __import__("time").sleep(0.2)
+        completed, execs = _run(tmp_path, repo, out="result=synced", args=("--log-to", str(log)))
+    finally:
+        holder.kill()
+        holder.wait()
+    assert completed.stdout.strip() == "skipped reason=retry_already_pending"
+    assert execs == []
 
 
 def test_image_without_the_cli_reads_as_no_verdict(tmp_path: Path) -> None:

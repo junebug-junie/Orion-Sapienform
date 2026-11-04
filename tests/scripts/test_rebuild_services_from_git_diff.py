@@ -974,7 +974,7 @@ def test_turn_in_flight_starts_a_detached_retry_that_logs_itself(tmp_path: Path)
         "printf 'sandbox-helper %s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
         "case \"$*\" in\n"
         "  *--log-to*) printf 'retry-line\\n' >> \"$4\"; echo 'ok result=synced' ;;\n"
-        "  *) echo 'failed reason=sync_declined rc=1 result=skipped_turn_in_flight_external' ;;\n"
+        "  *) echo 'skipped reason=turn_in_flight result=skipped_turn_in_flight_external' ;;\n"
         "esac\n"
     )
     completed, _ = _run(
@@ -988,12 +988,12 @@ def test_turn_in_flight_starts_a_detached_retry_that_logs_itself(tmp_path: Path)
     first = _sandbox_lines(tmp_path)
     assert len(first) == 1
     assert first[0].startswith(
-        "SANDBOX_SYNC failed reason=sync_declined rc=1 result=skipped_turn_in_flight_external retry=detached_pid_"
+        "SANDBOX_SYNC skipped reason=turn_in_flight result=skipped_turn_in_flight_external retry=detached_pid_"
     )
     import time
 
     capture = tmp_path / "safe-build-args.txt"
-    for _ in range(50):
+    for _ in range(200):
         if "retry-line" in (tmp_path / "post_pull_rebuild.log").read_text():
             break
         time.sleep(0.1)

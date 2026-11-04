@@ -60,6 +60,13 @@ verdict() {
     exit 0
 }
 
+# One pending retry at a time: several pulls during one long turn would
+# otherwise each start a 90-minute waiter doing the same work.
+if [ -n "$LOG_TO" ] && command -v flock >/dev/null 2>&1; then
+    exec 9>>"${LOG_TO}.sandbox-retry.lock" 2>/dev/null &&
+        { flock -n 9 || verdict "skipped reason=retry_already_pending"; }
+fi
+
 # Same rule as a live deploy (safe_docker_build.sh, apply_post_pull_migrations.py):
 # only the clean primary main checkout, synchronized with origin/main.
 git_dir=$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)
@@ -99,15 +106,25 @@ if [ "$DRY_RUN" = "1" ]; then
     verdict "skipped reason=dry_run would_run=docker_exec_${hub}_python3_-m_orion.fcc.sandbox_sync"
 fi
 
-# The sync's git steps time out at 30 s each; bound the whole call too.
+# Bounds how long this caller waits. A killed docker client does not stop the
+# process inside the container; that one ends on its own (--wait-s deadline,
+# 30 s per git step).
 TIMEOUT=""
 if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT="timeout $((${WAIT_S%.*} + 300))"
+    TIMEOUT="timeout $((WAIT_S + 300))"
 fi
 # shellcheck disable=SC2086
 out=$($TIMEOUT docker exec "$hub" python3 -m orion.fcc.sandbox_sync --wait-s "$WAIT_S" </dev/null)
 rc=$?
 result=$(printf '%s\n' "$out" | awk 'NF' | tail -n 1)
+if [ "$rc" -eq 124 ]; then
+    verdict "failed reason=timeout rc=124 container=$hub"
+fi
+case "$result" in
+    *result=skipped_turn_in_flight_external*)
+        # Deferred, not failed: a turn held the sandbox for the whole wait.
+        verdict "skipped reason=turn_in_flight $result" ;;
+esac
 if [ "$rc" -eq 0 ] && [ -n "$result" ]; then
     verdict "ok $result deploy_head=${deploy_head:0:12}"
 elif [ -n "$result" ]; then

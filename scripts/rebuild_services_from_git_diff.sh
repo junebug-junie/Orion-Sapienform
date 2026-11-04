@@ -336,10 +336,10 @@ apply_deferred_migrations() {
 # Runs after every successful deploy run (rebuilt or not): the sandbox is
 # Orion's copy of the whole repo, not of one image. Mid-turn safety is the
 # sync's own turn lock: it never touches the tree while any turn runs. It
-# waits up to 2 min; when a long turn outlasts that (2026-11-04: two agent
-# turns held the lock for 40+ min), a detached retry waits up to 90 min more
-# and appends its own "SANDBOX_SYNC retry ..." line, so `git pull` is never
-# held for a turn. scripts/sync_fcc_sandbox_after_deploy.sh re-checks the clean
+# waits up to 2 min (`git pull` waits with it); when a long turn outlasts that
+# (2026-11-04: two agent turns held the lock for 40+ min), a detached retry
+# waits up to 90 min more and appends its own "SANDBOX_SYNC retry ..." line
+# (one pending retry at a time). scripts/sync_fcc_sandbox_after_deploy.sh re-checks the clean
 # primary main checkout. Never fails the run. Kill switch:
 # ORION_POST_PULL_SANDBOX_SYNC=0.
 sync_fcc_sandbox() {
@@ -366,11 +366,10 @@ sync_fcc_sandbox() {
                 if command -v setsid >/dev/null 2>&1; then
                     setsid "$helper" --wait-s "${ORION_SANDBOX_SYNC_RETRY_WAIT_S:-5400}" --log-to "$REBUILD_LOG" \
                         </dev/null >/dev/null 2>&1 &
+                    line="$line retry=detached_pid_$!"
                 else
-                    nohup "$helper" --wait-s "${ORION_SANDBOX_SYNC_RETRY_WAIT_S:-5400}" --log-to "$REBUILD_LOG" \
-                        </dev/null >/dev/null 2>&1 &
+                    line="$line retry=unavailable_no_setsid"
                 fi
-                line="$line retry=detached_pid_$!"
                 ;;
         esac
     fi

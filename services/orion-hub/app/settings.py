@@ -1003,8 +1003,9 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SPEND_LOG_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_SPEND_LOG_ENABLED"
     )
+    # ON since 2026-11-04: the replay reported the measurement usable (see .env_example).
     HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
+        default=True, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
     )
     HUB_CURIOSITY_VALUE_ORDER_PROPENSITY: float = Field(
         default=0.5, ge=0.0, le=1.0, alias="HUB_CURIOSITY_VALUE_ORDER_PROPENSITY"

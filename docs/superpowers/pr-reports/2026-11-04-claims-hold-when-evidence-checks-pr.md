@@ -199,6 +199,9 @@ Coordinator follow-ups (after the #3106 merge):
     generic `to claim a job:` line prints. A claim on S5 is still allowed and holds: design
     section 3 expects S5 claims, and decision 3 shares S5, it does not close it. Documented in the
     design doc's Decision change section.
+  - Live: the `capacities` tail now ends with the generic line
+    `to claim a job: python -P -m orion.dig capacity claim '<part>' '<job>' because "..."` in place
+    of the ready S5 line (S5 was the only open job).
   - Evidence: `test_s5_shared_with_juniper_is_never_offered_as_an_open_job`,
     `test_a_claim_on_s5_is_allowed_while_it_is_shared_with_juniper`,
     `test_s5_shared_with_juniper_gets_no_ready_claim_line`. Live `capacities` no longer prints the

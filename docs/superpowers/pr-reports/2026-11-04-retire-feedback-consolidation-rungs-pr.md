@@ -224,7 +224,7 @@ sed -i '/^ORION_REVERIE_GROUND_CONSOLIDATION=/d' services/orion-thought/.env
 ```bash
 rm services/orion-feedback-runtime/.env services/orion-consolidation-runtime/.env && rmdir services/orion-feedback-runtime services/orion-consolidation-runtime
 ```
-5. In 2 or more days: the drop PR (DROP_PR_LINK). Follow its header: check that nothing has written since, take the backup, then apply.
+5. In 2 or more days: the drop PR (https://github.com/junebug-junie/Orion-Sapienform/pull/3116). Follow its header: check that nothing has written since, take the backup, then apply.
 
 ## Risks / concerns
 
@@ -246,6 +246,6 @@ rm services/orion-feedback-runtime/.env services/orion-consolidation-runtime/.en
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3115 (drop step: https://github.com/junebug-junie/Orion-Sapienform/pull/3116)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

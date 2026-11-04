@@ -1,24 +1,27 @@
-# Design: Prime's concerns come from loops that close
+# Design: attention is the competition for Orion's effort (rev 2)
 
 ## Summary
 
-- A docs-only proposal: `docs/superpowers/specs/2026-11-04-prime-concern-sources-design.md`.
-- Prime stops picking concerns from attention arcs. Those are mostly internal surprise gauges and
-  body-economy binding lines. Instead it picks from **concern sources**: loops that already tie an
-  event to an action to a checkable outcome. v1 sources: camera asks, reading findings, curiosity
-  findings, missed visitor expectations, and failing skills.
-- The self-monitor grades each source, and each source earns its share of Prime's attention from its
-  own record.
-- Two prerequisite fixes are named:
-  - the street node pinned at 0.0000 in every frame;
-  - an ungraded camera-ask loop.
+- Rev 2 replaces rev 1, which built a second attention system beside the first (Juniper's
+  challenge). The spec is now `docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md`.
+- **The finding.** Attention feeds a substrate ladder that writes about 40k frames a day per rung and
+  binds 0 winners to acts. Orion's real doing (about 90% of acts) runs through the body-economy want
+  ledger and the act ledger, beside the ladder.
+- **The proposal.** Attention becomes the want-ledger competition:
+  - the menu is event wants, each keeping its event identity;
+  - the bid is how unusual the event is × earned family weight − cost;
+  - the self-monitor is one more evidence source for the weights;
+  - binding moves one family at a time.
+- **The ladder is retired in stages, not revived.** Proposal templates move to want producers.
+  Policy's job becomes one gate. The allocator stays. Feedback and consolidation frames are retired.
 
 ## Outcome moved
 
-No runtime change. It decides the shape before any code. Live evidence:
-- 42 Prime concerns in 7 days, 0 from the world, Juniper, reading or curiosity; 40 dropped and 2
-  produced something.
-- The camera ask loop closed 495 times in 14 days and feeds nothing.
+No runtime change. Live evidence:
+- 0 winners bound to an act in 24 h;
+- 0 executions allowed out of about 121k "approved" decisions a day;
+- 235 real acts a day through the producer path, all with outcomes;
+- the want ledger is shadow everywhere except Prime.
 
 ## Current architecture
 
@@ -31,7 +34,7 @@ Docs only.
 
 ## Files changed
 
-- `docs/superpowers/specs/2026-11-04-prime-concern-sources-design.md`: the proposal.
+- `docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md`: the proposal (rev 2; rev 1's file renamed and rewritten).
 - `docs/superpowers/pr-reports/2026-11-04-prime-concern-sources-design-pr.md`: this report.
 
 ## Schema / bus / API changes

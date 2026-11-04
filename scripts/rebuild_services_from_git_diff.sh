@@ -22,6 +22,10 @@
 # at repo root (see scripts/git_hooks/post-merge).
 # Every compose step is logged (start/end/exit code) to $ORION_REBUILD_LOG,
 # default ~/.orion/post_pull_rebuild.log.
+#
+# After a successful deploy run, Orion's FCC sandbox (/mnt/orion-fcc/repo) is
+# reset to origin/main (scripts/sync_fcc_sandbox_after_deploy.sh; one
+# SANDBOX_SYNC line in the log). Kill switch: ORION_POST_PULL_SANDBOX_SYNC=0.
 
 set -e
 
@@ -72,7 +76,7 @@ while [ $# -gt 0 ]; do
             fi
             ;;
         -h|--help)
-            sed -n '2,26p' "$0"
+            sed -n '2,30p' "$0"
             exit 0
             ;;
         *)
@@ -325,6 +329,54 @@ apply_deferred_migrations() {
     fi
 }
 
+# Orion's FCC sandbox (/mnt/orion-fcc/repo) after a deploy. Orion's chat turns
+# import the sandbox's orion/ first (PYTHONPATH), and before this only a Hub
+# browser connect refreshed it, so chatting on in an open tab after a pull ran
+# old code (2026-11-04: sandbox at #3107 while #3109 and #3112 were deployed).
+# Runs after every successful deploy run (rebuilt or not): the sandbox is
+# Orion's copy of the whole repo, not of one image. Mid-turn safety is the
+# sync's own turn lock: it never touches the tree while any turn runs. It
+# waits up to 2 min (`git pull` waits with it); when a long turn outlasts that
+# (2026-11-04: two agent turns held the lock for 40+ min), a detached retry
+# waits up to 90 min more and appends its own "SANDBOX_SYNC retry ..." line
+# (one pending retry at a time). scripts/sync_fcc_sandbox_after_deploy.sh re-checks the clean
+# primary main checkout. Never fails the run. Kill switch:
+# ORION_POST_PULL_SANDBOX_SYNC=0.
+sync_fcc_sandbox() {
+    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
+    local line helper="$REPO_ROOT/scripts/sync_fcc_sandbox_after_deploy.sh"
+    if [ -z "$ORION_DEPLOY_PINNED_HEAD" ]; then
+        # Not a deploy run: main was not origin/main when it started.
+        return 0
+    fi
+    if [ "$1" != "ok" ]; then
+        line="skipped reason=$1"
+    elif [ "${ORION_POST_PULL_SANDBOX_SYNC:-1}" = "0" ]; then
+        line="skipped reason=disabled (ORION_POST_PULL_SANDBOX_SYNC=0)"
+    elif [ ! -x "$helper" ]; then
+        line="skipped reason=helper_missing"
+    else
+        # stdout is the verdict; the sync's own diagnostics pass through on stderr.
+        line=$("$helper" --wait-s "${ORION_SANDBOX_SYNC_WAIT_S:-120}" </dev/null) || true
+        line=$(printf '%s\n' "$line" | awk 'NF' | tail -n 1)
+        [ -n "$line" ] || line="failed reason=helper_printed_nothing"
+        case "$line" in
+            *result=skipped_turn_in_flight_external*)
+                # Detached (own session, no terminal) so the pull returns now.
+                if command -v setsid >/dev/null 2>&1; then
+                    setsid "$helper" --wait-s "${ORION_SANDBOX_SYNC_RETRY_WAIT_S:-5400}" --log-to "$REBUILD_LOG" \
+                        </dev/null >/dev/null 2>&1 &
+                    line="$line retry=detached_pid_$!"
+                else
+                    line="$line retry=unavailable_no_setsid"
+                fi
+                ;;
+        esac
+    fi
+    echo "rebuild_services_from_git_diff.sh: SANDBOX_SYNC $line"
+    rebuild_log "SANDBOX_SYNC $line"
+}
+
 if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     # A failed second pass is reported on stderr but, like the first pass, never
     # fails the pull: there is nothing to rebuild, and the deploy gate holds.
@@ -334,6 +386,7 @@ if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
         rebuild_log "NOTHING base=${BASE_REF:-default} (no affected services on this host)"
     fi
+    sync_fcc_sandbox ok
     exit 0
 fi
 
@@ -707,7 +760,11 @@ fi
 
 if [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     echo "rebuild_services_from_git_diff.sh: failures:$FAILED" >&2
+    # Some stack did not deploy; the operator finishes it with --services, and
+    # that run's success refreshes the sandbox.
+    sync_fcc_sandbox rebuild_failures
     exit 1
 fi
 
+sync_fcc_sandbox ok
 exit 0

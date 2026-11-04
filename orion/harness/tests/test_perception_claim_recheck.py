@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import pytest
 
+import asyncio
+import time
+
+from orion.harness import finalize
 from orion.harness.finalize import (
     UNSUPPORTED_CLAIM_REASON,
     UNSUPPORTED_CLAIM_TWICE_REASON,
+    UNSUPPORTED_CLAIM_UNCHECKED_REASON,
     has_unsupported_claim,
     run_harness_finalize_chain,
 )
@@ -26,7 +31,8 @@ def _bad(note=CLAIM):
     return make_reflection(alignment_verdict="misaligned", alignment_notes=[note])
 
 
-async def _run(reflections, repairs, *, notes=NOTES, fail_recheck=False):
+async def _run(reflections, repairs, *, notes=NOTES, fail_recheck=False, deadline=None, slow_recheck=0.0,
+               seen_repairs=None):
     thought = make_thought()
     draft = "Rowan came right on her usual 11:39; I started calling that slot Rowan."
     molecule = build_draft_molecule(
@@ -42,10 +48,15 @@ async def _run(reflections, repairs, *, notes=NOTES, fail_recheck=False):
     async def cortex_client(req):
         if "substrate_appraisal" in req.context:
             calls.append(f"reflect:{req.context['draft_text']}")
-            if fail_recheck and len([c for c in calls if c.startswith("reflect")]) > 1:
-                raise RuntimeError("cortex down")
+            if len([c for c in calls if c.startswith("reflect")]) > 1:
+                if fail_recheck:
+                    raise RuntimeError("cortex down")
+                if slow_recheck:
+                    await asyncio.sleep(slow_recheck)
             return {"reflection": reflections.pop(0)}
         calls.append(f"repair:{req.context['draft_text']}")
+        if seen_repairs is not None:
+            seen_repairs.append(req.context["reflection"]["alignment_notes"])
         return {"text": repairs.pop(0)}
 
     with pytest.MonkeyPatch.context() as mp:
@@ -56,7 +67,7 @@ async def _run(reflections, repairs, *, notes=NOTES, fail_recheck=False):
             correlation_id="c-recheck", draft_text=draft, draft_molecule=molecule, thought=thought,
             grammar_receipts=[], repair_overlay=make_repair_overlay(), user_message="where?",
             voice_contract=None, cortex_client=cortex_client, substrate_client=substrate_client,
-            situation_notes=notes,
+            situation_notes=notes, deadline_monotonic=deadline,
         )
     return chain, calls
 
@@ -95,7 +106,41 @@ async def test_no_recheck_for_other_misalignment_or_without_notes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_recheck_keeps_the_first_repair() -> None:
+async def test_a_failed_recheck_keeps_the_first_repair_and_says_unchecked() -> None:
+    # run_finalize_reflection degrades instead of raising: that must not read as a pass.
     chain, _calls = await _run([_bad()], ["fixed once"], fail_recheck=True)
     assert chain.final_text == "fixed once"
-    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_REASON
+    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_UNCHECKED_REASON
+
+
+@pytest.mark.asyncio
+async def test_too_little_budget_skips_the_recheck() -> None:
+    chain, calls = await _run([_bad()], ["fixed once"], deadline=time.monotonic() + 20)
+    assert chain.final_text == "fixed once" and len(calls) == 2
+    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_UNCHECKED_REASON
+
+
+@pytest.mark.asyncio
+async def test_a_recheck_that_would_run_out_the_budget_is_cut_and_sends_the_first_repair(monkeypatch) -> None:
+    monkeypatch.setattr(finalize, "RECHECK_MIN_SECONDS", 0.0)
+    monkeypatch.setattr(finalize, "RECHECK_BUDGET_MARGIN_SEC", 0.0)
+    chain, _calls = await _run([_bad(), make_reflection()], ["fixed once"],
+                               deadline=time.monotonic() + 0.2, slow_recheck=5.0)
+    assert chain.final_text == "fixed once"
+    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_UNCHECKED_REASON
+
+
+@pytest.mark.asyncio
+async def test_second_repair_keeps_the_first_checks_other_notes() -> None:
+    seen: list = []
+    first = make_reflection(alignment_verdict="misaligned", alignment_notes=["tone too flat", CLAIM])
+    await _run([first, _bad("unsupported claim: 'a vehicle slot'; notes say: 'a person'")],
+               ["fixed once", "fixed twice"], seen_repairs=seen)
+    assert seen[-1][0] == "tone too flat"
+    assert seen[-1][1].startswith("unsupported claim: 'a vehicle slot'")
+
+
+@pytest.mark.asyncio
+async def test_misaligned_repair_still_counts_as_changed_when_text_echoes() -> None:
+    chain, _calls = await _run([_bad(), make_reflection()], ["Rowan came right on her usual 11:39; I started calling that slot Rowan."])
+    assert chain.finalize_changed is True

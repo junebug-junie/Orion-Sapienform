@@ -148,4 +148,6 @@ test('revisedLabel names the unsupported-claim repairs (finalize perception re-c
   assert.equal(api.revisedLabel('unsupported_claim'), 'revised: the check found a claim the notes did not support');
   assert.equal(api.revisedLabel('unsupported_claim_repaired_twice'),
     'revised: the check found a claim the notes did not support, and fixed it twice');
+  assert.equal(api.revisedLabel('unsupported_claim_unchecked'),
+    'revised: the check found a claim the notes did not support (fix not re-checked)');
 });

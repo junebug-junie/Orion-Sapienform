@@ -168,7 +168,9 @@ def main() -> int:
             # repair once more if the claim is still there. Then one extra 5b judges what
             # would be sent (measurement only -- live sends without it).
             for r in runs:
-                if r["verdict"] != "misaligned":
+                # Live repairs any misaligned/uncertain verdict, and re-checks whenever an
+                # unsupported claim was listed (not only on misaligned).
+                if r["verdict"] not in ("misaligned", "uncertain") and not has_unsupported_claim(_as_reflection(r["reflection"])):
                     continue
                 notes = kw["notes"]
                 reply = _repair(args.llm_url, turn, draft=kw["draft"], reflection=r["reflection"], notes=notes)

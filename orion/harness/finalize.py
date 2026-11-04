@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -1216,13 +1218,22 @@ def _outcome_molecule_id(molecule: HarnessTurnOutcomeMoleculeV1) -> str:
 UNSUPPORTED_CLAIM_PREFIX = "unsupported claim:"
 UNSUPPORTED_CLAIM_REASON = "unsupported_claim"
 UNSUPPORTED_CLAIM_TWICE_REASON = "unsupported_claim_repaired_twice"
+# The first repair was sent without a passing re-check: the re-check failed,
+# degraded, or there was not enough reply budget left to run it.
+UNSUPPORTED_CLAIM_UNCHECKED_REASON = "unsupported_claim_unchecked"
+# Reply-budget turns (held curiosity runs): the re-check gets what is left
+# minus this, and is skipped below it, so finalize never runs out the budget
+# and falls back to the ORIGINAL draft, the one holding the false claim.
+RECHECK_BUDGET_MARGIN_SEC = 15.0
+RECHECK_MIN_SECONDS = 30.0
+
+
+def has_unsupported_claim_note(note: Any) -> bool:
+    return str(note).strip().lower().startswith(UNSUPPORTED_CLAIM_PREFIX)
 
 
 def has_unsupported_claim(reflection: FinalizeReflectionV1) -> bool:
-    return any(
-        str(note).strip().lower().startswith(UNSUPPORTED_CLAIM_PREFIX)
-        for note in (reflection.alignment_notes or [])
-    )
+    return any(has_unsupported_claim_note(note) for note in (reflection.alignment_notes or []))
 
 
 async def _recheck_unsupported_claim_repair(
@@ -1239,6 +1250,8 @@ async def _recheck_unsupported_claim_repair(
     fcc_model_label: str | None,
     situation_notes: str,
     voice_contract: AnswerContract | dict[str, Any] | None,
+    first_reflection: FinalizeReflectionV1,
+    deadline_monotonic: float | None = None,
 ) -> tuple[str, str]:
     """One bounded re-check of a repair that 5b asked for because of an
     unsupported perception claim, and at most one more repair.
@@ -1249,45 +1262,85 @@ async def _recheck_unsupported_claim_repair(
     (text to send, response_repair_reason). Fails open to the first repair:
     a re-check problem never costs the turn.
     """
+    limit: float | None = None
+    if deadline_monotonic is not None:
+        limit = deadline_monotonic - time.monotonic() - RECHECK_BUDGET_MARGIN_SEC
+        if limit < RECHECK_MIN_SECONDS:
+            logger.info("perception_claim_recheck corr=%s result=skipped_budget left=%.0fs", correlation_id, limit)
+            return repaired_text, UNSUPPORTED_CLAIM_UNCHECKED_REASON
     try:
-        recheck, _quick, _trace = await run_finalize_reflection(
-            correlation_id=correlation_id,
-            draft_text=repaired_text,
-            thought=thought,
-            substrate_appraisal=substrate_appraisal,
-            repair_overlay=repair_overlay,
-            user_message=user_message,
-            grammar_receipts=grammar_receipts,
-            cortex_client=cortex_client,
-            gpu_lease=gpu_lease,
-            fcc_model_label=fcc_model_label,
-            situation_notes=situation_notes,
-        )
-        if not has_unsupported_claim(recheck):
-            logger.info("perception_claim_recheck corr=%s result=clean", correlation_id)
-            return repaired_text, UNSUPPORTED_CLAIM_REASON
-        second, _meta = await run_orion_response_repair(
-            correlation_id=correlation_id,
-            draft_text=repaired_text,
-            thought=thought,
-            substrate_appraisal=substrate_appraisal,
-            reflection=recheck,
-            voice_contract=voice_contract,
-            repair_overlay=repair_overlay,
-            user_message=user_message,
-            grammar_receipts=grammar_receipts,
-            cortex_client=cortex_client,
-            gpu_lease=gpu_lease,
-            fcc_model_label=fcc_model_label,
-            situation_notes=situation_notes,
-        )
-        if not second.strip():
-            raise ValueError("second repair returned empty text")
-        logger.info("perception_claim_recheck corr=%s result=repaired_twice", correlation_id)
-        return second, UNSUPPORTED_CLAIM_TWICE_REASON
-    except Exception as exc:  # noqa: BLE001 -- fail open to the first repair
-        logger.warning("perception_claim_recheck_failed corr=%s err=%s", correlation_id, exc)
+        async with asyncio.timeout(limit):
+            return await _recheck_and_maybe_repair(
+                correlation_id=correlation_id, repaired_text=repaired_text, thought=thought,
+                substrate_appraisal=substrate_appraisal, repair_overlay=repair_overlay,
+                user_message=user_message, grammar_receipts=grammar_receipts, cortex_client=cortex_client,
+                gpu_lease=gpu_lease, fcc_model_label=fcc_model_label, situation_notes=situation_notes,
+                voice_contract=voice_contract, first_reflection=first_reflection,
+            )
+    except Exception as exc:  # noqa: BLE001 -- incl. its own timeout: fail open to the first repair
+        logger.warning("perception_claim_recheck_failed corr=%s err=%s", correlation_id, exc or type(exc).__name__)
+        return repaired_text, UNSUPPORTED_CLAIM_UNCHECKED_REASON
+
+
+async def _recheck_and_maybe_repair(
+    *,
+    correlation_id: str,
+    repaired_text: str,
+    thought: ThoughtEventV1,
+    substrate_appraisal: SubstrateFinalizeAppraisalV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    cortex_client: CortexClientFn,
+    gpu_lease: GpuLeaseRefV1 | None,
+    fcc_model_label: str | None,
+    situation_notes: str,
+    voice_contract: AnswerContract | dict[str, Any] | None,
+    first_reflection: FinalizeReflectionV1,
+) -> tuple[str, str]:
+    recheck, _quick, _trace = await run_finalize_reflection(
+        correlation_id=correlation_id,
+        draft_text=repaired_text,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        repair_overlay=repair_overlay,
+        user_message=user_message,
+        grammar_receipts=grammar_receipts,
+        cortex_client=cortex_client,
+        gpu_lease=gpu_lease,
+        fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
+    )
+    if recheck.reflection_source == "degraded_llm_failure_fallback":
+        # run_finalize_reflection degrades instead of raising; that is not a pass.
+        logger.info("perception_claim_recheck corr=%s result=recheck_degraded", correlation_id)
+        return repaired_text, UNSUPPORTED_CLAIM_UNCHECKED_REASON
+    if not has_unsupported_claim(recheck):
+        logger.info("perception_claim_recheck corr=%s result=clean", correlation_id)
         return repaired_text, UNSUPPORTED_CLAIM_REASON
+    # Keep the first 5b's other notes (tone, strain) so the second repair
+    # does not undo what the first one fixed for them.
+    carried = [n for n in first_reflection.alignment_notes or [] if not has_unsupported_claim_note(n)]
+    recheck = recheck.model_copy(update={"alignment_notes": [*carried, *(recheck.alignment_notes or [])]})
+    second, _meta = await run_orion_response_repair(
+        correlation_id=correlation_id,
+        draft_text=repaired_text,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        reflection=recheck,
+        voice_contract=voice_contract,
+        repair_overlay=repair_overlay,
+        user_message=user_message,
+        grammar_receipts=grammar_receipts,
+        cortex_client=cortex_client,
+        gpu_lease=gpu_lease,
+        fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
+    )
+    if not second.strip():
+        raise ValueError("second repair returned empty text")
+    logger.info("perception_claim_recheck corr=%s result=repaired_twice", correlation_id)
+    return second, UNSUPPORTED_CLAIM_TWICE_REASON
 
 
 def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
@@ -1500,6 +1553,7 @@ async def run_harness_finalize_chain(
     fcc_model_label: str | None = None,
     situation_notes: str | None = None,
     cut_short: bool = False,
+    deadline_monotonic: float | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
 
@@ -1663,8 +1717,14 @@ async def run_harness_finalize_chain(
                     fcc_model_label=fcc_model_label,
                     situation_notes=situation_notes,
                     voice_contract=voice_contract,
+                    first_reflection=reflection,
+                    deadline_monotonic=deadline_monotonic,
                 )
-                voice_meta = {**voice_meta, "finalize_changed": final_text.strip() != draft_text.strip()}
+                voice_meta = {
+                    **voice_meta,
+                    "finalize_changed": bool(voice_meta.get("finalize_changed"))
+                    or final_text.strip() != draft_text.strip(),
+                }
             voice_meta = {
                 **voice_meta,
                 "response_repair_ran": True,

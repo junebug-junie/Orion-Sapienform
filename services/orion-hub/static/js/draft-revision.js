@@ -22,6 +22,7 @@
     finalize_changed: 'the final pass changed it',
     unsupported_claim: 'the check found a claim the notes did not support',
     unsupported_claim_repaired_twice: 'the check found a claim the notes did not support, and fixed it twice',
+    unsupported_claim_unchecked: 'the check found a claim the notes did not support (fix not re-checked)',
   };
 
   function revisedLabel(reason) {

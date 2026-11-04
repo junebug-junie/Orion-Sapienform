@@ -575,6 +575,12 @@ async def handle_harness_run_request(
             fcc_model_label=request.fcc_model_label,
             situation_notes=request.situation_prompt_fragment,
             cut_short=bool(getattr(motor, "cut_short_reason", None)),
+            # The perception re-check (finalize._recheck_unsupported_claim_repair)
+            # stays inside the reply budget instead of running it out.
+            deadline_monotonic=(
+                received_monotonic + float(request.reply_budget_sec)
+                if getattr(request, "reply_budget_sec", None) is not None else None
+            ),
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,

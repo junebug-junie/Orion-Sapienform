@@ -69,7 +69,20 @@ Live evidence of the failure: governor log corr 6dc7f360-...: spawn_or_acquire_m
 
 ## Review findings fixed
 
-REVIEW_TBD
+A separate review subagent checked the arithmetic against the real code paths. Hub sends 870 s, and
+`held_turn_fcc_budget_sec` takes 330 s of it, so the motor gets 540 s. `_held_turn_budgets` caps the
+motor at the reply deadline. The governor uses `inference_timeout_sec`. No limit is keyed to the
+source tag. Nothing else would starve a 900 s turn.
+
+- Finding: the test's model left out the time Hub spends before the motor starts, and the
+  reply-deadline cap.
+  - Fix: the test now subtracts an assumed 60 s of Hub overhead. The motor still gets 480 s, over
+    the 300 s floor.
+  - Evidence: `test_pr_field_note_budget.py` 2 passed.
+- Finding: the spec's 1-2 h/day reads like a cap.
+  - Fix: the spec now says the 1-2 h/day is the typical cost, not the worst case under the cap.
+- Info: the 420 s values left in the poll and graph test fixtures are passed in explicitly. They are
+  not defaults, so they were left as is.
 
 ## Restart required
 
@@ -90,6 +103,6 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
 
 ## PR link
 
-PR_TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/3114
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -22,6 +22,9 @@ from app.settings import Settings  # noqa: E402
 # A note turn's motor work: a cold claude spawn (~60 s to first event live), the packet read (the dig
 # builds the live body, ~30-40 s), the write (builds it again) and the model's own decode.
 MIN_MOTOR_SEC = 300.0
+# Hub also spends time between receipt and the motor start (lock wait, prompt read), and caps the motor at
+# the reply deadline. Both only shrink the budget; assume this much of them so the gate stays conservative.
+HUB_OVERHEAD_SEC = 60.0
 
 
 def _example(service: str, key: str) -> float:
@@ -37,7 +40,7 @@ def _compose_default(service: str, key: str) -> float:
 def motor_budget(timeout_sec: float, reserve_sec: float) -> float:
     """Hub's arithmetic for a held turn, from the request durable-runs sends."""
     turn = timeout_sec - TURN_REPLY_GRACE_SEC
-    budget = turn - reserve_sec
+    budget = turn - reserve_sec - HUB_OVERHEAD_SEC
     return budget if budget > 0 else turn
 
 
@@ -53,4 +56,5 @@ def test_the_shipped_field_note_turn_leaves_the_motor_a_real_budget():
 
 
 def test_the_old_default_is_exactly_the_live_failure():
-    assert motor_budget(420.0, 330.0) == 60.0   # the "fcc turn timed out after 59.99s" of pr-field-note-3104
+    # the "fcc turn timed out after 59.99s" of pr-field-note-3104: 390 - 330 = 60 before any overhead
+    assert motor_budget(420.0, 330.0) + HUB_OVERHEAD_SEC == 60.0

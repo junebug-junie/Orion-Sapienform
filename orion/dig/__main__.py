@@ -501,6 +501,12 @@ def cmd_body(arg: str | None, out: Out) -> str:
         part = _find_part(atlas, organ) if organ else None
         if part is not None:
             return cmd_body_part(atlas, part, out) + note
+        if organ:
+            try:  # neither an organ nor a part: say so before writing any file
+                names.find_organ(atlas, organ)
+            except names.NamingError as exc:
+                organ_like = ORGAN_REF_RE.fullmatch(organ) or organ.startswith("organ:")
+                raise DigError(str(exc) + ("" if organ_like else f"; no part is named {organ!r} either")) from exc
     else:  # no names on a past body: today's names would read the present into the past
         day = _parse_day(arg)
         root = snapshot_root(day)
@@ -510,20 +516,23 @@ def cmd_body(arg: str | None, out: Out) -> str:
         # declared parts only (that day's files); nothing live is read for a past day
         atlas = build_atlas(catalog, None, now=_end_of_day_utc(day), live_graph=None,
                             body=gather_body(root, catalog, live=None))
-    path = out.write(f"body-{arg or 'now'}", json.loads(atlas.model_dump_json()))
+    path = out.write(f"body-{_file_name(arg or 'now')}", json.loads(atlas.model_dump_json()))
     if organ:
         try:
             return organ_view(atlas, organ, out=str(path)) + note
         except names.NamingError as exc:
-            organ_like = ORGAN_REF_RE.fullmatch(organ) or organ.startswith("organ:")
-            raise DigError(str(exc) + ("" if organ_like else f"; no part is named {organ!r} either")) from exc
+            raise DigError(str(exc)) from exc
     if arg is not None:
         return summarize(atlas, out=str(path))
     # the ledger note goes in the footer, so the file path stays the last line
     return summarize(atlas, out=str(path), extra_footer=(*_unnamed_footer(atlas), *([note.strip()] if note else [])))
 
 
-ORGAN_REF_RE = re.compile(r"(organ:)?[0-9a-f]{10}")
+ORGAN_REF_RE = re.compile(r"(organ:)?[0-9a-f]{10}", re.IGNORECASE)
+
+
+def _file_name(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text)
 
 
 def _find_part(atlas, ref: str):
@@ -541,6 +550,7 @@ def _find_part(atlas, ref: str):
 PART_FLOWS_SHOWN = 10  # per direction in the printout; every flow is in the file
 PART_CHANNELS_SHOWN = 3
 PART_CITES_SHOWN = 8
+PART_CITE_LINE_CHARS = 1000  # the cite line sits in the uncut tail, so it is bounded here
 
 
 def _flow_rows(flows, part_id: str, by_id: dict, census: set[str]) -> list[dict]:
@@ -574,27 +584,30 @@ def cmd_body_part(atlas, part, out: Out) -> str:
                     for f in atlas.flows if f.relation == "runs_on" and f.source == pid})
     mine = [f for f in atlas.flows if pid in (f.source, f.target) and f.relation != "runs_on"]
     flows_in = _flow_rows([f for f in mine if f.target == pid and f.source != pid], pid, by_id, census)
-    flows_out = _flow_rows([f for f in mine if f.source == pid], pid, by_id, census)
-    organ = next((o for o in atlas.organs if pid in o.members), None)
+    flows_out = _flow_rows([f for f in mine if f.source == pid and f.target != pid], pid, by_id, census)
+    loops = _flow_rows([f for f in mine if f.source == pid == f.target], pid, by_id, census)
+    # a singleton organ is not an organ `body <organ_id>` can open (find_organ: multi-part only)
+    organ = next((o for o in atlas.organs if pid in o.members and len(o.members) > 1), None)
     roles = [r for r in reading.roles + reading.confirmed if r.part_id == pid]
     my_claims = [c for c in reading.claims if c.part_id == pid]
     claimable = pid in claims.claimable(atlas).values()
     ok = claims.evidence_ids(atlas, pid, census) if claimable else set()
-    # strongest flow first, so the first id printed is the one the part leans on most
-    order = [x for row in flows_in + flows_out for x in (row["part"], *row["channels"])]
+    # strongest flow first (in and out together), so the first id is the one the part leans on most
+    strongest = sorted(flows_in + flows_out + loops, key=lambda r: -r["weight"])
+    order = [x for row in strongest for x in (row["part"], *row["channels"])]
     cite = sorted(ok, key=lambda e: (order.index(e) if e in order else len(order), e))
 
     organ_view = ({"organ_id": organ.organ_id, "name": organ.name, "members": len(organ.members)}
                   if organ else None)
-    path = out.write(f"body-part-{re.sub(r'[^A-Za-z0-9._-]', '_', part.name)}", {
+    path = out.write(f"body-part-{_file_name(part.name)}", {
         "part": json.loads(part.model_dump_json()), "hosts": hosts, "organ": organ_view,
-        "flows_in": flows_in, "flows_out": flows_out,
+        "flows_in": flows_in, "flows_out": flows_out, "self_loops": loops,
         "roles": [json.loads(r.model_dump_json()) for r in roles],
         "claims": [json.loads(c.model_dump_json()) for c in my_claims],
         "cite": cite, "census_channels": sorted(census), "atlas_as_of": atlas.as_of})
 
     label = (f'"{organ.name}" {organ.organ_id}' if organ and organ.name else
-             organ.organ_id if organ else "no organ")
+             organ.organ_id if organ else "none (a part alone)")
     lines = [f"part {part.name} ({pid}): {part.kind}, {part.status}"
              + (f", on {', '.join(hosts)}" if hosts else "") + f" · organ {label}"]
     for arrow, title, rows in (("<-", "in", flows_in), ("->", "out", flows_out)):
@@ -602,14 +615,20 @@ def cmd_body_part(atlas, part, out: Out) -> str:
         lines += [_flow_line(arrow, r) for r in rows[:PART_FLOWS_SHOWN]]
         if len(rows) > PART_FLOWS_SHOWN:
             lines.append(f"  +{len(rows) - PART_FLOWS_SHOWN} more in the file")
+    if loops:
+        lines.append("to itself: " + "; ".join(_flow_line("", r).strip().removeprefix(f"{part.name} ") for r in loops))
     if roles:
         lines.append("jobs: " + "; ".join(f"{r.role} {r.strength} ({r.rule})" for r in roles))
     if my_claims:
         lines.append("my claims: " + "; ".join(f"{c.role} {c.kind} {c.status}" for c in my_claims))
     if claimable and cite:
-        more = f" +{len(cite) - PART_CITES_SHOWN} more in the file" if len(cite) > PART_CITES_SHOWN else ""
-        tail = [f"cite in a claim (by full id): {', '.join(cite[:PART_CITES_SHOWN])}{more}",
-                f"  {CLAIM_PREFIX} {shlex.quote(part.name)} '<job>' because \"<what it does>, seen on {cite[0]}\""]
+        shown = cite[:PART_CITES_SHOWN]
+        while len(shown) > 1 and len(", ".join(shown)) > PART_CITE_LINE_CHARS:
+            shown = shown[:-1]
+        more = f" +{len(cite) - len(shown)} more in the file" if len(cite) > len(shown) else ""
+        because = shlex.quote(f"<what it does>, seen on {cite[0]}")
+        tail = [f"cite in a claim (by full id): {', '.join(shown)[:PART_CITE_LINE_CHARS]}{more}",
+                f"  {CLAIM_PREFIX} {shlex.quote(part.name)} '<job>' because {because}"]
     elif claimable:
         tail = ["cite in a claim: no part or non-census channel on its flows; only a repo file that exists"]
     else:

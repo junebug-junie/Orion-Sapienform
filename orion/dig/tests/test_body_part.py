@@ -126,3 +126,52 @@ def test_help_and_capacity_help_point_at_body_part(world, capsys):  # noqa: F811
     assert "body [<date>|<organ>|<part>]" in out
     _, out, _ = run(capsys, "capacity", "help")
     assert "python -P -m orion.dig body <part>" in out
+
+
+def _uneven():
+    """The pool fixture with uneven weights and a self loop on the gateway (review 2026-11-04:
+    with every weight 1, ordering tests passed whatever the sort did)."""
+    from orion.body_atlas.model import FlowV1
+
+    body = _body()
+    for f in body.flows:
+        if (f.source, f.target) == ("part:r3", "part:gateway"):
+            f.weight = 5.0
+        if (f.source, f.target) == ("part:gateway", "part:r2"):
+            f.weight = 9.0
+    body.flows.append(FlowV1(source="part:gateway", target="part:gateway", weight=2.0,
+                             evidence=["observed_publish"], channels=["gw:self"]))
+    return body
+
+
+def test_strongest_flow_first_across_both_directions_and_self_loops_apart(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _uneven)
+    code, out, err = run(capsys, "body", "gateway")
+    assert code == 0, err
+    lines = out.splitlines()
+    first_in = lines[lines.index("flows in (6), strongest first:") + 1]
+    first_out = lines[lines.index("flows out (4), strongest first:") + 1]
+    assert first_in == "  <- r3 signals [llm:request] w=5" and first_out == "  -> r2 signals [llm:reply] w=9"
+    assert "to itself: signals [gw:self] w=2" in out and "-> gateway" not in out
+    full = _file(out)
+    assert full["cite"][0] == "r2"  # the heaviest flow (out, w=9) beats the heaviest in-flow (w=5)
+    assert "gw:self" in full["cite"] and len(full["self_loops"]) == 1
+    assert "seen on r2" in out
+
+
+def test_a_part_alone_names_no_organ_id_it_cannot_open(world, capsys, monkeypatch):  # noqa: F811
+    atlas = _whole_atlas()
+    monkeypatch.setattr(dig, "_live_atlas", lambda: atlas)
+    single = next(o for o in atlas.organs if len(o.members) == 1)
+    name = next(p.name for p in atlas.parts if p.part_id == single.members[0])
+    code, out, _ = run(capsys, "body", name)
+    assert code == 0 and "organ none (a part alone)" in out.splitlines()[0] and single.organ_id not in out
+
+
+def test_an_unknown_name_writes_no_file_even_with_a_slash(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    code, _, err = run(capsys, "body", "pg/some_table")
+    assert code == 1 and "no part is named 'pg/some_table' either" in err
+    code, _, err = run(capsys, "body", "ORGAN:0123456789")
+    assert code == 1 and "no multi-part organ" in err and "no part is named" not in err
+    assert not (world / "home" / "dig").exists()

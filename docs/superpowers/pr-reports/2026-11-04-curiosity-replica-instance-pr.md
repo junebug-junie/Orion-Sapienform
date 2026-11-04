@@ -328,6 +328,6 @@ UNVERIFIED until deploy: a live replica-arm run with a `curiosity_offer_plans` r
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3118
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

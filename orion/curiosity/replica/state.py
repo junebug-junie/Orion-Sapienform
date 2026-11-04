@@ -2,6 +2,8 @@
 
 One key per loop instance; the replica never reads or writes Prime's state (design section 7). Pending plan
 requests are NOT persisted: each has a 90 s deadline, so a restart drops them and Hub falls back on its own.
+A restart in the middle of a thought leaves that thought's plan act open: nothing closes it, and the ledger
+expires it at its horizon (``PLAN_ACT_HORIZON_SEC``), which is not counted as an outcome.
 
 The plan act (design "Act ledger"): actor ``curiosity.replica``, verb ``infer``, signal ``artifact_produced``
 (no new signal). It opens when the model was reached and closes on the run the plan ordered

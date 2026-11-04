@@ -211,7 +211,8 @@ async def _plan(*, bus, pool, run_id, view, yield_model, history, sample, stale_
         return PlanOutcome(view, PlanRowV1(run_id=run_id, status=result.status, fallback_reason=result.status, **common))
     reason = validate_plan(result.picks, candidate_ids=[c.prior_id for c in candidates],
                            fresh_ids=[p.prior_id for p in fresh], signal_stance=result.signal_stance,
-                           live_signal_id=await live_signal_id(bus, answered_at))
+                           live_signal_id=await live_signal_id(bus, answered_at),
+                           max_picks=max(0, sample - coverage_slots))
     if reason is not None:
         return PlanOutcome(view, PlanRowV1(run_id=run_id, status=invalid_status(reason), fallback_reason=reason, **common))
     row = PlanRowV1(run_id=run_id, status="ok", fallback_reason=None, **common)

@@ -38,16 +38,18 @@ def validate_plan(
     fresh_ids: Iterable[str],
     signal_stance: Optional[CuriositySignalStanceV1] = None,
     live_signal_id: Optional[str] = None,
+    max_picks: int = PICKS_MAX,
 ) -> Optional[str]:
     """None when the plan may be used, else the first reason it may not (short, for ``invalid:<reason>``).
 
     ``candidate_ids``: the ids Hub sent. ``fresh_ids``: the fresh live priors in the worldview read Hub is
     about to show (a candidate gone or gone stale since the request is refused). ``live_signal_id``: the
-    regulate signal on curiosity in force now, if any."""
+    regulate signal on curiosity in force now, if any. ``max_picks``: at most the ordered slots the offer has
+    (Hub passes ``min(PICKS_MAX, sample - coverage_slots)``), so no pick is ever cut silently."""
     n = len(picks)
     if n < PICKS_MIN:
         return f"too_few_picks:{n}"
-    if n > PICKS_MAX:
+    if n > min(PICKS_MAX, max_picks):
         return f"too_many_picks:{n}"
     cands, fresh = set(candidate_ids), set(fresh_ids)
     seen: set[str] = set()

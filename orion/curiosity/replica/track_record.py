@@ -8,8 +8,10 @@ never disagree about what a plan did:
 * plan not used (any status but ``ok``) -> 0 at once, with the status;
 * used, run not scored yet -> wait;
 * used, run scored but the score is unknown (``realized_nats`` NULL: no start snapshot) -> not graded here
-  (the ledger's horizon expires the act; an unknown is never a 0);
-* used, run failed (``turn_ok`` false) -> 0;
+  (the ledger's horizon expires the act; an unknown is never a 0). This is checked FIRST, so a failed turn
+  whose score is unknown is not graded either: "unknown is never a 0" wins over "a failed turn is 0";
+* used, run failed (``turn_ok`` false) -> 0, but only once that failure is final: a durable retry overwrites
+  the outcome row, so a failure younger than ``failed_final_sec`` waits;
 * used, run completed -> 1 when ``realized_nats > 0`` (at least one belief moved), else 0.
 
 Metric quality gate for this grade: docs/superpowers/pr-reports/2026-11-04-curiosity-replica-instance-pr.md.
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Optional, Sequence
 
 KIND_TESTED = "tested"
@@ -65,7 +67,18 @@ def _fmt_nats(n: Optional[float]) -> str:
     return "unknown" if n is None else f"{n:.3f}"
 
 
-def settle_plan(row: Mapping[str, Any]) -> PlanSettlement:
+def _aware(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def settle_plan(row: Mapping[str, Any], *, now: Optional[datetime] = None,
+                failed_final_sec: float = 0.0) -> PlanSettlement:
     status = str(row.get("status") or "")
     if status != "ok":
         reason = row.get("fallback_reason") or status
@@ -81,6 +94,9 @@ def settle_plan(row: Mapping[str, Any]) -> PlanSettlement:
     pick_part = (f"Orion tested {len(hit)} of my {len(picks)} picks"
                  + (" (" + ", ".join(f"{p}: {_fmt_nats(tested[p])} nats" for p in hit) + ")" if hit else ""))
     if not row.get("turn_ok"):
+        done = _aware(row.get("completed_at"))
+        if now is not None and failed_final_sec > 0 and (done is None or (now - done).total_seconds() < failed_final_sec):
+            return PlanSettlement("pending")  # a durable retry may still replace this failure
         return PlanSettlement("graded", False, f"the run failed (turn_ok=false); {pick_part}")
     produced = float(nats) > 0.0
     return PlanSettlement("graded", produced,

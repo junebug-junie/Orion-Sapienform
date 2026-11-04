@@ -75,9 +75,12 @@ class Bus:
 class LLM:
     def __init__(self, answer, *, err=None, gateway_error=None):
         self.answer, self.err, self.gw, self.calls = answer, err, gateway_error, []
+        self.on_call = None
 
     def request_json(self, **kw):
         self.calls.append(kw)
+        if self.on_call:
+            self.on_call()
         return self.answer, self.err, ({"gateway_error": self.gw} if self.gw else {})
 
 
@@ -291,16 +294,161 @@ def test_an_unparseable_or_abstaining_answer_closes_its_act_at_once():
         assert rt.state.open_plans == [] and rt.requests == []
 
 
-def test_a_plan_that_fails_its_own_check_is_sent_but_its_act_closes_zero():
+def test_a_plan_that_fails_its_own_check_is_still_graded_from_hubs_row():
+    """The act never guesses Hub's verdict: it is held, and Hub's invalid:<reason> row closes it 0."""
     bad = {**PLAN, "picks": [{"prior_id": IDS[0], "why": "a"}, {"prior_id": "not-a-candidate", "why": "b"},
                              {"prior_id": IDS[2], "why": "c"}]}
-    rt = runtime(answer=bad)
+    pg = PG()
+    rt = runtime(answer=bad, pg=pg)
     rt.accept(request_envelope())
     asyncio.run(rt.tick())
-    assert result_of(rt)[2].status == "ok"  # Hub records it as invalid:not_a_candidate:2
-    closed = rt.bus.acts()[1][1]
-    assert closed["outcome"]["value"] == 0.0
-    assert "failed its own check (not_a_candidate:2)" in closed["outcome"]["note"] and rt.state.open_plans == []
+    assert result_of(rt)[2].status == "ok" and len(rt.state.open_plans) == 1
+    pg.plan_rows = [_plan_row("run000000001", status="invalid:not_a_candidate:2", fallback_reason="not_a_candidate:2")]
+    advance(rt, 301)
+    asyncio.run(rt.tick())
+    closed = rt.bus.acts()[-1][1]
+    assert closed["outcome"]["value"] == 0.0 and "plan not used: invalid:not_a_candidate:2" in closed["outcome"]["note"]
+    assert rt.state.open_plans == []
+
+
+def test_an_answer_just_past_the_deadline_is_held_and_graded_on_what_hub_did():
+    """Review finding: Hub's timer starts after it builds the request, so an answer a moment past
+    deadline_at can still be used. The act follows Hub's row either way."""
+    pg = PG()
+    rt = runtime(pg=pg)
+    rt.llm.on_call = lambda: advance(rt, 91)
+    rt.accept(request_envelope())
+    asyncio.run(rt.tick())
+    assert result_of(rt)[2].status == "ok" and len(rt.state.open_plans) == 1
+    pg.plan_rows = [_plan_row("run000000001", turn_ok=True, realized_nats=0.004,
+                              per_prior=[{"kind": "tested", "prior_id": IDS[3], "nats": 0.004}])]
+    advance(rt, 301)
+    asyncio.run(rt.tick())
+    assert rt.bus.acts()[-1][1]["outcome"]["value"] == 1.0
+
+
+def test_frame_reads_that_eat_the_budget_make_no_model_call():
+    rt = runtime()
+    real = rt.get_json
+
+    def slow(url):
+        advance(rt, 46)  # 90 - 46 - 5 = 39 s left: less than one 40 s generation
+        return real(url)
+
+    rt.get_json = slow
+    rt.accept(request_envelope())
+    asyncio.run(rt.tick())
+    assert rt.llm.calls == [] and rt.bus.acts() == [] and rt.bus.results() == []
+    asyncio.run(rt.tick())
+    result = result_of(rt)[2]
+    assert result.status == "unfunded" and "no time left after the frame reads" in rt.state.notes[-1]
+
+
+def test_the_seat_wait_is_never_zero():
+    """0 would send no seat wait at all, and the gateway would then wait its own 300 s for a seat."""
+    rt = runtime()
+    rt.accept(request_envelope())
+    advance(rt, 44.8)  # 40.2 s left: one generation fits, the seat wait is cut to its floor
+    asyncio.run(rt.tick())
+    assert rt.llm.calls[0]["pool_wait_sec"] == 0.5
+
+
+def test_the_5xx_retry_runs_only_if_it_can_still_end_in_time():
+    five = (None, "empty_llm_response", {"gateway_error": {"error": "upstream_http_5xx", "reason": None}})
+    # Start at 0: 20 s in, 65 s left, a second 40 s call fits. Start at 30: 50 s in, 35 s left, it does not.
+    for start, calls in ((0, 2), (30, 1)):
+        rt = runtime()
+        replies = [five, (PLAN, None, {})]
+        rt.llm.request_json = lambda replies=replies, rt=rt, **kw: (rt.llm.calls.append(kw), advance(rt, 20),
+                                                                    replies.pop(0))[2]  # each try takes 20 s
+        rt.accept(request_envelope())
+        advance(rt, start)
+        asyncio.run(rt.tick())
+        assert len(rt.llm.calls) == calls, start
+    # The late one was not retried: it never reached the model, and is given up as model_failed.
+    assert rt.bus.results() == [] and rt.requests[0].miss_status == "model_failed"
+
+
+def test_a_thought_that_crashes_answers_model_failed_at_once():
+    rt = runtime()
+
+    async def boom(req, now):
+        raise RuntimeError("frame bug")
+
+    rt._read_frame_inputs = boom
+    rt.accept(request_envelope())
+    asyncio.run(rt.tick())
+    assert result_of(rt)[2].status == "model_failed"
+    assert [k for k, _ in rt.bus.acts()] == ["act_opened", "act_closed"] and rt.requests == []
+
+
+def test_a_request_that_arrives_while_another_is_given_up_is_kept():
+    rt = runtime(outcome="deferred")
+    rt.accept(request_envelope(run_id="runA00000001", deadline_sec=40))
+    fresh = request_envelope(run_id="runB00000001")
+    publish = rt.bus.publish
+
+    async def publish_and_accept(channel, envelope):
+        await publish(channel, envelope)
+        if channel.startswith(PLAN_RESULT_CHANNEL_PREFIX):
+            rt.accept(fresh)
+
+    rt.bus.publish = publish_and_accept
+    asyncio.run(rt.tick())
+    assert result_of(rt)[2].run_id == "runA00000001"
+    assert [r.request.run_id for r in rt.requests] == ["runB00000001"]
+
+
+def test_a_second_request_for_the_run_being_planned_is_ignored():
+    rt = runtime()
+    env = request_envelope()
+    rt.accept(env)
+    rt.llm.on_call = lambda: rt.accept(request_envelope())
+    asyncio.run(rt.tick())
+    assert len(rt.llm.calls) == 1 and len(rt.bus.results()) == 1 and rt.requests == []
+
+
+def test_a_failed_turn_is_final_only_after_the_retry_grace():
+    pg = PG()
+    rt = runtime(pg=pg)
+    rt.accept(request_envelope())
+    asyncio.run(rt.tick())
+    pg.plan_rows = [_plan_row("run000000001", turn_ok=False, realized_nats=0.0, completed_at=T0 + timedelta(minutes=30))]
+    advance(rt, 3600)
+    asyncio.run(rt.tick())
+    assert len(rt.state.open_plans) == 1  # a durable retry may still replace the failure
+    advance(rt, 6 * 3600)
+    asyncio.run(rt.tick())
+    closed = rt.bus.acts()[-1][1]
+    assert closed["outcome"]["value"] == 0.0 and "the run failed" in closed["outcome"]["note"]
+
+
+def test_the_listener_decodes_real_bus_bytes():
+    """The _listen path with the real codec and raw pubsub messages (accept() alone skips the decode)."""
+    from contextlib import asynccontextmanager
+
+    from orion.core.bus.codec import OrionCodec
+
+    env = request_envelope()
+    rt = runtime()
+
+    class PubBus(Bus):
+        codec = OrionCodec()
+
+        @asynccontextmanager
+        async def subscribe(self, channel):
+            assert channel == "orion:curiosity:replica:plan:request"
+            yield object()
+
+        async def iter_messages(self, pubsub):
+            yield {"type": "message", "data": self.codec.encode(env)}
+            yield {"type": "message", "data": b"not json"}
+            rt._stop.set()
+
+    rt.bus = PubBus()
+    asyncio.run(rt._listen())
+    assert [r.request.run_id for r in rt.requests] == ["run000000001"]
+    assert rt.requests[0].correlation_id == env.correlation_id and rt.requests[0].reply_to == env.reply_to
 
 
 def test_stances_are_sent_and_recorded_only():

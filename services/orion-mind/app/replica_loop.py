@@ -82,8 +82,12 @@ HTTP_TIMEOUT_SEC = 4.0
 RUNS_DAYS = 3
 # The answer must be on the bus this long before Hub stops waiting.
 ANSWER_MARGIN_SEC = 5.0
-# A used plan with no Hub plan row after this long: Hub never recorded it (its write failed, or it never
-# got the answer). Closed 0: the run had the rule order as far as anyone can show.
+# The smallest seat wait a try asks for (never 0: see _seat_wait_sec).
+MIN_SEAT_WAIT_SEC = 0.5
+# A failed turn (turn_ok false) is final only this long after its outcome row: a durable retry (up to 3
+# attempts, within hours) overwrites the row (curiosity_offer_decisions.py UPSERT_OUTCOME_SQL).
+FAILED_TURN_FINAL_SEC = 6 * 3600.0
+# A plan with no Hub plan row after this long is let go ungraded (unknown is never a 0).
 PLAN_ROW_GRACE_SEC = 3600.0
 RECORD_PLANS = 10
 _PG_CONNECT_TIMEOUT_SEC = 3
@@ -100,7 +104,7 @@ REPLICA_IDENTITY = LoopIdentity(
 # reads it as the DSN's owner, read-only, and never shows the picks' reasons to Orion).
 PLAN_ROWS_SQL = """
 SELECT p.run_id, p.requested_at, p.status, p.fallback_reason, p.picks, p.act_id,
-       o.turn_ok, o.realized_nats, o.unknown_reason, o.per_prior
+       o.turn_ok, o.realized_nats, o.unknown_reason, o.per_prior, o.completed_at
 FROM curiosity_offer_plans p LEFT JOIN curiosity_run_outcomes o ON o.run_id = p.run_id
 WHERE p.run_id = ANY(%(ids)s)
 """
@@ -211,6 +215,9 @@ class ReplicaRuntime(MindLoopRuntime):
             logger.warning("curiosity_replica_request_invalid err=%s", str(exc)[:300])
             return False
         reply = envelope.reply_to or f"{PLAN_RESULT_CHANNEL_PREFIX}{req.correlation_id}"
+        if self._current is not None and self._current.request.run_id == req.run_id:
+            logger.info("curiosity_replica_request_duplicate run=%s (already planning it)", req.run_id)
+            return False
         self.requests = [r for r in self.requests if r.request.run_id != req.run_id]
         self.requests.append(PendingRequest(request=req, correlation_id=envelope.correlation_id, reply_to=reply,
                                             received_at=self.clock()))
@@ -232,11 +239,12 @@ class ReplicaRuntime(MindLoopRuntime):
                                 self.accept(decoded.envelope)
                         except Exception:  # noqa: BLE001
                             logger.warning("curiosity_replica_message_failed", exc_info=True)
+                logger.warning("curiosity_replica_listener_ended (resubscribing)")
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 logger.warning("curiosity_replica_listener_reconnecting", exc_info=True)
-                await asyncio.sleep(1)
+            await asyncio.sleep(1)  # never a hot loop, whether the subscription failed or just ended
 
     async def stop(self) -> None:
         if self._listener is not None:
@@ -283,15 +291,12 @@ class ReplicaRuntime(MindLoopRuntime):
 
     async def _upkeep(self) -> tuple[Any, datetime]:
         now = self.clock()
-        keep = []
-        for pending in self.requests:
-            if pending.answered:
-                continue
-            if self._time_left(pending, now) < float(self.cfg("LLM_TIMEOUT_SEC")):
-                await self._give_up(pending, now)
-                continue
-            keep.append(pending)
-        self.requests = keep
+        budget = float(self.cfg("LLM_TIMEOUT_SEC"))
+        expired = [r for r in self.requests if not r.answered and self._time_left(r, now) < budget]
+        # Rebuilt before any await: a request the listener adds while a give-up publishes is kept.
+        self.requests = [r for r in self.requests if not r.answered and r not in expired]
+        for pending in expired:
+            await self._give_up(pending, now)
         await self._maybe_settle(now)
         return None, now
 
@@ -323,7 +328,15 @@ class ReplicaRuntime(MindLoopRuntime):
         if self._current is None:
             return cap
         left = self._time_left(self._current, self.clock()) - float(self.cfg("LLM_TIMEOUT_SEC"))
-        return max(0.0, min(cap, left))
+        # Never 0: the runtime sends no seat wait for 0, and the gateway then waits its own default
+        # (LLM_GATEWAY_POOL_WAIT_SEC, 300 s) for a seat -- a call that could run long after Hub gave up.
+        return max(MIN_SEAT_WAIT_SEC, min(cap, left))
+
+    def _may_retry_5xx(self) -> bool:
+        """A second full call only if it can still end before the deadline."""
+        if self._current is None:
+            return True
+        return self._time_left(self._current, self.clock()) - float(self.cfg("LLM_TIMEOUT_SEC")) >= MIN_SEAT_WAIT_SEC
 
     async def _thought_gate_admits(self, now: datetime) -> bool:
         ok = await super()._thought_gate_admits(now)
@@ -345,7 +358,8 @@ class ReplicaRuntime(MindLoopRuntime):
     async def _on_no_model(self, reply: ModelReply) -> None:
         if self._current is not None:
             self._current.miss_status = "unfunded" if reply.kind == "no_seat" else "model_failed"
-            self._current.miss_why = f"the try never reached the model ({reply.kind})"
+            reason = (reply.gateway_error or {}).get("reason")
+            self._current.miss_why = f"the try never reached the model ({reply.kind}{': ' + str(reason) if reason else ''})"
 
     async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
         self._reached_model = True
@@ -372,6 +386,10 @@ class ReplicaRuntime(MindLoopRuntime):
         assert pending is not None  # _wants_to_think chose it
         frame_inputs = await self._read_frame_inputs(pending.request, now)
         system, frame = system_prompt(), build_frame(frame_inputs)
+        if self._time_left(pending, self.clock()) < float(self.cfg("LLM_TIMEOUT_SEC")):
+            # The reads ate the time a model call needs: not a thought (no act); given up next tick.
+            return ModelReply(route=self._route(), parsed=None, err="no time left after the frame reads",
+                              gateway_error={"reason": "no time left after the frame reads"}, kind="no_seat")
         reply = await self._ask_model(system, frame)
         reply.context.update(frame_tokens=frame_tokens(system, frame),
                              signal_id=(frame_inputs.signal or {}).get("signal_id"))
@@ -411,18 +429,18 @@ class ReplicaRuntime(MindLoopRuntime):
             latency_ms=self._latency_ms(pending), frame_tokens=reply.context.get("frame_tokens")))
         stances = ",".join(f"{k}={v.stance}" for k, v in (("focus", answer.focus_stance), ("signal", answer.signal_stance))
                            if v is not None) or "-"
-        logger.info("curiosity_replica_plan run=%s status=%s picks=%s check=%s late=%s stances=%s route=%s reading=%r",
+        # No reading or reasons in the log: they stay on Hub's plan row only (design section 5).
+        logger.info("curiosity_replica_plan run=%s status=%s picks=%s check=%s late=%s stances=%s route=%s",
                     req.run_id, status, ",".join(p.prior_id for p in answer.picks) or "-", verdict or "ok", late,
-                    stances, reply.route, answer.reading[:200])
+                    stances, reply.route)
         if status != "ok":
             return False, f"no plan: {status}"
-        if verdict is not None:
-            return False, f"plan failed its own check ({verdict}); the run had the rule order"
-        if late:
-            return False, "answered after Hub's deadline; the run had the rule order"
+        # Every plan sent as ok is graded from Hub's own row, even one this check or clock expects Hub to
+        # refuse: Hub's verdict (its timer starts after the request is built; the live signal can change) is
+        # the one the experiment scores, so the act must not guess it.
         self.state = hold_plan(self.state, OpenPlanV1(act_id=act.act_id, thought_id=thought_id, run_id=req.run_id,
                                                       opened_at=now, picks=[p.prior_id for p in answer.picks]))
-        # The act stays open: it closes on the run's score (_maybe_settle).
+        # The act stays open: it closes on Hub's plan row and the run's score (_maybe_settle).
         return None, "plan sent; graded on its run"
 
     # --- reads -------------------------------------------------------------------------------
@@ -506,12 +524,17 @@ class ReplicaRuntime(MindLoopRuntime):
             act = plan_act(plan.thought_id, plan.run_id)
             row = by_run.get(plan.run_id)
             if row is None:
-                if not opened_before(plan, now, PLAN_ROW_GRACE_SEC):
+                if opened_before(plan, now, PLAN_ROW_GRACE_SEC):
+                    # Unknown, never a 0: Hub may have restarted mid-wait (no run), or used the plan and then
+                    # failed to write its row. The ledger's horizon expires the act.
+                    logger.info("curiosity_replica_plan_unrecorded run=%s act=%s (left to the act's horizon)",
+                                plan.run_id, plan.act_id)
+                    self.state = add_note(self.state, f"Hub has no record of my plan for run {plan.run_id}")
+                else:
                     keep.append(plan)
-                    continue
-                produced, note = False, "Hub recorded no plan row for this run; the run had the rule order"
+                continue
             else:
-                s = settle_plan(row)
+                s = settle_plan(row, now=now, failed_final_sec=FAILED_TURN_FINAL_SEC)
                 if s.kind == "pending":
                     if opened_before(plan, now, PLAN_ACT_HORIZON_SEC):
                         self.state = add_note(self.state, f"my plan for run {plan.run_id} got no score before its horizon")

@@ -30,7 +30,7 @@ NotImplementedError here):
   ``_conclude(act, thought_id, inputs, now, reply, answer) -> (produced, note)`` (``produced`` None: the
   instance keeps the thought act open and closes it itself later); ``_after_think()``*;
   ``_log_started()``*; ``_new_thought_id()``*; ``_want_extras()``* (more ``WantV1`` fields, e.g. a request's
-  ``object_ref``); ``_on_not_funded(decision)``* and ``_on_no_model(reply)``* (an instance that answers a
+  ``object_ref``); ``_may_retry_5xx()``* (default True); ``_on_not_funded(decision)``* and ``_on_no_model(reply)``* (an instance that answers a
   requester can tell it why no thought happened). ``wake()`` ends the current tick wait early (a request
   arrived); Prime never calls it.
 
@@ -433,7 +433,7 @@ class MindLoopRuntime:
         route = self._route()
         started = time.monotonic()
         reply = await self._call(route, system, frame)
-        if reply.kind == "upstream_5xx":
+        if reply.kind == "upstream_5xx" and self._may_retry_5xx():
             self.log.info(f"{self.identity.name}_upstream_5xx_retry route=%s err=%s", route, (reply.err or "-")[:160])
             started = time.monotonic()
             reply = await self._call(route, system, frame)
@@ -499,6 +499,11 @@ class MindLoopRuntime:
 
     def _want_extras(self) -> dict[str, Any]:
         return {}
+
+    def _may_retry_5xx(self) -> bool:
+        """Whether the one immediate retry after an upstream 5xx may run (an instance with a deadline says no
+        when a second full call would end past it). Prime: always."""
+        return True
 
     async def _on_not_funded(self, decision: Any) -> None:
         return None

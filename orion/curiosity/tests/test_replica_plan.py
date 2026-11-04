@@ -278,3 +278,21 @@ def test_the_plan_act_is_the_same_act_when_rebuilt_for_its_close():
     assert a == b and a.actor == "curiosity.replica" and a.verb == "infer"
     assert a.goal_ref == "curiosity_run:run1" and a.expect.horizon_sec == PLAN_ACT_HORIZON_SEC
     assert a.expect.signal_id == "artifact_produced"
+
+
+def test_a_plan_longer_than_the_ordered_slots_is_rejected_not_cut():
+    picks = _picks("p000", "p001", "p002", "p003", "p004")
+    assert validate_plan(picks, candidate_ids=IDS, fresh_ids=IDS) is None
+    assert validate_plan(picks, candidate_ids=IDS, fresh_ids=IDS, max_picks=4) == "too_many_picks:5"
+
+
+def test_unknown_beats_failed_and_a_failure_waits_for_its_retries():
+    # Unknown is never a 0, even on a failed turn.
+    assert settle_plan(_scored(turn_ok=False, realized_nats=None, unknown_reason="no_snapshot")).kind == "ungradable"
+    young = _scored(turn_ok=False, realized_nats=0.0, completed_at=NOW - timedelta(hours=1))
+    assert settle_plan(young, now=NOW, failed_final_sec=6 * 3600).kind == "pending"
+    assert settle_plan(young, now=NOW + timedelta(hours=6), failed_final_sec=6 * 3600).produced is False
+    assert settle_plan(young, now=NOW + timedelta(hours=6), failed_final_sec=6 * 3600).kind == "graded"
+    # A success is final at once (a run that succeeded is not retried).
+    ok = _scored(completed_at=NOW)
+    assert settle_plan(ok, now=NOW, failed_final_sec=6 * 3600).produced is True

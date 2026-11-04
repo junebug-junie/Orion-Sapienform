@@ -367,3 +367,15 @@ def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_sk
     gone = K.attach_ledgers(r, atlas, None, [claim], [], recheck=lambda c: [])
     assert [c.status for c in gone.claims] == ["evidence gone"]
     assert K.evidence_gone_claims(gone) == []  # S1 is held by rule now: nothing to re-claim
+
+
+def test_a_claim_on_s5_is_allowed_while_it_is_shared_with_juniper():
+    # design section 3 expects S5 claims (pg:self_concept_history, families.yaml); decision 3 shares
+    # S5 with Juniper, it does not close it. So a claim is taken and holds; it is just never prompted.
+    atlas = _body()
+    vsm = K.VsmConfirmedV1(s5_shared_with=K.S5SharedV1(who="Juniper", signoff_files=["a/b.yaml"],
+                                                       decided="2026-10-30"))
+    claim = _claim(K.read_capacities(atlas, vsm=vsm), atlas, "watcher", "S5", "watcher pokes pool on watch:poke to keep me me")
+    view = _read(atlas, [claim], vsm=vsm)
+    assert [c.status for c in view.claims] == ["claimed"]
+    assert K.holders(view, "cap:s5") == ["part:watcher", "a/b.yaml"]

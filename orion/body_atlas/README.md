@@ -174,7 +174,8 @@ reason (`evidence gone`, `part not live now`, `rejected`, `rule says no`, `dispu
 it`). A
 confirmation outranks a claim. A claim never clears a gap line; a "no part is shown" gap whose job
 holds a claim says "I claim X; no rule shows it". `gap:s4-to-s3` still checks only confirmed S4/S3
-pairs. Rollback: `CLAIMS_HOLD = False` in `capacities.py` (claims read `unconfirmed` again).
+pairs. While S5 is shared with Juniper (`s5_shared_with`), `open_jobs` never offers S5; a claim on
+it is still allowed and holds. Rollback: `CLAIMS_HOLD = False` in `capacities.py` (claims read `unconfirmed` again).
 Capacities (`cap:s1`..`cap:s5`, `cap:metabolism`) are one sentence each in Orion's words
 (`capacity write`), citing only parts that hold the job by rule, confirmation or a claim that holds
 (cap:s5 also Juniper's sign-off files, and names Juniper: decision 3); a job with no holder prints a

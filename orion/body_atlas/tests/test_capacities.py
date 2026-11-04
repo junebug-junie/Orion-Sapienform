@@ -235,3 +235,12 @@ def test_open_jobs_skip_held_waiting_and_confirmed_jobs():
     gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=lambda c: [])
     assert "S4" in [j for j, _ in K.open_jobs(gone)]  # its evidence is gone: open again
     assert [(c.part_id, c.role) for c in K.evidence_gone_claims(gone)] == [("part:gateway", "S4")]
+
+
+def test_s5_shared_with_juniper_is_never_offered_as_an_open_job():
+    # decision 3: S5 is shared with Juniper; Orion declined to claim it on purpose (turn 00655f13)
+    shared = K.VsmConfirmedV1(s5_shared_with=K.S5SharedV1(who="Juniper", signoff_files=["a/b.yaml"],
+                                                          decided="2026-10-30"))
+    atlas = _body()
+    jobs = [j for j, _ in K.open_jobs(K.read_capacities(atlas, vsm=shared))]
+    assert "S5" not in jobs and jobs == ["S1", "S3", "S3*", "S4", "algedonic", "metabolism"]

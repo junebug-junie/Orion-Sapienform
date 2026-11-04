@@ -27,6 +27,7 @@ from orion.curiosity.value import (
     ARM_VALUE_ORDER,
     RunOutcome,
     kl_nats,
+    offer_arm,
 )
 from orion.schemas.durable_run import CuriosityTurnRequestV1
 from scripts.curiosity_offer_decisions import (
@@ -44,6 +45,7 @@ ATLAS_NEEDLE = "p.last_run_id AS last_run_id, p.why AS why"
 LIVE_NEEDLE = "p.status IS NULL OR NOT p.status IN"
 REVISION_NEEDLE = "MATCH (n:PriorRevision)"
 MIGRATION = Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_migration_curiosity_spend_v1.sql"
+REPLICA_MIGRATION = Path(__file__).resolve().parents[3] / spend.REPLICA_MIGRATION
 
 
 def _jsonb(text):
@@ -522,8 +524,14 @@ def test_the_migration_declares_every_column_the_writer_uses() -> None:
     outcomes_ddl = ddl.split("CREATE TABLE IF NOT EXISTS curiosity_run_outcomes", 1)[1].split(");", 1)[0]
     insert_cols = re.search(r"\(\s*([a-z_,\s]+)\)\s*VALUES", INSERT_DECISION_SQL).group(1)
     upsert_cols = re.search(r"\(\s*([a-z_,\s]+)\)\s*VALUES", UPSERT_OUTCOME_SQL).group(1)
+    # Columns added later by ALTER (the replica migration's arm_propensities) count as declared too.
+    added = set(re.findall(
+        r"ALTER TABLE curiosity_offer_decisions ADD COLUMN IF NOT EXISTS ([a-z_]+)\s",
+        REPLICA_MIGRATION.read_text(encoding="utf-8"),
+    ))
+    assert added == {"arm_propensities"}
     for col in [c.strip() for c in insert_cols.split(",")] + ["turn_snapshot", "turn_started_at", "decided_at"]:
-        assert re.search(rf"^\s*{col}\s", decisions_ddl, re.M), f"curiosity_offer_decisions.{col}"
+        assert col in added or re.search(rf"^\s*{col}\s", decisions_ddl, re.M), f"curiosity_offer_decisions.{col}"
     for col in [c.strip() for c in upsert_cols.split(",")] + ["completed_at"]:
         assert re.search(rf"^\s*{col}\s", outcomes_ddl, re.M), f"curiosity_run_outcomes.{col}"
     assert "run_id text PRIMARY KEY" in decisions_ddl
@@ -622,3 +630,24 @@ def test_offered_rows_record_which_slot_each_prior_came_from() -> None:
         [Prior("a", "c", 0.5, "open", 0), Prior("b", "c", 0.9, "open", 1, coverage=True)], _Model()
     )
     assert [(r["prior_id"], r["slot"]) for r in rows] == [("a", "order"), ("b", "coverage")]
+
+
+def test_live_config_draws_two_arms_and_records_the_replica_at_zero() -> None:
+    """Patch 2 of the curiosity replica: the draw is three-way, but Hub passes no replica
+    propensity until the replica can answer (patch 3). With the live config (value arm on at
+    0.5) a run is value or uncertainty, exactly as before, and its row says P(replica) = 0."""
+    bus = _FakeBus()
+    conn = _SpendConn()
+    states = [_state("half", 0.5, 0), _state("lean", 0.7, 0)]
+    reader = _reader(states)
+    loop = _graph_loop(
+        bus, reader=reader, conn=conn, value_order_enabled=True, value_order_propensity=0.5
+    )
+    _moves_during_turn(loop, reader, lambda rid: states)
+    assert asyncio.run(loop.tick()) is None
+    ((run_id, decision),) = conn.decisions.items()
+    assert decision["arm_propensities"] == {
+        ARM_VALUE_ORDER: 0.5, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 0.5,
+    }
+    assert decision["arm"] == offer_arm(run_id, enabled=True, propensity=0.5)[0]
+    assert decision["arm"] != ARM_REPLICA_ORDER

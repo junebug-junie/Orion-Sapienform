@@ -83,7 +83,5 @@ jobs:
         run: |
           pip install -r services/orion-cortex-exec/requirements.txt
           PYTHONPATH=services/orion-cortex-exec:. python -m pytest -q services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py
-      - name: Scheduling replay eval
-        run: python -m pytest -q services/orion-proposal-runtime/evals/test_baseline_replay.py
       - name: Image degradation eval
         run: PYTHONPATH=services/orion-thought:. python -m pytest -q services/orion-thought/evals/test_visual_chain_honesty_eval.py

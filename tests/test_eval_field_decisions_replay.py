@@ -15,8 +15,7 @@ def _row(rn: int, *, merged: dict, dims: dict, caps: dict) -> dict:
     return {
         "rn": rn, "scenario": "natural", "dims": dims, "winners": {"resource_pressure": ["pressure", "node:x"]},
         "merged": merged, "cap_vectors": {"capability:transport": caps}, "targets": {}, "top_capability": None,
-        "dominant": [], "transport_reliability_measured": True, "backed": {"resource_pressure": True},
-        "guard": {"resource_pressure": False},
+        "dominant": [], "transport_reliability_measured": True,
     }
 
 

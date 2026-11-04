@@ -11,7 +11,8 @@ shed RPC is sent (closes the agency-episode audit's ``expectation_precommitted``
     (shed_id) -> dispatch result (settlement_state) -> substrate_action_outcomes (outcome.outcome_row_id)
     -> attention_loop_outcome (loop_outcome_id) -> next broadcast tick
 
-Writers: orion-execution-dispatch-runtime (decision + settlement), orion-feedback-runtime (scoring).
+Writers: orion-execution-dispatch-runtime (decision + settlement), orion-sql-writer (scoring, via
+orion/autonomy/world_settlement_store.py; it was orion-feedback-runtime until that rung retired 2026-11-04).
 Readers: orion-proposal-runtime (in-flight check), the attend-act eval. Created lazily under a short
 lock_timeout (never blocks a boot); the same DDL is in
 services/orion-sql-db/manual_migration_world_action_episodes_v1.sql.

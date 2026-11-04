@@ -56,8 +56,9 @@ An action that cannot lose is not competing; the gate is what lets one lose.
 STATUS OF THAT GATE: UNVERIFIED, AND CURRENTLY INERT.
 -----------------------------------------------------
 `contrast` and `contrast_sd` have NO producer anywhere in this repository.
-`orion.autonomy.contrast.contrast()` is called from exactly one place --
-`orion/autonomy/evals/eval_action_value_contrast.py` -- and no service,
+`orion.autonomy.contrast.contrast()` is called only by analysis
+(`scripts/analysis/report_action_value.py`; the feedback-era eval was retired
+with the feedback rung 2026-11-04) -- and no service,
 worker or store persists a ContrastEstimate. The dispatch worker passes None
 for both, so `confidently_harmful` returns False on every candidate and has
 never once fired.

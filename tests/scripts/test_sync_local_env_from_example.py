@@ -271,8 +271,7 @@ def test_gpu_pool_keys_are_reached_by_the_default_sync() -> None:
 def test_substrate_reconcile_keys_are_reached_by_the_default_sync() -> None:
     """The bounded-reconciler keys (2026-09-25) must land in local .env on a default sync."""
     for service, prefix in (("orion-policy-runtime", "POLICY_RECONCILE_"),
-                            ("orion-execution-dispatch-runtime", "DISPATCH_RECONCILE_"),
-                            ("orion-feedback-runtime", "FEEDBACK_RECONCILE_")):
+                            ("orion-execution-dispatch-runtime", "DISPATCH_RECONCILE_")):
         assert service in sync_mod.DEFAULT_SERVICES
         keys = [k for k in sync_mod.parse_kv(ROOT / "services" / service / ".env_example")
                 if k.startswith(prefix)]
@@ -345,3 +344,12 @@ def test_energy_usage_point_id_never_synced_even_with_force(tmp_path: Path) -> N
     assert "ENERGY_USAGE_POINT_ID=up-123\n" in text
     assert "ENERGY_STAKES_NEAR_RATIO=0.95" in text
     assert not any("ENERGY_USAGE_POINT_ID" in c for c in result.updated + result.diverged)
+
+
+def test_world_settlement_key_reaches_local_env_after_the_move_to_sql_writer() -> None:
+    """World-action settle scoring moved from the retired feedback runtime to sql-writer (2026-11-04)."""
+    assert "orion-sql-writer" in sync_mod.DEFAULT_SERVICES
+    assert "orion-feedback-runtime" not in sync_mod.DEFAULT_SERVICES
+    keys = sync_mod.parse_kv(ROOT / "services" / "orion-sql-writer" / ".env_example")
+    assert "SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC" in keys
+    assert should_sync_key("SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC", all_keys=False)

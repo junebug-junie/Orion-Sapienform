@@ -6,12 +6,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.autonomy.prediction import EffectPosterior
-from orion.feedback.outcome_resolution import resolve_action_outcomes
-from orion.feedback.world_settlement import score_world_episode
+from orion.autonomy.world_settlement import score_world_episode
 from orion.hardware_watch.rules import TempPoint
-from orion.schemas.action_prediction import ExpectedEffectV1
-from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
-from orion.schemas.field_state import FieldStateV1
 
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 AFTER = T0 + timedelta(minutes=20)
@@ -106,17 +102,3 @@ def test_warm_prior_is_scored_against_its_own_belief():
     prior = EffectPosterior(mean=-0.1, variance=0.01, n=3)
     s = _score(_episode(), prior=prior)
     assert s.record.posterior_n == 4 and s.record.surprise_nats < _score(_episode()).record.surprise_nats
-
-
-def test_field_window_never_scores_the_world_signal():
-    cand = ExecutionDispatchCandidateV1(
-        dispatch_id="d", source_decision_id="p", source_proposal_id="q", dispatch_status="dispatched",
-        dispatch_mode="dispatch_read_only", dispatch_kind="self_regulate", target_id="pool:background_gpu",
-        target_kind="system", risk_score=0.1, confidence_score=1.0, dispatched_at=T0, result_ref="result:d",
-        expected_effect=ExpectedEffectV1(signal_id="cabinet_heat_pressure", direction="decrease", predicted_delta=0.0,
-                                         predictor_variance=0.25, predictor_n=0, cold_start=True))
-    frame = ExecutionDispatchFrameV1(frame_id="f", generated_at=T0, source_policy_frame_id="p", source_proposal_frame_id="q",
-                                     source_field_tick_id="t", dispatch_mode="dispatch_read_only", dispatched_candidates=[cand])
-    field = FieldStateV1(generated_at=T0, tick_id="t", node_vectors={"node:athena": {"execution_pressure": 0.4}})
-    res = resolve_action_outcomes(dispatch_frame=frame, feedback_frame_id="fb", field_before=field, field_after=field)
-    assert res.records == [] and res.skipped == {"d": "settle_time_signal:cabinet_heat_pressure"}

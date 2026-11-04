@@ -281,7 +281,6 @@ class ConceptWorker:
             ],
             "cognition_trace": ["channel contains cognition:trace"],
             "collapse_event": ["channel contains collapse"],
-            "feedback_outcome": ["kind=feedback.frame.v1"],
             "generic_activity": ["fallback"],
         }
 
@@ -345,8 +344,6 @@ class ConceptWorker:
             return "cognition_trace"
         if "collapse" in lowered_channel:
             return "collapse_event"
-        if lowered_kind == "feedback.frame.v1":
-            return "feedback_outcome"
         return "generic_activity"
 
     def _select_trigger_subjects(
@@ -614,11 +611,7 @@ class ConceptWorker:
     async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
         text = self._extract_text(env)
 
-        if env.kind == "feedback.frame.v1":
-            subject = "orion"
-            model_layer = model_layer_for_subject(subject)
-            entity_id = entity_id_for_subject(subject, model_layer)
-        elif env.kind == "action.outcome.emit.v1":
+        if env.kind == "action.outcome.emit.v1":
             subject = "orion"
             model_layer = model_layer_for_subject(subject)
             entity_id = entity_id_for_subject(subject, model_layer)
@@ -831,8 +824,8 @@ class ConceptWorker:
         )
         await self._publish_dossier(dossier, env.correlation_id)
 
-        # Structured substrate/feedback signals carry no text: skip concept induction.
-        if env.kind in {"feedback.frame.v1", "action.outcome.emit.v1"}:
+        # Structured action-outcome signals carry no text: skip concept induction.
+        if env.kind == "action.outcome.emit.v1":
             return
 
         source_kind = self._source_kind(env, intake_channel)

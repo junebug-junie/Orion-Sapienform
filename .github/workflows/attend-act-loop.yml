@@ -10,8 +10,10 @@ on:
       - 'orion/autonomy/evals/run_attend_act_loop_eval.py'
       - 'orion/autonomy/evals/fixtures/attend_act_loop_chain.json'
       - 'orion/hardware_watch/rules.py'
-      - 'orion/feedback/world_settlement.py'
-      - 'orion/feedback/outcome_resolution.py'
+      - 'orion/autonomy/world_settlement.py'
+      - 'orion/autonomy/world_settlement_store.py'
+      - 'services/orion-sql-writer/app/world_settlement_loop.py'
+      - 'services/orion-sql-writer/tests/test_world_settlement_pass.py'
       - 'orion/execution_dispatch/**'
       - 'orion/proposals/**'
       - 'orion/policy/**'
@@ -23,7 +25,6 @@ on:
       - 'config/execution_dispatch/**'
       - 'services/orion-proposal-runtime/**'
       - 'services/orion-execution-dispatch-runtime/**'
-      - 'services/orion-feedback-runtime/**'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_cabinet_heat_tick.py'
       - 'scripts/analysis/replay_attention_eligibility.py'
@@ -49,12 +50,13 @@ jobs:
         run: >-
           python -m pytest -q tests/test_shed_background_gpu_pipeline.py tests/test_world_settlement_scoring.py
           tests/test_world_action_dispatch.py tests/test_proposal_policy_loader.py tests/test_proposal_scoring.py
-          tests/test_action_outcome_resolution.py
       # One process per service: each service's tests import a top-level `app` package.
       - name: Proposal runtime (workspace winner context)
         run: python -m pytest -q services/orion-proposal-runtime/tests/test_workspace_winner_context.py
-      - name: Feedback runtime (settle-time world scoring pass)
-        run: python -m pytest -q services/orion-feedback-runtime/tests/test_world_settlement_pass.py
+      - name: sql-writer (settle-time world scoring pass; moved from the retired feedback runtime 2026-11-04)
+        run: |
+          pip install -r services/orion-sql-writer/requirements.txt
+          cd services/orion-sql-writer && PYTHONPATH=../..:. python -m pytest -q tests/test_world_settlement_pass.py
       - name: Agency episode audit (attention_winner + loop_outcome links)
         run: python -m pytest -q orion/autonomy/tests/test_agency_episode.py orion/autonomy/tests/test_agency_episode_reader.py orion/autonomy/tests/test_agency_episode_world_links.py
       - name: Attend-act loop eval (fixture mode)

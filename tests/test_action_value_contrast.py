@@ -11,7 +11,6 @@ produce no number.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 import pytest
 
@@ -27,95 +26,7 @@ from orion.autonomy.contrast import (
     pooled_treated_mean,
 )
 from orion.autonomy.prediction import EffectPosterior
-from orion.feedback.outcome_resolution import resolve_action_outcomes
-from orion.schemas.action_prediction import ExpectedEffectV1
-from orion.schemas.execution_dispatch_frame import (
-    ExecutionDispatchCandidateV1,
-    ExecutionDispatchFrameV1,
-)
-from orion.schemas.field_state import FieldStateV1
 
-NOW = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
-
-_DIM_CHANNEL = {
-    "execution_pressure": "execution_pressure",
-    "reasoning_pressure": "reasoning_pressure",
-    "reliability_pressure": "reliability_pressure",
-    "resource_pressure": "pressure",
-}
-
-
-def _field(tick_id: str, dimensions: dict[str, float]) -> FieldStateV1:
-    channels = {_DIM_CHANNEL[d]: v for d, v in dimensions.items()}
-    return FieldStateV1(
-        generated_at=NOW,
-        tick_id=tick_id,
-        node_vectors={"node:test": channels},
-        node_vector_updated_at={"node:test": {ch: NOW for ch in channels}},
-    )
-
-
-def _effect(signal="resource_pressure", direction="decrease", predicted=0.0, n=0):
-    return ExpectedEffectV1(
-        signal_id=signal,
-        direction=direction,
-        predicted_delta=predicted,
-        predictor_variance=0.25,
-        predictor_n=n,
-        cold_start=(n == 0),
-    )
-
-
-def _dispatched(dispatch_id: str, *, kind="maintain", target="host:docker_images", effect=None):
-    return ExecutionDispatchCandidateV1(
-        dispatch_id=dispatch_id,
-        source_decision_id=f"decision:{dispatch_id}",
-        source_proposal_id=f"proposal:{dispatch_id}",
-        dispatch_status="dispatched",
-        dispatch_mode="dispatch_read_only",
-        dispatch_kind=kind,
-        target_id=target,
-        target_kind="host",
-        risk_score=0.05,
-        confidence_score=0.9,
-        dispatched_at=NOW,
-        result_ref=f"result:{dispatch_id}",
-        expected_effect=effect or _effect(),
-    )
-
-
-def _blocked(dispatch_id: str, *, blocked_by, kind="maintain", target="host:docker_build_cache", effect=None):
-    return ExecutionDispatchCandidateV1(
-        dispatch_id=dispatch_id,
-        source_decision_id=f"decision:{dispatch_id}",
-        source_proposal_id=f"proposal:{dispatch_id}",
-        dispatch_status="blocked",
-        dispatch_mode="dispatch_read_only",
-        dispatch_kind=kind,
-        target_id=target,
-        target_kind="host",
-        risk_score=0.05,
-        confidence_score=0.9,
-        blocked_by=list(blocked_by),
-        expected_effect=effect or _effect(),
-    )
-
-
-def _frame(dispatched=(), blocked=()):
-    return ExecutionDispatchFrameV1(
-        frame_id="execution.dispatch.frame:test",
-        source_policy_frame_id="policy.frame:test",
-        source_proposal_frame_id="proposal.frame:test",
-        source_field_tick_id="tick:test",
-        generated_at=NOW,
-        execution_dispatch_policy_id="execution_dispatch_policy.v1",
-        dispatch_mode="dispatch_read_only",
-        dispatch_attempted=True,
-        dispatched_candidates=list(dispatched),
-        blocked_candidates=list(blocked),
-        dispatch_count=len(dispatched),
-        blocked_count=len(blocked),
-    )
 
 
 class TestBaselineBin:
@@ -128,7 +39,7 @@ class TestBaselineBin:
         assert baseline_bin(0.85) == 8
         assert baseline_bin(0.999) == BASELINE_BIN_COUNT - 1
 
-    def test_out_of_range_clamps_rather_than_crashing_the_feedback_runtime(self):
+    def test_out_of_range_clamps_rather_than_crashing_the_scorer(self):
         assert baseline_bin(1.0) == 9
         assert baseline_bin(1.7) == 9
         assert baseline_bin(-0.3) == 0
@@ -136,155 +47,6 @@ class TestBaselineBin:
     def test_non_finite_is_refused(self):
         with pytest.raises(ValueError):
             baseline_bin(float("nan"))
-
-
-class TestTheArmsAreRecordedSeparately:
-    def test_dispatched_and_capacity_blocked_both_score_in_one_tick(self):
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(
-                dispatched=[_dispatched("d1")],
-                blocked=[_blocked("b1", blocked_by=["max_dispatch_candidates:5"])],
-            ),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            now=NOW,
-        )
-        by_arm = {r.arm: r for r in res.records}
-        assert set(by_arm) == {"dispatched", "capacity_blocked"}
-        # Acceptance check 1: same window, same numbers, different arm.
-        assert by_arm["dispatched"].baseline == by_arm["capacity_blocked"].baseline
-        assert (
-            by_arm["dispatched"].observed_after
-            == by_arm["capacity_blocked"].observed_after
-        )
-        assert by_arm["dispatched"].baseline_bin == 8
-
-    def test_within_tick_the_two_arms_are_identical_which_is_why_this_arm_is_not_a_control(self):
-        """Documents the finding that redirected the design.
-
-        The spec proposed contrasting a dispatched candidate against a
-        capacity-blocked one. The field delta is measured frame-wide, so
-        both read the same before and the same after: a within-tick contrast
-        is identically zero by construction, and a capacity-blocked record
-        is contaminated by whichever siblings DID go out. It is recorded,
-        never used as the comparison group.
-        """
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(
-                dispatched=[_dispatched("d1")],
-                blocked=[_blocked("b1", blocked_by=["max_dispatch_candidates:5"])],
-            ),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            now=NOW,
-        )
-        deltas = {r.observed_delta for r in res.records}
-        assert len(deltas) == 1
-
-    def test_operator_review_block_is_not_a_control(self):
-        """Acceptance check 2. Blocked for reasons correlated with the
-        action's own content is a worse confounder than the one removed."""
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(
-                dispatched=[_dispatched("d1")],
-                blocked=[_blocked("b1", blocked_by=["requires_operator_review"])],
-            ),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            now=NOW,
-        )
-        assert [r.arm for r in res.records] == ["dispatched"]
-
-    def test_blocked_candidate_does_not_advance_the_actions_own_belief(self):
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(
-                blocked=[_blocked("b1", blocked_by=["max_dispatch_candidates:5"])],
-            ),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            now=NOW,
-        )
-        assert [r.arm for r in res.records] == ["capacity_blocked"]
-        assert res.posteriors == {}
-
-    def test_frame_dispatch_count_records_how_contaminated_the_tick_was(self):
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(
-                dispatched=[_dispatched("d1"), _dispatched("d2", target="host:docker_containers")],
-                blocked=[_blocked("b1", blocked_by=["max_dispatch_candidates:5"])],
-            ),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            now=NOW,
-        )
-        assert {r.frame_dispatch_count for r in res.records} == {2}
-
-
-class TestTheControlArm:
-    def test_an_idle_tick_produces_an_untreated_observation(self):
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            now=NOW,
-        )
-        by_signal = {o.signal_id: o for o in res.control_observations}
-        obs = by_signal["resource_pressure"]
-        assert obs.baseline_bin == 8
-        assert obs.observed_delta == pytest.approx(-0.45)
-        assert obs.moved is True
-        assert ("resource_pressure", "no_action", 8) in res.control_posteriors
-        # deviation_pressure rides along because orion/field/pressure.py
-        # injects it unconditionally from a field attribute that defaults to
-        # 0.0 -- it is present-and-0.0, not absent, so _present_pressures'
-        # absence guard structurally cannot fire on it. That is exactly the
-        # instrument the moved_n guard below exists to catch; the resolver
-        # records it honestly rather than filtering it here, because a
-        # hand-maintained exclusion list is the thing that goes stale.
-        assert "deviation_pressure" in by_signal
-        assert res.control_posteriors[
-            ("deviation_pressure", "no_action", 0)
-        ].moved_n == 0
-        assert by_signal["deviation_pressure"].moved is False
-
-    def test_a_tick_that_dispatched_anything_is_not_untreated(self):
-        """5 of 16 live templates declare NO signal and are 72% of dispatch
-        volume. An undeclared action still acts, so 'nothing claimed this
-        signal' is not the same as 'nothing touched it'."""
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(
-                dispatched=[
-                    _dispatched("d1")
-                ]
-            ),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85, "execution_pressure": 0.2}),
-            field_after=_field("a", {"resource_pressure": 0.40, "execution_pressure": 0.2}),
-            now=NOW,
-        )
-        assert res.control_observations == []
-        assert res.control_posteriors == {}
-
-    def test_control_observations_never_zero_fill_an_absent_signal(self):
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"execution_pressure": 0.4}),
-            now=NOW,
-        )
-        signals = {o.signal_id for o in res.control_observations}
-        # resource_pressure is in `before` and absent from `after`: it must
-        # NOT be scored as a delta of -0.85 against a fabricated 0.0, and it
-        # must not be scored as 0.0 either. It is simply not measured.
-        assert "resource_pressure" not in signals
-        assert "execution_pressure" not in signals
 
 
 class TestContrastArithmetic:
@@ -623,39 +385,6 @@ class TestTheFrozenInstrumentGuard:
     def test_a_new_cell_is_presumed_alive_not_dead(self):
         assert ControlCell(EffectPosterior.cold()).move_rate == 1.0
         assert not ControlCell(EffectPosterior.cold()).is_frozen
-
-    def test_the_resolver_advances_both_counters(self):
-        prior = {
-            ("resource_pressure", "no_action", 8): ControlCell(
-                EffectPosterior(-0.01, 0.001, 500), moved_n=7, move_rate=0.5
-            )
-        }
-        res = resolve_action_outcomes(
-            dispatch_frame=_frame(),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.85}),
-            control_priors=prior,
-            now=NOW,
-        )
-        cell = res.control_posteriors[("resource_pressure", "no_action", 8)]
-        assert cell.posterior.n == 501
-        assert cell.moved_n == 7  # frozen reading: n advances, moved_n does not
-        assert cell.move_rate == pytest.approx(0.5 * (1 - CONTROL_MOVE_RATE_ALPHA))
-
-        res2 = resolve_action_outcomes(
-            dispatch_frame=_frame(),
-            feedback_frame_id="f",
-            field_before=_field("b", {"resource_pressure": 0.85}),
-            field_after=_field("a", {"resource_pressure": 0.40}),
-            control_priors=prior,
-            now=NOW,
-        )
-        cell2 = res2.control_posteriors[("resource_pressure", "no_action", 8)]
-        assert cell2.moved_n == 8
-        assert cell2.move_rate == pytest.approx(
-            0.5 + CONTROL_MOVE_RATE_ALPHA * (1.0 - 0.5)
-        )
 
 
 class TestThinControlCoverage:

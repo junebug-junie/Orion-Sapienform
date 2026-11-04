@@ -354,20 +354,12 @@ _SUBSTRATE_CHAIN_PENDING: tuple[tuple[str, str], ...] = (
           JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id
         """,
     ),
-    (
-        "dispatch->feedback",
-        """
-        SELECT MIN(p.created_at)
-          FROM (
-                SELECT source_proposal_frame_id
-                  FROM substrate_execution_dispatch_frames
-                 WHERE feedback_pending
-                OFFSET 0
-               ) d
-          JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id
-        """,
-    ),
 )
+# No "dispatch->feedback" stage: the feedback rung (orion-feedback-runtime) retired 2026-11-04
+# (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md). Its marker,
+# substrate_execution_dispatch_frames.feedback_pending, is a column DEFAULT TRUE that only the feedback
+# runtime ever cleared, so probing it now would pin this floor forever and stop proposal retention
+# silently. Never re-add a probe for a stage that has no consumer clearing its marker.
 
 
 def _substrate_chain_floor(conn: Any, time_cutoff: datetime) -> tuple[datetime | None, bool]:

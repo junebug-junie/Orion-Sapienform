@@ -1119,21 +1119,12 @@ async def run_reverie_once(
             thought = thought.model_copy(
                 update={"chain_id": chain_context[0], "thought_index": chain_context[1]}
             )
-        if settings.reverie_ground_consolidation:
-            from .grounding import (
-                collect_grounding,
-                default_episode_loader,
-                default_motif_loader,
-            )
+        if settings.reverie_ground_episodes:
+            from .grounding import collect_grounding, default_episode_loader
 
-            motif_refs, episode_refs = collect_grounding(
-                motif_loader=default_motif_loader,
-                episode_loader=default_episode_loader,
-            )
-            if motif_refs or episode_refs:
-                thought = thought.model_copy(
-                    update={"motif_refs": motif_refs, "episode_summary_refs": episode_refs}
-                )
+            episode_refs = collect_grounding(episode_loader=default_episode_loader)
+            if episode_refs:
+                thought = thought.model_copy(update={"episode_summary_refs": episode_refs})
         if thought.hollow:
             logger.info(
                 "reverie tick dropped hollow thought corr=%s reason=%s",

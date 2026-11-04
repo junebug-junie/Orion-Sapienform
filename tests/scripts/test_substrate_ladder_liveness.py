@@ -45,7 +45,6 @@ def _replay(fixture: dict) -> ll.LadderReport:
     report.rungs = ll.evaluate_ladder(
         {k: _ts(v) for k, v in fixture["newest"].items()},
         now,
-        consolidation_motif_counts=fixture["consolidation_motif_counts"],
     )
     containers = [
         ll.RunningContainer(c["name"], c["service_dir"], _ts(c["image_created"]), schema_sha256=c.get("schema_sha256"))
@@ -69,10 +68,10 @@ def test_replay_of_2026_09_20_incident_is_red():
     assert report.red
     red = {r.rung for r in report.red_rungs}
     # The dead rungs, and only those: field_state and everything under it kept writing.
-    assert red == {"attention", "proposal", "policy", "dispatch", "feedback", "consolidation:motifs"}
+    # (feedback and consolidation were red too on 09-20; both rungs retired 2026-11-04.)
+    assert red == {"attention", "proposal", "policy", "dispatch"}
     status = {r.rung: r.status for r in report.rungs}
     assert status["field_state"] == "fresh"
-    assert status["consolidation"] == "fresh"  # it kept writing -- empty
     attention = next(r for r in report.rungs if r.rung == "attention")
     assert attention.age_sec > 47 * 3600
     skewed = {s.container for s in report.red_skew}
@@ -104,7 +103,6 @@ def test_feedback_runtime_shape_is_caught_by_skew_while_its_rung_is_fresh():
     kept writing frames (field_before=None). Freshness is green; skew must not be."""
     fx = json.loads(FIXTURE.read_text())
     fx["newest"] = {k: fx["now"] for k in fx["newest"]}
-    fx["consolidation_motif_counts"] = [3, 2, 3]
     fx["containers"] = [c for c in fx["containers"] if c["service_dir"] in ("orion-field-digester", "orion-feedback-runtime")]
     report = _replay(fx)
     assert not report.red_rungs
@@ -115,9 +113,8 @@ def test_incident_is_caught_by_freshness_within_the_limit_not_after_48h():
     """At 22:20Z on 09-20 (22 minutes in) attention is already past its 15m limit."""
     fx = json.loads(FIXTURE.read_text())
     fx["now"] = "2026-09-20T22:20:00+00:00"
-    fx["newest"] = {k: ("2026-09-20T22:19:50+00:00" if k not in ("attention", "proposal", "policy", "dispatch", "feedback") else v)
+    fx["newest"] = {k: ("2026-09-20T22:19:50+00:00" if k not in ("attention", "proposal", "policy", "dispatch") else v)
                     for k, v in fx["newest"].items()}
-    fx["consolidation_motif_counts"] = [2, 3, 2]
     report = _replay(fx)
     assert "rung:attention" in report.red_keys()
 
@@ -125,10 +122,19 @@ def test_incident_is_caught_by_freshness_within_the_limit_not_after_48h():
 def test_healthy_ladder_is_green():
     now = datetime(2026, 9, 25, 0, 16, tzinfo=timezone.utc)
     newest = {r.name: now - timedelta(seconds=30) for r in ll.RUNGS}
-    newest["consolidation"] = now - timedelta(minutes=16)
-    rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=[3, 2, 3])
+    rungs = ll.evaluate_ladder(newest, now)
     assert all(not r.red for r in rungs)
-    assert len(rungs) == len(ll.RUNGS) + 1
+    assert len(rungs) == len(ll.RUNGS)
+
+
+def test_retired_rungs_are_listed_and_never_checked():
+    """Feedback and consolidation retired 2026-11-04: the check names them as retired (with what
+    does their job now) and never reads their tables, which are dropped 2 days later."""
+    retired = {name for name, _, _ in ll.RETIRED_RUNGS}
+    assert retired == {"feedback", "consolidation"}
+    assert not retired & {r.name for r in ll.RUNGS}
+    assert not {r.table for r in ll.RUNGS} & {"substrate_feedback_frames", "substrate_consolidation_frames"}
+    assert ll.LadderReport().to_dict()["retired_rungs"][0]["replaced_by"]
 
 
 # ----------------------------------------------------------------- freshness
@@ -158,21 +164,6 @@ def test_freshness_sql_is_always_time_bounded():
 def test_rung_names_are_unique():
     names = [r.name for r in ll.RUNGS]
     assert len(names) == len(set(names))
-
-
-@pytest.mark.parametrize(
-    "counts,red",
-    [
-        ([0, 0, 0], True),
-        ([0, 0, 0, 4], True),
-        ([0, 0, 2], False),  # longest normal empty run in 60 days of live data was 1
-        ([0, 0], False),  # not enough frames to say
-        ([], False),
-        ([3, 0, 0], False),
-    ],
-)
-def test_consolidation_empty_run(counts, red):
-    assert ll.evaluate_consolidation_empty(counts).red is red
 
 
 # ---------------------------------------------------------------------- skew
@@ -409,8 +400,9 @@ def test_pinned_schemas_are_still_discovered(discovery):
         assert hits, f"{pin.path} written by {pin.producer_service} fell out of discovery"
         assert set(pin.models) <= set(hits[0].models)
         readers = {r for r, _ in hits[0].reader_models}
-        # The two services that broke on 09-20, and feedback, still broken on 09-25.
-        assert {"orion-attention-runtime", "orion-proposal-runtime", "orion-feedback-runtime"} <= readers
+        # The two services that broke on 09-20 (feedback, still broken on 09-25, retired 2026-11-04).
+        assert {"orion-attention-runtime", "orion-proposal-runtime"} <= readers
+        assert "orion-feedback-runtime" not in readers
 
 
 def test_second_real_pair_is_discovered(discovery):
@@ -503,11 +495,6 @@ def test_flaky_read_does_not_rearm_a_delivered_card(tmp_path):
     assert len(ok.calls) == 1
 
 
-def test_severity_is_warning_only_for_empty_consolidation_alone():
-    assert _red_report(("consolidation:motifs",)).severity() == "warning"
-    assert _red_report(("consolidation:motifs", "attention")).severity() == "critical"
-
-
 @pytest.mark.parametrize(
     "report,code",
     [
@@ -556,12 +543,12 @@ class _Conn:
 
 def test_a_failed_rung_query_is_cannot_check_not_fresh():
     cli = _load_cli()
-    newest, motifs, errors = cli.read_freshness(_Conn("orion-cortex-exec"), 3600)
+    newest, errors = cli.read_freshness(_Conn("orion-cortex-exec"), 3600)
     assert "grammar:orion-cortex-exec" not in newest
     assert len(errors) == 1 and errors[0].startswith("grammar:orion-cortex-exec")
-    rungs = ll.evaluate_ladder(newest, datetime.now(timezone.utc), consolidation_motif_counts=motifs)
+    rungs = ll.evaluate_ladder(newest, datetime.now(timezone.utc))
     assert "grammar:orion-cortex-exec" not in {r.rung for r in rungs}
-    assert len(rungs) == len(ll.RUNGS)  # every other rung + motifs
+    assert len(rungs) == len(ll.RUNGS) - 1  # every other rung
 
 
 # ---------------------------------------- escalation must never be silent

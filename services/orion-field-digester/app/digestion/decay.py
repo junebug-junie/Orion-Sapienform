@@ -86,8 +86,8 @@ CAPABILITY_DECAY_CHANNELS = {
 # older than the given seconds. For a reading whose producer rewrites it every
 # few seconds, "not written lately" means the producer stopped (service down,
 # flag rolled back, bus outage) -- and a held last value then reads as a live
-# measurement to diffusion, capability provenance, and feedback credit's
-# write-backed check (orion/field/credit_integrity.py), none of which can tell
+# measurement to diffusion and capability provenance (and, until the feedback rung
+# retired on 2026-11-04, feedback credit's write-backed check), none of which can tell
 # it apart from a fresh one. Dropping the key makes every consumer see
 # "unmeasured" instead -- including one layer up: a capability channel left
 # with no measuring source is dropped by apply_diffusion() too (2026-10-07),

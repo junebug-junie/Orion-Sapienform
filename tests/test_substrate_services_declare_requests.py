@@ -46,7 +46,8 @@ def test_orion_substrate_still_imports_requests_at_package_import() -> None:
 
 def test_the_scan_finds_the_incident_services() -> None:
     found = _services_using_orion_substrate()
-    assert {"orion-feedback-runtime", "orion-policy-runtime"} <= set(found)
+    # orion-feedback-runtime was the other incident service; it retired 2026-11-04.
+    assert "orion-policy-runtime" in set(found)
 
 
 def test_every_orion_substrate_service_declares_requests() -> None:

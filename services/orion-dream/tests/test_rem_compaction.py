@@ -169,7 +169,6 @@ def test_rem_store_only_writes_the_staging_table():
     # No write verb may target a canonical memory table.
     forbidden = (
         "substrate_episode_summaries",
-        "substrate_consolidation_frames",
         "substrate_memory",
         "collapse",
         "dream_compaction_request_queue",  # queue is read-only in Phase F

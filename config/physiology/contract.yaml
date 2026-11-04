@@ -212,13 +212,10 @@ readers:
   - module: services/orion-proposal-runtime/app/store.py
     role: display
     reason: loads cabinet temperature points for the proposal worker.
-  - module: services/orion-feedback-runtime/app/worker.py
+  - module: orion/autonomy/world_settlement_store.py
     role: display
-    reason: grades heat outcomes (cabinet_heat_pressure before/after) for world settlement.
-  - module: services/orion-feedback-runtime/app/store.py
-    role: display
-    reason: loads cabinet temperature points for outcome grading.
-  - module: orion/feedback/world_settlement.py
+    reason: settle-time pass (hosted by orion-sql-writer since the feedback rung retired 2026-11-04) -- loads cabinet temperature points and grades heat outcomes (cabinet_heat_pressure before/after) for world settlement.
+  - module: orion/autonomy/world_settlement.py
     role: display
     reason: settles a heat-related act by the cabinet_heat_pressure change.
   - module: orion/hardware_watch/shed_effect.py
@@ -242,9 +239,6 @@ readers:
   - module: services/orion-durable-runs/app/dream_carry_graph.py
     role: display
     reason: treats a child's deferred_thermal outcome as retryable; reacts to the outcome, no heat read.
-  - module: orion/feedback/builder.py
-    role: display
-    reason: maps deferred_thermal to a neutral "deferred" feedback outcome.
   - module: orion/execution_dispatch/visual_settlement.py
     role: display
     reason: settles a deferred_thermal visual run as a real answer, not a failure.

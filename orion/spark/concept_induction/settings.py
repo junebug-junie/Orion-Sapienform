@@ -48,7 +48,6 @@ class ConceptSettings(BaseSettings):
             "orion:spark:telemetry",
             "orion:metacognition:tick",
             "orion:cognition:trace",
-            "orion:feedback:frame",
             "orion:world_pulse:run:result",
             "orion:autonomy:action:outcome",
         ],

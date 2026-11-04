@@ -667,15 +667,14 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         schema=None,
         producer_service=(
             "orion-proposal-runtime, orion-policy-runtime, "
-            "orion-execution-dispatch-runtime, orion-feedback-runtime, "
-            "orion-consolidation-runtime"
+            "orion-execution-dispatch-runtime"
         ),
         cadence=Cadence.MULTI_SERVICE,
         composition_status=CompositionStatus.REHEARSAL,
         cognition_consumers=(),
         notes=(
-            "Five schemas (ProposalFrameV1 -> ConsolidationV1), tracked as one "
-            "row. 2026-08-12: the historical rehearsal justification below is "
+            "Three schemas (ProposalFrameV1 -> ExecutionDispatchFrameV1), tracked as "
+            "one row (the feedback and consolidation rungs retired 2026-11-04). 2026-08-12: the historical rehearsal justification below is "
             "NO LONGER TRUE and this classification is under review. "
             "EXECUTION_DISPATCH_MODE is dispatch_read_only live (verified "
             "inside the running container), and the ladder now carries a real "

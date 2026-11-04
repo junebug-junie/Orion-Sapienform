@@ -767,14 +767,21 @@ class TestTheSubstrateChainFloor:
 
     def test_it_covers_every_stage_that_can_reach_back_into_the_table(self):
         stages = {name for name, _ in grammar_truth._SUBSTRATE_CHAIN_PENDING}
-        assert stages == {"proposal->policy", "policy->dispatch", "dispatch->feedback"}
+        assert stages == {"proposal->policy", "policy->dispatch"}
         sql = " ".join(self._probes())
         for table in (
             "substrate_proposal_frames",
             "substrate_policy_decision_frames",
-            "substrate_execution_dispatch_frames",
         ):
             assert table in sql, table
+
+    def test_no_probe_reads_the_retired_feedback_marker(self):
+        """The feedback rung retired 2026-11-04. Its marker defaults TRUE on every dispatch frame and
+        nothing clears it any more, so a probe on it would pin the floor forever: proposal retention
+        would stop silently while the table grows ~40k rows a day."""
+        sql = " ".join(self._probes())
+        assert "feedback_pending" not in sql
+        assert all("feedback" not in name for name, _ in grammar_truth._SUBSTRATE_CHAIN_PENDING)
 
     def test_every_probe_returns_a_proposal_timestamp_not_the_pending_rows_own(self):
         """THE bug code review caught on the first version of this floor.

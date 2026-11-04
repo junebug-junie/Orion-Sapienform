@@ -92,18 +92,6 @@ def _one(conn, sql, params=None):
                AND p.frame_id IS NULL
             """,
         ),
-        (
-            "dispatch->feedback",
-            """
-            SELECT count(*)
-              FROM substrate_execution_dispatch_frames d
-              LEFT JOIN substrate_proposal_frames p
-                     ON p.frame_id = d.source_proposal_frame_id
-             WHERE d.feedback_pending
-               AND d.source_proposal_frame_id IS NOT NULL
-               AND p.frame_id IS NULL
-            """,
-        ),
     ],
 )
 def test_no_pending_stage_has_lost_its_parent_proposal(conn, stage, sql):
@@ -158,10 +146,6 @@ def test_a_backlog_is_always_explained_by_either_the_floor_or_active_pruning(con
           (SELECT MIN(p.created_at) FROM (
              SELECT source_proposal_frame_id FROM substrate_policy_decision_frames
               WHERE dispatch_pending OFFSET 0
-           ) d JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id),
-          (SELECT MIN(p.created_at) FROM (
-             SELECT source_proposal_frame_id FROM substrate_execution_dispatch_frames
-              WHERE feedback_pending OFFSET 0
            ) d JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id)
         )
         """,
@@ -197,10 +181,6 @@ def test_a_backlog_is_always_explained_by_either_the_floor_or_active_pruning(con
         ("policy->dispatch",
          "SELECT MIN(p.created_at) FROM (SELECT source_proposal_frame_id FROM "
          "substrate_policy_decision_frames WHERE dispatch_pending OFFSET 0) d JOIN "
-         "substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id"),
-        ("dispatch->feedback",
-         "SELECT MIN(p.created_at) FROM (SELECT source_proposal_frame_id FROM "
-         "substrate_execution_dispatch_frames WHERE feedback_pending OFFSET 0) d JOIN "
          "substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id"),
     ],
 )

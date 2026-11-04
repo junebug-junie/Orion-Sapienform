@@ -79,8 +79,6 @@ _EXTRA_COVERED_SCHEMA_NAMES: dict[str, str] = {
     "ProposalFrameV1": "l7_l11_ladder",
     "PolicyDecisionFrameV1": "l7_l11_ladder",
     "ExecutionDispatchFrameV1": "l7_l11_ladder",
-    "FeedbackFrameV1": "l7_l11_ladder",
-    "ConsolidationV1": "l7_l11_ladder",
     "PhiEncoderManifestV1": "phi_intrinsic_reward.v1 (training-artifact manifest, same lineage -- still alive, written by scripts/fit_phi_encoder.py; phi_intrinsic_reward.v1's own schema was retired 2026-08-21, this manifest was not)",
     "FieldAttentionTargetV1": "field_attention_frame.v1 (per-target row, orion/schemas/field_attention_frame.py)",
     "DriveAuditV1": "drive_state.v1 (audit-trail companion, orion/core/schemas/drives.py)",

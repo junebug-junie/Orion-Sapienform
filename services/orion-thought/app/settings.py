@@ -240,9 +240,11 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_CHAIN",
     )
 
-    # --- Reverie grounding (Phase D, default-off, read-only) ---
-    reverie_ground_consolidation: bool = Field(
-        False, alias="ORION_REVERIE_GROUND_CONSOLIDATION"
+    # --- Reverie grounding (Phase D, read-only): recent rung-4 episode ids. Renamed from
+    # ORION_REVERIE_GROUND_CONSOLIDATION when the consolidation rung (its motif half) was killed
+    # 2026-11-04. ON, as it was live. ---
+    reverie_ground_episodes: bool = Field(
+        True, alias="ORION_REVERIE_GROUND_EPISODES"
     )
 
     # --- Compaction request (Phase E, default-off, queue only) ---

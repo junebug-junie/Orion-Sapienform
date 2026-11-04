@@ -11,9 +11,10 @@ This module is the writer side, called by orion-sql-writer:
   stamped from the current EffectPosterior, never typed by a producer.
 - ``close_act``: one close. The first close wins (a late producer close after
   the horizon resolver already closed the act is ignored). A close is graded
-  through the EXISTING L10 machinery -- one ``substrate_action_outcomes`` row
+  into the shared outcome tables -- one ``substrate_action_outcomes`` row
   plus the ``substrate_action_effect_posterior`` upsert, with the same two
-  double-count guards orion-feedback-runtime uses -- and no new learner.
+  double-count guards the world settle scorer uses
+  (orion/autonomy/world_settlement_store.py; L10 feedback retired 2026-11-04) -- and no new learner.
 - ``resolve_due_acts``: the horizon resolver. ``juniper_replied`` acts are
   closed from the start time of Juniper's next turn (1 as soon as she starts a
   hub chat turn after the act -- even one that later errors -- 0 once the

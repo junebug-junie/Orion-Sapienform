@@ -652,10 +652,11 @@ Before the treated/control draw, `_world_admission_refusal` drops (records, neve
 still in flight or that the pool would refuse (`pool_gap`, `pool_daily_cap`, `pool_refusing:*`, using
 `ORION_SHED_MIN_GAP_SEC` / `ORION_SHED_MAX_SEC_PER_DAY`, which must mirror the pool's caps), so both
 arms come from one population. The draw is a hash of `dispatch_id` (a replay lands in the same arm).
-Dependencies: the feedback runtime's `ORION_WORLD_SETTLEMENT_SCORING_ENABLED` must be on -- an unscored
+Dependencies: orion-sql-writer's settle scoring (`SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC` > 0; moved
+there from the retired feedback runtime 2026-11-04) must be on -- an unscored
 episode stays "in flight" (6 h horizon), so with scoring off the action fires at most once per 6 h.
-The global per-tick `ORION_DISPATCH_HOLDBACK_FRACTION` (live 0.0) still applies after the per-template
-draw and writes no world control row; the real treated rate is 0.5 x (1 - that fraction).
+The per-template draw is the only holdback a world action sees (the global per-tick holdback was
+removed 2026-11-04 with the feedback rung), so the treated rate is 0.5.
 
 ## Rung-2 acts in the allocator (thinking rung 3, 2026-10-21)
 
@@ -688,12 +689,10 @@ unreadable state, any other status, or a gate fault leaves every decision as bef
 (`tests/test_self_monitor_act_gate.py`). Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`.
 Code: `orion/self_monitor/gate.py`.
 
-The per-tick randomized holdback (`ORION_DISPATCH_HOLDBACK_FRACTION`) is ON at 0.2 (attend-to-act
-design D3). It draws only on ticks that can yield a control observation: at least one candidate with a
-declared field signal that is not a world action or a visual baseline (`tick_can_yield_control`).
-Other ticks are re-proposed seconds later, so withholding them would only delay them. The rule
-decides only WHETHER a tick is drawn: on a mixed tick that is drawn, every candidate on it is held,
-as the per-tick design always did.
+The per-tick randomized holdback was REMOVED on 2026-11-04 with the feedback rung. Only the feedback
+runtime turned a withheld tick into a control observation, so withholding a tick now would delay a
+real act to feed a control arm nobody reads. `ORION_DISPATCH_HOLDBACK_FRACTION` (0.2) still sets the
+proven-effect act holdback below; the per-template world-action holdback draws its own arm.
 
 Eval: `python orion/autonomy/evals/run_rung3_replay_eval.py [--live --hours 48]`.
 

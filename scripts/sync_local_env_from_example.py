@@ -144,14 +144,12 @@ SYNC_PREFIXES = (
     "LLM_GATEWAY_POOL_",
     "LLM_GATEWAY_EXECUTOR_",
     # Substrate pending-marker reconcilers (2026-09-25): bounded window + full-sweep schedule.
-    # None of the policy / execution-dispatch / feedback runtimes were visited before this.
+    # None of the policy / execution-dispatch runtimes were visited before this (the feedback
+    # runtime's FEEDBACK_* keys retired with it, 2026-11-04).
     "POLICY_RECONCILE_",
     "DISPATCH_RECONCILE_",
-    "FEEDBACK_RECONCILE_",
-    # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff, and the feedback
-    # runtime's park-until-settled bound.
+    # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff.
     "CORTEX_EXEC_RENDER_SCENE_",
-    "FEEDBACK_VISUAL_SETTLE_",
     # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
     "ENERGY_",
     # Hub's curiosity energy-stakes hold; no HUB_ prefix, so ENERGY_ above misses it.
@@ -407,10 +405,11 @@ SYNC_PREFIXES = (
     "PRIME_",
     # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
     # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
-    # (feedback runtime) and the cabinet attention bridge (substrate runtime). The pool's own
+    # (sql-writer since 2026-11-04; was the feedback runtime) and the cabinet attention bridge
+    # (substrate runtime). The pool's own
     # GPU_POOL_ORION_SHED_* keys are already covered by GPU_POOL_.
     "ORION_WORLD_ACTION",
-    "ORION_WORLD_SETTLEMENT_",
+    "SQL_WRITER_WORLD_SETTLEMENT_",
     "ORION_WORKSPACE_WINNER_",
     "ORION_HARDWARE_WATCH_HEALTH_URL",
     "ORION_SHED_",
@@ -578,7 +577,6 @@ DEFAULT_SERVICES = (
     "orion-proposal-runtime",
     "orion-policy-runtime",
     "orion-execution-dispatch-runtime",
-    "orion-feedback-runtime",
     "orion-thought",
     "orion-harness-governor",
     "orion-dream",

@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-feedback-runtime, orion-execution-dispatch-runtime, orion-consolidation-runtime
+-- ORION-MIGRATION-REQUIRED-BY: orion-execution-dispatch-runtime
 -- Compact completion receipts for structurally empty execution-dispatch frames.
 --
 -- A receipt is the durable child proving feedback-runtime folded this dispatch's untreated

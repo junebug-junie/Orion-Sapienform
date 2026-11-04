@@ -8,12 +8,18 @@ the repo (they include Juniper's chat):
   draft, appraisal the finalize sighting (= harness_turn_trace.run_artifact)
   thought_event    the stance_decision sighting
   situation notes  the situation sighting
-  grammar receipts grammar_events, by the run_artifact's grammar_event_ids (atom summaries)
+  grammar receipts grammar_events, by the run_artifact's grammar_event_ids. The atom keeps only the
+                   first 500 characters of each tool result (grammar_publish.py), so a long result
+                   is clipped for both prompts alike; the "Harness step N: tool=X, " prefix is stripped.
 
-Turns, picked at random from the last --days where the 5b judge really ran (a failed judge call
-writes a fallback "misaligned"; those are excluded):
+Turns, picked at random from the last --days where the 5b LLM judge really ran
+(reflection_source substrate_informed_pass: no failed-call fallback, no deterministic quick gate):
   obedience  the stored verdict was misaligned/uncertain and a note cites the imperative
   control    the stored verdict was aligned
+
+Old prompt: --old-ref (default origin/main). After this PR merges, pass its parent sha instead, or
+the two prompts are equal and the eval stops. "cites_imperative" is an upper bound: a new-prompt note
+that corrects a wrong imperative from evidence also names it.
 
 Reported, never silently gated: per bucket, the share judged misaligned/uncertain by each prompt,
 and how many notes cite the imperative. Expected: the new prompt cites the imperative in no note,
@@ -37,11 +43,7 @@ from sqlalchemy import create_engine, text
 
 from orion.harness.finalize import build_finalize_reflect_context
 from orion.harness.tests.fixtures import make_repair_overlay
-from orion.schemas.harness_finalize import (
-    REFLECTION_SOURCE_JUDGE_FAILED,
-    GrammarReceiptV1,
-    SubstrateFinalizeAppraisalV1,
-)
+from orion.schemas.harness_finalize import GrammarReceiptV1, SubstrateFinalizeAppraisalV1
 from orion.schemas.thought import ThoughtEventV1
 
 REPO = Path(__file__).resolve().parents[2].parent
@@ -49,6 +51,7 @@ TEMPLATE_REL = "orion/cognition/prompts/harness_finalize_reflect.j2"
 _STEP_RE = re.compile(r":harness_step:(\d+)$")
 _TOOL_RE = re.compile(r"\btool=([^,\s]+)")
 _IMPERATIVE_RE = re.compile(r"\bimperative\b", re.I)
+_ATOM_PREFIX_RE = re.compile(r"^Harness step \d+: tool=[^,]*, ")
 
 
 def receipt_from_atom(event_id: str, event: dict) -> GrammarReceiptV1 | None:
@@ -60,7 +63,8 @@ def receipt_from_atom(event_id: str, event: dict) -> GrammarReceiptV1 | None:
     step = _STEP_RE.search(atom.get("atom_id") or "")
     tool = _TOOL_RE.search(summary)
     name = tool.group(1) if tool and tool.group(1) != "none" else None
-    return GrammarReceiptV1(step_index=int(step.group(1)) if step else 0, tool_name=name, summary=summary,
+    return GrammarReceiptV1(step_index=int(step.group(1)) if step else 0, tool_name=name,
+                            summary=_ATOM_PREFIX_RE.sub("", summary),
                             grammar_event_id=event_id)
 
 
@@ -96,8 +100,8 @@ def summarize(rows: list[dict]) -> dict:
 def _pick(conn, days: int, n: int) -> list[tuple[str, str]]:
     base = ("FROM harness_turn_trace WHERE created_at > now() - make_interval(days => :d) "
             "AND run_artifact->'reflection' IS NOT NULL "
-            "AND coalesce(run_artifact->'reflection'->>'reflection_source', '') <> :failed ")
-    args = {"d": days, "failed": REFLECTION_SOURCE_JUDGE_FAILED, "n": n}
+            "AND run_artifact->'reflection'->>'reflection_source' = 'substrate_informed_pass' ")
+    args = {"d": days, "n": n}
     obedience = conn.execute(text(
         "SELECT correlation_id " + base +
         "AND run_artifact->'reflection'->>'alignment_verdict' IN ('misaligned', 'uncertain') "

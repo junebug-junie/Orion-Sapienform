@@ -14,6 +14,7 @@ def test_receipt_is_rebuilt_from_a_grammar_atom():
                       "summary": "Harness step 7: tool=WebFetch, fetched https://x"}}
     r = receipt_from_atom("g-1", event)
     assert (r.step_index, r.tool_name, r.grammar_event_id) == (7, "WebFetch", "g-1")
+    assert r.summary == "fetched https://x"   # the harness's own summary, without the atom's prefix
     none_tool = receipt_from_atom("g-2", {"atom": {"atom_id": "a:harness_step:0", "summary": "Harness step 0: tool=none, x"}})
     assert none_tool.tool_name is None
     assert receipt_from_atom("g-3", {"atom": {}}) is None

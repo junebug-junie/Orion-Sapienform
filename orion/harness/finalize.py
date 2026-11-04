@@ -1221,6 +1221,9 @@ def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
 def response_repair_reason_for(reflection: FinalizeReflectionV1) -> str | None:
     if not needs_response_repair(reflection):
         return None
+    if reflection.reflection_source == REFLECTION_SOURCE_JUDGE_FAILED:
+        # The repair still runs (unchanged), but the reason says the judge failed, not the draft.
+        return "reflection_failed"
     if reflection.alignment_verdict == "misaligned":
         return "misaligned"
     if reflection.alignment_verdict == "uncertain":

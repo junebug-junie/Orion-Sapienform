@@ -43,8 +43,8 @@ Grounding:
 - When answering user_message needed world contact (current facts, a page, a file, a
   camera) and grammar_receipts is empty, lean misaligned or uncertain.
 - When tool_execution lists executed calls, world contact DID happen: check the draft against
-  the returned data in grammar_receipts. Do not call a tool-derived answer ungrounded when the
-  tool result supports it.
+  the returned data in grammar_receipts. Do not rule misaligned for "no world contact", and do
+  not call a tool-derived answer ungrounded when the tool result supports it.
 - Read substrate_appraisal.surprise_level, alignment_hints, strain_shift_refs and
   open_loop_pressure. When they conflict with the draft, prefer misaligned or uncertain; do
   not hand-wave.
@@ -86,7 +86,7 @@ WORLD-CONTACT OPPORTUNITY (independent of alignment_verdict — judge this
 regardless of whether you called the draft aligned, misaligned, or uncertain)
 - This section does not change how you judge alignment_verdict above — keep
   applying the INTEGRATIVE CHECK rules (including "lean misaligned or
-  uncertain" when the task required world-contact) exactly as written. This
+  uncertain" when answering user_message needed world contact) exactly as written. This
   is a second, separate judgment layered on top: even an honest draft you
   correctly call aligned can still set world_contact_opportunity=true.
 - Set world_contact_opportunity=true only when ALL of: the user explicitly
@@ -98,7 +98,7 @@ regardless of whether you called the draft aligned, misaligned, or uncertain)
   like "don't use tools" or otherwise decline tool use this turn. An honest
   "I can't see, I'd need to check" draft can still set this true — honesty is
   not the question here, availability of a real answer is. Do not let
-  INTEGRATIVE CHECK's "when tool_execution lists executed calls, world-contact
+  INTEGRATIVE CHECK's "when tool_execution lists executed calls, world contact
   DID happen" line above apply here — that line is about judging
   alignment_verdict for tools that WERE relevant to what ran; it does not mean
   any tool call satisfies a request specifically about what is visible.

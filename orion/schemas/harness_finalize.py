@@ -64,7 +64,9 @@ class SubstrateFinalizeAppraisalV1(BaseModel):
 
 # reflection_source of a reflection the harness wrote because the 5b judge call failed (bad JSON,
 # no GPU slot, gateway error). Its alignment_verdict is "misaligned" so the turn still degrades
-# safely, but it is not a judgment of the draft: readers that count verdicts must skip it.
+# safely (response repair still runs), but it is not a judgment of the draft. Handled today: the
+# metacog chat-turn gate (reports reflection_failed, no verdict) and response_repair_reason
+# ("reflection_failed"). The turn-outcome molecule still carries alignment_verdict="misaligned".
 REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
 
 

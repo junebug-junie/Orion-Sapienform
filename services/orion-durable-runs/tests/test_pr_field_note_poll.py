@@ -60,7 +60,10 @@ class FakeGitHub:
     def files(self, n):
         self.calls += 1
         self.log.append(f"files:{n}")
-        return self.file_map.get(n, CODE_FILES)
+        got = self.file_map.get(n, CODE_FILES)
+        if isinstance(got, Exception):
+            raise got
+        return got
 
     def pull(self, n):
         self.calls += 1
@@ -100,6 +103,8 @@ class FakePool:
                 if "max(created_at)" in sql:
                     ts = [r["created_at"] for r in pool.rows]
                     return Cur([{"last": max(ts) if ts else None}])
+                if "count(*)" in sql:   # in flight: no time filter
+                    return Cur([{"n": sum(1 for r in pool.rows if r["terminal"] is None)}])
                 since = params[1]
                 return Cur([r for r in pool.rows if r["created_at"] >= since])
 
@@ -244,12 +249,19 @@ def test_the_detail_call_budget_bounds_a_burst(tmp_path):
     assert len(r.code_records) == 3 and r.github_calls == 11 and r.skipped_budget >= 10
 
 
-def test_gap_warning_when_the_last_run_is_older_than_the_lookback(tmp_path):
+def test_gap_warning_names_only_merges_that_fell_out_of_the_lookback(tmp_path):
     long_ago = NOW - timedelta(days=5)
     rows = [{"run_id": "pr-field-note-1", "terminal": "completed", "created_at": long_ago, "updated_at": long_ago}]
-    p, *_ = poller(tmp_path, [], rows=rows, field_note_not_before=datetime(2026, 10, 1, tzinfo=timezone.utc))
-    assert "POST /pr-field-notes/poll" in run(p.poll_once()).gap_warning
-    p2, *_ = poller(tmp_path, [], rows=rows)   # not_before is inside the lookback: no gap to report
+    early = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    # a quiet stretch: nothing merged while nothing ran -> no warning
+    p, *_ = poller(tmp_path, [], rows=rows, field_note_not_before=early)
+    assert run(p.poll_once()).gap_warning is None
+    # a real gap: #2900 merged 4 days ago, no run, no record, now outside the 72 h window
+    p, submit, gh, _ = poller(tmp_path, [item(2900, hours_ago=96)], rows=rows, field_note_not_before=early)
+    r = run(p.poll_once())
+    assert "#2900" in r.gap_warning and "POST /pr-field-notes/poll?since=" in r.gap_warning
+    assert submit.requests == []   # the warning never backfills by itself
+    p2, *_ = poller(tmp_path, [item(2900, hours_ago=96)], rows=rows)   # not_before inside the lookback
     assert run(p2.poll_once()).gap_warning is None
 
 
@@ -354,3 +366,55 @@ def test_flag_ships_on_and_every_key_is_in_settings_env_example_and_compose():
     assert re.search(r"^PR_FIELD_NOTES_ENABLED=true$", example, re.M)
     assert "PR_FIELD_NOTES_ENABLED=${PR_FIELD_NOTES_ENABLED:-true}" in compose
     assert Settings.model_fields["field_note_poll_enabled"].default is True
+
+
+def test_one_bad_pr_never_blocks_the_others(tmp_path):
+    # #3105: its /files call 404s; #3106: classify says code record but the write is refused; #3107 is fine
+    p, submit, gh, _ = poller(tmp_path, [item(3105, hours_ago=3), item(3106, hours_ago=2), item(3107, hours_ago=1)],
+                              files={3105: GitHubUnavailable("http_404: GET files", tick_wide=False), 3106: TINY_DOCS})
+    p.ledger.write_code_record = lambda pr: (_ for _ in ()).throw(ValueError("needs a note, not a code record"))
+    r = run(p.poll_once())
+    assert r.error is None and sorted(r.pr_errors) == [3105, 3106]
+    assert r.submitted == ["pr-field-note-3107"]   # the client maps a real 404 so: next test
+
+
+def test_a_404_is_one_prs_problem_and_a_rate_limit_is_the_ticks():
+    def raise_(code, headers):
+        def opener(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, code, "x", headers, None)
+        return opener
+    with pytest.raises(GitHubUnavailable) as e404:
+        GitHubPublic("o/r", opener=raise_(404, {})).files(1)
+    with pytest.raises(GitHubUnavailable) as e403:
+        GitHubPublic("o/r", opener=raise_(403, {"X-RateLimit-Remaining": "0"})).files(1)
+    assert e404.value.tick_wide is False and e403.value.tick_wide is True
+
+
+def test_a_rate_limit_mid_tick_ends_the_tick(tmp_path):
+    p, submit, gh, _ = poller(tmp_path, [item(3105, hours_ago=2), item(3106, hours_ago=1)],
+                              files={3105: GitHubUnavailable("rate_limited: GET files")})
+    r = run(p.poll_once())
+    assert r.error.startswith("github: rate_limited") and submit.requests == [] and "files:3106" not in gh.log
+
+
+def test_in_flight_counts_runs_from_before_the_window(tmp_path):
+    """A manual since= poll must not start a second run while an older one is still going."""
+    old = NOW - timedelta(days=10)
+    rows = [{"run_id": "pr-field-note-2000", "terminal": None, "created_at": old, "updated_at": old}]
+    p, submit, gh, _ = poller(tmp_path, [item(3105)], rows=rows)
+    r = run(p.poll_once(since=NOW - timedelta(hours=2)))
+    assert r.submitted == [] and r.waiting_turn == 1
+
+
+def test_a_full_page_of_files_is_always_a_note_pr(tmp_path):
+    page = [{"filename": f"services/orion-hub/requirements-{i}.txt", "additions": 1, "deletions": 0} for i in range(100)]
+    p, submit, gh, _ = poller(tmp_path, [item(3110)], files={3110: page})
+    r = run(p.poll_once())
+    assert r.code_records == [] and r.submitted == ["pr-field-note-3110"]
+
+
+def test_a_not_before_without_an_offset_means_utc():
+    from app.settings import Settings
+
+    s = Settings(_env_file=None, POSTGRES_URI="postgresql://x@y/z", PR_FIELD_NOTES_NOT_BEFORE="2026-11-04T06:00:00")
+    assert s.field_note_not_before == NOT_BEFORE and s.field_note_not_before.tzinfo is not None

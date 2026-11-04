@@ -431,11 +431,16 @@ runs the automatic half.
     deadline 20 h.
   A PR whose runs all failed gets one more run (`-a2`) an hour later; then it stops and shows as a
   miss in `dig field-notes`. At most one note run is in flight (the spec's "one at a time"), at most
-  10 GitHub detail calls per tick (the public limit is 60/h), and a rate-limit answer ends the tick.
+  10 GitHub detail calls per tick (the public limit is 60/h). A rate limit, a 5xx or a network error
+  ends the tick. One PR's own trouble (a 404 on its files, a refused code record) is logged in
+  `pr_errors` and that PR alone waits for the next tick. A PR whose first files page is full (100)
+  always gets a note run, never a code record.
   Nothing merged before `PR_FIELD_NOTES_NOT_BEFORE` is touched (decision 3: no backfill).
 - **Run** (`app/pr_field_note_graph.py`, contract `orion/schemas/pr_field_note_run.py`):
-  `precheck -> resource_request -> resource_wait -> field_note -> finish`. `precheck` finishes a PR that
-  already has a record without asking the pool. `field_note` is one harness turn on the #2958 seam
+  `precheck -> resource_request -> resource_wait -> field_note -> finish`, and a retry goes
+  `retry_wait -> precheck`. `precheck` finishes a PR that already has a record (`already_recorded`)
+  without a turn: at the start without asking the pool, and before a retry so an attempt that saved
+  the note but replied badly is not repeated. `field_note` is one harness turn on the #2958 seam
   (`app/harness_step.py`; source tag `pr_field_note`, session `pr-field-notes`). Its fixed prompt
   spells out the two dig commands, says code checks are only for a sentence that claims something the
   packet does not state, and asks for about 3 tool calls (never more than 6). The hard bound is the
@@ -454,8 +459,10 @@ runs the automatic half.
   every attempt from `llm_call_usage`; Hub harness steps):
   `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py`.
 - **Surfaces.** `/health` -> `field_note_poll` (the last tick). `POST /pr-field-notes/poll` runs one tick
-  now. `?since=<iso>` re-polls a longer window after an outage over the lookback (a tick that sees one
-  logs `field_note_poll_gap_possible`). A `since` before `PR_FIELD_NOTES_NOT_BEFORE` is refused.
+  now. `?since=<iso>` re-polls a longer window after an outage over the lookback. When nothing has run
+  for longer than the lookback, a tick searches the stretch the lookback lost and logs
+  `field_note_poll_gap_possible` naming the merges with no record and no run (it never backfills them
+  itself). A `since` before `PR_FIELD_NOTES_NOT_BEFORE` is refused.
   `GET /runs/<id>` shows `pr_field_note` (pr, outcome, note id) and `harness_steps`.
 - **Deploy order:** `pr.field_note` is an additive `DurableWorkflowV1` value. Deploy orion-sql-writer,
   orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.

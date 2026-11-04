@@ -218,3 +218,24 @@ def test_ledger_receipt_ok_wants_a_note_for_this_pr(tmp_path):
     assert world.ledger.receipt_ok(PR, NOTE_ID) is True
     assert world.ledger.receipt_ok(3999, NOTE_ID) is False
     assert world.ledger.receipt_ok(3200, "fn:3200:1111111111") is False   # a code record is not a note
+
+
+def test_a_retry_after_the_note_was_saved_runs_no_second_turn(tmp_path):
+    """Attempt 1 saved the note but replied without a usable receipt. The retry looks at the ledger
+    first and finishes: no resumed turn that could only repeat the receipt (too few steps for Hub)."""
+    async def scenario():
+        world, saver = World(tmp_path, replies=["Saved it."]), InMemorySaver()
+        real_turn = world.turn
+
+        async def writes_then_mumbles(req):
+            world.write(PR, NOTE_ID)
+            return await real_turn(req)
+        world.turn = writes_then_mumbles
+        r1 = await start_and_grant(world, saver)
+        assert r1["status"] == "retrying" and len(world.turns) == 1
+        snap = await world.graph(saver).aget_state(CFG)
+        world.now = datetime.fromisoformat(snap.values["retry_at"]) + timedelta(seconds=1)
+        r2 = await asyncio.wait_for(world.graph(saver).ainvoke(Command(resume=True), CFG), 2)
+        assert r2["status"] == "completed" and r2["outcome"] == "already_recorded" and len(world.turns) == 1
+        assert r2["prior_record"]["note_id"] == NOTE_ID and r2["prior_record"]["has_note"] is True
+    asyncio.run(scenario())

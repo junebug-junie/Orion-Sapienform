@@ -64,8 +64,8 @@ def build_prompt(brief: PrFieldNoteBriefV1) -> str:
         "say why.\n"
         "2. Write 1-5 sentences. Start each with its label: [pr_text], [code_then] or [reflection]. Check "
         "code (rg, cat, git) ONLY when a sentence claims something about code that the packet does not "
-        "state; most notes need no code check. Do not use backticks, double quotes or $ in the note: it "
-        "goes inside double quotes on a shell line.\n"
+        "state; most notes need no code check. Do not use backticks, double quotes, backslashes or $ in the "
+        "note: it goes inside double quotes on a shell line.\n"
         f"3. Run `python -P -m orion.dig field-note {n} write \"<note>\" because \"#{n} <files you cite>\"`. "
         "If the write is refused, fix exactly what the refusal names and write again (at most 2 more "
         f"tries). If it says #{n} already has a note, do not write again.\n"
@@ -138,8 +138,9 @@ def build_pr_field_note_graph(run_turn: RunTurn, admission: AdmissionDeps, check
     step_key = PR_FIELD_NOTE_STEP_KEY
 
     async def precheck(state: PrFieldNoteState) -> dict:
-        """A PR that already has a record (Juniper asked in chat, or the poller wrote its code record)
-        needs no turn: finish without asking the pool for a hold."""
+        """A PR that already has a record (Juniper asked in chat, the poller wrote its code record, or an
+        earlier attempt of this run saved the note) needs no turn: finish without a (new) turn. Runs at
+        the start and before every retry. ``already_recorded`` never claims this run proved the note."""
         if step_key in (state.get("steps") or {}) or state.get("outcome"):
             return {}
         brief = PrFieldNoteBriefV1.model_validate(state["brief"])
@@ -233,7 +234,10 @@ def build_pr_field_note_graph(run_turn: RunTurn, admission: AdmissionDeps, check
     g.add_conditional_edges("resource_wait", after_wait,
                             {"granted": "field_note", "request": "resource_request", "failed": "failed"})
     g.add_conditional_edges("field_note", after_step)
-    g.add_edge("retry_wait", "resource_request")
+    # A retry looks at the ledger first: an attempt that saved the note but replied badly (or Juniper
+    # wrote one meanwhile) needs no second turn -- a resumed session that only repeats the receipt would
+    # make too few harness steps for Hub's lookup gate and fail (review 2026-11-04).
+    g.add_edge("retry_wait", "precheck")
     g.add_edge("finish", END)
     g.add_edge("failed", END)
     return g.compile(checkpointer=checkpointer)

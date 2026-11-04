@@ -61,10 +61,17 @@ SELECT run_id, terminal, created_at, updated_at FROM durable_admission_runs
 WHERE run_id LIKE %s AND created_at >= %s
 """
 LAST_RUN_SQL = "SELECT max(created_at) AS last FROM durable_admission_runs WHERE run_id LIKE %s"
+# No time filter: a run submitted before this poll's window (a manual since= poll) still counts.
+IN_FLIGHT_SQL = "SELECT count(*) AS n FROM durable_admission_runs WHERE run_id LIKE %s AND terminal IS NULL"
 
 
 class GitHubUnavailable(RuntimeError):
-    """GitHub did not answer usefully (down, rate-limited, bad JSON): end the tick, try next tick."""
+    """GitHub did not answer usefully (down, rate-limited, bad JSON). On the search or a rate limit the
+    tick ends (try next tick); on one PR's detail call only that PR waits for the next tick."""
+
+    def __init__(self, message: str, *, tick_wide: bool = True):
+        super().__init__(message)
+        self.tick_wide = tick_wide   # False: this one request's answer (a 404/422, bad JSON), not GitHub
 
 
 class GitHubPublic:
@@ -87,10 +94,13 @@ class GitHubPublic:
                 return json.loads(resp.read().decode() or "null")
         except urllib.error.HTTPError as exc:
             remaining = exc.headers.get("X-RateLimit-Remaining") if exc.headers else None
-            kind = "rate_limited" if exc.code in (403, 429) and remaining in ("0", None) else f"http_{exc.code}"
-            raise GitHubUnavailable(f"{kind}: GET {path}") from exc
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+            limited = exc.code in (403, 429) and remaining in ("0", None)
+            kind = "rate_limited" if limited else f"http_{exc.code}"
+            raise GitHubUnavailable(f"{kind}: GET {path}", tick_wide=limited or exc.code >= 500) from exc
+        except (urllib.error.URLError, OSError) as exc:
             raise GitHubUnavailable(f"{type(exc).__name__}: GET {path}: {exc}"[:300]) from exc
+        except ValueError as exc:
+            raise GitHubUnavailable(f"bad JSON: GET {path}: {exc}"[:300], tick_wide=False) from exc
 
     def merged_since(self, since: datetime) -> list[dict[str, Any]]:
         """``[{number, title, body, merged_at}]`` for PRs merged at or after ``since``."""
@@ -113,20 +123,23 @@ class GitHubPublic:
     def files(self, number: int) -> list[dict[str, Any]]:
         data = self._get(f"/repos/{self.repo}/pulls/{int(number)}/files?per_page=100")
         if not isinstance(data, list):
-            raise GitHubUnavailable(f"files of #{number}: no list")
+            raise GitHubUnavailable(f"files of #{number}: no list", tick_wide=False)
         return data
 
     def pull(self, number: int) -> dict[str, Any]:
         data = self._get(f"/repos/{self.repo}/pulls/{int(number)}")
         if not isinstance(data, dict):
-            raise GitHubUnavailable(f"pull #{number}: no object")
+            raise GitHubUnavailable(f"pull #{number}: no object", tick_wide=False)
         return data
 
     def commits(self, number: int) -> list[dict[str, Any]]:
         data = self._get(f"/repos/{self.repo}/pulls/{int(number)}/commits?per_page=100")
         if not isinstance(data, list):
-            raise GitHubUnavailable(f"commits of #{number}: no list")
+            raise GitHubUnavailable(f"commits of #{number}: no list", tick_wide=False)
         return data
+
+
+FILES_PAGE = 100
 
 
 def gh_shape(item: dict[str, Any], files: list[dict[str, Any]], pull: dict[str, Any] | None = None,
@@ -137,6 +150,7 @@ def gh_shape(item: dict[str, Any], files: list[dict[str, Any]], pull: dict[str, 
     tiny (tiny docs is at most 40 changed lines)."""
     fl = [{"path": f.get("filename") or "", "additions": int(f.get("additions") or 0),
            "deletions": int(f.get("deletions") or 0)} for f in files]
+    # A full page may be cut: never treated as a code-record PR (see is_code_record_pr's caller).
     pull = pull or {}
     out = {
         "number": int(item["number"]), "title": pull.get("title") or item.get("title") or "",
@@ -146,7 +160,7 @@ def gh_shape(item: dict[str, Any], files: list[dict[str, Any]], pull: dict[str, 
         "additions": int(pull["additions"]) if "additions" in pull else sum(f["additions"] for f in fl),
         "deletions": int(pull["deletions"]) if "deletions" in pull else sum(f["deletions"] for f in fl),
         "changedFiles": int(pull["changed_files"]) if "changed_files" in pull
-        else (len(fl) + 1 if len(fl) >= 100 else len(fl)),
+        else (len(fl) + 1 if len(fl) >= FILES_PAGE else len(fl)),
         "headRefName": (pull.get("head") or {}).get("ref") or "",
         "mergeCommit": {"oid": pull.get("merge_commit_sha") or ""},
         "commits": [{"authors": [{"email": ((c.get("commit") or {}).get("author") or {}).get("email") or ""}]}
@@ -207,6 +221,7 @@ class PollResult:
     github_calls: int = 0
     gap_warning: str | None = None
     error: str | None = None
+    pr_errors: dict[int, str] = field(default_factory=dict)   # one PR's trouble never blocks the rest
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.__dict__)
@@ -229,10 +244,7 @@ class FieldNotePoller:
 
     def floor(self, now: datetime) -> datetime:
         lookback = now - timedelta(hours=float(self.settings.field_note_lookback_hours))
-        not_before = self.settings.field_note_not_before
-        if not_before.tzinfo is None:
-            not_before = not_before.replace(tzinfo=timezone.utc)
-        return max(lookback, not_before)
+        return max(lookback, self.settings.field_note_not_before)   # settings make it UTC-aware
 
     async def _runs(self, since: datetime) -> dict[int, list[dict[str, Any]]]:
         async with self.pool.connection() as conn:
@@ -244,24 +256,35 @@ class FieldNotePoller:
                 out.setdefault(n, []).append(dict(row))
         return out
 
-    async def _gap_warning(self, now: datetime) -> str | None:
-        """Spec: an outage longer than the lookback loses merges; say so (a manual since= poll fixes it)."""
+    async def _gap_warning(self, now: datetime, recorded: dict[int, Any]) -> str | None:
+        """Spec: an outage longer than the lookback loses merges; say so (a manual since= poll fixes it).
+
+        Only a REAL gap: when nothing has happened for longer than the lookback (no run, no record), one
+        more search looks at the stretch the lookback no longer covers, and a warning names the merges in
+        it that have neither a record nor a run. A quiet stretch with no merges warns about nothing."""
         lookback = timedelta(hours=float(self.settings.field_note_lookback_hours))
+        edge = now - lookback
+        not_before = self.settings.field_note_not_before
+        if not_before >= edge:
+            return None   # the lookback still reaches back to not_before: nothing can fall out of it
         async with self.pool.connection() as conn:
             row = await (await conn.execute(LAST_RUN_SQL, (PR_FIELD_NOTE_RUN_PREFIX + "%",))).fetchone()
         last_run = row["last"] if row else None
         last_record = await asyncio.to_thread(self.ledger.last_written_at)
         stamps = [t for t in (last_run, datetime.fromisoformat(last_record) if last_record else None) if t]
-        if not stamps:
+        last = max(stamps) if stamps else not_before
+        if now - last <= lookback:
             return None
-        last = max(stamps)
-        not_before = self.settings.field_note_not_before
-        not_before = not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
-        # Only a gap the lookback creates: merges before not_before are skipped on purpose (decision 3).
-        if now - last > lookback and not_before < now - lookback:
-            return (f"no field-note run or record since {last.isoformat()} (> {lookback}); merges before "
-                    f"{(now - lookback).isoformat()} are outside this poll: POST /pr-field-notes/poll?since=<iso>")
-        return None
+        start = max(last, not_before)
+        older = [m for m in await asyncio.to_thread(self.github.merged_since, start)
+                 if datetime.fromisoformat(m["merged_at"].replace("Z", "+00:00")) < edge]
+        runs = await self._runs(start)
+        missed = sorted(m["number"] for m in older if m["number"] not in recorded and m["number"] not in runs)
+        if not missed:
+            return None
+        return (f"{len(missed)} merged PR(s) fell out of the {lookback} lookback with no record or run: "
+                + " ".join(f"#{n}" for n in missed[:20])
+                + f"; POST /pr-field-notes/poll?since={start.isoformat()}")
 
     async def poll_once(self, *, since: datetime | None = None) -> PollResult:
         async with self._lock:
@@ -275,9 +298,6 @@ class FieldNotePoller:
         result = PollResult(at=now.isoformat(), since=floor.isoformat())
         calls0 = self.github.calls
         try:
-            result.gap_warning = None if since else await self._gap_warning(now)
-            if result.gap_warning:
-                logger.warning("field_note_poll_gap_possible %s", result.gap_warning)
             merged = await asyncio.to_thread(self.github.merged_since, floor)
             merged = sorted((m for m in merged
                              if datetime.fromisoformat(m["merged_at"].replace("Z", "+00:00")) >= floor),
@@ -286,54 +306,32 @@ class FieldNotePoller:
             self.classified = {n: v for n, v in self.classified.items() if n in window}   # bounded
             result.merged_seen = len(merged)
             recorded = await asyncio.to_thread(self.ledger.live_records)
+            if since is None:
+                result.gap_warning = await self._gap_warning(now, recorded)
+                if result.gap_warning:
+                    logger.warning("field_note_poll_gap_possible %s", result.gap_warning)
             runs = await self._runs(floor)
-            in_flight = sum(1 for attempts in runs.values() for a in attempts if a.get("terminal") is None)
-            budget = MAX_DETAIL_CALLS
+            async with self.pool.connection() as conn:
+                row = await (await conn.execute(IN_FLIGHT_SQL, (PR_FIELD_NOTE_RUN_PREFIX + "%",))).fetchone()
+            state = {"in_flight": int(row["n"]) if row else 0, "budget": MAX_DETAIL_CALLS}
             for item in merged:
                 n = item["number"]
                 if n in recorded:
                     result.recorded += 1
                     continue
-                attempts = runs.get(n, [])
-                run_id = next_run_id(n, attempts, now=now)
-                if run_id is None:
-                    continue
-                if not attempts:
-                    # Never run: classify it once (one /files call), then a code record or a run.
-                    if n not in self.classified:
-                        if budget < 1:
-                            result.skipped_budget += 1
-                            continue
-                        budget -= 1
-                        files = await asyncio.to_thread(self.github.files, n)
-                        self.classified[n] = (is_code_record_pr(gh_shape(item, files)), files)
-                    code_record, files = self.classified[n]
-                    if code_record:
-                        if budget < 2:
-                            result.skipped_budget += 1
-                            continue
-                        budget -= 2
-                        pull = await asyncio.to_thread(self.github.pull, n)
-                        commits = await asyncio.to_thread(self.github.commits, n)
-                        note_id = await asyncio.to_thread(
-                            self.ledger.write_code_record, pr=gh_shape(item, files, pull, commits))
-                        self.classified.pop(n, None)
-                        if note_id:
-                            result.code_records.append(n)
-                            logger.info("field_note_poll_code_record pr=%s note_id=%s", n, note_id)
-                        continue
-                if in_flight >= MAX_IN_FLIGHT:
-                    result.waiting_turn += 1
-                    continue
-                request = run_request(item, run_id, now=now, timeout_sec=self.settings.field_note_turn_timeout_sec)
                 try:
-                    await self.submit(request)
-                except ValueError as exc:   # duplicate run id (a concurrent poll): nothing to do
-                    logger.info("field_note_poll_duplicate run=%s err=%s", run_id, exc)
-                    continue
-                in_flight += 1
-                result.submitted.append(run_id)
-                logger.info("field_note_poll_submitted run=%s pr=%s merged_at=%s", run_id, n, item["merged_at"])
+                    await self._one(item, runs.get(n, []), now=now, state=state, result=result)
+                except GitHubUnavailable as exc:
+                    if exc.tick_wide:
+                        raise
+                    result.pr_errors[n] = f"github: {exc}"[:300]
+                    logger.warning("field_note_poll_pr_failed pr=%s err=%s", n, exc)
+                except OSError:
+                    raise   # the ledger itself: every PR would fail the same way
+                except Exception as exc:  # noqa: BLE001 -- one bad PR (a refused code record, bad data) waits alone
+                    self.classified.pop(n, None)
+                    result.pr_errors[n] = f"{type(exc).__name__}: {exc}"[:300]
+                    logger.warning("field_note_poll_pr_failed pr=%s err=%s", n, exc, exc_info=True)
         except GitHubUnavailable as exc:
             result.error = f"github: {exc}"
             logger.warning("field_note_poll_github_unavailable %s", exc)
@@ -343,6 +341,50 @@ class FieldNotePoller:
         result.github_calls = self.github.calls - calls0
         logger.info("field_note_poll_tick %s", json.dumps({k: v for k, v in result.as_dict().items() if v}))
         return result
+
+    async def _one(self, item: dict[str, Any], attempts: list[dict[str, Any]], *, now: datetime,
+                   state: dict[str, int], result: PollResult) -> None:
+        """One merged PR with no record: classify once, then its code record or its run."""
+        n = item["number"]
+        run_id = next_run_id(n, attempts, now=now)
+        if run_id is None:
+            return
+        if not attempts:
+            if n not in self.classified:
+                if state["budget"] < 1:
+                    result.skipped_budget += 1
+                    return
+                state["budget"] -= 1
+                files = await asyncio.to_thread(self.github.files, n)
+                # A full first page may hide more files: such a PR always gets a note, never a code record.
+                code = len(files) < FILES_PAGE and is_code_record_pr(gh_shape(item, files))
+                self.classified[n] = (code, files)
+            code_record, files = self.classified[n]
+            if code_record:
+                if state["budget"] < 2:
+                    result.skipped_budget += 1
+                    return
+                state["budget"] -= 2
+                pull = await asyncio.to_thread(self.github.pull, n)
+                commits = await asyncio.to_thread(self.github.commits, n)
+                note_id = await asyncio.to_thread(self.ledger.write_code_record, pr=gh_shape(item, files, pull, commits))
+                self.classified.pop(n, None)
+                if note_id:
+                    result.code_records.append(n)
+                    logger.info("field_note_poll_code_record pr=%s note_id=%s", n, note_id)
+                return
+        if state["in_flight"] >= MAX_IN_FLIGHT:
+            result.waiting_turn += 1
+            return
+        request = run_request(item, run_id, now=now, timeout_sec=self.settings.field_note_turn_timeout_sec)
+        try:
+            await self.submit(request)
+        except ValueError as exc:   # duplicate run id (a concurrent poll): nothing to do
+            logger.info("field_note_poll_duplicate run=%s err=%s", run_id, exc)
+            return
+        state["in_flight"] += 1
+        result.submitted.append(run_id)
+        logger.info("field_note_poll_submitted run=%s pr=%s merged_at=%s", run_id, n, item["merged_at"])
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         interval = max(60.0, float(self.settings.field_note_poll_sec))

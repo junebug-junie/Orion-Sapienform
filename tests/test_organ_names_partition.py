@@ -104,6 +104,27 @@ def test_the_field_note_writer_never_hands_back_note_text():
     assert [ast.unparse(u) for u in uses if id(u) not in ok] == []
 
 
+def test_the_field_note_writer_returns_only_ids_and_booleans():
+    """Every public function of the exception declares an id/boolean-shaped return, and no ``return``
+    hands back a loaded record list, a live map or a bare variable (review 2026-11-04: the ``.note``
+    check alone would miss ``return records``)."""
+    import ast
+
+    allowed = {"bool", "str", "str | None", "None", "RecordRef", "dict[int, RecordRef]"}
+    tree = ast.parse((_REPO / FIELD_NOTE_WRITER).read_text(encoding="utf-8"))
+    public = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and not f.name.startswith("_")]
+    assert len(public) >= 5  # the check really looked at the module's API
+    assert {f.name: ast.unparse(f.returns) if f.returns else None for f in public
+            if (ast.unparse(f.returns) if f.returns else None) not in allowed} == {}
+    bad = []
+    for ret in (n for n in ast.walk(tree) if isinstance(n, ast.Return) and n.value is not None):
+        v = ret.value
+        if isinstance(v, ast.Name) or (isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute)
+                                       and v.func.attr in ("load", "live", "model_dump", "model_dump_json")):
+            bad.append(ast.unparse(ret))
+    assert bad == []
+
+
 def test_the_ast_check_sees_every_import_form():
     import ast
 

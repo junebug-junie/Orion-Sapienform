@@ -362,7 +362,9 @@ the text above, or settles what the text left open:
 - **A code record has an empty `body_map`.** durable-runs has neither the repo (importer scan) nor the
   live atlas, and a code record makes no claim a body map would check.
 - **verify_receipt runs inside the step**, before the step is checkpointed, and checks the ledger as well
-  as the reply. A receipt the model typed without the write behind it fails.
+  as the reply. A receipt the model typed without the write behind it fails. A retry passes through
+  `precheck` again: if an earlier attempt already saved the note, the run finishes as
+  `already_recorded` without a second turn.
 - **Bounds.** One note run in flight at a time. At most 2 runs per PR (the second an hour after the first
   failed). Each run has 3 attempts of a 420 s turn and a 20 h deadline. The prompt asks for about 3
   tool calls and at most 6. Hub's turn request has no step-limit field, so the time is the hard bound.

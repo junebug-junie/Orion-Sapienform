@@ -298,6 +298,12 @@ class Settings(BaseSettings):
     physiology_report_gpu_pool_path: str = Field(
         "/app/config/gpu_pool.yaml", alias="ORION_PHYSIOLOGY_REPORT_GPU_POOL_PATH")
 
+    @field_validator("field_note_not_before")
+    @classmethod
+    def _not_before_is_utc(cls, v: datetime) -> datetime:
+        # An env value with no offset means UTC; every comparison with it is then aware (review 2026-11-04).
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+
     @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
     @classmethod
     def _empty_envelope_is_none(cls, v):

@@ -125,3 +125,11 @@ def test_the_fit_prompt_carries_the_whole_answer_and_the_budget() -> None:
     assert str(SELF_DEFINITION_TEXT_CAP) in prompt
     assert f"It is {len(LONG)} characters" in prompt
     assert "Do not use any tools" in prompt
+
+
+
+def test_the_fit_prompt_aims_below_the_hard_limit() -> None:
+    from orion.curiosity.self_inquiry_prompt import SELF_FIT_TARGET_CHARS
+
+    assert SELF_FIT_TARGET_CHARS < SELF_DEFINITION_TEXT_CAP
+    assert f"about {SELF_FIT_TARGET_CHARS} characters" in build_answer_fit_prompt(LONG)

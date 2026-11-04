@@ -406,6 +406,10 @@ class WorldviewSnapshot:
     concept_total: int = 0
     continuation: Optional[TurnOutcome] = None
     unavailable_reason: Optional[str] = None
+    # The raw live-prior rows this snapshot was selected from, kept so the curiosity replica's validated
+    # plan can re-select the SAME read with its picks at the top (`with_head`) instead of a second graph
+    # read that could differ. Not part of equality or repr.
+    prior_rows: tuple = field(default=(), repr=False, compare=False)
 
     @property
     def is_unavailable(self) -> bool:
@@ -1260,7 +1264,42 @@ def read_snapshot(
         live_total=live_total,
         closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
+        prior_rows=tuple(prior_rows),
     )
+
+
+def fresh_priors(view: WorldviewSnapshot, *, stale_after: int) -> list[Prior]:
+    """Every fresh (not stale) live prior in the read ``view`` was selected from, collapsed the same way
+    `select_priors` collapses forks: the curiosity replica's candidate pool
+    (orion/curiosity/replica/candidates.py). Unordered."""
+    priors = [p for p in (build_prior(r) for r in view.prior_rows) if p is not None]
+    priors, _ = collapse_duplicate_priors(priors)
+    return [p for p in priors if not (stale_after > 0 and p.times_tested >= stale_after)]
+
+
+def with_head(
+    view: WorldviewSnapshot,
+    head_ids: Sequence[str],
+    *,
+    sample: int,
+    stale_after: int,
+    rotate_seed: str,
+    coverage_slots: int,
+) -> WorldviewSnapshot:
+    """``view`` re-selected from its own rows with ``head_ids`` at the top (`select_priors` head_ids):
+    the offer a validated replica plan produces. Same rows, sample, seed and coverage draw as the rule
+    order it replaces, so only the top differs. Empty ``head_ids`` returns ``view`` unchanged."""
+    if not head_ids or view.is_unavailable:
+        return view
+    offered, stale, _ = select_priors(
+        list(view.prior_rows),
+        sample=sample,
+        stale_after=stale_after,
+        rotate_seed=rotate_seed,
+        coverage_slots=coverage_slots,
+        head_ids=head_ids,
+    )
+    return replace(view, live_priors=offered, stale_priors=stale)
 
 
 def read_turn_outcome(reader: WorldviewReader, run_id: str) -> Optional[TurnOutcome]:

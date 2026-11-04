@@ -68,8 +68,7 @@ ARM_VALUE_ORDER = "value_order"
 ARM_UNCERTAINTY_ORDER = "uncertainty_order"
 # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
 # a small planner in orion-mind writes the top of the order. Drawn only when the caller passes a
-# replica propensity above 0; Hub passes none until the replica can answer (patch 3), so no run
-# is on this arm yet.
+# replica propensity above 0 (Hub: HUB_CURIOSITY_REPLICA_ARM_PROPENSITY, on since patch 3).
 ARM_REPLICA_ORDER = "replica_order"
 # Every arm a draw can return, in band order (value, replica, then uncertainty takes the rest).
 OFFER_ARMS = (ARM_VALUE_ORDER, ARM_REPLICA_ORDER, ARM_UNCERTAINTY_ORDER)

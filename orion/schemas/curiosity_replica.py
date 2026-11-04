@@ -2,9 +2,9 @@
 for curiosity's replica-arm runs, and that can answer Prime (support, challenge or refuse).
 
 Design: docs/superpowers/specs/2026-11-04-curiosity-replica-design.md (sections 2-5 and 9, "Proposed schema
-/ API changes"). Patch 2 of its build order: the shapes only. The producer of the request and the consumer
-of the result (Hub) and the replica instance that answers (orion-mind) land in patch 3; until then no run
-is drawn onto the replica arm (Hub passes no replica propensity to orion/curiosity/value.py draw_offer_arm).
+/ API changes"). The shapes came in patch 2 of its build order; patch 3 added the producer of the request
+and the consumer of the result (Hub: services/orion-hub/scripts/curiosity_replica_plan.py) and the replica
+instance that answers (orion-mind: services/orion-mind/app/replica_loop.py).
 
 The RPC: Hub publishes ``CuriosityOfferPlanRequestV1`` on ``orion:curiosity:replica:plan:request`` and waits
 at most ``PLAN_DEADLINE_SEC`` for ``CuriosityOfferPlanResultV1`` on

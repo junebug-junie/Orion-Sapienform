@@ -2,6 +2,7 @@ name: orion-prime-tests
 
 # Orion Prime 2A (docs/superpowers/specs/2026-10-29-orion-prime-design.md): the resident loop in
 # orion-mind (app/prime_loop.py, an instance of the loop library orion/mindloop/) and its pure logic (orion/prime/): the tick, the thought's answer,
+# plus the loop library's second instance, the curiosity replica (app/replica_loop.py, orion/curiosity/replica/),
 # Prime's acts, how a question settles, the narrator readout's arithmetic, and the frame eval on live
 # inputs captured 2026-10-30. Fake bus, model and market; no DB, Redis or LLM.
 
@@ -10,6 +11,11 @@ on:
     paths:
       - "orion/prime/**"
       - "orion/mindloop/**"
+      - "orion/curiosity/replica/**"
+      - "orion/curiosity/tests/test_replica_*.py"
+      - "orion/curiosity/worldview.py"
+      - "orion/curiosity/value.py"
+      - "orion/schemas/curiosity_replica.py"
       - "orion/refs.py"
       - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
@@ -29,6 +35,11 @@ on:
     paths:
       - "orion/prime/**"
       - "orion/mindloop/**"
+      - "orion/curiosity/replica/**"
+      - "orion/curiosity/tests/test_replica_*.py"
+      - "orion/curiosity/worldview.py"
+      - "orion/curiosity/value.py"
+      - "orion/schemas/curiosity_replica.py"
       - "orion/refs.py"
       - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
@@ -67,6 +78,10 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/prime
       - name: Loop library (orion/mindloop; a second instance runs on it with its own key, family and actor)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/mindloop
+      - name: Curiosity replica pure parts and contracts (candidates, plan check, frame, grading)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_replica_plan.py orion/curiosity/tests/test_replica_contracts.py
+      - name: Curiosity replica frame eval on live inputs (candidates, grounded, bounded, honest gaps, plan layout)
+        run: PYTHONPATH=${{ github.workspace }} python orion/curiosity/replica/evals/run_replica_frame_eval.py
       - name: References contract (every kind has a resolver, a dig command and a test)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/dig/tests/test_refs_contract.py
       - name: Frame eval on live inputs (grounded, bounded, honest gaps, settles)

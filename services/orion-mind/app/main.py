@@ -17,6 +17,7 @@ from orion.mindloop.turns import JUNIPER_TURNS
 from .engine import carries_live_turn, run_mind
 from .llm_client import RPC_HEALTH_SINK, MindLLMClient
 from .prime_loop import PrimeRuntime
+from .replica_loop import ReplicaRuntime
 from .settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
@@ -27,6 +28,8 @@ rpc_health_bus: OrionBusAsync | None = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 prime_bus: OrionBusAsync | None = None
 prime_runtime: PrimeRuntime | None = None
+replica_bus: OrionBusAsync | None = None
+replica_runtime: ReplicaRuntime | None = None
 
 
 def build_heartbeat_chassis() -> HeartbeatOnly:
@@ -123,6 +126,37 @@ async def _stop_prime() -> None:
         prime_bus = None
 
 
+async def _start_replica() -> None:
+    """The curiosity replica (app/replica_loop.py), loop-library instance #2, on its own bus connection.
+    A failed start is logged; Hub's replica-arm runs then time out to the uncertainty order."""
+    global replica_bus, replica_runtime
+    if not (settings.CURIOSITY_REPLICA_ENABLED and settings.ORION_BUS_ENABLED):
+        logger.info("curiosity_replica_disabled CURIOSITY_REPLICA_ENABLED=%s ORION_BUS_ENABLED=%s",
+                    settings.CURIOSITY_REPLICA_ENABLED, settings.ORION_BUS_ENABLED)
+        return
+    try:
+        bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=True)
+        replica_bus = bus
+        replica_runtime = ReplicaRuntime(settings=settings, bus=bus, llm=MindLLMClient(rpc_health=False))
+        await replica_runtime.start(connect=True)
+    except Exception as exc:
+        logger.warning("curiosity_replica_start_failed error=%s", exc)
+        replica_runtime = None
+
+
+async def _stop_replica() -> None:
+    global replica_bus, replica_runtime
+    if replica_runtime is not None:
+        await replica_runtime.stop()
+        replica_runtime = None
+    if replica_bus is not None:
+        try:
+            await replica_bus.close()
+        except Exception as exc:
+            logger.warning("curiosity_replica_bus_close_error error=%s", exc)
+        replica_bus = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global heartbeat_chassis
@@ -139,9 +173,11 @@ async def lifespan(app: FastAPI):
         heartbeat_chassis = None
     await _start_rpc_health()
     await _start_prime()
+    await _start_replica()
     try:
         yield
     finally:
+        await _stop_replica()
         await _stop_prime()
         await _stop_rpc_health()
     if heartbeat_chassis is not None:

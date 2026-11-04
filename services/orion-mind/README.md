@@ -51,14 +51,40 @@ Rollout is consumer-first: the schema is `extra="forbid"`, so rebuild
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before deploying
 this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 
+## The curiosity replica: loop-library instance #2 (2026-11-04)
+
+A small planner beside Prime. Design: `docs/superpowers/specs/2026-11-04-curiosity-replica-design.md` (patch 3).
+Code: `app/replica_loop.py` (I/O) and `orion/curiosity/replica/` (pure: candidates, plan check, frame, grading).
+Identity: actor and family `curiosity.replica` (tier 2, lane chat), Redis key `orion:curiosity:replica:state`,
+settings `CURIOSITY_REPLICA_*`, logs `curiosity_replica_*`.
+
+- **Woken by Hub.** On a replica-arm curiosity run Hub publishes a plan request on
+  `orion:curiosity:replica:plan:request`. The listener queues it and wakes the loop.
+- **Bids, then thinks once.** The loop bids `curiosity.replica` every tick until funded or until there is no
+  time left for one model call before Hub's deadline (90 s, 5 s margin). Then it answers `unfunded` or
+  `model_failed`, so Hub records the real reason. One call on route `prime` (the warm chat lane), seat wait cut
+  so the answer lands in time.
+- **Reads (its frame):** the candidates from the request; Hub's last investigate runs and their spend-log scores;
+  the stale ids; Prime's published concerns view (`orion:prime:concerns`, which Prime now writes on every save)
+  and any regulate signal on curiosity (arm hidden); the pending focus; the newest chat-history compactor digest
+  (card summary + journal title, with its age; no raw chat); its own last plans (picks tested, nats moved,
+  fallbacks). A failed read is a named gap. Postgres reads use `CURIOSITY_REPLICA_PG_DSN`, read-only.
+- **Answers** on `orion:curiosity:replica:plan:result:<correlation_id>` with 3-5 picks, checked first with the
+  same `validate_plan` Hub runs. Stances on Prime's focus or signal are sent and recorded only (patch 4).
+- **Its act** (`infer`) opens when the model is reached. A plan that cannot be used closes 0 at once. A used plan
+  stays open and closes on its run's score: 1 when the run moved at least one belief (`realized_nats > 0` on a
+  completed turn), the number the three-arm test scores.
+- **Never reads Prime's state** (a test checks the module has no reference to it).
+- Off: `CURIOSITY_REPLICA_ENABLED=false` (Hub's replica-arm runs then time out to the rule order).
+- Eval: `orion/curiosity/replica/evals/run_replica_frame_eval.py` (live inputs captured 2026-11-04).
+
 ## Orion Prime 2A: the resident loop (2026-10-30)
 
 orion-mind keeps thinking between conversations. Design: `docs/superpowers/specs/2026-10-29-orion-prime-design.md`
 (PR #2980), rollout step 2A. Code: `app/prime_loop.py` (Prime's I/O), `orion/prime/` (pure logic) and, since
 2026-11-04, the loop library `orion/mindloop/` (the tick, Juniper-first yield, the bid, the model call with seat
 wait, no-model backoff and starved route, the thought act, act publishing, state in Redis). Prime is the library's
-instance #1 (`PrimeRuntime(MindLoopRuntime)`); the curiosity replica will be #2
-(`docs/superpowers/specs/2026-11-04-curiosity-replica-design.md` section 10). The move changed no behavior:
+instance #1 (`PrimeRuntime(MindLoopRuntime)`); the curiosity replica is #2 (below). The move changed no behavior:
 `tests/test_prime_replay.py` replays recorded tick sequences against a golden recorded before the move, and loads
 the live persisted state captured from Redis on 2026-11-04.
 

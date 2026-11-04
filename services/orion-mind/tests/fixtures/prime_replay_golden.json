@@ -94,8 +94,10 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":null,\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":null,\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime"
   ]
  },
@@ -1019,6 +1021,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000000600004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null},{\"concern_id\":\"0000001b00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T18:40:00Z\",\"last_evidence_at\":\"2026-10-30T18:40:00Z\",\"act_opened_at\":\"2026-10-30T18:40:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_26a246560006989d35d532da\",\"thought_id\":\"0000001700004000\",\"focus_id\":\"a2dc5818-5ce0-5d03-bd09-c1c61bd00468\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T18:40:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T18:40:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -1027,9 +1030,12 @@
    "release",
    "publish orion:grammar:event act_opened predict",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "publish orion:grammar:event act_closed ask",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -1037,7 +1043,8 @@
    "publish orion:grammar:event act_closed infer",
    "release",
    "publish orion:grammar:event act_opened predict",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "gate_infer_probe_spent": {
@@ -1466,6 +1473,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000c300004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_daf72b94197a92dcfa5ed2de\",\"thought_id\":\"000000bf00004000\",\"focus_id\":\"1643c186-2b00-5f7d-8e52-48a8aee0c42c\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -1474,7 +1482,9 @@
    "release",
    "publish orion:grammar:event act_opened predict",
    "save orion:prime:state",
-   "save orion:prime:state"
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "gate_infer_refused": {
@@ -1492,11 +1502,17 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[\"at 12:00 UTC I did not start a thought: my own record says these have been unreliable lately (self-monitor: track_record_failing); one is re-tested every 6 h\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":null,\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":null,\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
-   "save orion:prime:state"
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "gate_predict_refused": {
@@ -1847,6 +1863,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000d500004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":null,\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_120a9af1144eedb2b2a0f185\",\"thought_id\":\"000000d100004000\",\"focus_id\":\"6f992154-64d4-56ab-a67d-9b7d2e80afb3\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[\"my bet that the concern 'afternoon heat' leads somewhere was not placed: my own record says these have been unreliable lately (self-monitor: track_record_failing); one is re-tested every 6 h\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -1854,8 +1871,11 @@
    "publish orion:grammar:event act_closed infer",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
-   "save orion:prime:state"
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "held_back": {
@@ -2248,6 +2268,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000002d00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_b8907b8af669ed0043ec8bdd\",\"thought_id\":\"0000002900004000\",\"focus_id\":\"6a70bb18-21c4-5a53-a725-0d147db71db6\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"control\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":null,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -2255,7 +2276,8 @@
    "publish orion:grammar:event act_closed infer",
    "release",
    "publish orion:grammar:event act_opened predict",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "juniper_yield": {
@@ -2270,7 +2292,8 @@
   "rpcs": [],
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":null,\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":null,\"retry_not_before\":null}",
   "timeline": [
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "llm_raises": {
@@ -2493,12 +2516,14 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
    "publish orion:grammar:event act_closed infer",
    "release",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "no_answer_bid": {
@@ -2555,6 +2580,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":null,\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":null,\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime"
   ]
  },
@@ -2625,10 +2651,12 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[\"a try to think at 12:00 UTC never reached the model (no_reply); I tried again\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":null,\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":1,\"no_model_tries_total\":1,\"last_try_kind\":\"no_reply\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "release",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "no_seat_then_starved_route": {
@@ -3265,26 +3293,35 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000005700004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:05:00Z\",\"last_evidence_at\":\"2026-10-30T12:05:00Z\",\"act_opened_at\":\"2026-10-30T12:05:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_ded584a947d6ecec68350fc9\",\"thought_id\":\"0000005300004000\",\"focus_id\":\"1aa4295a-5e5b-5fa9-9d9f-fdc4a65f3d56\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:05:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[\"a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:05:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":4,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime_starved",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime_starved",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime_starved",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime_starved",
    "publish orion:grammar:event act_opened infer",
@@ -3292,7 +3329,8 @@
    "publish orion:grammar:event act_closed infer",
    "release",
    "publish orion:grammar:event act_opened predict",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "preempted": {
@@ -3526,12 +3564,14 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
    "publish orion:grammar:event act_closed infer",
    "release",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "regulate_and_settle": {
@@ -4149,6 +4189,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my slow signal to durable.curiosity_investigate (act act_16a642f51940947fe280cc7c): treated slow durable.curiosity_investigate: no bid from it came while the signal was in force\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{\"durable.curiosity_investigate\":\"2026-10-30T16:00:00Z\"},\"last_thought_at\":\"2026-10-30T14:05:00Z\",\"last_reading\":\"watching\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -4156,16 +4197,21 @@
    "publish orion:grammar:event act_closed infer",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "publish orion:grammar:event act_closed regulate",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
    "publish orion:grammar:event act_closed infer",
    "release",
    "save orion:prime:state",
-   "save orion:prime:state"
+   "save orion:prime:concerns",
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "settle_across_restart": {
@@ -4884,6 +4930,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000a600004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_c7773ce2801e819e4a9436a2): treated run r1 finished disposition=explored\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T15:00:00Z\",\"last_reading\":\"ok\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
@@ -4892,14 +4939,17 @@
    "release",
    "publish orion:grammar:event act_opened predict",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "publish orion:grammar:event act_closed ask",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
    "publish orion:grammar:event act_closed infer",
    "release",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "two_5xx": {
@@ -4980,11 +5030,13 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[\"a try to think at 12:00 UTC never reached the model (upstream_5xx); I tried again\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":null,\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":1,\"no_model_tries_total\":1,\"last_try_kind\":\"upstream_5xx\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "llm prime",
    "release",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "unparseable": {
@@ -5433,20 +5485,25 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[\"first wake: I have not thought yet\"],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:03:00Z\",\"last_reading\":\"\",\"thoughts_total\":0,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
    "publish orion:grammar:event act_closed infer",
    "release",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "publish orion:grammar:event act_opened infer",
    "publish orion:grammar:event act_closed infer",
    "release",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  },
  "upstream_5xx_retry": {
@@ -5886,6 +5943,7 @@
   "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000006900004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_a3bb42a371c2d6c2a55bda8f\",\"thought_id\":\"0000006500004000\",\"focus_id\":\"a2fa9fff-fcb4-55d9-b3d9-c78113ea93c9\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
+   "save orion:prime:concerns",
    "bid prime",
    "llm prime",
    "llm prime",
@@ -5894,7 +5952,8 @@
    "publish orion:grammar:event act_closed infer",
    "release",
    "publish orion:grammar:event act_opened predict",
-   "save orion:prime:state"
+   "save orion:prime:state",
+   "save orion:prime:concerns"
   ]
  }
 }

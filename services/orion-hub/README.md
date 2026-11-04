@@ -1201,8 +1201,26 @@ arm from a deterministic per-run draw (`draw_offer_arm`, `orion/curiosity/value.
 with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`, so the orders can be
 compared on real outcomes. The draw has a third band for the curiosity replica
 (`replica_order`, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md),
-but Hub passes it no propensity until the replica can answer a plan request, so
-no run is drawn onto it and every run keeps its two-arm assignment. The offer
+with P(replica) = `HUB_CURIOSITY_REPLICA_ARM_PROPENSITY`. Since patch 3 all three
+arms get one third (value 0.3333, replica 0.3333, uncertainty the rest).
+
+On a replica-arm run, right after the worldview read and before the offer row,
+Hub asks orion-mind's curiosity replica for a plan
+(`scripts/curiosity_replica_plan.py`): it sends up to 60 fresh candidates on
+`orion:curiosity:replica:plan:request` and waits at most
+`HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC` (90 s). A plan that passes
+`validate_plan` (`orion/curiosity/replica/plan.py`: 3-5 distinct candidate ids,
+still fresh, a 1-200 character reason each; rejected whole on any failure) fills
+the top of the offer; the rest of the layout (6 ordered, 2 coverage, the stale
+bucket) is unchanged. Anything else -- no answer in time, abstain, unfunded,
+model failed, a rejected plan -- keeps the uncertainty order. Either way the run
+gets one `curiosity_offer_plans` row with its status and fallback reason, and one
+log line (`curiosity_replica_plan_used` or `curiosity_replica_fallback run=<id>
+reason=<reason>`). The run counts as a replica-arm run whatever happened
+(intention to treat). The replica's reasons stay on the plan row: the kickoff
+prompt shows only the order. Its stances on Prime's focus or signal are recorded
+on the row and have no effect yet (patch 4). Rollback:
+`HUB_CURIOSITY_REPLICA_ARM_ENABLED=false`. The offer
 row records the whole draw in `arm_propensities` (all three arms; needs
 `services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql`). With no scored history the
 two orders are identical, prior for prior (checked on 2000 random populations

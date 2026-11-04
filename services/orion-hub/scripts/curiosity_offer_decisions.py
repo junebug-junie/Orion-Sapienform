@@ -58,6 +58,7 @@ from orion.curiosity.value import (
     prior_tests_from_rows,
     valid_confidence,
 )
+from orion.curiosity.replica.plan import PlanRowV1
 from orion.curiosity.worldview import Prior, WorldviewReader, WorldviewUnavailable, build_prior
 
 logger = logging.getLogger("orion-hub.curiosity_offer_decisions")
@@ -121,6 +122,16 @@ ON CONFLICT (run_id) DO UPDATE SET
     n_invalid_confidence = EXCLUDED.n_invalid_confidence,
     per_prior = EXCLUDED.per_prior,
     revision_agreement = EXCLUDED.revision_agreement
+"""
+
+# One row per replica-arm run, first write wins (a run's plan is decided once, at kickoff). Written
+# before the offer row, so the offer row records the order the plan really produced.
+INSERT_PLAN_SQL = """
+INSERT INTO curiosity_offer_plans (
+    run_id, plan_id, requested_at, answered_at, status, fallback_reason, picks, focus_stance,
+    signal_stance, act_id, latency_ms, frame_tokens
+) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12)
+ON CONFLICT (run_id) DO NOTHING
 """
 
 LOAD_HISTORY_SQL = """
@@ -397,6 +408,40 @@ async def record_run_outcome(
     except Exception as exc:  # noqa: BLE001
         _log_failure("record_run_outcome", run_id, exc)
         return False
+
+
+async def record_offer_plan(pool: Any, row: "PlanRowV1") -> bool:
+    """The replica-arm run's plan row (orion/curiosity/replica/plan.py PlanRowV1), whatever happened:
+    a used plan, or a fallback with its reason. The picks' reasons stay on this row and never reach
+    Orion's prompt (no grant to orion_readonly). Best-effort like every write here."""
+    if pool is None:
+        _no_pool("record_offer_plan")
+        return False
+
+    def _j(value: Any) -> Optional[str]:
+        return None if value is None else json.dumps(value, allow_nan=False)
+
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                INSERT_PLAN_SQL,
+                row.run_id,
+                row.plan_id,
+                row.requested_at,
+                row.answered_at,
+                row.status,
+                row.fallback_reason,
+                json.dumps(list(row.picks), allow_nan=False),
+                _j(row.focus_stance),
+                _j(row.signal_stance),
+                row.act_id,
+                row.latency_ms,
+                row.frame_tokens,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log_failure("record_offer_plan", row.run_id, exc)
+        return False
+    return True
 
 
 async def load_prior_test_history(pool: Any, *, days: float) -> list[PriorTestRecord]:

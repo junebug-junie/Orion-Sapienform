@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from app.prime_loop import STATE_KEY
-from orion.prime.state import PrimeStateV1
+from orion.prime.state import PRIME_CONCERNS_KEY, PrimeStateV1
 from test_prime_loop import Bus, runtime
 
 HERE = Path(__file__).resolve().parent
@@ -20,7 +20,12 @@ LIVE_STATE = HERE / "fixtures" / "prime_state_live_2026-11-04.json"
 
 
 def test_recorded_tick_sequences_replay_identically():
-    """The scenarios run in a fresh interpreter (ids come from a counter there, see the script)."""
+    """The scenarios run in a fresh interpreter (ids come from a counter there, see the script).
+
+    Re-recorded once since the extraction (2026-11-04, curiosity replica patch 3): Prime now publishes its
+    concerns view after every state save. The ONLY difference from the pre-extraction golden was one
+    ``save orion:prime:concerns`` timeline line after each ``save orion:prime:state`` (59 in all); every act,
+    bid, model call, saved state and log line was unchanged (checked by diffing the two recordings)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]
@@ -56,7 +61,8 @@ def test_a_second_instance_beside_prime_keeps_its_own_key_family_and_actor():
     asyncio.run(prime.tick())
     prime_saved = bus.redis.kv[STATE_KEY]
     asyncio.run(echo.tick())
-    assert set(bus.redis.kv) == {STATE_KEY, ECHO_KEY} and bus.redis.kv[STATE_KEY] == prime_saved
+    # Prime's published concerns view (orion:prime:concerns) is the only other key: a read-only call, not state.
+    assert set(bus.redis.kv) == {STATE_KEY, ECHO_KEY, PRIME_CONCERNS_KEY} and bus.redis.kv[STATE_KEY] == prime_saved
     assert EchoStateV1.model_validate_json(bus.redis.kv[ECHO_KEY]).answers == ["hi"]
     assert [w.family for w in prime.bids] == ["prime"] and [w.family for w in echo.bids] == ["test.echo"]
     actors = [a["actor"] for _, a in bus.acts()]

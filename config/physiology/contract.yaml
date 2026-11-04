@@ -182,6 +182,14 @@ readers:
     role: bidder
     reason: the loop library every resident loop in orion-mind runs on (Prime is instance #1). Bids once per thought with the instance's family, tier and lane at its cost ceiling, and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. Reads no arousal/thermal/price state itself; it vetoes nothing.
     note: 2026-11-04, moved out of services/orion-mind/app/prime_loop.py unchanged (curiosity replica design section 10)
+  - module: services/orion-mind/app/replica_loop.py
+    role: display
+    reason: the curiosity replica (family curiosity.replica, Tier 2), loop-library instance #2; its bid and obey are orion/mindloop/runtime.py. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) only to SHOW it in its frame (arm hidden) and to check a signal stance names a live signal. Gates nothing.
+    note: 2026-11-04, curiosity replica patch 3 (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md)
+  - module: services/orion-hub/scripts/curiosity_replica_plan.py
+    role: display
+    reason: Hub's replica plan consumer. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) only to check a plan's signal stance names a live signal (validate_plan). Stances are recorded, never applied (patch 4); gates no work.
+    note: 2026-11-04, curiosity replica patch 3
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.

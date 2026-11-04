@@ -3995,9 +3995,9 @@ channels:
     since: "2026-10-16"
     description: "orion-introspect queue_curiosity_focus tool RPC. From a chat turn (unified_chat) or from Prime's resident loop (prime: origin self only, and never replaces a pending focus), Orion queues one question (and why) for its next regular investigate curiosity run. Hub writes one curiosity_focus_request row: one pending slot, a new focus replaces the pending one (named in the reply), except Orion's own choice (origin self) never replaces a focus Juniper asked for (origin juniper). Starts nothing; the run still waits for every gate, cooldown and cap, is shown the focus, and records a disposition (explored / set_aside:<reason>). Off when HUB_CURIOSITY_FOCUS_ENABLED=false. Reply on orion:introspect:result:<correlation_id>."
 
-  # Curiosity replica (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md, patch 2: contract
-  # only). Producer and consumer code land in patch 3; until then Hub draws no run onto the replica arm,
-  # so nothing publishes here.
+  # Curiosity replica (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md). Contract in patch 2;
+  # producer (services/orion-hub/scripts/curiosity_replica_plan.py) and consumer
+  # (services/orion-mind/app/replica_loop.py) in patch 3.
   - name: "orion:curiosity:replica:plan:request"
     kind: "request"
     schema_id: "CuriosityOfferPlanRequestV1"

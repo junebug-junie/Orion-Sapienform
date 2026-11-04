@@ -24,6 +24,15 @@ Evidence sources, each a rate per act in 0..1 (never a count, so running more do
   (``reliability=True``) and reads ``grammar_acts.outcome_note`` into ``ActRecord``; without the
   note a failed run would read as a refuted one.
 
+  **Self-grades (patch 2, Juniper decides).** Most closes are graded by the doer itself
+  (``outcome_source = producer``), which saturates (d) near 1.0. ``self_grades`` chooses how a
+  producer self-grade counts; the default is today's behaviour, and the live market passes nothing:
+
+  * ``all`` (default): every grade counts fully.
+  * ``world_only``: only grades the world made count. Resolver closes are already source (b), so
+    what is left is the ``expired`` close (the deadline passed with no artifact).
+  * ``half``: a producer self-grade counts as half a grade, both in the rate and in ``n``.
+
 Each act counts once toward ``n`` however many sources measured it.
 
 Guards (the replay's R7 checks them):
@@ -57,6 +66,9 @@ MAX_DRIFT_PER_DAY = 0.1
 EVIDENCE_WINDOW = timedelta(days=30)
 ENGAGEMENT_SIGNAL = "juniper_replied"
 RESOLVER_SOURCE = "resolver"
+PRODUCER_SOURCE = "producer"
+SELF_GRADE_MODES = ("all", "world_only", "half")
+SELF_GRADE_HALF = 0.5
 
 
 @dataclass(frozen=True)
@@ -80,12 +92,15 @@ class Evidence:
     reliability_n: int = 0
     # Every act any source measured, so an act measured by two sources counts once in ``n``.
     act_ids: frozenset = frozenset()
+    # self_grades="half": how much less than one full act each act measured ONLY by a producer
+    # self-grade counts toward ``n`` (0.5 per such act). 0 in every other mode.
+    n_discount: float = 0.0
 
     @property
-    def n(self) -> int:
+    def n(self) -> float:
         if self.act_ids:
-            return len(self.act_ids)
-        return self.use_n + self.engagement_n + self.reliability_n
+            return len(self.act_ids) - self.n_discount
+        return self.use_n + self.engagement_n + self.reliability_n - self.n_discount
 
     @property
     def mean_rate(self) -> Optional[float]:
@@ -93,23 +108,30 @@ class Evidence:
         return sum(rates) / len(rates) if rates else None
 
 
-def reliability_grades(family: str, acts: Sequence[ActRecord], *, since: datetime, until: datetime
-                       ) -> list[tuple[str, bool]]:
-    """Source (d): (act_id, upheld) for each world-settled close of ``family`` in [since, until)."""
-    out: list[tuple[str, bool]] = []
+def reliability_grades(family: str, acts: Sequence[ActRecord], *, since: datetime, until: datetime,
+                       self_grades: str = "all") -> list[tuple[str, bool, float]]:
+    """Source (d): (act_id, upheld, weight) for each graded close of ``family`` in [since, until).
+    ``self_grades`` sets how a producer self-grade counts (module docstring); weight is 1 except a
+    producer grade under ``half``."""
+    if self_grades not in SELF_GRADE_MODES:
+        raise ValueError(f"self_grades must be one of {SELF_GRADE_MODES}, not {self_grades!r}")
+    out: list[tuple[str, bool, float]] = []
     for a in acts:
         if (a.family != family or a.closed_at is None or not since <= a.closed_at < until
                 or a.outcome_source == RESOLVER_SOURCE):
             continue
+        self_graded = a.outcome_source == PRODUCER_SOURCE
+        if self_graded and self_grades == "world_only":
+            continue
         grade = act_outcome({"outcome_source": a.outcome_source, "outcome_note": a.outcome_note,
                              "outcome_value": a.outcome_value})
         if grade in ("upheld", "refuted"):
-            out.append((a.act_id, grade == "upheld"))
+            out.append((a.act_id, grade == "upheld", SELF_GRADE_HALF if self_graded and self_grades == "half" else 1.0))
     return out
 
 
 def evidence_for(family: str, acts: Sequence[ActRecord], uses: Sequence[UseRecord], *, since: datetime,
-                 until: datetime, reliability: bool = False) -> Evidence:
+                 until: datetime, reliability: bool = False, self_grades: str = "all") -> Evidence:
     u = [x for x in uses if x.family == family and x.link_status == "linked" and x.window_closed
          and x.used is not None and x.started_at is not None and since <= x.started_at < until]
     e = [a for a in acts if a.family == family and a.signal_id == ENGAGEMENT_SIGNAL and a.outcome_source == RESOLVER_SOURCE
@@ -117,13 +139,17 @@ def evidence_for(family: str, acts: Sequence[ActRecord], uses: Sequence[UseRecor
     if reliability and any(a.closed_at is not None for a in acts) and all(a.outcome_note is None for a in acts):
         # Without grammar_acts.outcome_note a run that never happened reads as a refuted one.
         raise ValueError("reliability=True needs ActRecord.outcome_note read from grammar_acts")
-    r = reliability_grades(family, acts, since=since, until=until) if reliability else []
-    ids = frozenset([x.act_id for x in u] + [a.act_id for a in e] + [i for i, _ in r])
+    r = reliability_grades(family, acts, since=since, until=until, self_grades=self_grades) if reliability else []
+    other_ids = {x.act_id for x in u} | {a.act_id for a in e}
+    ids = frozenset(other_ids | {i for i, _, _ in r})
+    r_weight = sum(w for _, _, w in r)
+    # An act measured only by a half-weight self-grade counts half toward n (one grade per act).
+    discount = sum(1.0 - w for i, _, w in r if i not in other_ids)
     return Evidence(use_rate=(sum(1 for x in u if x.used) / len(u)) if u else None, use_n=len(u),
                     engagement_rate=(sum(min(1.0, max(0.0, a.outcome_value)) for a in e) / len(e)) if e else None,
                     engagement_n=len(e),
-                    reliability_rate=(sum(1 for _, ok in r if ok) / len(r)) if r else None, reliability_n=len(r),
-                    act_ids=ids)
+                    reliability_rate=(sum(w for _, ok, w in r if ok) / r_weight) if r_weight > 0 else None,
+                    reliability_n=len(r), act_ids=ids, n_discount=discount)
 
 
 def shrunk_target(prior: float, ev: Evidence) -> tuple[float, str]:
@@ -149,7 +175,8 @@ def _day_end(d: date) -> datetime:
 
 
 def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[UseRecord], *,
-                  start: date, end: date, reliability: bool = False) -> dict[date, dict[str, FamilyWeight]]:
+                  start: date, end: date, reliability: bool = False, self_grades: str = "all"
+                  ) -> dict[date, dict[str, FamilyWeight]]:
     """Daily weights for every bidding family, start..end inclusive (UTC days, evidence up to each
     day's end). Day before ``start``: every family at its normalized prior. ``reliability``: also
     read source (d) (module docstring)."""
@@ -175,7 +202,8 @@ def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
         since = until - EVIDENCE_WINDOW
         raw: dict[str, tuple[float, str, Evidence]] = {}
         for f, c in bidders.items():
-            ev = evidence_for(f, acts, uses, since=since, until=until, reliability=reliability)
+            ev = evidence_for(f, acts, uses, since=since, until=until, reliability=reliability,
+                              self_grades=self_grades)
             tgt, basis = shrunk_target(c.prior_weight, ev)
             raw[f] = (tgt, basis, ev)
         norm = normalize({f: v[0] for f, v in raw.items()})
@@ -191,11 +219,12 @@ def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
 
 
 def weights_now(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[UseRecord],
-                now: datetime, *, reliability: bool = False) -> dict[str, FamilyWeight]:
+                now: datetime, *, reliability: bool = False, self_grades: str = "all") -> dict[str, FamilyWeight]:
     """Today's weights: the daily replay over the evidence window ending today."""
     end = now.astimezone(timezone.utc).date()
     start = end - timedelta(days=int(EVIDENCE_WINDOW.days))
-    series = weight_series(families, acts, uses, start=start, end=end, reliability=reliability)
+    series = weight_series(families, acts, uses, start=start, end=end, reliability=reliability,
+                           self_grades=self_grades)
     return series[end]
 
 
@@ -215,6 +244,7 @@ __all__ = [
     "KAPPA",
     "MAX_DRIFT_PER_DAY",
     "MIN_EVIDENCED",
+    "SELF_GRADE_MODES",
     "UseRecord",
     "evidence_for",
     "reliability_grades",

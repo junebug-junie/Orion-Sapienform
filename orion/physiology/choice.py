@@ -285,14 +285,18 @@ def tier1_reserved_share(acts: Sequence[ActRecord], families: FamiliesConfig, la
 
 def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[Any],
                   state: Optional[PhysiologyStateV1], now: datetime, *, lane_window_sec: float = 3600.0,
-                  weights: Optional[Mapping[str, FamilyWeight]] = None) -> MarketContext:
+                  weights: Optional[Mapping[str, FamilyWeight]] = None,
+                  event_history: Optional[Mapping[str, Sequence[float]]] = None) -> MarketContext:
     """Everything a bid reads besides the want, the prices and the book: per-family appetite,
     today's weights and Tier 1's reserved share per lane. (The floor's weekly funded shares live on
-    the ReservationBook: they come from want_ledger, not act history.)"""
+    the ReservationBook: they come from want_ledger, not act history.) ``event_history``: family ->
+    the intensities of its past event wants (want_ledger), an event want's rank reference."""
     from orion.physiology.appetite import build_family_appetite
     from orion.physiology.weights import weights_now
 
-    app = {f: build_family_appetite(c, acts, now) for f, c in families.families.items() if c.bids}
+    ev = event_history or {}
+    app = {f: build_family_appetite(c, acts, now, event_intensities=ev.get(f, ()))
+           for f, c in families.families.items() if c.bids}
     w = dict(weights) if weights is not None else weights_now(families, acts, uses, now)
     t1: dict[str, float] = {}
     t1_use: dict[str, float] = {}
@@ -389,7 +393,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             warnings.append("salience_ignored:producer_intensity")
     else:
         inten, ibasis = want_intensity(h.intensity, want.salience)
-    rank, vbasis, _out = rank_value(app, inten, want.outcome_value)
+    rank, vbasis, _out = rank_value(app, inten, want.outcome_value, event=want.salience is not None)
     if want.value_rank is not None:
         warnings.append("value_rank_ignored:market_fills_it")
     fw = ctx.weights.get(want.family)

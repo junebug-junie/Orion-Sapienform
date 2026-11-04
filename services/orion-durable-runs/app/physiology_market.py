@@ -16,6 +16,11 @@ floor until a first read succeeds), it never fails the bid.
 Bid sites in this process (Patch C3a): durable-runs' own admission (``app.run_bids``) calls
 ``Market.bid`` in-process, ``mark_opened`` at the run's first grant and ``release`` at its terminal.
 
+Event rank (attention as the want competition, patch 2). An event want (``WantV1.salience``) ranks
+against the family's own past event wants: their recorded intensities, read from ``want_ledger``
+(30 days, the first decision per want, real producers only) with the act history. A failed read keeps
+the last one; with none, an event want is ranked as any want (``event_cold:<basis>``).
+
 Prime's regulate signals (Orion Prime step 3, ``orion.physiology.prime_charge``). When
 ``prime_regulation`` is on and the want's family declares the signal's direction as a receptor
 (config/physiology/families.yaml), each bid reads ``orion:prime:regulate:<family>`` from the same Redis
@@ -89,6 +94,16 @@ SELECT decision_id, family, tier, decided_at
 """
 
 
+# The first decision per event want (a re-bid of the same want is not a new event).
+EVENT_HISTORY_SQL = """
+SELECT DISTINCT ON (want_id) family, (decision->>'intensity')::float AS intensity
+  FROM want_ledger
+ WHERE decided_at >= %(since)s AND decision->'want' ? 'salience' AND decision->>'intensity' IS NOT NULL
+   AND NOT (producer = ANY(%(synthetic)s))
+ ORDER BY want_id, decided_at
+"""
+
+
 def _utc(v: Any) -> Optional[datetime]:
     if v is None:
         return None
@@ -131,11 +146,24 @@ async def read_funded(pool: Any, now: datetime) -> list[FundedWant]:
     return [FundedWant(str(r["decision_id"]), _utc(r["decided_at"]), str(r["family"]), int(r["tier"])) for r in rows]
 
 
+async def read_event_history(pool: Any, now: datetime) -> dict[str, list[float]]:
+    """family -> intensities of its past event wants (30 days). Raises on a failed read."""
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(EVENT_HISTORY_SQL, {"since": now - HISTORY_WINDOW,
+                                                             "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
+    out: dict[str, list[float]] = {}
+    for r in rows:
+        if r["intensity"] is not None:
+            out.setdefault(str(r["family"]), []).append(float(r["intensity"]))
+    return out
+
+
 @dataclass
 class _Cached:
     at: datetime
     acts: list[ActRecord]
     uses: list[UseRecord]
+    events: Optional[dict[str, list[float]]] = None
 
 
 class Market:
@@ -172,7 +200,12 @@ class Market:
             if not acts:
                 # An act ledger read that returns nothing is not "no hunger anywhere": unknown.
                 raise RuntimeError("grammar_acts returned no rows")
-            self._cache = _Cached(at=now, acts=acts, uses=uses)
+            try:
+                events = await read_event_history(self._pool_getter(), now)
+            except Exception:  # noqa: BLE001 -- keep the last one; none yet: event wants rank as any want
+                logger.warning("physiology_bid_event_history_read_failed", exc_info=True)
+                events = self._cache.events if self._cache is not None else None
+            self._cache = _Cached(at=now, acts=acts, uses=uses, events=events)
             try:
                 self.book.seed_funded(await read_funded(self._pool_getter(), now), now)
             except Exception:  # noqa: BLE001 -- keep the last count; no floor until a first read succeeds
@@ -203,7 +236,7 @@ class Market:
         if self._weights is None or self._weights[0] != key:
             self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
         ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
-                            weights=self._weights[1])
+                            weights=self._weights[1], event_history=hist.events)
         # dataclasses.replace keeps every field (C1 rebuilt the context by hand and dropped
         # tier1_recent_use, so Tier 2's line forgot Tier 1's measured use).
         return dataclasses.replace(ctx, stale_after_sec=self._stale)
@@ -329,4 +362,4 @@ class Market:
                 "prime_regulation": self.prime_regulation, **self.counts}
 
 
-__all__ = ["Market", "act_from_row", "read_funded", "read_history", "use_from_row"]
+__all__ = ["Market", "act_from_row", "read_event_history", "read_funded", "read_history", "use_from_row"]

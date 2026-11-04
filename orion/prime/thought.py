@@ -54,6 +54,8 @@ class ConcernAddV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
     text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
     arc_id: Optional[str] = None
+    # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event want this concern is about.
+    event_id: Optional[str] = None
 
 
 class ConcernDropV1(BaseModel):
@@ -150,11 +152,25 @@ runs. Only one move per thought, so a regulate move replaces a question:
          "why": "...", "hours": 1-6}"""
 
 
-def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]]) -> str:
-    """The base prompt, plus the regulate move only when regulation is on and some family receives it."""
+# Event mode (attention as the want competition, patch 2): concerns come from the events Orion's body
+# economy funded, not from Temporal Self arcs. Swapped into SYSTEM_PROMPT by system_prompt(events=True).
+EVENT_CONCERN_RULE = ("- Every concern you add must name an event_id listed under EVENTS WORTH EFFORT (copy it exactly).\n"
+                      "  A concern without one is not added. Those events are the ones Orion's body economy judged\n"
+                      "  worth effort now; pick the one that matters, or add nothing.\n")
+_ARC_RULE = '- arc_id must be an arc_id listed under ATTENTION (the hex id after "arc_id"), or null.\n'
+_ARC_JSON = '''"add": [{"text": "...", "arc_id": null}]'''
+_EVENT_JSON = '''"add": [{"text": "...", "event_id": "<event_id>"}]'''
+
+
+def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False) -> str:
+    """The base prompt, plus the regulate move only when regulation is on and some family receives it.
+    ``events``: concerns come from funded event wants (event_id), not arcs."""
+    base = SYSTEM_PROMPT
+    if events:
+        base = base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
     if receptors and any(receptors.values()):
-        return SYSTEM_PROMPT + REGULATE_PROMPT
-    return SYSTEM_PROMPT
+        return base + REGULATE_PROMPT
+    return base
 
 
 @dataclass
@@ -169,6 +185,11 @@ class FrameInputs:
     curiosity: Optional[dict[str, Any]] = None
     curiosity_error: Optional[str] = None
     arc_ids: list[str] = field(default_factory=list)
+    # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants (GET /physiology/event-wants)
+    # replace the attention arcs. None with no error: event mode is off.
+    events: Optional[dict[str, Any]] = None
+    events_error: Optional[str] = None
+    event_mode: bool = False
     # Prime's own lane (PRIME_BID_LANE): its price is the one that decides Prime's thinking.
     bid_lane: str = "chat"
     # Regulation (step 3). None: off, the sections are not shown. family -> directions it receives.
@@ -234,6 +255,30 @@ def _attention_lines(inputs: FrameInputs) -> list[str]:
     return lines
 
 
+def event_ids(inputs: FrameInputs) -> list[str]:
+    """The event ids (event_ref) a concern may name: the funded event wants this frame shows."""
+    return [str(w.get("event_ref")) for w in (inputs.events or {}).get("wants") or [] if w.get("event_ref")]
+
+
+def _event_lines(inputs: FrameInputs) -> list[str]:
+    if inputs.events is None:
+        return [f"(unavailable: {inputs.events_error or 'not read'})"]
+    wants = inputs.events.get("wants") or []
+    if not wants:
+        return ["(none: nothing the body economy funded is open now)"]
+    lines = []
+    for w in wants:
+        sal = w.get("salience")
+        unusual = f"how unusual {_num(sal):.2f}" if sal is not None else "how unusual unknown"
+        lines.append(f"- event_id {w.get('event_ref')}: {w.get('label') or '(no words recorded)'} "
+                     f"({w.get('family')}; {unusual}; market value {_num(w.get('net')):.2f}; "
+                     f"funded {_age(inputs.now, w.get('decided_at'))})")
+    funded = inputs.events.get("funded_open")
+    if isinstance(funded, int) and funded > len(wants):
+        lines.append(f"({funded - len(wants)} more funded events not shown)")
+    return lines
+
+
 def _curiosity_lines(inputs: FrameInputs) -> list[str]:
     if inputs.curiosity is None:
         return [f"(unavailable: {inputs.curiosity_error or 'not read'})"]
@@ -258,7 +303,8 @@ def _curiosity_lines(inputs: FrameInputs) -> list[str]:
 
 def _concern_line(c: PrimeConcernV1, now: datetime) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
-    return (f"- concern_id {c.concern_id}: {c.text} (arc {c.arc_id or 'none'}, held since "
+    about = f"event {c.event_ref}" if c.event_ref else f"arc {c.arc_id or 'none'}"
+    return (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
             f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
 
 
@@ -294,7 +340,8 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
             f"- {n.question!r} (asked {_age(inputs.now, n.opened_at.isoformat())}"
             f"{'; held back as a control, not sent' if n.arm == 'control' else ''})"
             for n in state.open_nominations) or "(none)"),
-        "ATTENTION (Temporal Self, today):\n" + "\n".join(_attention_lines(inputs)),
+        ("EVENTS WORTH EFFORT (funded by Orion's body economy, highest value first):\n" + "\n".join(_event_lines(inputs))
+         if inputs.event_mode else "ATTENTION (Temporal Self, today):\n" + "\n".join(_attention_lines(inputs))),
         "BODY:\n" + "\n".join(_body_lines(inputs)),
         "CURIOSITY:\n" + "\n".join(_curiosity_lines(inputs)),
     ]
@@ -351,10 +398,11 @@ def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
 
 def apply_answer(
     state: PrimeStateV1, answer: PrimeAnswerV1, *, now: datetime, arc_ids: list[str], focus_pending: Optional[bool],
-    receptors: Optional[Mapping[str, Sequence[str]]] = None,
+    receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
-    ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused)."""
+    ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
+    ``event_ids``: event mode is on; a new concern must name one of these funded events (else not added)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -378,6 +426,16 @@ def apply_answer(
     for add in answer.concerns.add:
         if len(concerns) >= MAX_CONCERNS:
             warnings.append(f"concern not added, already holding {MAX_CONCERNS}: {add.text[:80]!r}")
+            continue
+        if event_ids is not None:
+            if add.event_id not in event_ids:
+                warnings.append(f"concern not added, it names no funded event shown in the frame "
+                                f"(event_id {add.event_id!r}): {add.text[:80]!r}")
+                continue
+            concern = PrimeConcernV1(concern_id=new_id(), text=add.text, event_ref=add.event_id, opened_at=now,
+                                     last_evidence_at=now)
+            concerns.append(concern)
+            added.append(concern.concern_id)
             continue
         arc_id = add.arc_id if add.arc_id in arc_ids else None
         if add.arc_id and arc_id is None:

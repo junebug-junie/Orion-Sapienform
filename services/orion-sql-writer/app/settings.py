@@ -518,6 +518,12 @@ class Settings(BaseSettings):
     # groups them into sightings, scores attention, opens asks, applies
     # Juniper's answers, writes patio presence, prunes.
     vision_individuals_interval_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_INTERVAL_SEC")
+    # Attention as the want competition, patch 2 (app/ask_event_wants.py): each OPEN camera ask posts an
+    # event want (family vision.ask, event_ref orion_ask:<id>, salience = sightings of its individual as a
+    # percentile of 30 days of camera asks) to the body economy. Shadow. 0 disables. An open ask older than
+    # the lookback is not posted.
+    ask_event_wants_interval_sec: float = Field(300.0, alias="ASK_EVENT_WANTS_INTERVAL_SEC")
+    ask_event_wants_lookback_hours: float = Field(24.0, alias="ASK_EVENT_WANTS_LOOKBACK_HOURS")
     # Re-identification line: body cosine to the nearest same-kind centroid
     # (any time, anywhere) needed to count as the same individual. 0.90 since
     # 2026-10-16 (docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md):

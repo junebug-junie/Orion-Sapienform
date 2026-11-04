@@ -1070,6 +1070,13 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_TICK_SEC: float = Field(
         default=300.0, alias="HUB_READING_FINDING_OUTREACH_TICK_SEC"
     )
+    # Attention as the want competition, patch 2 (scripts/reading_event_wants.py): each finished read
+    # posts an event want (family hub.world_pulse_read, event_ref world_pulse_read_seed:<id>, salience =
+    # the links it made as a percentile of 30 days of reads) to the body economy. Shadow; Prime reads the
+    # funded ones. Lookback = the family's 3 h window: an older read is no longer worth a want.
+    HUB_READING_EVENT_WANTS_ENABLED: bool = Field(default=True, alias="HUB_READING_EVENT_WANTS_ENABLED")
+    HUB_READING_EVENT_WANTS_TICK_SEC: float = Field(default=300.0, alias="HUB_READING_EVENT_WANTS_TICK_SEC")
+    HUB_READING_EVENT_WANTS_LOOKBACK_SEC: float = Field(default=10800.0, alias="HUB_READING_EVENT_WANTS_LOOKBACK_SEC")
     # Self-monitor E2 (scripts/self_monitor_questions.py): a faculty newly held broken/unreliable in
     # orion:self_monitor:latest mints ONE self-question (curiosity_self_questions, minted_by='orion'),
     # once per status episode; last-seen statuses persist in Redis. Unknown/stale state: nothing.

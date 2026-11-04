@@ -817,6 +817,22 @@ async def physiology_bid(want: dict):
     return decision.model_dump(mode="json")
 
 
+@app.get("/physiology/event-wants")
+async def physiology_event_wants(hours: float = 24.0, limit: int = 8) -> dict:
+    """Read-only ``FundedEventWantsV1``: event wants whose latest decision is funded and whose event has
+    not expired, highest net first (attention as the want competition, patch 2). Orion Prime reads it as
+    its concern source. From want_ledger; no scoring here."""
+    from datetime import datetime, timezone
+
+    from app.event_wants_menu import read_menu
+
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    menu = await read_menu(_checkpointer_cm, market.families if market is not None else None,
+                           now=datetime.now(timezone.utc), hours=hours, limit=limit)
+    return menu.model_dump(mode="json")
+
+
 @app.post("/physiology/bid/{want_id}/release")
 async def physiology_bid_release(want_id: str):
     """The want's act closed (or will not run): release its reservations now instead of at expiry."""

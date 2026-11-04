@@ -159,7 +159,9 @@ class WantDecisionV1(BaseModel):
     intensity: Optional[float] = None
     value_rank: Optional[float] = None
     graded: Optional[bool] = None
-    # graded | ungraded (outcome_value 1) | no_history (rank = intensity: nothing to rank against)
+    # graded | ungraded (outcome_value 1) | no_history (rank = intensity: nothing to rank against);
+    # an event want: event:graded | event:ungraded (ranked against past event wants) | event_cold:<basis>
+    # (fewer than 10 past event wants: ranked as above)
     value_basis: Optional[str] = None
     family_weight: Optional[float] = None
     # prior (fewer than 10 evidenced acts) | evidence (shrunk toward the evidence rates)
@@ -191,8 +193,45 @@ class WantDecisionV1(BaseModel):
     want: WantV1
 
 
+class FundedEventWantV1(BaseModel):
+    """One event want whose latest decision is ``funded`` and whose event has not expired (patch 2).
+
+    Served by orion-durable-runs ``GET /physiology/event-wants`` from ``want_ledger``; read by Orion
+    Prime as its concern source (``PRIME_CONCERNS_FROM_EVENT_WANTS``). Not a bus payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    want_id: str
+    family: str
+    event_ref: str
+    salience: Optional[float] = None
+    value_rank: Optional[float] = None
+    net: Optional[float] = None
+    decided_at: AwareDatetime
+    # When the event stops being worth effort: the want's window end (its own, else opened_at + the
+    # family's deferrable window).
+    expires_at: Optional[AwareDatetime] = None
+    # What the event is, in words, read from its source row (the read's title, the ask's question).
+    label: str = ""
+
+
+class FundedEventWantsV1(BaseModel):
+    """``GET /physiology/event-wants``: the market's funded, unexpired event wants, highest net first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["physiology.funded_event_wants.v1"] = "physiology.funded_event_wants.v1"
+    as_of: AwareDatetime
+    # Event wants decided in the window, and how many of them are funded and unexpired (before ``limit``).
+    considered: int = 0
+    funded_open: int = 0
+    wants: List[FundedEventWantV1] = Field(default_factory=list)
+
+
 __all__ = [
     "DECISION_REASONS",
+    "FundedEventWantV1",
+    "FundedEventWantsV1",
     "WANT_DECISION_CHANNEL",
     "WANT_DECISION_KIND",
     "WANT_KIND",

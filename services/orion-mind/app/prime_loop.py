@@ -142,6 +142,7 @@ from orion.prime.thought import (
     RegulateMoveV1,
     apply_answer,
     build_frame,
+    event_ids,
     parse_answer,
     summary_note,
     woke_note,
@@ -276,7 +277,7 @@ class PrimeRuntime(MindLoopRuntime):
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
         frame = build_frame(self.state, inputs)
-        reply = await self._ask_model(system_prompt(receptors), frame)
+        reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode), frame)
         reply.context.update(curiosity=curiosity, receptors=receptors)
         return reply
 
@@ -295,19 +296,34 @@ class PrimeRuntime(MindLoopRuntime):
         body, body_err = await self._read(f"{base}/physiology/state")
         if body is not None and not body.get("ok", False):
             body, body_err = None, "body state not ok"
-        # Attention is read for the frame (background), never as a change that wakes Prime.
+        # Attention is read for the frame (background), never as a change that wakes Prime. Event mode
+        # (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants replace the Temporal Self arcs.
+        if self._event_mode():
+            events, events_err = await self._read(
+                f"{base}/physiology/event-wants?hours={float(self.s.PRIME_EVENT_WANTS_HOURS):g}"
+                f"&limit={int(self.s.PRIME_EVENT_WANTS_LIMIT)}")
+            snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
+            inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, events=events,
+                                 events_error=events_err, event_mode=True, bid_lane=self.s.PRIME_BID_LANE)
+            return snap, inputs
         temporal, temporal_err = await self._read(f"{base}/temporal-self/frame")
         active = (temporal or {}).get("active_arc") or {}
-        prices = (body or {}).get("prices")
-        binding = (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
-                   if isinstance(prices, dict) else None)
-        snap = PrimeSnapshotV1(binding=binding, body_ok=body is not None)
+        snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
         arc_ids = [a.get("arc_id") for a in (temporal or {}).get("arcs_today") or [] if a.get("arc_id")]
         if active.get("arc_id"):
             arc_ids.append(active["arc_id"])
         inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, temporal=temporal,
                              temporal_error=temporal_err, arc_ids=arc_ids, bid_lane=self.s.PRIME_BID_LANE)
         return snap, inputs
+
+    def _event_mode(self) -> bool:
+        return bool(getattr(self.s, "PRIME_CONCERNS_FROM_EVENT_WANTS", False))
+
+    @staticmethod
+    def _binding(body: Optional[dict[str, Any]]) -> Optional[list[str]]:
+        prices = (body or {}).get("prices")
+        return (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
+                if isinstance(prices, dict) else None)
 
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         base = self.s.PRIME_HUB_URL.rstrip("/")
@@ -410,7 +426,12 @@ class PrimeRuntime(MindLoopRuntime):
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
-                               receptors=receptors)
+                               receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None)
+        if inputs.event_mode:
+            new = set(applied.added)
+            for c in applied.state.concerns:
+                if c.concern_id in new:
+                    logger.info("prime_concern_added concern=%s event_ref=%s", c.concern_id, c.event_ref)
         self.state = applied.state
         if applied.move is not None and applied.refs:
             unopened = await self._unresolved(applied.refs)

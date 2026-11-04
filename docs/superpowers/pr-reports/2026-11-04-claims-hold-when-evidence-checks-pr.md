@@ -1,5 +1,12 @@
 ## Summary
 
+**Stacks on #3106 (`feat/dig-body-part`): merge #3106 first.** This branch merges
+`origin/feat/dig-body-part`. Both features are kept: #3106's `body <part>` view, its help line and
+its "(`body <part>` lists them)" hint in the `Unclaimed jobs:` header; this branch's wording, the
+`Evidence gone` block and `MAX_GONE_SHOWN`. In `body <part>`, a claim that holds is now listed
+under `jobs:`, and `my claims:` prints "holds (evidence checks)" or the reason it holds nothing,
+in place of "unconfirmed". Help text: 2,747 of 2,750 chars.
+
 Orion's capacity claims now count. Before, a claim held no job until Juniper confirmed it, and
 Juniper does not review VSM (Viable System Model) claims, so the five live claims would have waited
 forever. Now a claim holds its job while its evidence still checks, every time the capacities are
@@ -103,7 +110,7 @@ in `config/body_atlas/vsm_confirmed.yaml`. Live: 5 claims, 0 confirmed.
 pytest orion/body_atlas/tests orion/dig/tests tests/test_organ_names_partition.py tests/test_report_dig_kit_usage.py \
        tests/test_no_personal_terms.py orion/harness/tests/test_stance_scope_hierarchy.py \
        orion/harness/tests/test_harness_prefix.py -q
--> 373 passed
+-> 373 passed (before the #3106 merge; after it: dig + body_atlas + partition + usage + personal terms 336 passed, harness + physiology 76 passed)
 pytest orion/physiology/tests/test_report_text.py -> 28 passed
 services/orion-cortex-exec: pytest tests/test_skill_verbs.py -k physiology -> 3 passed
 ```
@@ -166,6 +173,20 @@ metabolism (orion-biometrics, orion:power:intent:settled, two pg tables); world-
 (cortex-exec, orion:world_context:daily_capsule, two pg tables). One note from the smoke: the
 Redis key parts are live only when the atlas can read the bus Redis (`ORION_BUS_URL`). Without
 that read, durable-runs algedonic still held, on orion-dream and the repo file.
+
+Live smoke after the merge, `body orion-energy` (same scratch ledgers, real ledgers unchanged):
+
+```text
+part orion-energy (part:orion-energy): service, live, on athena · organ "cortex" organ:e7da34f2df
+flows in (1), strongest first:
+  <- orion-biometrics signals [orion:power:intent:settled] w=4.0931
+flows out (11), strongest first:
+  -> pg:energy_bill_actual writes [orion:energy:bill:actual] w=1
+  ...
+jobs: metabolism claimed (claimed)
+my claims: metabolism claim: holds (evidence checks)
+cite in a claim (by full id): orion-biometrics, orion:power:intent:settled, pg:energy_bill_actual, ... +12 more in the file
+```
 
 ## Review findings fixed
 

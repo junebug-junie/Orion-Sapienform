@@ -95,8 +95,9 @@ A signal stance must still name the live signal, or the whole plan is rejected (
 - **orion-mind:** `app/replica_loop.py` (`ReplicaRuntime(MindLoopRuntime)`: listener, bid, one model call,
   answer, act, settle), started in `app/main.py` on its own bus connection. Prime's `save()` now also writes
   its concerns view.
-- **Loop library** (`orion/mindloop/runtime.py`): one small hook. `_conclude` may return `produced=None`, which
-  keeps the thought act open for the instance to close later. Prime never returns None.
+- **Loop library** (`orion/mindloop/runtime.py`): two small hooks. `_conclude` may return `produced=None`,
+  which keeps the thought act open for the instance to close later (Prime never returns None).
+  `_may_retry_5xx()` lets an instance with a deadline skip the one retry after a server error (default True).
 - **Hub:** `scripts/curiosity_replica_plan.py` (`plan_offer`) called in `_investigate` after the worldview
   read and before the offer row; `scripts/curiosity_offer_decisions.py` gains `record_offer_plan`;
   `orion/curiosity/worldview.py` keeps the read's raw rows (`prior_rows`) and gains `fresh_priors` and
@@ -137,21 +138,23 @@ The replica's act is graded on "the run this plan ordered moved at least one bel
 6. **Reversibility.** No schema, no column: the rule lives in `settle_plan`. Cheap to change.
 
 An unknown score is never graded 0: the act is left to the ledger's horizon (24 h), which is not counted as
-an outcome. A plan Hub did not use closes 0 at once (intention to treat). A failed turn closes 0.
+an outcome. A plan Hub did not use closes 0 at once (intention to treat). A failed turn closes 0 once it is
+final (6 h after its outcome row, because a durable retry can replace it).
 
 ## Files changed
 
+- `docs/superpowers/pr-reports/2026-11-04-curiosity-replica-instance-pr.md`: this report.
 - `orion/curiosity/replica/__init__.py`, `candidates.py`, `plan.py`, `frame.py`, `track_record.py`,
   `state.py`: the replica's pure parts.
 - `orion/curiosity/replica/evals/run_replica_frame_eval.py`, `fixtures/replica_inputs_live_2026-11-04.json`:
   the frame eval on live-captured inputs (personal names scrubbed with the repo's own privacy matcher; the
   chat digest's words are not in the fixture, only its lengths and times).
-- `orion/curiosity/tests/test_replica_plan.py`: 25 tests for the pure parts.
+- `orion/curiosity/tests/test_replica_plan.py`: 27 tests for the pure parts.
 - `orion/curiosity/worldview.py`: `prior_rows` on the snapshot, `fresh_priors`, `with_head`.
 - `orion/mindloop/runtime.py`: the hold-the-act-open hook.
 - `services/orion-mind/app/replica_loop.py` (new), `app/main.py`, `app/prime_loop.py` (concerns view writer),
   `app/settings.py`, `.env_example`, `docker-compose.yml`, `README.md`.
-- `services/orion-mind/tests/test_replica_loop.py` (new, 14 tests); `test_prime_replay.py`,
+- `services/orion-mind/tests/test_replica_loop.py` (new, 24 tests); `test_prime_replay.py`,
   `prime_replay_scenarios.py`, `fixtures/prime_replay_golden.json` (re-recorded, see below);
   `test_prime_loop.py`, `test_rpc_health_publish.py` (lifespan tests turn the replica off; it has its own).
 - `services/orion-hub/scripts/curiosity_replica_plan.py` (new), `curiosity_investigation.py`,
@@ -197,7 +200,7 @@ an outcome. A plan Hub did not use closes 0 at once (intention to treat). A fail
 ```text
 orion-static-gates.yml, every step locally                         40 of 40 OK
 orion-prime-tests.yml, every step locally                          all OK (incl. the new replica steps)
-  orion-mind tests                                                 217 passed
+  orion-mind tests                                                 226 passed
   orion/curiosity replica + contracts, orion/prime, orion/mindloop, worldview   479 passed, 29 skipped
 services/orion-hub/tests (whole folder)                            4535 passed, 146 skipped, 0 failed
 orion-reading-tests.yml pytest steps (Postgres steps skip here)     1992 + 53 + 43 + 3 passed
@@ -245,12 +248,53 @@ result published: status ok; plan act opened and held open for grading
 
 ```text
 No Docker build: no dependency, Dockerfile or image change (psycopg2 is already in orion-mind's requirements).
-docker compose config for orion-mind: the new CURIOSITY_REPLICA_* keys pass through (static gate).
+docker compose config (orion-mind, with the live .env files): all 11 CURIOSITY_REPLICA_* keys render.
+Import smoke in the real orion-mind image (orion-mind-mind, worktree mounted read-only, no network):
+  app.main and app.replica_loop import; family curiosity.replica, key orion:curiosity:replica:state;
+  CURIOSITY_REPLICA_ENABLED True; psycopg2 2.9.9 present.
 ```
 
 ## Review findings fixed
 
-(filled in after the review below)
+A code-review subagent read the whole diff against the design and ran scratch tests. It found nothing
+must-fix: correlation ids and reply channel match, no request can be answered twice, the replica's reasons
+cannot reach the kickoff prompt, a fallback is exactly the uncertainty order, every replica-arm run gets a
+plan row, and Prime's only change is the concerns-view write. It found seven should-fix defects; all fixed:
+
+- Finding: a request the listener added while an expired one was being given up could be dropped (the list
+  was overwritten after an await). Reproduced by the reviewer.
+  - Fix: the list is rebuilt before any await. Evidence: `test_a_request_that_arrives_while_another_is_given_up_is_kept`.
+- Finding: a seat wait that worked out to 0 sent no seat wait at all, so the gateway waited its own 300 s;
+  and the frame reads were not counted against the deadline.
+  - Fix: the seat wait has a 0.5 s floor; if the reads leave too little time for one call, no call is made
+    and the request is given up as `unfunded` with that reason. Evidence: `test_the_seat_wait_is_never_zero`,
+    `test_frame_reads_that_eat_the_budget_make_no_model_call`.
+- Finding: the library's one retry after a server error ignored the deadline.
+  - Fix: new library hook `_may_retry_5xx()` (default True, so Prime is unchanged); the replica retries only
+    if a second call can still end in time. Evidence: `test_the_5xx_retry_runs_only_if_it_can_still_end_in_time`
+    (and Prime's replay still matches).
+- Finding: the replica graded its own plan 0 when it thought the answer was late or failed its own check,
+  but Hub's timer starts later and Hub might have used it. Reproduced by the reviewer.
+  - Fix: every plan sent as `ok` is held and graded from Hub's own plan row. Evidence:
+    `test_an_answer_just_past_the_deadline_is_held_and_graded_on_what_hub_did`,
+    `test_a_plan_that_fails_its_own_check_is_still_graded_from_hubs_row`.
+- Finding: no Hub plan row after an hour was graded 0, turning an unknown into a 0.
+  - Fix: let go ungraded (the ledger's horizon expires it), with a note in the next frame.
+- Finding: a failed first attempt was graded final, but a durable retry overwrites the outcome row.
+  - Fix: a failed turn is final only 6 h after its outcome row. Evidence:
+    `test_a_failed_turn_is_final_only_after_the_retry_grace`, `test_unknown_beats_failed_and_a_failure_waits_for_its_retries`.
+- Finding: tests never moved the clock during a tick and never drove the listener's decode.
+  - Fix: tests for each path above, plus a crash in the thought (`model_failed` at once) and the listener
+    decoding real bus bytes with the real codec.
+
+Nits fixed: a second request for the run being planned is ignored; the listener cannot spin when its
+subscription ends; `validate_plan` rejects more picks than the offer has ordered slots instead of the offer
+cutting them silently; the restart-mid-thought case is documented; the replica's "reading" is no longer in
+its log line (its reasons stay on Hub's plan row only); "unknown beats failed" is stated and tested.
+
+Not changed: a refusal by the replica's own self-monitor gate reaches Hub as `unfunded` (the plan-row
+status set is fixed by the contract and has no "gate" status); the exact reason is in the replica's own
+note and log line (`curiosity_replica_gave_up ... why=my own act gate refused the thought`).
 
 ## Restart required
 

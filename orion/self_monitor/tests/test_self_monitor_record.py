@@ -267,3 +267,51 @@ def test_failed_turns_count_once_under_turn_run_not_as_broken_guesses() -> None:
     assert "turn.self.steps" not in recs
     all_failed = [adapters.turn_run({**t, "failed": True}) for t in turns[:20]]
     assert reduce_bets(all_failed, now=NOW)[0].candidate_status == "broken"
+
+
+def _turn_run_rows(bet_rows: list[dict]) -> list[dict]:
+    """Run collect's own turn.run SQL over ``bet_rows`` (sqlite, with bool_and registered)."""
+    import sqlite3
+
+    from orion.self_monitor.collect import SOURCES
+
+    class _BoolAnd:
+        def __init__(self) -> None:
+            self.v = True
+
+        def step(self, x) -> None:
+            self.v = self.v and bool(x)
+
+        def finalize(self) -> int:
+            return int(self.v)
+
+    sql = next(s for name, s, _ in SOURCES if name == "prediction_turn_run")
+    db = sqlite3.connect(":memory:")
+    db.create_aggregate("bool_and", 1, _BoolAnd)
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TABLE prediction_turn_self_bet (correlation_id text, placed_at text, settled_at text, "
+               "status text, void_reason text)")
+    db.executemany("INSERT INTO prediction_turn_self_bet VALUES (:correlation_id, :placed_at, :settled_at, "
+                   ":status, :void_reason)", bet_rows)
+    return [dict(r) for r in db.execute(sql, {"since": "2000-01-01"})]
+
+
+def test_a_turn_stopped_from_outside_is_not_a_turn_run_bet():
+    # Juniper's stop or a GPU recall is not Orion failing to run (2026-11-04); nor did the turn run.
+    def rows(corr, void_reason, status="void"):
+        return [{"correlation_id": corr, "placed_at": "2026-11-03T01:00", "settled_at": "2026-11-03T02:00",
+                 "status": status, "void_reason": void_reason} for _ in range(6)]
+
+    out = {r["correlation_id"]: r for r in _turn_run_rows(
+        rows("stopped", "interrupted") + rows("crashed", "failed_to_execute") + rows("ran", None, "happened"))}
+    assert set(out) == {"crashed", "ran"}
+    assert out["crashed"]["failed"] == 1 and out["ran"]["failed"] == 0
+
+
+def test_an_interrupted_guess_is_no_bet_on_its_faculty():
+    row = {"bet_id": "c1:turn.self.asks_question", "faculty": "turn.self.asks_question",
+           "claim_kind": "probability", "placed_at": NOW - timedelta(hours=2), "settled_at": NOW - timedelta(hours=1),
+           "status": "void", "void_reason": "interrupted", "stated_p": 0.3, "coverage": 0.8}
+    assert adapters.turn_self_bet(row) is None
+    # Unknown void reasons are not loosened into an outcome either.
+    assert adapters.turn_self_bet({**row, "void_reason": "something_new"}) is None

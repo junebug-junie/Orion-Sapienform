@@ -21,7 +21,10 @@ def apply_harness_run_cancel(payload: dict[str, Any] | HarnessRunCancelV1) -> bo
         cancel = payload
     else:
         cancel = HarnessRunCancelV1.model_validate(payload)
-    killed = cancel_fcc_turn(cancel.correlation_id)
+    # Only a reason the sender actually named: the schema default ("client_disconnect")
+    # would read an unnamed cancel as an outside stop (orion/harness/stop_reason.py).
+    named = "reason" in cancel.model_fields_set
+    killed = cancel_fcc_turn(cancel.correlation_id, reason=cancel.reason if named else None)
     logger.info(
         "harness_run_cancel corr=%s reason=%s killed=%s",
         cancel.correlation_id,

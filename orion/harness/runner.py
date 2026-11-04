@@ -56,6 +56,7 @@ from orion.harness.reading_receipts import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
+from orion.harness.stop_reason import turn_stop_reason
 from orion.harness.task_anchor import build_focus_anchor, build_task_anchor, compose_task_anchor
 from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -87,6 +88,9 @@ class HarnessMotorResult:
     # the turn's own findings. The governor keeps the cut-short marker on the
     # final text so finalize/repair cannot present it as a finished answer.
     cut_short_reason: str | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): ``cancel:<reason>`` when a
+    # harness cancel killed it, else the motor's error code, else None.
+    stop_reason: str | None = None
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
     # Wall time for the FCC leg ALONE -- the motor loop, not the turn. This is
@@ -485,6 +489,7 @@ class HarnessRunner:
         last_recorded_step_order = 0  # order of the last non-progress frame in the collector
         draft_text = ""
         exit_code: int | None = None
+        stop_reason: str | None = None
         fcc_served_model: str | None = None
         compliance_verdict = "completed"
         grounding_status = "grounded"
@@ -673,6 +678,10 @@ class HarnessRunner:
                 # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
                 if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
                     exit_code = err_meta["exit_code"]
+                stop_reason = turn_stop_reason(
+                    cancel_reason=err_meta.get("cancel_reason") if isinstance(err_meta, dict) else None,
+                    error_code=error_code,
+                )
                 # Not cut short when the CLI already reported the turn complete
                 # (the process only hung on exit -- `partial` IS the answer), nor
                 # on reading-only machine turns: their consumer needs JSON and
@@ -826,6 +835,7 @@ class HarnessRunner:
                 grammar_receipts=receipts,
                 step_count=step_count,
                 exit_code=exit_code,
+                stop_reason=stop_reason,
                 compliance_verdict=compliance_verdict if compliance_verdict != "completed" else "failed",
                 grounding_status=grounding_status if grounding_status != "grounded" else "empty_draft",
                 grammar_collector=collector,
@@ -889,6 +899,7 @@ class HarnessRunner:
             grammar_receipts=receipts,
             step_count=step_count,
             exit_code=exit_code,
+            stop_reason=stop_reason,
             compliance_verdict=compliance_verdict,
             grounding_status=grounding_status,
             cut_short_reason=cut_short_reason,

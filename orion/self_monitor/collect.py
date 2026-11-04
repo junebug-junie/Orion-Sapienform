@@ -35,7 +35,10 @@ SOURCES: tuple[tuple[str, str, Adapter], ...] = (
      "SELECT correlation_id, min(placed_at) AS placed_at, max(settled_at) AS settled_at, "
      "bool_and(status = 'void' AND void_reason = 'failed_to_execute') AS failed "
      "FROM prediction_turn_self_bet WHERE settled_at >= :since AND correlation_id IS NOT NULL "
-     "AND NOT (status = 'void' AND void_reason IN ('ungradeable_no_stated', 'ungradeable_bad_record', 'expired_unsettled')) "
+     # 'interrupted': stopped from outside (Juniper's stop, a GPU recall) -- no bet on whether
+     # the turn runs, so neither failed nor upheld.
+     "AND NOT (status = 'void' AND void_reason IN ('ungradeable_no_stated', 'ungradeable_bad_record', "
+     "'expired_unsettled', 'interrupted')) "
      "GROUP BY correlation_id",
      adapters.turn_run),
     ("prediction_action_bet",

@@ -311,7 +311,8 @@ def test_a_turn_stopped_from_outside_is_interrupted_not_failed(reason):
 
 
 @pytest.mark.parametrize("stop_reason", ["fcc_timeout", "fcc_stream_stalled", "fcc_context_ceiling_exceeded",
-                                         "fcc_nonzero_exit", "cancel:some_new_reason", "cancel:", None, 7])
+                                         "fcc_nonzero_exit", "cancel:some_new_reason", "cancel:",
+                                         "cancel:durable_attempt_timeout", None, 7])
 def test_the_motors_own_kills_and_unknown_reasons_stay_failed_to_execute(stop_reason):
     # One direction only: a motor kill is a real failure, and an unknown or absent reason never loosens.
     art = dict(_art(text="", code=-9), stop_reason=stop_reason)

@@ -406,6 +406,24 @@ def test_a_preempt_seen_by_the_heartbeat_stops_the_turn_and_cancels_it_in_hub():
         assert started.is_set() and cancelled == [True]
         channel = rt.runner._publish.await_args.args[0]
         assert channel == "orion:harness:run:cancel"
+        # Stopped from outside: the killed turn's record reads "interrupted", not a failure.
+        assert rt.runner._publish.await_args.args[2].reason == "durable_attempt_stopped"
+    asyncio.run(scenario())
+
+
+def test_an_attempt_that_ran_out_of_its_own_time_cancels_with_a_timeout_reason():
+    # The turn was too slow, not stopped from outside: it must stay failed_to_execute downstream.
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")] * 20))
+
+        async def node(state):
+            await asyncio.sleep(10)
+
+        state = {**_held_state("curiosity.investigate"), "brief": {"timeout_sec": 0.05}}
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(rt.execute(state, node), 3)
+        assert rt.runner._publish.await_args.args[0] == "orion:harness:run:cancel"
+        assert rt.runner._publish.await_args.args[2].reason == "durable_attempt_timeout"
     asyncio.run(scenario())
 
 

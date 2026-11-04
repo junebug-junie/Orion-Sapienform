@@ -26,10 +26,12 @@ OUTSIDE_CANCEL_REASONS = frozenset(
         "user_stop",                # Hub stop button (api_routes.api_chat_turn_cancel)
         "client_disconnect",        # Hub websocket closed mid-turn
         "ws_error",                 # Hub websocket handler crashed mid-turn
-        "durable_attempt_stopped",  # durable-runs stopped the attempt (GPU recall/abort, run control)
+        "durable_attempt_stopped",  # durable-runs stopped the attempt (hold lost/recalled, run control)
         "worker_recovery",          # durable-runs recovering a dead worker's turn
     }
 )
+# Deliberately NOT outside: "durable_attempt_timeout" (the attempt's own time budget ran out -- the
+# turn was too slow, like the motor's fcc_timeout).
 
 
 def turn_stop_reason(*, cancel_reason: str | None, error_code: str | None) -> str | None:

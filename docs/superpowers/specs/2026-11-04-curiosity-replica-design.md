@@ -43,8 +43,9 @@ Decisions this design makes (each explained below):
   identical except for the order, and it keeps the replica from speaking as Orion.
 - Fallbacks **count against the replica** (intention-to-treat). A replica that is often unfunded or slow loses.
 - It bids as a new family **`curiosity.replica`, tier 2**, on the chat lane, like Prime.
-- It can **challenge** Prime's focus questions and regulate signals. In this version it cannot refuse them. A random
-  share of challenges is held back, so we can tell whether challenges change Prime.
+- It can **challenge or refuse** Prime's focus questions and regulate signals (Juniper, 11-04). A refusal always
+  carries a reason. A random share of challenges and of refusals is held back, so we can tell whether they change
+  Prime and whether refusing was right.
 
 ## Current architecture
 
@@ -128,20 +129,16 @@ three ways, each arm gets about 1.76 runs a day.
 The bootstrap is the honest row: the data is mostly zeros with a long tail, so the normal approximation is too
 hopeful. Simulation script: run on the 202 real outcomes, 200 resamples per cell, 400 permutations per test.
 
-## Missing questions
+## Decisions (Juniper, 2026-11-04)
 
-1. **Is a 3 to 6 month test acceptable?** At today's cadence only a replica that about doubles belief change can
-   win. Rec: accept it, with the fixed stop in section 6. Turn the value arm on now: the two rule arms then build up
-   their own comparison (the replay's ~171 runs per arm is about 65 days at 5.3 a day) while the replica is built,
-   and the three-arm test starts with both rule arms already live.
-2. **May the replica refuse Prime, or only challenge?** Rec: challenge only in v1 (Prime and the market stay the
-   referee). Refusal is a later step, only after challenges show they carry information.
-3. **Tier for `curiosity.replica`.** Tiers are Juniper's decision (10-23). Rec: tier 2. Reasoning below.
-4. **Should the replica plan on every run (shadow plans on the rule arms) or only on its own arm?** Rec: only its own
-   arm. Shadow plans cost about 3x the calls and cannot be scored, since they did not happen.
-5. **How much of Juniper's chat should the replica read?** Rec: the pending Juniper focus, plus the first 160
-   characters of her last 5 chat prompts from the last 24 hours. No replies, no memory. There is no privacy boundary
-   between Juniper and Orion (standing decision), so this is about frame size, not secrecy.
+1. **Turn the value arm on now (patch 0).** The two rule arms build up their own comparison while the replica is
+   built, so the three-arm test starts with both rule arms live.
+2. **A 3 to 6 month test is acceptable,** with the fixed stop in section 6.
+3. **The replica may challenge and refuse Prime** (section 9).
+4. **`curiosity.replica` is tier 2.**
+5. **It plans only on its own arm** for now. No shadow plans.
+6. **What Juniper has been talking about comes from the chat compactor's daily digest**, plus any pending focus she
+   asked for (section 2). No raw chat text.
 
 ## Proposed design
 
@@ -176,8 +173,10 @@ Each field carries its age. A missing field is shown as a gap, never as calm (sa
   `prime_concern:<id>` and the outcome note). So Prime publishes a read-only view: on every save it writes
   `PrimeConcernsViewV1` (id, text, age, arc id) to Redis `orion:prime:concerns`. That is Prime's first published
   call. The replica reads that key, never Prime's private state.
-- **What Juniper has been asking about:** a pending focus with origin `juniper`, and her last 5 prompts (160
-  characters each, last 24 hours, `chat_history_log.prompt`).
+- **What Juniper has been talking about** (Juniper, 11-04: use the chat compactor): the newest chat-history
+  compactor digest (`orion/cognition/chat_history_compactor`, one a day around 13:00 UTC: the card summary and the
+  journal title), shown with its age, plus any pending focus with origin `juniper` for today. No raw chat text.
+  The digest covers the previous day, so it can be up to about 36 hours old; the pending focus covers today.
 - **Its own track record:** its last 10 plans. For each pick: was it tested, did it move, by how many nats. Plus its
   pick uptake (share of its picks Orion tested) and its fallback count. It does **not** see the arm comparison or any
   p-value. Showing it the running score invites chasing noise.
@@ -189,8 +188,8 @@ One JSON object, parsed into `CuriosityOfferPlanAnswerV1`:
 ```json
 {"reading": "one or two sentences: how it reads curiosity's situation now",
  "picks": [{"prior_id": "...", "why": "one sentence"}],
- "focus_stance": null | {"stance": "support" | "challenge", "reason": "one sentence"},
- "signal_stance": null | {"signal_id": "...", "stance": "challenge", "reason": "one sentence"},
+ "focus_stance": null | {"stance": "support" | "challenge" | "refuse", "reason": "one sentence"},
+ "signal_stance": null | {"signal_id": "...", "stance": "support" | "challenge" | "refuse", "reason": "one sentence"},
  "abstain": false}
 ```
 
@@ -293,28 +292,40 @@ New family in `config/physiology/families.yaml`:
 - **No receptors in v1.** Prime regulating a planner that thinks under 2 times a day changes nothing measurable. A
   family gets a receptor only when it has a handler, a test, and binding bids (families.yaml rule).
 
-### 9. Second receiver of Prime's signals: what pushing back means
+### 9. Second receiver of Prime's signals: challenge and refuse
 
-Prime has two moves today. Concretely:
+Prime has two moves today. The replica may answer each one with **support**, **challenge** or **refuse**, always
+with a one-sentence reason. Every answer is an act (`actor=curiosity.replica`, verb `ask`, `parent_act_id` = Prime's
+act) that closes at once with the reason as its note.
 
-- **Prime's focus question.** Today it goes into Hub's one focus slot and the next run is shown it. With the replica:
-  the replica's frame shows the pending focus (origin, question). Its answer may carry `focus_stance`. A `challenge`
-  becomes an act (`actor=curiosity.replica`, verb `ask`, object `prime_nomination:<focus_id>`, `parent_act_id` =
-  Prime's nomination act). It closes at once with the reason as its note. **The focus is still shown to the run.**
-  Removing it would break Prime's own treated/control comparison (2A), and Orion can already set a focus aside.
-- **Prime's regulate signal on curiosity.** The market applies it as a charge on `durable.curiosity_investigate`
-  bids. The replica's frame shows the live signal and its why. A `signal_stance: challenge` becomes the same kind of
-  act, parented to Prime's `regulate` act. **The charge stays.** The body economy is the referee in v1.
+- **Prime's focus question.**
+  - *Challenge:* the focus is still shown to the run. Prime hears the reason.
+  - *Refuse:* the focus is not shown to the run. Hub marks the focus row `refused_by_organ` with the reason, and
+    Prime's question act closes 0 with note `refused by curiosity.replica: <reason>`. It still counts in Prime's
+    treated arm (intention to treat), so Prime's own 2A comparison stays honest: it then measures Prime's effect
+    including the organ's right to say no.
+  - Never for a focus with origin `juniper`: refusal applies to Prime's acts only.
+- **Prime's regulate signal on curiosity.**
+  - *Challenge:* the charge stays. Prime hears the reason.
+  - *Refuse:* the market stops applying that signal's charge from the next bid (the replica writes the refusal next
+    to the signal in `orion:prime:regulate:durable.curiosity_investigate`; `orion/physiology/choice.py` reads it). The
+    decision's `why` says "Prime's slow charge refused by curiosity.replica: <reason>". Prime's regulate act grades on
+    what actually happened.
+- **Holdback for refusals.** 20% of refusals are recorded but not applied (arm `control`): the focus is still shown,
+  the charge still applies. Comparing refused-and-applied against refused-but-held-back runs tells us whether the
+  replica's refusals were right (did the run do better without Prime's push?). Same 20% holdback for challenges
+  (whether they reach Prime), for the E4 test below.
+- **Guard against an organ that always says no.** The replica's frame shows its own refusal rate over the last 20
+  answers. The readout reports it; a rate above 50% for 14 days goes back to Juniper with the numbers. No hard cap:
+  the holdback tells us whether the refusals were worth it.
 - **Between runs.** A new Prime focus or regulate signal on curiosity is a reason for the replica to think once, even
-  with no plan request: one challenge thought per Prime act, at most 3 a day, 30 minutes refractory. This is the
-  loop's tick and hunger, not a plan.
-- **Prime hears it.** Prime's frame gains an "ORGAN REPLIES" section: challenges to its acts in the last 48 hours,
-  with the organ's reason (`orion/prime/thought.py`, new `_organ_reply_lines`).
-- **The E4 test.** 20% of challenges are held back: written as acts with arm `control`, never shown to Prime. E4
-  counts when Prime's next move about the same concern differs after a delivered challenge more often than after a
-  held-back one. Prime sent 10 focus questions in 5 days, so expect about 2 challenge opportunities a day at most,
-  and only on focus questions until Prime first regulates curiosity. E4 on regulate is UNVERIFIED until Prime sends
-  its first `regulate` act.
+  with no plan request: one answer per Prime act, at most 3 a day, 30 minutes refractory.
+- **Prime hears it.** Prime's frame gains an "ORGAN REPLIES" section: challenges and refusals to its acts in the last
+  48 hours, with the organ's reason (`orion/prime/thought.py`, new `_organ_reply_lines`).
+- **The E4 test.** E4 counts when Prime's next move about the same concern differs after a delivered challenge or
+  refusal more often than after a held-back one. Prime sent 10 focus questions in 5 days, so expect about 2
+  opportunities a day at most, and only on focus questions until Prime first regulates curiosity. E4 on regulate is
+  UNVERIFIED until Prime sends its first `regulate` act.
 
 ### 10. Groundwork: one loop library, two instances
 
@@ -420,7 +431,7 @@ run schemas, unrelated), so the library is named `orion/mindloop/` to avoid a co
   curiosity's planner.
 - No change to when curiosity runs, how often, or its cap. Only the order of the top of the offer.
 - No change to the stale bucket, the coverage slots, or the self-inquiry and self-sense lines.
-- The replica cannot refuse Prime in v1; it can only challenge.
+- The replica cannot refuse Juniper's own focus (origin `juniper`): refusal applies to Prime's acts only.
 - No new verbs, no new `ActSignal`, no new scheduler or queue.
 - No second replica (dream) until this one has a verdict.
 

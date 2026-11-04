@@ -165,6 +165,6 @@ Another agent's #3096 (capacity claims by default) already merged and changed th
 
 ## PR link
 
-(filled after PR creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3100
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

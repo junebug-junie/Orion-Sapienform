@@ -12,15 +12,16 @@ with nothing behind it:
 
   1. NOT CHOOSE. No ranking language, no "notably", no "this one stands out".
      The crystallization sample is explicitly described as random so Orion does
-     not read position in the list as significance. Open priors ARE ordered --
-     by the code's estimate of where a test could change Orion's mind most,
-     starting from how uncertain Orion itself said it was -- and the prompt
-     says so out loud, because an ordering presented as neutral is the
-     back-door ranking this whole arc exists to delete. The sentence is the
-     same whichever order a run gets (most-uncertain first, or the spend
-     log's value order: uncertainty weighed by measured learning yield), and
-     true of both: the order is the experiment's treatment, so the words
-     describing it must not differ between arms. Orion still chooses.
+     not read position in the list as significance. Open priors ARE ordered,
+     and the prompt says so out loud, because an ordering presented as
+     neutral is the back-door ranking this whole arc exists to delete. The
+     sentence (`ORDER_SENTENCE`) is the same whichever order a run gets --
+     most-uncertain first, the spend log's value order (uncertainty weighed
+     by measured learning yield), or the curiosity replica's plan -- and true
+     of all three: the order is the experiment's treatment, so the words
+     describing it must not differ between arms, and it says only that the
+     order was chosen before the run, never by whom or why (the replica's
+     reasons never reach Orion). Orion still chooses.
   2. SAY WHAT IS NOT SHOWN. The counts are included precisely because the
      sample is a slice of 646 -- without them, a menu of 12 reads as the whole
      of Orion's mind.
@@ -69,6 +70,17 @@ from orion.curiosity.worldview import (
 )
 
 DEFAULT_MAX_HOPS = 5
+
+# What the live-priors section says about their order. One sentence for every offer arm (uncertainty,
+# value, replica), true of each: the order was chosen before the run and is not a recommendation. It
+# names no rule and no planner, so the prompt is byte-identical across arms except for the prior
+# lines (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 5). The self-inquiry
+# line renders the same section, so it carries the same sentence.
+ORDER_SENTENCE = (
+    "These are ORDERED, and the order is not neutral: it is a presentation "
+    "choice made before this run, not a recommendation. Which one, if any, "
+    "is worth your time is your call."
+)
 
 # Expanded by the sandbox shell, not here: the harness stamps these env vars.
 GRAPH_URI = (
@@ -212,11 +224,7 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "or revised is still here on purpose: one test is not a settled "
             "question, and confidence is allowed to move DOWN on the second "
             "look.",
-            "These are ORDERED, and the order is not neutral: first come the ones "
-            "where the code estimates a test could change your mind the most, "
-            "starting from how unsure you are. That is a presentation choice, "
-            "not a recommendation -- which one, if any, is worth your time is "
-            "your call.",
+            ORDER_SENTENCE,
             "",
         ]
         lines += [f"  - {p.preview()}" for p in view.live_priors if not p.coverage]

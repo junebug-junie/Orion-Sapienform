@@ -65,6 +65,13 @@ COLD_POOL_YIELD = 1.0
 
 ARM_VALUE_ORDER = "value_order"
 ARM_UNCERTAINTY_ORDER = "uncertainty_order"
+# The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
+# a small planner in orion-mind writes the top of the order. Drawn only when the caller passes a
+# replica propensity above 0; Hub passes none until the replica can answer (patch 3), so no run
+# is on this arm yet.
+ARM_REPLICA_ORDER = "replica_order"
+# Every arm a draw can return, in band order (value, replica, then uncertainty takes the rest).
+OFFER_ARMS = (ARM_VALUE_ORDER, ARM_REPLICA_ORDER, ARM_UNCERTAINTY_ORDER)
 
 KIND_TESTED = "tested"
 KIND_FORMED = "formed"
@@ -491,13 +498,62 @@ def build_yield_model(
     )
 
 
-def offer_arm(run_id: str, *, enabled: bool, propensity: float) -> tuple[str, float]:
-    """(arm, P(value arm)) for one run. Deterministic in run_id so any run's
-    assignment can be re-derived; run ids are random, so this is a fair coin.
-    Disabled means every run is the uncertainty arm with P(value) = 0."""
-    p = min(1.0, max(0.0, float(propensity))) if enabled else 0.0
-    if p <= 0.0:
-        return ARM_UNCERTAINTY_ORDER, 0.0
+@dataclass(frozen=True)
+class ArmDraw:
+    """One run's arm and the chance each arm had. ``propensities`` always names all three arms and sums to 1,
+    so the offer row records the whole design of the draw, not just the arm that won."""
+
+    arm: str
+    propensities: dict[str, float]
+
+    @property
+    def value_arm_propensity(self) -> float:
+        """P(value arm), the number the offer row has carried since P1 (kept for old readers)."""
+        return self.propensities[ARM_VALUE_ORDER]
+
+
+def _p(enabled: bool, propensity: float) -> float:
+    return min(1.0, max(0.0, float(propensity))) if enabled else 0.0
+
+
+def draw_offer_arm(
+    run_id: str,
+    *,
+    value_enabled: bool,
+    value_propensity: float,
+    replica_enabled: bool = False,
+    replica_propensity: float = 0.0,
+) -> ArmDraw:
+    """The three-way offer arm for one run, deterministic in ``run_id`` (run ids are random, so this is a fair
+    draw that can be re-derived later).
+
+    One uniform draw u in [0, 1) from the run id. u < P(value) is the value arm; u < P(value) + P(replica) is
+    the replica arm; the rest is the uncertainty arm. The value band comes first and uses the same hash as the
+    two-arm draw, so with the replica at 0 every run gets exactly the arm it got before the replica existed.
+    A disabled arm has propensity 0. If the two enabled propensities sum past 1 they are scaled down together
+    (each keeps its share of the total), so the uncertainty arm is then never drawn."""
+    pv = _p(value_enabled, value_propensity)
+    pr = _p(replica_enabled, replica_propensity)
+    total = pv + pr
+    if total > 1.0:
+        pv, pr = pv / total, pr / total
+    pu = max(0.0, 1.0 - pv - pr)
+    propensities = {ARM_VALUE_ORDER: pv, ARM_REPLICA_ORDER: pr, ARM_UNCERTAINTY_ORDER: pu}
+    if pv <= 0.0 and pr <= 0.0:
+        return ArmDraw(ARM_UNCERTAINTY_ORDER, propensities)
     digest = hashlib.sha256(f"curiosity-offer-arm:{run_id}".encode("utf-8")).hexdigest()
-    draw = int(digest[:8], 16) / float(2**32)  # [0, 1): propensity 1.0 always assigns value
-    return (ARM_VALUE_ORDER if draw < p else ARM_UNCERTAINTY_ORDER), p
+    draw = int(digest[:8], 16) / float(2**32)  # [0, 1): propensity 1.0 always assigns that arm
+    if draw < pv:
+        arm = ARM_VALUE_ORDER
+    elif draw < pv + pr:
+        arm = ARM_REPLICA_ORDER
+    else:
+        arm = ARM_UNCERTAINTY_ORDER
+    return ArmDraw(arm, propensities)
+
+
+def offer_arm(run_id: str, *, enabled: bool, propensity: float) -> tuple[str, float]:
+    """(arm, P(value arm)) for one run: the two-arm draw, `draw_offer_arm` with no replica arm.
+    Disabled means every run is the uncertainty arm with P(value) = 0."""
+    draw = draw_offer_arm(run_id, value_enabled=enabled, value_propensity=propensity)
+    return draw.arm, draw.value_arm_propensity

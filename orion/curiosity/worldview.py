@@ -1010,6 +1010,7 @@ def select_priors(
     rotate_seed: str = "",
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
     coverage_slots: int = 0,
+    head_ids: Sequence[str] = (),
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -1041,6 +1042,19 @@ def select_priors(
     float bit; 0.0 and 0.005 share one clamped entropy). The same tie-break
     keeps the uncertainty order among priors that are all worth zero -- the
     likely early state, when every scored test moved nothing.
+
+    `head_ids`, when given, are the curiosity replica's validated picks
+    (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 4).
+    They fill the first ordered slots in their own order; the rest of the
+    ordered slots continue the order above with the picks skipped; the
+    coverage slots draw exactly as on any other run, skipping the picks; the
+    stale bucket is unchanged. So the layout and the number of priors shown
+    are the same on every arm -- only the top differs. A head id that is not a
+    fresh live prior here (stale, unreadable, or gone) is skipped, never
+    padded in: Hub validates the plan against this same read before passing
+    it, so a skip only happens if a caller passes an unvalidated plan. At most
+    `sample - coverage_slots` picks are used. Empty (the default) changes
+    nothing, so every existing caller gets byte-identical output.
     """
     priors: list[Prior] = []
     dropped = 0
@@ -1080,6 +1094,16 @@ def select_priors(
     )
     sample = max(0, sample)
     k = min(max(0, coverage_slots), sample)
+    if head_ids:
+        by_id = {p.prior_id: p for p in fresh}
+        picks: list[Prior] = []
+        for prior_id in head_ids:
+            prior = by_id.get(str(prior_id))
+            if prior is not None and prior not in picks:
+                picks.append(prior)
+        picks = picks[: sample - k]
+        picked_ids = {p.prior_id for p in picks}
+        fresh = picks + [p for p in fresh if p.prior_id not in picked_ids]
     head, tail = fresh[: sample - k], fresh[sample - k :]
     # Coverage slots: the order above only ever reaches priors near 0.5, so a confident prior with
     # a few tests ranked past the sample is never shown and never re-checked (live 2026-10-16: 72

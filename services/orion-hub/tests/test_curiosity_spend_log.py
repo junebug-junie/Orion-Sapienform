@@ -20,7 +20,14 @@ import pytest
 import scripts.curiosity_offer_decisions as spend
 from orion.curiosity.journal import INVESTIGATION_TAG
 from orion.curiosity.self_inquiry import SELF_INQUIRY_TAG
-from orion.curiosity.value import ARM_UNCERTAINTY_ORDER, ARM_VALUE_ORDER, RunOutcome, kl_nats
+from orion.curiosity.kickoff_prompt import ORDER_SENTENCE
+from orion.curiosity.value import (
+    ARM_REPLICA_ORDER,
+    ARM_UNCERTAINTY_ORDER,
+    ARM_VALUE_ORDER,
+    RunOutcome,
+    kl_nats,
+)
 from orion.schemas.durable_run import CuriosityTurnRequestV1
 from scripts.curiosity_offer_decisions import (
     INSERT_DECISION_SQL,
@@ -67,6 +74,7 @@ class _SpendConn(_FakeConn):
                 "stale_offered": _jsonb(args[4]),
                 "material_ids": _jsonb(args[5]),
                 "constants": _jsonb(args[6]),
+                "arm_propensities": None if args[7] is None else _jsonb(args[7]),
                 "turn_snapshot": None,
                 "turn_started_at": None,
             }
@@ -172,6 +180,10 @@ def test_a_tick_records_the_offer_the_start_snapshot_and_what_the_run_moved() ->
     run_id, decision = next(iter(conn.decisions.items()))
     assert decision["arm"] == ARM_UNCERTAINTY_ORDER  # the value switch is off by default
     assert decision["value_arm_propensity"] == 0.0
+    # The whole draw is recorded, all three arms; the replica arm is never drawn by Hub yet.
+    assert decision["arm_propensities"] == {
+        ARM_VALUE_ORDER: 0.0, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 1.0,
+    }
     assert [o["prior_id"] for o in decision["offered"]] == ["p2", "p3", "p1"]
     assert all(o["expected_nats"] > 0 for o in decision["offered"])
     assert decision["turn_snapshot"] is not None
@@ -252,6 +264,9 @@ def test_the_value_arm_orders_by_measured_progress_and_says_so() -> None:
     (decision,) = conn.decisions.values()
     assert decision["arm"] == ARM_VALUE_ORDER
     assert decision["value_arm_propensity"] == 1.0
+    assert decision["arm_propensities"] == {
+        ARM_VALUE_ORDER: 1.0, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 0.0,
+    }
     assert [o["prior_id"] for o in decision["offered"]] == ["lean", "half"]
     assert decision["offered"][0]["expected_nats"] > decision["offered"][1]["expected_nats"]
     assert decision["constants"]["history_tests"] == 5
@@ -587,7 +602,9 @@ def test_both_arms_read_the_same_words_about_the_order() -> None:
     assert _ordering_lines(prompts[False]) == _ordering_lines(prompts[True])
     for prompt in prompts.values():
         assert "least sure about come first" not in prompt
-        assert "the code estimates a test could change your mind the most" in prompt
+        assert ORDER_SENTENCE in prompt
+        # The sentence names no rule: it must stay true on the replica arm too.
+        assert "the code estimates a test could change your mind the most" not in prompt
 
 
 def test_offered_rows_record_which_slot_each_prior_came_from() -> None:

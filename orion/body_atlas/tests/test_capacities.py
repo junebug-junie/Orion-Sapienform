@@ -228,7 +228,10 @@ def test_open_jobs_skip_held_waiting_and_confirmed_jobs():
     claim = K.CapacityClaimV1(part_id="part:gateway", role="S4", kind="claim", because="b" * 20, cites=["r0"],
                               at="2026-11-04T00:00:00+00:00", dig="t")
     vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="gateway", role="S3", date="2026-11-04")])
-    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [])
+    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=lambda c: ["r0"])
     jobs = [j for j, _ in K.open_jobs(after)]
-    assert "S3" not in jobs and "S4" not in jobs  # confirmed by Juniper; Orion's claim waits on her
-    assert [(c.part_id, c.role) for c in K.pending_claims(after)] == [("part:gateway", "S4")]
+    assert "S3" not in jobs and "S4" not in jobs  # confirmed by Juniper; Orion's claim holds (evidence checks)
+    assert K.evidence_gone_claims(after) == []
+    gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=lambda c: [])
+    assert "S4" in [j for j, _ in K.open_jobs(gone)]  # its evidence is gone: open again
+    assert [(c.part_id, c.role) for c in K.evidence_gone_claims(gone)] == [("part:gateway", "S4")]

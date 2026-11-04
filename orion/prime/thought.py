@@ -176,6 +176,9 @@ class FrameInputs:
     receptors_error: Optional[str] = None
     # signal_id -> the market's record so far (None: unread).
     regulation_effects: dict[str, Optional[list[pc.PrimeChargeEffectV1]]] = field(default_factory=dict)
+    # durable-runs GET /physiology/report (read at thought time): the month's money and each machine's draw.
+    energy: Optional[dict[str, Any]] = None
+    energy_error: Optional[str] = None
 
 
 def _num(value: Any) -> float:
@@ -213,6 +216,46 @@ def _body_lines(inputs: FrameInputs) -> list[str]:
             lines.append(f"{name} (price {_num(price.get('value')):.2f}): {price['why']}")
         else:
             lines.append(f"{name}: (unavailable: not in the body state)")
+    return lines
+
+
+# Why Prime gets no per-organ cost (2026-11-04): over 30 days the act ledger's per-act dollar costs summed
+# to well under $1 against about $25/month of activity cost (curiosity $0.17 on 23 of 81 acts; painting,
+# reading and Prime itself none). Per-organ figures would be ~50x wrong; Prime had already blamed the
+# activity cost on "attention:juniper" (Juniper's message cap) for lack of anything better.
+NO_PER_ORGAN_COST = ("per-organ cost is not measured: acts carry only a few percent of the activity cost, so "
+                     "slowing one organ saves an unknown, probably small amount; the idle floor is not touched "
+                     "by slowing anything")
+
+
+def _energy_lines(inputs: FrameInputs) -> list[str]:
+    """The month's energy money split into what idling costs and what activity adds, and each machine's
+    draw now, all from what the body measures (GET /physiology/report)."""
+    if inputs.energy is None:
+        return [f"(unavailable: {inputs.energy_error or 'not read'})"]
+    money = inputs.energy.get("money") or {}
+    lines: list[str] = []
+    floor, forecast, envelope = (money.get(k) for k in ("floor_usd", "forecast_usd", "envelope_usd"))
+    if all(isinstance(v, (int, float)) for v in (floor, forecast, envelope)):
+        lines.append(f"this month: forecast ${forecast:.0f} against a ${envelope:.0f} limit. Idling alone (the "
+                     f"always-on floor) costs ${floor:.0f}; activity on top of idling adds about "
+                     f"${max(0.0, forecast - floor):.0f}")
+    else:
+        lines.append("this month's money: (unavailable: missing from the report)")
+    host_rest = 0.0
+    for h in inputs.energy.get("hosts") or []:
+        if not isinstance(h, dict) or not h.get("host"):
+            continue
+        rest, now = h.get("rest_usd_per_month"), h.get("usd_per_month_at_this_rate")
+        if isinstance(rest, (int, float)) and isinstance(now, (int, float)):
+            host_rest += rest
+            lines.append(f"- {h['host']}: idling costs ${rest:.0f}/month; right now it runs "
+                         f"{_num(h.get('above_rest_w')):.0f} W above idle, about ${now:.1f}/month at this rate")
+    if isinstance(floor, (int, float)) and host_rest and floor - host_rest >= 1:
+        # Live 11-04: hosts' idle $81 vs floor $111. Shown, not hidden, and not attributed.
+        lines.append(f"- the rest of the floor, about ${floor - host_rest:.0f}/month, is always-on draw not split "
+                     "by machine in this report")
+    lines.append(NO_PER_ORGAN_COST)
     return lines
 
 
@@ -296,6 +339,7 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
             for n in state.open_nominations) or "(none)"),
         "ATTENTION (Temporal Self, today):\n" + "\n".join(_attention_lines(inputs)),
         "BODY:\n" + "\n".join(_body_lines(inputs)),
+        "ENERGY MONEY:\n" + "\n".join(_energy_lines(inputs)),
         "CURIOSITY:\n" + "\n".join(_curiosity_lines(inputs)),
     ]
     if inputs.receptors is not None or inputs.receptors_error:

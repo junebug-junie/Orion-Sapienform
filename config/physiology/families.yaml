@@ -79,6 +79,17 @@ families:
     placement: one_of
 
   # --- Tier 2: discretionary, the open market. ---
+  curiosity.replica:
+    # Orion Prime 2C' (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 8): one short
+    # plan per replica-arm investigate run, plus at most 3 answers to Prime a day. Tier 2 (Juniper
+    # 2026-11-04): when it is unfunded the rule order runs and curiosity loses nothing. 90 s: the kickoff
+    # will not wait longer for a plan. Lane chat: the warm lane Prime already uses (route prime). No
+    # receptors: a planner that thinks under 2 times a day has nothing for a charge to bind on. Declared
+    # in patch 2 (contracts); the instance that bids with it lands in patch 3.
+    tier: 2
+    deferrable_window_s: 90
+    lanes: [chat]
+    placement: one_of
   durable.curiosity_investigate:
     tier: 2
     deferrable_window_s: 21600

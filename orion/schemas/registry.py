@@ -120,6 +120,14 @@ from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
 from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
 from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
 from orion.schemas.physiology_report import PHYSIOLOGY_REPORT_KIND, PhysiologyReportV1
+from orion.schemas.curiosity_replica import (
+    PLAN_REQUEST_KIND as CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
+    PLAN_RESULT_KIND as CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    CuriosityOfferPlanAnswerV1,
+    CuriosityOfferPlanRequestV1,
+    CuriosityOfferPlanResultV1,
+)
+from orion.prime.state import PrimeConcernsViewV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
     ChoiceOptionV1,
@@ -1606,6 +1614,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Personality graph loop (rev 2): the frame crosses HTTP (durable-runs -> thought, hub), so it
     # is also in SCHEMA_REGISTRY; the nested node/style models and the local cue live here only.
     "PersonalityFrameV1": PersonalityFrameV1,
+    # Curiosity replica contracts (2026-11-04 design, patch 2). Also in SCHEMA_REGISTRY below.
+    "CuriosityOfferPlanRequestV1": CuriosityOfferPlanRequestV1,
+    "CuriosityOfferPlanResultV1": CuriosityOfferPlanResultV1,
+    "CuriosityOfferPlanAnswerV1": CuriosityOfferPlanAnswerV1,
+    "PrimeConcernsViewV1": PrimeConcernsViewV1,
     "DispositionV1": DispositionV1,
     "ChoiceStyleV1": ChoiceStyleV1,
     "PersonalityCueV1": PersonalityCueV1,
@@ -2184,6 +2197,24 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PersonalityFrameV1": SchemaRegistration(
         model=PersonalityFrameV1,
         kind="personality.frame.v1",
+    ),
+    # Curiosity replica (2026-11-04 design, patch 2): the plan RPC, the model's answer, and Prime's
+    # published concerns view (Redis orion:prime:concerns). Also in `_REGISTRY` above.
+    "CuriosityOfferPlanRequestV1": SchemaRegistration(
+        model=CuriosityOfferPlanRequestV1,
+        kind=CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
+    ),
+    "CuriosityOfferPlanResultV1": SchemaRegistration(
+        model=CuriosityOfferPlanResultV1,
+        kind=CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    ),
+    "CuriosityOfferPlanAnswerV1": SchemaRegistration(
+        model=CuriosityOfferPlanAnswerV1,
+        kind="curiosity.replica.plan.answer.v1",
+    ),
+    "PrimeConcernsViewV1": SchemaRegistration(
+        model=PrimeConcernsViewV1,
+        kind="prime.concerns.view.v1",
     ),
     "DispositionNamingV1": SchemaRegistration(
         model=DispositionNamingV1,

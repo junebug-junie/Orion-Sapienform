@@ -3995,6 +3995,30 @@ channels:
     since: "2026-10-16"
     description: "orion-introspect queue_curiosity_focus tool RPC. From a chat turn (unified_chat) or from Prime's resident loop (prime: origin self only, and never replaces a pending focus), Orion queues one question (and why) for its next regular investigate curiosity run. Hub writes one curiosity_focus_request row: one pending slot, a new focus replaces the pending one (named in the reply), except Orion's own choice (origin self) never replaces a focus Juniper asked for (origin juniper). Starts nothing; the run still waits for every gate, cooldown and cap, is shown the focus, and records a disposition (explored / set_aside:<reason>). Off when HUB_CURIOSITY_FOCUS_ENABLED=false. Reply on orion:introspect:result:<correlation_id>."
 
+  # Curiosity replica (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md, patch 2: contract
+  # only). Producer and consumer code land in patch 3; until then Hub draws no run onto the replica arm,
+  # so nothing publishes here.
+  - name: "orion:curiosity:replica:plan:request"
+    kind: "request"
+    schema_id: "CuriosityOfferPlanRequestV1"
+    message_kind: "curiosity.replica.plan.request.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-mind"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica plan RPC. On a replica-arm investigate run only, Hub sends the fresh live priors it could offer (at most 60 candidates, stale ids, the pending focus) and waits at most 90 s. orion-mind's curiosity.replica instance bids (tier 2, lane chat), makes one short model call and answers with 3-5 prior ids in order plus an optional support/challenge/refuse stance on Prime's focus or regulate signal. Hub validates the plan against the same worldview read; a bad, late or missing plan means the uncertainty order. The replica's reasons stay on curiosity_offer_plans and never reach Orion's prompt. Reply on orion:curiosity:replica:plan:result:<correlation_id>."
+
+  - name: "orion:curiosity:replica:plan:result:*"
+    kind: "result"
+    schema_id: "CuriosityOfferPlanResultV1"
+    message_kind: "curiosity.replica.plan.result.v1"
+    producer_services: ["orion-mind"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica plan reply, one per request, keyed by the request's correlation_id. status ok (picks) | abstain | unfunded | model_failed | unparseable; Hub adds timeout and invalid:<reason> on its own plan row. Every replica-arm run counts as replica whatever the status (intention to treat)."
+
   - name: "orion:introspect:node_history:request"
     kind: "request"
     schema_id: "IntrospectRequestV1"

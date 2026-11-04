@@ -690,8 +690,8 @@ def claim_block(reading, atlas) -> list[str]:
     lines: list[str] = []
     jobs = capacities.open_jobs(reading)
     if jobs:
-        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim "
-                     "is not a role; Juniper reviews it). Cite by full id a part or channel on its flows, or a repo file:")
+        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (code checks "
+                     "the wiring you cite; Juniper may veto). Cite by full id a part or channel on its flows, or a repo file:")
         for job, cands in jobs:
             name, hint = "'<part>'", ""
             if cands:

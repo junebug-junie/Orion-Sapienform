@@ -28,7 +28,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from orion.body_atlas.capacities import (
-    CAP_JOBS, JOBS, CapacityClaimV1, CapacityReadingV1, CapacityV1, EvidenceCheckV1, VsmConfirmedV1, _Index,
+    CAP_JOBS, JOBS, BroadcastKeyV1, CapacityClaimV1, CapacityReadingV1, CapacityV1, EvidenceCheckV1, VsmConfirmedV1, _Index,
     active_claims, claimable, holders, rule_broadcast_keys, rule_census_reader,
 )
 from orion.body_atlas.model import BodyAtlasV1
@@ -125,6 +125,8 @@ def flow_dirs(atlas: BodyAtlasV1, part_id: str, census: set[str]) -> dict[str, s
         if f.channels and set(f.channels) <= census:  # a health heartbeat links everyone to everyone
             continue
         other = f.target if f.source == part_id else f.source
+        if other != part_id and other not in names:  # a flow to a dormant or transient part is not live wiring
+            continue
         if f.relation == "uses":
             d = "?"
         elif f.relation == "reads":  # source reads target: the data flows target -> source
@@ -217,7 +219,7 @@ def because_refs(atlas: BodyAtlasV1, part_id: str, because: str) -> tuple[list[s
     prefixes = _id_prefixes(atlas)
     if prefixes:
         alt = "|".join(sorted(map(re.escape, prefixes), key=len, reverse=True))
-        for m in re.finditer(rf"(?<![\w:/.-])((?:{alt}):[\w:.*/-]*[\w*])", low):
+        for m in re.finditer(rf"(?<![\w:/.-])((?:{alt}):(?!//)[\w:.*/-]*[\w*])", low):  # not a URL
             tok = m.group(1)
             if tok != self_name and tok not in known and not any(_cited(k, tok) for k in found):
                 unknown.append(tok)
@@ -226,20 +228,23 @@ def because_refs(atlas: BodyAtlasV1, part_id: str, because: str) -> tuple[list[s
 
 
 def check_evidence(atlas: BodyAtlasV1, claim: CapacityClaimV1, root: Path, *, idx: _Index | None = None,
-                   audit: set[str] | None = None, broadcast: set[str] | None = None) -> EvidenceCheckV1:
+                   audit: set[str] | None = None, broadcast: list[BroadcastKeyV1] | None = None) -> EvidenceCheckV1:
     """Re-check one claim against today's atlas (rung 4, 2026-11-04 decision note): every reference
     its because names (and every id it cited when written) must be on a live, non-census flow of the
     claimed part, or a repo file that exists; at least one must be atlas wiring; and the wiring must
     fit the job's shape (``EVIDENCE_SHAPES``). S5 never passes: it is Juniper's to confirm."""
     idx = idx or _Index(atlas)
     census = idx.census
+    census_low = {c.lower() for c in census}
     dirs = flow_dirs(atlas, claim.part_id, census)
     by_low = {k.lower(): k for k in dirs}
     parts = {p.name.lower(): p for p in atlas.parts}
-    found, unknown, files = because_refs(atlas, claim.part_id, claim.because)
-    cited_files = [c for c in claim.cites if "/" in c and _EXT_RE.search(c)]
-    refs = list(dict.fromkeys(found + unknown + [c.lower() for c in claim.cites if c not in cited_files]))
     channels = {ch.lower() for f in atlas.flows for ch in f.channels}
+    found, unknown, files = because_refs(atlas, claim.part_id, claim.because)
+    # a write-time cite with a "/" that is no atlas id is a repo file (``check_claim`` took any existing
+    # file, extension or not: services/x/Dockerfile)
+    cited_files = [c for c in claim.cites if "/" in c and c.lower() not in parts and c.lower() not in channels]
+    refs = list(dict.fromkeys(found + unknown + [c.lower() for c in claim.cites if c not in cited_files]))
     held: list[str] = []
     failed: list[str] = []
     wiring: dict[str, set[str]] = {}
@@ -249,8 +254,10 @@ def check_evidence(atlas: BodyAtlasV1, claim: CapacityClaimV1, root: Path, *, id
         if ref in by_low:
             wiring[by_low[ref]] = dirs[by_low[ref]]
             held.append(f"{by_low[ref]} ({'/'.join(sorted(dirs[by_low[ref]]))})")
-        elif ref in census:
+        elif ref in census_low:
             failed.append(f"{ref}: the census, which every part sends")
+        elif ref in parts and parts[ref].kind == "host":
+            failed.append(f"{ref}: a host, which is placement, not evidence of a job")
         elif ref in parts and parts[ref].status != "live":
             rows = parts[ref].facts.get("rows_est")
             failed.append(f"{ref}: {parts[ref].status}, not live" + (f" ({rows} rows)" if rows is not None else ""))
@@ -271,19 +278,24 @@ def check_evidence(atlas: BodyAtlasV1, claim: CapacityClaimV1, root: Path, *, id
     else:
         ins = any("in" in d for d in wiring.values())
         outs = any("out" in d for d in wiring.values())
+        live_ids = {pid.removeprefix("part:") for pid in idx.live}
+
+        def _reaches(ref: str) -> bool:  # out to a live service/endpoint, or a channel a live part reads
+            return ref in live_ids or bool(idx.readers.get(ref, set()) - {claim.part_id})
+        acts = any("out" in d and _reaches(w) for w, d in wiring.items())  # writing a table is not acting on a part
         if claim.role == "S2" and not (ins and outs):
             shape_miss = "S2 needs a cited flow in and one out"
-        elif claim.role in ("S3", "S4") and not outs:
+        elif claim.role in ("S3", "S4") and not acts:
             shape_miss = f"{claim.role} needs a cited flow out to another part"
         elif claim.role == "S3*":
             audit = audit if audit is not None else {r.part_id for r in rule_census_reader(idx)}
             if claim.part_id not in audit:
                 shape_miss = "S3* needs R-census-reader to find it listening to the whole body"
-            elif not outs:
-                shape_miss = "S3* needs a cited flow out (it reports back)"
+            elif not acts:
+                shape_miss = "S3* needs a cited flow out to another part (it reports back)"
         elif claim.role == "algedonic":
-            broadcast = broadcast if broadcast is not None else {b.part_id for b in rule_broadcast_keys(atlas, idx)}
-            hit = [w for w in wiring if f"part:{w}" in broadcast and "out" in wiring[w]]
+            broadcast = broadcast if broadcast is not None else rule_broadcast_keys(atlas, idx)
+            hit = [b for b in broadcast if claim.part_id in b.writers and b.part_id.removeprefix("part:") in wiring]
             if not hit:
                 shape_miss = "algedonic needs a cited Redis key it writes that R-broadcast-key finds"
     if shape_miss:
@@ -300,7 +312,7 @@ def check_claims(atlas: BodyAtlasV1, claims: list[CapacityClaimV1], root: Path) 
         return []
     idx = _Index(atlas)
     audit = {r.part_id for r in rule_census_reader(idx)}
-    broadcast = {b.part_id for b in rule_broadcast_keys(atlas, idx)}
+    broadcast = rule_broadcast_keys(atlas, idx)
     return [check_evidence(atlas, c, root, idx=idx, audit=audit, broadcast=broadcast) for c in standing.values()]
 
 

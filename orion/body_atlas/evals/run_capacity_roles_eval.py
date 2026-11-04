@@ -264,10 +264,11 @@ EVIDENCE_EXPECTED = {
 
 
 def _any_ref_holds(real):
-    """The mutant: a claim passes when any reference holds, not every one."""
+    """The mutant: a claim passes when any reference holds, not every one (the shape gate stays)."""
     def mutant(atlas, claim, root, **kw):
         got = real(atlas, claim, root, **kw)
-        return got.model_copy(update={"holds": bool(got.held), "failed": []})
+        shape = [x for x in got.failed if x.startswith("shape:")]
+        return got.model_copy(update={"holds": bool(got.held) and not shape, "failed": shape})
     return mutant
 
 
@@ -299,7 +300,8 @@ def _evidence_failures(path: Path) -> list[str]:
     s5 = C.check_claims(atlas, [r.model_copy(update={"role": "S5"}) for r in recs], _REPO)
     if any(c.holds for c in s5):
         f.append("evidence: an S5 claim passed the code check")
-    vsm = C.load_confirmed(_REPO)
+    # Juniper's real S5 line, but none of her confirmations: any "confirmed by Juniper" is then a leak
+    vsm = C.load_confirmed(_REPO).model_copy(update={"confirmed": [], "rejected": []})
     reading = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm, checks=checks), atlas, vsm, recs, [], checks)
     if any("confirmed by Juniper:" in j.text for j in reading.jobs):
         f.append("evidence: a checked claim printed as Juniper's confirmation")

@@ -155,3 +155,58 @@ def test_a_withdrawn_claim_is_not_checked_and_a_later_claim_stands_again():
     assert C.check_claims(atlas, [claim, back], _REPO) == []
     again = _c("orion-ctl", "S3", S3_OK, at="2026-11-05T05:00:00+00:00")
     assert len(C.check_claims(atlas, [claim, back, again], _REPO)) == 1
+
+
+# --- review findings, 2026-11-04 ------------------------------------------------------------
+
+def test_a_write_time_file_cite_without_an_extension_still_reads_as_a_file():
+    claim = _c("orion-ctl", "S3", S3_OK + " (services/orion-hub/Dockerfile)").model_copy(
+        update={"cites": ["orion-ask-a", "services/orion-hub/Dockerfile"]})
+    chk = _check(_wired(), claim)
+    assert chk.holds, chk.failed
+    assert "services/orion-hub/Dockerfile (file)" in chk.held
+
+
+def test_a_channel_to_a_dormant_part_is_not_live_wiring():
+    atlas = _wired()
+    next(p for p in atlas.parts if p.name == "orion-lanes").status = "dormant"
+    chk = _check(atlas, _c("orion-ctl", "S3", S3_OK))
+    assert not chk.holds and "orion:lanes:set: not on a live flow of orion-ctl" in chk.failed
+
+
+def test_s3_that_only_writes_a_table_does_not_act_on_a_part():
+    chk = _check(_wired(), _c("orion-ledger", "S3", "orion-ledger writes pg:costs every hour"))
+    assert chk.failed == ["shape: S3 needs a cited flow out to another part"]
+
+
+def test_s3star_on_the_census_reader_needs_a_flow_out():
+    # orion-r1 is R-census-reader's hit; it only hears orion:other:chat
+    chk = _check(_wired(), _c("orion-r1", "S3*", "orion-r1 hears orion-other on orion:other:chat"))
+    assert chk.failed == ["shape: S3* needs a cited flow out to another part (it reports back)"]
+
+
+def test_a_passing_claim_on_a_job_a_rule_now_holds_is_not_a_vetoable_role():
+    atlas = _wired()
+    claim = _c("orion-ctl", "S3", S3_OK)
+    checks = C.check_claims(atlas, [claim], _REPO)
+    reading = K.read_capacities(atlas, checks=checks)
+    reading.roles.append(K.RoleEvidenceV1(part_id="part:orion-ctl", role="S3", rule="R-test", strength="rule"))
+    reading.checked = []  # what read_capacities does when a rule holds the job (``taken``)
+    view = K.attach_ledgers(reading, atlas, None, [claim], [], checks)
+    assert [c.status for c in view.claims] == ["rule holds"] and K.vetoable_claims(view) == []
+
+
+def test_a_withdraw_written_before_its_claim_in_the_file_is_read_by_time():
+    atlas = _wired()
+    claim = _c("orion-ctl", "S3", S3_OK, at="2026-11-04T05:00:00+00:00")
+    back = C.withdraw_claim(atlas, [claim], "orion-ctl", "S3", dig="t").model_copy(
+        update={"at": "2026-11-04T06:00:00+00:00"})
+    assert C.check_claims(atlas, [back, claim], _REPO) == []  # out of file order, still withdrawn
+
+
+def test_a_url_in_prose_is_not_an_unknown_id():
+    atlas = _wired()
+    atlas.parts.append(atlas.parts[0].model_copy(update={"part_id": "part:http:anthropic", "name": "http:anthropic",
+                                                           "kind": "endpoint"}))
+    chk = _check(atlas, _c("orion-ctl", "S3", S3_OK + ", see http://example.org/x"))
+    assert chk.holds, chk.failed

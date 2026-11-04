@@ -318,7 +318,10 @@ counts as a role without her yes:
   metabolism any flow). `orion/body_atlas/claims.py` (`check_claims`, `EVIDENCE_SHAPES`).
 - **Prints as EVIDENCE-CHECKED** (code, not Juniper), never as "confirmed by Juniper". It holds
   the job, covers that job's "no part is shown" gap lines like a confirmation, and a capacity
-  sentence may cite it. Juniper's rejection wins over a pass; her confirmation outranks it.
+  sentence may cite it. "Out" for S3, S3* and S4 means reaching a live part (a service or
+  endpoint, or a channel a live part reads); writing a table is not acting on a part. A checked
+  algedonic part is a cap:s5 holder (cap:s5 reports S5 and the pain line), so cap:s5 can be
+  written without Juniper acting; the sentence must still name her (decision 3). Juniper's rejection wins over a pass; her confirmation outranks it.
 - **S5 never passes** (decision 3): S5 claims still wait for Juniper.
 - **Fails** print "evidence does not hold" with the reference that failed, in a "Fix or withdraw"
   block for Orion (`capacity withdraw <part> <job>` is new). Juniper's list is one "may veto"

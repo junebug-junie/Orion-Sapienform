@@ -253,9 +253,9 @@ class EvidenceCheckV1(BaseModel):
 EVIDENCE_SHAPES: dict[str, str] = {
     "S1": "any live flow of the part",
     "S2": "a flow in and a flow out (it hears the parts it coordinates and answers them)",
-    "S3": "a flow out to another part (control acts on others)",
-    "S3*": "R-census-reader finds it listening to the whole body, and it cites a flow out (it reports back)",
-    "S4": "a flow out to another part (what it sees reaches a part that acts)",
+    "S3": "a flow out to a live part, or a channel a live part reads (control acts on others; a table write is not)",
+    "S3*": "R-census-reader finds it listening to the whole body, and it cites a flow out to a live part (it reports back)",
+    "S4": "a flow out to a live part, or a channel a live part reads (what it sees reaches a part that acts)",
     "S5": "never: S5 is shared with Juniper (decision 3), so only she confirms an S5 claim",
     "algedonic": "it writes a Redis key R-broadcast-key finds (read straight by many, past the bus)",
     "metabolism": "any live flow of the part",
@@ -598,9 +598,10 @@ def _confirmed_roles(atlas: BodyAtlasV1, vsm: VsmConfirmedV1 | None) -> tuple[li
 
 def active_claims(claims: list[CapacityClaimV1]) -> dict[tuple[str, str], CapacityClaimV1]:
     """(part, role) -> Orion's standing claim: the latest claim line, unless a later ``withdraw``
-    took it back."""
+    took it back. "Later" is by ``at``, then file order (a merged or hand-edited ledger may be out
+    of order)."""
     out: dict[tuple[str, str], CapacityClaimV1] = {}
-    for c in claims:
+    for _, c in sorted(enumerate(claims), key=lambda ic: (ic[1].at, ic[0])):
         if c.kind == "claim":
             out[(c.part_id, c.role)] = c
         elif c.kind == "withdraw":
@@ -812,6 +813,7 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
     rejected = {(names.get(c.part, f"part:{c.part}"), c.role) for c in (vsm.rejected if vsm else [])}
     ruled = {(r.part_id, r.role) for r in out.roles}
     by_key = {(c.part_id, c.role): c for c in checks or []}
+    checked = {(r.part_id, r.role) for r in out.checked}
     latest: dict[tuple[str, str, str], CapacityClaimV1] = {
         (k[0], k[1], "claim"): c for k, c in active_claims(claims).items()}
     for c in claims:
@@ -830,8 +832,11 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
             status = "confirmed"
         elif key in by_key and c.role != "S5":
             chk = by_key[key]
-            status = "evidence-checked" if chk.holds else "evidence does not hold"
-            failed = [] if chk.holds else chk.failed
+            if chk.holds and key not in checked:  # a rule gives the job now: the claim holds nothing
+                status = "rule holds"
+            else:
+                status = "evidence-checked" if chk.holds else "evidence does not hold"
+                failed = [] if chk.holds else chk.failed
         else:
             status = "unconfirmed"
         out.claims.append(ClaimViewV1(part_id=c.part_id, role=c.role, kind=c.kind, status=status,

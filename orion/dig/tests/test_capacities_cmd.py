@@ -129,7 +129,7 @@ def test_capacities_output_tells_orion_to_write_claims_now_not_offer_them(world,
     code, out, _ = run(capsys, "capacities")
     lines = out.strip().splitlines()
     head = next(i for i, ln in enumerate(lines) if ln.startswith("Unclaimed jobs: "))
-    assert "without asking first" in lines[head] and "a claim is not a role; Juniper reviews it" in lines[head]
+    assert "without asking first" in lines[head] and "code checks the wiring you cite; Juniper may veto" in lines[head]
     ready = [ln for ln in lines[head + 1:] if ln.startswith("  python -P -m orion.dig capacity claim ")]
     jobs = [shlex.split(ln)[7] for ln in ready]
     assert jobs == ["S1", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]  # S2 is held by rule

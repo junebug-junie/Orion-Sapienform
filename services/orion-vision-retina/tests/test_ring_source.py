@@ -990,7 +990,19 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
-def _fcm_push(payload: dict, *, crypto_key_override: str | None = None):
+def _vapid_pub() -> bytes:
+    """A sender's VAPID public key (the ``p256ecdsa`` parameter), 65 bytes."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    return ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+
+
+def _fcm_push(payload: dict, *, crypto_key_override: str | None = None,
+              crypto_key_header: str | None = None, encryption_header: str | None = None):
+    """``crypto_key_header``/``encryption_header``: format strings with ``{dh}``,
+    ``{vapid}`` / ``{salt}`` for the whole header (default ``dh={dh}`` / ``salt={salt}``)."""
     """A real aesgcm-encrypted FCM data message the way FCM sends it since
     2026-10-28: crypto-key and salt WITHOUT base64 padding."""
     import json as _json
@@ -1016,8 +1028,10 @@ def _fcm_push(payload: dict, *, crypto_key_override: str | None = None):
     crypto_key = crypto_key_override if crypto_key_override is not None else _b64(sender_pub).rstrip("=")
     msg = DataMessageStanza(
         persistent_id="pid-1", raw_data=body,
-        app_data=[AppData(key="crypto-key", value="dh=" + crypto_key),
-                  AppData(key="encryption", value="salt=" + _b64(salt).rstrip("=")),
+        app_data=[AppData(key="crypto-key", value=(crypto_key_header or "dh={dh}").format(
+                      dh=crypto_key, vapid=_b64(_vapid_pub()).rstrip("="))),
+                  AppData(key="encryption", value=(encryption_header or "salt={salt}").format(
+                      salt=_b64(salt).rstrip("="))),
                   AppData(key="subtype", value="app")])
     assert not crypto_key.endswith("=") and len(crypto_key) % 4  # really unpadded
     return credentials, msg
@@ -1195,3 +1209,79 @@ def test_a_dead_listener_during_a_live_view_counts_once_and_is_not_a_restart(tmp
     src = asyncio.run(run())
     assert src.consecutive_listener_deaths == 1
     assert src.listener_restarts == 0
+
+
+# --- 2026-11-03 23:48: every push "Invalid EC key" after #3085 -----------------------
+# FCM's crypto-key header is `dh=<key>;p256ecdsa=<vapid key>`, both unpadded.
+# firebase-messaging strips "dh=" and decodes the rest as one value.
+
+LIVE_CRYPTO_KEY = "dh={dh};p256ecdsa={vapid}"
+
+
+def test_unpatched_library_fails_the_live_header_with_incorrect_padding(fcm_client_class):
+    """Stage 1 of the live failure (10-28 .. 11-03)."""
+    import binascii
+
+    credentials, msg = _fcm_push({"ding": 1}, crypto_key_header=LIVE_CRYPTO_KEY)
+    with pytest.raises(binascii.Error, match="Incorrect padding"):
+        _client(fcm_client_class, credentials, [])._handle_data_message(msg)
+
+
+def test_padding_the_whole_header_value_gives_invalid_ec_key():
+    """Stage 2 (the #3085 patch alone, live 11-03 23:48): padding "<key>;p256ecdsa=<vapid>"
+    as one value decodes 137 bytes, which is not a 65-byte P-256 point."""
+    from base64 import urlsafe_b64decode
+
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    _, msg = _fcm_push({"ding": 1}, crypto_key_header=LIVE_CRYPTO_KEY)
+    value = next(ad.value for ad in msg.app_data if ad.key == "crypto-key")[3:]
+    raw = urlsafe_b64decode(rs._b64url_padded(value).encode("ascii"))
+    assert len(raw) == 137
+    with pytest.raises(ValueError, match="Invalid EC key"):
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw)
+
+
+@pytest.mark.parametrize("crypto_key_header,encryption_header", [
+    (LIVE_CRYPTO_KEY, None),
+    ("dh={dh},p256ecdsa={vapid}", None),
+    ("p256ecdsa={vapid};dh={dh}", None),
+    (" dh={dh} ; p256ecdsa={vapid} ", "salt={salt};rs=4096"),
+    ("keyid=p256dh;dh={dh};p256ecdsa={vapid}", "rs=4096;salt={salt}"),
+])
+def test_patched_client_delivers_multi_parameter_headers(fcm_client_class, crypto_key_header, encryption_header):
+    rs.ensure_fcm_push_tolerance()
+    received = []
+    credentials, msg = _fcm_push({"ding": 1}, crypto_key_header=crypto_key_header,
+                                 encryption_header=encryption_header)
+    client = _client(fcm_client_class, credentials, received)
+    asyncio.run(client._handle_message(msg))
+    assert received == [({"ding": 1}, "pid-1")]
+    assert client.acks == ["pid-1"] and rs._FcmSkips.consecutive == 0
+
+
+def test_header_param():
+    assert rs._header_param("dh=AAA;p256ecdsa=BBB", "dh") == "AAA"
+    assert rs._header_param("p256ecdsa=BBB;dh=AAA", "dh") == "AAA"
+    assert rs._header_param("dh=AAA,p256ecdsa=BBB", "dh") == "AAA"
+    assert rs._header_param("DH=AAA=", "dh") == "AAA="
+    assert rs._header_param("p256ecdsa=BBB", "dh") is None
+    assert rs._header_param("", "dh") is None
+
+
+def test_skip_log_shows_header_layout_but_not_values(fcm_client_class):
+    """A future layout change must be readable from the skip line alone."""
+    from loguru import logger
+
+    rs.ensure_fcm_push_tolerance()
+    lines = []
+    sink = logger.add(lines.append, level="WARNING")
+    try:
+        credentials, msg = _fcm_push({"ding": 1}, crypto_key_header="p256ecdsa={vapid}")  # no dh at all
+        value = msg.app_data[0].value
+        asyncio.run(_client(fcm_client_class, credentials, [])._handle_message(msg))
+    finally:
+        logger.remove(sink)
+    line = "".join(str(x) for x in lines)
+    assert "skipped" in line and "crypto-key=[p256ecdsa:87]" in line and "encryption=[salt:22]" in line
+    assert value.split("=", 1)[1] not in line

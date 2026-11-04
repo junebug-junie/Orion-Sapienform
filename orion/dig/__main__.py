@@ -907,6 +907,15 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
              else "S5 waits for Juniper's yes or no" if rec.role == "S5"
              else "code re-checks its wiring on every `capacities` read; while it holds, so does the job; "
              "Juniper may reject it")
+    if verb == "claim" and rec.role != "S5":
+        # the write takes any one cite; every read runs the stricter check. Say its verdict now, so a
+        # claim that fails is never found only on the next read (turn 14cc4d06, 2026-11-04: a re-claim
+        # that said "I drop pg:energy_bill_forecast" still named the dormant table and failed)
+        chk = claims.check_evidence(atlas, rec, now_root())
+        after = (after + "; it holds now" if chk.holds else
+                 "written, but it does NOT hold on today's atlas: " + "; ".join(chk.failed[:3])
+                 + ". Every id the because names counts, even one you mention to drop. Claim it again "
+                 "naming only what holds, or `capacity withdraw`")
     return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
             f"\nclaims ledger: {claims_path()}")
 

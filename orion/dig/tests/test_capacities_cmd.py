@@ -239,3 +239,17 @@ def test_s5_shared_with_juniper_gets_no_ready_claim_line(world, capsys, monkeypa
         assert code == 0, (job, err)
     _, out, _ = run(capsys, "capacities")
     assert "Unclaimed jobs:" not in out and " S5 because" not in out
+
+
+
+def test_claim_write_says_at_once_when_the_read_check_fails(world, capsys, monkeypatch):  # noqa: F811
+    # turn 14cc4d06 (2026-11-04): the write took a claim the next read failed, and nothing said so
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    code, out, err = run(capsys, "capacity", "claim", "watcher", "S3", "because",
+                         "watcher is seen on watch:poke, and llm:reply which is not its flow")
+    assert code == 0, err
+    assert "does NOT hold" in out and "llm:reply" in out and "capacity withdraw" in out
+    code, out, err = run(capsys, "capacity", "claim", "watcher", "S3*", "because",
+                         "watcher reads the health census and pokes on watch:poke")
+    assert code == 0, err
+    assert "it holds now" in out, out

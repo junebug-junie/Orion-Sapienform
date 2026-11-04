@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 from orion.body_atlas.tests.test_capacities import _body
@@ -41,12 +42,12 @@ def _files(world):  # noqa: F811
 def test_capacities_ends_with_a_ready_claim_line_and_help_has_the_rule(world, capsys, monkeypatch):  # noqa: F811
     monkeypatch.setattr(dig, "_live_atlas", _body)
     code, out, _ = run(capsys, "capacities")
-    assert code == 0 and out.strip().splitlines()[-2].startswith("to claim a job: python -P -m orion.dig capacity claim")
+    assert code == 0 and "  python -P -m orion.dig capacity claim '<part>' S4 because" in out
     code, out, _ = run(capsys, "capacity", "help")
     assert code == 0 and "citing by full id a part or channel on one of its flows" in out
     assert "capacity write cap:s2" in out and "a claim never clears" in out
     code, out, _ = run(capsys, "help")
-    assert code == 0 and len(out) <= 2500 and "capacity claim <part> <job> because" in out
+    assert code == 0 and len(out) <= 2750 and "capacity claim <part> <job> because" in out  # HELP text (cap: test_dig.py)
     assert "cite one of its flows by full id or a repo file" in out
 
 
@@ -97,3 +98,80 @@ def test_juniper_confirmation_file_in_the_deployed_checkout_gives_the_role(world
     conf.write_text("confirmed: [{part: gateway, role: nope, date: x}]\n")
     code, _, err = run(capsys, "capacities")
     assert code == 1 and "vsm_confirmed.yaml does not read" in err
+
+
+def test_capacities_output_tells_orion_to_write_claims_now_not_offer_them(world, capsys, monkeypatch):  # noqa: F811
+    # 2026-11-04 (harness transcript 1f8aaec3): Juniper asked what Orion can do; Orion ran
+    # `capacities`, then offered "capacity claim work if you want me to do it". The printout gave
+    # one generic claim line and no instruction to write; the ledger stayed empty.
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    code, out, _ = run(capsys, "capacities")
+    lines = out.strip().splitlines()
+    head = next(i for i, ln in enumerate(lines) if ln.startswith("Unclaimed jobs: "))
+    assert "without asking first" in lines[head] and "a claim is not a role; Juniper reviews it" in lines[head]
+    ready = [ln for ln in lines[head + 1:] if ln.startswith("  python -P -m orion.dig capacity claim ")]
+    jobs = [shlex.split(ln)[7] for ln in ready]
+    assert jobs == ["S1", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]  # S2 is held by rule
+    s3star = next(ln for ln in ready if "'S3*'" in ln)
+    assert "claim watcher 'S3*' because \"<why>\"" in s3star  # the rule's candidate, named
+    assert "# the rule saw:" not in s3star  # its only rule evidence is the census, which is no cite
+    assert lines[-1].startswith("full result: ") and "to claim a job:" not in out
+
+
+def test_a_ready_claim_line_runs_once_its_because_is_filled_and_then_waits_on_juniper(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    _, out, _ = run(capsys, "capacities")
+    line = next(ln for ln in out.splitlines() if "'S3*'" in ln)
+    argv = shlex.split(line)[4:]  # capacity claim watcher S3* because <why>
+    argv[-1] = "watcher reads replies from gateway and pool and reports when they drift"
+    code, claimed, err = run(capsys, *argv)
+    assert code == 0, err
+    assert claimed.startswith("claimed watcher S3* (cites: gateway, pool)")
+    _, out, _ = run(capsys, "capacities")
+    assert "'S3*'" not in out  # claimed: no longer offered
+    assert "Waiting on Juniper (1): ask her yes or no on each" in out
+    assert "  watcher S3*: watcher reads replies from gateway and pool" in out
+
+
+def test_a_rejected_claim_reopens_the_job_without_its_part(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    run(capsys, "capacity", "claim", "watcher", "S3*", "because", "watcher reads replies from gateway and pool")
+    conf = world / "repo" / "config" / "body_atlas" / "vsm_confirmed.yaml"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("rejected:\n  - {part: watcher, role: S3*, date: 2026-11-04}\n")
+    _, out, _ = run(capsys, "capacities")
+    assert "capacity claim '<part>' 'S3*' because" in out and "Waiting on Juniper" not in out
+
+
+def test_the_claim_block_survives_a_cut_printout(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    from orion.body_atlas import capacities as K
+
+    real = K.render
+    monkeypatch.setattr(K, "render", lambda r: real(r) + [f"filler {i} " + "x" * 120 for i in range(40)])
+    code, out, _ = run(capsys, "capacities")
+    assert code == 0 and len(out.splitlines()) <= dig.MAX_LINES and len(out) <= dig.MAX_CHARS
+    assert "the rest is in the file" in out and "Unclaimed jobs: " in out and "claim '<part>' metabolism" in out
+
+
+def test_a_printed_claim_line_run_as_is_is_refused_and_writes_nothing(world, capsys, monkeypatch):  # noqa: F811
+    # review 2026-11-04: an example cite inside the quoted because let the line pass unedited
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    _, out, _ = run(capsys, "capacities")
+    for line in [ln for ln in out.splitlines() if ln.startswith("  python -P -m orion.dig capacity claim ")]:
+        code, _, err = run(capsys, *shlex.split(line, comments=True)[4:])
+        assert code == 1 and ("placeholder" in err or "not a live part" in err), (line, err)
+    code, _, err = run(capsys, "capacity", "claim", "gateway", "S3", "because", "<why; e.g. llm:reply, r0 and more>")
+    assert code == 1 and "placeholder" in err
+    assert not any(f.startswith("self/") for f in _files(world))
+
+
+def test_a_candidate_line_shows_only_the_rules_own_citable_evidence():
+    from orion.body_atlas import capacities as K
+
+    atlas = _body()
+    reading = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [], [])
+    reading.roles.append(K.RoleEvidenceV1(part_id="part:gateway", role="S4", rule="R-test", strength="candidate",
+                                          evidence=["llm:reply", "orion:system:health", "not-a-flow"]))
+    line = next(ln for ln in dig.claim_block(reading, atlas) if " S4 " in ln)
+    assert line.endswith('claim gateway S4 because "<why>"  # the rule saw: llm:reply')

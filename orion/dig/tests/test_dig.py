@@ -147,7 +147,9 @@ def test_printout_caps_keep_the_file_path():
 
 def test_help_fits_and_teaches_the_source_labels(capsys):
     code, out, _ = run(capsys, "help")
-    assert code == 0 and len(out) <= 2500
+    # 2500 -> 2750 (2026-11-04): PR field notes added two lines (spec 2026-11-04-pr-field-notes-design.md);
+    # help loads on demand only, so this guards growth, not every-turn context
+    assert code == 0 and len(out) <= 2750
     for label in ("code_then", "pr_text", "lived_record", "now", "reflection"):
         assert label in out
 
@@ -303,6 +305,9 @@ def test_brief_routes_any_self_request_to_help_not_to_exact_phrases():
         assert topic in DIG_BRIEF_LINE
     # The last line of `capacities` is always "full result: <path>"; never point Orion at it.
     assert "last line" not in DIG_BRIEF_LINE
+    # 2026-11-04: Orion ran `capacities` and offered claims instead of writing them. A claim is not
+    # a role (Juniper reviews each), so writing is the default, said by topic, not by command word.
+    assert "write the claims `capacities` asks for" in DIG_BRIEF_LINE and "Juniper reviews" in DIG_BRIEF_LINE
 
 
 def test_capacities_output_carries_the_line_the_brief_points_at():
@@ -310,3 +315,4 @@ def test_capacities_output_carries_the_line_the_brief_points_at():
     from orion.dig import __main__ as dig_main
 
     assert 'f"to claim a job: {CLAIM_CMD}' in inspect.getsource(dig_main.cmd_capacities)
+    assert "Unclaimed jobs: claim each you can back with evidence now" in inspect.getsource(dig_main.claim_block)

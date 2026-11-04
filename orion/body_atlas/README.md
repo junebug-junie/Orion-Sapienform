@@ -169,6 +169,9 @@ say" line, and a sentence whose holder later loses the role prints STALE. Ledger
 `$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only, partitioned from
 recall (`tests/test_organ_names_partition.py`). The capacity eval also runs the claims floor on
 the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must fail.
+`open_jobs` / `pending_claims` (2026-11-04) feed the `dig capacities` tail: the jobs to claim now
+(no rule or confirmed holder, no claim waiting) and the claims waiting for Juniper's yes or no. A
+capacities turn ends with claims written, not offered; a claim is still never a role.
 
 **HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
 *HTTP:* a service calls another when its code names that service's URL: a string constant that is
@@ -242,3 +245,19 @@ Known gaps (also in every whole-body atlas as `known_gaps`):
   so wildcard catalog entries add no `observed_publish` flows.
 - **Replicas stay separate.** Replicas (`atlas-worker-1`, `-2`) are separate parts that land in
   one organ.
+
+## PR field notes (`field_notes.py`)
+
+After a PR merges, Orion writes 1-5 sentences on what it changed in their body (spec
+`docs/superpowers/specs/2026-11-04-pr-field-notes-design.md`, approved by Juniper 2026-11-04).
+Code builds everything with a right answer: flags (`docs_only`, `tiny_docs`, `deps_only`, `huge`,
+`revert_of`, `authored_by_me`), the body map (`services/<svc>/` -> `part:<svc>` -> organ;
+`orion/<pkg>/` -> importing services), and the spec excerpts. `check()` is the write floor;
+`code_record()` is the no-model record for dependency-only and tiny docs-only PRs (decision 2).
+`authored_by_me` is `yes` only when a PR commit is authored by `orion-fcc@orion-sapienform.local`
+(the harness git identity) or its head branch is local in Orion's sandbox clone; otherwise
+`unknown`, never `no`. Checked 2026-11-04: #1623 (Orion's push proof) reads `yes` on both
+markers, #3090 (an agent PR) reads `unknown`.
+Ledger `$ORION_DIG_HOME/self/pr_field_notes.jsonl`, append-only, partitioned from recall
+(`tests/test_organ_names_partition.py`). Patch 1 is the dig commands only; the durable run and
+poller are Patch 2.

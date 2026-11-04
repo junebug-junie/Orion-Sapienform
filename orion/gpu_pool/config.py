@@ -59,6 +59,11 @@ class Defaults(BaseModel):
     # Stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     # Parsed and validated from 4.1; read by the hold/actuation engine from 4.3.
     hold_clawback_grace_sec: float = Field(600, ge=0)   # a recalled hold finishes its current node within this
+    # A swap seat drained only because BACKGROUND owner work is waiting (today: every diffusion
+    # job) gives a running hold this long instead, so a ~1 min image does not kill a 10-60 min
+    # reading/curiosity turn (live 10-28..11-04: 81 turns killed by gpu2 drains). A non-background
+    # owner arriving later still gets hold_clawback_grace_sec, counted from the recall.
+    background_drain_grace_sec: float = Field(3600, ge=0)
     swap_min_residency_sec: float = Field(600, ge=0)    # after a seat unloads, evicted residents stay this long
     actuate_ack_sec: float = Field(10, gt=0)            # no "accepted" within this -> actuator_unreachable
     # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md).

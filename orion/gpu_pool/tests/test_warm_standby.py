@@ -113,7 +113,7 @@ def test_diffusion_still_evicts_the_warm_seat():
     on_seat = lease("agent", "granted", SEAT, priority="background", kind="hold", retryable=True, lease_id="s")
     img = diffusion(lease_id="img")
     d = sched([on_seat, img], crds=warm)
-    assert [(r.lease_id, r.reason) for r in of(Recall, d)] == [("s", "draining")]
+    assert [(r.lease_id, r.reason) for r in of(Recall, d)] == [("s", "draining_background")]
     assert [(u.role, u.reason) for u in of(SwapUnload, sched([img], crds=warm))] == [(SEAT, "owner_reclaim")]
 
 

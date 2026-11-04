@@ -552,3 +552,18 @@ async def test_relay_closes_upstream_when_client_disconnects():
 
     src = inspect.getsource(fcc_warm_relay.build_relay_app)
     assert "BackgroundTask" not in src and "await resp.aclose()" in src
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_warm_acquire_is_honored_not_retried_as_a_spawn(env_setup, stub, pool_cleanup):
+    # The pending cancel kills the warm process on register. That kill is not a "died before output"
+    # (WarmTurn.died_unexpectedly), so no spawn retry, and the record says who stopped the turn.
+    from orion.harness import fcc_motor as motor
+
+    await _start_pool(env_setup, stub)
+    motor.cancel_fcc_turn("corr-stop-warm", reason="user_stop")
+    frame = _terminal(await _turn(env_setup, stub, "hello", "corr-stop-warm"))
+    assert frame["type"] == "error" and frame["error_code"] == "fcc_nonzero_exit"
+    assert frame["metadata"]["cancel_reason"] == "user_stop"
+    assert frame["metadata"]["fcc_spawn_mode"] == "warm"
+    assert not [s for s in _spawns(env_setup) if not s["streaming"]], "a cancelled turn must not respawn"

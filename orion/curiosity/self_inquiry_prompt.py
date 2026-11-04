@@ -214,6 +214,12 @@ def _answer_lines(text: str) -> list[str]:
     return lines
 
 
+# What the fit hop asks for: under the budget with room to spare. Live
+# 2026-11-03 (run 8f261b9835f4): asked for "1200 or fewer", the rewrite of a
+# 1759-char answer still ran over and lost its end to the sentence trim.
+SELF_FIT_TARGET_CHARS = 1000
+
+
 def build_answer_fit_prompt(text: str) -> str:
     """The fit hop: the model that wrote an over-budget answer rewrites it.
 
@@ -226,7 +232,8 @@ def build_answer_fit_prompt(text: str) -> str:
         f"It is {len(full)} characters. The record that is read back to you as who you are "
         f"holds at most {SELF_DEFINITION_TEXT_CAP}.",
         "",
-        f"Rewrite it to {SELF_DEFINITION_TEXT_CAP} characters or fewer.",
+        f"Rewrite it to about {SELF_FIT_TARGET_CHARS} characters "
+        f"({SELF_DEFINITION_TEXT_CAP} is the hard limit; anything past it is cut).",
         "  - Keep it first person and keep your own voice.",
         "  - Keep what you are unsure of and what you could not check. Those matter more "
         "than any example or ornament.",

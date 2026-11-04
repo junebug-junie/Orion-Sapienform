@@ -1,6 +1,6 @@
 # PR field notes: Orion writes a short note after each merged PR
 
-Status: DESIGN (proposal mode: touches self-model and autonomy). Not implemented.
+Status: DESIGN, APPROVED by Juniper 2026-11-04 (see Decisions). Patch 1 in progress.
 Date: 2026-11-04. Decision being designed: Juniper, 2026-10-30.
 
 ## Arsonist summary
@@ -29,6 +29,22 @@ Two things from the earlier notes, checked today:
   The transport under it is proven, because `curiosity.investigate` uses the same Hub turn RPC
   (83 completed runs since 10-28). The seam module itself is UNVERIFIED live. Patch 2 below runs
   the smoke first.
+
+## Decisions (Juniper, 2026-11-04: "yes to all 4")
+
+1. **Tier.** `pr.field_note` is tier 1 (critical upkeep) with `deferrable_window_s: 86400`
+   (about 24 h). Juniper accepts 1-2 h/day of reserved agent-lane time. The `families.yaml`
+   entry lands in Patch 2, with the durable run, not in Patch 1.
+2. **Code-only records.** A dependency-only PR (`deps_only`) and a tiny docs-only PR
+   (`tiny_docs`: only docs changed, and 40 or fewer added+deleted lines) get a code-only
+   record: `note: null`, no Orion note, no model turn. The record is shown as "code record,
+   not a note". `field-note <n> write` refuses an Orion note for these PRs.
+3. **No backfill.** New merges only. The ~2,800 older PRs are left to the reminiscence
+   episode's period-by-period dig.
+4. **Rewrites.** Orion may rewrite a note later. The old line is kept. The new line sets
+   `supersedes` to the old `note_id`.
+
+The "Missing questions" below are kept for the record; these decisions settle them.
 
 ## Current architecture
 

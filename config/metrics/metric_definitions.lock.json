@@ -1,23 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 787,
+  "metric_count": 786,
   "_last_change": {
-    "change_count": 13,
-    "high_severity_count": 0,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded"
+      "high   removed metric://bus_channel/orion-feedback-runtime/orion:feedback:frame",
+      "high   renamed metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder -> metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime/l7_l11_ladder"
     ]
   },
   "definitions": {
@@ -1673,17 +1662,6 @@
         "orion-hub"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-feedback-runtime/orion:feedback:frame": {
-      "schema_id": "FeedbackFrameV1",
-      "all_producers": [
-        "orion-feedback-runtime"
-      ],
-      "declared_consumers": [
-        "orion-spark-concept-induction"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-field-digester/orion:causal_geometry:snapshot": {
@@ -5767,7 +5745,7 @@
       "notes": "scalar field on RepairPressureAppraisalV1",
       "registry_source": "orion/inner_state_registry.py"
     },
-    "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder": {
+    "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime/l7_l11_ladder": {
       "notes": "cadence=multi_service composition=no_cognition_consumer",
       "registry_source": "orion/inner_state_registry.py"
     },

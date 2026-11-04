@@ -1106,11 +1106,13 @@ async def lifespan(app: FastAPI):
         from app.act_resolver_loop import act_resolver_loop
 
         act_resolver_task = asyncio.create_task(act_resolver_loop(settings))
+    else:
+        logger.info("act ledger resolver DISABLED (SQL_WRITER_ACT_LEDGER_ENABLED / SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC)")
+    # World-action settle scoring (moved from the retired feedback runtime, 2026-11-04). The loop
+    # itself logs DISABLED and returns when SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC <= 0.
     from app.world_settlement_loop import world_settlement_loop
 
     world_settlement_task: asyncio.Task | None = asyncio.create_task(world_settlement_loop(settings))
-    else:
-        logger.info("act ledger resolver DISABLED (SQL_WRITER_ACT_LEDGER_ENABLED / SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC)")
 
     # Hourly kWh per Orion power source, kept after raw watts are pruned (Hub Orion energy tab).
     from app.orion_energy_rollup import orion_energy_rollup_loop

@@ -107,5 +107,9 @@ def test_the_loop_is_on_by_default_and_wired_into_startup():
     from app.settings import Settings
 
     assert Settings.model_fields["sql_writer_world_settlement_interval_sec"].default > 0
+    import ast
+
     main = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
-    assert "world_settlement_loop(settings)" in main
+    tree = ast.parse(main)  # a text match alone passed once while main.py did not even compile
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "world_settlement_loop"]
+    assert calls, "world_settlement_loop(...) is never started in app/main.py"

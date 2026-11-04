@@ -62,7 +62,7 @@ Dominance: the top 10 by activation are identical in both modes (seed concepts O
 ## Person sighting replay eval (14 days, live Postgres, read-only)
 
 ```text
---propagation-decay-mode source       : persons 11, clusters 60, active person-hours 845, top Amanda 23.43% (limit 25%), flood 0, fenced 0, not resting 0 -> PASS
+--propagation-decay-mode source       : persons 11, clusters 60, active person-hours 845, top person 23.43% (limit 25%), flood 0, fenced 0, not resting 0 -> PASS
 --propagation-decay-mode receiver_age : identical -> PASS
 synthetic (both modes)                : top share 20.59% -> PASS
 ```

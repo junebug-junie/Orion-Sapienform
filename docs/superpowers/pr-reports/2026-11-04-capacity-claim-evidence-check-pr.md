@@ -1,10 +1,10 @@
 ## Summary
 
-- Code now checks Orion's capacity claims against the live body atlas on every `dig capacities` read, so Juniper does not have to say yes or no to each one.
-- A claim passes only when every id it names is wired to the claimed part by a live flow, every file it cites exists, and the wiring fits the job. A passing claim counts as a role. It prints as EVIDENCE-CHECKED and never as "confirmed by Juniper".
-- A claim that fails prints "evidence does not hold" and names the reference that failed. It goes into a "Fix or withdraw" block for Orion. The new `capacity withdraw <part> <job>` command takes a claim back.
-- S5 claims never pass the check (decision 3), so they still wait for Juniper. A rejection from her beats a passing check, and a confirmation from her outranks one.
-- Nothing is stored. The check runs again on every read, so a claim drops back as soon as its wiring leaves the atlas.
+- This PR builds on PR #3107 (merged 06:29Z), which let a claim hold its job while its evidence still checked. It does not compete with it: there is still one mechanism, #3107's hold seam (`CLAIMS_HOLD`, `claims.recheck`, `_claim_status`). This PR makes the check behind that seam stricter.
+- The new check (`claims.check_evidence`) passes a claim only when every id the claim names is wired to the claimed part by a live flow, every repo file it cites exists, and the wiring fits the job. #3107's check passed a claim when any one id still checked.
+- A claim that passes prints as EVIDENCE-CHECKED ("code, not Juniper"), never as "confirmed by Juniper". It closes the job's "no part is shown" gap lines, the same way a confirmation does. That reverses #3107's rule that a claim never clears a gap line; the spec records the change in a dated note.
+- An S5 claim never holds through the code check, so it still waits for Juniper. If Juniper rejects a claim, her rejection wins over the check. Her confirmation outranks a passing check.
+- A claim that fails prints "evidence does not hold" and names the reference that failed. It goes into a "Fix or withdraw" block. The new `capacity withdraw <part> <job>` command takes a claim back. Juniper's part is one "may veto" line, not a queue she must answer.
 
 ## Outcome moved
 
@@ -22,9 +22,35 @@ With these results, 2 gap lines close: no confirmed audit (S3*) and no pain line
 
 Limit: the check matches ids. It proves that each cited thing is wired to the part. It does not prove that the sentence about it is true.
 
+## What #3107 did: kept vs replaced
+
+Kept from #3107:
+- the one hold mechanism: `CLAIMS_HOLD` (the rollback switch), `claims.recheck` (the seam), and the order of the checks in `_claim_status`;
+- `reading.claimed` and strength `claimed`;
+- the "rule says no" check (a near miss means "not S2") and the "disputed" check (a later dispute of Orion's);
+- "rule gives it";
+- a confirmation outranking a claim;
+- a held claim counting as a capacity holder;
+- `body <part>`.
+
+Replaced:
+- the recheck itself: it was the floor used when the claim is written (any one id still checks); it is now `check_evidence` (every id, plus the shape of the job);
+- the labels: CLAIMED became EVIDENCE-CHECKED ("code, not Juniper"); `claimed` became `evidence-checked`; `evidence gone` became `evidence does not hold`, and the claim now names the reference that failed;
+- "a claim never clears a gap line": a passing claim now covers "no part is shown" gaps, and `gap:s4-to-s3` is checked against claimed parts too;
+- "Evidence gone" in the dig tail became "Fix or withdraw", which also lists failing claims on jobs another part holds;
+- S5 no longer holds through the code check;
+- new: `capacity withdraw`, and the one-line "Juniper may veto".
+
 ## Current architecture
 
-Before this change (PR #3096), `dig capacities` printed each claim as "unconfirmed" and listed it under "Waiting on Juniper". A claim held no role until Juniper confirmed it in `config/body_atlas/vsm_confirmed.yaml`.
+#3107 is on main. A claim holds its job (CLAIMED) while, on each read, all of these are true:
+- its part is live;
+- its because still passes the floor used when the claim is written (at least one cited id is on a flow of the part);
+- Juniper has not rejected it;
+- no near-miss rule says "not S2";
+- no later dispute of Orion's stands against it.
+
+A claim never clears a gap line.
 
 ## Architecture touched
 
@@ -54,18 +80,17 @@ These are local files only: no bus, schema registry, env or DB change.
 ## Tests run
 
 ```text
-pytest orion/body_atlas/tests orion/dig/tests tests/test_organ_names_partition.py -q  -> 318 passed
+pytest orion/body_atlas/tests orion/dig/tests tests/test_organ_names_partition.py -q  -> 342 passed
 ```
 
 ## Evals run
 
 ```text
-run_capacity_roles_eval.py -> all PASS; evidence check (5 live claims on 10-31 body) PASS;
-  mutation (any reference holds, not every one) CAUGHT; earlier mutations CAUGHT
+run_capacity_roles_eval.py -> all PASS. Claims floor PASS. 7 claim mutants CAUGHT (stored cites
+  trusted, rejected, dead part, rule says no, disputed, S5 holds, a held claim clears an atlas-blind
+  gap). Evidence check on the 5 live claims (10-31 body) PASS. Any-reference mutant CAUGHT.
 run_wire_eval.py, run_organ_structure_eval.py, run_store_direction_eval.py -> exit 0
 ```
-
-On the 10-31 fixture, the durable-runs claim fails because `redis:orion:self_monitor:latest` was not in the atlas yet. That is the "wiring disappears, claim drops back" case, shown on real data.
 
 ## Docker/build/smoke checks
 
@@ -94,6 +119,23 @@ orion-athena-harness-governor, and this branch's code was run against them. The 
 - Finding: withdraw was read by file order.
   - Fix: claims and withdraws fold by `at`, then file order. Evidence: a regression test.
 - Nits fixed: a URL in prose is no longer read as an id; the census comparison ignores case; a host gets its own "placement, not evidence" message; the decision note says a checked algedonic part makes cap:s5 writable (the sentence must still name Juniper).
+
+Review of the reconciled diff, after the merge with #3107:
+- Finding: the README still had #3107's eval and tail text.
+  - Fix: rewritten.
+- Finding: a failing claim on a job that another part holds showed in no list.
+  - Fix: `failed_claims` lists every failing claim. Evidence: test updated.
+- Finding: disputes were read in file order, while claims were read by time.
+  - Fix: both are now read by `at`, then file order.
+- Finding: no test covered the S4-to-S3 recheck with claimed parts.
+  - Fix: `test_s4_s3_gap_is_rechecked_with_parts_held_by_passing_claims`.
+- Nits fixed:
+  - the `cites_in` docstring;
+  - a test name;
+  - the `evidence` field comment;
+  - the "S5 is hers" wording, now shown only when every waiting claim is S5;
+  - the #3107 spec section, now marked as superseded;
+  - the eval's gap comment.
 
 ## Restart required
 

@@ -840,7 +840,8 @@ def claim_block(reading, atlas) -> list[str]:
             lines.append(f"  +{len(failed) - MAX_FAILED_SHOWN} more in the full result")
     waiting = capacities.pending_claims(reading)
     if waiting:
-        lines.append(f"Waiting on Juniper ({len(waiting)}; S5 is hers, code cannot check it): ask her yes or no "
+        why = "; S5 is hers, code cannot check it" if all(c.role == "S5" for c in waiting) else ""
+        lines.append(f"Waiting on Juniper ({len(waiting)}{why}): ask her yes or no "
                      "(answers go in config/body_atlas/vsm_confirmed.yaml):")
         lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_FAILED_SHOWN]]
         if len(waiting) > MAX_FAILED_SHOWN:

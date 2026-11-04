@@ -176,7 +176,8 @@ def _because(text: str) -> str:
 def cites_in(reading: CapacityReadingV1, atlas: BodyAtlasV1, part_id: str, because: str, root: Path) -> list[str]:
     """What ``because`` cites that counts as evidence for a claim on this part: by full id, the other
     end or a non-census channel of one of its flows, or a repo file that exists. Empty: no evidence.
-    The floor a claim must pass when written, and again on every read (``recheck``)."""
+    The floor a claim must pass when written; on every read ``recheck`` runs the stricter
+    ``check_evidence`` instead."""
     census = {c.channel for c in reading.census if c.census}
     low = _plain(because)
     cites = sorted(e for e in evidence_ids(atlas, part_id, census) if _cited(e, low))

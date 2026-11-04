@@ -107,7 +107,7 @@ class RoleEvidenceV1(BaseModel):
     role: Job
     rule: str
     strength: Literal["rule", "candidate", "confirmed", "claimed"]  # claimed: a claim code's evidence check passes
-    evidence: list[str] = Field(default_factory=list)  # channels / flows, by full id
+    evidence: list[str] = Field(default_factory=list)  # channels / flows by full id; a claimed role: "<id> (in/out)" or "<path> (file)"
     counts: dict[str, int] = Field(default_factory=dict)
 
 
@@ -838,7 +838,7 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
     held = {(r.part_id, r.role) for r in out.roles + out.confirmed if r.strength != "candidate"}
     not_s2 = {n.part_id for n in out.near_misses}
     latest: dict[tuple[str, str, str], CapacityClaimV1] = {}
-    for c in claims:
+    for _, c in sorted(enumerate(claims), key=lambda ic: (ic[1].at, ic[0])):  # by time, as active_claims
         if c.kind == "dispute":
             latest[(c.part_id, c.role, c.kind)] = c
     for k, c in active_claims(claims).items():
@@ -942,11 +942,10 @@ def open_jobs(reading: CapacityReadingV1) -> list[tuple[Job, list[str]]]:
 
 def failed_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
     """Orion's claims whose evidence does not hold on this read (each names the reference that
-    failed): Orion fixes or withdraws them, oldest first. A job some part holds now (rule,
-    confirmation or another claim) is left out: nothing to re-claim."""
-    held = {r.role for r in reading.roles + reading.confirmed + reading.claimed if r.strength != "candidate"}
-    return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "evidence does not hold"
-                   and c.role not in held), key=lambda c: c.at)
+    failed): Orion fixes or withdraws each, oldest first. Listed even when another part holds the
+    job: a false claim should not stand in the ledger unnoticed."""
+    return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "evidence does not hold"),
+                  key=lambda c: c.at)
 
 
 def pending_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:

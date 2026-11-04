@@ -86,7 +86,7 @@ def _job(view, job):
 S3_BECAUSE = "gateway sends its answers out on llm:reply to the callers"
 
 
-def test_a_claim_whose_evidence_checks_holds_its_role_and_is_citable_but_clears_no_gap():
+def test_a_claim_whose_evidence_checks_holds_its_role_and_is_citable_and_clears_no_atlas_blind_gap():
     atlas = _body()
     r = K.read_capacities(atlas)
     claim = _claim(r, atlas, "gateway", "S3", S3_BECAUSE)
@@ -378,7 +378,7 @@ def test_s5_claims_never_hold_and_a_checked_claim_covers_only_the_gaps_a_confirm
     assert any(g.gap_id == "gap:s3-unseen" for g in view.gaps)  # an atlas-blind gap stays
 
 
-def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_skips_held_jobs():
+def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_a_failing_one_still_lists():
     atlas = _body()
     claim = _claim(K.read_capacities(atlas), atlas, "w0", "S1", "w0 announces itself to pool on worker:announce")
     r = K.read_capacities(atlas)  # later, a rule gives w0 S1 (added by hand, as a rule result would be)
@@ -388,4 +388,5 @@ def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_sk
     assert "rule gives it: w0 S1" in "\n".join(K.render(view))
     gone = K.attach_ledgers(r, atlas, None, [claim], [], recheck=_gone)
     assert [c.status for c in gone.claims] == ["evidence does not hold"]
-    assert K.failed_claims(gone) == []  # S1 is held by rule now: nothing to re-claim
+    # S1 is held by rule now, but a false claim still shows, to fix or withdraw
+    assert [(c.part_id, c.role) for c in K.failed_claims(gone)] == [("part:w0", "S1")]

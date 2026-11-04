@@ -318,8 +318,10 @@ def _claims_failures(path: Path) -> list[str]:
         f.append(f"the full-ledger case lacks a status: {sorted(required - {c.status for c in big.claims})}")
     if any(r.role == "S5" for r in big.claimed):
         f.append(MUTANTS["s5"])
-    # a held S4 (orion-world-pulse) must leave every atlas-blind gap (gap:s4-to-s3 included) standing
-    blind = {g.gap_id for g in base.gaps if g.gap_id not in K.COVERED_BY_CONFIRMATION}
+    # a held S4 (orion-world-pulse) must leave every atlas-blind gap standing (on this bus-only body,
+    # gap:s4-to-s3 is the bus line no claim can answer; with wires it is rechecked, not a blind gap)
+    blind = {g.gap_id for g in base.gaps if g.gap_id not in K.COVERED_BY_CONFIRMATION
+             and not (big.wires is not None and g.gap_id == "gap:s4-to-s3")}
     if not any(r.role == "S4" for r in big.claimed) or not blind <= {g.gap_id for g in big.gaps}:
         f.append(MUTANTS["gap"])
     big.notes += [f"note {i}: " + "n" * 120 for i in range(3)]

@@ -361,6 +361,9 @@ false shapes the scan refuses: `orion/body_atlas/README.md`. Choices made while 
 
 ## Decision change 2026-11-04: a claim holds when its evidence checks
 
+(Superseded the same day for the recheck, the vocabulary and gap lines: see "Decision change
+2026-11-04 (second)" below.)
+
 **What changed.** Before, a claim never held a role until Juniper confirmed it in
 `config/body_atlas/vsm_confirmed.yaml` (decision 1, section 3). Now a claim holds its role, with
 a new strength `claimed`, when every read finds all of these (computed fresh, never stored):

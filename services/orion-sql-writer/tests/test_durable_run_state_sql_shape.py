@@ -79,3 +79,18 @@ def test_harness_echo_smoke_state_is_accepted_by_real_writer_route():
     })
     values = event.model_dump(exclude={"schema_version"})
     assert model(**values).workflow == "harness.echo_smoke"
+
+
+def test_pr_field_note_state_is_accepted_by_real_writer_route():
+    # Consumer side of PR field notes Patch 2 (orion/schemas/pr_field_note_run.py): sql-writer must accept
+    # the new workflow value before orion-durable-runs submits the first pr.field_note run.
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "pr-field-note-3105", "workflow": "pr.field_note",
+        "thread_id": "pr-field-note-3105", "node": "finish",
+        "status": "completed", "correlation_id": "trace-fn",
+        "detail": {"line": "pr_field_note", "pr_number": 3105, "outcome": "noted",
+                   "note_id": "fn:3105:0123456789", "turn_correlation_id": "c-1"},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "pr.field_note"

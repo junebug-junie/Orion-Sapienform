@@ -77,8 +77,8 @@ def test_citable_ids_are_exactly_what_claims_accepts_and_the_first_one_writes_a_
     assert dig.claims_path().exists()
     # and the claim now shows on the part
     _, out3, _ = run(capsys, "body", "gateway")
-    assert "my claims: S3 claim: holds (evidence checks)" in out3  # 2026-11-04: a checked claim holds
-    assert "jobs: S3 claimed" in out3 and "(claimed)" not in out3  # one of its jobs, said once
+    assert "my claims: S3 claim: holds (evidence-checked by code)" in out3  # 2026-11-04: a checked claim holds
+    assert "S3 claimed (evidence-checked)" in out3  # and it is one of the part's jobs
 
 
 def test_the_ready_line_as_printed_is_refused_for_its_placeholder(world, capsys, monkeypatch):  # noqa: F811

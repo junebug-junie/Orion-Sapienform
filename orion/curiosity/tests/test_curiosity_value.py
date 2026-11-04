@@ -8,8 +8,10 @@ import math
 import pytest
 
 from orion.curiosity.value import (
+    ARM_REPLICA_ORDER,
     ARM_UNCERTAINTY_ORDER,
     ARM_VALUE_ORDER,
+    OFFER_ARMS,
     COLD_POOL_YIELD,
     KIND_FORMED,
     KIND_MOVED_UNTESTED,
@@ -26,6 +28,7 @@ from orion.curiosity.value import (
     entropy_nats,
     index_states,
     kl_nats,
+    draw_offer_arm,
     offer_arm,
     prior_tests_from_rows,
     raw_yield,
@@ -400,3 +403,64 @@ def test_offer_arm_at_propensity_one_is_always_the_value_arm() -> None:
     assert 0xFFFFFFFF / float(2**32) < 1.0
     ids = [f"{i:012x}" for i in range(5000)]
     assert all(offer_arm(i, enabled=True, propensity=1.0) == (ARM_VALUE_ORDER, 1.0) for i in ids)
+
+
+# --- the three-way draw (curiosity replica, 2026-11-04 design section 5) ---------------------
+
+
+def _old_two_arm(run_id: str, enabled: bool, propensity: float) -> tuple[str, float]:
+    """The two-arm draw exactly as it was before the replica arm existed (PR history), as a reference."""
+    import hashlib
+
+    p = min(1.0, max(0.0, float(propensity))) if enabled else 0.0
+    if p <= 0.0:
+        return ARM_UNCERTAINTY_ORDER, 0.0
+    digest = hashlib.sha256(f"curiosity-offer-arm:{run_id}".encode("utf-8")).hexdigest()
+    draw = int(digest[:8], 16) / float(2**32)
+    return (ARM_VALUE_ORDER if draw < p else ARM_UNCERTAINTY_ORDER), p
+
+
+def test_with_no_replica_propensity_every_run_keeps_its_two_arm_assignment() -> None:
+    ids = [f"{i:032x}" for i in range(3000)]
+    for enabled, p in ((True, 0.5), (False, 0.5), (True, 0.0), (True, 1.0), (True, 0.3333)):
+        for i in ids:
+            draw = draw_offer_arm(i, value_enabled=enabled, value_propensity=p)
+            assert (draw.arm, draw.value_arm_propensity) == _old_two_arm(i, enabled, p)
+            assert offer_arm(i, enabled=enabled, propensity=p) == _old_two_arm(i, enabled, p)
+            assert draw.arm != ARM_REPLICA_ORDER
+            assert draw.propensities[ARM_REPLICA_ORDER] == 0.0
+
+
+def test_the_live_hub_config_records_a_fifty_fifty_draw_with_the_replica_at_zero() -> None:
+    draw = draw_offer_arm(RUN, value_enabled=True, value_propensity=0.5)
+    assert draw.propensities == {ARM_VALUE_ORDER: 0.5, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 0.5}
+
+
+def test_three_way_draw_is_roughly_a_third_each_and_deterministic() -> None:
+    ids = [f"{i:032x}" for i in range(6000)]
+    third = 1 / 3
+    draws = [draw_offer_arm(i, value_enabled=True, value_propensity=third,
+                            replica_enabled=True, replica_propensity=third) for i in ids]
+    for arm in OFFER_ARMS:
+        share = sum(d.arm == arm for d in draws) / len(draws)
+        assert 0.30 < share < 0.37, (arm, share)
+    assert draws[0] == draw_offer_arm(ids[0], value_enabled=True, value_propensity=third,
+                                      replica_enabled=True, replica_propensity=third)
+    assert abs(sum(draws[0].propensities.values()) - 1.0) < 1e-12
+    # Value band unchanged by adding the replica: a run on the value arm before stays there.
+    for i, d in zip(ids, draws):
+        if _old_two_arm(i, True, third)[0] == ARM_VALUE_ORDER:
+            assert d.arm == ARM_VALUE_ORDER
+
+
+def test_replica_switch_off_ignores_its_propensity_and_overfull_propensities_scale_down() -> None:
+    off = draw_offer_arm(RUN, value_enabled=True, value_propensity=0.5,
+                         replica_enabled=False, replica_propensity=0.9)
+    assert off.propensities[ARM_REPLICA_ORDER] == 0.0
+    full = draw_offer_arm(RUN, value_enabled=True, value_propensity=0.75,
+                          replica_enabled=True, replica_propensity=0.75)
+    assert full.propensities == {ARM_VALUE_ORDER: 0.5, ARM_REPLICA_ORDER: 0.5, ARM_UNCERTAINTY_ORDER: 0.0}
+    assert full.arm in (ARM_VALUE_ORDER, ARM_REPLICA_ORDER)
+    only = draw_offer_arm(RUN, value_enabled=False, value_propensity=0.5,
+                          replica_enabled=True, replica_propensity=1.0)
+    assert only.arm == ARM_REPLICA_ORDER and only.value_arm_propensity == 0.0

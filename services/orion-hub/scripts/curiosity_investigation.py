@@ -218,7 +218,7 @@ from orion.curiosity.value import (
     YieldModel,
     build_yield_model,
     diff_snapshots,
-    offer_arm,
+    draw_offer_arm,
     revision_agreement,
     valid_confidence,
 )
@@ -1426,6 +1426,7 @@ class CuriosityInvestigation:
         view: WorldviewSnapshot,
         material: StudyMaterial,
         model: YieldModel,
+        arm_propensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         if not self.spend_log_enabled:
             return
@@ -1437,6 +1438,7 @@ class CuriosityInvestigation:
             run_id=run_id,
             arm=arm,
             value_arm_propensity=value_arm_propensity,
+            arm_propensities=arm_propensities,
             offered=offered_rows(view.live_priors, model),
             stale_offered=offered_rows(view.stale_priors, model),
             material_ids=material_ids,
@@ -2455,9 +2457,16 @@ class CuriosityInvestigation:
         # first, or expected belief change (entropy x measured learning
         # yield). A per-run random arm, so the two can be compared; with the
         # switch off every run is the uncertainty arm. See orion/curiosity/value.py.
-        arm, value_arm_propensity = offer_arm(
-            run_id, enabled=self.value_order_enabled, propensity=self.value_order_propensity
+        # The draw is three-way (value / replica / uncertainty), but no replica propensity is passed:
+        # the curiosity replica cannot answer a plan request yet (patch 3 of
+        # docs/superpowers/specs/2026-11-04-curiosity-replica-design.md), so no run is drawn onto it
+        # and every run gets exactly the two-arm draw it got before.
+        draw = draw_offer_arm(
+            run_id,
+            value_enabled=self.value_order_enabled,
+            value_propensity=self.value_order_propensity,
         )
+        arm, value_arm_propensity = draw.arm, draw.value_arm_propensity
         yield_model = await self._load_yield_model()
         expected_nats_for = (
             (
@@ -2477,6 +2486,7 @@ class CuriosityInvestigation:
             run_id=run_id,
             arm=arm,
             value_arm_propensity=value_arm_propensity,
+            arm_propensities=draw.propensities,
             view=view,
             material=material,
             model=yield_model,

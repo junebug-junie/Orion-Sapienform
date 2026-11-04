@@ -205,6 +205,51 @@ class PrimeSnapshotV1(BaseModel):
     body_ok: bool = False
 
 
+# Prime's first published call (curiosity replica design 2026-11-04, section 2): a read-only view of its
+# open concerns, so another loop instance (the curiosity replica) can read what Prime is concerned about
+# without touching Prime's private state. Written to this Redis key as JSON; the writer lands with the
+# replica that reads it (patch 3), so nothing writes or reads the key yet.
+PRIME_CONCERNS_KEY = "orion:prime:concerns"
+
+
+class PrimeConcernViewV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    concern_id: str
+    text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
+    # Hours since Prime opened it.
+    age_h: float = Field(ge=0.0)
+    arc_id: Optional[str] = None
+
+
+class PrimeConcernsViewV1(BaseModel):
+    """What Prime publishes about its open concerns: ids, words, age and arc. No bets, no outcomes, no
+    track record -- those stay Prime's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["prime.concerns.view.v1"] = "prime.concerns.view.v1"
+    as_of: AwareDatetime
+    concerns: list[PrimeConcernViewV1] = Field(default_factory=list, max_length=MAX_CONCERNS)
+
+
+def concerns_view(state: PrimeStateV1, *, now: datetime) -> PrimeConcernsViewV1:
+    """The published view of ``state``'s open concerns (a concern already graded is closed, so left out)."""
+    return PrimeConcernsViewV1(
+        as_of=now,
+        concerns=[
+            PrimeConcernViewV1(
+                concern_id=c.concern_id,
+                text=c.text,
+                age_h=max(0.0, (now - c.opened_at).total_seconds() / 3600.0),
+                arc_id=c.arc_id,
+            )
+            for c in state.concerns
+            if c.graded is None
+        ][:MAX_CONCERNS],
+    )
+
+
 def _push(items: list[str], text: str, cap: int) -> list[str]:
     out = [*items, text]
     return out[-cap:]
@@ -308,13 +353,17 @@ __all__ = [
     "MAX_CONCERNS",
     "ConcernEnd",
     "MAX_CONCERN_RECORD",
+    "PRIME_CONCERNS_KEY",
     "PrimeConcernRecordV1",
     "PrimeConcernV1",
+    "PrimeConcernViewV1",
+    "PrimeConcernsViewV1",
     "PrimeNominationV1",
     "PrimeRegulationOpenV1",
     "PrimeSnapshotV1",
     "PrimeStateV1",
     "close_concern",
+    "concerns_view",
     "new_id",
     "note_change",
     "note_outcome",

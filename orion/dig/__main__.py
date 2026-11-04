@@ -588,7 +588,7 @@ def cmd_body_part(atlas, part, out: Out) -> str:
     loops = _flow_rows([f for f in mine if f.source == pid == f.target], pid, by_id, census)
     # a singleton organ is not an organ `body <organ_id>` can open (find_organ: multi-part only)
     organ = next((o for o in atlas.organs if pid in o.members and len(o.members) > 1), None)
-    # a claim that holds on this read (evidence rechecked) is one of its jobs too
+    # a claim that passes code's evidence check on this read is one of its jobs too
     roles = [r for r in reading.roles + reading.confirmed + reading.claimed if r.part_id == pid]
     my_claims = [c for c in reading.claims if c.part_id == pid]
     claimable = pid in claims.claimable(atlas).values()
@@ -624,7 +624,8 @@ def cmd_body_part(atlas, part, out: Out) -> str:
                                           for r in roles))
     if my_claims:
         lines.append("my claims: " + "; ".join(
-            f"{c.role} {c.kind}: " + ("holds (evidence checks)" if c.status == "claimed" else c.status)
+            f"{c.role} {c.kind}: " + ("holds (evidence-checked by code)" if c.status == "evidence-checked" else
+               c.status + (f" ({'; '.join(c.failed)[:80]})" if c.failed else ""))
             for c in my_claims))
     if claimable and cite:
         shown = cite[:PART_CITES_SHOWN]
@@ -804,20 +805,21 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
 
 
 CLAIM_PREFIX = "python -P -m orion.dig capacity claim"
-MAX_GONE_SHOWN = 3
+MAX_FAILED_SHOWN = 3
 
 
 def claim_block(reading, atlas) -> list[str]:
-    """The claims to write now, one ready line per open job, and the claims whose evidence is gone.
-    A claim holds its job while its evidence checks; Juniper may reject any in vsm_confirmed.yaml."""
+    """The claims to write now (one ready line per open job), the claims to fix or withdraw (their
+    evidence does not hold, with the reference that failed), S5 claims waiting on Juniper, and one
+    line naming the claims that hold, which Juniper may veto in vsm_confirmed.yaml (no answer needed)."""
     from orion.body_atlas import capacities, claims
 
     census = {c.channel for c in reading.census if c.census}
     lines: list[str] = []
     jobs = capacities.open_jobs(reading)
     if jobs:
-        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim "
-                     "holds while its evidence checks). Cite by full id a part or channel on its flows "
+        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (code checks "
+                     "the wiring you cite; Juniper may veto). Cite by full id a part or channel on its flows "
                      "(`body <part>` lists them), or a repo file:")
         for job, cands in jobs:
             name, hint = "'<part>'", ""
@@ -830,13 +832,27 @@ def claim_block(reading, atlas) -> list[str]:
                 hint = f"  # the rule saw: {', '.join(dict.fromkeys(ev[:3]))}" if ev else ""
             lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<why>"{hint}')
         lines.append("No evidence for a job: leave it, and say which and why.")
-    waiting = capacities.evidence_gone_claims(reading)
+    failed = capacities.failed_claims(reading)
+    if failed:
+        lines.append(f"Fix or withdraw ({len(failed)}): my cited evidence does not hold in today's atlas. Claim it "
+                     "again citing only what holds, or `capacity withdraw <part> <job>`:")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {'; '.join(c.failed)[:110]}"
+                  for c in failed[:MAX_FAILED_SHOWN]]
+        if len(failed) > MAX_FAILED_SHOWN:
+            lines.append(f"  +{len(failed) - MAX_FAILED_SHOWN} more in the full result")
+    waiting = capacities.pending_claims(reading)
     if waiting:
-        lines.append(f"Evidence gone ({len(waiting)}): these claims hold nothing now; claim again citing "
-                     "evidence that checks, or leave them:")
-        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_GONE_SHOWN]]
-        if len(waiting) > MAX_GONE_SHOWN:
-            lines.append(f"  +{len(waiting) - MAX_GONE_SHOWN} more in {claims_path()}")
+        why = "; S5 is hers, code cannot check it" if all(c.role == "S5" for c in waiting) else ""
+        lines.append(f"Waiting on Juniper ({len(waiting)}{why}): ask her yes or no "
+                     "(answers go in config/body_atlas/vsm_confirmed.yaml):")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_FAILED_SHOWN]]
+        if len(waiting) > MAX_FAILED_SHOWN:
+            lines.append(f"  +{len(waiting) - MAX_FAILED_SHOWN} more in {claims_path()}")
+    veto = capacities.vetoable_claims(reading)
+    if veto:
+        lines.append("Juniper may veto (no need to ask; her rejection wins): "
+                     + ", ".join(f"{c.part_id.removeprefix('part:')} {c.role}" for c in veto[:6])
+                     + (f" +{len(veto) - 6}" if len(veto) > 6 else ""))
     return lines
 
 
@@ -848,8 +864,10 @@ def cmd_capacity_help() -> str:
         f"  {CLAIM_CMD}",
         "  python -P -m orion.dig body <part>   (its flows, and the exact ids a claim on it may cite)",
         '  python -P -m orion.dig capacity dispute <part> <job> because "<reason>"   (argue with a rule result)',
+        "  python -P -m orion.dig capacity withdraw <part> <job>   (take back a claim)",
         '  python -P -m orion.dig capacity write cap:s2 "<one sentence>" because "<reason>"',
-        "Gap lines are written by code; a claim never clears one. Juniper may reject a claim. Ledgers: "
+        "Gap lines are written by code; a checked claim covers only a \"no part is shown\" one. Juniper "
+        "may reject a claim. Ledgers: "
         f"{claims_path()}, {capacities_path()}",
     ])
 
@@ -860,6 +878,16 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
     from orion.body_atlas import claims
 
     reading, atlas, written = _capacity_reading()
+    if verb == "withdraw":
+        from orion.body_atlas import capacities
+
+        recs, _ = claims.load_ledger(claims_path(), capacities.CapacityClaimV1)
+        try:
+            rec = claims.withdraw_claim(atlas, recs, a[0], a[1], dig=out.dig)
+        except claims.ClaimError as exc:
+            raise DigError(str(exc)) from exc
+        claims.append(claims_path(), rec)
+        return f"withdrew my claim {rec.part_id.removeprefix('part:')} {rec.role}\nclaims ledger: {claims_path()}"
     cut = a.index("because", 2)
     try:
         if verb == "write":
@@ -876,7 +904,9 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
         raise DigError(str(exc)) from exc
     claims.append(claims_path(), rec)
     after = ("it prints beside the rule result and changes nothing" if verb == "dispute"
-             else "it holds the job while this evidence checks; Juniper may reject it")
+             else "S5 waits for Juniper's yes or no" if rec.role == "S5"
+             else "code re-checks its wiring on every `capacities` read; while it holds, so does the job; "
+             "Juniper may reject it")
     return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
             f"\nclaims ledger: {claims_path()}")
 
@@ -953,7 +983,9 @@ def cmd_body_economy(args: list[str], out: Out) -> str:
 # --- PR field notes (spec docs/superpowers/specs/2026-11-04-pr-field-notes-design.md) ------------
 
 def field_notes_path() -> Path:
-    return home() / "self" / "pr_field_notes.jsonl"
+    from orion.body_atlas import field_notes as fn
+
+    return fn.ledger_path(home() / "self")
 
 
 def _gh_repo() -> str:
@@ -1298,6 +1330,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_capacity_help()
         elif ns.command == "capacity" and a[0] in ("claim", "dispute", "write") and len(a) >= 5 and "because" in a[3:]:
             text = cmd_capacity(a[0], a[1:], out)
+        elif ns.command == "capacity" and a[0] == "withdraw" and len(a) == 3:
+            text = cmd_capacity("withdraw", a[1:], out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)
         elif ns.command == "name-organs" and not a:

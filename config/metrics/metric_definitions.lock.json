@@ -1,23 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 787,
+  "metric_count": 789,
   "_last_change": {
-    "change_count": 13,
+    "change_count": 2,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean",
-      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded"
+      "medium added metric://bus_channel/orion-hub/orion:curiosity:replica:plan:request",
+      "medium added metric://bus_channel/orion-mind/orion:curiosity:replica:plan:result:*"
     ]
   },
   "definitions": {
@@ -2196,6 +2185,17 @@
       "notes": "kind=event stability=None",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:curiosity:replica:plan:request": {
+      "schema_id": "CuriosityOfferPlanRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:curiosity:turn:reply:*": {
       "schema_id": "CuriosityTurnResultV1",
       "all_producers": [
@@ -2732,6 +2732,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-mind/orion:curiosity:replica:plan:result:*": {
+      "schema_id": "CuriosityOfferPlanResultV1",
+      "all_producers": [
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-notify/orion:notify:config:preference": {

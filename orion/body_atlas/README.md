@@ -163,30 +163,38 @@ dispute` argues with one and prints beside it. Juniper confirms or rejects claim
 covers that job's "no part is shown" gap lines (`COVERED_BY_CONFIRMATION`), never an atlas-blind
 one.
 
-**Claims hold when their evidence checks (2026-11-04).** Juniper does not review VSM claims, so a
-claim that waited for her would never count. A claim now holds its role (strength `claimed`; a
-job held by nothing stronger prints CLAIMED, legend "me, evidence checked") while every read of
-`attach_ledgers` finds: the part live; its because still passing the write-time floor
-(`claims.cites_in`, run again through `claims.recheck`); no `rejected` entry from Juniper; no later
-dispute of Orion's on the same part and job; and no rule result saying "not this job" (an R-server
-or R-collector near miss is "not S2"). Nothing is stored; a claim that fails a check prints its
-reason (`evidence gone`, `part not live now`, `rejected`, `rule says no`, `disputed`, `rule gives
-it`). A
-confirmation outranks a claim. A claim never clears a gap line; a "no part is shown" gap whose job
-holds a claim says "I claim X; no rule shows it". `gap:s4-to-s3` still checks only confirmed S4/S3
-pairs. While S5 is shared with Juniper (`s5_shared_with`), `open_jobs` never offers S5; a claim on
-it is still allowed and holds. Rollback: `CLAIMS_HOLD = False` in `capacities.py` (claims read `unconfirmed` again).
+**Claims hold when code's evidence check passes (2026-11-04, #3107 + upgrade).** Juniper does not
+review VSM claims. A claim holds its role (strength `claimed`; a job held by nothing stronger prints
+EVIDENCE-CHECKED, legend "code, not Juniper") while every read of `attach_ledgers` finds: the part
+live; no `rejected` entry from Juniper; the job not S5 (decision 3: S5 waits for her); no rule
+result saying "not this job" (an R-server or R-collector near miss is "not S2"); no later dispute
+of Orion's on the same part and job; and `claims.recheck` -> `claims.check_evidence` passing:
+every id the because names (part names with `-` or `:`, channels, ids with an atlas prefix; the
+atlas's own ids, never a word list) and every id cited when written is on a live flow of the part
+that carries more than the census; every repo path cited exists; at least one cite is atlas wiring;
+and the wiring fits the job (`EVIDENCE_SHAPES`: S2 in and out, S3/S4 out to a live part, S3* an
+R-census-reader hit that reports out, algedonic writes a key R-broadcast-key finds, S1/metabolism
+any). Nothing is stored. A claim that fails prints its reason (`evidence does not hold` with the
+reference that failed, `part not live now`, `rejected`, `rule says no`, `disputed`, `rule gives
+it`); the dig tail lists the evidence failures under "Fix or withdraw" (`dig capacity withdraw
+<part> <job>`), S5 claims under "Waiting on Juniper", and one "Juniper may veto" line. A
+confirmation outranks a claim. A passing claim covers its job's "no part is shown" gap lines like
+a confirmation (never an atlas-blind one), and `gap:s4-to-s3` checks S4/S3 parts it holds. Rollback:
+`CLAIMS_HOLD = False` in `capacities.py` (claims read `unconfirmed` again).
 Capacities (`cap:s1`..`cap:s5`, `cap:metabolism`) are one sentence each in Orion's words
 (`capacity write`), citing only parts that hold the job by rule, confirmation or a claim that holds
 (cap:s5 also Juniper's sign-off files, and names Juniper: decision 3); a job with no holder prints a
 code-written "I cannot yet say" line, and a sentence whose holder later loses the role prints
 STALE. Ledgers: `$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only,
 partitioned from recall (`tests/test_organ_names_partition.py`). The capacity eval runs the claims
-floor on the 2026-10-30 body with six mutations that must each be CAUGHT: a claim with gone
-evidence, a rejected claim, a claim on a dead part, a claim a rule says no to, and a claim Orion
-later disputed each hold a role; and a held claim clears its gap line. `open_jobs` / `evidence_gone_claims` feed the `dig capacities` tail: the jobs to claim now
-(no part holds them by rule, confirmation or claim) and the claims whose evidence is gone (claim
-again or leave them). A capacities turn ends with claims written, not offered.
+floor on the 2026-10-30 body with seven mutations that must each be CAUGHT: a claim whose stored
+cites are trusted, a rejected claim, a claim on a dead part, a claim a rule says no to, a claim
+Orion later disputed and an S5 claim each hold a role; and a held claim clears an atlas-blind gap.
+It also checks Orion's five live claims of 2026-11-04 (frozen) against the 10-31 body, with an
+eighth mutation (a claim passes when any reference holds). `open_jobs` / `failed_claims` /
+`pending_claims` / `vetoable_claims` feed the `dig capacities` tail: the jobs to claim now, the
+claims to fix or withdraw (with the reference that failed), the S5 claims waiting on Juniper, and
+one "Juniper may veto" line. A capacities turn ends with claims written, not offered.
 
 **HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
 *HTTP:* a service calls another when its code names that service's URL: a string constant that is

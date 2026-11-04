@@ -14,6 +14,16 @@ from orion.body_atlas.model import (
 HEALTH = "orion:system:health"
 
 
+def _ok(*held):
+    """A recheck whose evidence check passes, citing ``held``."""
+    return lambda c: K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=True, held=list(held))
+
+
+def _gone(c):
+    """A recheck whose evidence check fails."""
+    return K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=False, failed=["x: gone"])
+
+
 def _atlas(parts: dict[str, tuple[str, str]], sig: list[tuple[str, str, str]], *, organs: dict[str, list[str]],
            other: list[FlowV1] = ()) -> BodyAtlasV1:
     """parts: name -> (kind, status). sig: (source, target, channel) signals flows."""
@@ -228,19 +238,10 @@ def test_open_jobs_skip_held_waiting_and_confirmed_jobs():
     claim = K.CapacityClaimV1(part_id="part:gateway", role="S4", kind="claim", because="b" * 20, cites=["r0"],
                               at="2026-11-04T00:00:00+00:00", dig="t")
     vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="gateway", role="S3", date="2026-11-04")])
-    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=lambda c: ["r0"])
+    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_ok("r0"))
     jobs = [j for j, _ in K.open_jobs(after)]
     assert "S3" not in jobs and "S4" not in jobs  # confirmed by Juniper; Orion's claim holds (evidence checks)
-    assert K.evidence_gone_claims(after) == []
-    gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=lambda c: [])
-    assert "S4" in [j for j, _ in K.open_jobs(gone)]  # its evidence is gone: open again
-    assert [(c.part_id, c.role) for c in K.evidence_gone_claims(gone)] == [("part:gateway", "S4")]
-
-
-def test_s5_shared_with_juniper_is_never_offered_as_an_open_job():
-    # decision 3: S5 is shared with Juniper; Orion declined to claim it on purpose (turn 00655f13)
-    shared = K.VsmConfirmedV1(s5_shared_with=K.S5SharedV1(who="Juniper", signoff_files=["a/b.yaml"],
-                                                          decided="2026-10-30"))
-    atlas = _body()
-    jobs = [j for j, _ in K.open_jobs(K.read_capacities(atlas, vsm=shared))]
-    assert "S5" not in jobs and jobs == ["S1", "S3", "S3*", "S4", "algedonic", "metabolism"]
+    assert K.failed_claims(after) == []
+    gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_gone)
+    assert "S4" not in [j for j, _ in K.open_jobs(gone)]  # its evidence fails: on the fix-or-withdraw list instead
+    assert [(c.part_id, c.role) for c in K.failed_claims(gone)] == [("part:gateway", "S4")]

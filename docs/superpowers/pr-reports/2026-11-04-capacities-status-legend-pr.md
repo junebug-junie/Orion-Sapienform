@@ -1,8 +1,8 @@
 ## Summary
 
-- The `dig capacities` printout now has one `status:` line under the job lines. It says what each job status shown means.
-- `BY RULE` reads "the atlas rule found it; not Juniper's confirmation (a confirmation is named on its line)". This keeps a rule finding apart from Juniper's sign-off.
-- Regression tests fail if any allowed status has no meaning, or if the `BY RULE` meaning stops separating the rule from Juniper.
+- The `dig capacities` printout now has one `status:` line under the job lines. It says who stands behind a status: a rule or Juniper.
+- Live it reads `status: BY RULE = a rule, not Juniper`. When Juniper confirms something, `CONFIRMED = Juniper` is added. The other statuses (CANDIDATE, NO RULE, NO PART FOUND) already say that nothing holds the job, so they get no meaning text. The eval's size budget has room for only about 70 characters.
+- Regression tests pin the exact live line, the case where Juniper confirms a rule-held job, and no line when no status needs one.
 
 ## Outcome moved
 
@@ -38,19 +38,26 @@ On 2026-11-04 01:45Z (turn `1ee0e35d-9d49-4564-8aa9-e321a9ae3ac2`), Juniper aske
 ## Tests run
 
 ```text
-.venv/bin/python -m pytest orion/body_atlas/tests -q   -> 173 passed
+.venv/bin/python -m pytest orion/body_atlas/tests -q   -> 174 passed
 .venv/bin/python -m pytest tests/test_organ_names_partition.py tests/test_report_dig_kit_usage.py -q   -> 11 passed
 ```
 
 Rendered on the live atlas file `/mnt/orion-fcc/dig/2026-11-03/body-now-7.json`:
 
 ```text
-status: BY RULE = the atlas rule found it; not Juniper's confirmation (a confirmation is named on its line) · CANDIDATE = the rule fits but cannot show the whole job; Juniper must confirm · NO RULE = no rule tests this job; a claim can name a part, Juniper confirms it
+status: BY RULE = a rule, not Juniper
 ```
 
 ## Evals run
 
-No eval change. The printout is not scored by `run_capacity_roles_eval.py`, which scores roles, not wording. The live check is Orion's next capacities turn: the reply must not call a `BY RULE` job confirmed.
+```text
+run_capacity_roles_eval.py   -> exit 0 (size floor with ledgers: under 38 lines / 3700 chars)
+run_organ_structure_eval.py  -> exit 0
+run_store_direction_eval.py  -> exit 0
+run_wire_eval.py             -> exit 0
+```
+
+No eval change. The live check is Orion's next capacities turn: the reply must not call a `BY RULE` job confirmed.
 
 ## Docker/build/smoke checks
 
@@ -68,6 +75,10 @@ The dig code is baked into the harness image. The post-pull rebuild covers it th
   - Fix: "no rule tests this job; a claim can name a part, Juniper confirms it".
   - Evidence: rendered line above.
 - Reviewer checked live: 26 lines, 2828 of 4000 chars. No cut.
+- Finding (CI, my miss): I did not run the evals before the first push. `run_capacity_roles_eval.py` failed its size floor with every ledger full: 30 lines, 3846 chars, over the 3700 limit. Main uses about 3630 of it.
+  - Fix: the line keeps only who stands behind the status (`BY RULE = a rule, not Juniper`, `CONFIRMED = Juniper`). The size budget stays as it was.
+  - Evidence: all four body-atlas evals exit 0. `test_no_legend_when_no_status_needs_one`.
+- The review's "meaning for every status" test is now "every meaning names a real status". The other three statuses carry no meaning, because there is no room for it.
 
 ## Restart required
 

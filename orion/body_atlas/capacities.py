@@ -780,14 +780,12 @@ def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
     return {r.part_id for r in reading.roles if r.rule == rule}
 
 
-# What each status means, printed under the job lines. Orion read "BY RULE" as "confirmed" (turn
-# 1ee0e35d, 2026-11-04) while Juniper had confirmed nothing; the line keeps the two apart.
+# Who stands behind a status, printed under the job lines. Orion read "BY RULE" as "confirmed" (turn
+# 1ee0e35d, 2026-11-04) while Juniper had confirmed nothing. The eval's size budget leaves room for
+# these two only; the other statuses (CANDIDATE, NO RULE, NO PART FOUND) say no one holds the job.
 STATUS_MEANINGS = {
-    "BY RULE": "the atlas rule found it; not Juniper's confirmation (a confirmation is named on its line)",
-    "CONFIRMED": "Juniper confirmed it",
-    "CANDIDATE": "the rule fits but cannot show the whole job; Juniper must confirm",
-    "NO RULE": "no rule tests this job; a claim can name a part, Juniper confirms it",
-    "NO PART FOUND": "the rule exists, no live part fits",
+    "BY RULE": "a rule, not Juniper",
+    "CONFIRMED": "Juniper",
 }
 
 
@@ -799,7 +797,9 @@ def render(reading: CapacityReadingV1) -> list[str]:
         label = f"{j.job} {JOB_TITLES[j.job]}"
         lines.append(f"{label:<21} {j.status:<13} {j.text}")
     shown = {j.status for j in reading.jobs}
-    lines.append("status: " + " · ".join(f"{s} = {m}" for s, m in STATUS_MEANINGS.items() if s in shown))
+    legend = [f"{s} = {m}" for s, m in STATUS_MEANINGS.items() if s in shown]
+    if legend:
+        lines.append("status: " + " · ".join(legend))
     servers = sorted({_bare(n.part_id) for n in reading.near_misses if n.rule == "R-server"})
     collectors = sorted({_bare(n.part_id) for n in reading.near_misses if n.rule == "R-collector"})
     lines.append("near misses (not S2): servers " + (", ".join(servers) or "none")

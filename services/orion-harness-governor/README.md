@@ -514,6 +514,11 @@ no responder would read as "unknown" on every call.
 
 ## Dig kit: `dig body-economy` (skills.physiology.state.v1 from Bash, 2026-10-29)
 
+Turns import the sandbox's `orion/` before `/app` (`PYTHONPATH`, `orion/fcc/context_budget.py`), so a
+dig change is live for Orion only once the sandbox is at that commit. The post-pull rebuild resets it
+after each deploy (`SANDBOX_SYNC` line in `~/.orion/post_pull_rebuild.log`). Check it:
+`git -C /mnt/orion-fcc/repo log -1 --oneline`.
+
 Chat and curiosity turns both run here with Bash and the dig brief line (`orion/dig/brief.py`). Orion reads
 their own body economy with `python -P -m orion.dig body-economy [<section>...] [--window 24h|7d|30d]
 [--family <f>]`: plain text from orion-durable-runs `GET /physiology/report` (what binds now, money, wants

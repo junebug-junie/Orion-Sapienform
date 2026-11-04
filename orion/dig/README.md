@@ -14,6 +14,14 @@ loads the rest on demand.
 has edited there) instead of the deployed `/app/orion`. `-P` drops the current folder (verified
 live: without it `orion.__path__` is `/mnt/orion-fcc/repo/orion`, with it `/app/orion`).
 
+**But a real turn still reads the sandbox first.** The turn's `PYTHONPATH` lists the sandbox before
+`/app` (`orion/fcc/context_budget.py` `extend_fcc_subprocess_env`), and `-P` does not drop
+`PYTHONPATH` (verified live 2026-11-04: with `PYTHONPATH=/mnt/orion-fcc/repo:/app`, `-P` still
+imports `/mnt/orion-fcc/repo/orion/dig`). So a dig change is live for Orion only when the sandbox
+is at that commit, not when the governor image is. The post-pull rebuild resets the sandbox to
+`origin/main` after each deploy (`scripts/sync_fcc_sandbox_after_deploy.sh`, `SANDBOX_SYNC` line
+in `~/.orion/post_pull_rebuild.log`). Check it: `git -C /mnt/orion-fcc/repo log -1 --oneline`.
+
 **Context rules:**
 
 - Every command prints at most 40 lines and 4,000 chars.

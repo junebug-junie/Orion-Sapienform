@@ -81,7 +81,9 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    it. `namespaces` is a code-derived hint, not a name.
 
 ```bash
-# live (inside orion-harness-governor, where chat and curiosity run Bash):
+# live (inside orion-harness-governor, where chat and curiosity run Bash). Orion's turns import
+# the sandbox's orion/ first (PYTHONPATH), so check the sandbox is at the deployed commit too:
+#   git -C /mnt/orion-fcc/repo log -1 --oneline
 python -P -m orion.dig body                 # the live body, capped printout
 python -P -m orion.dig body <organ_id>      # every member of one organ
 FALKORDB_URI=redis://orion-athena-falkordb:6379 python -P -m orion.body_atlas --out /tmp/atlas.json

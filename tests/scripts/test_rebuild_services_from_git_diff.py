@@ -80,6 +80,8 @@ def _run(
     init_git: bool | str = False,
     log_checker: bool = False,
     services: tuple[str, ...] = (),
+    sandbox_helper: str | None = None,
+    env_extra: dict[str, str] | None = None,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -96,6 +98,10 @@ def _run(
         (fake_scripts / "check_sql_migrations_applied.py").write_text(checker)
     if applier is not None:
         (fake_scripts / "apply_post_pull_migrations.py").write_text(applier)
+    if sandbox_helper is not None:
+        helper = fake_scripts / "sync_fcc_sandbox_after_deploy.sh"
+        helper.write_text(sandbox_helper)
+        helper.chmod(0o755)
 
     capture = tmp_path / "safe-build-args.txt"
     safe_build = fake_scripts / "safe_docker_build.sh"
@@ -147,6 +153,8 @@ def _run(
     # Never append to the operator's real ~/.orion/post_pull_rebuild.log.
     env["ORION_REBUILD_LOG"] = str(tmp_path / "post_pull_rebuild.log")
     env.pop("ORION_POST_MERGE_REBUILD", None)
+    env.pop("ORION_POST_PULL_SANDBOX_SYNC", None)
+    env.update(env_extra or {})
     completed = subprocess.run(
         [str(script), *(extra_args or [])],
         cwd=fake_root,
@@ -840,3 +848,156 @@ def test_sigkill_leaves_no_end_and_the_next_run_reports_it_once(tmp_path: Path) 
     shutil.rmtree(tmp_path / "repo")
     third, _ = _run(tmp_path, plan="", log_checker=True)
     assert "died with no END line" not in third.stderr
+
+
+# --- FCC sandbox refresh after a deploy (2026-11-04) -------------------------
+# Orion's turns import the sandbox's orion/ first; only a Hub browser connect
+# refreshed it, so chat in an open tab after a pull ran old code.
+
+def _sandbox_helper(stdout: str, rc: int = 0) -> str:
+    return (
+        "#!/bin/sh\n"
+        "printf 'sandbox-helper\\n' >> \"$REBUILD_TEST_CAPTURE\"\n"
+        + (f"printf '%s\\n' '{stdout}'\n" if stdout else "")
+        + "echo 'diagnostic on stderr' >&2\n"
+        + f"exit {rc}\n"
+    )
+
+
+def _sandbox_lines(tmp_path: Path) -> list[str]:
+    return [ln.split(" ", 3)[3] for ln in _log_lines(tmp_path) if " SANDBOX_SYNC " in ln]
+
+
+def test_sandbox_sync_runs_after_a_successful_deploy_run(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        sandbox_helper=_sandbox_helper("ok result=synced head=abc123 deploy_head=abc123"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert calls == ["orion-a up -d --build", "sandbox-helper"]
+    assert _sandbox_lines(tmp_path) == ["SANDBOX_SYNC ok result=synced head=abc123 deploy_head=abc123"]
+    assert "SANDBOX_SYNC ok result=synced" in completed.stdout
+
+
+def test_sandbox_sync_runs_when_nothing_needed_a_rebuild(tmp_path: Path) -> None:
+    """A docs- or dig-only pull still changes what Orion's turns read."""
+    completed, calls = _run(
+        tmp_path,
+        plan="",
+        init_git=True,
+        sandbox_helper=_sandbox_helper("ok result=synced head=abc123"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert calls == ["sandbox-helper"]
+    assert _sandbox_lines(tmp_path) == ["SANDBOX_SYNC ok result=synced head=abc123"]
+
+
+def test_failing_sandbox_sync_never_changes_the_rebuild_exit_code(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        sandbox_helper=_sandbox_helper("failed reason=sync_declined rc=1 result=error_fetch", rc=1),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert _sandbox_lines(tmp_path) == ["SANDBOX_SYNC failed reason=sync_declined rc=1 result=error_fetch"]
+
+
+def test_silent_crashing_sandbox_helper_is_logged_and_ignored(tmp_path: Path) -> None:
+    completed, _ = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        sandbox_helper=_sandbox_helper("", rc=2),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert _sandbox_lines(tmp_path) == ["SANDBOX_SYNC failed reason=helper_printed_nothing"]
+
+
+def test_sandbox_sync_kill_switch_skips_the_helper(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        sandbox_helper=_sandbox_helper("ok result=synced"),
+        env_extra={"ORION_POST_PULL_SANDBOX_SYNC": "0"},
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "sandbox-helper" not in calls
+    assert _sandbox_lines(tmp_path) == ["SANDBOX_SYNC skipped reason=disabled (ORION_POST_PULL_SANDBOX_SYNC=0)"]
+
+
+def test_sandbox_sync_skipped_when_a_stack_failed(tmp_path: Path) -> None:
+    """The --services rerun that finishes the deploy refreshes the sandbox."""
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        safe_build_rc=1,
+        sandbox_helper=_sandbox_helper("ok result=synced"),
+    )
+    assert completed.returncode == 1
+    assert "sandbox-helper" not in calls
+    assert _sandbox_lines(tmp_path) == ["SANDBOX_SYNC skipped reason=rebuild_failures"]
+
+
+def test_sandbox_sync_not_attempted_on_a_run_that_started_on_stale_main(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git="stale",
+        sandbox_helper=_sandbox_helper("ok result=synced"),
+    )
+    assert "sandbox-helper" not in calls
+    assert _sandbox_lines(tmp_path) == []
+
+
+def test_sandbox_sync_not_attempted_on_dry_run(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        extra_args=["--dry-run"],
+        sandbox_helper=_sandbox_helper("ok result=synced"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "sandbox-helper" not in calls
+
+
+def test_turn_in_flight_starts_a_detached_retry_that_logs_itself(tmp_path: Path) -> None:
+    """2026-11-04: two agent turns held the sandbox lock 40+ min. The run must
+    not wait for them; a detached retry waits and writes its own line."""
+    helper = (
+        "#!/bin/sh\n"
+        "printf 'sandbox-helper %s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
+        "case \"$*\" in\n"
+        "  *--log-to*) printf 'retry-line\\n' >> \"$4\"; echo 'ok result=synced' ;;\n"
+        "  *) echo 'failed reason=sync_declined rc=1 result=skipped_turn_in_flight_external' ;;\n"
+        "esac\n"
+    )
+    completed, _ = _run(
+        tmp_path,
+        plan="orion-a,build",
+        init_git=True,
+        sandbox_helper=helper,
+        env_extra={"ORION_SANDBOX_SYNC_WAIT_S": "7", "ORION_SANDBOX_SYNC_RETRY_WAIT_S": "9"},
+    )
+    assert completed.returncode == 0, completed.stderr
+    first = _sandbox_lines(tmp_path)
+    assert len(first) == 1
+    assert first[0].startswith(
+        "SANDBOX_SYNC failed reason=sync_declined rc=1 result=skipped_turn_in_flight_external retry=detached_pid_"
+    )
+    import time
+
+    capture = tmp_path / "safe-build-args.txt"
+    for _ in range(50):
+        if "retry-line" in (tmp_path / "post_pull_rebuild.log").read_text():
+            break
+        time.sleep(0.1)
+    calls = capture.read_text().splitlines()
+    assert "sandbox-helper --wait-s 7" in calls
+    assert f"sandbox-helper --wait-s 9 --log-to {tmp_path / 'post_pull_rebuild.log'}" in calls
+    assert "retry-line" in (tmp_path / "post_pull_rebuild.log").read_text()

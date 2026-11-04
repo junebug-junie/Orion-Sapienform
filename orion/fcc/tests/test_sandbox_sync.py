@@ -412,3 +412,41 @@ def test_sync_skips_push_auth_when_no_token(origin_and_clone, tmp_path, monkeypa
         check=False,
     )
     assert rewrite.returncode != 0 or not rewrite.stdout.strip()
+
+
+def test_cli_prints_one_verdict_line_and_exits_zero_on_sync(origin_and_clone, capsys):
+    """The post-pull rebuild runs this CLI inside Hub and logs its last line."""
+    from orion.fcc.sandbox_sync import main
+
+    origin, clone = origin_and_clone
+    (origin / "file.txt").write_text("v2")
+    _git(origin, "add", "file.txt")
+    _git(origin, "commit", "-m", "second")
+
+    assert main(["--workspace", str(clone)]) == 0
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    assert line.startswith("result=synced ")
+    assert "commits_advanced=1" in line
+    assert (clone / "file.txt").read_text() == "v2"
+
+
+def test_cli_waits_for_a_turn_then_reports_the_skip_nonzero(origin_and_clone, capsys):
+    """A turn in flight: never touch the tree; retry until the wait runs out."""
+    from orion.fcc.sandbox_sync import main
+    from orion.fcc.turn_lock import turn_in_progress
+
+    _, clone = origin_and_clone
+    with turn_in_progress(str(clone)) as held:
+        assert held
+        rc = main(["--workspace", str(clone), "--wait-s", "0.3", "--poll-s", "0.1"])
+    assert rc == 1
+    assert capsys.readouterr().out.strip().startswith("result=skipped_turn_in_flight_external")
+
+
+def test_cli_without_workspace_is_a_nonzero_skip(monkeypatch, capsys):
+    from orion.fcc.sandbox_sync import main
+
+    monkeypatch.delenv("HUB_AGENT_CLAUDE_WORKSPACE", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_WORKSPACE", raising=False)
+    assert main([]) == 1
+    assert capsys.readouterr().out.strip().startswith("result=skipped_no_workspace")

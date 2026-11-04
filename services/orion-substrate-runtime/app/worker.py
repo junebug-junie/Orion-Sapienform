@@ -2916,6 +2916,7 @@ class BiometricsSubstrateWorker:
             engine = SubstrateDynamicsEngine(
                 store=store,
                 decay_mode=self._settings.dynamics_decay_mode,
+                propagation_decay_mode=self._settings.dynamics_propagation_decay_mode,
             )
             result = engine.tick(now=datetime.now(timezone.utc))
             logger.info(

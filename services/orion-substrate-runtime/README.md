@@ -242,6 +242,19 @@ seeds and propagates activation pressure from those `prediction_error` values.
   the existing stamp when an incoming record with an older `observed_at` wins the activation
   max, so a replayed record's value is treated as fresh as of that stamp (under-decay, not
   compounding).
+- `SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE` (default `source`, 2026-11-03): how activation
+  that arrives through an edge is decayed. `source`: a neighbour's activation is propagated as
+  it stands this tick (its seed decayed by its own age, its stored value decayed since its last
+  decay) and is not decayed again by the receiving node's age, so an old node reached by a fresh
+  neighbour hears it (a walkway day node, observed at the day's start, now reads about cluster
+  x 0.6 x 0.8 after a sighting instead of ~0.04, and fades with the cluster). A neighbour with no half-life carries no decay,
+  so the first decaying node it reaches still decays it by that node's age -- otherwise the
+  never-decaying topic-foundry evidence would pin ~700 old concepts at ~0.3 forever (measured
+  on the live graph, `scripts/replay_substrate_propagation_decay.py`). The same old rule applies
+  when the receiver decays more slowly than the signal (a 6 h hub feeding a 30-day concept): the
+  tick persists the echo into the receiver's stored value, which then fades on the receiver's
+  clock, so taking it as is would hold it for weeks after the hub went quiet. `receiver_age` is the old
+  double decay; rollback only. Ignored when `SUBSTRATE_DYNAMICS_DECAY_MODE=legacy`.
 
 Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the

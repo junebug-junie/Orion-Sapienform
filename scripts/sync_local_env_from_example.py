@@ -434,6 +434,9 @@ SYNC_PREFIXES = (
     # Neither matched a prefix: the default run visited the .env and added nothing.
     "PERSON_GRAPH_",
     "PERSON_SIGHTING_",
+    # Substrate dynamics tick (orion-substrate-runtime): propagation decay mode
+    # (2026-11-03) matched no prefix, so the default run added nothing.
+    "SUBSTRATE_DYNAMICS_",
 )
 
 SYNC_EXACT = frozenset(

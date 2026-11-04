@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # by full age every tick -- rollback only. Validated in
     # orion.substrate.activation.normalize_decay_mode (unknown value raises).
     dynamics_decay_mode: str = Field("since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
+    # source (2026-11-03): activation propagated from a decaying neighbour is
+    # decayed once, by that neighbour's clock, not again by the receiver's age.
+    # receiver_age: the pre-2026-11-03 double decay -- rollback only. Ignored
+    # when SUBSTRATE_DYNAMICS_DECAY_MODE=legacy. Validated in
+    # orion.substrate.activation.normalize_propagation_decay_mode.
+    dynamics_propagation_decay_mode: str = Field("source", alias="SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE")
     enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
     episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
     # bus_synaptic_prediction_error: own explicit flag, not piggybacked on

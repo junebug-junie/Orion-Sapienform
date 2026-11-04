@@ -1187,17 +1187,24 @@ the outcome row keeps before/after for every prior a run changed.
 Measured from Hub's own snapshots because Orion writes a revision only when a
 confidence *moves*: 21 revisions across 94 journaled runs by 2026-09-14.
 
-`HUB_CURIOSITY_VALUE_ORDER_ENABLED` (default off) offers priors by *expected
+`HUB_CURIOSITY_VALUE_ORDER_ENABLED` (on since 2026-11-04) offers priors by *expected
 belief change* instead of raw uncertainty. Expected value is entropy times the
 prior's measured learning yield: net, straightness-discounted belief change
 per unit of uncertainty over its last `HUB_CURIOSITY_YIELD_WINDOW` tests --
 counting only progress a test made and that stuck -- shrunk toward the pool
 average by `HUB_CURIOSITY_YIELD_PSEUDO_TESTS`. Orion still chooses; only the
-order changes, and the prompt describes the order in the same words on both
-arms ("where the code estimates a test could change your mind the most,
-starting from how unsure you are"). Each run draws its arm from a
-deterministic per-run coin with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`,
-so the two orders can be compared on real outcomes. With no scored history the
+order changes, and the prompt describes the order in the same words on every
+arm (`ORDER_SENTENCE` in `orion/curiosity/kickoff_prompt.py`: "a presentation
+choice made before this run, not a recommendation" -- it names no rule, so it
+stays true when the curiosity replica's plan sets the order). Each run draws its
+arm from a deterministic per-run draw (`draw_offer_arm`, `orion/curiosity/value.py`)
+with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`, so the orders can be
+compared on real outcomes. The draw has a third band for the curiosity replica
+(`replica_order`, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md),
+but Hub passes it no propensity until the replica can answer a plan request, so
+no run is drawn onto it and every run keeps its two-arm assignment. The offer
+row records the whole draw in `arm_propensities` (all three arms; needs
+`services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql`). With no scored history the
 two orders are identical, prior for prior (checked on 2000 random populations
 in `tests/test_curiosity_worldview.py`); among priors all worth zero, the
 uncertainty order still decides.
@@ -4025,7 +4032,16 @@ Design:
   Juniper can always Clear it or queue her own.
 - **Reading it back.** `curiosity` with `kind=focus` lists recent focuses with
   a one-line story: queued -> taken by run X -> disposition, or expired /
-  replaced / cleared / failed. Run items that took a focus carry `extra.focus`.
+  replaced / cleared / refused_by_organ / failed. Run items that took a focus carry `extra.focus`.
+- **Refused by the organ.** Curiosity's own planner (the curiosity replica) may
+  refuse a focus *Prime* queued, before a run takes it, with a one-sentence
+  reason (`refuse_focus` in `orion/curiosity/focus.py`). The row leaves the slot
+  and reads `refused_by_organ`; no run is shown it. It is stored as `cleared`
+  plus `refused_by` / `refused_reason` / `refused_act_id` (the status CHECK
+  cannot gain a value additively). A focus Juniper asked for, or one Orion chose
+  in a conversation, can never be refused: the code, the UPDATE's own guard and
+  a table CHECK each refuse it. Needs
+  `services/orion-sql-db/manual_migration_curiosity_focus_request_refused_v1.sql`.
 - **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
   with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
   and a run chip that took a focus says so.

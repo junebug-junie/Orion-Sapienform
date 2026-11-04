@@ -87,7 +87,7 @@ straight back to `resource_request` (reading, compactor digest, curiosity compac
 by `hold = {"retry_at", "listener_wait"}`, which `AdmissionRuntime.register` waits out; graphs
 with a `retry_wait` node also get `retry_at` on the state.
 
-Wired into: `curiosity.investigate`, `self_sense_eval`, `harness.echo_smoke`,
+Wired into: `curiosity.investigate`, `self_sense_eval`, `harness.echo_smoke`, `pr.field_note`,
 `curiosity.compaction` (via `failed_attempt`), `reading.turn`, `compactor.digest`,
 `journal.compose`, `memory.episode_distill`, `orion_day.letter`. `reverie.visual` and
 `dream.carry` already treat any transport error as a backed-off deferral that spends no attempt.
@@ -414,6 +414,61 @@ chars, `text_truncated`).
 **Deploy order:** `harness.echo_smoke` is an additive `DurableWorkflowV1` value on
 `extra="forbid"` models. Deploy orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch
 before triggering the first smoke, or an old validator drops its state rows.
+
+### PR field notes: GitHub poll + `pr.field_note` (2026-11-04, spec Patch 2)
+
+After every merged PR, Orion writes a short field note on what changed in their body (spec
+`docs/superpowers/specs/2026-11-04-pr-field-notes-design.md`; the dig half is #3100). This service
+runs the automatic half.
+
+- **Poll** (`app/pr_field_note_poll.py`, every `PR_FIELD_NOTES_POLL_SEC`=900 s). One unauthenticated
+  GitHub search for PRs merged since `max(now - PR_FIELD_NOTES_LOOKBACK_H, PR_FIELD_NOTES_NOT_BEFORE)`.
+  No token, no gh, no git: the repo is public. The 72 h lookback repairs a missed tick. A PR with a
+  ledger record is done. A new PR costs one `/pulls/<n>/files` call to classify it:
+  - dependency-only or tiny docs-only (Juniper's decision 2): the poll writes its **code record** at
+    once (two more calls: merge sha, commit authors). No run, no model turn.
+  - anything else: one `pr.field_note` run, id `pr-field-note-<n>`, agent lane, background priority,
+    deadline 20 h.
+  A PR whose runs all failed gets one more run (`-a2`) an hour later; then it stops and shows as a
+  miss in `dig field-notes`. At most one note run is in flight (the spec's "one at a time"), at most
+  10 GitHub detail calls per tick (the public limit is 60/h). A rate limit, a 5xx or a network error
+  ends the tick. One PR's own trouble (a 404 on its files, a refused code record) is logged in
+  `pr_errors` and that PR alone waits for the next tick. A PR whose first files page is full (100)
+  always gets a note run, never a code record.
+  Nothing merged before `PR_FIELD_NOTES_NOT_BEFORE` is touched (decision 3: no backfill).
+- **Run** (`app/pr_field_note_graph.py`, contract `orion/schemas/pr_field_note_run.py`):
+  `precheck -> resource_request -> resource_wait -> field_note -> finish`, and a retry goes
+  `retry_wait -> precheck`. `precheck` finishes a PR that already has a record (`already_recorded`)
+  without a turn: at the start without asking the pool, and before a retry so an attempt that saved
+  the note but replied badly is not repeated. `field_note` is one harness turn on the #2958 seam
+  (`app/harness_step.py`; source tag `pr_field_note`, session `pr-field-notes`). Its fixed prompt
+  spells out the two dig commands, says code checks are only for a sentence that claims something the
+  packet does not state, and asks for about 3 tool calls (never more than 6). The hard bound is the
+  turn time, `PR_FIELD_NOTES_TURN_TIMEOUT_SEC`=900 s. Hub keeps its finalize reserve
+  (`HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC`=330) out of that, so the motor gets 540 s; at 420 it got
+  60 s and the first live run timed out. `tests/test_pr_field_note_budget.py` gates the arithmetic.
+- **Done only with a receipt.** `verify_receipt` (code, inside the step, before the checkpoint) needs
+  `field-note #<n> saved fn:<n>:<hex>` for THIS PR in the reply AND that id as a note for this PR in
+  the ledger. Anything else is a failed attempt (the shared retry policy), never a completed run.
+- **Ledger access.** compose mounts the host's `/mnt/orion-fcc/self` (`PR_FIELD_NOTES_SELF_HOST`) at
+  `PR_FIELD_NOTES_LEDGER_DIR`. Only `app/pr_field_note_ledger.py` touches it. It is the one named
+  exception in `tests/test_organ_names_partition.py`, and it hands back ids and booleans, never note
+  text (a test checks every `.note` use is an `is not None`). A code record's `body_map` is empty:
+  this container has neither the repo nor the live atlas.
+- **Cost.** Each run is an act `make:durable.pr_field_note` (`app/run_acts.py`). Its family is tier 1
+  in `config/physiology/families.yaml` with a 24 h deferrable window (Juniper's decision 1). Bids are
+  shadow. Measured cost per note (wall time, whole-machine Wh, GPU slot seconds from the act; tokens of
+  every attempt from `llm_call_usage`; Hub harness steps):
+  `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py`.
+- **Surfaces.** `/health` -> `field_note_poll` (the last tick). `POST /pr-field-notes/poll` runs one tick
+  now. `?since=<iso>` re-polls a longer window after an outage over the lookback. When nothing has run
+  for longer than the lookback, a tick searches the stretch the lookback lost and logs
+  `field_note_poll_gap_possible` naming the merges with no record and no run (it never backfills them
+  itself). A `since` before `PR_FIELD_NOTES_NOT_BEFORE` is refused.
+  `GET /runs/<id>` shows `pr_field_note` (pr, outcome, note id) and `harness_steps`.
+- **Deploy order:** `pr.field_note` is an additive `DurableWorkflowV1` value. Deploy orion-sql-writer,
+  orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+- **Off:** `PR_FIELD_NOTES_ENABLED=false` and restart: no poll, no runs, no code records.
 
 ### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
 

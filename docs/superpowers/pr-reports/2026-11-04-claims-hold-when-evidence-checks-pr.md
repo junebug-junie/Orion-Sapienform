@@ -183,12 +183,36 @@ flows in (1), strongest first:
 flows out (11), strongest first:
   -> pg:energy_bill_actual writes [orion:energy:bill:actual] w=1
   ...
-jobs: metabolism claimed (claimed)
+jobs: metabolism claimed
 my claims: metabolism claim: holds (evidence checks)
 cite in a claim (by full id): orion-biometrics, orion:power:intent:settled, pg:energy_bill_actual, ... +12 more in the file
 ```
 
 ## Review findings fixed
+
+Coordinator follow-ups (after the #3106 merge):
+
+- Finding: the `Unclaimed jobs:` tail offered a ready `capacity claim '<part>' S5` line "without
+  asking first", though S5 is shared with Juniper (decision 3) and Orion declined to claim it on
+  turn 00655f13.
+  - Fix: `open_jobs` counts S5 as held while `s5_shared_with` is set. With no other open job, the
+    generic `to claim a job:` line prints. A claim on S5 is still allowed and holds: design
+    section 3 expects S5 claims, and decision 3 shares S5, it does not close it. Documented in the
+    design doc's Decision change section.
+  - Live: the `capacities` tail now ends with the generic line
+    `to claim a job: python -P -m orion.dig capacity claim '<part>' '<job>' because "..."` in place
+    of the ready S5 line (S5 was the only open job).
+  - Evidence: `test_s5_shared_with_juniper_is_never_offered_as_an_open_job`,
+    `test_a_claim_on_s5_is_allowed_while_it_is_shared_with_juniper`,
+    `test_s5_shared_with_juniper_gets_no_ready_claim_line`. Live `capacities` no longer prints the
+    S5 line.
+- Finding: the `body <part>` jobs line printed "metabolism claimed (claimed)". A confirmed role
+  doubled the same way ("confirmed (confirmed)").
+  - Fix: the rule name prints only when it differs from the strength ("S2 rule (R-matchmaker)",
+    "S3* candidate (R-census-reader)", "metabolism claimed", "S3 confirmed").
+  - Evidence: `test_body_part.py` asserts "jobs: S3 claimed" with no "(claimed)"; live smoke below.
+
+Code review subagent:
 
 Code review ran in a subagent on `git diff origin/main...HEAD`. All seven findings are fixed.
 

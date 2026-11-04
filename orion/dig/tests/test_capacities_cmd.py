@@ -45,25 +45,28 @@ def test_capacities_ends_with_a_ready_claim_line_and_help_has_the_rule(world, ca
     assert code == 0 and "  python -P -m orion.dig capacity claim '<part>' S4 because" in out
     code, out, _ = run(capsys, "capacity", "help")
     assert code == 0 and "citing by full id a part or channel on one of its flows" in out
-    assert "capacity write cap:s2" in out and "a claim never clears" in out
+    assert "capacity write cap:s2" in out and "capacity withdraw <part> <job>" in out
+    assert 'a checked claim covers only a "no part is shown" one' in out
     code, out, _ = run(capsys, "help")
     assert code == 0 and len(out) <= 2750 and "capacity claim <part> <job> because" in out  # HELP text (cap: test_dig.py)
     assert "cite one of its flows by full id or a repo file" in out
 
 
-def test_claim_appends_one_ledger_line_and_never_clears_a_gap(world, capsys, monkeypatch):  # noqa: F811
+def test_claim_appends_one_ledger_line_and_never_clears_an_atlas_blind_gap(world, capsys, monkeypatch):  # noqa: F811
     monkeypatch.setattr(dig, "_live_atlas", _body)
     _, before, _ = run(capsys, "capacities", "gaps")
     code, out, err = run(capsys, "capacity", "claim", "gateway", "S3", "because", "gateway answers r0 on llm:reply")
     assert code == 0, err
-    assert out.startswith("claimed gateway S3 (cites: llm:reply, r0); it holds the job while this evidence checks; "
-                          "Juniper may reject it")
+    assert out.startswith("claimed gateway S3 (cites: llm:reply, r0); code re-checks its wiring on every")
     assert "self/capacity_claims.jsonl" in _files(world) and "self/capacities.jsonl" not in _files(world)
     _, after, _ = run(capsys, "capacities", "gaps")
-    assert before.splitlines()[:-1] == after.splitlines()[:-1]  # only the file path differs
+    assert before.splitlines()[:-1] == after.splitlines()[:-1]  # S3's gaps are atlas-blind: a check covers none
     _, out, _ = run(capsys, "capacities")
-    assert "S3 control            CLAIMED       gateway · " in out
-    assert "my claims: 1 (1 hold, 0 confirmed by Juniper)" in out and "CLAIMED = me, evidence checked" in out
+    # gateway sends llm:reply out to r0: a flow out; printed as code's check, never Juniper's word
+    assert "S3 control            EVIDENCE-CHECKED my claim: gateway · " in out
+    assert "Juniper may veto (no need to ask; her rejection wins): gateway S3" in out
+    assert "Waiting on Juniper" not in out and "confirmed by Juniper: gateway" not in out
+    assert "my claims: 1 (1 evidence-checked, 0 confirmed by Juniper)" in out and "EVIDENCE-CHECKED = code, not Juniper" in out
 
 
 def test_a_refused_claim_writes_nothing_and_says_why(world, capsys, monkeypatch):  # noqa: F811
@@ -96,7 +99,7 @@ def test_juniper_confirmation_file_in_the_deployed_checkout_gives_the_role(world
     run(capsys, "capacity", "claim", "gateway", "S3", "because", "gateway answers r0 on llm:reply")
     _, out, _ = run(capsys, "capacities")
     assert "S3 control            CONFIRMED     confirmed by Juniper: gateway" in out
-    assert "my claims: 1 (0 hold, 1 confirmed by Juniper)" in out
+    assert "my claims: 1 (0 evidence-checked, 1 confirmed by Juniper)" in out
     conf.write_text("confirmed: [{part: gateway, role: nope, date: x}]\n")
     code, _, err = run(capsys, "capacities")
     assert code == 1 and "vsm_confirmed.yaml does not read" in err
@@ -110,7 +113,7 @@ def test_capacities_output_tells_orion_to_write_claims_now_not_offer_them(world,
     code, out, _ = run(capsys, "capacities")
     lines = out.strip().splitlines()
     head = next(i for i, ln in enumerate(lines) if ln.startswith("Unclaimed jobs: "))
-    assert "without asking first" in lines[head] and "a claim holds while its evidence checks" in lines[head]
+    assert "without asking first" in lines[head] and "code checks the wiring you cite; Juniper may veto" in lines[head]
     ready = [ln for ln in lines[head + 1:] if ln.startswith("  python -P -m orion.dig capacity claim ")]
     jobs = [shlex.split(ln)[7] for ln in ready]
     assert jobs == ["S1", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]  # S2 is held by rule
@@ -128,14 +131,16 @@ def test_a_ready_claim_line_runs_once_its_because_is_filled_and_then_holds(world
     argv[-1] = "watcher reads replies from gateway and pool and reports when they drift"
     code, claimed, err = run(capsys, *argv)
     assert code == 0, err
-    assert claimed.startswith("claimed watcher S3* (cites: gateway, pool)")
+    # gateway reaches watcher only by the census, so only pool is a cite; watcher pokes pool on
+    # watch:poke (a flow out: it reports) and R-census-reader finds it: the S3* shape holds
+    assert claimed.startswith("claimed watcher S3* (cites: pool)")
     _, out, _ = run(capsys, "capacities")
     assert "'S3*'" not in out  # claimed: no longer offered
-    assert "S3* audit             CLAIMED       watcher · " in out
-    assert "Evidence gone" not in out and "Waiting on Juniper" not in out
+    assert "S3* audit             EVIDENCE-CHECKED my claim: watcher · " in out
+    assert "Fix or withdraw" not in out and "Waiting on Juniper" not in out
 
 
-def test_a_claim_whose_evidence_is_gone_is_listed_to_claim_again(world, capsys, monkeypatch):  # noqa: F811
+def test_a_claim_whose_evidence_fails_is_listed_to_fix_or_withdraw_and_withdraw_takes_it_back(world, capsys, monkeypatch):  # noqa: F811
     monkeypatch.setattr(dig, "_live_atlas", _body)
     run(capsys, "capacity", "claim", "gateway", "S4", "because", "gateway sends its answers out on llm:reply")
 
@@ -145,10 +150,30 @@ def test_a_claim_whose_evidence_is_gone_is_listed_to_claim_again(world, capsys, 
 
     monkeypatch.setattr(dig, "_live_atlas", without_reply)
     _, out, _ = run(capsys, "capacities")
-    assert "  evidence gone: gateway S4" in out
-    assert "Evidence gone (1): these claims hold nothing now; claim again citing evidence that checks" in out
-    assert "  gateway S4: gateway sends its answers out on llm:reply" in out
-    assert "capacity claim '<part>' S4 because" in out  # the job is open again
+    assert "  evidence does not hold: gateway S4" in out
+    assert "Fix or withdraw (1): my cited evidence does not hold in today's atlas" in out
+    assert "  gateway S4: llm:reply: in no part or channel of my atlas" in out  # the reference that failed
+    assert "capacity claim '<part>' S4 because" not in out  # on the fix list, not offered twice
+    code, out, err = run(capsys, "capacity", "withdraw", "gateway", "S4")
+    assert code == 0 and out.startswith("withdrew my claim gateway S4"), err
+    _, out, _ = run(capsys, "capacities")
+    assert "Fix or withdraw" not in out and "capacity claim '<part>' S4 because" in out  # open again
+    code, _, err = run(capsys, "capacity", "withdraw", "gateway", "S4")
+    assert code == 1 and "no standing claim" in err
+
+
+def test_evidence_on_a_different_part_fails_and_an_s5_claim_waits_on_juniper(world, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    # watcher really pokes pool, but llm:reply is gateway's channel: evidence on a different part
+    code, _, err = run(capsys, "capacity", "claim", "watcher", "S3", "because",
+                       "watcher pokes pool on watch:poke and steers llm:reply")
+    assert code == 0, err
+    _, out, _ = run(capsys, "capacities")
+    assert "  watcher S3: llm:reply: not on a live flow of watcher" in out
+    code, _, err = run(capsys, "capacity", "claim", "pool", "S5", "because", "pool answers r0 on lease:reply")
+    assert code == 0, err
+    _, out, _ = run(capsys, "capacities")
+    assert "Waiting on Juniper (1; S5 is hers, code cannot check it)" in out and "  pool S5: pool answers r0" in out
 
 
 def test_a_rejected_claim_reopens_the_job_without_its_part(world, capsys, monkeypatch):  # noqa: F811
@@ -158,7 +183,7 @@ def test_a_rejected_claim_reopens_the_job_without_its_part(world, capsys, monkey
     conf.parent.mkdir(parents=True)
     conf.write_text("rejected:\n  - {part: watcher, role: S3*, date: 2026-11-04}\n")
     _, out, _ = run(capsys, "capacities")
-    assert "capacity claim '<part>' 'S3*' because" in out and "Evidence gone" not in out
+    assert "capacity claim '<part>' 'S3*' because" in out and "Fix or withdraw" not in out
     assert "  rejected: watcher S3*" in out
 
 
@@ -194,3 +219,23 @@ def test_a_candidate_line_shows_only_the_rules_own_citable_evidence():
                                           evidence=["llm:reply", "orion:system:health", "not-a-flow"]))
     line = next(ln for ln in dig.claim_block(reading, atlas) if " S4 " in ln)
     assert line.endswith('claim gateway S4 because "<why>"  # the rule saw: llm:reply')
+
+
+def test_s5_shared_with_juniper_gets_no_ready_claim_line(world, capsys, monkeypatch):  # noqa: F811
+    # decision 3: S5 is shared with Juniper; turn 00655f13 declined to claim it, on purpose. The tail
+    # must not tell Orion to claim it "without asking first".
+    monkeypatch.setattr(dig, "_live_atlas", _body)
+    conf = world / "repo" / "config" / "body_atlas" / "vsm_confirmed.yaml"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("s5_shared_with: {who: Juniper, signoff_files: [config/x.yaml], decided: 2026-10-30}\n")
+    _, out, _ = run(capsys, "capacities")
+    ready = [ln for ln in out.splitlines() if ln.startswith("  python -P -m orion.dig capacity claim ")]
+    assert ready and not any(shlex.split(ln)[7] == "S5" for ln in ready)
+    # every other job claimed: no open job is left, and S5 is still never offered
+    for job, part, ch in (("S1", "w0", "worker:announce"), ("S3", "gateway", "llm:reply"), ("S3*", "watcher", "watch:poke"),
+                          ("S4", "r0", "lease:request"), ("algedonic", "r1", "lease:request"),
+                          ("metabolism", "r2", "lease:request")):
+        code, _, err = run(capsys, "capacity", "claim", part, job, "because", f"{part} is seen on {ch}, often")
+        assert code == 0, (job, err)
+    _, out, _ = run(capsys, "capacities")
+    assert "Unclaimed jobs:" not in out and " S5 because" not in out

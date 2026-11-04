@@ -63,6 +63,9 @@ from orion.curiosity.worldview import Prior, WorldviewReader, WorldviewUnavailab
 logger = logging.getLogger("orion-hub.curiosity_offer_decisions")
 
 MIGRATION = "services/orion-sql-db/manual_migration_curiosity_spend_v1.sql"
+# `arm_propensities` (the chance each of the three offer arms had, orion/curiosity/value.py
+# draw_offer_arm) and the replica's plan table.
+REPLICA_MIGRATION = "services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql"
 
 # Start snapshots are needed only until the run's last attempt ends (the
 # outcome row keeps before/after for every prior the run changed), so they are
@@ -78,8 +81,9 @@ _UNDEFINED_TABLE = "42P01"
 
 INSERT_DECISION_SQL = """
 INSERT INTO curiosity_offer_decisions (
-    run_id, arm, value_arm_propensity, offered, stale_offered, material_ids, constants
-) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb)
+    run_id, arm, value_arm_propensity, offered, stale_offered, material_ids, constants,
+    arm_propensities
+) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
 ON CONFLICT (run_id) DO NOTHING
 """
 
@@ -271,6 +275,7 @@ async def record_offer_decision(
     stale_offered: list[dict[str, Any]],
     material_ids: list[str],
     constants: Mapping[str, Any],
+    arm_propensities: Optional[Mapping[str, float]] = None,
 ) -> bool:
     """One row per run, first write wins. Also drops start snapshots older
     than `SNAPSHOT_RETENTION_DAYS` -- once per run, so the table's largest
@@ -289,6 +294,11 @@ async def record_offer_decision(
                 json.dumps(stale_offered, allow_nan=False),
                 json.dumps(material_ids),
                 json.dumps(dict(constants), allow_nan=False),
+                # NULL only for a caller that drew no three-way arm (none in Hub since the column
+                # landed); never a guessed map.
+                json.dumps(dict(arm_propensities), allow_nan=False)
+                if arm_propensities is not None
+                else None,
             )
     except Exception as exc:  # noqa: BLE001
         _log_failure("record_offer_decision", run_id, exc)

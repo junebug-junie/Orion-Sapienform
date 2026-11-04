@@ -427,6 +427,8 @@ SYNC_PREFIXES = (
     "WALKWAY_SEEN_",
     # Caption motion cross-check (orion-sql-writer, 2026-10-23, spec PR #2763 item 3 C).
     "VISION_CAPTION_MOTION_",
+    # PR field notes Patch 2 (orion-durable-runs GitHub poll + pr.field_note runs, 2026-11-04).
+    "PR_FIELD_NOTES_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
     # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).

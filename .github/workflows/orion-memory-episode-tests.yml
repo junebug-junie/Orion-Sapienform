@@ -40,6 +40,7 @@ on:
       - "orion/curiosity/tests/test_focus_lifecycle.py"
       - "orion/curiosity/tests/focus_fixtures.py"
       - "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql"
+      - "services/orion-sql-db/manual_migration_curiosity_focus_request_refused_v1.sql"
       - ".github/workflows/orion-memory-episode-tests.yml"
   push:
     branches: [main]
@@ -67,6 +68,7 @@ on:
       - "services/orion-sql-db/manual_migration_vision_ask_names_v1.sql"
       - "orion/curiosity/focus.py"
       - "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql"
+      - "services/orion-sql-db/manual_migration_curiosity_focus_request_refused_v1.sql"
       - ".github/workflows/orion-memory-episode-tests.yml"
 
 jobs:

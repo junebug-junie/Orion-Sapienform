@@ -318,6 +318,14 @@ def excerpt_docs(texts: list[tuple[str, str | None]]) -> tuple[str, list[DocRead
 
 # --- ledger --------------------------------------------------------------------------------------
 
+LEDGER_FILE = "pr_field_notes.jsonl"  # under $ORION_DIG_HOME/self/ (orion/dig field_notes_path)
+
+
+def ledger_path(self_dir: Path | str) -> Path:
+    """The ledger inside a ``self/`` directory: the dig CLI's and Patch 2's poller's one path rule."""
+    return Path(self_dir) / LEDGER_FILE
+
+
 def load(path: Path) -> tuple[list[PrFieldNoteV1], int]:
     """Records in file order and how many lines could not be read (never fatal)."""
     if not path.exists():

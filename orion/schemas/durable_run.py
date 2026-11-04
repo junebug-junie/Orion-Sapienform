@@ -47,6 +47,7 @@ from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW, DreamCarryBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_WORKFLOW, HarnessEchoSmokeBriefV1
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
+from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW, PrFieldNoteBriefV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
@@ -95,6 +96,10 @@ DurableWorkflowV1 = Literal[
     # ADDITIVE on Literal/forbid, consumer-first: deploy orion-sql-writer, orion-hub, orion-actions
     # and orion-cortex-orch before orion-durable-runs runs the first (hand-triggered) smoke.
     "harness.echo_smoke",
+    # PR field notes Patch 2 (2026-11-04, orion/schemas/pr_field_note_run.py): submitted by
+    # orion-durable-runs' own GitHub poller. ADDITIVE on Literal/forbid, consumer-first: deploy
+    # orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+    "pr.field_note",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
@@ -222,7 +227,7 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1
+    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
@@ -245,7 +250,9 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("curiosity.compaction requires CuriosityCompactionBriefV1")
         if (self.workflow == HARNESS_ECHO_SMOKE_WORKFLOW) != isinstance(self.brief, HarnessEchoSmokeBriefV1):
             raise ValueError("harness.echo_smoke requires HarnessEchoSmokeBriefV1")
-        if self.workflow in (HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
+        if (self.workflow == PR_FIELD_NOTE_WORKFLOW) != isinstance(self.brief, PrFieldNoteBriefV1):
+            raise ValueError("pr.field_note requires PrFieldNoteBriefV1")
+        if self.workflow in (PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 

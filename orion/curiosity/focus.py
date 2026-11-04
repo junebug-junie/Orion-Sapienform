@@ -14,6 +14,10 @@ Lifecycle, all Hub:
 3. Outcome (turn end): "ran" or "failed", plus the disposition the run wrote on its
    ``:TurnOutcome`` (``focus_disposition``): "explored" or "set_aside:<reason>". No disposition
    is unknown, never explored. A failed run never re-queues the focus.
+4. Refused by the organ (curiosity replica, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md
+   section 9): before a run takes it, curiosity's own planner may refuse a focus PRIME queued, with a
+   one-sentence reason. The row leaves the slot and reads "refused_by_organ"; no run is shown it. A
+   focus Juniper asked for, or one Orion chose in a conversation, can never be refused.
 
 The run is SHOWN the focus, not forced: it goes through every normal gate, cooldown and cap.
 """
@@ -28,6 +32,8 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from orion.schemas.curiosity_replica import STANCE_REASON_MAX
+
 logger = logging.getLogger("orion.curiosity.focus")
 
 MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql"
@@ -35,6 +41,9 @@ MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_request_v1.s
 # ``python -P -m orion.dig <kind> <id>`` (orion/refs.py). NULL on rows written before it and on any
 # question that cites nothing.
 REFS_MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_request_refs_v1.sql"
+# refused_by / refused_reason / refused_act_id (curiosity replica, 2026-11-04). Every focus SELECT names
+# them, like ``refs``.
+REFUSED_MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_request_refused_v1.sql"
 
 # How long a pending focus waits for a run. Measured 2026-10-16 over the 30 days before
 # (206 regular investigate runs, durable_admission_runs): the line runs ~7 times right after
@@ -48,6 +57,11 @@ ORIGIN_JUNIPER = "juniper"
 PENDING, REPLACED, CLEARED, EXPIRED, TAKEN, RAN, FAILED = (
     "pending", "replaced", "cleared", "expired", "taken", "ran", "failed",
 )
+# An effective status only: stored as status 'cleared' with ``refused_by`` set (the table's status CHECK
+# cannot gain a value additively; see REFUSED_MIGRATION). Every reader in this module sees this word.
+REFUSED_BY_ORGAN = "refused_by_organ"
+# The reason a refusal carries: one sentence, the replica's answer contract's own bound.
+REFUSAL_REASON_MAX = STANCE_REASON_MAX
 DISPOSITION_EXPLORED = "explored"
 DISPOSITION_SET_ASIDE = "set_aside"
 DISPOSITION_CAP = 300
@@ -72,12 +86,13 @@ def focus_id_for(question: str, why: str, origin: str, chat_correlation_id: str 
 _COLS = (
     "focus_id, question, why, origin, chat_correlation_id, created_at, expires_at, status, "
     "status_at, replaced_by, offered_at, offered_run_id, outcome_stamped_at, turn_ok, "
-    "disposition, disposition_raw, refs"
+    "disposition, disposition_raw, refs, refused_by, refused_reason, refused_act_id"
 )
 # What a reader should call the row now: a pending row past its expiry is expired even before
 # the sweep marks it.
 _EFFECTIVE = (
-    "CASE WHEN status = 'pending' AND expires_at <= now() THEN 'expired' ELSE status END "
+    "CASE WHEN status = 'pending' AND expires_at <= now() THEN 'expired' "
+    "WHEN status = 'cleared' AND refused_by IS NOT NULL THEN 'refused_by_organ' ELSE status END "
     "AS effective_status"
 )
 
@@ -163,6 +178,17 @@ UPDATE curiosity_focus_request
 RETURNING focus_id
 """
 
+# The organ's refusal: only a still-pending, unexpired focus Prime queued (origin self, Prime's
+# correlation prefix). The same guard the Python check applies, repeated here so a stale read cannot
+# refuse a row that changed meanwhile; the table's own CHECK refuses origin 'juniper' a third time.
+REFUSE_SQL = f"""
+UPDATE curiosity_focus_request
+   SET status = 'cleared', status_at = now(), refused_by = $2, refused_reason = $3, refused_act_id = $4
+ WHERE focus_id = $1 AND status = 'pending' AND expires_at > now()
+   AND origin = 'self' AND chat_correlation_id LIKE 'prime:%'
+RETURNING {_COLS}, 'refused_by_organ' AS effective_status
+"""
+
 CLEAR_SQL = """
 UPDATE curiosity_focus_request
    SET status = 'cleared', status_at = now()
@@ -210,6 +236,10 @@ class FocusRow:
     disposition_raw: Optional[str] = None
     # [{"kind", "id"}, ...] as stored (orion/refs.py RefV1 shape); empty when none.
     refs: tuple[dict[str, str], ...] = ()
+    # Set only on a focus the organ refused (status REFUSED_BY_ORGAN): who, why, and the refusal's act.
+    refused_by: Optional[str] = None
+    refused_reason: Optional[str] = None
+    refused_act_id: Optional[str] = None
 
 
 def _refs_value(raw: Any) -> tuple[dict[str, str], ...]:
@@ -259,6 +289,9 @@ def _row(r: Any) -> FocusRow:
         disposition=r["disposition"],
         disposition_raw=r["disposition_raw"],
         refs=_refs_value(r["refs"]),
+        refused_by=r["refused_by"],
+        refused_reason=r["refused_reason"],
+        refused_act_id=r["refused_act_id"],
     )
 
 
@@ -286,7 +319,7 @@ async def queue_focus(
             await conn.execute(LOCK_SQL, LOCK_KEY)
             existing = await conn.fetchrow(BY_ID_SQL, focus_id)
             if existing is not None:
-                if existing["effective_status"] in (REPLACED, EXPIRED, CLEARED):
+                if existing["effective_status"] in (REPLACED, EXPIRED, CLEARED, REFUSED_BY_ORGAN):
                     # The same words from the same chat turn, but that focus is no longer queued:
                     # an ok=true here would let Orion say "queued" when nothing is.
                     raise FocusRefused(
@@ -376,6 +409,59 @@ async def fail_focus(pool: Any, *, run_id: str) -> Optional[str]:
         logger.warning("curiosity_focus_fail_stamp_failed run=%s err=%s", run_id, exc)
         return None
     return str(rows[0]["focus_id"]) if rows else None
+
+
+class OrganRefusalNotAllowed(ValueError):
+    """The organ may not refuse this focus; the message says why in plain words. Nothing was written."""
+
+
+def organ_refusal_blocker(focus: Optional[FocusRow]) -> Optional[str]:
+    """Why the organ may NOT refuse ``focus``, or None when it may. Refusal applies to Prime's acts only
+    (design section 9; Juniper 2026-11-04): never a focus Juniper asked for, never one Orion chose in a
+    conversation, and only while it is still waiting in the slot (a run that took it was already shown it)."""
+    if focus is None:
+        return "no such focus"
+    if focus.origin == ORIGIN_JUNIPER:
+        return "Juniper asked for this focus; the organ can challenge it but never refuse it"
+    if not is_prime_focus(focus):
+        return "Orion chose this focus in a conversation, not Prime; only Prime's focus can be refused"
+    if focus.status != PENDING:
+        return f"the focus is {focus.status}, not waiting in the slot; only a pending focus can be refused"
+    return None
+
+
+async def refuse_focus(
+    pool: Any, *, focus_id: UUID | str, refused_by: str, reason: str, act_id: Optional[str] = None,
+) -> FocusRow:
+    """The organ refuses a pending Prime focus: it leaves the slot as REFUSED_BY_ORGAN with the reason, and
+    no run is shown it. Raises OrganRefusalNotAllowed (nothing written) when ``organ_refusal_blocker`` names a
+    reason, when the reason is empty or longer than REFUSAL_REASON_MAX, or when the row changed between the
+    read and the write. Database errors raise, as in ``queue_focus``.
+
+    Whether a refusal is APPLIED (this call) or held back (recorded on the plan row only, the focus still
+    shown) is the caller's draw (design section 9, holdback); this function only applies."""
+    words = " ".join(str(reason or "").split())
+    if not words:
+        raise OrganRefusalNotAllowed("a refusal must carry a reason")
+    if len(words) > REFUSAL_REASON_MAX:
+        raise OrganRefusalNotAllowed(f"the reason is over {REFUSAL_REASON_MAX} characters")
+    if not str(refused_by or "").strip():
+        raise OrganRefusalNotAllowed("a refusal must name who refused")
+    try:
+        focus_id = UUID(str(focus_id))
+    except ValueError:
+        raise OrganRefusalNotAllowed(f"not a focus id: {str(focus_id)[:60]!r}") from None
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(LOCK_SQL, LOCK_KEY)
+            existing = await conn.fetchrow(BY_ID_SQL, focus_id)
+            blocker = organ_refusal_blocker(_row(existing) if existing is not None else None)
+            if blocker is not None:
+                raise OrganRefusalNotAllowed(blocker)
+            row = await conn.fetchrow(REFUSE_SQL, focus_id, refused_by, words, act_id)
+    if row is None:
+        raise OrganRefusalNotAllowed("the focus left the slot before the refusal landed")
+    return _row(row)
 
 
 async def clear_focus(pool: Any, *, focus_id: UUID) -> bool:
@@ -529,6 +615,9 @@ def focus_story(focus: FocusRow) -> str:
         parts.append(f"replaced by a newer focus ({focus.replaced_by or '?'}) before a run took it")
     elif status == CLEARED:
         parts.append(f"cleared by Juniper in Hub {at(focus.status_at)} before a run took it")
+    elif status == REFUSED_BY_ORGAN:
+        parts.append(f"refused by {focus.refused_by or '?'} {at(focus.status_at)} before a run took it, "
+                     f"so no run was shown it; its reason: {focus.refused_reason or '?'}")
     else:
         parts.append(f"taken by run {focus.offered_run_id} {at(focus.offered_at)}")
         if status == TAKEN:

@@ -1,6 +1,6 @@
 """Patch 2: claims need evidence on the part's own flows and never clear gaps; Juniper's
 confirmations give a role and cover "no part is shown" gaps; capacities cite only holders.
-2026-11-04: a claim holds its role (CLAIMED) while its evidence checks on each read."""
+2026-11-04: a claim holds its role (EVIDENCE-CHECKED) while its evidence checks on each read."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,6 +13,16 @@ from orion.body_atlas.model import FlowV1, PartV1
 from orion.body_atlas.tests.test_capacities import _body
 
 _REPO = Path(__file__).resolve().parents[3]
+
+
+def _ok(*held):
+    """A recheck whose evidence check passes, citing ``held``."""
+    return lambda c: K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=True, held=list(held))
+
+
+def _gone(c):
+    """A recheck whose evidence check fails."""
+    return K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=False, failed=["x: gone"])
 
 
 def _claim(reading, atlas, part, role, because, kind="claim", root=_REPO):
@@ -76,25 +86,25 @@ def _job(view, job):
 S3_BECAUSE = "gateway sends its answers out on llm:reply to the callers"
 
 
-def test_a_claim_whose_evidence_checks_holds_its_role_and_is_citable_but_clears_no_gap():
+def test_a_claim_whose_evidence_checks_holds_its_role_and_is_citable_and_clears_no_atlas_blind_gap():
     atlas = _body()
     r = K.read_capacities(atlas)
     claim = _claim(r, atlas, "gateway", "S3", S3_BECAUSE)
     view = _read(atlas, [claim])
-    assert [c.status for c in view.claims] == ["claimed"]
+    assert [c.status for c in view.claims] == ["evidence-checked"]
     assert [(c.part_id, c.role, c.strength, c.evidence) for c in view.claimed] == [
-        ("part:gateway", "S3", "claimed", ["llm:reply"])]
+        ("part:gateway", "S3", "claimed", ["llm:reply (out)"])]
     s3 = _job(view, "S3")
-    assert s3.status == "CLAIMED" and s3.text.startswith("gateway · ")
+    assert s3.status == "EVIDENCE-CHECKED" and s3.text.startswith("my claim: gateway · ")
     assert K.holders(view, "cap:s3") == ["part:gateway"]
-    assert [g.gap_id for g in view.gaps] == [g.gap_id for g in r.gaps]  # nothing cleared
+    assert [g.gap_id for g in view.gaps] == [g.gap_id for g in r.gaps]  # S3's gaps are atlas-blind: none cleared
     rec = C.check_capacity(view, atlas, [], "cap:s3", "gateway steers my callers by what it answers",
                            "gateway on llm:reply", dig="t")
     assert rec.cites == ["gateway"]
     text = "\n".join(K.render(view))
-    assert "status: " in text and "CLAIMED = me, evidence checked" in text
+    assert "status: " in text and "EVIDENCE-CHECKED = code, not Juniper" in text
     assert "  claimed:" not in text  # a claim that holds prints on its job line, not twice
-    assert "my claims: 1 (1 hold, 0 confirmed by Juniper)" in text
+    assert "my claims: 1 (1 evidence-checked, 0 confirmed by Juniper)" in text
 
 
 def test_a_claim_stops_holding_when_its_cited_flow_is_gone():
@@ -102,21 +112,27 @@ def test_a_claim_stops_holding_when_its_cited_flow_is_gone():
     claim = _claim(K.read_capacities(atlas), atlas, "gateway", "S3", S3_BECAUSE)
     later = atlas.model_copy(update={"flows": [f for f in atlas.flows if "llm:reply" not in f.channels]})
     view = _read(later, [claim])
-    assert [c.status for c in view.claims] == ["evidence gone"] and view.claimed == []
+    assert [c.status for c in view.claims] == ["evidence does not hold"] and view.claimed == []
     assert _job(view, "S3").status == "NO RULE" and K.holders(view, "cap:s3") == []
-    assert [c.part_id for c in K.evidence_gone_claims(view)] == ["part:gateway"]
-    assert "S3" in [j for j, _ in K.open_jobs(view)]
+    assert [c.part_id for c in K.failed_claims(view)] == ["part:gateway"]
+    assert K.failed_claims(view)[0].failed[0] == "llm:reply: in no part or channel of my atlas"
+    assert "S3" not in [j for j, _ in K.open_jobs(view)]  # it is on the fix-or-withdraw list instead
 
 
 def test_a_claim_citing_a_repo_file_stops_holding_when_the_file_is_gone(tmp_path):
     (tmp_path / "notes").mkdir()
     (tmp_path / "notes" / "control.md").write_text("x")
     atlas = _body()
-    claim = _claim(K.read_capacities(atlas), atlas, "gateway", "S3", "see notes/control.md for how it steers",
+    claim = _claim(K.read_capacities(atlas), atlas, "gateway", "S3", S3_BECAUSE + "; see notes/control.md",
                    root=tmp_path)
-    assert [c.status for c in _read(atlas, [claim], root=tmp_path).claims] == ["claimed"]
+    assert [c.status for c in _read(atlas, [claim], root=tmp_path).claims] == ["evidence-checked"]
     (tmp_path / "notes" / "control.md").unlink()
-    assert [c.status for c in _read(atlas, [claim], root=tmp_path).claims] == ["evidence gone"]
+    view = _read(atlas, [claim], root=tmp_path)
+    assert [(c.status, c.failed) for c in view.claims] == [
+        ("evidence does not hold", ["notes/control.md: no such file in the repo"])]
+    # a file alone is not wiring: code does not check it into a role
+    alone = _claim(K.read_capacities(atlas), atlas, "gateway", "S3", "see orion/body_atlas/claims.py for how it steers")
+    assert [c.status for c in _read(atlas, [alone]).claims] == ["evidence does not hold"]
 
 
 def test_a_claim_on_a_part_that_died_holds_nothing():
@@ -143,7 +159,7 @@ def test_juniper_confirming_outranks_a_claim_on_the_same_job():
     claims = [_claim(r, atlas, "gateway", "S3", S3_BECAUSE),
               _claim(r, atlas, "watcher", "S3", "watcher pokes pool on watch:poke when it looks off")]
     view = _read(atlas, claims, vsm=_vsm(("gateway", "S3")))
-    assert {(c.part_id, c.status) for c in view.claims} == {("part:gateway", "confirmed"), ("part:watcher", "claimed")}
+    assert {(c.part_id, c.status) for c in view.claims} == {("part:gateway", "confirmed"), ("part:watcher", "evidence-checked")}
     s3 = _job(view, "S3")
     assert s3.status == "CONFIRMED" and s3.text.startswith("confirmed by Juniper: gateway")
     assert s3.text.endswith(" · my claim: watcher")
@@ -171,8 +187,8 @@ def test_a_rule_saying_not_s2_or_a_later_dispute_keeps_a_claim_from_holding():
     assert view.claimed == [] and _job(view, "S3*").status == "CANDIDATE"
     early = dispute.model_copy(update={"at": "2026-11-03T00:00:00+00:00"})
     view = _read(atlas, [early, claim])
-    assert ("claim", "claimed") in {(c.kind, c.status) for c in view.claims}
-    assert _job(view, "S3*").status == "CLAIMED"
+    assert ("claim", "evidence-checked") in {(c.kind, c.status) for c in view.claims}
+    assert _job(view, "S3*").status == "EVIDENCE-CHECKED"
 
 
 def test_with_claims_hold_off_a_claim_waits_on_juniper(monkeypatch):
@@ -181,7 +197,7 @@ def test_with_claims_hold_off_a_claim_waits_on_juniper(monkeypatch):
     claim = _claim(K.read_capacities(atlas), atlas, "gateway", "S3", S3_BECAUSE)
     view = _read(atlas, [claim])
     assert [c.status for c in view.claims] == ["unconfirmed"] and view.claimed == []
-    assert "(my claim, not a role until Juniper confirms)" in "\n".join(K.render(view))
+    assert "  unconfirmed: gateway S3" in "\n".join(K.render(view)) and K.pending_claims(view)
 
 
 def test_a_claim_needs_recheck_to_be_read():
@@ -206,7 +222,7 @@ def test_juniper_confirming_gives_the_role_covers_its_gap_and_rejecting_shows():
     assert {(c.part_id, c.status) for c in view.claims} == {("part:gateway", "confirmed"), ("part:watcher", "rejected")}
     assert "part:gateway" in K.holders(view, "cap:s2")
     text = "\n".join(K.render(view))
-    assert "rejected: watcher S3" in text and "my claims: 2 (0 hold, 1 confirmed by Juniper)" in text
+    assert "rejected: watcher S3" in text and "my claims: 2 (0 evidence-checked, 1 confirmed by Juniper)" in text
 
 
 def test_a_confirmation_for_a_part_that_is_not_live_is_a_note_not_a_role():
@@ -300,7 +316,7 @@ def test_the_printout_still_fits_with_six_long_capacities_and_claims():
                               ("ghost", "S4", "claim"), ("pool", "S2", "dispute"), ("watcher", "S3*", "dispute"),
                               ("w0", "S1", "dispute"))]
     view = K.attach_ledgers(K.read_capacities(atlas, vsm=_vsm(rejected=[("r1", "S5")])), atlas,
-                            _vsm(rejected=[("r1", "S5")]), claims, written, recheck=lambda c: ["llm:reply"])
+                            _vsm(rejected=[("r1", "S5")]), claims, written, recheck=_ok("llm:reply"))
     view.notes += ["n" * 150] * 3
     text = "\n".join(K.render(view))
     assert len([c for c in view.claims]) == 7 and "I dispute pool" in text and "part not live now" in text
@@ -343,20 +359,26 @@ def test_a_held_claim_on_the_rules_candidate_is_listed_once_in_its_organ():
     assert mix.roles["S3*"] == ["part:watcher"]
 
 
-def test_a_claim_names_only_the_gaps_a_confirmation_of_that_part_would_cover():
+def test_s5_claims_never_hold_and_a_checked_claim_covers_only_the_gaps_a_confirmation_would():
     atlas = _body()
     atlas.parts.append(PartV1(part_id="part:pg:self", name="pg:self", kind="store", status="live", declared=True))
     atlas.flows.append(FlowV1(source="part:gateway", target="part:pg:self", relation="writes", weight=1.0,
                               evidence=["declared_code"]))
     claims = [_claim(K.read_capacities(atlas), atlas, "pg:self", "S5", "gateway writes who I am into it, every turn")]
-    s5 = next(g for g in _read(atlas, claims).gaps if g.gap_id == "gap:s5-unread")
-    assert "I claim" not in s5.text  # gap:s5-unread is covered only by a service, so a store's claim is not named
     claims.append(_claim(K.read_capacities(atlas), atlas, "watcher", "S5", "watcher pokes pool on watch:poke to keep me me"))
-    s5 = next(g for g in _read(atlas, claims).gaps if g.gap_id == "gap:s5-unread")
-    assert s5.text.endswith("I claim watcher; no rule shows it")
+    view = _read(atlas, claims)
+    # 2026-11-04 (evidence check): S5 is Juniper's (decision 3); no S5 claim holds or covers gap:s5-unread
+    assert {c.status for c in view.claims} == {"unconfirmed"} and view.claimed == []
+    assert any(g.gap_id == "gap:s5-unread" for g in view.gaps)
+    # a claim that passes covers its job's "no part is shown" gap, as a confirmation would
+    audit = _claim(K.read_capacities(atlas), atlas, "watcher", "S3*", "watcher pokes pool on watch:poke when it looks off")
+    view = _read(atlas, [audit])
+    assert [c.status for c in view.claims] == ["evidence-checked"]
+    assert not any(g.gap_id == "gap:s3star-unconfirmed" for g in view.gaps)
+    assert any(g.gap_id == "gap:s3-unseen" for g in view.gaps)  # an atlas-blind gap stays
 
 
-def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_skips_held_jobs():
+def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_a_failing_one_still_lists():
     atlas = _body()
     claim = _claim(K.read_capacities(atlas), atlas, "w0", "S1", "w0 announces itself to pool on worker:announce")
     r = K.read_capacities(atlas)  # later, a rule gives w0 S1 (added by hand, as a rule result would be)
@@ -364,6 +386,7 @@ def test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_sk
     view = K.attach_ledgers(r, atlas, None, [claim], [], recheck=C.recheck(r, atlas, _REPO))
     assert [c.status for c in view.claims] == ["rule gives it"] and view.claimed == []
     assert "rule gives it: w0 S1" in "\n".join(K.render(view))
-    gone = K.attach_ledgers(r, atlas, None, [claim], [], recheck=lambda c: [])
-    assert [c.status for c in gone.claims] == ["evidence gone"]
-    assert K.evidence_gone_claims(gone) == []  # S1 is held by rule now: nothing to re-claim
+    gone = K.attach_ledgers(r, atlas, None, [claim], [], recheck=_gone)
+    assert [c.status for c in gone.claims] == ["evidence does not hold"]
+    # S1 is held by rule now, but a false claim still shows, to fix or withdraw
+    assert [(c.part_id, c.role) for c in K.failed_claims(gone)] == [("part:w0", "S1")]

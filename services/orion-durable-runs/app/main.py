@@ -43,6 +43,8 @@ _checkpointer_cm: Any = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
+field_notes: Any = None     # app.pr_field_note_poll.FieldNotePoller while PR_FIELD_NOTES_ENABLED (Patch 2)
+_field_notes_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
 claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
@@ -546,6 +548,7 @@ def _build_personality():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
+    global field_notes, _field_notes_task
     global rpc_health_publisher, situation, temporal_self, personality, market
     from app.runner import DurableRunner
 
@@ -598,6 +601,14 @@ async def lifespan(app: FastAPI):
 
                 _reconcile_task = asyncio.create_task(
                     run_reconcile_loop(admission.pool, admission.submit, _settings, _stop))
+            if _settings.field_note_poll_enabled:
+                # PR field notes Patch 2: poll GitHub's public API, write code records, submit note runs.
+                from app.pr_field_note_ledger import FieldNoteLedger
+                from app.pr_field_note_poll import FieldNotePoller
+
+                field_notes = FieldNotePoller(settings=_settings, pool=admission.pool, submit=admission.submit,
+                                              ledger=FieldNoteLedger(_settings.field_note_ledger_dir))
+                _field_notes_task = asyncio.create_task(field_notes.run_forever(_stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
             if admission is not None:
@@ -625,6 +636,8 @@ async def lifespan(app: FastAPI):
             _sweep_task.cancel()
         if _reconcile_task is not None:
             _reconcile_task.cancel()
+        if _field_notes_task is not None:
+            _field_notes_task.cancel()
         if situation is not None:
             await situation.close()
         if temporal_self is not None:
@@ -674,7 +687,32 @@ async def health() -> dict[str, Any]:
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
         "personality": personality.health() if personality is not None else None,
         "physiology_market": market.health() if market is not None else None,
+        # PR field notes Patch 2: the last poll (merged PRs seen, runs submitted, code records written).
+        "field_note_poll": field_notes.health() if field_notes is not None else None,
     }
+
+
+@app.post("/pr-field-notes/poll")
+async def field_note_poll(since: str | None = None) -> dict[str, Any]:
+    """Run one field-notes poll now. ``since`` (ISO time) replaces the lookback for this one poll: the
+    spec's manual re-poll after an outage longer than PR_FIELD_NOTES_LOOKBACK_H. A ``since`` before
+    PR_FIELD_NOTES_NOT_BEFORE is a backfill (Juniper's decision 3: none) and is refused."""
+    from datetime import datetime, timezone
+
+    if field_notes is None:
+        raise HTTPException(503, "PR field notes are off (PR_FIELD_NOTES_ENABLED / admission)")
+    at = None
+    if since:
+        try:
+            at = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(400, f"since is not an ISO time: {since!r}") from exc
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if at < _settings.field_note_not_before:
+            raise HTTPException(400, f"since is before PR_FIELD_NOTES_NOT_BEFORE "
+                                     f"({_settings.field_note_not_before.isoformat()}): no backfill")
+    return (await field_notes.poll_once(since=at)).as_dict()
 
 
 @app.get("/physiology/state")

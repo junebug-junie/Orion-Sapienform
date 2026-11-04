@@ -1,6 +1,7 @@
 # PR field notes: Orion writes a short note after each merged PR
 
-Status: DESIGN, APPROVED by Juniper 2026-11-04 (see Decisions). Patch 1 in progress.
+Status: DESIGN, APPROVED by Juniper 2026-11-04 (see Decisions). Patch 1 merged (#3100). Patch 2 built
+(see "Patch 2 as built" at the end).
 Date: 2026-11-04. Decision being designed: Juniper, 2026-10-30.
 
 ## Arsonist summary
@@ -341,3 +342,37 @@ The number is: merged PRs in a window that have a live note, divided by merged P
 3. **Eval and cost.** The truth eval, the measured cost table, and the 7-day coverage check.
 4. **Reminiscence hookup.** Lands with #2888 Patch 4, which also needs the separate
    `require_lookup` fix for its pure-writing hops.
+
+## Patch 2 as built (2026-11-04)
+
+Report: `docs/superpowers/pr-reports/2026-11-04-pr-field-notes-automatic-pr.md`. Where it differs from
+the text above, or settles what the text left open:
+
+- **Smoke first.** `harness.echo_smoke` ran live on 2026-11-04 and PASSED: run
+  `harness-echo-smoke-20261104T055700Z-55ce10`, 117 s from submit to completed, turn
+  `faa6ab2c-03f4-503d-8ad3-e65c2f0c582f` (82k prompt tokens, 33k of them cached, 1.7k completion, 11
+  Hub steps for a one-command turn). It is the first `harness.echo_smoke` row in `durable_admission_runs`.
+- **Family name.** The economy keys a family by its act actor, so the family is
+  `durable.pr_field_note` (like `durable.journal_compose`), not `pr.field_note`. The workflow is
+  `pr.field_note`. Tier 1, `deferrable_window_s: 86400`, lanes `[agent, agent-gpu2]`, shadow bids.
+- **Code records are written by the poller**, not by a run: a code-record PR gets no run at all.
+- **Ledger access from durable-runs.** Code records and the receipt check need the ledger, so compose
+  mounts the host's `/mnt/orion-fcc/self`. `app/pr_field_note_ledger.py` is the one named exception
+  in the partition test. It returns ids and booleans only. No credential was added.
+- **A code record has an empty `body_map`.** durable-runs has neither the repo (importer scan) nor the
+  live atlas, and a code record makes no claim a body map would check.
+- **verify_receipt runs inside the step**, before the step is checkpointed, and checks the ledger as well
+  as the reply. A receipt the model typed without the write behind it fails. A retry passes through
+  `precheck` again: if an earlier attempt already saved the note, the run finishes as
+  `already_recorded` without a second turn.
+- **Bounds.** One note run in flight at a time. At most 2 runs per PR (the second an hour after the first
+  failed). The 1-2 h/day above is the TYPICAL cost (a median harness turn is about 325 s), not the cap's
+  worst case. Each run has 3 attempts of a 900 s turn (raised from 420 s after the first live run: Hub keeps 330 s of
+  it for finalize, so 420 gave the harness motor 60 s) and a 20 h deadline. The prompt asks for about 3
+  tool calls and at most 6. Hub's turn request has no step-limit field, so the time is the hard bound.
+- **New merges only.** `PR_FIELD_NOTES_NOT_BEFORE=2026-11-04T06:00:00+00:00`. A manual `since=` re-poll
+  before that time is refused.
+- **Cost.** `services/orion-durable-runs/scripts/pr_field_note_cost.py` replaces the estimate table once
+  20 notes exist (acceptance check 6). It reads time, whole-machine Wh and slot seconds from the act, and
+  the tokens of every attempt from `llm_call_usage`.
+

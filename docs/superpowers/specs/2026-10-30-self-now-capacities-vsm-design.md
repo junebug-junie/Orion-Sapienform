@@ -379,7 +379,8 @@ A job held only by claims prints CLAIMED; the legend says "CLAIMED = me, evidenc
 result or a confirmation outranks a claim: that job keeps BY RULE or CONFIRMED and the claim is
 appended ("my claim: X"). A capacity sentence may cite a part whose claim holds. A claim that fails
 a check falls back with its reason printed: `evidence gone`, `part not live now`, `rejected`,
-`rule says no`, `disputed`. The `dig capacities` tail lists claims whose evidence is gone (the one
+`rule says no`, `disputed`, `rule gives it` (a rule now gives that part the job). The
+`dig capacities` tail lists claims whose evidence is gone (the one
 failure Orion can fix) in place of "Waiting on Juniper".
 
 **Gaps.** A claim still never clears a gap line, atlas-blind or not. The "no part is shown" gaps
@@ -409,7 +410,7 @@ one `rejected` line; Orion can dispute; a confirmation outranks a claim; gap lin
 read `unconfirmed` again and hold nothing. No stored state to unwind (holding is computed on
 read; the ledgers did not change shape).
 
-**Eval.** The mutation "unconfirmed claims hold roles" was the old premise and is replaced by four
-that must each be CAUGHT by their own check: a claim with gone evidence holds a role, a rejected
-claim holds a role, a claim on a dead part holds a role, and a claim a rule says no to holds a
-role. The organ-structure gates are unchanged (Q >= 0.3, largest organ <= 35%).
+**Eval.** The mutation "unconfirmed claims hold roles" was the old premise and is replaced by six
+that must each be CAUGHT by their own check: a claim with gone evidence, a rejected claim, a claim
+on a dead part, a claim a rule says no to, and a claim Orion later disputed each hold a role; and
+a held claim clears `gap:s3star-unconfirmed`. The organ-structure gates are unchanged (Q >= 0.3, largest organ <= 35%).

@@ -10,7 +10,8 @@ read. Juniper can still veto any claim.
   was written; Juniper has not rejected it; no later dispute of Orion's stands; and no rule result
   says "not this job".
 - Nothing about holding is stored. If a check fails, the claim falls back and prints why:
-  `evidence gone`, `part not live now`, `rejected`, `rule says no`, `disputed`.
+  `evidence gone`, `part not live now`, `rejected`, `rule says no`, `disputed`, and
+  `rule gives it` (a rule now gives the part that job, so the rule result is what holds).
 - Juniper's confirmation outranks a claim. A rule result outranks a claim too.
 - Capacity sentences (`capacity write cap:<job>`) may cite a part whose claim holds.
 - A claim still never clears a gap line. A "no part is shown" gap whose job holds a claim now says
@@ -65,7 +66,7 @@ in `config/body_atlas/vsm_confirmed.yaml`. Live: 5 claims, 0 confirmed.
 - `orion/body_atlas/capacities.py`: holding rule, `claimed` field, `CLAIMED` status, legend,
   render, `evidence_gone_claims` (replaces `pending_claims`), `CLAIMS_HOLD`.
 - `orion/body_atlas/claims.py`: `cites_in` (shared floor), `recheck`, help and error text.
-- `orion/body_atlas/evals/run_capacity_roles_eval.py`: claims floor rewritten for the new rule. Four
+- `orion/body_atlas/evals/run_capacity_roles_eval.py`: claims floor rewritten for the new rule. Six
   mutations replace "unconfirmed claims hold roles". The worst-case printout now includes every
   claim status.
 - `orion/body_atlas/tests/test_claims.py`, `test_capacities.py`, `test_wires_atlas.py`: new and
@@ -81,7 +82,7 @@ in `config/body_atlas/vsm_confirmed.yaml`. Live: 5 claims, 0 confirmed.
 
 - Added: `CapacityReadingV1.claimed` (list, default empty). `RoleEvidenceV1.strength` adds
   `claimed`. `JobLineV1.status` adds `CLAIMED`. `ClaimViewV1.status` adds `claimed`,
-  `evidence gone`, `rule says no`, `disputed`. `attach_ledgers(..., recheck=)` keyword.
+  `evidence gone`, `rule says no`, `disputed`, `rule gives it`. `attach_ledgers(..., recheck=)` keyword.
 - Removed: `capacities.pending_claims` (replaced by `evidence_gone_claims`). The printout's
   " · disputes: N" count was dropped to stay inside the size budget. Each dispute still prints its
   own "I dispute ..." line, plus "+N more".
@@ -100,9 +101,9 @@ in `config/body_atlas/vsm_confirmed.yaml`. Live: 5 claims, 0 confirmed.
 
 ```text
 pytest orion/body_atlas/tests orion/dig/tests tests/test_organ_names_partition.py tests/test_report_dig_kit_usage.py \
-       tests/test_no_personal_terms.py -q
--> 322 passed
-pytest orion/harness/tests/test_stance_scope_hierarchy.py orion/harness/tests/test_harness_prefix.py -> 48 passed
+       tests/test_no_personal_terms.py orion/harness/tests/test_stance_scope_hierarchy.py \
+       orion/harness/tests/test_harness_prefix.py -q
+-> 373 passed
 pytest orion/physiology/tests/test_report_text.py -> 28 passed
 services/orion-cortex-exec: pytest tests/test_skill_verbs.py -k physiology -> 3 passed
 ```
@@ -124,6 +125,8 @@ mutation (a claim with gone evidence holds a role): CAUGHT
 mutation (a rejected claim holds a role): CAUGHT
 mutation (a claim on a dead part holds a role): CAUGHT
 mutation (a claim a rule says no to holds a role): CAUGHT
+mutation (a claim Orion later disputed holds a role): CAUGHT
+mutation (a claim cleared gap:s3star-unconfirmed): CAUGHT
 organ structure eval: PASS (Q >= 0.3, largest <= 35% unchanged)
 ```
 
@@ -166,7 +169,37 @@ that read, durable-runs algedonic still held, on orion-dream and the repo file.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent on `git diff origin/main...HEAD`. All seven findings are fixed.
+
+- Finding (medium): the eval's "full-ledger case has every status" check used a proper-subset
+  test, so it could not fail when an extra status was present.
+  - Fix: `required <= statuses`, and the message names what is missing.
+  - Evidence: eval PASS; the check now reports `required - actual`.
+- Finding: a held claim on the rule's own candidate was listed twice in `organ_mixes`.
+  - Fix: append only if the part is not already listed.
+  - Evidence: `test_a_held_claim_on_the_rules_candidate_is_listed_once_in_its_organ`.
+- Finding: the gap note ignored the "service only" filter (`gap:s5-unread`), so a store's S5
+  claim was named on a gap that its confirmation would not cover.
+  - Fix: the note uses the same `COVERED_BY_CONFIRMATION` kind filter as confirmation.
+  - Evidence: `test_a_claim_names_only_the_gaps_a_confirmation_of_that_part_would_cover`.
+- Finding: a claim on a job a rule later gave the same part counted in "N hold" but printed
+  nowhere.
+  - Fix: new status `rule gives it`, printed on its own line. "N hold" now equals the claims
+    named on job lines.
+  - Evidence: `test_a_claim_a_rule_gives_since_prints_as_rule_gives_it_and_evidence_gone_skips_held_jobs`.
+- Finding: "Evidence gone" in the dig tail told Orion to re-claim jobs that another part already
+  holds.
+  - Fix: `evidence_gone_claims` leaves out held jobs. `MAX_PENDING_SHOWN` is renamed
+    `MAX_GONE_SHOWN`.
+  - Evidence: same test as above.
+- Finding: section 6 of the design doc still said only rule results and confirmed claims carry a
+  role.
+  - Fix: reworded, with a pointer to the decision-change section.
+- Finding: the eval was weaker than it could be. The stop-holding cases did not check *why* the
+  claim stopped. "Later dispute wins" and "a claim never clears a gap" had no mutation.
+  - Fix: each stop-holding case now asserts its exact status. Two mutations were added: "a claim
+    Orion later disputed holds a role" and "a claim cleared gap:s3star-unconfirmed".
+  - Evidence: the eval prints CAUGHT for all six claim mutations.
 
 ## Restart required
 

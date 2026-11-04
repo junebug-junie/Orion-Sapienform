@@ -131,6 +131,18 @@ def test_printout_is_small_and_names_every_job():
         assert f"\n{job} " in f"\n{text}"
 
 
+def test_printout_says_by_rule_is_not_juniper_confirmed():
+    # turn 1ee0e35d (2026-11-04): Orion reported S1/S2 "BY RULE" as "Confirmed" with 0 confirmations
+    lines = K.render(K.read_capacities(_body()))
+    statuses = {j.status for j in K.read_capacities(_body()).jobs}
+    legend = next(ln for ln in lines if ln.startswith("status: "))
+    for status in statuses:
+        assert f"{status} = " in legend
+    if "BY RULE" in statuses:
+        assert "not confirmed by Juniper" in legend
+    assert set(K.STATUS_MEANINGS) >= statuses
+
+
 _SPEC = importlib.util.spec_from_file_location(
     "run_capacity_roles_eval", Path(__file__).parents[1] / "evals" / "run_capacity_roles_eval.py")
 _EVAL = importlib.util.module_from_spec(_SPEC)

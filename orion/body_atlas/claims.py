@@ -8,9 +8,11 @@ it is the review surface (design decision 1). Code checks a floor, as names do:
 * a **claim** names a live part and a job, and its because cites, by full id, the other end or
   a non-census channel of one of that part's flows (placement on a host does not count), or a
   repo file that exists. A claim cannot take a job a rule already gives the part; a **dispute**
-  argues with one, and prints beside it.
+  argues with one, and prints beside it. Since 2026-11-04 a claim holds its role while that same
+  floor (``cites_in``) still passes on every read (``recheck``); Juniper may reject any claim.
 * a **capacity** (``cap:s1`` .. ``cap:s5``, ``cap:metabolism``) may cite only parts that hold its
-  job by rule or by Juniper's confirmation (for ``cap:s5``, also her sign-off files), and its
+  job by rule, by Juniper's confirmation or by a claim that holds (for ``cap:s5``, also her
+  sign-off files), and its
   sentence may not name any other live part. With no holder there is nothing to write: the gap
   line stands. cap:s5 names Juniper (decision 3).
 
@@ -28,7 +30,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from orion.body_atlas.capacities import (
-    CAP_JOBS, JOBS, CapacityClaimV1, CapacityReadingV1, CapacityV1, VsmConfirmedV1, claimable, holders,
+    CAP_JOBS, JOBS, CapacityClaimV1, CapacityReadingV1, CapacityV1, Recheck, VsmConfirmedV1, claimable, holders,
 )
 from orion.body_atlas.model import BodyAtlasV1
 from orion.body_atlas.names import BECAUSE_MAX_CHARS, BECAUSE_MIN_CHARS, _cited
@@ -150,6 +152,21 @@ def _because(text: str) -> str:
     return because
 
 
+def cites_in(reading: CapacityReadingV1, atlas: BodyAtlasV1, part_id: str, because: str, root: Path) -> list[str]:
+    """What ``because`` cites that counts as evidence for a claim on this part: by full id, the other
+    end or a non-census channel of one of its flows, or a repo file that exists. Empty: no evidence.
+    The floor a claim must pass when written, and again on every read (``recheck``)."""
+    census = {c.channel for c in reading.census if c.census}
+    low = _plain(because)
+    cites = sorted(e for e in evidence_ids(atlas, part_id, census) if _cited(e, low))
+    return cites + repo_files(because, root)
+
+
+def recheck(reading: CapacityReadingV1, atlas: BodyAtlasV1, root: Path) -> Recheck:
+    """For ``capacities.attach_ledgers``: a claim's evidence, checked again against this atlas."""
+    return lambda c: cites_in(reading, atlas, c.part_id, c.because, root)
+
+
 def check_claim(reading: CapacityReadingV1, atlas: BodyAtlasV1, ref: str, role: str, because: str, *,
                 kind: str, root: Path, dig: str) -> CapacityClaimV1:
     part_id = _part(atlas, ref)
@@ -162,11 +179,9 @@ def check_claim(reading: CapacityReadingV1, atlas: BodyAtlasV1, ref: str, role: 
     if kind == "dispute" and not ruled:
         raise ClaimError(f"no rule gives {part_id.removeprefix('part:')} {job}; there is nothing to dispute "
                          "(`capacity claim` to propose a role)")
-    census = {c.channel for c in reading.census if c.census}
-    low = _plain(because)
-    cites = sorted(e for e in evidence_ids(atlas, part_id, census) if _cited(e, low))
-    cites += repo_files(because, root)
+    cites = cites_in(reading, atlas, part_id, because, root)
     if not cites:
+        census = {c.channel for c in reading.census if c.census}
         sample = sorted(evidence_ids(atlas, part_id, census))[:3]
         raise ClaimError("the because must cite, by full id, a part or channel on one of this part's flows"
                          + (f" (e.g. {', '.join(sample)})" if sample else "") + ", or a repo file that exists")
@@ -186,13 +201,13 @@ def check_capacity(reading: CapacityReadingV1, atlas: BodyAtlasV1, written: list
     hs = holders(reading, cap_id)
     jobs = "/".join(CAP_JOBS[cap_id])
     if not hs:
-        raise ClaimError(f"no part holds {jobs} by rule or by Juniper's confirmation, so there is nothing to "
-                         "cite; the gap line stands (`capacity claim` a part, then Juniper confirms)")
+        raise ClaimError(f"no part holds {jobs} by rule, confirmation or a claim that checks, so there is "
+                         "nothing to cite; the gap line stands (`capacity claim` a part, with evidence)")
     held = [h.removeprefix("part:") for h in hs]
     s_low = _plain(sentence)
     others = sorted(n for n in claimable(atlas) if n not in held and _cited(n, s_low))
     if others:
-        raise ClaimError(f"the sentence names {', '.join(others)}, which hold no {jobs} by rule or confirmation; "
+        raise ClaimError(f"the sentence names {', '.join(others)}, which hold no {jobs} by rule, confirmation or claim; "
                          f"a capacity may name only {', '.join(held[:6])}")
     text = f"{s_low} {_plain(because)}"
     cites = [h for h in held if _cited(h, text)]
@@ -210,6 +225,7 @@ def claim_rule() -> str:
     """The floor ``check_claim`` and ``check_capacity`` enforce, from the same constants."""
     return (f"Claim: a live part, a job ({', '.join(JOBS)}), and a because ({BECAUSE_MIN_CHARS}-"
             f"{BECAUSE_MAX_CHARS} chars) citing by full id a part or channel on one of its flows, or a repo "
-            "file that exists. Not a role until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml. Capacity "
+            "file that exists. It holds the job while that evidence still checks on each read; Juniper may "
+            "reject it in config/body_atlas/vsm_confirmed.yaml. Capacity "
             f"(cap:s1..s5, cap:metabolism): one sentence ({SENTENCE_MIN_CHARS}-{SENTENCE_MAX_CHARS} chars) "
-            "naming only parts that hold the job by rule or confirmation.")
+            "naming only parts that hold the job by rule, confirmation or a claim that checks.")

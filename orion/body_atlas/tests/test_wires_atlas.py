@@ -141,8 +141,10 @@ def test_a_confirmed_algedonic_part_covers_the_algedonic_gap_and_a_claim_does_no
     assert not any(g.gap_id == "gap:algedonic-none" for g in K.read_capacities(atlas, vsm=yes).gaps)
     claim = K.CapacityClaimV1(part_id="part:redis:orion:regulation:latest", role="algedonic", kind="claim",
                               because="b", cites=[], at="t", dig="d")
-    r = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [claim], [])
-    assert any(g.gap_id == "gap:algedonic-none" for g in r.gaps)
+    r = K.attach_ledgers(K.read_capacities(atlas), atlas, None, [claim], [], recheck=lambda c: ["orion-w"])
+    assert [c.status for c in r.claims] == ["claimed"]  # the claim holds the job ...
+    gap = next(g for g in r.gaps if g.gap_id == "gap:algedonic-none")  # ... and still clears no gap
+    assert gap.text.endswith("I claim redis:orion:regulation:latest; no rule shows it")
 
 
 def test_printout_with_wires_still_fits():

@@ -588,7 +588,8 @@ def cmd_body_part(atlas, part, out: Out) -> str:
     loops = _flow_rows([f for f in mine if f.source == pid == f.target], pid, by_id, census)
     # a singleton organ is not an organ `body <organ_id>` can open (find_organ: multi-part only)
     organ = next((o for o in atlas.organs if pid in o.members and len(o.members) > 1), None)
-    roles = [r for r in reading.roles + reading.confirmed if r.part_id == pid]
+    # a claim that holds on this read (evidence rechecked) is one of its jobs too
+    roles = [r for r in reading.roles + reading.confirmed + reading.claimed if r.part_id == pid]
     my_claims = [c for c in reading.claims if c.part_id == pid]
     claimable = pid in claims.claimable(atlas).values()
     ok = claims.evidence_ids(atlas, pid, census) if claimable else set()
@@ -620,7 +621,9 @@ def cmd_body_part(atlas, part, out: Out) -> str:
     if roles:
         lines.append("jobs: " + "; ".join(f"{r.role} {r.strength} ({r.rule})" for r in roles))
     if my_claims:
-        lines.append("my claims: " + "; ".join(f"{c.role} {c.kind} {c.status}" for c in my_claims))
+        lines.append("my claims: " + "; ".join(
+            f"{c.role} {c.kind}: " + ("holds (evidence checks)" if c.status == "claimed" else c.status)
+            for c in my_claims))
     if claimable and cite:
         shown = cite[:PART_CITES_SHOWN]
         while len(shown) > 1 and len(", ".join(shown)) > PART_CITE_LINE_CHARS:
@@ -767,7 +770,8 @@ def _capacity_reading(atlas=None):
     reading = capacities.read_capacities(atlas, vsm=vsm)
     claim_recs, s1 = claims.load_ledger(claims_path(), capacities.CapacityClaimV1)
     written, s2 = claims.load_ledger(capacities_path(), capacities.CapacityV1)
-    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written)
+    reading = capacities.attach_ledgers(reading, atlas, vsm, claim_recs, written,
+                                        recheck=claims.recheck(reading, atlas, now_root()))
     for path, n in ((claims_path(), s1), (capacities_path(), s2)):
         if n:
             reading.notes.append(f"{n} unreadable line(s) skipped in {path}")
@@ -798,12 +802,12 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
 
 
 CLAIM_PREFIX = "python -P -m orion.dig capacity claim"
-MAX_PENDING_SHOWN = 3
+MAX_GONE_SHOWN = 3
 
 
 def claim_block(reading, atlas) -> list[str]:
-    """The claims to write now, one ready line per open job, and the claims waiting on Juniper.
-    A claim is not a role: Juniper confirms or rejects each in config/body_atlas/vsm_confirmed.yaml."""
+    """The claims to write now, one ready line per open job, and the claims whose evidence is gone.
+    A claim holds its job while its evidence checks; Juniper may reject any in vsm_confirmed.yaml."""
     from orion.body_atlas import capacities, claims
 
     census = {c.channel for c in reading.census if c.census}
@@ -811,7 +815,7 @@ def claim_block(reading, atlas) -> list[str]:
     jobs = capacities.open_jobs(reading)
     if jobs:
         lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first (a claim "
-                     "is not a role; Juniper reviews it). Cite by full id a part or channel on its flows "
+                     "holds while its evidence checks). Cite by full id a part or channel on its flows "
                      "(`body <part>` lists them), or a repo file:")
         for job, cands in jobs:
             name, hint = "'<part>'", ""
@@ -824,13 +828,13 @@ def claim_block(reading, atlas) -> list[str]:
                 hint = f"  # the rule saw: {', '.join(dict.fromkeys(ev[:3]))}" if ev else ""
             lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<why>"{hint}')
         lines.append("No evidence for a job: leave it, and say which and why.")
-    waiting = capacities.pending_claims(reading)
+    waiting = capacities.evidence_gone_claims(reading)
     if waiting:
-        lines.append(f"Waiting on Juniper ({len(waiting)}): ask her yes or no on each (answers go in "
-                     "config/body_atlas/vsm_confirmed.yaml):")
-        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_PENDING_SHOWN]]
-        if len(waiting) > MAX_PENDING_SHOWN:
-            lines.append(f"  +{len(waiting) - MAX_PENDING_SHOWN} more in {claims_path()}")
+        lines.append(f"Evidence gone ({len(waiting)}): these claims hold nothing now; claim again citing "
+                     "evidence that checks, or leave them:")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:60]}" for c in waiting[:MAX_GONE_SHOWN]]
+        if len(waiting) > MAX_GONE_SHOWN:
+            lines.append(f"  +{len(waiting) - MAX_GONE_SHOWN} more in {claims_path()}")
     return lines
 
 
@@ -843,7 +847,7 @@ def cmd_capacity_help() -> str:
         "  python -P -m orion.dig body <part>   (its flows, and the exact ids a claim on it may cite)",
         '  python -P -m orion.dig capacity dispute <part> <job> because "<reason>"   (argue with a rule result)',
         '  python -P -m orion.dig capacity write cap:s2 "<one sentence>" because "<reason>"',
-        "Gap lines are written by code; a claim never clears one. Ledgers: "
+        "Gap lines are written by code; a claim never clears one. Juniper may reject a claim. Ledgers: "
         f"{claims_path()}, {capacities_path()}",
     ])
 
@@ -870,7 +874,7 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
         raise DigError(str(exc)) from exc
     claims.append(claims_path(), rec)
     after = ("it prints beside the rule result and changes nothing" if verb == "dispute"
-             else "Orion's claim until Juniper confirms it in config/body_atlas/vsm_confirmed.yaml")
+             else "it holds the job while this evidence checks; Juniper may reject it")
     return (f"{'disputed' if verb == 'dispute' else 'claimed'} {rec.part_id.removeprefix('part:')} {rec.role} (cites: {', '.join(rec.cites[:6])}); {after}"
             f"\nclaims ledger: {claims_path()}")
 

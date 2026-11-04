@@ -16,10 +16,14 @@ FAIL (the shared servers become S2). An eval that cannot fail is not a gate.
 Patch 2, **claims floor** on the 2026-10-30 body (``orion/body_atlas/claims.py``): a claim citing
 one of the part's flows passes; one citing an unrelated part, only the census, or taking a job a
 rule already gives is refused; a capacity with no holder, or naming a part that holds no such
-job, is refused; an unconfirmed claim is never citable and never clears a gap; Juniper's
-confirmation does both; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities,
-several claims, disputes and notes still fit the printout. Mutation (a code change, patched in):
-``holders`` also returns parts with an unconfirmed claim; the floor must FAIL.
+job, is refused; a claim whose evidence checks holds its role (CLAIMED, citable, 2026-11-04) but
+never clears a gap; it stops holding when its evidence is gone, its part dies, Juniper rejects it
+or a rule says no (a near miss is "not S2"); Juniper's confirmation outranks a claim and covers the
+"no part is shown" gap; the checked-in ``vsm_confirmed.yaml`` reads; six full-length capacities,
+claims in every status, disputes and notes still fit the printout. Mutations (code changes,
+patched in), each must be CAUGHT by its own check: a claim with gone evidence, a rejected claim,
+a claim on a dead part, a claim a rule says no to, and a claim Orion later disputed each hold a
+role; and a held claim clears its "no part is shown" gap line.
 
 The expected sets are the only hand-written truth here; the rules never read them.
 
@@ -133,24 +137,65 @@ def _refused(fn, *args, **kw) -> bool:
     return False
 
 
-def _claims_hold_holders(real):
-    """The mutant: a ``holders`` that also counts unconfirmed claims, the bug the floor guards."""
-    def mutant(reading, cap_id):
-        extra = [c.part_id for c in reading.claims if c.kind == "claim" and c.role in K.CAP_JOBS[cap_id]]
-        return list(dict.fromkeys(real(reading, cap_id) + extra))
-    return mutant
+def _with_floor_off(cut: str):
+    """Install one mutant (a code change, patched in), each the bug a hold check guards against:
+    ``evidence`` trusts the cites stored at write time instead of checking them again; ``rejected``
+    drops Juniper's no; ``dead`` counts every part as live; ``rule-no`` ignores a near miss's "not S2";
+    ``disputed`` ignores Orion's later dispute; ``gap`` lets a held claim clear its "no part is
+    shown" gap line. Returns the undo."""
+    real_status, real_recheck, real_attach = K._claim_status, C.recheck, K.attach_ledgers
+    if cut == "evidence":
+        C.recheck = lambda reading, atlas, root: (lambda c: list(c.cites))
+    elif cut == "gap":
+        def attach(*a, **kw):
+            out = real_attach(*a, **kw)
+            jobs = {r.role for r in out.claimed}
+            out.gaps = [g for g in out.gaps if not (g.gap_id in K.COVERED_BY_CONFIRMATION and g.job in jobs)]
+            return out
+        K.attach_ledgers = attach
+    else:
+        def mutant(c, **kw):
+            if cut == "rejected":
+                kw["rejected"] = set()
+            elif cut == "dead":
+                kw["live"] = kw["live"] | {c.part_id}
+            elif cut == "rule-no":
+                kw["not_s2"] = set()
+            elif cut == "disputed":
+                kw["latest"] = {}
+            return real_status(c, **kw)
+        K._claim_status = mutant
+
+    def undo():
+        K._claim_status, C.recheck, K.attach_ledgers = real_status, real_recheck, real_attach
+    return undo
 
 
-def claims_failures(path: Path, *, claims_hold: bool = False) -> list[str]:
-    """``claims_hold=True`` runs the floor with the mutant ``holders`` patched into both modules."""
-    if not claims_hold:
-        return _claims_failures(path)
-    real_k, real_c = K.holders, C.holders
-    K.holders = C.holders = _claims_hold_holders(real_k)
+# each mutant is CAUGHT only when the floor's own check for it fails (not by chance)
+MUTANTS = {"evidence": "a claim with gone evidence holds a role", "rejected": "a rejected claim holds a role",
+           "dead": "a claim on a dead part holds a role", "rule-no": "a claim a rule says no to holds a role",
+           "disputed": "a claim Orion later disputed holds a role", "gap": "a claim cleared gap:s3star-unconfirmed"}
+
+
+def claims_failures(path: Path, *, mutant: str | None = None) -> list[str]:
+    """``mutant``: run the floor with one of ``MUTANTS`` patched in."""
+    undo = _with_floor_off(mutant) if mutant else (lambda: None)
     try:
         return _claims_failures(path)
     finally:
-        K.holders, C.holders = real_k, real_c
+        undo()
+
+
+def _attach(atlas, vsm, claims, written=()):
+    r = K.read_capacities(atlas, vsm=vsm)
+    return K.attach_ledgers(r, atlas, vsm, list(claims), list(written), recheck=C.recheck(r, atlas, _REPO))
+
+
+def _because_for(reading, atlas, part: str) -> str:
+    """A because citing the first evidence id the floor offers for this part (a holding claim)."""
+    census = {c.channel for c in reading.census if c.census}
+    ev = sorted(C.evidence_ids(atlas, f"part:{part}", census))[0]
+    return f"{part} works with {ev} on the flows the atlas shows me"
 
 
 def _claims_failures(path: Path) -> list[str]:
@@ -160,7 +205,7 @@ def _claims_failures(path: Path) -> list[str]:
         vsm = C.load_confirmed(_REPO)
     except C.ClaimError as exc:
         return [f"checked-in vsm_confirmed.yaml does not read: {exc}"]
-    if vsm.confirmed:
+    if vsm.confirmed or vsm.rejected:
         return ["vsm_confirmed.yaml is no longer empty: point this eval at a frozen copy"]
     f: list[str] = []
     base = K.read_capacities(atlas, vsm=vsm)
@@ -180,16 +225,47 @@ def _claims_failures(path: Path) -> list[str]:
     for why, (fn, *args) in refusals.items():
         if not _refused(fn, *args, kind="claim", root=_REPO, dig="e"):
             f.append(f"claim not refused: {why}")
-    reading = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [])
-    if not _refused(C.check_capacity, reading, atlas, [], "cap:s2", "orion-durable-runs keeps my runs from fighting",
-                    "orion-durable-runs schedules them", dig="e"):
-        f.append("an unconfirmed claim became citable in cap:s2")
-    if "part:orion-durable-runs" in next(c.holders for c in reading.capacities if c.cap_id == "cap:s2"):
-        f.append("an unconfirmed claim is listed as a cap:s2 holder")
-    if len(reading.gaps) != len(base.gaps):
-        f.append("an unconfirmed claim changed the gap lines")
-    if [c.status for c in reading.claims] != ["unconfirmed"]:
-        f.append(f"claim status {[c.status for c in reading.claims]} != ['unconfirmed']")
+    # 2026-11-04: a claim whose evidence checks on this read holds its role (CLAIMED)
+    reading = _attach(atlas, vsm, [claim])
+    if [c.status for c in reading.claims] != ["claimed"]:
+        f.append(f"a claim whose evidence checks reads {[c.status for c in reading.claims]}, not ['claimed']")
+    if "part:orion-durable-runs" not in K.holders(reading, "cap:s2"):
+        f.append("a claim whose evidence checks is not a cap:s2 holder")
+    if [g.gap_id for g in reading.gaps] != [g.gap_id for g in base.gaps]:
+        f.append("a claim changed the gap lines")
+    audit = C.check_claim(base, atlas, "orion-equilibrium-service", "S3*",
+                          _because_for(base, atlas, "orion-equilibrium-service"), kind="claim", root=_REPO, dig="e")
+    a = _attach(atlas, vsm, [audit])
+    if next(j.status for j in a.jobs if j.job == "S3*") != "CLAIMED":
+        f.append("a job held only by a claim does not print CLAIMED")
+    if not any(g.gap_id == "gap:s3star-unconfirmed" for g in a.gaps):
+        f.append(MUTANTS["gap"])
+    # Orion's own later dispute of the same part and job (the rule's S3* candidate) stops the claim
+    late = C.check_claim(base, atlas, "orion-equilibrium-service", "S3*", _because_for(base, atlas,
+                         "orion-equilibrium-service"), kind="dispute", root=_REPO, dig="e")
+    a = _attach(atlas, vsm, [audit.model_copy(update={"at": "2026-11-04T00:00:00+00:00"}),
+                             late.model_copy(update={"at": "2026-11-04T01:00:00+00:00"})])
+    if a.claimed or "disputed" not in {c.status for c in a.claims}:
+        f.append(MUTANTS["disputed"])
+    # each way a claim must stop holding
+    names = {p.name: p.part_id for p in atlas.parts}
+    dr = names["orion-durable-runs"]
+    cut = atlas.model_copy(update={"flows": [x for x in atlas.flows if dr not in (x.source, x.target)]})
+    dead = atlas.model_copy(update={"parts": [p.model_copy(update={"status": "transient"}) if p.part_id == dr else p
+                                              for p in atlas.parts]})
+    no = vsm.model_copy(update={"rejected": [K.ConfirmationV1(part="orion-durable-runs", role="S2", date="2026-11-04")]})
+    gw = C.evidence_ids(atlas, names["orion-llm-gateway"], {c.channel for c in base.census if c.census})
+    near = C.check_claim(base, atlas, "orion-llm-gateway", "S2", f"orion-llm-gateway serves {sorted(gw)[0]} "
+                         "and many more callers", kind="claim", root=_REPO, dig="e")
+    for why, want, view, part in (
+            (MUTANTS["evidence"], "evidence gone", _attach(cut, vsm, [claim]), dr),
+            (MUTANTS["rejected"], "rejected", _attach(atlas, no, [claim]), dr),
+            (MUTANTS["dead"], "part not live now", _attach(dead, vsm, [claim]), dr),
+            (MUTANTS["rule-no"], "rule says no", _attach(atlas, vsm, [near]), names["orion-llm-gateway"])):
+        if part in K.holders(view, "cap:s2") or view.claimed:
+            f.append(why)
+        elif [c.status for c in view.claims] != [want]:  # it stopped, but for the wrong reason
+            f.append(f"{why.split(' holds')[0]} reads {[c.status for c in view.claims]}, not [{want!r}]")
     if not _refused(C.check_capacity, reading, atlas, [], "cap:s4", "I look ahead with orion-world-pulse each day",
                     "orion-world-pulse reads the world", dig="e"):
         f.append("cap:s4 written with no S4 holder")
@@ -200,13 +276,15 @@ def _claims_failures(path: Path) -> list[str]:
                           "R-matchmaker: orion-gpu-pool sits between requesters and workers", dig="e")
     if ok.cites != ["orion-gpu-pool"]:
         f.append(f"cap:s2 cites {ok.cites}")
-    # Juniper's confirmation: citable, covers the S3* gap
+    # Juniper's confirmation: citable, outranks a claim, covers the S3* gap
     yes = vsm.model_copy(update={"confirmed": [
         K.ConfirmationV1(part="orion-durable-runs", role="S2", date="2026-10-30"),
         K.ConfirmationV1(part="orion-equilibrium-service", role="S3*", date="2026-10-30")]})
-    conf = K.attach_ledgers(K.read_capacities(atlas, vsm=yes), atlas, yes, [claim], [])
+    conf = _attach(atlas, yes, [claim, audit])
     if "part:orion-durable-runs" not in K.holders(conf, "cap:s2") or conf.claims[0].status != "confirmed":
         f.append("a confirmed claim is not citable")
+    if next(j.status for j in conf.jobs if j.job == "S3*") != "CONFIRMED" or conf.claimed:
+        f.append("a confirmation does not outrank a claim")
     if any(g.gap_id == "gap:s3star-unconfirmed" for g in conf.gaps):
         f.append("a confirmed S3* did not cover gap:s3star-unconfirmed")
     if not any(g.gap_id == "gap:s3-unseen" for g in conf.gaps):
@@ -215,16 +293,22 @@ def _claims_failures(path: Path) -> list[str]:
     long = "x" * C.SENTENCE_MAX_CHARS
     written = [K.CapacityV1(cap_id=c, sentence=long, because="b" * 20, cites=["orion-gpu-pool"], at="t", dig="e")
                for c in K.CAP_JOBS]
-    many = [claim.model_copy(update={"part_id": f"part:{p}", "role": r, "kind": k}) for p, r, k in (
-        ("orion-world-pulse", "S4", "claim"), ("orion-prediction", "S4", "claim"), ("orion-hub", "S3", "claim"),
-        ("orion-hardware-watch", "algedonic", "claim"), ("pg:self_concept_history", "S5", "claim"),
-        ("orion-gpu-pool", "S2", "dispute"), ("camera:cam0", "S1", "dispute"), ("http:openai", "S1", "dispute"))]
-    big = K.attach_ledgers(K.read_capacities(atlas, vsm=yes), atlas, yes, [claim, *many], written)
+    # holding claims (real evidence), one whose evidence is gone, one a rule says no to, disputes
+    many = [claim.model_copy(update={"part_id": f"part:{p}", "role": r, "kind": k, "because": _because_for(base, atlas, p)})
+            for p, r, k in (("orion-world-pulse", "S4", "claim"), ("orion-prediction", "S4", "claim"),
+                            ("orion-hub", "S3", "claim"), ("orion-hardware-watch", "algedonic", "claim"),
+                            ("pg:self_concept_history", "S5", "claim"), ("orion-gpu-pool", "S2", "dispute"),
+                            ("camera:cam0", "S1", "dispute"), ("http:openai", "S1", "dispute"))]
+    many += [claim.model_copy(update={"part_id": "part:orion-hub", "role": "metabolism", "because": "x" * 400}), near]
+    big = _attach(atlas, yes, [claim, *many], written)
+    required = {"claimed", "evidence gone", "rule says no", "confirmed"}
+    if not required <= {c.status for c in big.claims}:
+        f.append(f"the full-ledger case lacks a status: {sorted(required - {c.status for c in big.claims})}")
     big.notes += [f"note {i}: " + "n" * 120 for i in range(3)]
     text = "\n".join(K.render(big))
     if len(text.splitlines()) > 38 or len(text) > 3700:  # room for the dig pointer and tail lines
         f.append(f"printout with ledgers too big: {len(text.splitlines())} lines, {len(text)} chars")
-    # What Orion reads: render plus the dig tail (claims to write, claims waiting on Juniper, path),
+    # What Orion reads: render plus the dig tail (claims to write, claims whose evidence is gone, path),
     # which `capped` never cuts. A usual reading (two claims waiting) must fit whole. In this worst
     # case (every ledger full, long notes) a cut is allowed, but the tail stays small and every job
     # line still shows.
@@ -237,7 +321,7 @@ def _claims_failures(path: Path) -> list[str]:
     shown = capped(K.render(big), tail=tail)
     if not all(ln in shown for ln in K.render(big)[: 1 + len(K.JOBS)]):
         f.append("dig capacities with full ledgers cut a job line")
-    usual = K.attach_ledgers(K.read_capacities(atlas, vsm=yes), atlas, yes, [claim, *many[:2]], [])
+    usual = _attach(atlas, yes, [claim, *many[:2]])
     shown = capped(K.render(usual), tail="\n".join(claim_block(usual, atlas) + [path_line]))
     if "the rest is in the file" in shown:
         f.append(f"dig capacities with two claims waiting is cut: {len(shown)} chars")
@@ -257,10 +341,11 @@ def main(argv: list[str] | None = None) -> int:
     for f in claim_fails:
         print(f"FAIL claims: {f}")
     print("claims floor (whole_body_2026-10-30_stores.json): " + ("PASS" if not claim_fails else f"FAIL ({len(claim_fails)})"))
-    mutant_fails = claims_failures(TODAY, claims_hold=True)
-    claims_mutant = any("unconfirmed claim" in f for f in mutant_fails)  # caught by the floor, not by chance
-    print("mutation (unconfirmed claims hold roles): " + ("CAUGHT" if claims_mutant else "NOT CAUGHT"))
-    failed += bool(claim_fails) + (not claims_mutant)
+    failed += bool(claim_fails)
+    for cut, why in MUTANTS.items():
+        caught = why in claims_failures(TODAY, mutant=cut)  # caught by the floor's own check, not by chance
+        print(f"mutation ({why}): " + ("CAUGHT" if caught else "NOT CAUGHT"))
+        failed += not caught
     if args.live:
         catalog, observed, now, body = _structure._live_inputs(_REPO)
         reading = K.read_capacities(build_atlas(catalog, observed, now=now, body=body))

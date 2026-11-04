@@ -301,6 +301,9 @@ partition test, `tests/test_organ_names_partition.py` (allowlist `orion/body_atl
    files.]
 4. **Order:** rules first (gaps visible now), or the HTTP/Redis atlas fix first? [Rules first.]
 5. **When does Orion write capacities?** [On Juniper's ask, like naming; not on a timer.]
+   2026-11-04: her ask is any capacities question, in any words. Asked "what can you do", Orion
+   kept offering claims and wrote none, so `dig capacities` now ends with one ready claim line
+   per open job and says to write each claim it can back now; Juniper's review stays the gate.
 
 **Recorded 2026-10-30:** Juniper answered "hit it" to all five. Decided: (1) Juniper confirms by PR
 to `config/body_atlas/vsm_confirmed.yaml`; (2) `cap:metabolism` is kept, through claims; (3) S5

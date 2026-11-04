@@ -40,6 +40,9 @@ SENTENCE_MAX_CHARS = 160
 _PATH_RE = re.compile(r"(?<![\w/.:-])((?:[\w.-]+/)+[\w.-]*\w)")
 
 
+_PLACEHOLDER_RE = re.compile(r"<\w[^<>]*>")
+
+
 class ClaimError(ValueError):
     pass
 
@@ -140,6 +143,8 @@ def repo_files(text: str, root: Path) -> list[str]:
 
 def _because(text: str) -> str:
     because = " ".join(text.split())
+    if _PLACEHOLDER_RE.search(because):  # a printed `capacity claim` line run as is (2026-11-04 review)
+        raise ClaimError("the because still holds a <...> placeholder; write your own reason in its place")
     if not BECAUSE_MIN_CHARS <= len(because) <= BECAUSE_MAX_CHARS:
         raise ClaimError(f"the because is {BECAUSE_MIN_CHARS}-{BECAUSE_MAX_CHARS} chars, got {len(because)}")
     return because

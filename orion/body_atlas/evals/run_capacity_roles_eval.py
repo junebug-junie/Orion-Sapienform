@@ -224,6 +224,23 @@ def _claims_failures(path: Path) -> list[str]:
     text = "\n".join(K.render(big))
     if len(text.splitlines()) > 38 or len(text) > 3700:  # room for the dig pointer and tail lines
         f.append(f"printout with ledgers too big: {len(text.splitlines())} lines, {len(text)} chars")
+    # What Orion reads: render plus the dig tail (claims to write, claims waiting on Juniper, path),
+    # which `capped` never cuts. A usual reading (two claims waiting) must fit whole. In this worst
+    # case (every ledger full, long notes) a cut is allowed, but the tail stays small and every job
+    # line still shows.
+    from orion.dig.__main__ import capped, claim_block
+
+    path_line = "full result: /mnt/orion-fcc/dig/2026-11-04/capacities-99.json"
+    tail = "\n".join(claim_block(big, atlas) + [path_line])
+    if len(tail.splitlines()) > 12 or len(tail) > 900:
+        f.append(f"dig tail with full ledgers too big: {len(tail.splitlines())} lines, {len(tail)} chars")
+    shown = capped(K.render(big), tail=tail)
+    if not all(ln in shown for ln in K.render(big)[: 1 + len(K.JOBS)]):
+        f.append("dig capacities with full ledgers cut a job line")
+    usual = K.attach_ledgers(K.read_capacities(atlas, vsm=yes), atlas, yes, [claim, *many[:2]], [])
+    shown = capped(K.render(usual), tail="\n".join(claim_block(usual, atlas) + [path_line]))
+    if "the rest is in the file" in shown:
+        f.append(f"dig capacities with two claims waiting is cut: {len(shown)} chars")
     return f
 
 

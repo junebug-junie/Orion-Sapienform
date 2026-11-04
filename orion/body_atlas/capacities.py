@@ -776,6 +776,30 @@ def attach_ledgers(reading: CapacityReadingV1, atlas: BodyAtlasV1, vsm: VsmConfi
     return out
 
 
+def open_jobs(reading: CapacityReadingV1) -> list[tuple[Job, list[str]]]:
+    """The jobs Orion should claim now: no part holds them by rule or by Juniper's confirmation,
+    and no claim of Orion's for them is waiting or confirmed. Each comes with the parts a rule
+    found as candidates for it that Orion has not claimed for it yet (a rejected one stays out).
+    Read with ``reading.claims`` attached (``attach_ledgers``)."""
+    held = {r.role for r in reading.roles + reading.confirmed if r.strength != "candidate"}
+    # a confirmed claim is already in ``reading.confirmed`` (held); only the unconfirmed ones wait
+    waiting = {c.role for c in reading.claims if c.kind == "claim" and c.status == "unconfirmed"}
+    tried = {(c.part_id, c.role) for c in reading.claims if c.kind == "claim"}
+    out: list[tuple[Job, list[str]]] = []
+    for job in JOBS:
+        if job in held or job in waiting:
+            continue
+        cands = [r.part_id for r in reading.roles
+                 if r.role == job and r.strength == "candidate" and (r.part_id, job) not in tried]
+        out.append((job, list(dict.fromkeys(cands))))
+    return out
+
+
+def pending_claims(reading: CapacityReadingV1) -> list[ClaimViewV1]:
+    """Orion's claims waiting for Juniper's yes or no, oldest first."""
+    return sorted((c for c in reading.claims if c.kind == "claim" and c.status == "unconfirmed"), key=lambda c: c.at)
+
+
 def hits(reading: CapacityReadingV1, rule: str) -> set[str]:
     return {r.part_id for r in reading.roles if r.rule == rule}
 

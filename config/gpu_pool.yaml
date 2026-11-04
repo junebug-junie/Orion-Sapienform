@@ -26,6 +26,13 @@ defaults:
   retry: {max_attempts: 3, base_sec: 5, max_sec: 300}
   # Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md)
   hold_clawback_grace_sec: 600  # a recalled hold (durable run) finishes its current graph node within this, then is aborted + re-queued
+  # H5 (2026-11-04): a swap seat drained only for BACKGROUND owner work (every diffusion job) gives a running
+  # hold this long instead, so a ~1 min image no longer kills a 10-60 min reading/curiosity turn (81 killed
+  # 10-28..11-04). Images wait up to this for the running node (inside the 2.5 h Juniper allowed 2026-09-29).
+  # Default 3600 lives in orion/gpu_pool/config.py (Defaults.background_drain_grace_sec), NOT here yet:
+  # Defaults is extra=forbid and circe's lane controller parses this file, so a new key here breaks any
+  # reader still on older code. Add `background_drain_grace_sec: <sec>` here once every reader is deployed.
+  # Rollback: set it equal to hold_clawback_grace_sec.
   swap_min_residency_sec: 600   # after a seat unloads, its evicted residents stay this long (swap_requested reason=min_residency)
   actuate_ack_sec: 10           # the actuator must answer "accepted" within this, else swap_failed reason=actuator_unreachable
   # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md)

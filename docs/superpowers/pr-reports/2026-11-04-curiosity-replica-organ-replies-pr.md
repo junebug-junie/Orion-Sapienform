@@ -103,6 +103,14 @@ Checked on 4,000 act ids: the draw lands 18-22% control for each stance (`test_r
     `refused by curiosity.replica: three runs died on this kind of question`, in the treated arm, before the
     next thought; the next frame shows "refused it: the question was not shown to the run".
 
+### After merging main (#3120 energy money, #3122 event mode)
+
+The branch merges `origin/main` (merge, not rebase). Prime's frame keeps both the ENERGY MONEY and the ORGAN
+REPLIES sections, `_ask` makes both reads, and `system_prompt` takes both `events=` and `organ_replies=`. The
+golden was re-recorded and compared with main's golden part by part: every part of every scenario on main is
+identical; the only difference is the two added organ scenarios (whose frames show both sections and whose
+system prompt carries the organ paragraph).
+
 ## Metric quality gate: the answer act's grade (`artifact_produced`)
 
 1. **Provenance.** `orion/curiosity/replica/answers.py answer_produced`: 1 when the answer did what its arm says

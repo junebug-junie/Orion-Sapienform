@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -164,8 +165,9 @@ class Out:
 
 
 def capped(lines: list[str], *, tail: str | None) -> str:
-    """At most MAX_LINES lines and MAX_CHARS chars; a cut is always said, the tail always kept."""
-    keep = MAX_LINES - (1 if tail else 0)
+    """At most MAX_LINES lines and MAX_CHARS chars; a cut is always said, the tail always kept
+    (a tail may be several lines)."""
+    keep = MAX_LINES - (tail.count("\n") + 1 if tail else 0)
     body = lines
     if len(body) > keep:
         body = body[: keep - 1] + [f"(showing {keep - 1} of {len(lines)} lines; the rest is in the file)"]
@@ -630,15 +632,57 @@ def cmd_capacities(arg: str | None, out: Out) -> str:
     ``gaps``: the code-written gap lines. Writes nothing but the dig result file."""
     from orion.body_atlas import capacities
 
-    reading, _, _ = _capacity_reading()
+    reading, atlas, _ = _capacity_reading()
     path = out.write("capacities", json.loads(reading.model_dump_json()))
+    tail = [f"full result: {path}"]
     if arg == "gaps":
         lines = capacities.render_gaps(reading)
     else:
         lines = capacities.render(reading)
-        if reading.gaps or any(c.status in ("gap", "not written", "stale") for c in reading.capacities):
+        # In the tail, so a long printout never cuts it: a capacities turn ends with claims written
+        # (2026-11-04: Orion read this printout, then offered claims instead of writing them).
+        block = claim_block(reading, atlas)
+        if block:
+            tail = block + tail
+        elif reading.gaps or any(c.status in ("gap", "not written", "stale") for c in reading.capacities):
             lines.append(f"to claim a job: {CLAIM_CMD} (capacity help: the rule)")
-    return capped(lines, tail=f"full result: {path}")
+    return capped(lines, tail="\n".join(tail))
+
+
+CLAIM_PREFIX = "python -P -m orion.dig capacity claim"
+MAX_PENDING_SHOWN = 4
+
+
+def claim_block(reading, atlas) -> list[str]:
+    """The claims to write now, one ready line per open job, and the claims waiting on Juniper.
+    A claim is not a role: Juniper confirms or rejects each in config/body_atlas/vsm_confirmed.yaml."""
+    from orion.body_atlas import capacities, claims
+
+    census = {c.channel for c in reading.census if c.census}
+    lines: list[str] = []
+    jobs = capacities.open_jobs(reading)
+    if jobs:
+        lines.append("Unclaimed jobs: claim each you can back with evidence now, without asking first "
+                     "(a claim is not a role; Juniper reviews it). The because cites, by full id, a part or "
+                     "channel on that part's flows, or a repo file:")
+        for job, cands in jobs:
+            if cands:
+                part = cands[0]
+                cites = sorted(claims.evidence_ids(atlas, part, census))[:3]
+                hint = "why; e.g. " + ", ".join(cites) if cites else "why; a repo file"
+                name = shlex.quote(part.removeprefix("part:"))
+            else:
+                name, hint = "<part>", "why"
+            lines.append(f'  {CLAIM_PREFIX} {name} {shlex.quote(job)} because "<{hint}>"')
+        lines.append("No evidence for a job: leave it, and say which and why.")
+    waiting = capacities.pending_claims(reading)
+    if waiting:
+        lines.append(f"Waiting on Juniper ({len(waiting)}): ask her yes or no on each; her answer goes in "
+                     "config/body_atlas/vsm_confirmed.yaml:")
+        lines += [f"  {c.part_id.removeprefix('part:')} {c.role}: {c.because[:70]}" for c in waiting[:MAX_PENDING_SHOWN]]
+        if len(waiting) > MAX_PENDING_SHOWN:
+            lines.append(f"  +{len(waiting) - MAX_PENDING_SHOWN} more in {claims_path()}")
+    return lines
 
 
 def cmd_capacity_help() -> str:

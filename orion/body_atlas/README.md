@@ -169,6 +169,9 @@ say" line, and a sentence whose holder later loses the role prints STALE. Ledger
 `$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only, partitioned from
 recall (`tests/test_organ_names_partition.py`). The capacity eval also runs the claims floor on
 the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must fail.
+`open_jobs` / `pending_claims` (2026-11-04) feed the `dig capacities` tail: the jobs to claim now
+(no rule or confirmed holder, no claim waiting) and the claims waiting for Juniper's yes or no. A
+capacities turn ends with claims written, not offered; a claim is still never a role.
 
 **HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
 *HTTP:* a service calls another when its code names that service's URL: a string constant that is

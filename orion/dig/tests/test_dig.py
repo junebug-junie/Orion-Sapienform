@@ -303,6 +303,9 @@ def test_brief_routes_any_self_request_to_help_not_to_exact_phrases():
         assert topic in DIG_BRIEF_LINE
     # The last line of `capacities` is always "full result: <path>"; never point Orion at it.
     assert "last line" not in DIG_BRIEF_LINE
+    # 2026-11-04: Orion ran `capacities` and offered claims instead of writing them. A claim is not
+    # a role (Juniper reviews each), so writing is the default, said by topic, not by command word.
+    assert "write the claims `capacities` asks for" in DIG_BRIEF_LINE and "Juniper reviews" in DIG_BRIEF_LINE
 
 
 def test_capacities_output_carries_the_line_the_brief_points_at():

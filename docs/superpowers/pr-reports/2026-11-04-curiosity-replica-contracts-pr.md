@@ -187,6 +187,6 @@ orion-mind needs no restart (nothing it runs changed).
     `refused_by_organ`; both migration headers say so. Nothing refuses a focus until patch 4.
 
 ## PR link
-(filled in below)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3110
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

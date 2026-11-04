@@ -462,8 +462,8 @@ def test_liveness_for_node_broadcast_lane_age_with_real_resets_reads_live():
 
 def test_liveness_for_node_computes_ladder_throughput_rollup():
     node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
-    # 5 stages, each its own cursor -- fetch() opens one cursor per stage.
-    cursors = [_FakeCursor(fetchall_result=[(1.0,), (2.0,), (3.0,)]) for _ in range(5)]
+    # 3 stages, each its own cursor -- fetch() opens one cursor per stage.
+    cursors = [_FakeCursor(fetchall_result=[(1.0,), (2.0,), (3.0,)]) for _ in range(3)]
     conn = _FakeConn(cursors)
     outcome = liveness_for_node(node, conn)
     assert isinstance(outcome, LivenessOutcome)
@@ -527,10 +527,12 @@ def test_liveness_for_node_ladder_sample_count_is_real_row_sum_not_bucket_count(
     ~28x. sample_count must be a true row total, comparable to the scalar
     source's `len(values)`."""
     node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
-    cursors = [_FakeCursor(fetchall_result=[(10.0,), (0.0,), (20.0,)]) for _ in range(5)]
+    cursors = [_FakeCursor(fetchall_result=[(10.0,), (0.0,), (20.0,)]) for _ in range(3)]
     conn = _FakeConn(cursors)
     outcome = liveness_for_node(node, conn)
-    assert outcome.sample_count == 5 * 30  # 10+0+20 per stage, 5 stages
+    # 10+0+20 per stage, 3 stages (proposal, policy, attention; feedback and consolidation
+    # retired 2026-11-04).
+    assert outcome.sample_count == 3 * 30
 
 
 def test_liveness_for_node_propagates_query_failure():

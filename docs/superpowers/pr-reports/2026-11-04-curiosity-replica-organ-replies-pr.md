@@ -311,6 +311,6 @@ a live frame; the regulate side at all (Prime has never sent a regulate act on c
 
 ## PR link
 
-(added after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3123
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

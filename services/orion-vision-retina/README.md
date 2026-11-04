@@ -184,8 +184,19 @@ self-looks, health `ok`. `ring_source.ensure_fcm_push_tolerance()` (applied
 before every listener start) pads both headers, and a message that still
 cannot be handled is logged, counted (`ring_push_messages_skipped`,
 `ring_push_last_skip_error`) and acknowledged instead of killing the
-listener. Live check after a restart: `ring_events_seen` grows and
-`journalctl CONTAINER_NAME=orion-vision-retina-doorbell -o cat | grep -c "Incorrect padding"`
+listener. **Second stage, 2026-11-03 23:48 .. 11-04 (fixed).** With only the padding
+fix deployed, every push was skipped with `ValueError: Invalid EC key`
+(health correctly `degraded`, `ring_deaf`). FCM's `crypto-key` header is
+`dh=<key>;p256ecdsa=<VAPID key>`; the library strips `dh=` and decodes the
+rest as one value. While FCM padded the key the decoder stopped at its `=`;
+unpadded it ran on into `p256ecdsa` and produced 137 bytes instead of a
+65-byte key. `ring_source._header_param` now takes only the `dh` (and
+`salt`) parameter, in any order, `;`- or `,`-separated. A skip line now
+also prints the header layout (parameter names and value lengths, never
+values), e.g. `headers crypto-key=[dh:87 p256ecdsa:87] encryption=[salt:22]`.
+Live check after a restart: `ring_events_seen` grows,
+`ring_push_messages_skipped` stays 0, and
+`docker logs orion-vision-retina-doorbell 2>&1 | grep -cE "Incorrect padding|Invalid EC key"`
 stops growing. Each live view is
 registered with Ring before it starts, so every exit path (no answer, error,
 shutdown) closes it -- an orphaned session keeps a battery camera streaming.

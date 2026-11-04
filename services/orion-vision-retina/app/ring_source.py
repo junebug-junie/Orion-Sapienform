@@ -83,6 +83,57 @@ def _b64url_padded(s: str) -> str:
     return s + "=" * (-len(s) % 4)
 
 
+# The two per-message headers firebase-messaging reads, and the one parameter
+# it needs from each (it assumes that parameter is the whole header).
+_PUSH_HEADER_PARAMS = {"crypto-key": "dh", "encryption": "salt"}
+
+
+def _header_param(header: str, name: str) -> str | None:
+    """One parameter's value from a Web Push header (RFC 8291 draft "aesgcm":
+    ``;``-separated parameters, ``,``-separated entries), or None.
+
+    Since 2026-10-28 FCM sends ``crypto-key: dh=<key>;p256ecdsa=<vapid key>``
+    with no base64 padding. firebase-messaging 0.4.5 strips the first 3
+    characters (``dh=``) and decodes the rest as ONE value. While FCM padded
+    the key, the decoder stopped at the ``=`` and never reached
+    ``p256ecdsa``; unpadded, the strict decode failed ("Incorrect padding"),
+    and padded as a whole it decoded 137 bytes, not a 65-byte key point
+    ("Invalid EC key", 2026-11-03 23:48 .. 11-04, every push skipped)."""
+    want = name.casefold()
+    for entry in (header or "").split(","):
+        for part in entry.split(";"):
+            key, sep, value = part.strip().partition("=")
+            if sep and key.strip().casefold() == want:
+                return value.strip().strip('"')
+    return None
+
+
+def _header_shape(msg: Any) -> str:
+    """Parameter names and value lengths of the push headers, never the values:
+    enough to see a new header layout in a skip log line."""
+    out = []
+    for ad in getattr(msg, "app_data", []) or []:
+        if ad.key in _PUSH_HEADER_PARAMS:
+            parts = [f"{k.strip() if sep else '?'}:{len(v.strip()) if sep else len(k.strip())}"
+                     for entry in ad.value.split(",")
+                     for k, sep, v in (p.partition("=") for p in entry.split(";"))]
+            out.append(f"{ad.key}=[{' '.join(parts)}]")
+    return " ".join(out) or "no push headers"
+
+
+def _normalize_push_headers(msg: Any) -> None:
+    """Rewrite ``crypto-key``/``encryption`` to just ``dh=<v>``/``salt=<v>``,
+    the form firebase-messaging parses. A header without that parameter is
+    left alone (the library then fails on it and the message is skipped)."""
+    for ad in getattr(msg, "app_data", []) or []:
+        param = _PUSH_HEADER_PARAMS.get(ad.key)
+        if param is None:
+            continue
+        value = _header_param(ad.value, param)
+        if value is not None:
+            ad.value = f"{param}={value}"
+
+
 class _FcmSkips:
     """Push messages the patched client could not handle and skipped (acked).
     Process-wide: the patch is on the library class, not on one listener."""
@@ -103,7 +154,9 @@ def ensure_fcm_push_tolerance() -> None:
     message on every reconnect, and every listener died within a second of
     starting (1,440 restarts in 24 h, 0 Ring events, 0 doorbell crops).
 
-    Two patches on ``FcmPushClient``: pad both headers before decoding (the
+    Three patches on ``FcmPushClient``: take only the ``dh``/``salt``
+    parameter out of each header (``_header_param``: FCM also sends
+    ``p256ecdsa`` in ``crypto-key``), pad both values before decoding (the
     library already pads its own stored keys), and if handling one data
     message still raises, log it, count it and return, so the message is
     acknowledged and skipped instead of killing the listener. Same fix as
@@ -130,6 +183,11 @@ def ensure_fcm_push_tolerance() -> None:
 
     def _handle_data_message(self, msg, *args, **kwargs):
         try:
+            shape = _header_shape(msg)
+        except Exception:  # noqa: BLE001 -- logging must never drop a message
+            shape = "?"
+        try:
+            _normalize_push_headers(msg)
             out = handle(self, msg, *args, **kwargs)
         except Exception as exc:  # noqa: BLE001 -- one bad message must not kill the listener
             _FcmSkips.count += 1
@@ -137,7 +195,7 @@ def ensure_fcm_push_tolerance() -> None:
             _FcmSkips.last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(f"[RETINA] ring push message {getattr(msg, 'persistent_id', '?')} skipped "
                            f"(acknowledged, not delivered; {_FcmSkips.consecutive} in a row): "
-                           f"{_FcmSkips.last_error}")
+                           f"{_FcmSkips.last_error} headers {shape}")
             return None
         _FcmSkips.consecutive = 0
         return out

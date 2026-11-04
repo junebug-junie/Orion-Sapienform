@@ -13,6 +13,10 @@ The R2 drive template applied to every want family:
 * **Rest.** A close sets ``t`` to 0. With no want and no close, intensity rises toward 1 and
   stays there: a family starved for days reads as a drive (design: "drives are read, not declared").
 
+**Event wants.** A want that carries an event (``WantV1.salience``, how unusual the event is for
+its source) has ``intensity = max(hunger, salience)``: an unusual event can win before the family's
+clock is due, and a want with no event is hunger alone (attention as the want competition, patch 1).
+
 **value_rank** is the market's one common unit: this want's ``intensity x outcome_value`` as a
 percentile (mid-rank) of the SAME family's last 30 days of acts, each act's intensity
 reconstructed from its own gap since the previous close. Families are never compared on their
@@ -59,6 +63,9 @@ class ActRecord:
     outcome_source: Optional[str] = None         # producer | resolver | expired | None
     signal_id: Optional[str] = None
     cost: Mapping[str, Any] = field(default_factory=dict)   # cost_json (ActCostV2 shape) or {}
+    # grammar_acts.outcome_note: tells a close that never ran ("failed: ...") from a real 0. Read by
+    # weights' source (d); None for callers that do not read it (then (d) is not computed).
+    outcome_note: Optional[str] = None
 
     @property
     def graded(self) -> bool:
@@ -205,6 +212,15 @@ def hunger(app: FamilyAppetite, now: datetime, *, opened_at: Optional[datetime] 
     return Hunger(unfunded_sec=t, intensity=intensity(t, app.tau_sec), basis=basis)
 
 
+def want_intensity(hunger_intensity: float, salience: Optional[float]) -> tuple[float, str]:
+    """(intensity, basis): ``max(hunger, salience)``. basis ``salience`` when the event is the larger
+    part, else ``hunger``. No salience (a clock want): hunger alone."""
+    if salience is None or not math.isfinite(salience):
+        return hunger_intensity, "hunger"
+    s = min(1.0, max(0.0, float(salience)))
+    return (s, "salience") if s > hunger_intensity else (hunger_intensity, "hunger")
+
+
 def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Optional[float]
                ) -> tuple[float, str, float]:
     """(value_rank, value_basis, outcome used). Graded: rank of intensity x expected outcome (the
@@ -282,4 +298,5 @@ __all__ = [
     "lane_hunger_seed",
     "mid_rank",
     "rank_value",
+    "want_intensity",
 ]

@@ -82,7 +82,9 @@ def act_faculty(actor: str, verb: str, object_ref: str) -> str:
     return base
 
 
-def _act_outcome(row: Row) -> Optional[str]:
+def act_outcome(row: Row) -> Optional[str]:
+    """One grammar_acts close -> upheld | refuted | failed_to_execute | no_change. Also read by the body
+    economy's weights (source (d), ``orion/physiology/weights.py``), so both organs grade an act alike."""
     source = (row.get("outcome_source") or "").strip()
     note = (row.get("outcome_note") or "").strip()
     value = _float(row.get("outcome_value"))
@@ -100,7 +102,7 @@ def grammar_act(row: Row) -> Optional[SettledBetV1]:
     opened = _aware(row.get("opened_at"))
     if closed is None or opened is None:
         return None
-    outcome = _act_outcome(row)
+    outcome = act_outcome(row)
     source = (row.get("outcome_source") or "").strip()
     # An expired act is a real 0 (the deadline passed with no artifact): the world answered.
     settled_by = "juniper" if source == "resolver" else "world"

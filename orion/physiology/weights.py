@@ -15,6 +15,16 @@ Evidence sources, each a rate per act in 0..1 (never a count, so running more do
   resolver: the share Juniper answered. Only families with Juniper-visible output have it.
 * (c) Orion's endorsement (personality graph): EXCLUDED. The Patch A recon found it not yet
   independent of (a) (design "Producer split", item 7: "stays out until it records real choices").
+* (d) reliability, the self-monitor's track record (attention as the want competition, patch 1):
+  the share of the family's world-settled closes that the self-monitor grades ``upheld``
+  (``orion.self_monitor.adapters.act_outcome``, the same function the self-monitor uses, so
+  there is no second track record). A close that never ran (``failed_to_execute``) and one with no
+  outcome are not grades. Resolver closes (Juniper's turn did or did not start) are left out: they
+  ARE source (b), and counting them twice would double Juniper's vote. Off unless the caller asks
+  (``reliability=True``) and reads ``grammar_acts.outcome_note`` into ``ActRecord``; without the
+  note a failed run would read as a refuted one.
+
+Each act counts once toward ``n`` however many sources measured it.
 
 Guards (the replay's R7 checks them):
 
@@ -39,12 +49,14 @@ from typing import Mapping, Optional, Sequence
 
 from orion.physiology.appetite import ActRecord
 from orion.physiology.families import FamiliesConfig
+from orion.self_monitor.adapters import act_outcome
 
 KAPPA = 30.0
 MIN_EVIDENCED = 10
 MAX_DRIFT_PER_DAY = 0.1
 EVIDENCE_WINDOW = timedelta(days=30)
 ENGAGEMENT_SIGNAL = "juniper_replied"
+RESOLVER_SOURCE = "resolver"
 
 
 @dataclass(frozen=True)
@@ -64,28 +76,54 @@ class Evidence:
     use_n: int
     engagement_rate: Optional[float]
     engagement_n: int
+    reliability_rate: Optional[float] = None
+    reliability_n: int = 0
+    # Every act any source measured, so an act measured by two sources counts once in ``n``.
+    act_ids: frozenset = frozenset()
 
     @property
     def n(self) -> int:
-        # Distinct acts are counted once: the two sources never share an act today ((a) has no link
-        # path for outreach, the only family with (b) that bids). A shared act would count twice.
-        return self.use_n + self.engagement_n
+        if self.act_ids:
+            return len(self.act_ids)
+        return self.use_n + self.engagement_n + self.reliability_n
 
     @property
     def mean_rate(self) -> Optional[float]:
-        rates = [r for r in (self.use_rate, self.engagement_rate) if r is not None]
+        rates = [r for r in (self.use_rate, self.engagement_rate, self.reliability_rate) if r is not None]
         return sum(rates) / len(rates) if rates else None
 
 
+def reliability_grades(family: str, acts: Sequence[ActRecord], *, since: datetime, until: datetime
+                       ) -> list[tuple[str, bool]]:
+    """Source (d): (act_id, upheld) for each world-settled close of ``family`` in [since, until)."""
+    out: list[tuple[str, bool]] = []
+    for a in acts:
+        if (a.family != family or a.closed_at is None or not since <= a.closed_at < until
+                or a.outcome_source == RESOLVER_SOURCE):
+            continue
+        grade = act_outcome({"outcome_source": a.outcome_source, "outcome_note": a.outcome_note,
+                             "outcome_value": a.outcome_value})
+        if grade in ("upheld", "refuted"):
+            out.append((a.act_id, grade == "upheld"))
+    return out
+
+
 def evidence_for(family: str, acts: Sequence[ActRecord], uses: Sequence[UseRecord], *, since: datetime,
-                 until: datetime) -> Evidence:
+                 until: datetime, reliability: bool = False) -> Evidence:
     u = [x for x in uses if x.family == family and x.link_status == "linked" and x.window_closed
          and x.used is not None and x.started_at is not None and since <= x.started_at < until]
-    e = [a for a in acts if a.family == family and a.signal_id == ENGAGEMENT_SIGNAL and a.outcome_source == "resolver"
+    e = [a for a in acts if a.family == family and a.signal_id == ENGAGEMENT_SIGNAL and a.outcome_source == RESOLVER_SOURCE
          and a.outcome_value is not None and a.closed_at is not None and since <= a.closed_at < until]
+    if reliability and any(a.closed_at is not None for a in acts) and all(a.outcome_note is None for a in acts):
+        # Without grammar_acts.outcome_note a run that never happened reads as a refuted one.
+        raise ValueError("reliability=True needs ActRecord.outcome_note read from grammar_acts")
+    r = reliability_grades(family, acts, since=since, until=until) if reliability else []
+    ids = frozenset([x.act_id for x in u] + [a.act_id for a in e] + [i for i, _ in r])
     return Evidence(use_rate=(sum(1 for x in u if x.used) / len(u)) if u else None, use_n=len(u),
                     engagement_rate=(sum(min(1.0, max(0.0, a.outcome_value)) for a in e) / len(e)) if e else None,
-                    engagement_n=len(e))
+                    engagement_n=len(e),
+                    reliability_rate=(sum(1 for _, ok in r if ok) / len(r)) if r else None, reliability_n=len(r),
+                    act_ids=ids)
 
 
 def shrunk_target(prior: float, ev: Evidence) -> tuple[float, str]:
@@ -111,9 +149,10 @@ def _day_end(d: date) -> datetime:
 
 
 def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[UseRecord], *,
-                  start: date, end: date) -> dict[date, dict[str, FamilyWeight]]:
+                  start: date, end: date, reliability: bool = False) -> dict[date, dict[str, FamilyWeight]]:
     """Daily weights for every bidding family, start..end inclusive (UTC days, evidence up to each
-    day's end). Day before ``start``: every family at its normalized prior."""
+    day's end). Day before ``start``: every family at its normalized prior. ``reliability``: also
+    read source (d) (module docstring)."""
     bidders = {f: c for f, c in families.families.items() if c.bids}
     tiers = sorted({c.tier for c in bidders.values()})
 
@@ -136,7 +175,7 @@ def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
         since = until - EVIDENCE_WINDOW
         raw: dict[str, tuple[float, str, Evidence]] = {}
         for f, c in bidders.items():
-            ev = evidence_for(f, acts, uses, since=since, until=until)
+            ev = evidence_for(f, acts, uses, since=since, until=until, reliability=reliability)
             tgt, basis = shrunk_target(c.prior_weight, ev)
             raw[f] = (tgt, basis, ev)
         norm = normalize({f: v[0] for f, v in raw.items()})
@@ -152,11 +191,11 @@ def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
 
 
 def weights_now(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[UseRecord],
-                now: datetime) -> dict[str, FamilyWeight]:
+                now: datetime, *, reliability: bool = False) -> dict[str, FamilyWeight]:
     """Today's weights: the daily replay over the evidence window ending today."""
     end = now.astimezone(timezone.utc).date()
     start = end - timedelta(days=int(EVIDENCE_WINDOW.days))
-    series = weight_series(families, acts, uses, start=start, end=end)
+    series = weight_series(families, acts, uses, start=start, end=end, reliability=reliability)
     return series[end]
 
 
@@ -178,6 +217,7 @@ __all__ = [
     "MIN_EVIDENCED",
     "UseRecord",
     "evidence_for",
+    "reliability_grades",
     "max_daily_move",
     "shrunk_target",
     "weight_series",

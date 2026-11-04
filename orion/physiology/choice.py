@@ -82,6 +82,7 @@ from orion.physiology.appetite import (
     hunger,
     lane_hunger_seed,
     rank_value,
+    want_intensity,
 )
 from orion.physiology.families import FamiliesConfig, FamilyConfig
 from orion.physiology.prime_charge import PrimeRegulationV1
@@ -382,7 +383,12 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     lane_details = {k[len(LANE_PREFIX):]: r.detail for k, r in readings.items() if k.startswith(LANE_PREFIX)}
     seed, seed_lane = lane_hunger_seed(lane_details, lanes)
     h = hunger(app, now, opened_at=want.opened_at, seed_sec=seed, seed_lane=seed_lane)
-    inten = want.intensity if want.intensity is not None else h.intensity
+    if want.intensity is not None:
+        inten, ibasis = want.intensity, "producer"
+        if want.salience is not None:
+            warnings.append("salience_ignored:producer_intensity")
+    else:
+        inten, ibasis = want_intensity(h.intensity, want.salience)
     rank, vbasis, _out = rank_value(app, inten, want.outcome_value)
     if want.value_rank is not None:
         warnings.append("value_rank_ignored:market_fills_it")
@@ -565,6 +571,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                   charge=round(charge, 6), net=round(net, 6), lane=chosen, state_tick_id=state.tick_id,
                   state_age_sec=round(age, 1))
     hunger_s = f"hunger {h.unfunded_sec or 0:.0f} s ({h.basis}, tau {app.tau_sec:.0f} s {app.tau_basis})"
+    if ibasis == "salience":
+        hunger_s = f"event salience {inten:.2f} over {hunger_s}"
     head = (f"{want.family}: weight {weight:.2f} ({wbasis}) x rank {rank:.2f} ({vbasis}; intensity {inten:.2f}, "
             f"{hunger_s}) - charge {charge:.3f} = net {net:+.3f}")
     if prime is not None:
@@ -596,9 +604,11 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     # (want_ledger + this process's own), counted only once the ledger was read...
     floor_share = book.funded_share(want.family, tier, now) if book.funded_seeded else None
     # ...and only for a want with some hunger: the floor guarantees a share to families that want,
-    # it does not fund a family whose drive just discharged (intensity 0). Each floor fund raises
-    # the family's share, so the quota limits itself (no per-window rate limit).
-    under_floor = (tier == FLOOR_TIER and book.funded_seeded and inten > 0
+    # it does not fund a family whose drive just discharged (intensity 0). An event's salience is
+    # not hunger: an event on a family that just acted competes on its net, it does not open the
+    # floor. Each floor fund raises the family's share, so the quota limits itself.
+    drive = inten if ibasis == "producer" else h.intensity
+    under_floor = (tier == FLOOR_TIER and book.funded_seeded and drive > 0
                    and (floor_share is None or floor_share < EXPLORATION_FLOOR))
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"

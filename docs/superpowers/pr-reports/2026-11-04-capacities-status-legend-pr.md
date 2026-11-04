@@ -91,6 +91,6 @@ The post-pull rebuild rebuilds `orion-harness-governor`. If it does not run: `sc
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3091
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

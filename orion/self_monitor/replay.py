@@ -43,10 +43,12 @@ from orion.self_monitor.view import SelfMonitorView
 
 # Acts that left the allocator start themselves, and each trigger holds the same E1 gate, with no job key,
 # like dispatch: thought.painting (ladder retirement PR 2, services/orion-thought/app/painting_self_start.py)
-# and hub.retro_leisure (PR 1, services/orion-hub/scripts/retro_leisure_self_start.py), both 2026-11-05.
+# hub.retro_leisure (PR 1, services/orion-hub/scripts/retro_leisure_self_start.py) and aitown.session
+# (PR 3, services/orion-embodiment/app/town_self_start.py), all 2026-11-05.
 SELF_START_SEAMS = {("thought.painting", "make"): "painting_self_start",
-                    ("hub.retro_leisure", "play"): "retro_leisure_self_start"}
-ALLOCATOR_ACTORS = {("hub.world_pulse_read", "look"), ("aitown.session", "play")}
+                    ("hub.retro_leisure", "play"): "retro_leisure_self_start",
+                    ("aitown.session", "play"): "town_self_start"}
+ALLOCATOR_ACTORS = {("hub.world_pulse_read", "look")}
 
 
 PRIME_GATED_VERBS = frozenset({"infer", "predict", "ask", "regulate"})

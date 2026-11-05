@@ -12,6 +12,7 @@ from typing import Optional
 from uuid import uuid4
 
 from app.settings import get_settings
+from app.town_self_start import TownSelfStart, build_act_gate
 from app.town_sessions import TownConfig, TownSessionController
 
 from orion.autonomy.fcc_env import expand_env_path, load_fcc_env
@@ -21,7 +22,6 @@ from orion.core.bus.codec import OrionCodec
 from orion.core.bus.resilience import publish_with_reconnect, run_subscription
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.embodiment import aitown_client
-from orion.schemas.aitown_session import AITOWN_SESSION_START_REQUEST_CHANNEL
 from orion.embodiment.arbiter import ArbiterState, decide
 from orion.embodiment.intents import build_intent
 from orion.embodiment.worldmap import walkable_tiles
@@ -180,6 +180,16 @@ class EmbodimentWorker:
             redis_getter=lambda: self._bus.redis,
             world_id_getter=lambda: self._world_id or None,
             bus_getter=lambda: self._bus,
+        )
+        # Ladder retirement PR 3 (2026-11-05): Orion's sessions start on this service's own timer
+        # (app/town_self_start.py), which bids and then asks the controller above. It replaced the
+        # dispatch runtime's orion:aitown_session:start:request RPC.
+        self._town_self_start = TownSelfStart(
+            self._town,
+            tick_sec=float(getattr(self._settings, "town_self_start_tick_sec", 300.0)),
+            enabled=bool(getattr(self._settings, "town_self_start_enabled", True)),
+            gate=build_act_gate(self._settings, self._town),
+            shadow_bid_enabled=bool(getattr(self._settings, "physiology_shadow_bid_enabled", True)),
         )
 
     def _walkable_tiles(self) -> Optional[set[tuple[int, int]]]:
@@ -362,12 +372,13 @@ class EmbodimentWorker:
         self._rpc_health_publisher.start()
         asyncio.create_task(self._consume_loop(), name="embodiment-consume")
         asyncio.create_task(self._town_loop(), name="embodiment-town-sessions")
-        asyncio.create_task(self._town_rpc_loop(), name="embodiment-town-session-rpc")
+        self._town_self_start.begin()
         if self._settings.perception_interval_sec > 0:
             asyncio.create_task(self._perception_loop(), name="embodiment-perception")
 
     async def stop(self) -> None:
         self._stop.set()
+        await self._town_self_start.stop()
         await self._rpc_health_publisher.stop()
         await self._bus.close()
 
@@ -392,18 +403,9 @@ class EmbodimentWorker:
             except asyncio.TimeoutError:
                 pass
 
-    async def _town_rpc_loop(self) -> None:
-        await run_subscription(
-            self._bus, AITOWN_SESSION_START_REQUEST_CHANNEL, self._handle_town_rpc,
-            stop_event=self._stop, name="embodiment-town-session-rpc",
-        )
-
-    async def _handle_town_rpc(self, raw_msg: dict) -> None:
-        decoded = self._bus.codec.decode(raw_msg.get("data"))
-        if not decoded.ok:
-            logger.warning("embodiment_town_rpc_decode_failed: %s", decoded.error)
-            return
-        await self._town.handle(decoded.envelope, publish=self._bus.publish, source_ref=self._service_ref())
+    def town_self_start_snapshot(self) -> dict:
+        """GET /health -> ``town_self_start``: each tick's result and the refusal counts."""
+        return self._town_self_start.snapshot()
 
     async def _handle_logged(self, raw_msg: dict) -> None:
         try:

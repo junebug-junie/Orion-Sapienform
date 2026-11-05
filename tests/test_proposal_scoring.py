@@ -500,13 +500,10 @@ _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
      # measures "worth reading", so a dimension weight would be a hand-typed float. Its pacing is
      # elsewhere and measured: the allocator scores it on the look act's own belief and cost, a
      # decision holds it 12000 s, and Hub gates it (cap 8/day, arousal, thermal, the lane's window).
-     "read_world_pulse",
+     "read_world_pulse"}
      # (retro_leisure_session was here 2026-10-22..2026-11-05: Hub starts leisure on its own timer
-     # now, ladder retirement PR 1.)
-     # 2026-10-30 (AI Town sessions): same reason as read_world_pulse. Paced and capped by
-     # orion-embodiment's controller (30 min per session, 2 h per local day, 1 h apart) and a 2400 s
-     # act hold, scored on the play act's own belief and cost.
-     "aitown_session"}
+     # now, ladder retirement PR 1. aitown_session was here 2026-10-30..2026-11-05: orion-embodiment
+     # starts town sessions on its own timer now, ladder retirement PR 3.)
 )
 
 

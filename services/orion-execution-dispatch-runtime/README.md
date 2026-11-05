@@ -737,21 +737,15 @@ Ladder retirement PR 1 removed the `retro_leisure_session` route, its template, 
 `orion.retro_leisure.start.v1` executor key, `app/retro_leisure_dispatch.py`, the
 `orion:retro_leisure:start:*` RPC and `ORION_DISPATCH_RETRO_LEISURE_*`. Hub starts leisure on its own
 timer now (`services/orion-hub/scripts/retro_leisure_self_start.py`) and still opens and closes the
-`hub.retro_leisure` `play` act itself. The act-duration cost (`_act_duration_or_ceiling_cost`) moved to
-`app/aitown_session_dispatch.py`; AI Town is its only user.
+`hub.retro_leisure` `play` act itself.
 
-### AI Town session (2026-10-30, Juniper: a want Orion chooses, 2 h a day)
+### AI Town session (2026-10-30 .. 2026-11-05, retired)
 
-Route `aitown_session` (template of the same name, kind `express`, `express_bounded`). Its executor key `orion.aitown_session.start.v1` is one bus RPC to
-orion-embodiment (`orion:aitown_session:start:request`, `app/aitown_session_dispatch.py`). The dispatch
-is one `aitown.session` `play` act: the embodiment session controller opens it when it unpauses the
-town (key `aitown_session_dispatch:<dispatch_id>`) and closes it when it pauses it (`artifact_produced`
-= Orion spoke at least one line in town).
-
-- Cost: the act's own median open->close time, else the 1800 s session cap (cold ceiling).
-- One session at a time (an open act or a started dispatch holds the route for 2400 s).
-- A controller refusal blocks the candidate `doer_refused:<why>` and holds the route for its
-  `retry_after_sec`: until the next local midnight after `daily_cap`, the rest of the gap after
-  `cooldown`, else 300 s.
-- Kill switch: `ORION_DISPATCH_AITOWN_SESSION_ENABLED` (ON). The controller has its own
-  (`EMBODIMENT_TOWN_SESSIONS_ENABLED`), the hard daily cap and every other gate.
+Ladder retirement PR 3 removed the `aitown_session` route, its template, the
+`orion.aitown_session.start.v1` executor key, `app/aitown_session_dispatch.py`, the
+`orion:aitown_session:start:*` RPC and `ORION_DISPATCH_AITOWN_SESSION_*`. orion-embodiment starts Orion's
+town sessions on its own timer now (`services/orion-embodiment/app/town_self_start.py`), under the session
+controller's caps, and still opens and closes the `aitown.session` `play` act itself. AI Town was the last
+route with `cost_source: act_duration`, so that cost rule (`_act_duration_or_ceiling_cost`, the
+`cold_cost_ceiling_sec` field) went with it. The reading pull keeps its own act-duration cost
+(`_act_duration_cost`, `object_source: queue`).

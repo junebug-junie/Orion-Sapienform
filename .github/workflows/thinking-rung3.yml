@@ -65,7 +65,7 @@ jobs:
         run: python -m pytest -q tests/test_rung3_reading_pull.py tests/test_rung3_reading_pull_thermal_pin.py
       - name: Retro leisure route is gone (ladder retirement PR 1)
         run: python -m pytest -q tests/test_rung3_retro_leisure.py
-      - name: AI Town session route
+      - name: AI Town session route is gone (ladder retirement PR 3)
         run: python -m pytest -q tests/test_rung3_aitown_session.py
       - name: Install execution dispatch production dependencies
         run: pip install -r services/orion-execution-dispatch-runtime/requirements.txt

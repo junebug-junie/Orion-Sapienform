@@ -567,22 +567,9 @@ proposal_templates:
   # on its own timer (services/orion-hub/scripts/retro_leisure_self_start.py), under the runner's own
   # gates. One trigger, never two.
 
-  # 2026-10-30 (Juniper: AI Town as a want Orion chooses, capped at 2 hours a day). Open one AI Town
-  # session now. Offered every tick the action warrant
-  # allows, and the motor allocator decides on the `play:aitown.session` act's own belief and measured
-  # cost (config/execution_dispatch route aitown_session). No dimensions: nothing in the field
-  # measures "worth going to town". Pacing and the hard cap are in orion-embodiment's session
-  # controller (30 min per session, 2 h per local day, 1 h apart).
-  aitown_session:
-    kind: express
-    target_kind: system
-    target_id: world:aitown
-    proposed_effect: increase_observability
-    required_policy_gate: read_only
-    base_priority: 0.30
-    base_risk: 0.05
-    reversibility: 1.0
-    dimensions: {}
+  # 2026-11-05 (ladder retirement PR 3): aitown_session left this policy. orion-embodiment starts Orion's
+  # town sessions on its own timer (services/orion-embodiment/app/town_self_start.py), under the session
+  # controller's caps (30 min per session, 2 h per local day, 1 h apart). One trigger, never two.
 
   # 2026-11-05 (ladder retirement PR 5): shed_background_gpu, Orion's first world-facing,
   # self-reverting action, left this policy. The cooling world act is decided by the want market now

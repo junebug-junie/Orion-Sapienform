@@ -1,7 +1,7 @@
 # Separate GitHub identities for Orion, Claude Code, and Cursor
 
 Status: DESIGN (proposal mode). Nothing in this document is implemented.
-Decision by Juniper, 2026-11-05: **Orion = machine user + fine-grained PAT (option B). Claude Code and Cursor = one GitHub App each (option A).**
+Decision by Juniper, 2026-11-05: **Orion = machine user + classic PAT (option B, amended: fine-grained tokens cannot reach a repo owned by another personal account). Claude Code and Cursor = one GitHub App each (option A).**
 
 ## Arsonist summary
 
@@ -20,11 +20,11 @@ Fix: three separate identities, each with the smallest permission set, each revo
 
 | Identity | Type | Shows up as | Credential | Lifetime |
 |---|---|---|---|---|
-| Orion | Machine user `orion-sapienform` | `orion-sapienform` | Fine-grained PAT, one repo | 90 days, rotated by hand |
+| Orion | Machine user `orion-sapienform` | `orion-sapienform` | Classic PAT, scope `repo`; the account is a Write collaborator on this one repo only | 90 days, rotated by hand |
 | Claude Code | GitHub App `claude-code-orion` | `claude-code-orion[bot]` | Private key, mints installation token | Token 1 hour |
 | Cursor | GitHub App `cursor-orion` | `cursor-orion[bot]` | Private key, mints installation token | Token 1 hour |
 
-Permissions for all three, repo `Orion-Sapienform` only:
+Permissions for the two Apps, repo `Orion-Sapienform` only. Orion's reach is set by its Write collaborator role and by owning nothing else, because a classic token cannot be narrowed below `repo`:
 
 - Metadata: read
 - Contents: read and write (needed to push branches)
@@ -46,7 +46,7 @@ Because `main` requires a code-owner approval, none of the three can merge its o
 
 ### 1. Where credentials live
 
-- Orion PAT: env var `ORION_GITHUB_TOKEN`. **Not** `GITHUB_TOKEN`, so the existing read path keeps working and durable-runs never receives it. Only the one service that performs the write gets it in its compose file.
+- Orion PAT (classic, `repo`): env var `ORION_GITHUB_TOKEN`. **Not** `GITHUB_TOKEN`, so the existing read path keeps working and durable-runs never receives it. Only the one service that performs the write gets it in its compose file.
 - App private keys: `~/.orion/secrets/<app>.pem`, mode 600, outside the repo. Never in `.env`.
 - App ids and installation ids go in `.env_example` as empty placeholders (`CLAUDE_GITHUB_APP_ID`, `CLAUDE_GITHUB_APP_INSTALLATION_ID`, `CLAUDE_GITHUB_APP_KEY_PATH`, and the `CURSOR_` equivalents). Local `.env` synced with `python scripts/sync_local_env_from_example.py`.
 
@@ -76,7 +76,7 @@ One new skill verb in `services/orion-cortex-exec/app/verb_adapters.py`, next to
 
 1. Create GitHub user `orion-sapienform` (own email; a `+alias` of the existing address works).
 2. Invite it to the repo as a collaborator with **Write**. Accept from that account.
-3. As that user: Settings → Developer settings → Fine-grained tokens → resource owner `orion-sapienform`, only repo `Orion-Sapienform`, the four permissions above, 90-day expiry. Put the token in the Orion service's local `.env` as `ORION_GITHUB_TOKEN`.
+3. As that user: Settings → Developer settings → Personal access tokens → Tokens (classic), scope `repo` only, 90-day expiry. (Fine-grained tokens cannot select a repo owned by another personal account; only the owner's own repos or an org's.) Put the token in the Orion service's local `.env` as `ORION_GITHUB_TOKEN`.
 4. Create two GitHub Apps (`claude-code-orion`, `cursor-orion`) under `junebug-junie`: no webhook, no user authorization, the four permissions above, "Only on this account". Install each on `Orion-Sapienform` only. Download each private key to `~/.orion/secrets/`.
 5. Give me the App ids and installation ids (not secret). I do not need the keys' contents.
 
@@ -92,6 +92,7 @@ Cursor note: Cursor ships its own GitHub app for its cloud agents. Decide whethe
 
 ## Acceptance checks
 
+0. With `ORION_GITHUB_TOKEN`, `gh api user --jq .login` returns `orion-sapienform` and `gh api user/repos` lists no repo Orion could write to other than this one.
 1. `scripts/gh_app_token.py claude` returns a token; `gh api /installation/repositories --jq '.repositories[].full_name'` using it lists only `Orion-Sapienform`.
 2. `scripts/gh_as.sh claude pr comment <test PR> --body test` produces a comment whose author, read back via `gh api repos/.../issues/comments/<id> --jq .user.login`, is `claude-code-orion[bot]`.
 3. Same check for `cursor-orion[bot]`.

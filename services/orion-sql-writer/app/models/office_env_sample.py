@@ -4,7 +4,7 @@ from app.db import Base
 
 
 class OfficeEnvSampleSQL(Base):
-    """Office temperature/humidity/air from ``orion:office:env:sample`` (pan-1 SHT40 + CCS811).
+    """Office env from ``orion:office:env:sample`` (pan-1 SHT40 + CCS811 + PMSA003I + TSL2591).
 
     Measurements are flattened for history queries; a stale sample has NULL
     readings (never 0.0). The full validated payload is kept in ``payload_json``.
@@ -24,6 +24,13 @@ class OfficeEnvSampleSQL(Base):
     office_eco2_ppm = Column(Integer, nullable=True)
     office_tvoc_ppb = Column(Integer, nullable=True)
     air_warming = Column(Boolean, nullable=True)
+    # PMSA003I CF=1 mass concentrations (ug/m3). NULL when not reading.
+    office_pm1_ug_m3 = Column(Integer, nullable=True)
+    office_pm25_ug_m3 = Column(Integer, nullable=True)
+    office_pm10_ug_m3 = Column(Integer, nullable=True)
+    # TSL2591 at the windowsill. NULL when not reading OR saturated (light_saturated=true).
+    office_lux = Column(Float, nullable=True)
+    light_saturated = Column(Boolean, nullable=True)
     stale = Column(Boolean, nullable=False)
     sample_age_sec = Column(Float, nullable=True)
     frame_seq = Column(Integer, nullable=True)

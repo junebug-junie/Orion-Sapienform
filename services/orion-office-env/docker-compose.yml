@@ -26,11 +26,55 @@ services:
       OFFICE_PUBLISH_INTERVAL_SEC: ${OFFICE_PUBLISH_INTERVAL_SEC:-30}
       OFFICE_STALE_AFTER_SEC: ${OFFICE_STALE_AFTER_SEC:-10}
       OFFICE_SENSOR_ID: ${OFFICE_SENSOR_ID:-sht40-office}
+      ENV_ROOM: office
 
     # The Nano's host serial device, mapped to a fixed in-container path. Compose
     # refuses to start if the host path is absent (Nano unplugged) -- by design.
     devices:
       - "${OFFICE_SERIAL_DEVICE_HOST}:/dev/office-nano"
+    group_add:
+      - "${OFFICE_SERIAL_GID:-20}"
+
+    networks:
+      - app-net
+
+  # Second pan-1 Nano: SCD40 in the server closet, above the server cabinet. Same image
+  # and firmware as the office node; ENV_ROOM=closet makes it publish closet.env.sample.v1.
+  # Each container is pinned to its own /dev/serial/by-id path. Never share a glob: with
+  # two Nanos plugged in, "first match" can swap the rooms.
+  orion-closet-env:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    container_name: ${PROJECT}-orion-closet-env
+    build:
+      context: ../..
+      dockerfile: services/orion-office-env/Dockerfile
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: orion-closet-env
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      INSTANCE_ID: ${INSTANCE_ID:-pan-1}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED:-true}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_HEALTH_CHANNEL: ${ORION_HEALTH_CHANNEL:-orion:system:health}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
+      ENV_ROOM: closet
+      CLOSET_ENV_SAMPLE_CHANNEL: ${CLOSET_ENV_SAMPLE_CHANNEL:-orion:closet:env:sample}
+      CLOSET_SENSOR_ID: ${CLOSET_SENSOR_ID:-scd40-closet}
+      OFFICE_SERIAL_PORT: /dev/closet-nano
+      OFFICE_SERIAL_BAUD: ${OFFICE_SERIAL_BAUD:-115200}
+      OFFICE_PUBLISH_INTERVAL_SEC: ${OFFICE_PUBLISH_INTERVAL_SEC:-30}
+      # The SCD40 reads every 5 s and the firmware resends it each 1 s frame, so the
+      # office stale window fits it too.
+      OFFICE_STALE_AFTER_SEC: ${OFFICE_STALE_AFTER_SEC:-10}
+
+    devices:
+      - "${CLOSET_SERIAL_DEVICE_HOST}:/dev/closet-nano"
     group_add:
       - "${OFFICE_SERIAL_GID:-20}"
 

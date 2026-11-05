@@ -28,3 +28,15 @@ def test_office_env_schema_registry_aligns_with_resolve() -> None:
     reg = SCHEMA_REGISTRY["OfficeEnvSampleV1"]
     assert reg.kind == "office.env.sample.v1"
     assert resolve("OfficeEnvSampleV1") is OfficeEnvSampleV1
+
+
+def test_closet_env_channel_cataloged_and_registered() -> None:
+    from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
+
+    entry = _channels()["orion:closet:env:sample"]
+    assert entry["schema_id"] == "ClosetEnvSampleV1"
+    assert entry["message_kind"] == "closet.env.sample.v1"
+    assert entry["producer_services"] == ["orion-closet-env"]
+    assert "orion-sql-writer" in entry["consumer_services"]
+    assert SCHEMA_REGISTRY["ClosetEnvSampleV1"].kind == "closet.env.sample.v1"
+    assert resolve("ClosetEnvSampleV1") is ClosetEnvSampleV1

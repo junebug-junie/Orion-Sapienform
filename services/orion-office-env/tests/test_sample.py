@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.sample import build_sample
+from app.sample import build_closet_sample, build_sample
 from orion.schemas.telemetry.office_env import OfficeEnvFrameV1
 
 NOW = datetime(2026, 10, 27, 20, 0, 0, tzinfo=timezone.utc)
@@ -144,3 +144,89 @@ def test_odd_air_register_does_not_reject_frame() -> None:
     """Frame bounds are the uint16 register; the SHT40 values must survive any air value."""
     f = _air_frame({"temp_c": 21.0}, eco2_ppm=65535, tvoc_ppb=65535, since_init_ms=WARM_MS)
     assert f.environment.temp_c == 21.0
+
+
+def _raw(**blocks) -> OfficeEnvFrameV1:
+    body = {"schema": "orion.office_env_frame.v1", "seq": 7, "uptime_ms": 9000, **blocks}
+    return OfficeEnvFrameV1.model_validate(body)
+
+
+def test_particulate_and_light_carry_readings() -> None:
+    s = _build(
+        _raw(
+            particulate={"pm1_ug_m3": 1, "pm25_ug_m3": 3, "pm10_ug_m3": 4},
+            light={"lux": 412.5, "full": 5000, "ir": 1200, "gain_x": 25, "saturated": False},
+        ),
+        age_sec=1.0,
+    )
+    assert s.state.stale is False
+    m = s.measurements
+    assert (m.office_pm1_ug_m3, m.office_pm25_ug_m3, m.office_pm10_ug_m3) == (1, 3, 4)
+    assert m.office_lux == 412.5
+    assert m.office_temp_c is None  # SHT40 absent: omitted, not zero
+    assert s.state.light_saturated is None
+
+
+def test_saturated_light_has_no_lux_and_says_so() -> None:
+    s = _build(
+        _raw(environment={"temp_c": 21.0}, light={"full": 65535, "ir": 65535, "gain_x": 1, "saturated": True}),
+        age_sec=1.0,
+    )
+    assert s.measurements.office_lux is None
+    assert s.state.light_saturated is True
+    assert s.state.stale is False
+
+
+def test_saturated_light_alone_is_not_a_fresh_reading() -> None:
+    s = _build(_raw(light={"saturated": True}), age_sec=1.0)
+    assert s.state.stale is True
+    assert s.state.light_saturated is None
+
+
+def test_out_of_range_pm_and_lux_are_dropped_not_clamped() -> None:
+    s = _build(
+        _raw(
+            environment={"temp_c": 21.0},
+            particulate={"pm1_ug_m3": 5000, "pm25_ug_m3": 2, "pm10_ug_m3": 65535},
+            light={"lux": 120000.0},
+        ),
+        age_sec=1.0,
+    )
+    m = s.measurements
+    assert (m.office_pm1_ug_m3, m.office_pm25_ug_m3, m.office_pm10_ug_m3) == (None, 2, None)
+    assert m.office_lux is None
+
+
+def test_office_sample_ignores_closet_co2_block() -> None:
+    s = _build(_raw(co2={"co2_ppm": 600, "temp_c": 25.0, "humidity_pct": 30.0}), age_sec=1.0)
+    assert s.state.stale is True
+    assert s.measurements.model_dump(exclude_none=True) == {}
+
+
+def _closet(frame, age_sec):
+    received = NOW - timedelta(seconds=age_sec) if age_sec is not None else None
+    return build_closet_sample(
+        frame=frame, received_at=received, now=NOW, stale_after_sec=10.0,
+        node="pan-1", sensor_id="scd40-closet",
+    )
+
+
+def test_closet_sample_from_scd40() -> None:
+    s = _closet(_raw(co2={"co2_ppm": 640, "temp_c": 29.4, "humidity_pct": 23.5}), age_sec=2.0)
+    assert s.schema_name == "closet.env.sample.v1"
+    assert s.state.stale is False and s.sensor.online is True
+    assert s.measurements.closet_co2_ppm == 640
+    assert s.measurements.closet_temp_c == 29.4
+    assert s.measurements.closet_humidity_pct == 23.5
+    assert s.sensor.model == "SCD40"
+
+
+def test_closet_sample_stale_without_scd40_or_when_old() -> None:
+    for frame, age in (
+        (_raw(environment={"temp_c": 21.0}), 1.0),  # office-only frame
+        (_raw(co2={"co2_ppm": 640}), 60.0),
+        (None, None),
+    ):
+        s = _closet(frame, age)
+        assert s.state.stale is True
+        assert s.measurements.model_dump(exclude_none=True) == {}

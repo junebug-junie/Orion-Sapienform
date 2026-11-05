@@ -428,6 +428,7 @@ def apply_batch(
     stationary_min_sec: float = 1800.0,
     stationary_iou: float = 0.5,
     stationary_max_gap_sec: float = 300.0,
+    stationary_streams: Optional[Iterable[str]] = None,
     cannot_link: Optional[Dict[str, Iterable[str]]] = None,
     cannot_link_margin: float = 0.10,
     continuation_threshold: Optional[float] = None,
@@ -603,8 +604,12 @@ def apply_batch(
         if continuation_threshold is not None:
             _observe(ind.individual_id, crop.observed_at, crop.box_xyxy)
         assigned += 1
-        advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
-                           min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
+        # Prop detection only on streams that have props (None: every stream).
+        # The office camera stays out: a person at a desk sits still for hours
+        # (2026-11-04), and a prop gets no asks, attention or "who is around".
+        if stationary_streams is None or crop.stream_id in stationary_streams:
+            advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
+                               min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
         crop_stationary[crop.crop_id] = ind.stationary
 
         zone_key = crop.zone or _NO_ZONE
@@ -1151,6 +1156,9 @@ class IndividualsConfig:
     stationary_min_sec: float = 1800.0
     stationary_iou: float = 0.5
     stationary_max_gap_sec: float = 300.0
+    # Streams the stationary rule applies to (VISION_STATIONARY_STREAMS). Others
+    # never mark an individual stationary. None = every stream.
+    stationary_streams: Optional[Tuple[str, ...]] = None
     # Visual confirmation asks (2026-10-15). A person with at least this many
     # face crops gets "who is this?" the same day, and only people with this
     # many faces are compared for "are these the same person?". <= 0 disables both.
@@ -1502,6 +1510,7 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 face_match_threshold=cfg.face_match_threshold if cfg.face_match_threshold > 0 else None,
                 stationary_min_sec=cfg.stationary_min_sec, stationary_iou=cfg.stationary_iou,
                 stationary_max_gap_sec=cfg.stationary_max_gap_sec,
+                stationary_streams=None if cfg.stationary_streams is None else set(cfg.stationary_streams),
                 continuation_threshold=cfg.continuation_threshold if cfg.continuation_enabled else None,
                 continuation_gap_sec=min(cfg.continuation_gap_sec, cfg.merge_gap_sec),
                 continuation_max_disp=cfg.continuation_max_disp,

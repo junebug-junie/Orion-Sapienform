@@ -60,7 +60,7 @@ CAMERA_EYES_DEADLINE_SEC = 2.0
 # Equal to the .env_example value in orion-cortex-exec, orion-hub and
 # orion-thought (tests/test_camera_eyes.py pins this).
 DEFAULT_CAMERA_DESCRIPTIONS: dict[str, dict[str, Any]] = {
-    "cam0": {"name": "your room camera", "view": "the room where Juniper works", "outside": False},
+    "cam0": {"name": "your office camera", "view": "the office where Juniper works", "outside": False},
     "carbon": {"name": "the laptop webcam", "view": "Juniper at her laptop", "outside": False},
     "walkway": {
         "name": "your outdoor camera",

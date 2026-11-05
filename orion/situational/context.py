@@ -305,7 +305,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         street_stream_ids=_split_stream_ids(
             getattr(settings, "orion_situation_street_stream_ids", None)
             if getattr(settings, "orion_situation_street_stream_ids", None) is not None
-            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway")
+            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway,cam0")
         ),
         # 1200s (20min): see identity_ask_cooldown.py's module docstring for
         # the reasoning -- long enough that "ask once per sit-down" is the
@@ -585,7 +585,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         # Plain getattr, no `or` fallback: an explicit "" disables the
         # Street line (settings_from_runtime's own contract).
         orion_situation_street_stream_ids=getattr(
-            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway"
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway,cam0"
         ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),

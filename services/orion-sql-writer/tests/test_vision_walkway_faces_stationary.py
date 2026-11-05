@@ -211,6 +211,30 @@ def test_a_walking_person_is_never_stationary() -> None:
     assert not any(res.crop_stationary.values())
 
 
+def test_office_person_at_a_desk_is_never_a_prop() -> None:
+    """2026-11-04 review H1: the same still box on the office camera (cam0),
+    which is not in VISION_STATIONARY_STREAMS, never becomes stationary --
+    Juniper sitting at her desk keeps her asks, attention and "who is around"."""
+    import dataclasses
+
+    crops = [dataclasses.replace(c, stream_id="cam0") for c in _skeleton_crops()]
+    res = _batch(crops, [], stationary_streams={"walkway", "doorbell"},
+                 new_id=iter(f"id{k}" for k in range(1000)).__next__)
+    assert not any(res.crop_stationary.values())
+    # The walkway prop is still caught under the same list.
+    res = _batch(_skeleton_crops(), [], stationary_streams={"walkway", "doorbell"},
+                 new_id=iter(f"id{k}" for k in range(1000)).__next__)
+    assert any(res.crop_stationary.values())
+
+
+def test_stationary_streams_default_leaves_the_office_camera_out() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import individuals_config
+
+    cfg = individuals_config(Settings())
+    assert cfg.stationary_streams == ("walkway", "doorbell")
+
+
 def test_stationary_rule_can_be_disabled() -> None:
     res = _batch(_skeleton_crops(), [], stationary_min_sec=0,
                  new_id=iter(f"id{k}" for k in range(1000)).__next__)

@@ -53,3 +53,17 @@ streams:
       - name: porch
         embed: true
         polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+  # Office camera, cam0 (2026-11-04, orion-vision-retina-office, 2560x1920 main
+  # stream). The room where Juniper works, inside our home. One whole-frame
+  # zone: every box may be crop-embedded and become an individual, so the
+  # people in the room can be named like the walkway's. presence: false --
+  # orion-vision-window already keeps the room's presence row (vision_presence
+  # `cam0`); a second head-count row would say the same thing twice. The framed
+  # desk photo of two people is dropped earlier by the host's per-camera size
+  # floor (detections.drop_undersized), so it never becomes an individual.
+  cam0:
+    zones:
+      - name: office
+        embed: true
+        presence: false
+        polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]

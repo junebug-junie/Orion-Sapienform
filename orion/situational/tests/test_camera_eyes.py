@@ -170,7 +170,7 @@ def test_fresh_walkway_is_live_with_todays_people_range() -> None:
     assert (senses[2].people_today_low, senses[2].people_today_high, senses[2].people_today_through) == (2, 15, "08:00")
     line = senses_line(senses)
     assert line.startswith("Your cameras (your own eyes): ")
-    assert "your room camera (cam0" in line
+    assert "your office camera (cam0" in line
     assert (
         "your outdoor camera (walkway, since 2026-10-14; looks at the community walkway, the street"
         " and our patio -- outside and public, not your room): receiving frames (newest within the last 15 min);"
@@ -338,7 +338,7 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
     assert [c.status for c in ctx.cameras] == ["not_seeing", "live", "live"]
     text = _brief_text(ctx)
     assert "- Your cameras (your own eyes): " in text
-    assert "your room camera (cam0" in text
+    assert "your office camera (cam0" in text
     assert (
         "outside and public, not your room): receiving frames (newest within the last 15 min); today so far,"
         " people: at least 1, at most 3 (the camera splits one person into several)"
@@ -405,7 +405,7 @@ def test_frames_arriving_without_a_room_description_do_not_claim_sight(monkeypat
     ctx = asyncio.run(situation_mod._build_perception_context(cfg, SituationDiagnosticsV1()))
     assert ctx.available is False
     text = _brief_text(ctx)
-    assert "your room camera (cam0" in text and "receiving frames (newest within the last 15 min)" in text
+    assert "your office camera (cam0" in text and "receiving frames (newest within the last 15 min)" in text
     assert "Room: haven't seen anything recently; do not infer." in text
     assert ": live" not in text
 

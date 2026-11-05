@@ -396,7 +396,7 @@ class Settings(BaseSettings):
     # more traffic than this panel has any use for.
     VISION_FRAME_CACHE_ENABLED: bool = Field(default=True, alias="VISION_FRAME_CACHE_ENABLED")
     VISION_FRAME_CACHE_STREAM_IDS: str = Field(
-        default="carbon,walkway,doorbell",
+        default="carbon,walkway,doorbell,cam0",
         alias="VISION_FRAME_CACHE_STREAM_IDS",
         description="Comma-separated stream_ids to cache the latest frame pointer for.",
     )
@@ -1932,7 +1932,7 @@ class Settings(BaseSettings):
     )
     # Walkway cameras for the Street line. Empty string disables that line.
     ORION_SITUATION_STREET_STREAM_IDS: str = Field(
-        default="doorbell,walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        default="doorbell,walkway,cam0", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")

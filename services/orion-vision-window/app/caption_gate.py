@@ -53,14 +53,19 @@ class CaptionGate:
         stationary_min_sec: float,
         stationary_iou: float,
         stationary_max_gap_sec: float,
+        stationary_streams: Iterable[str] | str | None = None,
     ) -> None:
         self.streams = set(_csv(streams))
+        # Fixture (prop) tracking only where props exist: WINDOW_STATIONARY_STREAMS.
+        # None keeps the old behavior (every gated stream). The office camera is
+        # gated but not tracked: Juniper at her desk is not a prop (2026-11-04).
+        fixture_streams = self.streams if stationary_streams is None else set(_csv(stationary_streams)) & self.streams
         self.labels = list(dict.fromkeys(_csv(labels)))
         self.min_score = float(min_score)
         self.max_age_sec = float(max_age_sec)
         self._fixtures: Dict[str, FixtureTracker] = {
             label: FixtureTracker(
-                streams=self.streams,
+                streams=fixture_streams,
                 min_sec=stationary_min_sec,
                 iou=stationary_iou,
                 max_gap_sec=stationary_max_gap_sec,

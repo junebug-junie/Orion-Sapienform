@@ -137,4 +137,5 @@ def test_settings_defaults_ship_on():
     assert s.vision_hourly_frames_interval_sec > 0
     cfg = config_from_settings(s)
     assert cfg.retention_days == 14.0
-    assert dict(cfg.streams) == {"walkway": "walkway_walkway", "cam0": "frame", "doorbell": "doorbell_doorbell"}
+    # cam0 moved to retina naming (orion-vision-retina-office) 2026-11-04.
+    assert dict(cfg.streams) == {"walkway": "walkway_walkway", "cam0": "cam0_cam0", "doorbell": "doorbell_doorbell"}

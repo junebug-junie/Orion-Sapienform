@@ -556,6 +556,10 @@ class Settings(BaseSettings):
     vision_stationary_min_sec: float = Field(1800.0, alias="VISION_STATIONARY_MIN_SEC")
     vision_stationary_iou: float = Field(0.5, alias="VISION_STATIONARY_IOU")
     vision_stationary_max_gap_sec: float = Field(300.0, alias="VISION_STATIONARY_MAX_GAP_SEC")
+    # Streams whose individuals can become stationary props (2026-11-04). The
+    # office camera (cam0) stays out: a person at a desk sits still for hours.
+    # Same rule as orion-vision-window's WINDOW_STATIONARY_STREAMS. Empty = none.
+    vision_stationary_streams: str = Field("walkway,doorbell", alias="VISION_STATIONARY_STREAMS")
     # Two observations of one individual this close together are one sighting.
     vision_individuals_merge_gap_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_MERGE_GAP_SEC")
     # Rows read per stream per tick; the cursor carries the rest to the next tick.
@@ -711,7 +715,7 @@ class Settings(BaseSettings):
     # false = the reducer does not run (readers then see no new rows).
     vision_rollup_enabled: bool = Field(True, alias="VISION_ROLLUP_ENABLED")
     vision_rollup_interval_sec: float = Field(300.0, alias="VISION_ROLLUP_INTERVAL_SEC")
-    vision_rollup_streams: str = Field("walkway", alias="VISION_ROLLUP_STREAMS")
+    vision_rollup_streams: str = Field("walkway,cam0", alias="VISION_ROLLUP_STREAMS")
     # A vehicle individual seen in this many different clock hours of the
     # trailing 24 h is a parked car the stationary rule missed: not a passing.
     vision_rollup_parked_min_hours: int = Field(4, ge=1, alias="VISION_ROLLUP_PARKED_MIN_HOURS")
@@ -749,7 +753,7 @@ class Settings(BaseSettings):
     # Whole days older than this are deleted. 0 = keep forever.
     vision_hourly_frames_retention_days: float = Field(14.0, ge=0.0, alias="VISION_HOURLY_FRAMES_RETENTION_DAYS")
     vision_hourly_frames_streams: str = Field(
-        "walkway,cam0=frame,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
+        "walkway,cam0,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.

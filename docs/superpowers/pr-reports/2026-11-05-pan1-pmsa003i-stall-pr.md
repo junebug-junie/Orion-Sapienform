@@ -83,6 +83,6 @@ No restart required. Firmware already flashed to both pan-1 Nanos (office E8F60A
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3126
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

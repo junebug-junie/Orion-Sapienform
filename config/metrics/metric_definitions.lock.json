@@ -2,10 +2,14 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 791,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 5,
+    "high_severity_count": 3,
     "changes": [
-      "medium added metric://bus_channel/orion-closet-env/orion:closet:env:sample"
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome",
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:shed:reply:* (declared_consumers: ['orion-execution-dispatch-runtime'] -> ['orion-durable-runs'])",
+      "medium added metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome",
+      "medium added metric://bus_channel/orion-durable-runs/orion:gpu_pool:shed:request"
     ]
   },
   "definitions": {
@@ -1240,6 +1244,20 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome": {
+      "schema_id": "ActionOutcomeEmitV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-execution-dispatch-runtime",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:curiosity:turn:request": {
       "schema_id": "CuriosityTurnRequestV1",
       "all_producers": [
@@ -1306,6 +1324,17 @@
         "orion-llm-gateway",
         "orion-thought",
         "orion-world-model"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:gpu_pool:shed:request": {
+      "schema_id": "GpuPoolShedReasonRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
       ],
       "declared_consumers": [
         "orion-gpu-pool"
@@ -1628,30 +1657,6 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome": {
-      "schema_id": "ActionOutcomeEmitV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime",
-        "orion-spark-concept-induction"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request": {
-      "schema_id": "GpuPoolShedReasonRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-gpu-pool"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request": {
       "schema_id": "RetroLeisureStartRequestV1",
       "all_producers": [
@@ -1771,7 +1776,7 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
-        "orion-execution-dispatch-runtime"
+        "orion-durable-runs"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

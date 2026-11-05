@@ -88,6 +88,23 @@ families:
     deferrable_window_s: 86400
     lanes: [agent, agent-gpu2]
     placement: one_of
+  self_regulate.shed:
+    # 2026-11-05, ladder retirement PR 5 (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-
+    # rungs.md "PR 5"): Orion's cooling world act. "The cabinet is warming" (elevated or hot AND rising
+    # >= 0.5 C in 15 min) posts an EVENT want (event_ref cabinet_reading:<node>:<UTC second>, salience = the
+    # 15-minute rise as a strict-below percentile of the cabinet's own warming minutes of the last 30 days)
+    # from services/orion-durable-runs/app/cooling_act.py, only when orion/autonomy/self_shed.py eligibility
+    # and the pool's mirrored caps pass. Its bids BIND from day one (Juniper, 2026-11-05): funded
+    # -> the 0.5 treated/control draw and the shed RPC; deferred -> bid again while the event lasts; no
+    # answer -> no shed (the pool's reflex is the gate that remains). TIER 1 IS A PROPOSAL: Juniper signs off
+    # in PR review. 900: one shed TTL and the 15-minute rise window; past it the warm moment is a new event.
+    # No lanes: a shed holds no GPU slot (it withholds new background grants). No act-ledger actor yet (the
+    # act opens no grammar act), so hunger counts from the want's own opened_at. No receptors: Prime sends no
+    # regulate signal to this family, and a slow charge on the body's own cooling is not wanted without
+    # evidence; declare one when there is a reason.
+    tier: 1
+    deferrable_window_s: 900
+    lanes: []
 
   # --- Tier 2: discretionary, the open market. ---
   curiosity.replica:

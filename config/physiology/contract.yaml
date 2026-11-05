@@ -48,6 +48,8 @@ protected_paths:
   # (orion/physiology/binding.py), so the checker sees them as readers: listed below as `bidder` (a binding bid
   # site obeys the market's decision; it reads no regulation or price state of its own).
   - {glob: "services/orion-dream/app/physiology_bind.py", organ: "choice (Patch D bid site: the dream cycle binds)"}
+  # 2026-11-05, ladder retirement PR 5: the cooling world act binds here (only funded sheds), listed below as bidder.
+  - {glob: "services/orion-durable-runs/app/cooling_act.py", organ: "choice (binding bid site: the cooling world act)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -71,7 +73,7 @@ readers:
     note: pending Patch D
   - module: services/orion-proposal-runtime/app/worker.py
     role: bidder
-    reason: visual-baseline deferral on strained arousal; cabinet heat in shed-eligibility.
+    reason: visual-baseline deferral on strained arousal (the cabinet-heat shed eligibility moved to orion-durable-runs app/cooling_act.py on 2026-11-05).
     note: pending Patch D
   - module: orion/world_pulse_read/pull.py
     role: bidder
@@ -143,8 +145,16 @@ readers:
     note: pending Patch B/D -- Juniper to decide spinal vs priced (it is not the 34 C reflex)
   - module: orion/autonomy/self_shed.py
     role: bidder
-    reason: Orion's self-shed act is eligible only while the cabinet is elevated/hot/unknown.
-    note: pending Patch D (eligibility becomes a price)
+    reason: "Orion's self-shed act is eligible only while the cabinet is elevated/hot/unknown (not critical, which is the reflex's) and the reflex is idle."
+    note: "2026-11-05 its one caller is the cooling act's binding bid (services/orion-durable-runs/app/cooling_act.py); the eligibility is the act's own precondition, the market decides whether to spend on it"
+  - module: orion/autonomy/shed_act.py
+    role: bidder
+    reason: "the cooling act's pure rules -- the event is a warming moment (thermal gate elevated/hot and rising >= 0.5 C in 15 min), salience = the rise's percentile among the cabinet's own warming minutes, and the binding rule (only funded sheds; no answer never does). Vetoes nothing the market funded."
+    note: 2026-11-05, ladder retirement PR 5 (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md)
+  - module: services/orion-durable-runs/app/cooling_act.py
+    role: bidder
+    reason: "the cooling world act's loop and BINDING bid site (family self_regulate.shed). Reads the cabinet for the self_shed eligibility and the event's salience, posts the event want and obeys the decision -- funded sheds (0.5 treated/control), deferred waits, no answer never sheds."
+    note: 2026-11-05, ladder retirement PR 5; replaces execution dispatch as the act's only trigger
 
   # --- display: reads the state, gates nothing. ---
   - module: services/orion-thought/app/visual_chain_health_monitor.py
@@ -229,9 +239,6 @@ readers:
     role: display
     reason: SHADOW bid (in-process journal compose) logged beside the real gate; never obeyed.
     note: Patch C3b; becomes the bid site when Patch D cuts each producer over
-  - module: services/orion-proposal-runtime/app/store.py
-    role: display
-    reason: loads cabinet temperature points for the proposal worker.
   - module: orion/autonomy/world_settlement_store.py
     role: display
     reason: settle-time pass (hosted by orion-sql-writer since the feedback rung retired 2026-11-04) -- loads cabinet temperature points and grades heat outcomes (cabinet_heat_pressure before/after) for world settlement.

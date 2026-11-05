@@ -284,7 +284,8 @@ would pause a real background run, so it waits for Juniper's approval.
 
 One more named reason on the U4 shed lever, below the reflex: `orion_self_shed`, precedence 1,
 blocks NEW `background` grants only (never system, interactive, urgent; running work finishes;
-nothing recalled). Set by execution-dispatch's `shed_background_gpu` action over
+nothing recalled). Set by the cooling world act (`shed_background_gpu`; orion-durable-runs
+`app/cooling_act.py`, decided by the want market since 2026-11-05; execution dispatch before) over
 `orion:gpu_pool:shed:request` (`GpuPoolShedReasonRequestV1`, set/clear/status; the schema refuses
 `cooling_incident`). Code: `orion/gpu_pool/orion_shed.py`; ledger `public.gpu_pool_orion_shed`
 (`app/orion_shed_store.py`, migration `services/orion-sql-db/manual_migration_gpu_pool_orion_shed_v1.sql`).

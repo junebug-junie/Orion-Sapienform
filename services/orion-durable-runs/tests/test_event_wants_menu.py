@@ -96,6 +96,14 @@ def test_read_menu_labels_from_the_source_rows_and_drops_an_answered_ask():
     labels = {w.event_ref: w.label for w in menu.wants}
     assert labels == {"world_pulse_read_seed:s1": "a read finished: Bees learn",
                       "orion_ask:k1": "an open camera question to Juniper: Is this Jacob?"}
+
+
+def test_a_cooling_act_want_is_labelled_from_its_own_reading_ref():
+    ref = "cabinet_reading:athena:2026-11-05T18:00:00Z"
+    pool = _Pool({LATEST_EVENT_DECISIONS_SQL: [_row("c", ref, family="self_regulate.shed",
+                                                    latest=NOW + timedelta(minutes=10))]})
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.label for w in menu.wants] == ["the athena cabinet was warming at 2026-11-05T18:00:00Z (Orion's cooling act)"]
     assert FundedEventWantsV1.model_validate_json(menu.model_dump_json()) == menu
 
 

@@ -96,9 +96,9 @@ class ProposalCandidateV1(BaseModel):
         "operator_review",
         "autonomy_policy",
         "execution_policy",
-        # 2026-10-01: a bounded, auto-reverting action on Orion's own resources. Allowed by
-        # execution dispatch only while ORION_WORLD_ACTIONS_ENABLED and the template is named in
-        # ORION_WORLD_ACTIONS_ALLOWED; no per-action operator approval (Juniper's approval is the flag).
+        # 2026-10-01: a bounded, auto-reverting action on Orion's own resources. Its only template
+        # (shed_background_gpu) left the proposal policy on 2026-11-05 for the want market (ladder
+        # retirement PR 5); no template uses this gate any more.
         "self_reversible",
     ] = "read_only"
 

@@ -2622,7 +2622,7 @@ channels:
     kind: "event"
     schema_id: "ActionOutcomeEmitV1"
     message_kind: "action.outcome.emit.v1"
-    producer_services: ["orion-spark-concept-induction", "orion-execution-dispatch-runtime"]
+    producer_services: ["orion-spark-concept-induction", "orion-execution-dispatch-runtime", "orion-durable-runs"]
     consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-07-06"
@@ -3497,18 +3497,18 @@ channels:
     kind: "request"
     schema_id: "GpuPoolShedReasonRequestV1"
     message_kind: "gpu_pool.shed.request.v1"
-    producer_services: ["orion-execution-dispatch-runtime"]
+    producer_services: ["orion-durable-runs"]
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-10-01"
-    description: "Orion's learned shed action (attend-to-act loop A1): set / clear / status of the lower-precedence orion_self_shed reason on the pool's U4 shed lever (no NEW background grants; running work finishes; never system/interactive/urgent). The schema's reason Literal refuses cooling_incident. Caps (TTL, per-day, gap) are enforced by the pool. Off unless GPU_POOL_ORION_SHED_ENABLED. Reply GpuPoolShedResultV1 on orion:gpu_pool:shed:reply:*."
+    description: "Orion's learned shed action (attend-to-act loop A1; since 2026-11-05 the cooling world act in orion-durable-runs app/cooling_act.py, decided by the want market, family self_regulate.shed -- execution dispatch no longer sends it): set / clear / status of the lower-precedence orion_self_shed reason on the pool's U4 shed lever (no NEW background grants; running work finishes; never system/interactive/urgent). The schema's reason Literal refuses cooling_incident. Caps (TTL, per-day, gap) are enforced by the pool. Off unless GPU_POOL_ORION_SHED_ENABLED. Reply GpuPoolShedResultV1 on orion:gpu_pool:shed:reply:*."
 
   - name: "orion:gpu_pool:shed:reply:*"
     kind: "result"
     schema_id: "GpuPoolShedResultV1"
     message_kind: "gpu_pool.shed.result.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-durable-runs"]
     stability: "experimental"
     since: "2026-10-01"
     description: "Per-request reply to orion:gpu_pool:shed:request (orion.schemas.gpu_pool.GPU_POOL_SHED_REPLY_PREFIX): the shed record (state active|expired|cancelled|preempted_by_reflex|refused, refusal, TTL, drained_at, grants_withheld, delayed_grant_sec)."

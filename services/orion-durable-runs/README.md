@@ -1131,6 +1131,35 @@ Attention as the want competition (docs/superpowers/specs/2026-11-04-attention-a
 - **Replay.** `evals/event_wants_replay.py [--live --days 14]`: salience per source, the event rank vs
   the old rank, and how often Prime's frame would have had a funded event.
 
+### The cooling world act: the market decides, the pool acts (2026-11-05, ladder retirement PR 5, BINDING)
+
+Orion's one world act -- "hold back new background GPU work while the cabinet warms" (`shed_background_gpu`)
+-- has its own loop here (`app/cooling_act.py`; pure rules `orion/autonomy/shed_act.py`). Until this PR its
+only trigger was execution dispatch (an attention-workspace winner on the cabinet node); spec:
+docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md, "PR 5".
+
+Every `ORION_COOLING_ACT_TICK_SEC` (60 s):
+
+1. **Settle.** A treated shed still `shed_pending` settles from the pool's `gpu_pool_orion_shed` row, or as
+   `settlement_timeout` at t0 + TTL + 300 s (`orion/autonomy/shed_settlement.py`). One `ActionOutcomeEmitV1`
+   goes out, then the terminal is recorded on the episode. orion-sql-writer's scorer then scores it, unchanged.
+2. **Eligible?** `orion/autonomy/self_shed.py` (cabinet elevated/hot/unknown and not critical, hardware-watch
+   idle, background work present, nothing in flight), then the pool's mirrored caps (in flight, 15-min gap,
+   1 h/day, a pool that refuses).
+3. **The event.** The cabinet is *warming*: elevated or hot and rising >= `ORION_SHED_RISE_THRESHOLD_C` (0.5 C)
+   in 15 minutes -- the same rise that made the cabinet node win attention. It posts an event want: family
+   `self_regulate.shed` (Tier 1, a proposal), `event_ref` `cabinet_reading:athena:<UTC second>`, `salience` =
+   the rise's strict-below percentile among the cabinet's own warming minutes of the last 30 days.
+4. **Obey.** Funded: the 0.5 treated/control draw (hash of the episode id), the precommitted
+   `substrate_world_action_episodes` row (eligibility + the want + the expected effect), then (treated) the one
+   `orion:gpu_pool:shed:request`. Deferred: the same want bids again at the market's retry time, until its
+   900 s event window ends. No answer (timeout, error, stale prices, no market): **no shed**.
+
+Health: `/health` -> `cooling_act` (counts, the last tick's result, the open want). Kill:
+`ORION_COOLING_ACT_ENABLED=false` + restart. The pool's own reflex and `GPU_POOL_ORION_SHED_ENABLED` are separate.
+Replay: `evals/cooling_act_replay.py [--live --days 14]` runs this loop on real cabinet history with the real
+market rule and the real scorer.
+
 ### Body-economy report: `GET /physiology/report` (2026-10-29, read-only)
 
 One `PhysiologyReportV1` (`orion/schemas/physiology_report.py`, `schema_version: physiology.report.v1`)

@@ -24,9 +24,9 @@ class DispatchModeConfigV1(BaseModel):
     # by a config file appearing -- it takes a deliberate operator decision,
     # same posture allow_mutating_dispatch has held since 2026-08-12.
     allow_express_dispatch: bool = False
-    # 2026-10-01: gates SELF_REVERSIBLE_SCOPE routes (attend-to-act loop A1). Structural, like the two
-    # above; the operational switch is the dispatch runtime's ORION_WORLD_ACTIONS_ENABLED plus the
-    # template named in ORION_WORLD_ACTIONS_ALLOWED -- all three must be open for a send.
+    # 2026-10-01: gates SELF_REVERSIBLE_SCOPE routes (attend-to-act loop A1). Closed since 2026-11-05: the
+    # only route (shed_background_gpu) left dispatch for the want market, and the runtime no longer passes
+    # world_actions_allowed, so even an open flag would block such a route `world_actions_disabled`.
     allow_self_reversible_dispatch: bool = False
 
 
@@ -44,12 +44,10 @@ MAINTENANCE_SCOPE = "maintenance_bounded"
 # pruning, and vice versa. A shared flag makes both an all-or-nothing choice.
 EXPRESS_SCOPE = "express_bounded"
 
-# 2026-10-01 (attend-to-act loop A1): a bounded, auto-reverting action on Orion's OWN resources
-# (today: the GPU pool's orion_self_shed reason). Its own scope so it can be closed without touching
-# maintenance or express, and so the route table says what the action is. Not a cortex verb: the
-# route's cortex_verb is an executor key the dispatch runtime maps to a GPU-pool shed RPC.
+# 2026-10-01 (attend-to-act loop A1): a bounded, auto-reverting action on Orion's OWN resources. Its only
+# route (shed_background_gpu) left dispatch on 2026-11-05 (ladder retirement PR 5) for the want market in
+# orion-durable-runs; the scope stays until the whole package retires (PR 6), closed and with no route.
 SELF_REVERSIBLE_SCOPE = "self_reversible"
-SHED_EXECUTOR_VERB = "orion.gpu_pool.shed.v1"
 # Thinking rung 3 follow-up (2026-10-21): not a cortex verb either. The executor key the dispatch
 # runtime maps to the reading pull RPC (orion/schemas/world_pulse_read_pull.py), which asks Hub to
 # start one extra world-pulse read. Hub runs every gate; the dispatch runtime only admits or refuses.

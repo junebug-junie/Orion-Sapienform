@@ -49,6 +49,8 @@ situation: Any = None
 temporal_self: Any = None
 claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
 market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOGY_BID_ENABLED (Patch C1)
+cooling_act: Any = None     # app.cooling_act.CoolingAct while ORION_COOLING_ACT_ENABLED (ladder retirement PR 5)
+_cooling_act_task: asyncio.Task | None = None
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -550,7 +552,7 @@ def _build_personality():
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
     global field_notes, _field_notes_task
-    global rpc_health_publisher, situation, temporal_self, personality, market
+    global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
     from app.runner import DurableRunner
 
     try:
@@ -595,6 +597,17 @@ async def lifespan(app: FastAPI):
             await personality.start(_stop)
         if _settings.physiology_bid_enabled:
             market = _build_market()
+        if _settings.cooling_act_enabled:
+            if market is None or rpc_bus is None:
+                # Its bid binds: no market (or no bus for the shed RPC) means it could never act.
+                logger.warning("cooling_act_not_started reason=%s",
+                               "no_market" if market is None else "no_bus")
+            else:
+                from app.cooling_act import CoolingAct, CoolingActStore
+
+                cooling_act = CoolingAct(settings=_settings, store=CoolingActStore.from_uri(_settings.postgres_uri),
+                                         market_getter=lambda: market, bus_getter=lambda: rpc_bus)
+                _cooling_act_task = asyncio.create_task(cooling_act.run(_stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -639,6 +652,8 @@ async def lifespan(app: FastAPI):
             _reconcile_task.cancel()
         if _field_notes_task is not None:
             _field_notes_task.cancel()
+        if _cooling_act_task is not None:
+            _cooling_act_task.cancel()
         if situation is not None:
             await situation.close()
         if temporal_self is not None:
@@ -688,6 +703,8 @@ async def health() -> dict[str, Any]:
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
         "personality": personality.health() if personality is not None else None,
         "physiology_market": market.health() if market is not None else None,
+        # Ladder retirement PR 5: the cooling world act (counts, last tick, the open want).
+        "cooling_act": cooling_act.health() if cooling_act is not None else None,
         # PR field notes Patch 2: the last poll (merged PRs seen, runs submitted, code records written).
         "field_note_poll": field_notes.health() if field_notes is not None else None,
     }

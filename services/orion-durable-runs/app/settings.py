@@ -291,6 +291,31 @@ class Settings(BaseSettings):
     # config/physiology/families.yaml (today only durable.curiosity_investigate). false -> the market never
     # reads them; bids are exactly as before (instant rollback).
     physiology_prime_regulation: bool = Field(True, alias="ORION_PHYSIOLOGY_PRIME_REGULATION")
+    # The cooling world act (2026-11-05, ladder retirement PR 5; app/cooling_act.py). Every tick: when the
+    # cabinet is warm and orion.autonomy.self_shed eligibility passes, post an event want (family
+    # self_regulate.shed) and OBEY the market: funded -> the 0.5 treated/control draw, the precommitted
+    # episode row, the shed RPC (orion:gpu_pool:shed:request); deferred -> wait and bid again while the
+    # event lasts; no answer -> no shed. Needs the market (ORION_PHYSIOLOGY_BID_ENABLED) and the bus.
+    # Kill: false + restart (the pool's own GPU_POOL_ORION_SHED_ENABLED and thermal reflex are separate).
+    cooling_act_enabled: bool = Field(True, alias="ORION_COOLING_ACT_ENABLED")
+    cooling_act_tick_sec: float = Field(60.0, ge=10.0, le=600.0, alias="ORION_COOLING_ACT_TICK_SEC")
+    # The randomized control arm, drawn only among funded, eligible, admitted decisions (hash of the id).
+    cooling_act_holdback_fraction: float = Field(0.5, ge=0.0, le=1.0, alias="ORION_COOLING_ACT_HOLDBACK_FRACTION")
+    # hardware-watch /health (compose service key). Unreachable/stale/disabled = reflex not known idle =
+    # not eligible. Moved from orion-proposal-runtime with the act.
+    hardware_watch_health_url: str = Field(
+        "http://hardware-watch:8131/health", alias="ORION_HARDWARE_WATCH_HEALTH_URL")
+    # "Warming": the event needs a rise >= this (C in 15 min) while elevated or hot (orion.autonomy.shed_act.is_warming).
+    shed_rise_threshold_c: float = Field(0.5, gt=0.0, le=5.0, alias="ORION_SHED_RISE_THRESHOLD_C")
+    # The shed RPC and the TTL it asks for (the pool caps it anyway). Moved from execution dispatch.
+    gpu_pool_shed_rpc_timeout_sec: float = Field(5.0, gt=0.0, le=60.0, alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC")
+    shed_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="ORION_SHED_TTL_SEC")
+    # Mirrors of the pool's caps (GPU_POOL_ORION_SHED_MIN_GAP_SEC / _MAX_SEC_PER_DAY), applied BEFORE the
+    # randomized draw so both arms come from the same population. The pool still enforces its own values.
+    shed_min_gap_sec: float = Field(900.0, ge=0, alias="ORION_SHED_MIN_GAP_SEC")
+    shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="ORION_SHED_MAX_SEC_PER_DAY")
+    # A settled shed's outcome line (ActionOutcomeEmitV1 -> sql-writer -> action_outcomes; chat narrates it).
+    action_outcome_channel: str = Field("orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT")
     # Body-economy report (2026-10-29): GET /physiology/report, read-only (PhysiologyReportV1). Readers:
     # the Hub #body-economy page and skills.physiology.state.v1 (Orion's own body read). false -> 503.
     physiology_report_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_REPORT_ENABLED")

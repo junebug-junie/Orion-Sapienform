@@ -47,8 +47,9 @@ HELD_OUT_COMMIT = "94f9043536c33eaa5a1e100a0b7d793a3fe70b86"  # main at the 10-2
 
 # (service, URL): read 2026-10-31
 TRUE_CALLS = [
-    # services/orion-proposal-runtime/app/worker.py:96 urlopen(self._settings.hardware_watch_health_url)
-    ("orion-proposal-runtime", "http://hardware-watch:8131/health"),
+    # services/orion-durable-runs/app/cooling_act.py read_hardware_watch(settings.hardware_watch_health_url)
+    # (moved from orion-proposal-runtime's worker on 2026-11-05, ladder retirement PR 5)
+    ("orion-durable-runs", "http://hardware-watch:8131/health"),
     # services/orion-proposal-runtime/app/worker.py:162 urlopen(baseline_policy.thought_url + "/visual-chain/activity")
     ("orion-proposal-runtime", "http://orion-athena-thought:7155"),
     # services/orion-graphiti-adapter/app/main.py:148 embed_url=settings.CRYSTALLIZER_EMBED_HOST_URL

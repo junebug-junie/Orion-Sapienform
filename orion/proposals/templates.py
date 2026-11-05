@@ -108,13 +108,6 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Contrast the last window of one already-stored telemetry source against the window before it, and journal it only if a disclosed notability rule fires.",
         ["self_study", "read_only", "append_only_journal"],
     ),
-    "shed_background_gpu": (
-        "Hold back new background GPU work while the cabinet warms",
-        "Workspace focus is on the body's heat, the cabinet is elevated and rising, and the AC is healthy: "
-        "stop granting NEW background GPU leases for a bounded time (running work finishes), then check "
-        "whether the cabinet actually cooled against a held-back control.",
-        ["workspace_winner_bound", "self_reversible", "world_sensor_scored"],
-    ),
     "prune_stopped_containers": (
         "Prune stopped containers under tension",
         "Deviation and/or resource pressure is elevated; prune stopped containers if the skill's own gate agrees.",

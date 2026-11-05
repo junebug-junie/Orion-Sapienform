@@ -6,7 +6,8 @@ Moved unchanged from orion-feedback-runtime (``app/worker.py::_score_world_episo
 orion-sql-writer (``app/world_settlement_loop.py``), beside the act ledger's horizon resolver.
 
 What it does (attend-to-act loop, docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md):
-an execution-dispatch world action (today only ``shed_background_gpu``) writes an episode row
+the cooling world act (``shed_background_gpu``; orion-durable-runs ``app/cooling_act.py`` since 2026-11-05,
+execution dispatch before) writes an episode row
 (treated or randomized-holdback control) before it acts. Once the episode's settle window has closed,
 this pass scores it on the cabinet sensor (``orion.autonomy.world_settlement.score_world_episode``,
 pure) and writes, in one transaction:
@@ -17,7 +18,7 @@ pure) and writes, in one transaction:
   ``resolved``/``dismissed``;
 * the episode's score (``substrate_world_action_episodes``).
 
-Record-only: it acts on nothing, and only finds episodes once execution dispatch made one.
+Record-only: it acts on nothing, and only finds episodes once the cooling act made one.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ class WorldSettlementStore:
 
     def load_world_episodes_due(self, *, now: datetime, limit: int = 20) -> list[dict]:
         """Unscored episodes whose window has closed. [] while the ledger does not exist yet
-        (execution dispatch creates it on its first world decision)."""
+        (the cooling act creates it on its first world decision)."""
         from orion.autonomy import world_episodes
 
         with self._engine.connect() as conn:

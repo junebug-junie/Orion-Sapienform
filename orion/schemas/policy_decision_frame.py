@@ -44,8 +44,8 @@ class PolicyDecisionV1(BaseModel):
         # the real gate is builder.py's scope check plus mode.allow_express_dispatch.
         "approved_express",
         # 2026-10-01 (attend-to-act loop A1): a bounded, self-reverting action on Orion's own
-        # resources. Describes, does not authorize: dispatch still requires
-        # ORION_WORLD_ACTIONS_ENABLED + the template in ORION_WORLD_ACTIONS_ALLOWED.
+        # resources. Describes, does not authorize. Its only action (shed_background_gpu) left the ladder
+        # on 2026-11-05 (ladder retirement PR 5); nothing reaches this value any more.
         "approved_self_reversible",
         "requires_operator_review",
         "deferred",

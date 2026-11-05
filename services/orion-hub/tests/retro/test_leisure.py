@@ -529,13 +529,42 @@ def test_a_policy_that_stays_missing_still_ends_after_the_grace(world):
     world.retro.lag_after_grant = 10 ** 6   # the policy never shows up
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.ended.end_reason == 'policy_ended_by_retro'
-    assert world.clock.t - 1_000_000 <= L.POLICY_GONE_GRACE_SEC + 2 * L.POLL_SEC
+    assert L.POLICY_GONE_GRACE_SEC <= world.clock.t - 1_000_000 <= L.POLICY_GONE_GRACE_SEC + 2 * L.POLL_SEC
+
+
+def test_a_human_during_the_grace_still_preempts_at_once(world):
+    world.retro.lag_after_grant = 10 ** 6
+    began = world.clock.t
+    def human_acts(retro):   # lands on the first poll after the grant, inside the grace
+        if retro.session['scripted'] and HUMAN_AT_KEY not in world.redis.kv:
+            world.redis.kv[HUMAN_AT_KEY] = str(world.clock.t)
+    world.retro.on_tick = human_acts
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'human_preempted'
+    assert world.clock.t - began < L.POLICY_GONE_GRACE_SEC
+
+
+def test_a_policy_seen_again_restarts_the_grace(world):
+    # missing 1.5 s, seen once, missing again: no 2 s run of absence until well after 3 s.
+    seen = {'n': 0}
+    def flicker(retro):
+        seen['n'] += 1
+        if seen['n'] == 7:        # the 7th status GET shows the policy once
+            retro.status_lag = 0
+        elif seen['n'] == 8:
+            retro.status_lag = 10 ** 6
+    world.retro.lag_after_grant = 10 ** 6
+    world.retro.on_tick = flicker
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.ended.end_reason == 'policy_ended_by_retro'
+    assert world.clock.t - 1_000_000 >= 1.5 + L.POLICY_GONE_GRACE_SEC
 
 
 ORPHAN_SID = 'o' * 36
 
 
-def orphan_world(world, frames=None, ledger_end=1.0, state='paused', scripted=(), in_ledger=True):
+def orphan_world(world, frames=None, ledger_end=1.0, state='paused', scripted=(), in_ledger=True,
+                 end_reason='policy_ended_by_retro', mode='policy_gone', decisions=0, started_ago=6 * 86400):
     import json
     frames = dict(human=0, script=0, leisure=3610, none=6) if frames is None else frames
     record = dict(rooms_new=0, deaths=0)
@@ -544,8 +573,11 @@ def orphan_world(world, frames=None, ledger_end=1.0, state='paused', scripted=()
     world.retro.session = dict(session_id=ORPHAN_SID, generation='h' * 36, state=state, game_id='the-legend-of-zelda',
                                scripted=list(scripted), frame=3616,
                                zelda=dict(atlas=dict(lineage_id='lin-9', session=record)))
-    rows = [dict(leisure_id='old', session_id=ORPHAN_SID if in_ledger else 'x' * 36,
-                 started_at=world.clock.t - 6 * 86400, ended_at=ledger_end, seconds=1.0)]
+    row = dict(leisure_id='old', session_id=ORPHAN_SID if in_ledger else 'x' * 36,
+               started_at=world.clock.t - started_ago, ended_at=ledger_end, seconds=1.0)
+    if end_reason is not None:
+        row.update(end_reason=end_reason, mode=mode, decisions=decisions)
+    rows = [row]
     world.redis.kv[LEDGER_KEY] = json.dumps(rows)
 
 
@@ -565,6 +597,33 @@ def test_orions_own_paused_leftover_is_stopped_and_play_starts(world, monkeypatc
     row = [r for r in journal(world) if r['event'] == 'orphan_stopped'][0]
     assert row['orphan_session_id'] == ORPHAN_SID and row['act_id'] == 'act-o'
     assert row['frames_by_controller']['human'] == 0
+    assert row['save_error'] == 'skipped:no_goal_played' and f'sessions/{ORPHAN_SID}/save' not in posts
+
+
+def test_an_orphan_whose_run_played_goals_is_saved_before_the_stop(world, monkeypatch):
+    monkeypatch.setattr(L, 'POLL_SEC', 1.0)   # keep the 200-row journal from trimming the row
+    orphan_world(world, end_reason='shed_wait_policy_lost', decisions=4)
+    out = asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=60), deps=world.deps))
+    posts = [p for m, p, _ in world.retro.calls if m == 'POST']
+    assert posts[:3] == [f'sessions/{ORPHAN_SID}/save', f'sessions/{ORPHAN_SID}/stop', 'sessions']
+    row = [r for r in journal(world) if r['event'] == 'orphan_stopped'][0]
+    assert row['save_id'] == 'f' * 32 and out.started
+
+
+def test_a_runner_killed_mid_run_leaves_an_orphan_once_its_lock_is_gone(world):
+    # Hub restart mid-run: the row never closed. Past the lock TTL with no lock held: an orphan.
+    orphan_world(world, ledger_end=None, end_reason=None, started_ago=1800 + 301)
+    cfg = config(RETRO_LEISURE_MIN_GAP_SEC=0)
+    assert asyncio.run(L.should_start(cfg, deps=world.deps)) is None
+    world.redis.kv[LOCK_KEY] = 'someone'        # a live runner holds the lock
+    assert asyncio.run(L.should_start(cfg, deps=world.deps)) == 'retro_session_active'
+
+
+def test_ledger_rows_record_how_the_run_ended(world):
+    import json
+    asyncio.run(L.run_leisure_session(config(RETRO_LEISURE_SESSION_MAX_SEC=60), deps=world.deps))
+    row = json.loads(world.redis.kv[LEDGER_KEY])[-1]
+    assert row['end_reason'] == 'session_cap' and row['mode'] == 'normal' and row['decisions'] >= 1
 
 
 @pytest.mark.parametrize('kw', [
@@ -572,7 +631,10 @@ def test_orions_own_paused_leftover_is_stopped_and_play_starts(world, monkeypatc
     dict(frames=dict(human=0, script=900, leisure=3000, none=0)),  # a browser co-play handoff
     dict(frames='absent'),                                         # Retro gave no counts
     dict(frames=dict(human=0, script=0, leisure=0, none=10)),      # Orion never drove it
-    dict(ledger_end=None),                                         # its runner may be alive
+    dict(ledger_end=None, end_reason=None, started_ago=600),       # open row, inside the lock TTL
+    dict(end_reason='human_present', mode='release'),              # Juniper paused it (no lease)
+    dict(end_reason='policy_ended_by_retro', mode='release'),
+    dict(end_reason=None),                                         # an older row: no end recorded
     dict(in_ledger=False),                                         # not a leisure game
     dict(state='running'),
     dict(scripted=[dict(port=0, epoch=2)]),
@@ -603,3 +665,34 @@ def test_orphan_that_changed_since_the_gate_is_not_stopped(world):
     out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
     assert out.refusal == 'retro_session_active'
     assert f'sessions/{ORPHAN_SID}/stop' not in [p for m, p, _ in world.retro.calls if m == 'POST']
+
+
+def test_presence_is_rechecked_just_before_an_orphan_is_stopped(world):
+    orphan_world(world)
+    def browser_opens(retro):
+        world.redis.kv[BROWSER_PREFIX + 'late'] = '1'
+    # The gate passes; then a browser connects before the runner reaches the stop.
+    orig = world.deps.store.acquire_lock
+    async def lock_then_browser(owner, ttl):
+        ok = await orig(owner, ttl); browser_opens(None); return ok
+    world.deps.store.acquire_lock = lock_then_browser
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.refusal == 'browser_connected'
+    assert f'sessions/{ORPHAN_SID}/stop' not in [p for m, p, _ in world.retro.calls if m == 'POST']
+
+
+def test_an_orphan_stop_that_fails_starts_nothing(world):
+    import json
+    orphan_world(world)
+    real = world.retro.call
+    async def stop_fails(method, path, body=None):
+        if method == 'POST' and path.endswith('/stop'):
+            world.retro.calls.append((method, path, body))
+            return 503, {'detail': 'unavailable_or_busy'}
+        return await real(method, path, body)
+    world.deps.retro.call = stop_fails
+    before = world.redis.kv[LEDGER_KEY]
+    out = asyncio.run(L.run_leisure_session(config(), deps=world.deps))
+    assert out.started is False and out.refusal.startswith('orphan_stop_failed')
+    assert 'sessions' not in [p for m, p, _ in world.retro.calls if m == 'POST']
+    assert json.loads(world.redis.kv[LEDGER_KEY]) == json.loads(before)

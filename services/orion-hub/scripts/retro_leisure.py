@@ -20,10 +20,14 @@ Doer-side gates (``leisure_block_reason``), checked at start and every RECHECK_S
   ledger_unknown / cooldown / daily_cap / session_cap   one start per MIN_GAP_SEC, DAILY_MAX_SEC
                                                    per rolling 24 h, SESSION_MAX_SEC per session
 An orphan is a game an earlier leisure run of Orion's started and left paused (Retro paused it
-for no_controller after its policy was dropped). It is in the leisure ledger with a closed row,
-it is paused with no script, and Retro's frame counts show no human or browser-script frame in
-it. Nobody else ever drove it, so it does not block a start: the runner stops it, then starts
-fresh from the newest save (live 2026-10-30..11-05: one such game refused every start for 6 days).
+for no_controller after its policy was dropped). Its ledger row says the run ended because the
+policy was gone (ORPHAN_END_REASONS), or the row is still open long after the lock TTL with no
+runner holding the lock (Hub was killed mid-run). It is paused with no script, and Retro's
+port-0 frame counts show no human or browser-script frame in it. A run that ended because a
+human acted (human_present: e.g. Juniper pressed Pause, which needs no lease) is never an orphan.
+Nobody else ever drove it, so it does not block a start: the runner re-checks presence, saves it
+if its run had placed goals, stops it, then starts fresh from the newest save (live
+2026-10-30..11-05: one such game refused every start for 6 days).
 
 A browser that only WATCHES (media socket) does not end a running session: opening the page
 shows it live. A human acquire or takeover is preempted by Retro's arbiter (Lane A); the
@@ -72,6 +76,9 @@ ACTIVE_STATES = ('starting', 'running', 'paused')
 # 10-23..10-30 ended policy_ended_by_retro 60-90 ms after the grant, while Retro kept the
 # policy for 60 s more). Retro itself waits 60 s before it drops an idle leisure policy.
 POLICY_GONE_GRACE_SEC = 2.0
+# Ledger end reasons after which the game is left paused with nobody in it (see own_orphan).
+ORPHAN_END_REASONS = ('policy_ended_by_retro', 'shed_wait_policy_lost')
+LOCK_GRACE_SEC = 300.0   # the lock TTL is session_max_sec + this
 ZELDA_PORT = 0   # Retro's Zelda reader and motor use controller 1 only (navigate.py accept()).
 
 
@@ -250,17 +257,32 @@ def _settings(config) -> dict:
                 port=ZELDA_PORT)
 
 
-def own_orphan(session: Any, ledger: Optional[list]) -> Optional[str]:
+def _orphan_row(session_id: str, ledger: list, *, now: Optional[float], stale_after: Optional[float],
+                lock_free: Optional[bool]) -> Optional[dict]:
+    for r in ledger:
+        if not isinstance(r, dict) or r.get('session_id') != session_id:
+            continue
+        if r.get('ended_at') is not None:
+            if r.get('mode') == POLICY_GONE and r.get('end_reason') in ORPHAN_END_REASONS:
+                return r
+        elif (lock_free is True and now is not None and stale_after is not None
+                and now - float(r.get('started_at') or now) > stale_after):
+            return r   # a runner killed mid-run (Hub restart): it never closed its row
+    return None
+
+
+def own_orphan(session: Any, ledger: Optional[list], *, now: Optional[float] = None,
+               stale_after: Optional[float] = None, lock_free: Optional[bool] = None) -> Optional[str]:
     """The session id when Retro's active session is a game Orion's leisure left behind, else None.
-    Every test must pass; anything unreadable means 'not an orphan' (the start stays refused)."""
+    Every test must pass; anything unreadable means 'not an orphan' (the start stays refused).
+    Retro's frame counts cover port 0 only (Zelda's one controller)."""
     if not isinstance(session, dict) or session.get('state') != 'paused' or session.get('scripted'):
         return None
     sid = session.get('session_id')
     if not sid or not isinstance(ledger, list):
         return None
-    if not any(isinstance(r, dict) and r.get('session_id') == sid and r.get('ended_at') is not None
-               for r in ledger):
-        return None   # not started by leisure, or its runner may still be alive
+    if _orphan_row(sid, ledger, now=now, stale_after=stale_after, lock_free=lock_free) is None:
+        return None   # not left by a policy-gone leisure run, or its runner may still be alive
     frames = atlas_session_fields(session)['controller_frames']
     if human_held_frames(frames) is not False or frames.get('script', 0) != 0:
         return None   # a human, or a browser co-play handoff, drove it at some point
@@ -285,12 +307,14 @@ async def gather_gate_inputs(config, deps: LeisureDeps, *, own_leisure_id=None, 
     state: Optional[str] = 'unreadable'
     orphan: Optional[str] = None
     if own_leisure_id is None:
+        lock_free = await deps.store.lock_free()
         try:
             status, ready = await deps.retro.call('GET', 'health/ready')
             if status == 200 and isinstance(ready, dict):
                 session = ready.get('session')
                 state = session.get('state') if isinstance(session, dict) else None
-                orphan = own_orphan(session, ledger)
+                orphan = own_orphan(session, ledger, now=deps.clock(), lock_free=lock_free,
+                                    stale_after=s['session_max_sec'] + LOCK_GRACE_SEC)
         except Exception:  # noqa: BLE001
             state, orphan = 'unreadable', None
     return replace(base, arousal_level=level, arousal_reason=reason, cabinet_reflex=reflex,
@@ -501,16 +525,40 @@ async def _stop_orphan(deps: LeisureDeps, run: _Run) -> Optional[str]:
     """Close Orion's own orphan game (see the module doc). Re-reads it first: the gate read is a
     moment old. Returns a refusal, or None once it is stopped."""
     sid = run.orphan_session_id
+    browsers = await deps.store.browsers_connected()
+    ok, since = await deps.store.seconds_since_human()
+    if browsers is None or not ok:
+        return 'presence_unknown'
+    if browsers > 0:
+        return 'browser_connected'
+    if since is not None and since < HUMAN_QUIET_SEC:
+        return 'human_recent'
     status, session = await deps.retro.call('GET', f'sessions/{sid}')
     ledger = await deps.store.ledger()
-    if status != 200 or own_orphan(session, ledger) != sid:
+    # This runner holds the lock now, so no other runner can own an open row.
+    stale_after = run.session_max_sec + LOCK_GRACE_SEC
+    if status != 200 or own_orphan(session, ledger, now=deps.clock(), lock_free=True,
+                                   stale_after=stale_after) != sid:
         return 'retro_session_active'
+    row = _orphan_row(sid, ledger, now=deps.clock(), stale_after=stale_after, lock_free=True) or {}
     frames = (atlas_session_fields(session)['controller_frames'] or {})
+    # Keep what that run played: save first when it placed goals (a run with none may sit on a
+    # title screen, which must not become the newest save; see _finish).
+    save_id = save_error = None
+    if row.get('decisions'):
+        s_status, saved = await deps.retro.call('POST', f'sessions/{sid}/save', {})
+        if s_status == 200 and isinstance(saved, dict):
+            save_id = (saved.get('saved') or {}).get('save_id')
+        else:
+            save_error = str(saved.get('detail') if isinstance(saved, dict) else s_status)
+    else:
+        save_error = 'skipped:no_goal_played'
     status, stopped = await deps.retro.call('POST', f'sessions/{sid}/stop', {})
     state = stopped.get('state') if isinstance(stopped, dict) else None
     await _journal(deps, 'orphan_stopped', orphan_session_id=sid, leisure_id=run.leisure_id,
                    act_id=run.act_id, status=status, state=state, frame=session.get('frame'),
-                   frames_by_controller=frames)
+                   frames_by_controller=frames, orphan_end_reason=row.get('end_reason'),
+                   save_id=save_id, save_error=save_error)
     if status != 200 or state not in ('stopped', 'failed'):
         return f'orphan_stop_failed:{state or status}'
     return None
@@ -818,7 +866,8 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
             logger.warning('retro_leisure_action_bets_end_failed', exc_info=True)
     ended_at = deps.clock()
     if ledger is not None:
-        rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1))
+        rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1),
+                     end_reason=reason, mode=mode, decisions=run.planned)
                 if r.get('leisure_id') == run.leisure_id else r for r in ledger]
         try:
             await deps.store.write_ledger(rows)

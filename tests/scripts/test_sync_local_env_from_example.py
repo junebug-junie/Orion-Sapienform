@@ -71,6 +71,14 @@ def test_default_sync_reaches_admission_templates_and_preserves_overrides(tmp_pa
     capsys.readouterr()
 
 
+def test_orion_github_token_never_synced() -> None:
+    """Live PAT for Orion's own GitHub identity: the template ships it empty, so a
+    sync (even --all-keys --force) must never flatten the real token."""
+    assert "ORION_GITHUB_TOKEN" in NEVER_SYNC_KEYS
+    assert should_sync_key("ORION_GITHUB_TOKEN", all_keys=False) is False
+    assert should_sync_key("ORION_GITHUB_TOKEN", all_keys=True) is False
+
+
 def test_recall_graphiti_chat_keys_never_synced() -> None:
     """RECALL_GRAPHITI_IN_CHAT and RECALL_GRAPHITI_ADAPTER_URL gate real chat-time graph
     search (orion-recall). Both must change together by hand or the feature silently

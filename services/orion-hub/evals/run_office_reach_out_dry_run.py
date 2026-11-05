@@ -87,11 +87,11 @@ async def main() -> None:
             print(f"\n----- PROMPT (as it would be composed at {at.isoformat()}) -----")
             print(build_prompt(partial, tz, now=at))
             print("\n----- CAMERA NOTES delivered under Orion's message (record_appendix) -----")
-            print(appendix(partial, tz))
+            print(appendix(partial, tz, at))
             print("\n----- PROMPT if composed after the visit closed -----")
             print(build_prompt(s, tz, now=now))
             print("\n----- CAMERA NOTES after close -----")
-            print(appendix(s, tz))
+            print(appendix(s, tz, now))
 
 
 if __name__ == "__main__":

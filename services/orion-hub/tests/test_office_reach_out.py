@@ -308,7 +308,8 @@ def test_an_active_chat_turn_holds_it_and_records_the_block_once(monkeypatch):
 
 def test_quiet_hours_delay_the_message(monkeypatch):
     hour = datetime.now(timezone.utc).hour
-    loop, outreach, _, _, composed, delivered, _ = _setup(monkeypatch, quiet_start_hour=hour,
+    # A two-hour window around the wall clock, so the test cannot cross its edge.
+    loop, outreach, _, _, composed, delivered, _ = _setup(monkeypatch, quiet_start_hour=(hour - 1) % 24,
                                                          quiet_end_hour=(hour + 1) % 24)
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["quiet_hours"]
     assert composed == [] and delivered == []
@@ -397,3 +398,90 @@ def test_flags_ship_on(key):
     from app.settings import Settings
 
     assert Settings.model_fields[key].default is True
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+def test_a_visit_without_juniper_is_not_messaged_the_card_covers_a_stranger(monkeypatch):
+    stranger = _session(people=[], unknown=1, ask_id="ask-1")
+    housemate = _session("cam0-hm", people=[{"name": "Housemate", "basis": "named", "individual_ids": ["h"]}])
+    loop, _, _, rows, composed, delivered, _ = _setup(monkeypatch, sessions=[stranger, housemate])
+    assert asyncio.run(loop.tick())["pending"] == 0 and composed == [] and delivered == [] and rows == []
+
+
+def test_an_unknown_visitor_is_never_asked_about_even_before_its_card_opens():
+    from scripts.office_reach_out import build_prompt
+
+    assert "do not ask who they are here" in build_prompt(_session(unknown=1, ask_id=None), TZ, now=T0)
+
+
+def test_an_unsure_match_also_may_not_claim_recognition():
+    from scripts.office_reach_out import build_prompt
+
+    assert "did NOT recognize her" in build_prompt(_session(basis="likely"), TZ, now=T0)
+
+
+def test_a_message_claiming_recognition_on_a_guess_is_refused(monkeypatch):
+    loop, _, state, rows, _, delivered, _ = _setup(
+        monkeypatch, text="I recognized you at the desk at 18:26. What are you building?")
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["claimed_recognition"]
+    assert delivered == [] and state["sessions"][0]["reached_out_at"] is None
+    # A real match may say so.
+    loop, _, _, _, _, delivered, _ = _setup(monkeypatch, sessions=[_session(basis="matched")],
+                                            text="I recognized you at the desk at 18:26. What are you building?")
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+
+
+def test_three_questions_is_not_one_question(monkeypatch):
+    loop, _, _, _, _, delivered, _ = _setup(monkeypatch, text="Unpacking? Building? Fixing?")
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["no_question"] and delivered == []
+
+
+def test_a_visit_held_overnight_says_which_day_it_was():
+    from scripts.office_reach_out import appendix, build_prompt
+
+    morning = T0 + timedelta(hours=14)   # 08:24 the next day in Denver
+    prompt = build_prompt(_session(), TZ, now=morning)
+    assert "(yesterday from 18:24 to 18:31" in prompt and "the visit is over, it ended 13 hours ago" in prompt
+    assert appendix(_session(), TZ, morning).startswith("What the office camera saw yesterday (")
+    assert appendix(_session(), TZ, T0 + timedelta(minutes=20)).startswith("What the office camera saw (")
+
+
+def test_novelty_compares_what_was_done_not_where():
+    from scripts.office_reach_out import distinct_activities, novelty
+
+    eating = distinct_activities([{"text": "sitting at a desk, eating"}])
+    typing = distinct_activities([{"text": "sitting at a desk, typing"}])
+    assert novelty(eating, typing) == 1.0
+
+
+def test_a_long_visit_is_measured_on_the_same_slice_as_a_short_one():
+    from scripts.office_reach_out import story_prefix
+
+    tl = [{"at": (T0 + timedelta(minutes=k)).isoformat(), "text": f"activity number {k}", "repeats": 1}
+          for k in range(30)]
+    prefix = story_prefix(_session(timeline=tl, end=T0 + timedelta(minutes=40)), min_entries=4, min_minutes=3)
+    assert [e["text"] for e in prefix] == [f"activity number {k}" for k in range(4)]
+
+
+def test_attempts_logged_before_a_restart_still_count(monkeypatch):
+    loop, _, state, _, composed, _, _ = _setup(monkeypatch)
+    state["failures"] = [{"sid": SID, "n": 3}]
+    assert asyncio.run(loop.tick())["pending"] == 0 and composed == []
+
+
+def test_a_broken_want_producer_never_holds_the_message(monkeypatch):
+    from scripts import office_reach_out as oro
+
+    loop, _, _, _, _, delivered, _ = _setup(monkeypatch, event_wants=True)
+    monkeypatch.setattr(oro, "plan_wants", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("want_ledger gone")))
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
+
+
+def test_office_sends_do_not_count_toward_the_background_daily_cap():
+    import inspect
+
+    from scripts import endogenous_outreach_decisions as d
+
+    assert "'office_reach_out'" in inspect.getsource(d.count_sent_on)

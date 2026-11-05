@@ -138,3 +138,32 @@ def test_a_claim_is_taken_once_and_released_only_by_its_owner():
             await pool.close()
 
     asyncio.run(run())
+
+
+@needs_pg
+def test_failed_attempts_in_the_decision_log_cap_a_restarted_hub(monkeypatch):
+    import asyncpg
+
+    async def run():
+        pool = await asyncpg.create_pool(PG, min_size=1, max_size=2)
+        try:
+            await _reset(pool)
+            await pool.execute("DELETE FROM endogenous_outreach_decisions")
+            for k in range(3):
+                await pool.execute(
+                    "INSERT INTO endogenous_outreach_decisions (decision_id, decided_at, outreach, reason, result_json) "
+                    "VALUES ($1, $2, false, 'orion_passed', $3::jsonb)", f"d{k}", NOW - timedelta(minutes=5),
+                    json.dumps({"source": "office_reach_out", "office_session_id": SID}))
+            delivered: list = []
+            summary = await _loop(pool, _outreach(monkeypatch, delivered)).tick()
+            assert summary["pending"] == 0 and delivered == []
+            # Another source's rows for the same id do not count.
+            await pool.execute("UPDATE endogenous_outreach_decisions SET result_json = "
+                               "jsonb_set(result_json, '{source}', '\"reading_finding_outreach\"')")
+            summary = await _loop(pool, _outreach(monkeypatch, delivered)).tick()
+            assert summary["pending"] == 1 and len(delivered) == 1
+        finally:
+            await pool.execute("DELETE FROM endogenous_outreach_decisions")
+            await pool.close()
+
+    asyncio.run(run())

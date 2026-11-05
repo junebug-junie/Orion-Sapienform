@@ -9,6 +9,7 @@ on:
     paths:
       - "services/orion-hub/scripts/office_reach_out.py"
       - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"
       - "services/orion-hub/tests/test_office_reach_out_pg.py"
       - "services/orion-sql-db/manual_migration_vision_office_session*.sql"
       - "services/orion-sql-db/manual_migration_endogenous_outreach_decisions_v1.sql"
@@ -18,6 +19,7 @@ on:
     paths:
       - "services/orion-hub/scripts/office_reach_out.py"
       - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"
       - "services/orion-hub/tests/test_office_reach_out_pg.py"
       - "services/orion-sql-db/manual_migration_vision_office_session*.sql"
       - "services/orion-sql-db/manual_migration_endogenous_outreach_decisions_v1.sql"

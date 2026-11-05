@@ -71,7 +71,8 @@ JUNIPER = "juniper"
 
 TOLD_REASONS = frozenset({"sent"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
-FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal", "orion_passed", "no_question"})
+FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal", "orion_passed", "no_question",
+                            "claimed_recognition"})
 
 # Two activities are the same when their content words overlap this much (Jaccard). "sitting at a desk,
 # working on a computer" vs "sitting at a desk, working on a laptop": 4 of 6 words -> same.
@@ -79,6 +80,11 @@ SAME_ACTIVITY_JACCARD = 0.5
 # Grammatical words only: they carry no activity.
 _FUNCTION_WORDS = frozenset({"the", "and", "with", "into", "from", "that", "this", "for", "its", "their",
                              "her", "his", "while", "onto", "out", "some", "something"})
+# Who bases under which Orion must not say it recognized Juniper (anything but a match or her own naming).
+UNSURE_BASES = frozenset({"prior", "likely", None})
+# A deterministic check on Orion's words for those bases: "I recognized you", "I could see it was you".
+_RECOGNITION_CLAIM = re.compile(r"\brecogni[sz]|\bI (?:saw|could see|could tell) (?:that )?(?:it was|that was) you\b",
+                                re.I)
 PROMPT_ENTRIES_CAP = 24
 APPENDIX_ENTRIES_CAP = 6
 
@@ -95,7 +101,7 @@ SESSIONS_SQL_NO_REACH = _SESSIONS_SQL.format(reached="NULL::timestamptz AS reach
 
 COLUMN_SQL = """
 SELECT count(*) AS n FROM information_schema.columns
-WHERE table_name = 'vision_office_session' AND column_name = ANY($1::text[])
+WHERE table_schema = current_schema() AND table_name = 'vision_office_session' AND column_name = ANY($1::text[])
 """
 
 POSTED_SQL = ("SELECT DISTINCT want_id FROM want_ledger WHERE reason <> 'physiology_unavailable' "
@@ -170,14 +176,33 @@ def has_story(session: Mapping[str, Any], now: datetime, *, min_entries: int, mi
     return len(session.get("timeline") or []) >= min_entries and duration_sec(session, now) >= 60.0 * min_minutes
 
 
+def story_prefix(session: Mapping[str, Any], *, min_entries: int, min_minutes: float) -> list[Mapping[str, Any]]:
+    """The timeline entries up to the moment the visit first had a story: the ``min_entries``-th entry,
+    or ``min_minutes`` after the start if that comes later."""
+    tl = list(session.get("timeline") or [])
+    start = session.get("started_at")
+    if len(tl) < min_entries or start is None:
+        return tl
+    cut = max(_ts(tl[min_entries - 1].get("at")) or start, start + timedelta(minutes=min_minutes))
+    return [e for e in tl if (_ts(e.get("at")) or start) <= cut]
+
+
 def short_activity(phrase: str) -> str:
     """First two comma clauses, as sql-writer's ``vision_office_sessions.short_activity`` cuts them
     ("where, doing what"; the third clause is the captioner's hedge)."""
     return ",".join(str(phrase or "").split(",")[:2]).strip()
 
 
+def activity_clause(phrase: str) -> str:
+    """The "doing what" clause ("sitting at a desk, opening a box" -> "opening a box"); a one-clause
+    caption is kept whole. The "where" clause is left out: the office is always a desk, a closet or a
+    room, so it would make "at a desk, eating" and "at a desk, typing" the same activity."""
+    parts = [p.strip() for p in str(phrase or "").split(",")]
+    return parts[1] if len(parts) > 1 and parts[1] else parts[0]
+
+
 def activity_words(phrase: str) -> frozenset[str]:
-    return frozenset(t for t in re.findall(r"[a-z]+", short_activity(phrase).lower())
+    return frozenset(t for t in re.findall(r"[a-z]+", activity_clause(phrase).lower())
                      if len(t) >= 3 and t not in _FUNCTION_WORDS)
 
 
@@ -211,7 +236,10 @@ def plan_wants(sessions: Sequence[Mapping[str, Any]], *, now: datetime, lookback
     story = sorted((s for s in sessions if s.get("started_at") is not None
                     and has_story(s, now, min_entries=min_entries, min_minutes=min_minutes)),
                    key=lambda s: (s["started_at"], s["session_id"]))
-    acts = {s["session_id"]: distinct_activities(s["timeline"]) for s in story}
+    # Every visit is measured on its timeline up to the moment it first had a story, the same slice the
+    # producer sees when it posts: a long visit is not compared on more scenes than a short one.
+    acts = {s["session_id"]: distinct_activities(story_prefix(s, min_entries=min_entries, min_minutes=min_minutes))
+            for s in story}
 
     def before(s: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         return [h for h in story if s["started_at"] - SOURCE_HISTORY <= h["started_at"] < s["started_at"]]
@@ -245,6 +273,23 @@ def _spread(items: Sequence[Any], cap: int) -> list[Any]:
 def _hhmm(v: Any, tz: ZoneInfo) -> str:
     t = _ts(v)
     return t.astimezone(tz).strftime("%H:%M") if t is not None else "??:??"
+
+
+def day_words(v: Any, tz: ZoneInfo, now: datetime) -> str:
+    """"" for today (local), else "yesterday " / "on Tuesday ": a visit held overnight by quiet hours is
+    not "this morning"."""
+    t = _ts(v)
+    if t is None:
+        return ""
+    days = (now.astimezone(tz).date() - t.astimezone(tz).date()).days
+    if days <= 0:
+        return ""
+    return "yesterday " if days == 1 else f"on {t.astimezone(tz):%A} "
+
+
+def _ago(seconds: float) -> str:
+    m = int(max(0.0, seconds) // 60)
+    return f"{m} minutes" if m < 120 else f"{m // 60} hours"
 
 
 def shown_entries(session: Mapping[str, Any], cap: int) -> list[Mapping[str, Any]]:
@@ -290,11 +335,12 @@ def who_line(session: Mapping[str, Any]) -> str:
     return line
 
 
-def appendix(session: Mapping[str, Any], tz: ZoneInfo) -> str:
+def appendix(session: Mapping[str, Any], tz: ZoneInfo, now: Optional[datetime] = None) -> str:
     """The camera's notes, delivered under Orion's message as recorded (not generated)."""
     entries = shown_entries(session, APPENDIX_ENTRIES_CAP)
     more = len(session.get("timeline") or []) - len(entries)
-    lines = ["What the office camera saw (its own captions; they can be wrong):"]
+    day = day_words(session.get("started_at"), tz, now or datetime.now(timezone.utc)).strip()
+    lines = [f"What the office camera saw{' ' + day if day else ''} (its own captions; they can be wrong):"]
     lines += [f"{_hhmm(e.get('at'), tz)} {short_activity(str(e.get('text') or ''))}" for e in entries]
     if more > 0:
         lines.append(f"(+{more} more)")
@@ -305,11 +351,17 @@ def appendix(session: Mapping[str, Any], tz: ZoneInfo) -> str:
 def build_prompt(session: Mapping[str, Any], tz: ZoneInfo, *, now: datetime) -> str:
     still_there = session.get("status") == "open" and session.get("ended_at") is None
     start = _hhmm(session.get("started_at"), tz)
-    span = f"since {start}" if still_there else f"from {start} to {_hhmm(session.get('ended_at') or session.get('last_seen_at'), tz)}"
+    day = day_words(session.get("started_at"), tz, now)
+    end = session.get("ended_at") or session.get("last_seen_at")
+    span = (f"{day}since {start}" if still_there else f"{day}from {start} to {_hhmm(end, tz)}")
     basis = juniper_basis(session)
+    if still_there:
+        state = "; the visit is still going on"
+    else:
+        state = f"; the visit is over, it ended {_ago((now - (_ts(end) or now)).total_seconds())} ago"
     lines = [
         f"The office camera stitched together one visit to Juniper's office ({span}, {tz.key} time"
-        + ("; the visit is still going on" if still_there else "") + ").",
+        + state + ").",
         "",
         "What it saw, in order (the camera's own captions, from a small vision model; they can be wrong):",
         "",
@@ -324,16 +376,16 @@ def build_prompt(session: Mapping[str, Any], tz: ZoneInfo, *, now: datetime) -> 
         "message (two or three sentences). Say what it looked like was going on, naming at least one thing the "
         "camera saw with its time as listed above, and then ask her ONE question about what she is doing or "
         "making. The camera's notes are delivered to her under your message as recorded, so do not list them all.")
-    if basis == "prior":
+    if basis in UNSURE_BASES:
         lines.append(
-            "The camera did NOT recognize her: it is only guessing it was her because the office is almost "
-            "always her. Do not say you recognized or saw that it was her; say it looked like her, or that you "
-            "are guessing.")
-    elif basis is None:
-        lines.append("The camera did not place Juniper in this visit: do not say she was the one there.")
-    if int(session.get("unknown_people") or 0) and session.get("ask_id"):
-        lines.append("Someone the camera did not recognize was there too. A separate \"Who is this?\" card about "
-                     "them is already in the Hub; you may mention them, but do not ask who they are here.")
+            "The camera did NOT recognize her: it is only guessing it was her (the office is almost always her, "
+            "or the match was unsure). Do not say you recognized or saw that it was her; say it looked like "
+            "her, or that you are guessing.")
+    if int(session.get("unknown_people") or 0):
+        card = ("A separate \"Who is this?\" card about them is already in the Hub" if session.get("ask_id")
+                else "The Hub shows a separate \"Who is this?\" card for unknown visitors")
+        lines.append(f"Someone the camera did not recognize was there too. {card}; you may mention them, but do "
+                     "not ask who they are here.")
     lines += ["", "Read the captions as your reading of a scene, not as facts. Do not mention scores, systems or "
               "internal signals. Do not reply PASS: Juniper asked for this message."]
     return "\n".join(lines)
@@ -449,18 +501,33 @@ class OfficeReachOut:
                 summary["blocked"] = "no_table"
                 return summary
             columns = int(await conn.fetchval(COLUMN_SQL, ["reached_out_at", "reach_out_decision_id"]) or 0)
-            rows = await conn.fetch(SESSIONS_SQL if columns >= 2 else SESSIONS_SQL_NO_REACH,
-                                    now - self.lookback - 2 * SOURCE_HISTORY, now)
+            # The want's history needs 60 days (30 days of visits, each measured on its own 30 days before).
+            since = now - self.lookback - (2 * SOURCE_HISTORY if self.event_wants_enabled else timedelta(0))
+            rows = await conn.fetch(SESSIONS_SQL if columns >= 2 else SESSIONS_SQL_NO_REACH, since, now)
             sessions = [session_from_row(r) for r in rows]
+            plan: list[dict[str, Any]] = []
+            posted_ids: set[str] = set()
             if self.event_wants_enabled:
-                summary["wants"] = await self._post_wants(conn, sessions, now)
+                try:
+                    plan = await asyncio.to_thread(
+                        plan_wants, sessions, now=now, lookback=self.lookback, min_entries=self.min_entries,
+                        min_minutes=self.min_minutes)
+                    fresh = [i for i in (event_want_id(SOURCE, p["session_id"]) for p in plan) if i not in self._posted]
+                    if fresh:
+                        posted_ids = {str(r["want_id"]) for r in await conn.fetch(
+                            POSTED_SQL, fresh, now - self.lookback - timedelta(days=1))}
+                except Exception:  # noqa: BLE001 -- the want never holds the message back
+                    logger.warning("office_event_wants_failed", exc_info=True)
+                    plan = []
+            pending: list[Mapping[str, Any]] = []
             if self.reach_out_enabled:
                 if columns < 2:
                     summary["blocked"] = "no_reach_out_columns"
                     logger.warning("office_reach_out_blocked reason=no_reach_out_columns: apply "
                                    "services/orion-sql-db/manual_migration_vision_office_session_reach_out_v1.sql")
-                    return summary
-                pending = self._pending(sessions, now)
+                    pending = []
+                else:
+                    pending = self._pending(sessions, now)
                 if pending:
                     failures: dict[str, int] = {}
                     try:
@@ -470,6 +537,12 @@ class OfficeReachOut:
                         logger.warning("office_reach_out_failures_unread", exc_info=True)
                     pending = [s for s in pending if max(failures.get(s["session_id"], 0),
                                                          self._failures.get(s["session_id"], 0)) < self.max_attempts]
+        if plan:
+            # Bid after the connection is back in the pool: a slow market call must not hold it.
+            try:
+                summary["wants"] = await self._post_wants(plan, posted_ids, sessions)
+            except Exception:  # noqa: BLE001
+                logger.warning("office_event_wants_failed", exc_info=True)
         if self.reach_out_enabled:
             summary["pending"] = len(pending)
             if pending:
@@ -477,20 +550,18 @@ class OfficeReachOut:
         return summary
 
     def _pending(self, sessions: Sequence[Mapping[str, Any]], now: datetime) -> list[Mapping[str, Any]]:
+        # Only visits the camera placed Juniper in: a visit of someone else alone is not "what are YOU up
+        # to", and an unknown visitor alone already has step B's "Who is this?" card.
         return [s for s in sessions
-                if s["reached_out_at"] is None and s["started_at"] is not None
+                if s["reached_out_at"] is None and s["started_at"] is not None and juniper_basis(s) is not None
                 and s["started_at"] >= now - self.lookback
                 and has_story(s, now, min_entries=self.min_entries, min_minutes=self.min_minutes)]
 
-    async def _post_wants(self, conn: Any, sessions: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, int]:
+    async def _post_wants(self, plan: Sequence[Mapping[str, Any]], posted_ids: set[str],
+                          sessions: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         out = {"posted": 0, "no_history": 0, "already": 0, "unanswered": 0}
-        plan = plan_wants(sessions, now=now, lookback=self.lookback, min_entries=self.min_entries,
-                          min_minutes=self.min_minutes)
         ids = [event_want_id(SOURCE, p["session_id"]) for p in plan]
-        fresh = [i for i in ids if i not in self._posted]
-        if fresh:
-            self._posted |= {str(r["want_id"]) for r in await conn.fetch(
-                POSTED_SQL, fresh, now - self.lookback - timedelta(days=1))}
+        self._posted |= posted_ids
         by_id = {s["session_id"]: s for s in sessions}
         for p, want_id in zip(plan, ids):
             if want_id in self._posted:
@@ -569,8 +640,12 @@ class OfficeReachOut:
             return self._fail(outreach, session, meta, "empty_generation", correlation_id)
         if is_pass_response(text):
             return self._fail(outreach, session, meta, "orion_passed", correlation_id)
-        if "?" not in text:
-            return self._fail(outreach, session, {**meta, "text": text[:500]}, "no_question", correlation_id)
+        questions = text.count("?") + text.count("\uff1f")
+        if not 1 <= questions <= 2:   # one question asked (a second "?" allowed for a quoted aside)
+            return self._fail(outreach, session, {**meta, "text": text[:500], "questions": questions}, "no_question",
+                              correlation_id)
+        if juniper_basis(session) in UNSURE_BASES and _RECOGNITION_CLAIM.search(text):
+            return self._fail(outreach, session, {**meta, "text": text[:500]}, "claimed_recognition", correlation_id)
         async with pool.acquire() as conn:
             claimed = await conn.fetch(CLAIM_SQL, sid, self._clock(), decision_id)
         if not claimed:
@@ -583,10 +658,13 @@ class OfficeReachOut:
         try:
             result = await outreach.offer_message(
                 text=text, correlation_id=correlation_id, tag=TAG, model=debug.get("fcc_model_label"), meta=meta,
-                skip_rate_gates=True, provenance=capsule, record_appendix=appendix(session, self.tz))
-        except BaseException:
-            await self._release(pool, sid, decision_id)
+                skip_rate_gates=True, provenance=capsule, record_appendix=appendix(session, self.tz, self._clock()))
+        except asyncio.CancelledError:
+            await self._release(pool, sid, decision_id)   # shut down before delivery: retried after restart
             raise
+        except Exception:  # noqa: BLE001 -- delivery may have half-happened: keep the mark, err toward silence
+            logger.warning("office_reach_out_offer_failed session=%s (kept as told)", sid, exc_info=True)
+            return {"session_id": sid, "reason": "offer_failed"}
         reason = str(result.get("reason") or ("sent" if result.get("outreach") else "not_sent"))
         if reason != "sent":
             await self._release(pool, sid, decision_id)

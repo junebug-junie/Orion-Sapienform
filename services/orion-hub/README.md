@@ -3071,6 +3071,22 @@ from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 
 while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
 `tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
 
+The office strip also shows particulates (PM1 / PM2.5 / PM10, µg/m³, PMSA003I) and windowsill
+light (lux, TSL2591). Light reads "too bright to measure" when the sensor saturates in direct sun
+(`state.light_saturated`; lux is then absent, not 0). Deploy-order safety: these four readings and
+`light_saturated` are read from `payload_json` (`->'measurements'` / `->'state'`), not from their own
+columns, so Hub works before sql-writer has added those columns; rows from before the sensors
+existed show "—".
+
+**Server-closet strip** (same subview, below the office strip): CO2 (measured, SCD40), temperature
+and humidity from the closet Nano above the server cabinet, read from Postgres
+`closet_env_sample` (`orion:closet:env:sample`). Routes: `GET /api/closet/env/latest` and
+`GET /api/closet/env/history?window=24h|3d|7d` (`scripts/closet_env_routes.py`, reusing the office
+helpers). Same pan-1 publisher and cadence, so it uses the same `OFFICE_ENV_NODE` /
+`OFFICE_ENV_STALE_AFTER_SEC` / `OFFICE_ENV_HISTORY_MAX_POINTS`. If `closet_env_sample` does not exist
+yet (Hub deployed first), the routes answer "no samples yet" (`sample: null`, `points: []`), not an
+error. Same script (`static/js/office-env.js`). Tests: `tests/test_closet_env_routes.py`.
+
 After deploying sql-writer and Hub on Athena, prove the live path rather than only the
 container state:
 

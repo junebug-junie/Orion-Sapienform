@@ -1,0 +1,47 @@
+# Workflow: pan-1 office + server-closet sensor service (orion-office-env).
+# Until 2026-11-04 no workflow ran this service's tests at all.
+
+name: orion-office-env-tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-office-env/**"
+      - "orion/schemas/telemetry/office_env.py"
+      - "orion/schemas/telemetry/closet_env.py"
+      - "orion/schemas/registry.py"
+      - "orion/bus/channels.yaml"
+      - "orion/core/bus/**"
+      - "tests/test_office_env_bus_catalog.py"
+      - ".github/workflows/orion-office-env-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-office-env/**"
+      - "orion/schemas/telemetry/office_env.py"
+      - "orion/schemas/telemetry/closet_env.py"
+      - "orion/schemas/registry.py"
+      - "orion/bus/channels.yaml"
+      - "orion/core/bus/**"
+      - "tests/test_office_env_bus_catalog.py"
+      - ".github/workflows/orion-office-env-tests.yml"
+
+jobs:
+  office-env-unit:
+    name: office-env — unit + evals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-office-env/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Run office-env tests and evals
+        run: |
+          cd services/orion-office-env && PYTHONPATH=../..:. python -m pytest -q -p no:cacheprovider tests evals
+      - name: Run bus catalog test
+        run: PYTHONPATH=. python -m pytest -q -p no:cacheprovider tests/test_office_env_bus_catalog.py

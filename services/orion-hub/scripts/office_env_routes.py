@@ -1,8 +1,19 @@
-"""Hub read APIs for the office environment (pan-1 SHT40 + CCS811): latest state and history.
+"""Hub read APIs for the office environment (pan-1 SHT40 + CCS811 + PMSA003I + TSL2591):
+latest state and history.
 
 Reads Postgres ``office_env_sample`` (written by orion-sql-writer from
 ``orion:office:env:sample``). Absent is not zero: stale samples carry NULL readings,
 so they appear as gaps in history, never as a flat line at 0.
+
+Deploy-order safety: the particulate and light readings (``_PAYLOAD_FIELDS``) and the
+``light_saturated`` flag are read from ``payload_json`` (the full validated sample the
+sql-writer stores on every row), never from their own columns. Those columns are added
+by the sql-writer at its boot, and Hub can deploy first; a query naming them would fail
+the whole strip, including temperature. Rows written before the new sensors existed
+simply have no such keys, so the readings are absent, not zero.
+
+The pure helpers here take a ``fields`` tuple, so ``closet_env_routes.py`` reuses them
+for the server-closet SCD40.
 """
 
 from __future__ import annotations
@@ -22,7 +33,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/office/env", tags=["office-env"])
 
-_FIELDS = ("office_temp_c", "office_humidity_pct", "office_eco2_ppm", "office_tvoc_ppb")
+# Readings that have their own long-standing columns.
+_COLUMN_FIELDS = ("office_temp_c", "office_humidity_pct", "office_eco2_ppm", "office_tvoc_ppb")
+# Readings read from payload_json->'measurements' (see the module docstring).
+_PAYLOAD_FIELDS = ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux")
+_FIELDS = _COLUMN_FIELDS + _PAYLOAD_FIELDS
+# Boolean state flags carried into the latest sample. NULL / missing = no claim, omitted.
+_COLUMN_FLAGS = ("air_warming",)
+_PAYLOAD_FLAGS = ("light_saturated",)
+_FLAGS = _COLUMN_FLAGS + _PAYLOAD_FLAGS
+_STAT_KEYS = (
+    ("office_temp_c", "temp"),
+    ("office_humidity_pct", "humidity"),
+    ("office_eco2_ppm", "eco2"),
+    ("office_tvoc_ppb", "tvoc"),
+    ("office_pm1_ug_m3", "pm1"),
+    ("office_pm25_ug_m3", "pm25"),
+    ("office_pm10_ug_m3", "pm10"),
+    ("office_lux", "lux"),
+)
 
 
 def _now_utc() -> datetime:
@@ -40,29 +69,60 @@ def _payload_dict(row: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     return payload_json if isinstance(payload_json, dict) else None
 
 
-def row_to_sample(row: Mapping[str, Any]) -> dict[str, Any]:
-    """DB row -> absent-safe API sample (missing readings are omitted, not zeroed)."""
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _payload_section(row: Mapping[str, Any], section: str) -> Mapping[str, Any]:
+    payload = _payload_dict(row) or {}
+    value = payload.get(section)
+    return value if isinstance(value, dict) else {}
+
+
+def row_to_sample(
+    row: Mapping[str, Any],
+    *,
+    fields: Sequence[str] = _FIELDS,
+    flags: Sequence[str] = _FLAGS,
+    payload_fields: Sequence[str] = _PAYLOAD_FIELDS,
+    payload_flags: Sequence[str] = _PAYLOAD_FLAGS,
+) -> dict[str, Any]:
+    """DB row -> absent-safe API sample (missing readings are omitted, not zeroed).
+
+    ``payload_fields`` / ``payload_flags`` come from ``payload_json`` when the row has no
+    column for them (deploy-order safety, see the module docstring)."""
+    measurements = _payload_section(row, "measurements") if payload_fields else {}
+    state = _payload_section(row, "state") if payload_flags else {}
     sample: dict[str, Any] = {
         "ts": _iso_utc(row["ts"]),
         "sensor_online": bool(row["sensor_online"]),
     }
-    for field in _FIELDS:
-        if row.get(field) is not None:
-            sample[field] = float(row[field])
-    # NULL on rows written before the CCS811 existed: no claim either way, so omitted.
-    if row.get("air_warming") is not None:
-        sample["air_warming"] = bool(row["air_warming"])
+    for field in fields:
+        value = row.get(field)
+        if value is not None:
+            sample[field] = float(value)
+        elif field in payload_fields and _is_number(measurements.get(field)):
+            sample[field] = float(measurements[field])
+    # NULL on rows written before a sensor existed: no claim either way, so omitted.
+    for flag in flags:
+        value = row.get(flag)
+        if value is None and flag in payload_flags:
+            value = state.get(flag)
+        if value is not None:
+            sample[flag] = bool(value)
     return sample
 
 
-def rows_to_points(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def rows_to_points(
+    rows: Iterable[Mapping[str, Any]], *, fields: Sequence[str] = _FIELDS
+) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for row in rows:
         timestamp = row.get("t")
         if timestamp is None:
             continue
         point: dict[str, Any] = {"t": _iso_utc(timestamp)}
-        for field in _FIELDS:
+        for field in fields:
             if row.get(field) is not None:
                 point[field] = float(row[field])
         if len(point) > 1:
@@ -98,7 +158,9 @@ def _split_at_gaps(points: Sequence[Mapping[str, Any]]) -> list[Sequence[Mapping
     return segments
 
 
-def _bucket(points: Sequence[Mapping[str, Any]], n: int) -> list[dict[str, Any]]:
+def _bucket(
+    points: Sequence[Mapping[str, Any]], n: int, fields: Sequence[str]
+) -> list[dict[str, Any]]:
     if len(points) <= n:
         return [dict(p) for p in points]
     out_points: list[dict[str, Any]] = []
@@ -107,7 +169,7 @@ def _bucket(points: Sequence[Mapping[str, Any]], n: int) -> list[dict[str, Any]]
         if not bucket:
             continue
         out: dict[str, Any] = {"t": bucket[0]["t"]}
-        for field in _FIELDS:
+        for field in fields:
             values = [float(p[field]) for p in bucket if p.get(field) is not None]
             if values:
                 out[field] = sum(values) / len(values)
@@ -115,7 +177,9 @@ def _bucket(points: Sequence[Mapping[str, Any]], n: int) -> list[dict[str, Any]]
     return out_points
 
 
-def downsample_points(points: Sequence[Mapping[str, Any]], max_points: int) -> list[dict[str, Any]]:
+def downsample_points(
+    points: Sequence[Mapping[str, Any]], max_points: int, *, fields: Sequence[str] = _FIELDS
+) -> list[dict[str, Any]]:
     """Bucket-average ordered points to about ``max_points``, never across an outage.
 
     Averaging is done per contiguous segment, and the first point after an outage carries
@@ -129,19 +193,19 @@ def downsample_points(points: Sequence[Mapping[str, Any]], max_points: int) -> l
     sampled: list[dict[str, Any]] = []
     for index, segment in enumerate(segments):
         share = max(1, round(max_points * len(segment) / total))
-        chunk = _bucket(segment, share)
+        chunk = _bucket(segment, share, fields)
         if index > 0 and chunk:
             chunk[0]["gap"] = True
         sampled.extend(chunk)
-    _mark_field_gaps(sampled)
+    _mark_field_gaps(sampled, fields)
     return sampled
 
 
-def _mark_field_gaps(points: list[dict[str, Any]]) -> None:
+def _mark_field_gaps(points: list[dict[str, Any]], fields: Sequence[str]) -> None:
     """Per-field outages that rows alone do not show: the CCS811 warm-up leaves eCO2 empty
     while temperature keeps rows coming. A point that has a field after a point lacking it
     gets that field in ``gap_fields``, so the chart breaks that one line there."""
-    for field in _FIELDS:
+    for field in fields:
         seen = missing = False
         for point in points:
             if point.get(field) is None:
@@ -152,8 +216,41 @@ def _mark_field_gaps(points: list[dict[str, Any]]) -> None:
             seen, missing = True, False
 
 
-async def query_latest_row(*, node: str) -> Optional[Mapping[str, Any]]:
-    """Newest sample row, stale or not (the stale flag is itself the signal)."""
+def _payload_measurement_sql(field: str) -> str:
+    return f"(payload_json->'measurements'->>'{field}')::double precision"
+
+
+LATEST_SQL = """
+    SELECT ts, office_temp_c, office_humidity_pct, office_eco2_ppm, office_tvoc_ppb,
+           air_warming, sensor_online, stale, sample_age_sec, payload_json
+    FROM office_env_sample
+    WHERE node = $1
+    ORDER BY ts DESC
+    LIMIT 1
+"""
+
+# New readings come from payload_json, not their columns (module docstring). The
+# json ``->>`` path is NULL on old rows, so they read as absent.
+HISTORY_SQL = """
+    SELECT t, {select_fields}
+    FROM (
+        SELECT ts AS t, {column_fields}, {payload_fields}
+        FROM office_env_sample
+        WHERE node = $1
+          AND ts >= $2
+    ) AS s
+    WHERE {any_reading}
+    ORDER BY t ASC
+""".format(
+    select_fields=", ".join(_FIELDS),
+    column_fields=", ".join(_COLUMN_FIELDS),
+    payload_fields=", ".join(f"{_payload_measurement_sql(f)} AS {f}" for f in _PAYLOAD_FIELDS),
+    any_reading=" OR ".join(f"{f} IS NOT NULL" for f in _FIELDS),
+)
+
+
+async def run_query(sql: str, *args: Any, one: bool) -> Any:
+    """One short-lived asyncpg connection per call (same as the cabinet routes)."""
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         raise RuntimeError("DATABASE_URL is not configured")
@@ -162,46 +259,21 @@ async def query_latest_row(*, node: str) -> Optional[Mapping[str, Any]]:
 
     connection = await asyncpg.connect(dsn=database_url)
     try:
-        return await connection.fetchrow(
-            """
-            SELECT ts, office_temp_c, office_humidity_pct, office_eco2_ppm, office_tvoc_ppb,
-                   air_warming, sensor_online, stale, sample_age_sec, payload_json
-            FROM office_env_sample
-            WHERE node = $1
-            ORDER BY ts DESC
-            LIMIT 1
-            """,
-            node,
-        )
+        if one:
+            return await connection.fetchrow(sql, *args)
+        return await connection.fetch(sql, *args)
     finally:
         await connection.close()
+
+
+async def query_latest_row(*, node: str) -> Optional[Mapping[str, Any]]:
+    """Newest sample row, stale or not (the stale flag is itself the signal)."""
+    return await run_query(LATEST_SQL, node, one=True)
 
 
 async def query_history_rows(*, node: str, hours: int) -> Sequence[Mapping[str, Any]]:
-    database_url = os.getenv("DATABASE_URL", "").strip()
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is not configured")
-
-    import asyncpg
-
     cutoff = _now_utc() - timedelta(hours=hours)
-    connection = await asyncpg.connect(dsn=database_url)
-    try:
-        return await connection.fetch(
-            """
-            SELECT ts AS t, office_temp_c, office_humidity_pct, office_eco2_ppm, office_tvoc_ppb
-            FROM office_env_sample
-            WHERE node = $1
-              AND ts >= $2
-              AND (office_temp_c IS NOT NULL OR office_humidity_pct IS NOT NULL
-                   OR office_eco2_ppm IS NOT NULL OR office_tvoc_ppb IS NOT NULL)
-            ORDER BY ts ASC
-            """,
-            node,
-            cutoff,
-        )
-    finally:
-        await connection.close()
+    return await run_query(HISTORY_SQL, node, cutoff, one=False)
 
 
 LatestQuery = Callable[..., Awaitable[Optional[Mapping[str, Any]]]]
@@ -210,14 +282,14 @@ _latest_query: LatestQuery = query_latest_row
 _history_query: HistoryQuery = query_history_rows
 
 
-def _stats(raw_points: Sequence[Mapping[str, Any]], n: int) -> dict[str, Any]:
+def _stats(
+    raw_points: Sequence[Mapping[str, Any]],
+    n: int,
+    *,
+    stat_keys: Sequence[tuple[str, str]] = _STAT_KEYS,
+) -> dict[str, Any]:
     out: dict[str, Any] = {"n_raw": len(raw_points), "n": n}
-    for field, key in (
-        ("office_temp_c", "temp"),
-        ("office_humidity_pct", "humidity"),
-        ("office_eco2_ppm", "eco2"),
-        ("office_tvoc_ppb", "tvoc"),
-    ):
+    for field, key in stat_keys:
         values = [float(p[field]) for p in raw_points if p.get(field) is not None]
         out[f"{key}_min"] = min(values) if values else None
         out[f"{key}_max"] = max(values) if values else None
@@ -225,7 +297,13 @@ def _stats(raw_points: Sequence[Mapping[str, Any]], n: int) -> dict[str, Any]:
 
 
 def _load_latest(
-    row: Optional[Mapping[str, Any]], *, stale_after_sec: float, now: datetime
+    row: Optional[Mapping[str, Any]],
+    *,
+    stale_after_sec: float,
+    now: datetime,
+    to_sample: Callable[[Mapping[str, Any]], dict[str, Any]] = row_to_sample,
+    fields: Sequence[str] = _FIELDS,
+    flags: Sequence[str] = _FLAGS,
 ) -> dict[str, Any]:
     """``ok`` needs BOTH a recent row (the publisher is alive) and a non-stale
     sample (the sensor itself is alive)."""
@@ -235,13 +313,12 @@ def _load_latest(
     age_sec = (now.astimezone(timezone.utc) - received_at).total_seconds()
     sensor_stale = bool(row.get("stale"))
     publisher_stale = age_sec > stale_after_sec
-    sample = row_to_sample(row)
+    sample = to_sample(row)
     if publisher_stale:
         # The publisher stopped: the newest row is history, not a current reading. Do not
         # hand the UI a number it could show as live.
-        for field in _FIELDS:
+        for field in (*fields, *flags):
             sample.pop(field, None)
-        sample.pop("air_warming", None)
         sample["sensor_online"] = False
     out: dict[str, Any] = {
         "ok": not publisher_stale and not sensor_stale,

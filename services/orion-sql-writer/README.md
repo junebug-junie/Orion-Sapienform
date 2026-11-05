@@ -1117,6 +1117,16 @@ the CCS811 existed). Those three columns are added by boot DDL in `app/main.py`,
 `create_all` does not alter the existing table. Their DDL runs in an isolated, verified startup
 gate: a lock timeout stops SQL writer before bus subscription instead of serving traffic with a
 stale table shape. No retention is configured yet (~2,880 rows/day).
+PMSA003I particulates (`office_pm1_ug_m3`, `office_pm25_ug_m3`, `office_pm10_ug_m3`) and TSL2591
+light (`office_lux`, `light_saturated`) were added 2026-11-04 the same way (boot DDL, same gate).
+`office_lux` is NULL when saturated (`light_saturated=true`: too bright to measure, not dark).
+
+`closet_env_sample` holds the server-closet SCD40 (`closet.env.sample.v1` on
+`orion:closet:env:sample`, from the `orion-closet-env` container of `orion-office-env` on pan-1):
+`closet_co2_ppm`, `closet_temp_c`, `closet_humidity_pct`, NULL when stale. New table, made by
+`create_all`; `_normalize_closet_env_sample_payload` shares `_normalize_env_sample_payload` with
+the office table. The channel is force-subscribed and the route is a code default, so a stale
+operator `.env` cannot drop it. No retention yet (~2,880 rows/day).
 
 `orion_energy_hourly` holds Orion's own kWh per UTC hour per source, written only by
 `app/orion_energy_rollup.py` and read by the Hub Orion Energy tab. Raw cluster watts are pruned

@@ -2157,7 +2157,17 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-10-27"
-    description: "Read-only office temperature/humidity (SHT40 on a pan-1 Nano ESP32). Absent is not zero; stale samples carry no measurements."
+    description: "Read-only office temperature/humidity (SHT40), eCO2/TVOC (CCS811), particulates (PMSA003I) and windowsill light (TSL2591) on a pan-1 Nano ESP32. Absent is not zero; stale samples carry no measurements."
+
+  - name: "orion:closet:env:sample"
+    kind: "telemetry"
+    schema_id: "ClosetEnvSampleV1"
+    message_kind: "closet.env.sample.v1"
+    producer_services: ["orion-closet-env"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Read-only server-closet CO2/temperature/humidity (SCD40 on the second pan-1 Nano ESP32, above the server cabinet). Published by the orion-office-env image's closet container. Absent is not zero; stale samples carry no measurements."
 
   # House-level electricity (docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md).
   # Whole-house Green Button intervals, priced by a versioned tariff, joined to settled

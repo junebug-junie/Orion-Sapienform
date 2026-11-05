@@ -28,6 +28,7 @@ from app.models import (
     CabinetAmbientSpikeSQL,
     HomeCoolingSampleSQL,
     OfficeEnvSampleSQL,
+    ClosetEnvSampleSQL,
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
     EnergyCostAccruedSQL,
@@ -173,6 +174,7 @@ from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
 from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
+from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -527,6 +529,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CabinetAmbientSpikeSQL": (CabinetAmbientSpikeSQL, CabinetAmbientSpikeV1),
     "HomeCoolingSampleSQL": (HomeCoolingSampleSQL, HomeCoolingSampleV1),
     "OfficeEnvSampleSQL": (OfficeEnvSampleSQL, OfficeEnvSampleV1),
+    "ClosetEnvSampleSQL": (ClosetEnvSampleSQL, ClosetEnvSampleV1),
     "EnergyUsageIntervalSQL": (EnergyUsageIntervalSQL, EnergyUsageIntervalV1),
     "EnergyCostAccruedSQL": (EnergyCostAccruedSQL, EnergyCostAccruedV1),
     "EnergyRunCostSQL": (EnergyRunCostSQL, EnergyRunCostEstimatedV1),
@@ -1684,11 +1687,17 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     return out
 
 
-def _normalize_office_env_sample_payload(write_data: dict) -> dict:
-    """Map ``office.env.sample.v1`` onto OfficeEnvSampleSQL columns.
+def _normalize_env_sample_payload(
+    write_data: dict,
+    *,
+    float_keys: tuple[str, ...],
+    int_keys: tuple[str, ...],
+    state_keys: tuple[str, ...],
+) -> dict:
+    """Flatten a pan-1 env sample (office or closet) onto its SQL columns.
 
     Nested sensor/measurements/state/provenance objects are flattened. A stale
-    sample has no measurements, so the reading columns stay NULL -- never 0.0.
+    sample has no measurements, so the reading columns stay NULL -- never 0.
     """
     full_payload = dict(write_data)
     out = dict(write_data)
@@ -1702,21 +1711,20 @@ def _normalize_office_env_sample_payload(write_data: dict) -> dict:
 
     measurements = out.pop("measurements", None)
     if isinstance(measurements, dict):
-        for key in ("office_temp_c", "office_humidity_pct"):
+        for key in float_keys:
             value = measurements.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[key] = float(value)
-        for key in ("office_eco2_ppm", "office_tvoc_ppb"):
+        for key in int_keys:
             value = measurements.get(key)
             if isinstance(value, int) and not isinstance(value, bool):
                 out[key] = value
 
     state = out.pop("state", None)
     if isinstance(state, dict):
-        if state.get("stale") is not None:
-            out["stale"] = bool(state["stale"])
-        if state.get("air_warming") is not None:
-            out["air_warming"] = bool(state["air_warming"])
+        for key in ("stale", *state_keys):
+            if state.get(key) is not None:
+                out[key] = bool(state[key])
 
     provenance = out.pop("provenance", None)
     if isinstance(provenance, dict):
@@ -1731,6 +1739,29 @@ def _normalize_office_env_sample_payload(write_data: dict) -> dict:
     out.pop("schema_name", None)
     out.pop("schema", None)
     return out
+
+
+def _normalize_office_env_sample_payload(write_data: dict) -> dict:
+    """Map ``office.env.sample.v1`` onto OfficeEnvSampleSQL columns."""
+    return _normalize_env_sample_payload(
+        write_data,
+        float_keys=("office_temp_c", "office_humidity_pct", "office_lux"),
+        int_keys=(
+            "office_eco2_ppm", "office_tvoc_ppb",
+            "office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3",
+        ),
+        state_keys=("air_warming", "light_saturated"),
+    )
+
+
+def _normalize_closet_env_sample_payload(write_data: dict) -> dict:
+    """Map ``closet.env.sample.v1`` onto ClosetEnvSampleSQL columns."""
+    return _normalize_env_sample_payload(
+        write_data,
+        float_keys=("closet_temp_c", "closet_humidity_pct"),
+        int_keys=("closet_co2_ppm",),
+        state_keys=(),
+    )
 
 
 def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
@@ -1792,6 +1823,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_home_cooling_sample_payload(write_data)
         if sql_model_cls is OfficeEnvSampleSQL:
             write_data = _normalize_office_env_sample_payload(write_data)
+        if sql_model_cls is ClosetEnvSampleSQL:
+            write_data = _normalize_closet_env_sample_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)

@@ -71,10 +71,10 @@ readers:
     role: bidder
     reason: defers the reverie visual baseline while arousal reads strained (arousal_strained).
     note: pending Patch D
-  - module: services/orion-proposal-runtime/app/worker.py
+  - module: services/orion-thought/app/painting_self_start.py
     role: bidder
-    reason: visual-baseline deferral on strained arousal (the cabinet-heat shed eligibility moved to orion-durable-runs app/cooling_act.py on 2026-11-05).
-    note: pending Patch D
+    reason: "the waking painting's only trigger -- runs the visual-baseline schedule, whose arousal reader (R3 reader 4) defers a due painting while arousal reads strained; places a SHADOW hunger bid on thought.painting before the run exists, never obeyed."
+    note: 2026-11-05, ladder retirement PR 2 (moved from orion-proposal-runtime's worker); pending Patch D (painting is fourth in the binding order)
   - module: orion/world_pulse_read/pull.py
     role: bidder
     reason: world_pulse_read pull gate refuses on arousal_strained and on thermal_hot.
@@ -162,7 +162,7 @@ readers:
     reason: diagnostic read that explains a baseline deferral; its own comment says it gates nothing.
   - module: services/orion-thought/app/physiology_shadow.py
     role: display
-    reason: SHADOW bids (painting and dream-hop generate step) logged beside the real gate; never obeyed.
+    reason: SHADOW bids (the painting trigger's hunger bid, and the dream-hop generate step) logged beside the real gate; never obeyed.
     note: Patch C3b; becomes the bid site when Patch D cuts each producer over
   - module: services/orion-hub/scripts/reading_event_wants.py
     role: display

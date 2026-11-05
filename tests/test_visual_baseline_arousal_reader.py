@@ -92,10 +92,11 @@ def test_must_not_thermal_gate_has_no_arousal_input():
     assert "arousal" not in src and "regulation" not in src
 
 
-def test_worker_reads_arousal_only_through_the_flagged_reader():
-    src = (REPO / "services/orion-proposal-runtime/app/worker.py").read_text()
-    assert "arousal_level=self._baseline_arousal_level" in src
-    assert "enabled=bool(self._settings.visual_baseline_arousal_enabled)" in src
+def test_trigger_reads_arousal_only_through_the_flagged_reader():
+    """The schedule moved to orion-thought's painting trigger on 2026-11-05 (ladder retirement PR 2)."""
+    src = (REPO / "services/orion-thought/app/painting_self_start.py").read_text()
+    assert "arousal_level=arousal_level" in src
+    assert "enabled=bool(settings.visual_baseline_arousal_enabled)" in src
 
 
 def test_deferrals_are_recorded_with_their_first_time_and_cleared_on_issue():

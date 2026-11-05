@@ -31,6 +31,7 @@ from orion.schemas.execution_dispatch_frame import (  # noqa: E402
     ExecutionDispatchFrameV1,
 )
 from orion.self_monitor.gate import ActGate  # noqa: E402
+from tests._dispatch_minted_act_route import with_dispatch_minted_act_route  # noqa: E402
 from orion.self_monitor.view import SelfMonitorView, self_monitor_view  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
@@ -69,6 +70,7 @@ def _worker(monkeypatch, *, posteriors=None, in_flight=False, view_raw=None, gat
     store.act_arm_stats.return_value = (0, 0)
     store.act_attempt_rows.return_value = list(ledger_rows or [])
     worker._store = store
+    with_dispatch_minted_act_route(worker)
     worker._self_monitor_gate = None if gate_enabled is None else ActGate(
         enabled=gate_enabled, probe_interval_sec=6 * 3600.0,
         read_view=view_fn or (lambda now: self_monitor_view(view_raw, now=now)),

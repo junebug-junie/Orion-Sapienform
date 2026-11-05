@@ -21,6 +21,7 @@ faculty the replay also counts jobs: ``jobs_worked`` (a real attempt of the job 
 ``reach``: which doers pass a gated seam today. ``allocator`` = an act-backed route in
 config/execution_dispatch/execution_dispatch_policy.v1.yaml (for hub.world_pulse_read only the
 reading PULL passes it; Hub's own scheduled read lane opens the same act without it);
+``painting_self_start`` = orion-thought's painting trigger (thought.painting since 2026-11-05);
 ``actions_journal`` = orion-actions' ``_dispatch_journal``; ``prime`` = Prime's own act opener in
 orion-mind (services/orion-mind/app/prime_loop.py and its loop library orion/mindloop/runtime.py); everything else is ``not_gated``.
 """
@@ -40,7 +41,10 @@ from orion.self_monitor.gate import DEFAULT_PROBE_INTERVAL_SEC, FAILING_STATUSES
 from orion.self_monitor.questions import self_questions_for
 from orion.self_monitor.view import SelfMonitorView
 
-ALLOCATOR_ACTORS = {("thought.painting", "make"), ("hub.world_pulse_read", "look"),
+# thought.painting left the allocator on 2026-11-05 (ladder retirement PR 2): its gate seam is orion-thought's
+# own painting trigger (services/orion-thought/app/painting_self_start.py), with no job key, like dispatch.
+SELF_START_ACTORS = {("thought.painting", "make")}
+ALLOCATOR_ACTORS = {("hub.world_pulse_read", "look"),
                     ("hub.retro_leisure", "play"), ("aitown.session", "play")}
 
 
@@ -48,6 +52,8 @@ PRIME_GATED_VERBS = frozenset({"infer", "predict", "ask", "regulate"})
 
 
 def reach(actor: str, verb: str) -> str:
+    if (actor, verb) in SELF_START_ACTORS:
+        return "painting_self_start"
     if (actor, verb) in ALLOCATOR_ACTORS:
         return "allocator"
     if actor == "actions.journal":

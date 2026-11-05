@@ -568,9 +568,55 @@ WHERE started_at > now() - make_interval(days => :days)
 _BASELINE_DEFERRAL_SQL = "SELECT state->'deferral' FROM visual_baseline_checkpoint WHERE id = 1"
 
 
+def visual_baseline_eligibility(activity, *, now, policy, arousal_level=None):
+    """Run the baseline schedule (``orion.reverie.baseline.schedule``) on its one durable
+    checkpoint row, under ``FOR UPDATE``: two replicas (or a deploy overlap) never issue the same
+    need twice. Returns (eligibility or None, reason).
+
+    Moved from orion-proposal-runtime's store on 2026-11-05 (ladder retirement PR 2): the painting
+    starts itself here now (app/painting_self_start.py). Same row, same reducer, so a need that was
+    pending at the switch-over keeps its id and its retry clock.
+
+    ``arousal_level`` (R3 reader 4) is a callable that ``schedule`` invokes only when a baseline
+    would be issued; ``strained`` defers it by ``retry_sec``. A missing checkpoint table issues
+    nothing (``visual_baseline_checkpoint_missing``)."""
+    import json
+
+    from sqlalchemy import text
+
+    from orion.reverie.baseline import schedule
+
+    with _get_engine().begin() as conn:
+        if not conn.execute(text("SELECT to_regclass('visual_baseline_checkpoint')")).scalar():
+            return None, "visual_baseline_checkpoint_missing"
+        row = conn.execute(text("SELECT state FROM visual_baseline_checkpoint WHERE id = 1 FOR UPDATE")).scalar()
+        if row is None:
+            return None, "visual_baseline_checkpoint_missing"
+        if isinstance(row, str):
+            row = json.loads(row)
+        eligibility, state, reason = schedule(activity, row, now=now, policy=policy, arousal_level=arousal_level)
+        conn.execute(text("UPDATE visual_baseline_checkpoint SET state = CAST(:state AS jsonb) WHERE id = 1"),
+                     {"state": json.dumps(state)})
+        return eligibility, reason
+
+
+def painting_act_attempt_rows(actor: str, verb: str, secs: float) -> list[dict]:
+    """The act-ledger rows the self-monitor gate reads (``orion.self_monitor.gate.last_attempt_sql``):
+    this actor's acts opened in the last ``secs``. Raises on a failed read (the gate treats that as
+    "unreadable ledger", never as a refusal)."""
+    from sqlalchemy import text
+
+    from orion.self_monitor.gate import last_attempt_sql
+
+    with _get_engine().connect() as conn:
+        rows = conn.execute(text(last_attempt_sql("sqlalchemy")),
+                            {"actor": actor, "verb": verb, "secs": float(secs)}).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def visual_baseline_deferral() -> dict | None:
-    """The waking baseline painting's current run of arousal deferrals, as proposal-runtime's
-    scheduler records it (``orion.reverie.baseline.DEFERRAL_KEY``: reason, since, last_at), or None
+    """The waking baseline painting's current run of arousal deferrals, as the painting
+    self-start's scheduler records it (``orion.reverie.baseline.DEFERRAL_KEY``: reason, since, last_at), or None
     (none recorded, no checkpoint table, or the read failed). Never raises.
 
     2026-10-18 12:07 -> 10-20: arousal read strained (cabinet heat + GPU queue) and every due

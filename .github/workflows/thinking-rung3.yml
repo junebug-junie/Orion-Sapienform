@@ -6,6 +6,7 @@ on:
       - 'orion/autonomy/allocator.py'
       - 'orion/self_monitor/**'
       - 'tests/test_self_monitor_act_gate.py'
+      - 'tests/_dispatch_minted_act_route.py'
       - 'orion/autonomy/self_shed.py'
       - 'orion/autonomy/prediction.py'
       - 'orion/autonomy/evals/run_rung3_replay_eval.py'

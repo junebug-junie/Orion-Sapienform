@@ -106,7 +106,7 @@ def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
 @dataclass(frozen=True)
 class DeferralEvidence:
     """Why the waking baseline painting is not being issued, from real records (2026-10-20):
-    the baseline checkpoint's deferral run (proposal-runtime) and Orion's arousal now (Redis)."""
+    the baseline checkpoint's deferral run (the painting trigger, app/painting_self_start.py) and Orion's arousal now (Redis)."""
     reason: str                          # the checkpoint's deferral reason, e.g. "arousal_strained"
     since: str | None = None             # first deferral of this need (ISO)
     last_at: str | None = None           # latest deferral (ISO)
@@ -119,7 +119,7 @@ def _deferral_cause(ev: DeferralEvidence) -> str:
             if "cabinet_hot" in ev.arousal_reasons else "")
     return (f"(1) Orion's arousal reads strained ({why}), so the waking baseline painting has been "
             f"deferred every time it came due since {ev.since or 'unknown'} (latest {ev.last_at or 'unknown'}; "
-            "visual_baseline_deferred reason=arousal_strained in orion-athena-proposal-runtime logs)."
+            "visual_baseline_deferred reason=arousal_strained in orion-athena-thought logs)."
             f"{heat} This is not a broken GPU path: it clears when arousal drops (2026-10-18 precedent). "
             "Other causes to rule out: ")
 

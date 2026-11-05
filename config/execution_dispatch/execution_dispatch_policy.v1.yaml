@@ -27,11 +27,11 @@ mode:
   #      (escalating) when it cannot measure either one.
   # Risk accepted: the blast radius is Docker build cache, which rebuilds.
   allow_mutating_dispatch: true
-  # 2026-08-30: opens EXPRESS_SCOPE -- Orion's first outward action
-  # (skills.imagination.render_scene.v1). Turned on by explicit decision, the
-  # same posture allow_mutating_dispatch was given on 2026-08-12. Separate from
-  # that flag on purpose: this can be closed without stopping docker pruning,
-  # and pruning can be closed without stopping this.
+  # 2026-08-30: opens EXPRESS_SCOPE. Opened for Orion's first outward action
+  # (skills.imagination.render_scene.v1, which left dispatch on 2026-11-05); it
+  # still gates the retro_leisure_session and aitown_session routes. Separate from
+  # allow_mutating_dispatch on purpose: this can be closed without stopping docker
+  # pruning, and pruning can be closed without stopping this.
   allow_express_dispatch: true
   # 2026-10-01..2026-11-05: opened SELF_REVERSIBLE_SCOPE for shed_background_gpu. Closed again in ladder
   # retirement PR 5: the act left dispatch for the want market (orion-durable-runs app/cooling_act.py), and
@@ -104,17 +104,10 @@ proposal_kind_to_cortex:
   # The binding constraint was NOT the RPC timeout: the prune's subprocess was
   # inheriting SKILLS_MESH_OPS_TIMEOUT_SEC, which is 12 SECONDS live. A
   # 142 GB prune would have been SIGKILLed ~12s in, mid-delete, every time.
-  # 2026-08-30: the `express` kind's default route. Points at the same verb as
-  # the render_scene template route below -- there is exactly one express action
-  # today, so a kind-level fallback that resolved anywhere else would be
-  # inventing a capability. Gated by mode.allow_express_dispatch either way.
-  express:
-    dispatch_kind: express
-    cortex_verb: skills.imagination.render_scene.v1
-    cortex_mode: brain
-    allowed_scope: express_bounded
-    rpc_timeout_sec: 170
-
+  # 2026-11-05 (ladder retirement PR 2): the `express` kind's default route is gone. It pointed at
+  # skills.imagination.render_scene.v1, and painting left dispatch (orion-thought
+  # app/painting_self_start.py starts it). An express proposal with no template route of its own is
+  # now blocked `no_cortex_route_for_proposal_kind` instead of silently becoming a painting.
   maintain:
     dispatch_kind: maintain
     cortex_verb: skills.runtime.builder_prune.v1
@@ -145,38 +138,13 @@ template_to_cortex:
     allowed_scope: inspect_only
     rpc_timeout_sec: 40
 
-  # 2026-08-30: ORION'S FIRST OUTWARD ROUTE.
-  #
-  # express_bounded, not maintenance_bounded. It is not maintenance, and it must
-  # be switchable on its own -- stopping image generation should not also stop
-  # docker pruning. Gated by mode.allow_express_dispatch, which defaults OFF for
-  # the same reason allow_mutating_dispatch does: an action whose product exists
-  # outside Orion does not become dispatchable because a config file appeared.
-  #
-  # rpc_timeout_sec 170 sits under the verb yaml's timeout_ms=180000 and over
-  # cortex-exec's own thought_http_timeout_sec=150, the same staggered-budget
-  # discipline the two prune routes use: the innermost hop times out first, so a
-  # slow generation is reported rather than severed at an outer layer.
   # 2026-11-05 (ladder retirement PR 5): the shed_background_gpu route (executor orion.gpu_pool.shed.v1)
   # is gone. The cooling world act is decided by the want market in orion-durable-runs (app/cooling_act.py).
 
-  # 2026-10-21 (thinking rung 3): this dispatch IS the thought.painting `make` act -- the act's
-  # key is reverie_visual_run_id(dispatch_id) and its test_before is visual_dispatch:<dispatch_id>
-  # (services/orion-thought/app/visual_steps.py _painting_act). So the allocator scores the
-  # candidate on that act's own EffectPosterior (orion/autonomy/act_candidates.py) instead of
-  # refusing it `unmeasurable`. Kill switch: ORION_DISPATCH_ACT_CANDIDATES_ENABLED.
-  render_scene:
-    dispatch_kind: express
-    cortex_verb: skills.imagination.render_scene.v1
-    cortex_mode: brain
-    allowed_scope: express_bounded
-    rpc_timeout_sec: 170
-    act:
-      verb: make
-      actor: thought.painting
-      signal_id: artifact_produced
-      horizon_sec: 5400   # PAINTING_HORIZON_SEC, services/orion-thought/app/visual_steps.py
-      object_source: dispatch   # the painting run id derives from the dispatch id: no control arm
+  # 2026-11-05 (ladder retirement PR 2): the render_scene route (the thought.painting `make` act,
+  # 2026-08-30 .. 2026-11-05) is gone, with its `act:` declaration (how the allocator scored it).
+  # Orion starts its own paintings in orion-thought (app/painting_self_start.py); the act ledger still
+  # grades each one from the run's own steps. One trigger, never two.
 
   # 2026-10-21 (thinking rung 3 follow-up): the reading pull. This dispatch IS one extra
   # hub.world_pulse_read `look` act on the seed the self-scheduled lane would claim next (Hub picks

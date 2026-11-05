@@ -1,5 +1,9 @@
 """Thinking rung 3: rung-2 acts compete in the motor allocator on their own belief and cost.
 
+Painting left dispatch on 2026-11-05 (ladder retirement PR 2); the worker tests below run on an
+in-memory copy of its old route (tests/_dispatch_minted_act_route.py) to keep the generic act
+machinery covered until the service retires (PR 6).
+
 Pins, each against real numbers from the live 48 h window ending 2026-10-21:
 - a route that produces an act (render_scene -> thought.painting `make`) is scored on that act's
   EffectPosterior and the binary act learner's tau^2 -- before rung 3 it was refused `unmeasurable`
@@ -29,6 +33,7 @@ sys.path.insert(0, str(SVC))
 import app.worker as worker_mod  # noqa: E402
 from app.worker import ExecutionDispatchRuntimeWorker  # noqa: E402
 from orion.autonomy.act_candidates import ActRef, act_allocator_candidate, act_expectation_reason  # noqa: E402
+from tests._dispatch_minted_act_route import with_dispatch_minted_act_route  # noqa: E402
 from orion.autonomy.allocator import Candidate, allocate, expected_information_gain_nats  # noqa: E402
 from orion.autonomy.contrast import HOLDBACK_BLOCK_REASON  # noqa: E402
 from orion.autonomy.prediction import (  # noqa: E402
@@ -101,10 +106,14 @@ def test_expectation_reason_carries_the_scored_numbers() -> None:
 
 # --- policy --------------------------------------------------------------------------------------
 
-def test_render_scene_route_declares_the_painting_act() -> None:
+def test_no_real_route_produces_the_painting_act() -> None:
+    """Ladder retirement PR 2: painting left dispatch. Fails while the render_scene route (or any
+    route producing thought.painting) is still in the real policy -- painting would have two triggers."""
     policy = load_execution_dispatch_policy(REPO / "config/execution_dispatch/execution_dispatch_policy.v1.yaml")
-    ref = policy.act_refs_by_cortex_verb()[RENDER_VERB]
-    assert (ref.verb, ref.actor, ref.signal_id) == ("make", "thought.painting", "artifact_produced")
+    assert RENDER_VERB not in policy.act_refs_by_cortex_verb()
+    assert all(r.act is None or r.act.actor != "thought.painting" for r in policy.template_to_cortex.values())
+    routes = [*policy.template_to_cortex.values(), *policy.proposal_kind_to_cortex.values()]
+    assert all(r.cortex_verb != RENDER_VERB for r in routes)
 
 
 def test_one_dispatch_one_act() -> None:
@@ -143,6 +152,7 @@ def _worker(monkeypatch, *, enabled: bool = True, in_flight: bool = False, cost:
     store.act_control_stats.return_value = (0, 0)
     store.act_arm_stats.return_value = (0, 0)
     worker._store = store
+    with_dispatch_minted_act_route(worker)
     return worker
 
 
@@ -287,15 +297,6 @@ def test_a_structural_zero_control_arm_never_lowers_the_bar() -> None:
     assert reference_rate(20, 0) == (0.5, "act_prior_above_control")
     weak = EffectPosterior(mean=0.4, variance=0.004, n=60)
     assert proven_effect(weak, n_control=40, control_successes=0).proven is False
-
-
-def test_policy_horizon_matches_the_painting_producer() -> None:
-    import re
-
-    text = (REPO / "services/orion-thought/app/visual_steps.py").read_text()
-    producer = float(re.search(r"^PAINTING_HORIZON_SEC = ([0-9.]+)", text, re.M).group(1))
-    policy = load_execution_dispatch_policy(REPO / "config/execution_dispatch/execution_dispatch_policy.v1.yaml")
-    assert policy.act_refs_by_cortex_verb()[RENDER_VERB].horizon_sec == producer
 
 
 def test_proven_needs_20_observations_and_a_2_sigma_lower_bound_above_the_reference() -> None:

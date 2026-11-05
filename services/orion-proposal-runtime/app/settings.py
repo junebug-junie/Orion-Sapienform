@@ -38,14 +38,9 @@ class Settings(BaseSettings):
     # template, shed_background_gpu, is the cooling world act, now decided by the want market in
     # orion-durable-runs (app/cooling_act.py); ORION_WORKSPACE_WINNER_PROPOSALS_ENABLED,
     # ORION_HARDWARE_WATCH_HEALTH_URL and ORION_SHED_RISE_THRESHOLD_C moved there or were removed.
-    # Temporal Self rev 4, R3 reader 4: while Orion's arousal (Redis orion:regulation:latest,
-    # written by orion-durable-runs) reads `strained`, a due visual-reverie baseline image is
-    # deferred by the policy's retry_sec (reason arousal_strained in the frame warnings).
-    # Missing / stale (> max age) / unknown / Redis down / flag off = today's behaviour.
-    visual_baseline_arousal_enabled: bool = Field(True, alias="ORION_VISUAL_BASELINE_AROUSAL_ENABLED")
-    regulation_reader_max_age_sec: float = Field(
-        360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
-    )
+    # 2026-11-05 (ladder retirement PR 2): the visual-baseline schedule and its arousal reader
+    # (ORION_VISUAL_BASELINE_AROUSAL_ENABLED, ORION_REGULATION_READER_MAX_AGE_SEC) moved to orion-thought
+    # (app/painting_self_start.py), with the render_scene template's removal. Nothing here reads them.
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

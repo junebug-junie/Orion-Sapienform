@@ -286,7 +286,7 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
         now = now_fn()
         if baseline and baseline.due_at > now:
             # Due-ness only ever becomes true, so it is checked against the real clock;
-            # early (e.g. clock skew with proposal-runtime) waits rather than failing.
+            # early (e.g. clock skew with the scheduler) waits rather than failing.
             return step.retry("visual_baseline_not_due",
                               retry_after_sec=(baseline.due_at - now).total_seconds())
         attempt_id, replay = await asyncio.to_thread(
@@ -585,7 +585,9 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
 
     # Body economy Patch C3b: a SHADOW bid at the point this step would spend GPU work. Logged
     # beside the real outcome, never obeyed (app/physiology_shadow.py). Replays, adoptions and the
-    # in-flight guard above return before it: they are not a new want.
+    # in-flight guard above return before it: they are not a new want. Dream hops only since
+    # 2026-11-05: a waking painting's want is bid once, before its run exists, by the trigger
+    # (app/painting_self_start.py), so the market sees the want and not the aftermath.
     shadow = _painting_shadow(req)
     trace = _GenerateTrace()
     result: ReverieVisualStepResultV1 | None = None
@@ -606,13 +608,17 @@ class _GenerateTrace:
 
 
 def _painting_shadow(req: ReverieVisualStepRequestV1):
-    """The generate step's shadow want, placed. want_id = this step's correlation id: the act's
-    correlation id when this step opens the act (grammar_acts keeps the first one it sees).
-    None if the shadow could not be built: the step never depends on it."""
+    """A dream hop's generate-step shadow want, placed. want_id = this step's correlation id: the
+    act's correlation id when this step opens the act (grammar_acts keeps the first one it sees).
+    None for a waking painting (its trigger already bid, app/painting_self_start.py: a second bid
+    for the same want would double its shadow reservation) and when the shadow could not be built:
+    the step never depends on it."""
+    if req.dream_hop is None:
+        return None
     try:
         from .physiology_shadow import ShadowBid
 
-        shadow = ShadowBid(family="thought.painting" if req.dream_hop is None else "thought.dream_hop", verb="make",
+        shadow = ShadowBid(family="thought.dream_hop", verb="make",
                            tier=2, want_id=req.correlation_id, object_ref=f"durable_run:{req.run_id}",
                            component="visual_steps.generate")
         shadow.place()
@@ -995,7 +1001,42 @@ async def run_visual_step(bus, req: ReverieVisualStepRequestV1, *,
     """Execute one stage, then mirror it into the act ledger. Never raises."""
     result = await _run_visual_step_inner(bus, req, cortex_client=cortex_client, now_fn=now_fn)
     await _mirror_painting_act(bus, req, result)
+    _release_self_start_want(req, result)
     return result
+
+
+SELF_START_DISPATCH_PREFIX = "painting_self_start:"   # app/painting_self_start.DISPATCH_PREFIX
+
+
+def run_ended(req: ReverieVisualStepRequestV1, result: ReverieVisualStepResultV1) -> bool:
+    """True when this step result ends the run: produced, any terminal, or a finished abandon."""
+    return (getattr(result, "outcome", None) == "produced" or result.status == "terminal"
+            or (req.step == "abandon" and result.status == "done"))
+
+
+def _release_self_start_want(req: ReverieVisualStepRequestV1, result: ReverieVisualStepResultV1) -> None:
+    """A self-started painting's trigger placed a shadow want (want_id = the run's correlation id).
+    When the run ends -- painted, refused or abandoned -- its shadow reservation ends with it
+    (Patch C3a release), instead of holding diffusion shadow capacity until expiry. Best-effort,
+    in the background; never touches the step. Dream hops and manual runs placed no such want."""
+    visual = req.visual_request
+    if (req.dream_hop is not None or not visual.correlation_id
+            or not str(visual.dispatch_id or "").startswith(SELF_START_DISPATCH_PREFIX)
+            or not run_ended(req, result)):
+        return
+    try:
+        if not bool(getattr(settings, "thought_physiology_shadow_bid_enabled", True)):
+            return
+        from orion.physiology.client import arelease
+
+        task = asyncio.get_running_loop().create_task(arelease(visual.correlation_id))
+        _release_tasks.add(task)
+        task.add_done_callback(_release_tasks.discard)
+    except Exception:  # noqa: BLE001 -- shadow only
+        logger.info("painting_self_start_release_not_sent run=%s", req.run_id)
+
+
+_release_tasks: set[asyncio.Task] = set()
 
 
 async def _run_visual_step_inner(bus, req: ReverieVisualStepRequestV1, *,

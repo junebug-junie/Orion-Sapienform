@@ -314,6 +314,25 @@ class ThoughtSettings(BaseSettings):
     # (orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the step's
     # real outcome (app/physiology_shadow.py). Never obeyed; off = no bid, no log line.
     thought_physiology_shadow_bid_enabled: bool = Field(True, alias="THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED")
+    # Ladder retirement PR 2 (2026-11-05): Orion starts its own waking paintings
+    # (app/painting_self_start.py): the visual-baseline schedule (config/proposals/visual_baseline.v1.yaml,
+    # 5400 s after each painting, 600 s retry), arousal deferral, the self-monitor act gate, a SHADOW
+    # hunger bid on thought.painting, then one reverie.visual durable run (POST <url>/runs). The
+    # proposal template render_scene and proposal-runtime's baseline read are gone: this is the only
+    # trigger. Off = Orion paints only when a dream hop or a manual run asks.
+    painting_self_start_enabled: bool = Field(True, alias="ORION_PAINTING_SELF_START_ENABLED")
+    painting_self_start_tick_sec: float = Field(60.0, gt=0.0, alias="ORION_PAINTING_SELF_START_TICK_SEC")
+    painting_self_start_durable_runs_url: str = Field(
+        "http://orion-athena-durable-runs:8121", alias="ORION_PAINTING_SELF_START_DURABLE_RUNS_URL"
+    )
+    # Temporal Self rev 4, R3 reader 4 (moved from orion-proposal-runtime with the schedule, same
+    # name): while arousal reads `strained`, a due baseline painting is deferred by retry_sec.
+    visual_baseline_arousal_enabled: bool = Field(True, alias="ORION_VISUAL_BASELINE_AROUSAL_ENABLED")
+    # Self-monitor E1 (orion/self_monitor/gate.py), the gate execution-dispatch held for this act:
+    # a painting faculty held broken/unreliable is refused `track_record_failing`, except one
+    # re-test probe per window. Same names and defaults as orion-execution-dispatch-runtime.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
     # Slower than the text chain's ~90s cadence (design doc §4: "slower cadence
     # than the text chain"). Real cadence is max(this, actual run duration) --
     # intentional, not a bug (design doc §4).

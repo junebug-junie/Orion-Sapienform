@@ -60,9 +60,9 @@ def test_holdback_is_drawn_only_when_the_object_exists_without_the_act() -> None
 def test_routes_declare_where_their_object_comes_from() -> None:
     policy = load_execution_dispatch_policy(REPO / "config/execution_dispatch/execution_dispatch_policy.v1.yaml")
     refs = policy.act_refs_by_cortex_verb()
-    paint = refs["skills.imagination.render_scene.v1"]
     read = refs[READ_PULL_EXECUTOR_VERB]
-    assert paint.object_source == "dispatch"
+    # The one "dispatch"-object route (painting) left dispatch on 2026-11-05 (ladder retirement PR 2).
+    assert "skills.imagination.render_scene.v1" not in refs
     assert (read.verb, read.actor, read.signal_id, read.object_source, read.horizon_sec) == (
         "look", "hub.world_pulse_read", "artifact_produced", "queue", 12000.0)
     route = policy.template_to_cortex["read_world_pulse"]

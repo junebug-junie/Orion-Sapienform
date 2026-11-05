@@ -12,6 +12,11 @@ on:
       - 'orion/execution_dispatch/**'
       - 'orion/autonomy/**'
       - 'config/proposals/**'
+      - 'config/execution_dispatch/**'
+      - 'config/physiology/families.yaml'
+      - 'orion/physiology/client.py'
+      - 'orion/self_monitor/gate.py'
+      - 'orion/regulation/arousal_read.py'
       - 'services/orion-thought/**'
       - 'services/orion-proposal-runtime/**'
       - 'services/orion-execution-dispatch-runtime/**'
@@ -21,6 +26,7 @@ on:
       - 'services/orion-sql-db/manual_migration_reverie_visual*.sql'
       - 'tests/test_visual_baseline_pipeline.py'
       - 'tests/test_visual_baseline_arousal_reader.py'
+      - 'tests/test_express_outward_action.py'
       - 'services/orion-analytics/models/marts/dim_reverie_outcomes.sql'
       - 'tests/test_dim_reverie_outcomes_covers_terminal_reasons.py'
       - 'orion/gpu_pool/client.py'
@@ -74,9 +80,17 @@ jobs:
           services/orion-thought/tests/test_visual_steps_db.py
           services/orion-thought/tests/test_bus_listener_visual_step.py
           services/orion-thought/tests/test_painting_act.py
+          services/orion-thought/tests/test_painting_self_start.py
+          services/orion-thought/tests/test_physiology_shadow_bid.py
           services/orion-thought/tests/test_visual_painting_gap_monitor.py
           services/orion-thought/tests/test_settings_mind_enrichment.py
       # One process per service: both services' tests import a top-level `app` package.
+      - name: Painting has one trigger (proposal-runtime no longer schedules it)
+        run: |
+          pip install -r services/orion-proposal-runtime/requirements.txt
+          cd services/orion-proposal-runtime && python -m pytest -q tests
+      - name: Painting self-start replay (fixture)
+        run: python -P services/orion-thought/evals/painting_self_start_replay.py
       - name: Durable render settlement contracts (execution-dispatch)
         run: python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py
       - name: Durable render kickoff (cortex-exec)

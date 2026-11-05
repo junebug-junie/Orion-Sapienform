@@ -817,6 +817,35 @@ Every knob (all `VISION_*`, `ORION_ASK_*` keys) is listed with a comment in
 
 Report: `python3 scripts/report_vision_individuals.py [--stream walkway] [--json]`.
 
+### Office sessions (2026-11-05, office camera design PR #3127 step B)
+
+`app/vision_office_sessions.py` (+ `_loop.py`): one row per visit to a room camera in
+`vision_office_session` (migration `services/orion-sql-db/manual_migration_vision_office_session_v1.sql`).
+A visit is one presence stretch (`vision_presence_transition`: present .. recent/absent/unknown), not one
+person record (one 8-minute visit on 11-05 was split into 10 records). Each row holds:
+
+- **who** (`who_of_session`): names Juniper gave, confident album matches, the camera prior's guess
+  ("Juniper (probably)"), household members by score ("(maybe)"), and "someone I don't know". The prior covers
+  ONE person: two people in one window (`vision_scene_inventory.counts.person`) never read as two "probably
+  Juniper"s. Known limit: a lone stranger reads "Juniper (probably)" -- the prior, said as a guess.
+- **timeline**: the stream's `camera_caption` rows (frame time from `frame_ts:`), opener "The person in the image
+  is" removed, consecutive repeats folded. Council `visual_observation` rows are not activity.
+- **label**: "Juniper (probably) in the office: <activities>", at most 300 characters (the Temporal Self arc
+  label; orion-durable-runs source `office_session` relabels the office company arc from the final row).
+- **image_refs**: person crop thumbnails of the visit (unknown first); thumbnails are kept forever by the host.
+
+A row is `open` while the visit goes on and for `VISION_OFFICE_SESSIONS_SETTLE_SEC` (660 s, longer than the
+person model's 600 s interval) after it ended; then `closed` and never rewritten (except `ask_id`). When a
+session has an unknown person, the existing "Who is this?" card (`orion_ask`, `vision_individual`) opens right
+away -- also while the visit is still going on -- about the record most likely to be the stranger, under its
+own cap `VISION_OFFICE_ASK_DAILY_CAP` (4/day; one per session; the street rule's `ORION_ASK_DAILY_CAP` does not
+count these, marker `rule:office_session` in `evidence_refs`), the shared cooldown, and "no picture, no ask".
+Log: `[VISION_OFFICE_SESSION] closed session_id=... who=... label=...`. Kill switch
+`VISION_OFFICE_SESSIONS_ENABLED` (ON). Read-only live replay:
+`PYTHONPATH=.:services/orion-sql-writer python services/orion-sql-writer/evals/run_office_session_replay.py --uri
+<pg uri> --since <iso> --until <iso>`. Tests: `tests/test_vision_office_sessions.py` (pure),
+`tests/test_vision_office_sessions_pg.py` (real Postgres).
+
 ### Walkway motion stories (2026-10-16, Hub only)
 
 `app/vision_motion.py` (pure) + `app/vision_motion_loop.py` (clocked, every

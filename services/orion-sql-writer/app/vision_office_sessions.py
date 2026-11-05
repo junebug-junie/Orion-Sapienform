@@ -387,8 +387,9 @@ def office_ask_question(*, place: str, started_at: datetime, ended_at: Optional[
                         others: Sequence[str], unknown: int) -> str:
     span = (f"from {_hhmm(started_at, tz)} to {_hhmm(ended_at, tz)}" if ended_at is not None
             else f"since {_hhmm(started_at, tz)}")
-    verb = "was" if ended_at is not None else "is"
-    who = "someone I don't recognize" if unknown <= 1 else f"{unknown} people I don't recognize"
+    one = unknown <= 1
+    verb = ("was" if one else "were") if ended_at is not None else ("is" if one else "are")
+    who = "someone I don't recognize" if one else f"{unknown} people I don't recognize"
     text_ = f"I think {who} {verb} in {place} {span}."
     if others:
         text_ += f" Also there: {', '.join(others)}."
@@ -419,13 +420,14 @@ def _present(conn, table: str) -> bool:
     return conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar() is not None
 
 
-def _transitions(conn, stream: str, lo: datetime) -> List[dict]:
+def _transitions(conn, stream: str, lo: datetime, hi: datetime) -> List[dict]:
+    """Presence rows in [lo, hi] (hi = the pass's own clock, so a replay never sees its future)."""
     from sqlalchemy import text
 
     return [dict(r._mapping) for r in conn.execute(text(
         "SELECT transition_id, presence_id, from_state, to_state, occurred_at FROM vision_presence_transition "
-        "WHERE presence_id = :s AND occurred_at >= :lo ORDER BY occurred_at, transition_id"),
-        {"s": stream, "lo": lo})]
+        "WHERE presence_id = :s AND occurred_at >= :lo AND occurred_at <= :hi ORDER BY occurred_at, transition_id"),
+        {"s": stream, "lo": lo, "hi": hi})]
 
 
 def _captions(conn, stream: str, lo: datetime, hi: datetime) -> List[dict]:
@@ -620,7 +622,8 @@ def open_office_ask(conn, row: dict, records: Sequence[Record], overlap: Mapping
         images = _images(srows, now, icfg)
         if not images:
             continue  # no picture, no ask
-        others = [f"{p['name']}{BASIS_WORDS[p['basis']]}" for p in who["people"] if iid not in p["individual_ids"]]
+        # Everyone else accounted for; a person who IS only this record is not "also there".
+        others = [f"{p['name']}{BASIS_WORDS[p['basis']]}" for p in who["people"] if p["individual_ids"] != [iid]]
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=office_ask_question(place=row["_place"], started_at=row["started"], ended_at=row["ended"], tz=tz,
@@ -649,7 +652,7 @@ def run_office_sessions(conn, now: datetime, cfg: OfficeSessionsConfig, icfg,
     lo = now - timedelta(hours=cfg.lookback_hours)
     for stream in cfg.streams:
         stored = _stored(conn, stream, lo)
-        for span in build_spans(_transitions(conn, stream, lo)):
+        for span in build_spans(_transitions(conn, stream, lo, now)):
             summary["office_sessions_seen"] += 1
             prev = stored.get(span.session_id)
             if prev is not None and prev["status"] == "closed":

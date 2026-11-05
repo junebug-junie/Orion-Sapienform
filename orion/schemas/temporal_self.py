@@ -101,6 +101,8 @@ TemporalSourceKind = Literal[
     "body_binding",
     # the self-monitor's held faculty status changes and keepalives (self-monitor organ patch 2)
     "faculty_status_changed",
+    # one final office visit (sql-writer vision_office_session): labels the office company arc
+    "office_session",
 ]
 
 ArcKind = Literal[

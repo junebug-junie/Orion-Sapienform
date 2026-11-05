@@ -84,6 +84,8 @@ ARC_SOURCE_TABLES = (
     "vision_motion_story", "vision_presence_transition",
     # Self-monitor patch 2: the self_monitor node's faculty_status_changed rows (faculty arcs).
     "self_monitor",
+    # Office sessions (2026-11-05): the final visit row that labels an office company arc.
+    "vision_office_session",
 )
 
 # Families with an explicit (non-direct) join path. Any other actor links only through a

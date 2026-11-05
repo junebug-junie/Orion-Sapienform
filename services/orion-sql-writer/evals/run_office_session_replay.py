@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     out = []
     with eng.connect() as conn:
         conn.execute(text("SET TRANSACTION READ ONLY"))
-        rows = [r for r in _transitions(conn, a.stream, since) if r["occurred_at"] < until]
+        rows = _transitions(conn, a.stream, since, until)
         # "now" = the end of the range, so a visit inside it reads as it would have once settled.
         now = max(until, datetime.now(timezone.utc))
         for span in build_spans(rows):

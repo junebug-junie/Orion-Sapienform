@@ -190,6 +190,20 @@ says "Robin (named by Juniper)" only when she vouched for that story: her latest
 Hub story card), or her spot-check verdict "right" on it (`sources.story_name`). Payload `name_source`:
 `juniper` | `recognizer`. Read as of the read, like the gate.
 
+### Office sessions label company arcs (2026-11-05)
+
+Spec: `docs/superpowers/specs/2026-11-05-office-camera-attention-and-reach-out-design.md` step B. Source
+`office_session` (`sources.office_session`): orion-sql-writer's `vision_office_session`, one FINAL row per
+visit to a room camera (span, who probably, activity timeline from the camera's own captions; no model
+prose in the label). Available at `closed_at` (`arcs.AVAILABLE_AT_KINDS`, like street events). It opens no
+arc: `arcs._fold_office_session` sets the label of today's CLOSED `company` arc of the same camera that
+overlaps the visit most ("Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a
+cabinet") and adds `vision_office_session:<id>` to its `related_refs`. A name the presence row confirmed is
+kept when the session found nobody unknown ("juniper in the office: ..."). Open arcs are never relabelled,
+so the stance cue's "Someone has been here since" is unchanged. Recent arcs show the label without the
+"company:" prefix. Known limit: a visit final after local midnight labels nothing. Kill switch:
+`TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED` (orion-durable-runs). Tests: `tests/test_office_session_arcs.py`.
+
 ### Thread arc ids and the truth eval (2026-10-12)
 
 `OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread

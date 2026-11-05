@@ -73,6 +73,9 @@ PURITY_MIN_CROPS = 4
 ATTRIBUTION_CROPS = 20
 # An accept bar is armed only with this many held-out own clusters, at least half above it.
 MIN_GENUINE_CLUSTERS = 3
+# A camera prior names a guess only for a person who is at least this much of who
+# is usually there (attribute; config/person_model/camera_priors.*.yaml).
+PRIOR_DOMINANCE = 0.5
 
 
 @dataclass(frozen=True)
@@ -348,11 +351,11 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
     prior:
 
     - an ``unsure`` score carries no evidence, so when nobody is accepted the
-      guess is the person with the highest prior (score breaks ties), not the
-      highest raw score. A body score across cameras mostly matches clothes and
+      guess is the camera's dominant person (prior >= ``PRIOR_DOMINANCE``, not
+      ruled out by Juniper for this cluster), not the highest raw score. A body score across cameras mostly matches clothes and
       light: on Juniper's first office visit another household member scored 0.80 and she 0.73.
-    - a ``reject`` from a bar fitted on other cameras' crops is not trusted
-      until the person's album holds a crop from this camera: an infrared
+    - for that dominant person only, a ``reject`` from a bar fitted on other
+      cameras' crops is not trusted until their album holds a crop from this camera: an infrared
       office crop of Juniper can sit below a reject bound learned outdoors.
     - an ``accept`` (a calibrated, confident match) still wins.
 
@@ -365,9 +368,16 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
     for cid, crops in sorted(clusters.items()):
         stream = cluster_stream(crops)
         prior = {k.strip().casefold(): v for k, v in (priors.get(stream) or {}).items()}
+        # The prior names a guess only for a person who is MOST of who is here
+        # (PRIOR_DOMINANCE) and whom Juniper has not ruled out for this cluster. A
+        # small prior (a household member at 1%) never names a guess: after her
+        # "no" the guess falls back to the scores, as on every other camera.
+        ruled_out = blocked.get(cid, set())
+        top = max(((k, v) for k, v in prior.items() if k not in ruled_out), key=lambda kv: kv[1], default=(None, 0.0))
+        dominant = top[0] if top[1] >= PRIOR_DOMINANCE else None
         scored = []
         for p in persons:
-            if p.strip().casefold() in blocked.get(cid, set()):
+            if p.strip().casefold() in ruled_out:
                 continue
             ch = pick_channel(crops, p, bars, album, cfg)
             if ch is None:
@@ -376,23 +386,20 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
             if s is None:
                 continue
             b = band(s, bars[(p, ch)])
-            if b == "reject" and prior and not album_has_stream(album, p, stream):
-                b = "unsure"  # an out-of-camera reject bound is not evidence here
+            if b == "reject" and p.strip().casefold() == dominant and not album_has_stream(album, p, stream):
+                b = "unsure"  # a reject bound fitted on other cameras is not evidence here
             if b != "reject":
                 scored.append((b == "accept", s, p, ch, b))
         if not scored:
             continue
         accepted = [x for x in scored if x[0]]
         basis = "evidence"
-        if accepted or not prior:
+        by_prior = [x for x in scored if dominant is not None and x[2].strip().casefold() == dominant]
+        if accepted or not by_prior:
             best = max(accepted or scored, key=lambda x: x[1])
         else:
-            by_prior = [x for x in scored if prior.get(x[2].strip().casefold(), 0.0) > 0]
-            if by_prior:
-                best = max(by_prior, key=lambda x: (prior[x[2].strip().casefold()], x[1]))
-                basis = "prior"
-            else:
-                best = max(scored, key=lambda x: x[1])
+            best = max(by_prior, key=lambda x: x[1])
+            basis = "prior"
         b = "unsure" if len(accepted) > 1 else best[4]
         out.append({"individual_id": cid, "person_label": best[2], "channel": best[3],
                     "score": round(best[1], 4), "band": b, "basis": basis})
@@ -653,8 +660,8 @@ def attribution_has_basis(conn) -> bool:
     from sqlalchemy import text
 
     return bool(conn.execute(text(
-        "SELECT 1 FROM information_schema.columns WHERE table_name = 'vision_person_attribution' "
-        "AND column_name = 'basis'")).scalar())
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+        "AND table_name = 'vision_person_attribution' AND column_name = 'basis'")).scalar())
 
 
 def write_attributions(conn, guesses: List[dict], now: datetime) -> Tuple[int, int]:

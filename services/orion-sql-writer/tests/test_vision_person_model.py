@@ -911,10 +911,11 @@ def test_an_outdoor_reject_bound_cannot_rule_her_out_in_the_office() -> None:
     bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)   # learned outdoors
     (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
     assert g["person_label"] == "Juniper" and g["basis"] == "prior"
-    # Once her album holds an office crop, the bound is in-camera and counts.
+    # Once her album holds an office crop, the bound is in-camera and counts: she is
+    # ruled out, and the guess falls back to the scores (the 1% prior names nobody).
     album["Juniper"][1].append(_on("cam0", [_crop("j2", "jo", "2026-11-05", _vec(0, 1))])[0])
     (g2,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
-    assert g2["person_label"] == "Sibling" and g2["basis"] == "prior"
+    assert g2["person_label"] == "Sibling" and g2["basis"] == "evidence"
 
 
 def test_prior_names_match_album_names_ignoring_case_and_other_cameras_are_unchanged() -> None:
@@ -926,10 +927,22 @@ def test_prior_names_match_album_names_ignoring_case_and_other_cameras_are_uncha
     assert w["person_label"] == "Sibling" and w["basis"] == "evidence"
 
 
-def test_a_name_she_ruled_out_is_never_the_prior_guess() -> None:
+def test_after_her_no_a_small_prior_never_names_the_guess() -> None:
+    """Review finding: a "no" must not walk down the 1% names ("Is this <sibling>?")."""
     album, bars, office = _office_world()
     (g,) = pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS)
-    assert g["person_label"] == "Sibling" and g["basis"] == "prior"
+    assert g["person_label"] == "Sibling" and g["basis"] == "evidence"   # the scores', as on any camera
+
+
+def test_a_small_prior_relaxes_no_reject_and_a_misspelled_prior_changes_nothing() -> None:
+    album, bars, office = _office_world()
+    bars[("Sibling", "body")] = pm.Bar("Sibling", "body", None, 1.01, 272, 1500)   # rejects every crop
+    bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)
+    # Juniper ruled out: the 1% sibling's reject still counts, so there is no guess at all.
+    assert pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS) == []
+    # A prior naming nobody in the album: the same guesses as with no prior.
+    assert pm.attribute(office, album, bars, {}, CFG, priors={"cam0": {"Junper": 0.97}}) == \
+        pm.attribute(office, album, bars, {}, CFG)
 
 
 def test_camera_priors_file_example_and_local_first(tmp_path) -> None:
@@ -942,6 +955,10 @@ def test_camera_priors_file_example_and_local_first(tmp_path) -> None:
     bad.write_text("streams:\n  cam0:\n    A: 0.8\n    B: 0.5\n")
     with pytest.raises(ValueError):
         load_camera_priors(bad)
+    dup = tmp_path / "dup.yaml"
+    dup.write_text("streams:\n  cam0:\n    Juniper: 0.5\n    juniper: 0.4\n")
+    with pytest.raises(ValueError):
+        load_camera_priors(dup)
     assert load_camera_priors(tmp_path / "missing.yaml") == {}
 
 
@@ -965,3 +982,30 @@ def test_write_attributions_stores_basis_and_works_without_the_column(pg) -> Non
                 "SELECT count(*) FROM vision_person_attribution WHERE individual_id='o2'")).scalar() == 1
         finally:
             conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS basis text"))
+
+
+@needs_pg
+def test_office_prior_asks_rank_last_and_one_is_open_per_name(pg) -> None:
+    """Review finding: one office visit splits into several records, each guessed
+    Juniper by the camera prior. They must not take the day's asks: evidence
+    guesses go first, and only one prior "Is this Juniper?" is open at a time."""
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        for iid in ("off-1", "off-2", "off-3", "walk-1"):
+            _add_cluster(conn, iid, None, [_vec(1, 0.1)], 0)
+            _thumb(conn, iid)
+            conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = :i"), {"i": iid})
+        for iid, person, score, basis in (("off-1", "Juniper", 0.9, "prior"), ("off-2", "Juniper", 0.8, "prior"),
+                                          ("off-3", "Juniper", 0.7, "prior"), ("walk-1", "Sibling", 0.5, "evidence")):
+            conn.execute(text(
+                "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+                "model_version, decided_at, basis) VALUES (:i, :p, 'body', :s, 'unsure', :v, :t, :b)"),
+                {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    assert [a["source_ref"] for a in opened] == ["walk-1|Sibling", "off-1|Juniper"]
+    with pg.begin() as conn:   # the next cycle: her office ask is still open, so no second one
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []

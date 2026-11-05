@@ -855,6 +855,7 @@ def _who_line(
         props = {"person": people_props}
     named: list[str] = []
     guessed: dict[str, str] = {}
+    guess_rows: dict[tuple[str, str], int] = {}
     seen_names: set[str] = set()
     named_by_kind: dict[str, set[str]] = {}
     # kind -> distinct_days per individual, in first-seen (most recent) order.
@@ -875,9 +876,12 @@ def _who_line(
         guess = str(row.get("guess") or "").strip()
         if guess:
             # The camera's prior chose this name (office camera): a guess, said as one.
-            # It counts like a name in the people range (it is that person, probably).
+            # It counts like a name in the people range, and as the SAME name as a
+            # record Juniper named, so the two never stand for two people.
+            kind_g = str(row.get("kind") or "").strip() or "something"
             guessed.setdefault(guess.casefold(), guess)
-            named_by_kind.setdefault(str(row.get("kind") or "").strip(), set()).add("guess:" + guess.casefold())
+            named_by_kind.setdefault(kind_g, set()).add(guess.casefold())
+            guess_rows[(kind_g, guess.casefold())] = guess_rows.get((kind_g, guess.casefold()), 0) + 1
             continue
         kind = str(row.get("kind") or "").strip() or "something"
         try:
@@ -894,9 +898,15 @@ def _who_line(
     # know, even if every record of that kind carries the prior's guess.
     if guessed and peaks is not None:
         for kind, keys in named_by_kind.items():
-            if kind in _LIVING_KINDS and kind not in recurring and kind not in new \
-                    and int(peaks.get(kind, 0) or 0) > len(keys):
+            seen = int(peaks.get(kind, 0) or 0) - int(props.get(kind, 0) or 0)
+            if kind in _LIVING_KINDS and kind not in recurring and kind not in new and seen > len(keys):
                 new[kind] = 0
+    elif guessed:
+        # No window count to tell one person from several: every guessed record
+        # past the first of a name may be someone else ("up to N"), never silence.
+        for (kind, _name), n in guess_rows.items():
+            if n > 1:
+                new[kind] = new.get(kind, 0) + n - 1
     # (phrase, how many individuals it stands for; None = a range, no count)
     phrases: list[tuple[str, int | None]] = [(name, 1) for name in named]
     phrases += [
@@ -916,7 +926,8 @@ def _who_line(
                     peak=None if peaks is None else int(peaks.get(kind, 0) or 0),
                     props=int(props.get(kind, 0) or 0),
                 )
-                phrases.append((_living_phrase(kind, low, high, recurring=rec), None))
+                if high > 0:
+                    phrases.append((_living_phrase(kind, low, high, recurring=rec), None))
                 continue
             if kind in recurring:
                 phrases.append((_recurring_phrase(kind, recurring[kind]), len(recurring[kind])))

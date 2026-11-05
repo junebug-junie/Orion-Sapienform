@@ -32,6 +32,9 @@ def load_camera_priors(path: Optional[str | Path] = None) -> Dict[str, Dict[str,
     out: Dict[str, Dict[str, float]] = {}
     for stream_id, block in (raw.get("streams") or {}).items():
         prior = {str(k).strip(): float(v) for k, v in (block or {}).items() if str(k).strip() and float(v) > 0}
+        folded = [k.casefold() for k in prior]
+        if len(set(folded)) != len(folded):
+            raise ValueError(f"camera prior for {stream_id} names one person twice (case-insensitive)")
         total = sum(prior.values())
         if total > 1.0 + 1e-9:
             raise ValueError(f"camera prior for {stream_id} sums to {total:.3f} > 1")

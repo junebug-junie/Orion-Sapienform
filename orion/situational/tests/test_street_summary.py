@@ -586,6 +586,37 @@ def test_a_name_she_gave_wins_over_the_same_guess() -> None:
     text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
                                       tz=timezone.utc, camera="office camera"))
     assert "Juniper" in text_ and "probably Juniper" not in text_
+    # Review finding: the named record and the guess are one person, so a second
+    # person in the same window is still said.
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera",
+                                      people_windows=[{"counts": {"person": 2}}], stationary_people={}))
+    assert "unfamiliar" in text_
+
+
+def test_unread_window_counts_never_collapse_guessed_records_into_one() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(3)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera"))
+    assert "probably Juniper" in text_ and "up to 2 unfamiliar people" in text_
+
+
+def test_a_stationary_prop_never_reads_as_up_to_zero_people() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(2)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera",
+                                      people_windows=[{"counts": {"person": 2}}], stationary_people={"person": 1}))
+    assert "up to 0" not in text_ and "unfamiliar" not in text_
 
 
 def test_prior_guess_read_fails_open() -> None:

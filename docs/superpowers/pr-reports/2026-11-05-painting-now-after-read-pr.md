@@ -21,7 +21,7 @@ Orion paints on its own again. Before the fix: 0 paintings since 05:48Z. One was
 ## Tests run
 
 ```text
-services/orion-thought tests/test_painting_self_start.py: 28 passed
+services/orion-thought tests/test_painting_self_start.py: 29 passed
   new test_activity_read_after_the_tick_clock_still_paints: FAILS with the fix removed (mutation check), passes with it
 services/orion-thought full suite: 840 passed, 32 skipped
 ```
@@ -35,7 +35,17 @@ The fixture's read_lag is the guard against it.
 
 ## Review findings fixed
 
-REVIEW
+The code review ran in a subagent at medium effort. It found no blocker, and confirmed two things
+by putting the old tick back: only the new test fails, and later uses of `now` are all safe (the
+shift is milliseconds).
+- **SHOULD:** the shift had no limit. A future `observed_at` from another host's clock would
+  silently push deadlines and dispatch ids forward.
+  - Fix: the clock moves only for a local read lag of 5 s or less (`MAX_READ_LAG`). Anything
+    further ahead stays refused.
+  - Evidence: `test_an_activity_far_in_the_future_is_still_refused_as_stale`.
+- **Checked:** no other caller of `schedule()` or `validate_eligibility` has this ordering. Each
+  takes its clock after the observation.
+- **Not done (NIT):** a read lag in the replay eval. The test fixture covers it.
 
 ## Restart required
 

@@ -470,3 +470,12 @@ def test_activity_read_after_the_tick_clock_still_paints():
     t, sent, _ = _trigger(clock)
     assert _tick(t, NOW) == "submitted"
     assert len(sent) == 1
+
+
+def test_an_activity_far_in_the_future_is_still_refused_as_stale():
+    """Only a local read lag (<= 5 s) moves the clock; a skewed observed_at must not push deadlines."""
+    clock = Clock()
+    clock.read_lag = timedelta(seconds=30)
+    t, sent, _ = _trigger(clock)
+    assert _tick(t, NOW) == "visual_activity_unavailable_or_stale"
+    assert sent == []

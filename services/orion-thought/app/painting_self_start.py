@@ -138,6 +138,9 @@ class TickResult:
     detail: dict = field(default_factory=dict)
 
 
+MAX_READ_LAG = timedelta(seconds=5)
+
+
 class PaintingSelfStart:
     """The trigger. Every dependency is injected, so the replay eval runs this same class."""
 
@@ -178,7 +181,9 @@ class PaintingSelfStart:
         # The activity is read AFTER the tick's clock was taken, so its observed_at is a little later
         # than `now`. schedule() refuses a negative age as stale, which held every tick live from the
         # 2026-11-05 deploy until this fix. Decide at the later of the two instants.
-        if activity.observed_at > now:
+        # Capped: only a local read lag moves the clock. An observed_at further ahead (another host's
+        # clock, a bad row) stays refused as stale instead of silently pushing deadlines forward.
+        if now < activity.observed_at <= now + MAX_READ_LAG:
             now = activity.observed_at
         eligibility, reason = await asyncio.to_thread(
             self._baseline_eligibility, activity, now=now, policy=policy, arousal_level=self._arousal_level)

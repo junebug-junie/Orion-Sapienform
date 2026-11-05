@@ -257,7 +257,7 @@ def _stub_room(monkeypatch, percept=None):
 
 def test_street_defaults_to_walkway_and_empty_disables() -> None:
     # cam0 (the office camera) joined 2026-11-04: who is in the room, by name.
-    assert _cfg().street_stream_ids == ["doorbell", "cam0", "walkway"]
+    assert _cfg().street_stream_ids == ["doorbell", "walkway", "cam0"]
     cfg = situation_mod.settings_from_runtime(SimpleNamespace(orion_situation_street_stream_ids=""))
     assert cfg.street_stream_ids == []
 
@@ -327,7 +327,7 @@ def test_one_failed_street_read_does_not_hide_the_other(monkeypatch) -> None:
     monkeypatch.setattr(situation_mod, "fetch_street_summary", _fetch)
     diag = SituationDiagnosticsV1()
     ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
-    assert ctx.street_stream_id == "cam0"  # first camera after the failed doorbell
+    assert ctx.street_stream_id == "walkway"  # first camera after the failed doorbell
     assert "Two people walked by." in (ctx.street_summary or "")
     # The error stays visible; it is not overwritten with "ok".
     assert diag.provider_status["perception_street"] == "error"

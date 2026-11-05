@@ -65,4 +65,5 @@ streams:
     zones:
       - name: office
         embed: true
+        presence: false
         polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]

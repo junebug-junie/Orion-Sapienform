@@ -4,6 +4,7 @@ import threading
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -104,7 +105,7 @@ def _latest_frame_prefix(stream_id: str) -> str:
     """File prefix of one camera's frames: retina naming ``<camera>_<stream>_``
     (orion-vision-retina app/frame_store.py; every camera's retina uses its
     stream id as its camera id)."""
-    safe = __import__("re").sub(r"[^A-Za-z0-9._-]+", "_", stream_id).strip("_") or "unknown"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stream_id).strip("_") or "unknown"
     return f"{safe}_{safe}_"
 
 

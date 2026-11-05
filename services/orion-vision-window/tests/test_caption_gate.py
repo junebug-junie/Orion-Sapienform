@@ -129,6 +129,29 @@ def test_caption_of_a_stationary_prop_only_is_dropped():
     assert items[1][0].outputs.caption.text == "A woman walks past the patio."
 
 
+def test_office_person_sitting_still_for_hours_is_not_a_prop():
+    """2026-11-04 review H1: cam0 is caption-gated but not prop-tracked
+    (WINDOW_STATIONARY_STREAMS=walkway). Juniper at her desk in the same box
+    for 2 h is still a person, so her caption stands."""
+    gate = _gate(streams="walkway,cam0", stationary_streams="walkway")
+    t0 = time.time() - 7300
+    for k in range(int(2 * 60 * 3)):
+        gate.apply("cam0", [(_detect([("person", 0.8, SKELETON)], stream="cam0"), t0 + 20.0 * k)])
+    now = t0 + 20.0 * 360
+    art = _caption("A woman is typing on a laptop at a desk.", source=[_src("person", SKELETON, 0.8)],
+                   stream="cam0", frame_ts=now - 1)
+    items, _, _ = gate.apply("cam0", [(_detect([("person", 0.8, SKELETON)], stream="cam0"), now - 1), (art, now)])
+    assert items[1][0].outputs.caption.text == "A woman is typing on a laptop at a desk."
+
+
+def test_real_settings_track_props_on_the_walkway_only():
+    from app.settings import Settings
+
+    s = Settings()
+    assert "cam0" in s.WINDOW_CAPTION_GATE_STREAMS.split(",")
+    assert "cam0" not in s.WINDOW_STATIONARY_STREAMS.split(",")
+
+
 def test_stale_caption_is_dropped():
     gate = _gate()
     now = time.time()

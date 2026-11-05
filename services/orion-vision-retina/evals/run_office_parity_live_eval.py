@@ -46,6 +46,13 @@ def _fresh_frames(max_age_s: float = 60.0) -> int:
     return sum(1 for p in FRAMES_DIR.glob("cam0_cam0_*.jpg") if now - p.stat().st_mtime < max_age_s)
 
 
+def _fresh_edge_frames(max_age_s: float = 60.0) -> int:
+    """orion-vision-edge's own cam0 files (``frame_*``). Any fresh one means the
+    edge is still running and cam0 is published twice."""
+    now = time.time()
+    return sum(1 for p in FRAMES_DIR.glob("frame_*.jpg") if now - p.stat().st_mtime < max_age_s)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=int, default=2)
@@ -54,6 +61,9 @@ def main() -> int:
     frames = _fresh_frames()
     print(f"{'retina frames in the last 60 s':34s} {frames}")
     ok &= frames > 0
+    edge = _fresh_edge_frames()
+    print(f"{'edge frames in the last 60 s (want 0)':34s} {edge}")
+    ok &= edge == 0
     for name, sql in STEPS:
         n = _count(sql.replace(":H", str(int(args.hours))))
         print(f"{name:34s} {'UNREAD' if n is None else n}")

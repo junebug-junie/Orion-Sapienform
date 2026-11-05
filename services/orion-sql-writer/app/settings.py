@@ -554,6 +554,10 @@ class Settings(BaseSettings):
     vision_stationary_min_sec: float = Field(1800.0, alias="VISION_STATIONARY_MIN_SEC")
     vision_stationary_iou: float = Field(0.5, alias="VISION_STATIONARY_IOU")
     vision_stationary_max_gap_sec: float = Field(300.0, alias="VISION_STATIONARY_MAX_GAP_SEC")
+    # Streams whose individuals can become stationary props (2026-11-04). The
+    # office camera (cam0) stays out: a person at a desk sits still for hours.
+    # Same rule as orion-vision-window's WINDOW_STATIONARY_STREAMS. Empty = none.
+    vision_stationary_streams: str = Field("walkway,doorbell", alias="VISION_STATIONARY_STREAMS")
     # Two observations of one individual this close together are one sighting.
     vision_individuals_merge_gap_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_MERGE_GAP_SEC")
     # Rows read per stream per tick; the cursor carries the rest to the next tick.

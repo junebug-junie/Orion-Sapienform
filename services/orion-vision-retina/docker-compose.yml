@@ -203,14 +203,14 @@ services:
 
   # The office camera, cam0 (2026-11-04, Juniper: "route through the vision
   # retina, not the vision edge"). The indoor Reolink in the room where
-  # Juniper works, read from its full-resolution MAIN stream (2560x1920, the
+  # Juniper works (the office), read from its full-resolution MAIN stream (2560x1920, the
   # same size as the walkway) so faces are big enough for person learning.
   # orion-vision-edge used to capture this camera from the 640x480 substream
-  # and opened the main stream only for one still per face check; it no
-  # is no longer used for cam0 (kept in the repo, not run; see its README). stream_id/camera_id
+  # and opened the main stream only for one still per face check. The edge
+  # is no longer used (kept in the repo, not run; see its README). stream_id/camera_id
   # stay `cam0`, so presence, history and config/vision_frame_router.yaml
   # `streams.cam0` / config/vision_zones.yaml `streams.cam0` keep their key.
-  # Behind the `room` profile for the walkway's reason: an empty
+  # Behind the `office` profile for the walkway's reason: an empty
   # OFFICE_RTSP_URL is refused at boot, and carbon runs a plain `up` of this
   # file. Once started, the post-pull rebuild re-ups it like the walkway:
   #   scripts/safe_docker_build.sh orion-vision-retina --profile office up -d --build orion-vision-retina-office

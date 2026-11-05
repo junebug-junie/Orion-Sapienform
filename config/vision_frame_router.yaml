@@ -80,7 +80,10 @@ streams:
       task_type: retina_fast
       trigger_labels: [person, dog]
       trigger_ttl_seconds: 8
-      min_seconds_between_tasks_per_camera: 2
+      # 5, not the walkway's 2 (2026-11-04 review): Juniper is in view for
+      # hours, and each task now also embeds crops and faces on the shared
+      # GPU. One task per 5 s still catches every arrival (TTL 8 s).
+      min_seconds_between_tasks_per_camera: 5
       max_inflight_per_camera: 1
       request:
         want_caption: false

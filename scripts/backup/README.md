@@ -188,25 +188,30 @@ file copy:
 
 | Target | Capture method | Why |
 |--------|-----------------|-----|
-| Postgres | `docker exec ... pg_dumpall`, piped through `gzip` to the destination file | Logical dump, always consistent regardless of concurrent writes; streamed rather than buffered in memory since a full cluster dump has been observed at 1.2GB+ live and only grows |
+| Postgres | `docker exec ... pg_dumpall`, piped through `docker exec ... zstd -3` to the destination file | Logical dump, always consistent regardless of concurrent writes; streamed rather than buffered in memory since a full cluster dump has been observed at 1.2GB+ live and only grows. zstd replaced `gzip` on 2026-11-05: with the cluster at 105GB the single-threaded host-side `gzip -6` (~105 MB/s measured) was the slowest stage in the pipeline and nightly runs started timing out against `POSTGRES_DUMP_TIMEOUT_SEC` (failed Nov 3/5, passed Nov 4 -- straddling the ceiling). zstd -3 measures ~695 MB/s and compresses *better* (101MB vs 200MB on a live sample); it runs inside the postgres container because the athena host has no zstd binary. Deliberately two separate `docker exec` processes piped at the OS level, not one `sh -c 'pg_dumpall | zstd'`: a shell pipe would collapse both exit codes into the pipeline's tail and hide a failed dump behind zstd's 0 |
 | FalkorDB | `redis-cli BGSAVE`, poll `INFO persistence` for `rdb_bgsave_in_progress`/`rdb_last_bgsave_status`, then copy the resulting `dump.rdb` | Atomic point-in-time RDB snapshot; polling the explicit status fields (not just watching `LASTSAVE` change) avoids both false-negatives from `LASTSAVE`'s 1-second resolution and false-failures on a save that legitimately takes longer than a short fixed timeout |
 | Chroma | `docker stop`, plain copy of the host bind-mount path, `docker start` | Chroma's per-collection index segments mutate on write with no CLI-accessible checkpoint API available here; an earlier version of this tool tried a live `sqlite3 .backup` for the metadata file only and left the segment files raw-copied, which doesn't actually solve the consistency problem for those files (and can leave a stale `-wal`/`-shm` sidecar next to a `.backup` output, corrupting restore) -- stopping for the copy window is simple and actually consistent |
 | Convex | Same stop/copy/start treatment, against the resolved Docker volume mountpoint (`docker volume inspect ... --format '{{.Mountpoint}}'`) | Same reason -- confirmed live that a raw copy of Convex's `db.sqlite3` tears mid-write ("file changed as we read it"), and its data directory also mixes in live RocksDB-style segment files that have no safe online-backup API exposed to this tool either |
 
 ### Restoring a Postgres dump
 
-The cluster dump is gzipped on the way to disk (`pg_dumpall.sql.gz`):
+The cluster dump is zstd-compressed on the way to disk (`pg_dumpall.sql.zst`):
 
 ```bash
-gunzip -c /mnt/storage-warm/backups/<node>/db/postgres/latest/pg_dumpall.sql.gz \
+docker exec -i orion-athena-sql-db zstd -dc \
+  < /mnt/storage-warm/backups/<node>/db/postgres/latest/pg_dumpall.sql.zst \
   | docker exec -i orion-athena-sql-db psql -U postgres
 ```
 
-Snapshots written before 2026-09-02 are uncompressed `pg_dumpall.sql` -- pipe
-those straight from `cat` instead. Both exit codes in the dump pipeline are
-checked separately, because `gzip` exits 0 after faithfully compressing a
-*truncated* stream; trusting only the tail of the pipe would store a partial
-dump as a healthy snapshot.
+(`zstd` is not installed on the athena host — it ships in the postgres image, hence the `docker exec` on the decompress side. If you have zstd locally, `zstd -dc < file.zst | docker exec -i ...` works too.)
+
+Snapshots written between 2026-09-02 and 2026-11-04 are gzip-compressed
+(`pg_dumpall.sql.gz`) — use `gunzip -c` instead. Snapshots written before
+2026-09-02 are uncompressed `pg_dumpall.sql` — pipe those straight from `cat`.
+All three formats restore the same way otherwise. Both exit codes in the dump
+pipeline are checked separately, because a compressor exits 0 after faithfully
+compressing a *truncated* stream; trusting only the tail of the pipe would
+store a partial dump as a healthy snapshot.
 
 **Postgres orphan cleanup:** before every dump attempt, and again if the dump
 times out, the script runs `SELECT pg_terminate_backend(pid) FROM

@@ -3598,12 +3598,12 @@
                 </div>
               </div>
             </div>
-            <div id="climateOverlayStrip" role="region" aria-label="Office, cabinet, outdoor temperature and Orion power" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-3">
+            <div id="climateOverlayStrip" role="region" aria-label="Office, cabinet, closet, outdoor temperature and Orion power" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-3">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h3 class="text-sm font-semibold text-gray-100">Climate and power — overlay</h3>
                   <p class="text-[11px] text-gray-500">
-                    Office, cabinet and outdoor temperature on one °C plot, with Orion's total wall watts
+                    Office, cabinet, server-closet (above the cabinet) and outdoor temperature on one °C plot, with Orion's total wall watts
                     (all nodes plus cabinet cooling) underneath on the same time axis. Outdoor is hourly
                     Open-Meteo. Gaps mean no reading, never 0.
                   </p>
@@ -3617,6 +3617,7 @@
               <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Series shown in the overlay">
                 <button type="button" data-climate-overlay-series="office_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#3987e5"></span>office °C</button>
                 <button type="button" data-climate-overlay-series="cabinet_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#d95926"></span>cabinet °C</button>
+                <button type="button" data-climate-overlay-series="closet_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#e09a00"></span>closet °C</button>
                 <button type="button" data-climate-overlay-series="outdoor_temp_c" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#199e70"></span>outdoor °C</button>
                 <button type="button" data-climate-overlay-series="orion_watts" aria-pressed="true" class="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-200 hover:border-gray-500"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#9085e9"></span>Orion watts</button>
               </div>
@@ -3668,7 +3669,16 @@
                 <div id="energyDailyBars" aria-label="Daily house kWh, last 14 days" class="flex items-end gap-1 min-h-[4rem] text-amber-400"></div>
               </div>
             </div>
-            <div id="cabinetSensorGrid" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+            <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-3">
+              <div>
+                <h3 class="text-sm font-semibold text-gray-100">Cabinet sensors — Athena Nanos</h3>
+                <p class="text-[11px] text-gray-500">
+                  Live readings from the Nanos inside the server cabinet (~1 Hz). A sensor that is not wired
+                  to these Nanos shows <code class="text-gray-500">absent</code>, never 0.
+                </p>
+              </div>
+              <div id="cabinetSensorGrid"></div>
+            </div>
             <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>

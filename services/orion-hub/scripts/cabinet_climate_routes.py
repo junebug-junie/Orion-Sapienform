@@ -1,10 +1,13 @@
 """Hub read API for the Cabinet / Office climate overlay chart.
 
-One window, four series on a shared time grid, each read from the table its own strip
+One window, five series on a shared time grid, each read from the table its own strip
 already uses:
 
 - ``office_temp_c``: ``office_env_sample`` (pan-1 SHT40).
 - ``cabinet_temp_c``: ``orion_biometrics_summary.measurements.cabinet_temp_c`` (Nano BME680).
+- ``closet_temp_c``: ``closet_env_sample`` (pan-1 closet SCD40, above the server cabinet).
+  Temperature only; the closet CO2 stays on its own strip. A not-yet-created table
+  reads as no rows, like the closet strip itself.
 - ``outdoor_temp_c``: ``prediction_weather_hourly`` observed hours (Open-Meteo, stored in °F).
 - ``orion_watts``: per-bucket mean wall watts of every node in ``orion_biometrics_cluster``
   plus the cabinet cooling plug (``home_cooling_sample``) -- the same sources the Orion
@@ -26,6 +29,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from fastapi import APIRouter, HTTPException, Query
 
 from .cabinet_ambient_routes import _iso_utc, biometrics_summary_cutoff, parse_window
+from .closet_env_routes import _is_undefined_table
 from .settings import settings
 
 logger = logging.getLogger(__name__)
@@ -36,12 +40,18 @@ router = APIRouter(prefix="/api/cabinet/climate", tags=["cabinet-climate"])
 _GRAIN_SEC = {"24h": 300, "3d": 900, "7d": 1800}
 WEATHER_GRAIN_SEC = 3600
 
-SERIES = ("office_temp_c", "cabinet_temp_c", "outdoor_temp_c", "orion_watts")
+SERIES = ("office_temp_c", "cabinet_temp_c", "closet_temp_c", "outdoor_temp_c", "orion_watts")
 
 _OFFICE_SQL = """
 SELECT date_bin(make_interval(secs => $3), ts, 'epoch') AS t, avg(office_temp_c) AS v
 FROM office_env_sample
 WHERE node = $1 AND ts >= $2 AND office_temp_c IS NOT NULL
+GROUP BY 1 ORDER BY 1
+"""
+_CLOSET_SQL = """
+SELECT date_bin(make_interval(secs => $3), ts, 'epoch') AS t, avg(closet_temp_c) AS v
+FROM closet_env_sample
+WHERE node = $1 AND ts >= $2 AND closet_temp_c IS NOT NULL
 GROUP BY 1 ORDER BY 1
 """
 # ``timestamp`` is varchar here; $2 is a biometrics_summary_cutoff() string.
@@ -108,6 +118,7 @@ async def query_series_rows(*, hours: int, grain_sec: int) -> dict[str, Any]:
             _CABINET_SQL,
             (str(settings.CABINET_AMBIENT_HISTORY_NODE), biometrics_summary_cutoff(since), float(grain_sec)),
         ),
+        "closet_temp_c": (_CLOSET_SQL, (str(settings.OFFICE_ENV_NODE), since, float(grain_sec))),
         "outdoor_temp_c": (_OUTDOOR_SQL, (since,)),
         "orion_watts": (_WATTS_SQL, (since, float(grain_sec))),
     }
@@ -118,7 +129,8 @@ async def query_series_rows(*, hours: int, grain_sec: int) -> dict[str, Any]:
             try:
                 out[key] = list(await connection.fetch(sql, *args))
             except Exception as exc:  # noqa: BLE001
-                out[key] = exc
+                # Hub can deploy before sql-writer creates closet_env_sample: no rows yet.
+                out[key] = [] if key == "closet_temp_c" and _is_undefined_table(exc) else exc
     finally:
         await connection.close()
     return out

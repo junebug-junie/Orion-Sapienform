@@ -41,9 +41,11 @@ class Clock:
         self.arousal = None
         self.arousal_calls = 0
         self.now = NOW
+        self.read_lag = timedelta(0)
 
     def activity(self) -> VisualActivityV1:
-        return VisualActivityV1(history_status="ok", observed_at=self.now, last_success_at=self.last_success_at,
+        return VisualActivityV1(history_status="ok", observed_at=self.now + self.read_lag,
+                                last_success_at=self.last_success_at,
                                 last_success_chain_id="chain-1" if self.last_success_at else None,
                                 last_success_sha256="a" * 64 if self.last_success_at else None,
                                 active_attempt_id=self.active)
@@ -104,7 +106,7 @@ def _trigger(clock: Clock, *, submit_error=None, gate=None, legacy=False):
 
 
 def _tick(t, now):
-    t.clock.now = now   # the activity is observed at the tick's own time, as live
+    t.clock.now = now   # the activity is observed at the tick's time (+ read_lag, as live)
     return asyncio.run(t.tick(now))
 
 
@@ -457,3 +459,23 @@ async def test_the_want_is_released_when_its_run_ends(monkeypatch, step, status,
     visual_steps._release_self_start_want(req, res)
     await asyncio.sleep(0.01)
     assert calls == (["want-1"] if released else [])
+
+
+def test_activity_read_after_the_tick_clock_still_paints():
+    """Live order (2026-11-05 regression): the tick takes `now`, THEN reads the activity, whose
+    observed_at defaults to the read time -- a few ms later. A negative age used to read as stale on
+    every tick, and Orion did not paint at all after the deploy."""
+    clock = Clock()
+    clock.read_lag = timedelta(milliseconds=600)
+    t, sent, _ = _trigger(clock)
+    assert _tick(t, NOW) == "submitted"
+    assert len(sent) == 1
+
+
+def test_an_activity_far_in_the_future_is_still_refused_as_stale():
+    """Only a local read lag (<= 5 s) moves the clock; a skewed observed_at must not push deadlines."""
+    clock = Clock()
+    clock.read_lag = timedelta(seconds=30)
+    t, sent, _ = _trigger(clock)
+    assert _tick(t, NOW) == "visual_activity_unavailable_or_stale"
+    assert sent == []

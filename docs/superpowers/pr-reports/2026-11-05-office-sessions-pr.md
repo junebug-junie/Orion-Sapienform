@@ -212,6 +212,6 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
 
 ## PR link
 
-PLACEHOLDER_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3132
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

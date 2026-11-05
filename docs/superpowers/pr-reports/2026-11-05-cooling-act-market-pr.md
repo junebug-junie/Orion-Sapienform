@@ -292,6 +292,12 @@ A code-review subagent read the whole diff, ran the suites and pulled 30 days of
 - Finding: the replay docstring overstated what it runs. Fix: reworded (and stated above).
 - Finding: CI path filters missed `orion/autonomy/contrast.py`, `prediction.py` and
   `orion/substrate/bus_synaptic_surprise.py`. Fix: added to both path blocks.
+- Finding (CI, spotted by Juniper): the body-atlas wire eval (`orion/body_atlas/evals/run_wire_eval.py`)
+  failed `true facts missed: [('orion-proposal-runtime', 'http://hardware-watch:8131/health')]`. The
+  hardware-watch `/health` call moved with the act.
+  - Fix: the hand-checked fact now names `orion-durable-runs` (`app/cooling_act.py` `read_hardware_watch`).
+  - Evidence: the scanner finds it ("scanner facts: PASS"), all four "mutations must fail" lanes are still
+    CAUGHT, `orion/body_atlas/tests` 229 passed, and the organ-structure and capacity-roles evals pass.
 - Not fixed (low, same as the old dispatch path): after a failed precommit or control write, the next tick
   can post a new event and draw again. A DB blip can change one moment's arm. Recorded here.
 - Not fixed, by plan: the spec this PR cites lives on PR #3121 (docs only); merge #3121 first or with this

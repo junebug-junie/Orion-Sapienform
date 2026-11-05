@@ -20,8 +20,9 @@
  *
  * CCS811: eCO2 is an estimate derived from VOCs, not a CO2 measurement.
  *   `air.since_init_ms` lets the host drop the 20-minute conditioning period.
- * PMSA003I: values are sent only 30 s after each sensor start (datasheet: the fan
- *   needs 30 s before data is stable). CF=1 "standard" values, same as Athena.
+ * PMSA003I: read between frames; the newest good reading is sent while < 3 s old. Values
+ *   are sent only 30 s after its fan starts (datasheet). A sensor that answers but stops
+ *   reading for 10 s is restarted. CF=1 "standard" values, same as Athena.
  * TSL2591: gain is auto-ranged. A reading saturated even at the lowest gain sends
  *   `light.saturated=true` with no lux (too bright to measure, not zero light). A reading
  *   too dark for the current gain (full == 0) also has no lux; the gain steps up.
@@ -55,6 +56,11 @@ static constexpr uint32_t CCS_CONDITIONING_MS = 20UL * 60UL * 1000UL;
 static constexpr uint32_t CCS_POLL_INTERVAL_MS = 250;
 // PMSA003I datasheet: data is stable 30 s after the fan starts.
 static constexpr uint32_t PM_STABLE_MS = 30000;
+// The PMSA003I makes a new reading about once a second. A good reading older than this is
+// not reported; no good reading for PM_STALL_REINIT_MS restarts the driver.
+static constexpr uint32_t PM_MAX_READING_AGE_MS = 3000;
+static constexpr uint32_t PM_STALL_REINIT_MS = 10000;
+static constexpr uint32_t PM_POLL_INTERVAL_MS = 250;
 // SCD40 makes a reading every 5 s; one older than this is not reported.
 static constexpr uint32_t SCD_MAX_READING_AGE_MS = 15000;
 static constexpr uint32_t SCD_POLL_INTERVAL_MS = 1000;
@@ -84,7 +90,17 @@ static uint32_t ccs_init_ms = 0, ccs_read_ms = 0, ccs_last_poll_ms = 0;
 static bool ccs_have_reading = false, ccs_conditioned = false;
 static uint16_t ccs_eco2 = 0, ccs_tvoc = 0;
 
-static uint32_t pm_init_ms = 0;
+// Fan start (power-up or the sensor reappearing on the bus). A restart of a sensor that
+// stayed powered does NOT reset it: the fan never stopped.
+static uint32_t pm_fan_start_ms = 0;
+static bool pm_fan_known = false;
+static bool pm_driver = false;
+// Latched once the fan has run PM_STABLE_MS, so a millis() wrap (~49.7 days) cannot close
+// the gate again (same idea as ccs_conditioned).
+static bool pm_fan_settled = false;
+static uint32_t pm_read_ms = 0, pm_last_try_ms = 0;
+static bool pm_have_reading = false;
+static uint16_t pm_1 = 0, pm_25 = 0, pm_10 = 0;
 
 // TSL2591 auto-range ladder, low to high sensitivity.
 static const tsl2591Gain_t kTslGains[] = {TSL2591_GAIN_LOW, TSL2591_GAIN_MED, TSL2591_GAIN_HIGH,
@@ -152,8 +168,25 @@ static bool init_ccs811() {
 
 static bool init_pmsa003i() {
   pm_ch = find_channel(PM_ADDR);
-  if (!select_channel(pm_ch) || !pm.begin_I2C(&Wire)) return false;
-  pm_init_ms = millis();
+  if (!select_channel(pm_ch)) return false;
+  // Adafruit PM25 AQI 2.0 begin_I2C() returns false on EVERY call after the first (it
+  // refuses when its driver object already exists), so the driver is created once and a
+  // restart only re-finds the channel. Calling it again killed particulates until the Nano
+  // rebooted (live 2026-11-05).
+  if (!pm_driver) {
+    // The driver object is created even when begin_I2C's own probe NACKs and it returns
+    // false, so it counts as created either way; our probe below decides.
+    pm.begin_I2C(&Wire);
+    pm_driver = true;
+  }
+  if (!probe(PM_ADDR)) return false;
+  if (!pm_fan_known) {
+    pm_fan_start_ms = millis();
+    pm_fan_known = true;
+    pm_fan_settled = false;
+  }
+  pm_have_reading = false;
+  pm_read_ms = millis();  // the stall clock starts now
   return true;
 }
 
@@ -204,6 +237,29 @@ static void poll_ccs811(uint32_t now) {
   ccs_tvoc = ccs.getTVOC();
   ccs_read_ms = now;
   ccs_have_reading = true;
+}
+
+// Read the PMSA003I between frames, so one failed read (bad header or checksum) does not
+// drop a frame's particulates. A read that keeps failing while the sensor still answers
+// on the bus (seen live 2026-11-05: 30 min of no particulate) restarts the driver.
+static void poll_pmsa003i(uint32_t now) {
+  if (!pm_ok || now - pm_last_try_ms < PM_POLL_INTERVAL_MS) return;
+  pm_last_try_ms = now;
+  PM25_AQI_Data data;
+  // About 2 in 5 reads land mid-update and come back cut short (0xFF padding); the sensor
+  // can NACK a probe at that moment too. One miss is never treated as a lost sensor.
+  if (select_channel(pm_ch) && pm.read(&data)) {
+    pm_1 = data.pm10_standard;
+    pm_25 = data.pm25_standard;
+    pm_10 = data.pm100_standard;
+    pm_read_ms = now;
+    pm_have_reading = true;
+  } else if (now - pm_read_ms > PM_STALL_REINIT_MS) {
+    pm_ok = false;  // no good read for 10 s: back to the retry path
+    pm_have_reading = false;
+    // Gone from the bus means unplugged or unpowered, so its fan restarts too.
+    if (!select_channel(pm_ch) || !probe(PM_ADDR)) pm_fan_known = false;
+  }
 }
 
 static void poll_scd40(uint32_t now) {
@@ -275,12 +331,11 @@ void setup() {
 void loop() {
   static uint32_t last_frame_ms = 0;
   static uint32_t last_init_try_ms = 0;
-  const uint32_t now = millis();
 
   // A sensor missing at boot (or dropped off the bus) is retried, never given up on.
   if ((!sht_ok || !ccs_ok || !pm_ok || !tsl_ok || !scd_ok) &&
-      now - last_init_try_ms >= REINIT_INTERVAL_MS) {
-    last_init_try_ms = now;
+      millis() - last_init_try_ms >= REINIT_INTERVAL_MS) {
+    last_init_try_ms = millis();
     if (!sht_ok) sht_ok = init_sht40();
     if (!ccs_ok) ccs_ok = init_ccs811();
     if (!pm_ok) pm_ok = init_pmsa003i();
@@ -288,7 +343,13 @@ void loop() {
     if (!scd_ok) scd_ok = init_scd40();
   }
 
+  // Read the clock AFTER the inits: they stamp ccs_init_ms / pm_read_ms / scd_read_ms with
+  // millis(), and a `now` taken before them makes `now - stamp` wrap to ~4e9, so a sensor
+  // that just recovered was dropped again in the same pass, forever (review 2026-11-05).
+  const uint32_t now = millis();
+
   poll_ccs811(now);
+  poll_pmsa003i(now);
   poll_scd40(now);
 
   if (now - last_frame_ms < FRAME_INTERVAL_MS) return;
@@ -324,20 +385,12 @@ void loop() {
     air["since_init_ms"] = since_init;
   }
 
-  if (pm_ok) {
-    PM25_AQI_Data data;
-    if (!select_channel(pm_ch)) {
-      pm_ok = false;
-    } else if (pm.read(&data)) {
-      if (now - pm_init_ms >= PM_STABLE_MS) {
-        JsonObject part = doc.createNestedObject("particulate");
-        part["pm1_ug_m3"] = data.pm10_standard;
-        part["pm25_ug_m3"] = data.pm25_standard;
-        part["pm10_ug_m3"] = data.pm100_standard;
-      }
-    } else if (!probe(PM_ADDR)) {
-      pm_ok = false;  // gone from the bus; a checksum miss alone just skips this frame
-    }
+  if (pm_ok && pm_have_reading && now - pm_read_ms <= PM_MAX_READING_AGE_MS &&
+      (pm_fan_settled || (pm_fan_settled = now - pm_fan_start_ms >= PM_STABLE_MS))) {
+    JsonObject part = doc.createNestedObject("particulate");
+    part["pm1_ug_m3"] = pm_1;
+    part["pm25_ug_m3"] = pm_25;
+    part["pm10_ug_m3"] = pm_10;
   }
 
   if (tsl_ok) add_light(doc);

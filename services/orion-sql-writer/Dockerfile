@@ -19,7 +19,9 @@ COPY config/vision_zones.yaml /app/config/vision_zones.yaml
 COPY config/vision_topology.yaml /app/config/vision_topology.yaml
 # People Orion knows by name and stated pronouns (app/person_record.py,
 # orion/person_model/person.py resolves it as /app/config/person_model/people.yaml).
-COPY config/person_model/people.yaml /app/config/person_model/people.yaml
+# The whole folder: people.yaml, and camera_priors.example.yaml plus its gitignored
+# camera_priors.local.yaml when the build checkout has one (orion/person_model/camera_priors.py).
+COPY config/person_model/ /app/config/person_model/
 # Act energy cost (orion/grammar/act_energy_fill.py): card -> host/nvidia-smi index, and the heat fit.
 COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml

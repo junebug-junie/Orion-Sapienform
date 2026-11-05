@@ -8,7 +8,7 @@ TRUNCATEs the walkway tables -- e.g.:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
     for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1 \\
-             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 person_record_v1; do
+             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 vision_person_basis_v1 person_record_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_vision_person_model.py
 """
@@ -865,3 +865,103 @@ def test_not_a_person_names_come_from_the_person_record(pg) -> None:
     # The linked label (not just the row's own name) counts; a revoked link and a
     # name an active person also carries do not.
     assert names == frozenset({"halloween decor", "skeleton", "ups delivery"})
+
+
+# --- camera priors (2026-11-04, the office camera: "99% of the time it is me in there") ---
+
+import dataclasses as _dc
+
+PRIORS = {"cam0": {"Juniper": 0.97, "Sibling": 0.01}}
+
+
+def _on(stream: str, crops):
+    return [_dc.replace(c, stream=stream) for c in crops]
+
+
+def _office_world():
+    """Juniper's and Sibling's albums are walkway crops; an office crop scores
+    higher against Sibling's (clothes and light), as on her first office visit."""
+    album = {
+        "Juniper": {1: _on("walkway", [_crop("j1", "jc", "2026-10-01", _vec(1, 0.6))])},
+        "Sibling": {1: _on("walkway", [_crop("s1", "sc", "2026-10-01", _vec(1, 0.1))])},
+    }
+    bars = {("Juniper", "body"): pm.Bar("Juniper", "body", None, None, 29, 1500),
+            ("Sibling", "body"): pm.Bar("Sibling", "body", None, None, 272, 1500)}
+    office = {"o1": _on("cam0", [_crop("o1a", "o1", "2026-11-05", _vec(1, 0.05))])}
+    return album, bars, office
+
+
+def test_office_guess_follows_the_prior_when_no_match_is_confident() -> None:
+    album, bars, office = _office_world()
+    (raw,) = pm.attribute(office, album, bars, {}, CFG)
+    assert raw["person_label"] == "Sibling" and raw["basis"] == "evidence"   # what happened on 11-05
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Juniper" and g["band"] == "unsure" and g["basis"] == "prior"
+
+
+def test_a_confident_match_beats_the_prior() -> None:
+    album, bars, office = _office_world()
+    bars[("Sibling", "body")] = pm.Bar("Sibling", "body", 0.5, None, 272, 1500)   # armed, and the crop clears it
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Sibling" and g["band"] == "accept" and g["basis"] == "evidence"
+
+
+def test_an_outdoor_reject_bound_cannot_rule_her_out_in_the_office() -> None:
+    album, bars, office = _office_world()
+    bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)   # learned outdoors
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Juniper" and g["basis"] == "prior"
+    # Once her album holds an office crop, the bound is in-camera and counts.
+    album["Juniper"][1].append(_on("cam0", [_crop("j2", "jo", "2026-11-05", _vec(0, 1))])[0])
+    (g2,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g2["person_label"] == "Sibling" and g2["basis"] == "prior"
+
+
+def test_prior_names_match_album_names_ignoring_case_and_other_cameras_are_unchanged() -> None:
+    album, bars, office = _office_world()
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors={"cam0": {"juniper ": 0.97}})
+    assert g["person_label"] == "Juniper" and g["basis"] == "prior"
+    walk = {"w1": _on("walkway", office["o1"])}
+    (w,) = pm.attribute(walk, album, bars, {}, CFG, priors=PRIORS)
+    assert w["person_label"] == "Sibling" and w["basis"] == "evidence"
+
+
+def test_a_name_she_ruled_out_is_never_the_prior_guess() -> None:
+    album, bars, office = _office_world()
+    (g,) = pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Sibling" and g["basis"] == "prior"
+
+
+def test_camera_priors_file_example_and_local_first(tmp_path) -> None:
+    from orion.person_model.camera_priors import load_camera_priors
+
+    ex = tmp_path / "camera_priors.example.yaml"
+    ex.write_text("streams:\n  cam0:\n    Juniper: 0.97\n")
+    assert load_camera_priors(ex) == {"cam0": {"Juniper": 0.97}}
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("streams:\n  cam0:\n    A: 0.8\n    B: 0.5\n")
+    with pytest.raises(ValueError):
+        load_camera_priors(bad)
+    assert load_camera_priors(tmp_path / "missing.yaml") == {}
+
+
+@needs_pg
+def test_write_attributions_stores_basis_and_works_without_the_column(pg) -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    now = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc)
+    g = {"individual_id": "o1", "person_label": "Juniper", "channel": "body", "score": 0.7, "band": "unsure",
+         "basis": "prior"}
+    with pg.begin() as conn:
+        pm.write_attributions(conn, [g], now)
+        assert conn.execute(text("SELECT basis FROM vision_person_attribution WHERE individual_id='o1'")).scalar() == "prior"
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN basis"))
+        try:
+            pm.write_attributions(conn, [{**g, "individual_id": "o2"}], now)   # before the migration: still lands
+            assert conn.execute(text(
+                "SELECT count(*) FROM vision_person_attribution WHERE individual_id='o2'")).scalar() == 1
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS basis text"))

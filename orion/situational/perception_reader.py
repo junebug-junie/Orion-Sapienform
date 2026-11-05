@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, NamedTuple, Sequence
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 from orion.situational.street_material import (
     REDUCER_EVENT_TYPES_SQL,
@@ -854,6 +854,7 @@ def _who_line(
     if props is None:
         props = {"person": people_props}
     named: list[str] = []
+    guessed: dict[str, str] = {}
     seen_names: set[str] = set()
     named_by_kind: dict[str, set[str]] = {}
     # kind -> distinct_days per individual, in first-seen (most recent) order.
@@ -871,6 +872,13 @@ def _who_line(
                 named.append(label)
             named_by_kind.setdefault(str(row.get("kind") or "").strip(), set()).add(label.casefold())
             continue
+        guess = str(row.get("guess") or "").strip()
+        if guess:
+            # The camera's prior chose this name (office camera): a guess, said as one.
+            # It counts like a name in the people range (it is that person, probably).
+            guessed.setdefault(guess.casefold(), guess)
+            named_by_kind.setdefault(str(row.get("kind") or "").strip(), set()).add("guess:" + guess.casefold())
+            continue
         kind = str(row.get("kind") or "").strip() or "something"
         try:
             days = int(row.get("distinct_days") or 0)
@@ -881,8 +889,20 @@ def _who_line(
         else:
             new[kind] = new.get(kind, 0) + 1
 
+    # A guess never hides a second person: when one window held more of a kind
+    # than the names and guesses listed, the rest are still people Orion does not
+    # know, even if every record of that kind carries the prior's guess.
+    if guessed and peaks is not None:
+        for kind, keys in named_by_kind.items():
+            if kind in _LIVING_KINDS and kind not in recurring and kind not in new \
+                    and int(peaks.get(kind, 0) or 0) > len(keys):
+                new[kind] = 0
     # (phrase, how many individuals it stands for; None = a range, no count)
     phrases: list[tuple[str, int | None]] = [(name, 1) for name in named]
+    phrases += [
+        (f"probably {name} (my guess from who is usually here, not confirmed)", 1)
+        for key, name in guessed.items() if key not in seen_names
+    ]
     # One kind stays together: its recurring phrase, then its new one.
     kinds = list(recurring) + sorted(k for k in new if k not in recurring)
     for living in (True, False):
@@ -1207,6 +1227,32 @@ def _street_rows(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> li
         return None
 
 
+# Prior guesses (2026-11-04, office camera): the person model's guess for an
+# unnamed individual when the camera's prior chose the name (basis = 'prior',
+# config/person_model/camera_priors.*.yaml) -- "probably Juniper", because she is
+# almost always the one in the office. Only these are shown; a guess the scores
+# chose stays unshown, as before (names otherwise appear only when Juniper gave
+# them). Own statement, own failure: before the basis column exists it fails and
+# the line reads as before.
+_STREET_PRIOR_GUESSES_SQL = text(
+    "SELECT DISTINCT ON (a.individual_id) a.individual_id, a.person_label "
+    "FROM vision_person_attribution a "
+    "WHERE a.individual_id IN :ids AND a.revoked_at IS NULL "
+    "  AND a.band = 'unsure' AND a.basis = 'prior' "
+    "ORDER BY a.individual_id, a.decided_at DESC"
+).bindparams(bindparam("ids", expanding=True))
+
+
+def _read_prior_guesses(conn: Any, sightings: list[dict[str, Any]] | None) -> dict[str, str]:
+    """individual id -> prior-chosen name, for the unnamed individuals sighted."""
+    ids = sorted({str(r.get("individual_id")) for r in sightings or []
+                  if r.get("individual_id") and not str(r.get("label") or "").strip()})
+    if not ids:
+        return {}
+    rows = _street_rows(conn, _STREET_PRIOR_GUESSES_SQL, {"ids": ids}, "prior_guesses")
+    return {str(r["individual_id"]): str(r["person_label"]).strip() for r in rows or [] if r.get("person_label")}
+
+
 def _read_individual_windows(
     conn: Any, expectations: list[dict[str, Any]] | None, window: Mapping[str, Any]
 ) -> dict[str, dict[str, Any]] | None:
@@ -1289,6 +1335,9 @@ def fetch_street_summary(
                 sightings = _street_rows(
                     conn, _STREET_SIGHTINGS_PRE_STATIONARY_SQL, sightings_params, "sightings_pre_stationary"
                 )
+            guesses = _read_prior_guesses(conn, sightings)
+            if guesses and sightings:
+                sightings = [{**r, "guess": guesses.get(str(r.get("individual_id")))} for r in sightings]
             expectations = _street_rows(
                 conn, _STREET_EXPECTATIONS_SQL,
                 {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},

@@ -175,6 +175,11 @@ class PaintingSelfStart:
         if self._legacy_worker_enabled():
             return self._done(now, "legacy_visual_worker_enabled")
         activity = await asyncio.to_thread(self._load_activity)
+        # The activity is read AFTER the tick's clock was taken, so its observed_at is a little later
+        # than `now`. schedule() refuses a negative age as stale, which held every tick live from the
+        # 2026-11-05 deploy until this fix. Decide at the later of the two instants.
+        if activity.observed_at > now:
+            now = activity.observed_at
         eligibility, reason = await asyncio.to_thread(
             self._baseline_eligibility, activity, now=now, policy=policy, arousal_level=self._arousal_level)
         if eligibility is None:

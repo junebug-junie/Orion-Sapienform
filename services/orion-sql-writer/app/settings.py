@@ -664,6 +664,22 @@ class Settings(BaseSettings):
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
 
+    # Office sessions (app/vision_office_sessions.py, app/vision_office_sessions_loop.py; office camera
+    # design PR #3127 step B). One row per visit to a room camera: span, who (probably), activity
+    # timeline. The Temporal Self labels the office company arc from it; an unknown person opens the
+    # "Who is this?" card right away. false = the reducer does not run.
+    vision_office_sessions_enabled: bool = Field(True, alias="VISION_OFFICE_SESSIONS_ENABLED")
+    vision_office_sessions_interval_sec: float = Field(60.0, ge=0.0, alias="VISION_OFFICE_SESSIONS_INTERVAL_SEC")
+    # Room streams that get sessions (comma-separated presence ids).
+    vision_office_sessions_streams: str = Field("cam0", alias="VISION_OFFICE_SESSIONS_STREAMS")
+    # A visit becomes final this long after it ended: longer than VISION_PERSON_MODEL_INTERVAL_SEC,
+    # so the person model has guessed every record before "who" is fixed.
+    vision_office_sessions_settle_sec: float = Field(660.0, ge=0.0, alias="VISION_OFFICE_SESSIONS_SETTLE_SEC")
+    vision_office_sessions_lookback_hours: float = Field(24.0, gt=0.0, alias="VISION_OFFICE_SESSIONS_LOOKBACK_HOURS")
+    # "Who is this?" asks opened by office sessions per local day (one per session at most). 0 = none.
+    # Separate from ORION_ASK_DAILY_CAP (the street rule), which does not count them.
+    vision_office_ask_daily_cap: int = Field(4, ge=0, alias="VISION_OFFICE_ASK_DAILY_CAP")
+
     # Walkway motion stories (app/vision_motion.py, app/vision_motion_loop.py;
     # docs/superpowers/specs/2026-10-16-walkway-motion-stories-proposal.md).
     # One plain sentence per passing thing, from box maths. HUB ONLY until

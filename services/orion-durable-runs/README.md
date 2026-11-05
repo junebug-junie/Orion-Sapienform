@@ -858,6 +858,16 @@ replay: `python -P services/orion-durable-runs/evals/run_street_episode_replay.p
 source is not read and episodes are room-only again. Deploy order: orion-thought and orion-hub before
 this service (the `street` arc kind is new to `extra="forbid"` frame readers).
 
+**Office sessions (2026-11-05, office camera design PR #3127 step B).** The chronicle reads orion-sql-writer's
+`vision_office_session` (migration `manual_migration_vision_office_session_v1.sql`, REQUIRED-BY sql-writer)
+as source `office_session`: FINAL rows only (`status = 'closed'`), available at `closed_at` (a row is final
+660 s after the visit ended). It adds no arc: it relabels today's closed office `company` arc that overlaps
+it most, e.g. "Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a cabinet",
+and records `vision_office_session:<id>` in the arc's `related_refs`. The read is skipped while the table is
+missing. Known limit: a visit that becomes final after local midnight finds no arc (yesterday's arcs are
+already drained) and labels nothing. Kill switch: `TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED` (ON). No new arc kind
+or schema field reaches frame readers (only a label), so there is no deploy order.
+
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 

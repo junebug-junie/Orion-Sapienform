@@ -2127,7 +2127,10 @@ ASKED_TODAY_SQL = (
     "AND created_at >= :d "
     "AND NOT (evidence_refs @> CAST(:face AS jsonb)) "
     # A name Juniper typed on a walkway story card is not a question Orion asked (2026-10-18).
-    "AND NOT coalesce(answer_detail ? 'story_id', false)"
+    "AND NOT coalesce(answer_detail ? 'story_id', false) "
+    # Office sessions open their own "who is this?" under VISION_OFFICE_ASK_DAILY_CAP
+    # (app/vision_office_sessions.py OFFICE_RULE_REF, 2026-11-05).
+    "AND NOT (evidence_refs @> '[\"rule:office_session\"]'::jsonb)"
 )
 # "Is this <name>?" asks have their own cap (person_confirm_ask_daily_cap). Until
 # 2026-10-22 they shared ask_daily_cap with the slow rule, which opens first and

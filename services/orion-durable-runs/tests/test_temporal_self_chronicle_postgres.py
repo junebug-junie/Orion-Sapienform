@@ -509,3 +509,43 @@ def test_one_visit_is_one_arc_late_written_stories_fold_and_names_say_where_they
             assert (await cur.fetchone())["n"] == 0  # the late-written story folded, nothing stored late
 
     with_db(scenario_fn)
+
+
+def test_office_session_labels_the_office_company_arc_and_the_flag_and_a_missing_table_read_nothing():
+    """Office sessions (office camera design PR #3127 step B) on real Postgres: the reader returns only
+    FINAL room rows (an open row and another camera's row stay out), the chronicle relabels the office
+    company arc of the same visit, the flag's off path reads nothing, and a database without the table
+    skips the source instead of failing the whole read."""
+    async def scenario_fn(pool):
+        w = scenario()
+        start = T0 + timedelta(minutes=2)
+        for n, (to, frm, m) in enumerate((("present", "absent", 0), ("recent", "present", 8), ("absent", "recent", 10))):
+            w.add("presence_transition", {"transition_id": f"tr-{n}", "presence_id": "cam0", "from_state": frm,
+                                          "to_state": to, "occurred_at": start + timedelta(minutes=m),
+                                          "identity_confirmed": False, "label": None})
+        label = "Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a cabinet"
+        base = {"session_id": "cam0-tr-0", "stream_id": "cam0", "status": "closed", "started_at": start,
+                "last_seen_at": start + timedelta(minutes=8), "ended_at": start + timedelta(minutes=8),
+                "end_reason": "left", "closed_at": start + timedelta(minutes=19), "who_text": "Juniper (probably)",
+                "who": {"text": "Juniper (probably)"}, "unknown_people": 0, "timeline": [], "label": label,
+                "individual_ids": [], "image_refs": [], "evidence_refs": [], "ask_id": None}
+        w.add("office_session", base)
+        async with pool.connection() as conn:
+            await fdb.insert(conn, "vision_office_session", [
+                dict(base, session_id="cam0-open", status="open", closed_at=None, ended_at=None),
+                dict(base, session_id="walkway-x", stream_id="walkway")])
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["office_session"])
+        assert [e.event_id for e in events] == ["office_session:cam0-tr-0"]
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "company"]
+        assert arc["subject_label"] == label and arc["status"] == "closed"
+        assert "vision_office_session:cam0-tr-0" in arc["related_refs"]
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("office_session",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "office_session"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE vision_office_session")
+        _, gone = await SourceReader(pool, TZ).read(lo, hi, ticks=False)
+        assert not [e for e in gone if e.source_kind == "office_session"]
+
+    with_db(scenario_fn)

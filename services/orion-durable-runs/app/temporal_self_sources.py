@@ -256,6 +256,14 @@ SELECT 'street_event' AS origin, event_id, handoff_id, event, created_at
 FROM vision_handoff_street_outbox
 WHERE created_at >= %(lo)s AND kind IN ('handoff_met', 'handoff_late', 'handoff_missed')
 """, slack=timedelta(minutes=10), optional_table="vision_handoff_street_outbox"),
+    # Office sessions (office camera design PR #3127 step B): one FINAL row per visit to a room camera
+    # (orion-sql-writer app/vision_office_sessions.py). Available at closed_at (when the row became
+    # final, never rewritten after), so the window is on closed_at and needs no slack.
+    SourceQuery("office_session", """
+SELECT session_id, stream_id, status, started_at, ended_at, closed_at, who_text, label, unknown_people, ask_id
+FROM vision_office_session
+WHERE status = 'closed' AND closed_at >= %(lo)s AND closed_at < %(hi)s AND stream_id = ANY(%(room_streams)s)
+""", optional_table="vision_office_session"),
 )
 
 TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"

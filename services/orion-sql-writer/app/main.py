@@ -1243,6 +1243,15 @@ async def lifespan(app: FastAPI):
         ask_event_wants_task = asyncio.create_task(ask_event_wants_loop(settings))
     else:
         logger.info("ask event wants loop DISABLED (ASK_EVENT_WANTS_INTERVAL_SEC=0)")
+    # Office sessions: one row per visit to a room camera (app/vision_office_sessions_loop.py).
+    vision_office_sessions_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_office_sessions_enabled", False)) and float(
+            getattr(settings, "vision_office_sessions_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_office_sessions_loop import vision_office_sessions_loop
+
+        vision_office_sessions_task = asyncio.create_task(vision_office_sessions_loop(settings))
+    else:
+        logger.info("vision office sessions DISABLED (VISION_OFFICE_SESSIONS_ENABLED=false or interval 0)")
 
     try:
         yield
@@ -1252,7 +1261,7 @@ async def lifespan(app: FastAPI):
                         vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task, world_settlement_task,
                         vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task,
                         orion_energy_attribution_task, vision_hourly_frames_task,
-                        act_downstream_use_task, ask_event_wants_task)
+                        act_downstream_use_task, ask_event_wants_task, vision_office_sessions_task)
             if t is not None
         ]
         for background in pending:

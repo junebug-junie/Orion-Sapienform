@@ -178,7 +178,8 @@ jobs:
           conn.cursor().execute(pathlib.Path("services/orion-sql-db/manual_migration_vision_osnet_shadow_v1.sql").read_text())
           for f in ("vision_split_v1", "vision_reanchor_v1", "vision_motion_story_v1",
                     "vision_motion_story_strip_v2", "vision_motion_story_edges_v1",
-                    "vision_person_album_v1", "vision_person_basis_v1", "vision_scene_inventory", "vision_handoff_v1"):
+                    "vision_person_album_v1", "vision_person_basis_v1", "vision_scene_inventory", "vision_handoff_v1",
+                    "vision_presence_transition_v1", "vision_office_session_v1"):
               body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
               for stmt in body.split(";"):
                   if stmt.strip():
@@ -197,6 +198,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_rollup.py \
             services/orion-sql-writer/tests/test_vision_handoff_pg.py \
             services/orion-sql-writer/tests/test_vision_hourly_frames_pg.py \
+            services/orion-sql-writer/tests/test_vision_office_sessions_pg.py \
             tests/scripts/test_vision_detection_rate_watch_pg.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2

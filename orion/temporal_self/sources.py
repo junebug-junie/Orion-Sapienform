@@ -799,6 +799,46 @@ def street_event(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | N
     return fn(row, tz_name) if fn else None
 
 
+# --------------------------------------------------------------------------- the office
+# Office sessions (office camera design PR #3127 step B): orion-sql-writer's vision_office_session
+# holds one row per visit to a room camera: span, who (probably), activity timeline. The final row
+# labels the office company arc ("Juniper (probably) in the office: sitting at a desk, opening a box;
+# reaching into a cabinet"). The label is the writer's own deterministic template (no model prose).
+
+# Words for the place a room stream looks at. Restated from orion-sql-writer
+# app/vision_office_sessions.py PLACE_WORDS; services/orion-sql-writer/tests fail if they disagree.
+ROOM_PLACE_WORDS = {"cam0": "the office"}
+
+
+def office_session(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """vision_office_session, FINAL rows only (``status = 'closed'``), room streams only. Time:
+    started_at .. ended_at, available at closed_at (``payload.available_at``: a row is final
+    VISION_OFFICE_SESSIONS_SETTLE_SEC after the visit ended, long after the company arc closed).
+    Subject: the stream (the company arc's own subject). Label: the row's label.
+
+    Payload: ``who`` (the who text), ``activities`` (the label after "in <place>: "), ``place``,
+    ``unknown_people``, ``ask_id`` -- what the reducer needs to relabel the arc, nothing else."""
+    stream = row.get("stream_id")
+    label = clip(row.get("label"))
+    if stream not in ROOM_STREAMS or row.get("status") != "closed" or not label or row.get("closed_at") is None:
+        return None
+    place = ROOM_PLACE_WORDS.get(str(stream), "")
+    head = f"in {place}: " if place else ""
+    activities = label.split(head, 1)[1] if head and head in label else ""
+    try:
+        unknown = int(row.get("unknown_people") or 0)
+    except (TypeError, ValueError):
+        unknown = 0
+    return _event(
+        kind="office_session", table="vision_office_session", ref=row.get("session_id"),
+        at=row.get("started_at"), ended=row.get("ended_at"), tz_name=tz_name, subject_ref=str(stream),
+        label=label,
+        payload={"who": clip(row.get("who_text")), "activities": activities, "place": place,
+                 "unknown_people": unknown, "ask_id": row.get("ask_id"),
+                 **_available_payload(row.get("closed_at"))},
+    )
+
+
 def _iso(value: Any) -> str | None:
     dt = as_utc(value)
     return dt.isoformat() if dt else None
@@ -829,6 +869,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "street_event": street_event,
     "body_binding": body_binding,
     "faculty_status_changed": faculty_status_changed,
+    "office_session": office_session,
 }
 
 

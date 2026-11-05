@@ -152,7 +152,8 @@ LANE_RULES = {
     "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
                 "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
-                "label only when identity was confirmed; spans days"),
+                "label only when identity was confirmed, or from the visit's final office_session row "
+                "(who, probably, and what they did) once the arc is closed; spans days"),
     "strain": ("arousal_transition (the regulation step's own rows); opens on strained, cause rows add to "
                "the label, keepalives (every 30 min) only refresh; closes on idle/engaged (process_ended) or "
                "unknown (source_stale); a strained row with a new episode start, a not-strained row after an "
@@ -218,13 +219,19 @@ def _add_context(arc: TemporalSelfArcV1, event_id: str) -> None:
         arc.context_event_ids.append(event_id)
 
 
+# Kinds whose row is written well after it ends: the adapter puts the write time in
+# ``payload.available_at``. Street stories (median 49 s, p99 20 min on 10-23) and office sessions
+# (final VISION_OFFICE_SESSIONS_SETTLE_SEC, 660 s, after the visit ended).
+AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session"})
+
+
 def event_available_at(e: TemporalSelfEventV1) -> datetime:
     """When the event could first be read: its end (a process event is emitted once complete), or
-    later when the adapter says the row was written later (``payload.available_at``, street events
-    only: a story is written a median 49 s after it ends, p99 20 min on 10-23). Ordering by the write
-    time is what lets a row written after the chronicle's read lag still fold, never arrive late."""
+    later when the adapter says the row was written later (``payload.available_at``, the
+    ``AVAILABLE_AT_KINDS`` only). Ordering by the write time is what lets a row written after the
+    chronicle's read lag still fold, never arrive late."""
     base = e.ended_at or e.occurred_at
-    written = e.payload.get("available_at") if e.source_kind == "street_event" else None
+    written = e.payload.get("available_at") if e.source_kind in AVAILABLE_AT_KINDS else None
     if written:
         try:
             t = as_utc(written)
@@ -702,6 +709,58 @@ def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None: 
         _end_company(state, arc, "source_stale", t)
 
 
+OFFICE_SESSION_REF = "vision_office_session:"
+
+
+def _overlap_sec(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> float:
+    return (min(a1, b1) - max(a0, b0)).total_seconds()
+
+
+def _fold_office_session(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """An office visit's final row labels today's CLOSED company arc of the same camera that overlaps
+    it most (a session and its arc are built from the same presence rows, so they cover the same
+    stretch). The label says who probably was there and what they did; an identity the presence row
+    confirmed keeps its name, the session adds the activities. The ref goes in ``related_refs``
+    (the session is not a presence row). No overlapping closed arc (the visit became final after
+    midnight, or its arc was never opened): nothing changes."""
+    start, end = e.occurred_at, e.ended_at or e.occurred_at
+    best: TemporalSelfArcV1 | None = None
+    best_key: tuple[float, datetime] | None = None
+    for arc in state.arcs.values():
+        if arc.kind != "company" or arc.subject_ref != e.subject_ref or arc.status != "closed":
+            continue
+        ov = _overlap_sec(arc.began_at, arc.ended_at or arc.last_seen_at, start, end)
+        if ov < 0 or (ov == 0 and end > start):
+            continue  # an arc that only touches the visit is another stretch
+        key = (ov, arc.began_at)
+        if best_key is None or key > best_key:
+            best, best_key = arc, key
+    if best is None:
+        return
+    ref = _ref(e)
+    if ref in best.related_refs:
+        return
+    # The arc's label so far came only from a confirmed presence row (no earlier session labelled it).
+    confirmed = bool(best.subject_label) and not any(r.startswith(OFFICE_SESSION_REF) for r in best.related_refs)
+    best.related_refs.append(ref)
+    activities = str(e.payload.get("activities") or "")
+    place = str(e.payload.get("place") or "")
+    if confirmed and place:
+        # A face match the presence row confirmed beats the camera prior: keep that name (never
+        # downgraded to "probably"), add anyone the session did not know, and what happened.
+        name = best.subject_label.strip()
+        who = name[:1].upper() + name[1:]
+        try:
+            unknown = int(e.payload.get("unknown_people") or 0)
+        except (TypeError, ValueError):
+            unknown = 0
+        if unknown:
+            who += " and " + ("someone I don't know" if unknown == 1 else f"{unknown} people I don't know")
+        best.subject_label = clip(f"{who} in {place}: {activities}" if activities else f"{who} in {place}")
+    else:
+        best.subject_label = e.label
+
+
 def _strain_arc(state: TemporalSelfStateV1) -> TemporalSelfArcV1 | None:
     for arc in state.arcs.values():
         if arc.kind == "strain" and arc.status == "open":
@@ -1087,6 +1146,8 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
         _fold_binding(state, e)
     elif k == "faculty_status_changed":
         _fold_faculty(state, e)
+    elif k == "office_session":
+        _fold_office_session(state, e)
     elif k in ("dream_hypothesis", "expectation_verdict", "action_outcome"):
         _fold_expectation(state, e)
         if k == "action_outcome":

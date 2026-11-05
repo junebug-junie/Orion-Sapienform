@@ -26,6 +26,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfFrameV1,
     TemporalSelfStateV1,
 )
+from orion.temporal_self.arcs import AVAILABLE_AT_KINDS
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_store")
 
@@ -169,7 +170,7 @@ class ChronicleStore:
 
     async def stored_available(self, event_ids: Iterable[str]) -> dict[str, datetime]:
         """Already-stored events -> the available time they were stored with (ended_at, else
-        occurred_at; a street event's ``available_at`` when later, the same rule as
+        occurred_at; a street event's or office session's ``available_at`` when later, the same rule as
         ``arcs.event_available_at``). Absent ids were never stored (the late probe's test)."""
         ids = sorted(set(event_ids))
         if not ids:
@@ -182,7 +183,7 @@ class ChronicleStore:
         out: dict[str, datetime] = {}
         for r in rows:
             t = datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else r["occurred_at"]
-            if r["source_kind"] == "street_event" and r["written"]:
+            if r["source_kind"] in AVAILABLE_AT_KINDS and r["written"]:
                 t = max(t, datetime.fromisoformat(r["written"]))
             out[r["event_id"]] = t
         return out

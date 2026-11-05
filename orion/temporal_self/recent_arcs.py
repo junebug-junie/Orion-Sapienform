@@ -31,6 +31,7 @@ from pydantic import ValidationError
 from orion.schemas.temporal_self import ArcSummaryV1, TemporalSelfFrameV1
 from orion.self_monitor.names import faculty_arc_words
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
+from orion.temporal_self.sources import ROOM_PLACE_WORDS
 from orion.temporal_self.stance_cue import (
     DEFAULT_MAX_AGE_SEC,
     MAX_FUTURE_SKEW_SEC,
@@ -69,6 +70,9 @@ def _what(arc: ArcSummaryV1) -> str:
         return f"played {label}"
     if arc.kind == "street":
         return f"saw {label}"  # the label already says "Outside (<camera>): ..."
+    if arc.kind == "company" and any(f" in {p}" in label for p in ROOM_PLACE_WORDS.values()):
+        # An office visit's label already says who and where: "Juniper (probably) in the office: ..."
+        return label
     if arc.kind == "faculty":
         return f"track record: {faculty_arc_words(arc.subject_ref, arc.subject_label)}"  # "<plain> (<id>) <status>"
     if arc.kind == "strain":

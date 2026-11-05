@@ -527,6 +527,7 @@ def _build_chronicle():
                                             ("body_binding", s.temporal_self_binding_arcs_enabled),
                                             ("retro_play", s.temporal_self_retro_play_enabled),
                                             ("street_event", s.temporal_self_street_episodes_enabled),
+                                            ("office_session", s.temporal_self_office_sessions_enabled),
                                             ("faculty_status_changed", s.self_monitor_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 

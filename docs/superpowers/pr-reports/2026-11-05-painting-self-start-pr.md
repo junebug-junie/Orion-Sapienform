@@ -225,13 +225,38 @@ generate-step bid. The replay is an eval, not a signal.
 ## Tests run
 
 ```text
-(filled in below)
+services/orion-thought: tests + evals (whole suite)                              867 passed, 32 skipped
+services/orion-thought/tests/test_painting_self_start.py                         31 passed (incl. the act-ledger end-to-end)
+services/orion-proposal-runtime/tests                                            8 passed
+services/orion-execution-dispatch-runtime/tests                                  128 passed
+services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py            9 passed
+tests/ + orion/{autonomy,proposals,policy,execution_dispatch,reverie,self_monitor,physiology}
+  branch vs a clean origin/main worktree, same machine:  main 70 failed / branch 67 failed (45 collection
+  errors on both: they need a database, FalkorDB or service installs). No new failure; 4 main failures
+  now pass (test_maintenance_dispatch_gating x2, test_self_study_analysis_wiring, test_visual_baseline_pipeline).
+orion/body_atlas/tests                                                            229 passed
+orion/self_monitor/tests                                                          126 passed
+CI workflow commands run locally (pip installs skipped): orion-static-gates (all OK after the fix to
+  tests/test_check_verb_physiology.py), visual-baseline (all OK), thinking-rung3 (all OK except
+  "Reading pull against Postgres", which needs the CI Postgres service), attend-act-loop (all OK),
+  body-atlas, dig-kit, body-economy-analysis, temporal-self(-readers), substrate-neighborhood (OK).
+  self-monitor, mind-tier-by-caller, self-readings, orion-prime: the same steps fail on clean origin/main
+  in this environment (they need installs or live stores); CI is the authority there.
+scripts/check_body_economy_contract.py   OK (101 state-reading modules)
+scripts/check_env_template_parity.py     PASS
+scripts/check_env_key_single_source.py   OK
 ```
 
 ## Evals run
 
 ```text
-(filled in below)
+python -P services/orion-thought/evals/painting_self_start_replay.py                 9/9 PASS (fixture)
+python -P services/orion-thought/evals/painting_self_start_replay.py --live --days 14  140 vs 129, ratio 1.085 (PASS)
+  ... --interval-sec 3600 / 4500 / 6300 / 7200                                        calibration table above
+python orion/body_atlas/evals/run_wire_eval.py      scanner facts 13/13, rules PASS, 4/4 mutations CAUGHT
+python orion/body_atlas/evals/run_organ_structure_eval.py / run_capacity_roles_eval.py   PASS
+python orion/autonomy/evals/run_rung3_replay_eval.py / run_rung3_reading_replay_eval.py  PASS
+python orion/autonomy/evals/run_attend_act_loop_eval.py                                  PASS
 ```
 
 ## Docker/build/smoke checks
@@ -247,7 +272,41 @@ UNVERIFIED on the live rail: no self-started painting yet (not deployed).
 
 ## Review findings fixed
 
-(filled in below)
+A code-review subagent read the whole diff, ran the suites, re-ran the live replay (140 vs 130 at its
+time, ratio 1.077) and checked the containers live (thought reaches durable-runs on `app-net`; the
+image has the baseline yaml). No blockers.
+
+- Finding (should-fix): no test tied the run's deadline to the act's 5,400 s horizon any more (the
+  deleted dispatch-route horizon test did).
+  - Fix: `test_the_run_deadline_is_the_painting_acts_horizon` builds the run from the shipped yaml and
+    asserts its deadline equals `visual_steps.PAINTING_HORIZON_SEC`.
+- Finding (should-fix): the trigger settles its shadow want `submitted` at the POST, so a funded
+  reservation was never released when the run later ended unpainted (27 of 167 in the replay).
+  - Fix: `visual_steps._release_self_start_want` releases the want (Patch C3a `release`) when a
+    self-started run ends, painted or not. Dream hops and dispatched runs are untouched.
+  - Evidence: `test_the_want_is_released_when_its_run_ends` (7 cases).
+- Finding (nit): the self-monitor gate's Redis and ledger reads ran on the event loop. Fix: both in
+  `asyncio.to_thread`.
+- Finding (nit): a failed submit still spent the 6 h probe. Fix: the probe is claimed only after the run
+  is registered. Evidence: `test_a_failed_submit_keeps_the_probe`.
+- Finding (nit): the receipt check was weaker than cortex-exec's kickoff, and a 409 read as
+  `unreachable`. Fix: `post_run` also checks `workflow_kind` and `requested_resource`, and reports
+  `http_<code>`.
+- Finding (nit): `physiology_shadow.py` said a painting's want_id is the act's correlation id. Fix:
+  reworded (a waking painting joins the act by `object_ref`).
+- Found by the local CI run: `tests/test_check_verb_physiology.py` read the painting verb's actor from the
+  dispatch route. Fix: it reads `PAINT_ACTOR` from the trigger.
+- Found by the body-atlas wire eval: the hand-checked facts `orion-proposal-runtime ->
+  http://orion-athena-thought:7155` and `orion-proposal-runtime reads orion:regulation:latest` are no longer
+  true. Fix: now `orion-thought -> http://orion-athena-durable-runs:8121` (the `POST /runs`), `orion-thought
+  reads orion:regulation:latest` and `orion-thought reads orion:self_monitor:latest` (the moved gate; it
+  keeps the "no Redis constructor" mutation caught). The old proposal-runtime call is now a false fact.
+- Not fixed, said plainly:
+  - Two runs can be submitted for one need when the first waits more than 600 s for its claim (behind
+    a dream hop). The later one ends `already_satisfied` and never reaches the GPU (6 in the replay; the
+    old ladder had the same behaviour).
+  - `GET /visual-chain/activity` and cortex-exec's `CORTEX_EXEC_RENDER_SCENE_*` keys have no live caller
+    now. They go with PR 6.
 
 ## Restart required
 
@@ -288,8 +347,13 @@ Within a day: `thought.painting` acts with `test_before LIKE 'visual_dispatch:pa
 
 ## Risks / concerns
 
+- Severity: medium. Concern: the rate depends on how much of the time arousal is strained or the room is
+  hot. This window had 83 strained hours and 10,476 hot minutes. In a calm, cool fortnight the trigger
+  paints about 14-15 a day (the fixture's ungated day: 15). Mitigation: the old path did the same on calm
+  days (real 10-27..11-04: 14-15 a day on calm days). The live week check after deploy compares
+  against the 14-day range; the knob is `interval_sec`.
 - Severity: low. Concern: the replay paints 8.5 % more than real. Mitigation: inside the check; the
-  calibration table names the knob (`interval_sec`).
+  calibration table names the knob.
 - Severity: low. Concern: the downstream ladder lanes for a baseline candidate (policy evaluator
   validation, dispatch builder/worker `visual_baseline` lanes, the allocator's baseline lane, dispatch's
   render settlement, cortex-exec's durable render kickoff) stay in code, unreachable. Mitigation: nothing

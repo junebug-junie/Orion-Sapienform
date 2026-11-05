@@ -276,17 +276,8 @@ class Settings(BaseSettings):
     )
     # 2026-11-05 (ladder retirement PR 1): the retro_leisure_session route and its two keys are gone.
     # Hub starts leisure on its own timer (services/orion-hub/scripts/retro_leisure_self_start.py).
-    # AI Town sessions (Juniper 2026-10-30): route aitown_session -> orion.aitown_session.start.v1, one
-    # bus RPC to orion-embodiment's session controller. false -> its candidates are refused
-    # `aitown_session_disabled` and no RPC is sent (the town stays paused, except Juniper's manual
-    # opens). The controller has its own switch (EMBODIMENT_TOWN_SESSIONS_ENABLED), the daily cap and
-    # every other gate. Shipped ON.
-    orion_dispatch_aitown_session_enabled: bool = Field(True, alias="ORION_DISPATCH_AITOWN_SESSION_ENABLED")
-    # 60 s: the controller's start does an engine read and a resume mutation on Convex (each up to its
-    # 30 s client timeout; 15-25 s measured under contention), so 15 s would time out real starts.
-    orion_dispatch_aitown_session_rpc_timeout_sec: float = Field(
-        60.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_AITOWN_SESSION_RPC_TIMEOUT_SEC"
-    )
+    # 2026-11-05 (ladder retirement PR 3): the aitown_session route and its two keys are gone.
+    # orion-embodiment starts town sessions on its own timer (services/orion-embodiment/app/town_self_start.py).
     # 2026-11-05 (ladder retirement PR 5): the world-action keys (ORION_WORLD_ACTIONS_ENABLED,
     # ORION_WORLD_ACTIONS_ALLOWED, ORION_WORLD_ACTION_ELIGIBILITY_MAX_AGE_SEC) are gone, and the shed keys
     # (ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC, ORION_SHED_TTL_SEC, ORION_SHED_MIN_GAP_SEC,

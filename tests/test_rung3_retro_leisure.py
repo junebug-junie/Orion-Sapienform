@@ -8,8 +8,10 @@ this PR (a template without a route, a route without a receiver) fails here:
 - no dispatch route (template or kind) that runs `orion.retro_leisure.start.v1` or declares the
   `hub.retro_leisure` act;
 - no dispatch-side retro code (module, mixin, settings keys);
-- no `orion:retro_leisure:start:*` channel and no RetroLeisureStart* schema;
-- the act-duration cost the retired route shared with AI Town still exists for AI Town.
+- no `orion:retro_leisure:start:*` channel and no RetroLeisureStart* schema.
+
+(The act-duration cost the retired route shared with AI Town left with AI Town's route, ladder
+retirement PR 3; tests/test_rung3_aitown_session.py pins that.)
 """
 from __future__ import annotations
 
@@ -69,13 +71,3 @@ def test_no_retro_leisure_rpc_channel_or_schema() -> None:
     assert "RetroLeisureStartResultV1" not in registry._REGISTRY
     with pytest.raises(ImportError):
         importlib.import_module("orion.schemas.retro_leisure")
-
-
-def test_the_act_duration_cost_stays_for_ai_town() -> None:
-    from app.worker import ExecutionDispatchRuntimeWorker
-
-    assert hasattr(ExecutionDispatchRuntimeWorker, "_act_duration_or_ceiling_cost")
-    policy = load_execution_dispatch_policy(
-        REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml")
-    act = policy.template_to_cortex["aitown_session"].act
-    assert act.cost_source == "act_duration" and act.cold_cost_ceiling_sec == 1800

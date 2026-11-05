@@ -208,7 +208,8 @@ families:
     # act play:aitown.session). New family, tier 2 like the other leisure wants; Juniper signs off on
     # the tier in PR review. The town's NPC dialogue runs on quick_background (pool class fast,
     # circe gpu3) by route, so the calls span `fast` and nothing is placed. Hard cap 2 h per local
-    # day is the controller's, independent of bids.
+    # day is the controller's, independent of bids. Since 2026-11-05 (ladder retirement PR 3) the bid
+    # is placed by embodiment's own timer (app/town_self_start.py) before the caps, not after a dispatch.
     tier: 2
     deferrable_window_s: 7200
     lanes: [fast]

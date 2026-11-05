@@ -1,0 +1,36 @@
+name: orion-embodiment tests (AI Town sessions + the session timer)
+# Ladder retirement PR 3 (2026-11-05): orion-embodiment starts Orion's AI Town sessions on its own
+# timer (app/town_self_start.py). Before this workflow no CI job ran this service's tests at all.
+on:
+  pull_request:
+    paths:
+      - 'services/orion-embodiment/**'
+      - 'orion/embodiment/town_sessions.py'
+      - 'orion/embodiment/tests/test_town_sessions.py'
+      - 'orion/schemas/aitown_session.py'
+      - 'orion/self_monitor/gate.py'
+      - 'orion/self_monitor/view.py'
+      - 'orion/self_monitor/adapters.py'
+      - 'orion/grammar/acts.py'
+      - '.github/workflows/orion-embodiment-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  embodiment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-embodiment/requirements.txt pytest pytest-asyncio
+      - name: Service tests (session controller, timer, /health)
+        working-directory: services/orion-embodiment
+        env:
+          EMBODIMENT_FCC_ENV_PATH: /tmp/nonexistent-embodiment-fcc-test.env
+        run: python -m pytest -q tests
+      - name: Session ledger arithmetic
+        run: python -m pytest -q orion/embodiment/tests/test_town_sessions.py
+      - name: Timer replay (fixture)
+        run: python -P services/orion-embodiment/evals/town_self_start_replay.py

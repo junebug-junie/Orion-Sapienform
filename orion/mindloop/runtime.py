@@ -337,8 +337,8 @@ class MindLoopRuntime:
         Without it a family with no measured slot time is priced at a whole lane window
         (orion/physiology/choice.py "priced_at_one_window"). Live 10-30, every Prime bid was then
         deferred capacity_reserved on lane:chat (24/24), so Prime could never think and never build the
-        history that would price it. Same rule as a dispatch route's cold_cost_ceiling_sec: charge the
-        doer's enforced maximum while nothing is on record."""
+        history that would price it. The rule: charge the doer's enforced maximum while nothing is on
+        record (the retired AI Town dispatch route's cold_cost_ceiling_sec did the same until 2026-11-05)."""
         from orion.schemas.grammar import ActCostV2
 
         ceiling = float(self.cfg("LLM_TIMEOUT_SEC"))

@@ -52,7 +52,7 @@ from orion.execution_dispatch.builder import (
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
-from orion.execution_dispatch.policy import AITOWN_SESSION_EXECUTOR_VERB, READ_PULL_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.execution_dispatch.policy import READ_PULL_EXECUTOR_VERB, load_execution_dispatch_policy
 from orion.schemas.world_pulse_read_pull import (
     WORLD_PULSE_READ_PULL_REPLY_PREFIX,
     WORLD_PULSE_READ_PULL_REQUEST_CHANNEL,
@@ -84,7 +84,6 @@ from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1,
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
-from app.aitown_session_dispatch import AITownSessionDispatchMixin
 from app.result_status import status_for_settlement, status_for_stored_settlement
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
@@ -281,7 +280,7 @@ ACTION_OUTCOME_SUMMARY_MAX_CHARS = 280
 ACTION_OUTCOME_SUBJECT = "orion"
 
 
-class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
+class ExecutionDispatchRuntimeWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
         self._store = ExecutionDispatchRuntimeStore(
@@ -749,13 +748,8 @@ class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
             if ref is not None:
                 if act_costs is None:
                     act_costs = self._load_act_costs()
-                if ref.cost_source == "act_duration":
-                    # The act's own measured open->close time, or the route's declared ceiling while
-                    # the act has never closed (aitown_session: the session cap).
-                    act_cost = self._act_duration_or_ceiling_cost(ref)
-                else:
-                    act_cost = (self._act_duration_cost(ref) if ref.object_source == "queue"
-                                else act_costs.get((item.dispatch_kind, item.target_id)))
+                act_cost = (self._act_duration_cost(ref) if ref.object_source == "queue"
+                            else act_costs.get((item.dispatch_kind, item.target_id)))
                 candidates.append(act_allocator_candidate(
                     dispatch_id=item.dispatch_id, dispatch_kind=item.dispatch_kind,
                     target_id=item.target_id, ref=ref, posteriors=posteriors, cost_sec=act_cost,
@@ -766,7 +760,7 @@ class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
                 # would only queue behind it (and, cold, would be re-admitted every tick until its
                 # first close lands). Also one per act per tick, and none when the belief could not
                 # be read (fail closed: unreadable is not cold).
-                held = self._reading_pull_held_reason(item) or self._aitown_session_held_reason(item)
+                held = self._reading_pull_held_reason(item)
                 if held is not None:
                     act_held[item.dispatch_id] = held
                 elif (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
@@ -979,8 +973,7 @@ class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
         if not getattr(self._settings, "orion_dispatch_act_candidates_enabled", False):
             return {}
         return {verb: ActRef(verb=a.verb, actor=a.actor, signal_id=a.signal_id, horizon_sec=a.horizon_sec,
-                             object_source=a.object_source, cost_source=a.cost_source,
-                             cold_cost_ceiling_sec=a.cold_cost_ceiling_sec)
+                             object_source=a.object_source)
                 for verb, a in self._policy.act_refs_by_cortex_verb().items()}
 
     def _admit_proven_acts(self, allocation, act_items, act_in_flight, posteriors):
@@ -1318,14 +1311,11 @@ class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
                                                   target_id=item.target_id,
                                                   # A queue object's actor runs concurrent lane reads.
                                                   include_open_acts=ref.object_source != "queue",
-                                                  # A started act-duration route (AI Town) is
-                                                  # held too, before its open act is stored.
                                                   # ...so a started pull holds the route for its
                                                   # horizon instead, on every path (information,
                                                   # probe), not only the proven one.
                                                   started_within_sec=(float(ref.horizon_sec)
                                                                       if ref.object_source == "queue"
-                                                                      or ref.cost_source == "act_duration"
                                                                       else None))
                         # A proven-effect decision (either arm) holds the act for its horizon, so a
                         # held-back act is not simply re-proposed seconds later.
@@ -2307,8 +2297,6 @@ class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
         now = datetime.now(timezone.utc)
         if candidate.cortex_verb == READ_PULL_EXECUTOR_VERB:
             return await self._send_read_pull(bus, frame, candidate, now=now)
-        if candidate.cortex_verb == AITOWN_SESSION_EXECUTOR_VERB:
-            return await self._send_aitown_session(bus, frame, candidate, now=now)
         if candidate.cortex_verb == "skills.imagination.render_scene.v1":
             candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
         result_id = f"result:{candidate.dispatch_id}"

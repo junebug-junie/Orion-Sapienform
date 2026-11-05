@@ -105,11 +105,11 @@ async def aitown_stop_world() -> str:
 async def aitown_resume_world() -> str:
   """Refused since 2026-10-30: the town opens only in sessions.
 
-  Orion's own sessions start through the motor allocator (route aitown_session) and
-  orion-embodiment's session controller, which counts them toward the 2 h/day cap. A
+  Orion's own sessions start on orion-embodiment's own timer (app/town_self_start.py,
+  since 2026-11-05) and its session controller, which counts them toward the 2 h/day cap. A
   direct testing:resume from here would run the town outside that cap and be logged as
   Juniper's manual time. Juniper opens the town with Hub's Unfreeze button."""
-  return _json({"error": "refused: AI Town runs only in sessions (Orion: the aitown_session want, "
+  return _json({"error": "refused: AI Town runs only in sessions (Orion: the aitown.session want, "
                          "capped 2 h/day by orion-embodiment; Juniper: Hub's Unfreeze button)"})
 
 

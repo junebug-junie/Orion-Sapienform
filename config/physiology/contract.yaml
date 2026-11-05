@@ -219,7 +219,7 @@ readers:
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.
-    note: 2026-10-30; becomes the bid site when Patch D cuts each producer over
+    note: 2026-10-30; placed by embodiment's own timer (app/town_self_start.py) since ladder retirement PR 3 (2026-11-05); becomes the bid site when Patch D cuts each producer over
   - module: services/orion-dream/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (a dream check that would sleep) logged beside the real gate; never obeyed.

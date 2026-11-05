@@ -133,6 +133,8 @@ SYNC_PREFIXES = (
     "SELF_MONITOR_",
     # Ladder retirement PR 2 (2026-11-05): orion-thought's painting trigger (app/painting_self_start.py).
     "ORION_PAINTING_SELF_START_",
+    # Ladder retirement PR 1 (2026-11-05): Hub's leisure timer (scripts/retro_leisure_self_start.py).
+    "RETRO_LEISURE_SELF_START_",
     # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
     "ORION_PHYSIOLOGY_",
     "CHANNEL_PHYSIOLOGY_",

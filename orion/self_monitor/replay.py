@@ -41,19 +41,20 @@ from orion.self_monitor.gate import DEFAULT_PROBE_INTERVAL_SEC, FAILING_STATUSES
 from orion.self_monitor.questions import self_questions_for
 from orion.self_monitor.view import SelfMonitorView
 
-# thought.painting left the allocator on 2026-11-05 (ladder retirement PR 2): its gate seam is orion-thought's
-# own painting trigger (services/orion-thought/app/painting_self_start.py), with no job key, like dispatch.
-SELF_START_ACTORS = {("thought.painting", "make")}
-ALLOCATOR_ACTORS = {("hub.world_pulse_read", "look"),
-                    ("hub.retro_leisure", "play"), ("aitown.session", "play")}
+# Acts that left the allocator start themselves, and each trigger holds the same E1 gate, with no job key,
+# like dispatch: thought.painting (ladder retirement PR 2, services/orion-thought/app/painting_self_start.py)
+# and hub.retro_leisure (PR 1, services/orion-hub/scripts/retro_leisure_self_start.py), both 2026-11-05.
+SELF_START_SEAMS = {("thought.painting", "make"): "painting_self_start",
+                    ("hub.retro_leisure", "play"): "retro_leisure_self_start"}
+ALLOCATOR_ACTORS = {("hub.world_pulse_read", "look"), ("aitown.session", "play")}
 
 
 PRIME_GATED_VERBS = frozenset({"infer", "predict", "ask", "regulate"})
 
 
 def reach(actor: str, verb: str) -> str:
-    if (actor, verb) in SELF_START_ACTORS:
-        return "painting_self_start"
+    if (actor, verb) in SELF_START_SEAMS:
+        return SELF_START_SEAMS[(actor, verb)]
     if (actor, verb) in ALLOCATOR_ACTORS:
         return "allocator"
     if actor == "actions.journal":

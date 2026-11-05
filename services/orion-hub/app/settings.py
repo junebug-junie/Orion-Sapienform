@@ -39,13 +39,23 @@ class Settings(BaseSettings):
     HUB_RETRO_ORIGIN: str = ""
     HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
     HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
-    # Solo leisure play (scripts/retro_leisure.py). Ships on; the allocator act and the doer
+    # Solo leisure play (scripts/retro_leisure.py). Ships on; Hub's leisure timer and the doer
     # gates decide when it actually runs.
     RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")
     RETRO_LEISURE_GAME_IDS: str = Field(default="the-legend-of-zelda", alias="RETRO_LEISURE_GAME_IDS")
     RETRO_LEISURE_SESSION_MAX_SEC: float = Field(default=1800.0, ge=60.0, le=1800.0, alias="RETRO_LEISURE_SESSION_MAX_SEC")
     RETRO_LEISURE_DAILY_MAX_SEC: float = Field(default=5400.0, ge=0.0, le=86400.0, alias="RETRO_LEISURE_DAILY_MAX_SEC")
     RETRO_LEISURE_MIN_GAP_SEC: float = Field(default=10800.0, ge=0.0, alias="RETRO_LEISURE_MIN_GAP_SEC")
+    # Ladder retirement PR 1 (2026-11-05): Hub starts leisure on its own timer
+    # (scripts/retro_leisure_self_start.py), the only trigger. Each tick bids, then asks the gate above.
+    # 300 s = the retired dispatch route's effective cadence (its 300 s refusal hold).
+    RETRO_LEISURE_SELF_START_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_SELF_START_ENABLED")
+    RETRO_LEISURE_SELF_START_TICK_SEC: float = Field(default=300.0, ge=30.0, le=3600.0,
+                                                     alias="RETRO_LEISURE_SELF_START_TICK_SEC")
+    # The self-monitor act gate (E1, orion/self_monitor/gate.py) the timer holds for the play act, as
+    # dispatch did: a faculty held broken/unreliable is refused, except one re-test probe per interval.
+    SELF_MONITOR_ACT_GATE_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    SELF_MONITOR_PROBE_INTERVAL_SEC: float = Field(default=21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
 
     """Configuration for the Orion Hub service, loaded from environment variables."""
 

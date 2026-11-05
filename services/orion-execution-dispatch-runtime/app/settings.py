@@ -274,14 +274,8 @@ class Settings(BaseSettings):
     orion_dispatch_reading_pull_rpc_timeout_sec: float = Field(
         15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_READING_PULL_RPC_TIMEOUT_SEC"
     )
-    # Orion plays Zelda (2026-10-22, spec section E): route retro_leisure_session ->
-    # orion.retro_leisure.start.v1, one bus RPC to Hub's leisure runner. false -> its candidates are
-    # refused `retro_leisure_disabled` and no RPC is sent. Hub has its own switch
-    # (RETRO_LEISURE_ENABLED) and every gate. Shipped ON.
-    orion_dispatch_retro_leisure_enabled: bool = Field(True, alias="ORION_DISPATCH_RETRO_LEISURE_ENABLED")
-    orion_dispatch_retro_leisure_rpc_timeout_sec: float = Field(
-        15.0, gt=0.0, le=120.0, alias="ORION_DISPATCH_RETRO_LEISURE_RPC_TIMEOUT_SEC"
-    )
+    # 2026-11-05 (ladder retirement PR 1): the retro_leisure_session route and its two keys are gone.
+    # Hub starts leisure on its own timer (services/orion-hub/scripts/retro_leisure_self_start.py).
     # AI Town sessions (Juniper 2026-10-30): route aitown_session -> orion.aitown_session.start.v1, one
     # bus RPC to orion-embodiment's session controller. false -> its candidates are refused
     # `aitown_session_disabled` and no RPC is sent (the town stays paused, except Juniper's manual

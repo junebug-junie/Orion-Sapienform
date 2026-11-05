@@ -696,7 +696,6 @@ from orion.schemas.durable_run import (
 )
 from orion.schemas.resource_admission import ResourceEventV1
 from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
-from orion.schemas.retro_leisure import RetroLeisureStartRequestV1, RetroLeisureStartResultV1
 from orion.schemas.aitown_session import AITownSessionStartRequestV1, AITownSessionStartResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
@@ -1082,8 +1081,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolShedResultV1": GpuPoolShedResultV1,
     "WorldPulseReadPullRequestV1": WorldPulseReadPullRequestV1,
     "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
-    "RetroLeisureStartRequestV1": RetroLeisureStartRequestV1,
-    "RetroLeisureStartResultV1": RetroLeisureStartResultV1,
     "AITownSessionStartRequestV1": AITownSessionStartRequestV1,
     "AITownSessionStartResultV1": AITownSessionStartResultV1,
     "GpuActuateV1": GpuActuateV1,
@@ -2081,9 +2078,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # Thinking rung 3 follow-up: the allocator's reading pull (orion/schemas/world_pulse_read_pull.py).
     "WorldPulseReadPullRequestV1": SchemaRegistration(model=WorldPulseReadPullRequestV1, kind="world_pulse_read.pull.request.v1"),
     "WorldPulseReadPullResultV1": SchemaRegistration(model=WorldPulseReadPullResultV1, kind="world_pulse_read.pull.result.v1"),
-    # Orion plays Zelda (section E): the allocator's retro leisure start (orion/schemas/retro_leisure.py).
-    "RetroLeisureStartRequestV1": SchemaRegistration(model=RetroLeisureStartRequestV1, kind="retro_leisure.start.request.v1"),
-    "RetroLeisureStartResultV1": SchemaRegistration(model=RetroLeisureStartResultV1, kind="retro_leisure.start.result.v1"),
     # AI Town sessions (2026-10-30): the allocator's town session start (orion/schemas/aitown_session.py).
     "AITownSessionStartRequestV1": SchemaRegistration(model=AITownSessionStartRequestV1, kind="aitown_session.start.request.v1"),
     "AITownSessionStartResultV1": SchemaRegistration(model=AITownSessionStartResultV1, kind="aitown_session.start.result.v1"),

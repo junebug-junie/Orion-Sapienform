@@ -82,8 +82,11 @@ _LAST_ATTEMPT_SQL = (
 
 
 def last_attempt_sql(style: str = "sqlalchemy") -> str:
-    """The ledger read, in the caller's placeholder style: ``sqlalchemy`` (:name) or ``pyformat``
-    (psycopg2's %(name)s). Params: actor, verb, secs. Columns: object_ref, test_before, opened_at."""
+    """The ledger read, in the caller's placeholder style: ``sqlalchemy`` (:name), ``pyformat``
+    (psycopg2's %(name)s) or ``asyncpg`` ($1 actor, $2 verb, $3 secs as float). Columns: object_ref,
+    test_before, opened_at."""
+    if style == "asyncpg":
+        return _LAST_ATTEMPT_SQL.format(actor="$1", verb="$2", secs="$3::float8")
     if style == "pyformat":
         return _LAST_ATTEMPT_SQL.format(actor="%(actor)s", verb="%(verb)s", secs="%(secs)s")
     return _LAST_ATTEMPT_SQL.format(actor=":actor", verb=":verb", secs=":secs")

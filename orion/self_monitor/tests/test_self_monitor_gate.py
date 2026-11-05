@@ -373,6 +373,7 @@ def test_replay_option_a_admits_the_nights_retries() -> None:
     assert (out["jobs"], out["jobs_worked"], out["jobs_lost"]) == (2, 2, 0)
     assert out["reach"] == "actions_journal" and reach("prime", "predict") == "prime"
     assert reach("thought.painting", "make") == "painting_self_start" and reach("hub.world_pulse_read", "look") == "allocator" and reach("dream.cycle", "make") == "not_gated"
+    assert reach("hub.retro_leisure", "play") == "retro_leisure_self_start"
 
 
 def test_replay_a_refused_first_try_does_not_open_a_retry_chain() -> None:

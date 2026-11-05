@@ -1,6 +1,6 @@
 """AI Town sessions (Juniper 2026-10-30): the motor allocator admits or refuses one town session.
 
-Mirror of tests/test_rung3_retro_leisure.py (the same dispatch shape). Pins:
+(Was a mirror of the retro leisure route, retired 2026-11-05.) Pins:
 - the route declares the aitown.session `play` act with a dispatch object, the act's own duration
   as its cost, and the controller's 1800 s session cap as the cold ceiling; the template is a
   no-dimension express proposal;

@@ -52,9 +52,6 @@ SELF_REVERSIBLE_SCOPE = "self_reversible"
 # runtime maps to the reading pull RPC (orion/schemas/world_pulse_read_pull.py), which asks Hub to
 # start one extra world-pulse read. Hub runs every gate; the dispatch runtime only admits or refuses.
 READ_PULL_EXECUTOR_VERB = "orion.world_pulse_read.pull.v1"
-# Orion plays Zelda (2026-10-22, spec section E): the executor key the dispatch runtime maps to one
-# retro leisure start RPC (orion/schemas/retro_leisure.py). Hub's leisure runner runs every gate.
-RETRO_LEISURE_EXECUTOR_VERB = "orion.retro_leisure.start.v1"
 # AI Town sessions (Juniper 2026-10-30): the executor key the dispatch runtime maps to one AI Town
 # session start RPC (orion/schemas/aitown_session.py). orion-embodiment's controller runs every gate.
 AITOWN_SESSION_EXECUTOR_VERB = "orion.aitown_session.start.v1"
@@ -91,7 +88,7 @@ class ActRouteRefV1(BaseModel):
     object_source: Literal["dispatch", "queue"] = "dispatch"
     # Where the act's measured cost comes from. None keeps the object_source rule above. "act_duration":
     # the act's own measured open->close time (grammar_acts), for a route whose dispatch is only an
-    # RPC that starts the work (retro_leisure_session: a session runs minutes after the RPC answers).
+    # RPC that starts the work (aitown_session: a session runs minutes after the RPC answers).
     # Such a route is also held in flight for horizon_sec after Hub answers `started`, before its open
     # act is stored (the worker's _act_in_flight).
     cost_source: Literal["act_duration"] | None = None

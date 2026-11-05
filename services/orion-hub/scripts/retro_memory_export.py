@@ -3,7 +3,7 @@
 Spec: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F. Called once per
 finished session:
 
-- leisure: scripts/retro_leisure_listener.py, with Lane B's ``LeisureOutcome.ended``
+- leisure: scripts/retro_leisure_self_start.py (Hub's leisure timer), with Lane B's ``LeisureOutcome.ended``
   (``export_leisure_outcome``);
 - co-play: ``app.state.retro_session_end_sink`` (``make_session_end_sink``), which Lane B's
   scripts/retro_routes.py calls with a ``RetroSessionEnded`` at every co-play handoff end.
@@ -18,8 +18,8 @@ What it writes, in order:
    trust_source ``retro_play``, linked to session_id and lineage_id (cross-day recall);
 3. the card id back onto the session row (or ``card_error`` when the card failed);
 4. the ``play`` act's close, 1 when the session had at least one real planner decision, else 0:
-   for a leisure session the motor allocator started, the ``hub.retro_leisure`` act keyed by its
-   ``dispatch_id``; for a co-play handoff, the ``hub.retro_coplay`` act keyed by the row key
+   for a leisure session Hub's timer started, the ``hub.retro_leisure`` act keyed by its act id
+   (passed as ``dispatch_id``, the historic name); for a co-play handoff, the ``hub.retro_coplay`` act keyed by the row key
    (opened at the handoff start through ``make_session_start_sink``).
 
 The summary is facts and counts only (``build_session_summary``). No model writes it, and it never

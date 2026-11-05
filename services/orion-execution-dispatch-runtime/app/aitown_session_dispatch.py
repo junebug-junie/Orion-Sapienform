@@ -1,6 +1,6 @@
 """Route ``aitown_session``: the motor allocator admits one AI Town session (Juniper, 2026-10-30).
 
-Same shape as ``retro_leisure_dispatch.py``. The allocator admits or refuses; orion-embodiment's
+The allocator admits or refuses; orion-embodiment's
 session controller (services/orion-embodiment/app/town_sessions.py) runs every gate (kill switch,
 daily cap, gap, one session at a time) and unpauses the town. Mixed into
 ``ExecutionDispatchRuntimeWorker`` (app/worker.py), which calls two hooks:
@@ -9,10 +9,14 @@ daily cap, gap, one session at a time) and unpauses the town. Mixed into
   kill switch (``aitown_session_disabled``) or the controller's last refusal still holding
   (``doer_refused:<why>``, for the controller's own ``retry_after_sec``: the next local midnight
   after ``daily_cap``).
+- ``_act_duration_or_ceiling_cost(ref)`` (any route with ``cost_source: act_duration``): the act's
+  own measured open->close seconds (for a session, its wall time), or the route's
+  ``cold_cost_ceiling_sec`` (the controller's session cap) while the act has never closed. This is the
+  one exception to "no typed fallback": the ceiling is the doer's enforced maximum, used only when no
+  close exists, so a cold act is charged its worst case. A cost that cannot be read is None (refused
+  ``no_cost_estimate``), never the ceiling. (Moved here from the retired retro_leisure_dispatch.py,
+  ladder retirement PR 1, 2026-11-05.)
 - ``_send_aitown_session(bus, frame, candidate, now=)``: one start RPC.
-
-The act's cost is its own measured duration (``_act_duration_or_ceiling_cost``, shared with retro
-leisure through ``cost_source: act_duration``).
 """
 
 from __future__ import annotations
@@ -45,6 +49,18 @@ FAILURE_HOLD_SEC = 300.0
 
 class AITownSessionDispatchMixin:
     """Needs ``self._settings``, ``self._store`` and ``self._record_dispatch_status`` (the worker)."""
+
+    def _act_duration_or_ceiling_cost(self, ref) -> float | None:
+        try:
+            measured = self._store.act_duration_p50_sec(
+                actor=ref.actor, verb=ref.verb, signal_id=ref.signal_id,
+                lookback_hours=int(self._settings.orion_dispatch_act_cost_lookback_hours))
+        except Exception:
+            logger.warning("act_duration_cost_unreadable act=%s", ref.label(), exc_info=True)
+            return None
+        if measured is not None:
+            return measured
+        return getattr(ref, "cold_cost_ceiling_sec", None)
 
     def _aitown_session_enabled(self) -> bool:
         return bool(getattr(self._settings, "orion_dispatch_aitown_session_enabled", False))

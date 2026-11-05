@@ -52,7 +52,7 @@ from orion.execution_dispatch.builder import (
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
-from orion.execution_dispatch.policy import AITOWN_SESSION_EXECUTOR_VERB, RETRO_LEISURE_EXECUTOR_VERB, READ_PULL_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.execution_dispatch.policy import AITOWN_SESSION_EXECUTOR_VERB, READ_PULL_EXECUTOR_VERB, load_execution_dispatch_policy
 from orion.schemas.world_pulse_read_pull import (
     WORLD_PULSE_READ_PULL_REPLY_PREFIX,
     WORLD_PULSE_READ_PULL_REQUEST_CHANNEL,
@@ -86,7 +86,6 @@ from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
 from app.aitown_session_dispatch import AITownSessionDispatchMixin
 from app.result_status import status_for_settlement, status_for_stored_settlement
-from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
 
@@ -282,7 +281,7 @@ ACTION_OUTCOME_SUMMARY_MAX_CHARS = 280
 ACTION_OUTCOME_SUBJECT = "orion"
 
 
-class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDispatchMixin):
+class ExecutionDispatchRuntimeWorker(AITownSessionDispatchMixin):
     def __init__(self) -> None:
         self._settings = get_settings()
         self._store = ExecutionDispatchRuntimeStore(
@@ -752,7 +751,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                     act_costs = self._load_act_costs()
                 if ref.cost_source == "act_duration":
                     # The act's own measured open->close time, or the route's declared ceiling while
-                    # the act has never closed (retro_leisure_session: the session cap).
+                    # the act has never closed (aitown_session: the session cap).
                     act_cost = self._act_duration_or_ceiling_cost(ref)
                 else:
                     act_cost = (self._act_duration_cost(ref) if ref.object_source == "queue"
@@ -767,8 +766,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                 # would only queue behind it (and, cold, would be re-admitted every tick until its
                 # first close lands). Also one per act per tick, and none when the belief could not
                 # be read (fail closed: unreadable is not cold).
-                held = (self._reading_pull_held_reason(item) or self._retro_leisure_held_reason(item)
-                        or self._aitown_session_held_reason(item))
+                held = self._reading_pull_held_reason(item) or self._aitown_session_held_reason(item)
                 if held is not None:
                     act_held[item.dispatch_id] = held
                 elif (not getattr(self, "_posteriors_read_ok", True) or ref in act_seen
@@ -1320,7 +1318,7 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
                                                   target_id=item.target_id,
                                                   # A queue object's actor runs concurrent lane reads.
                                                   include_open_acts=ref.object_source != "queue",
-                                                  # A started act-duration route (retro leisure) is
+                                                  # A started act-duration route (AI Town) is
                                                   # held too, before its open act is stored.
                                                   # ...so a started pull holds the route for its
                                                   # horizon instead, on every path (information,
@@ -2309,8 +2307,6 @@ class ExecutionDispatchRuntimeWorker(RetroLeisureDispatchMixin, AITownSessionDis
         now = datetime.now(timezone.utc)
         if candidate.cortex_verb == READ_PULL_EXECUTOR_VERB:
             return await self._send_read_pull(bus, frame, candidate, now=now)
-        if candidate.cortex_verb == RETRO_LEISURE_EXECUTOR_VERB:
-            return await self._send_retro_leisure(bus, frame, candidate, now=now)
         if candidate.cortex_verb == AITOWN_SESSION_EXECUTOR_VERB:
             return await self._send_aitown_session(bus, frame, candidate, now=now)
         if candidate.cortex_verb == "skills.imagination.render_scene.v1":

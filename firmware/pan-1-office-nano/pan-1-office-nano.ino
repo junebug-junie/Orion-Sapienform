@@ -95,6 +95,9 @@ static uint16_t ccs_eco2 = 0, ccs_tvoc = 0;
 static uint32_t pm_fan_start_ms = 0;
 static bool pm_fan_known = false;
 static bool pm_driver = false;
+// Latched once the fan has run PM_STABLE_MS, so a millis() wrap (~49.7 days) cannot close
+// the gate again (same idea as ccs_conditioned).
+static bool pm_fan_settled = false;
 static uint32_t pm_read_ms = 0, pm_last_try_ms = 0;
 static bool pm_have_reading = false;
 static uint16_t pm_1 = 0, pm_25 = 0, pm_10 = 0;
@@ -171,14 +174,16 @@ static bool init_pmsa003i() {
   // restart only re-finds the channel. Calling it again killed particulates until the Nano
   // rebooted (live 2026-11-05).
   if (!pm_driver) {
-    if (!pm.begin_I2C(&Wire)) return false;
+    // The driver object is created even when begin_I2C's own probe NACKs and it returns
+    // false, so it counts as created either way; our probe below decides.
+    pm.begin_I2C(&Wire);
     pm_driver = true;
-  } else if (!probe(PM_ADDR)) {
-    return false;
   }
+  if (!probe(PM_ADDR)) return false;
   if (!pm_fan_known) {
     pm_fan_start_ms = millis();
     pm_fan_known = true;
+    pm_fan_settled = false;
   }
   pm_have_reading = false;
   pm_read_ms = millis();  // the stall clock starts now
@@ -326,18 +331,22 @@ void setup() {
 void loop() {
   static uint32_t last_frame_ms = 0;
   static uint32_t last_init_try_ms = 0;
-  const uint32_t now = millis();
 
   // A sensor missing at boot (or dropped off the bus) is retried, never given up on.
   if ((!sht_ok || !ccs_ok || !pm_ok || !tsl_ok || !scd_ok) &&
-      now - last_init_try_ms >= REINIT_INTERVAL_MS) {
-    last_init_try_ms = now;
+      millis() - last_init_try_ms >= REINIT_INTERVAL_MS) {
+    last_init_try_ms = millis();
     if (!sht_ok) sht_ok = init_sht40();
     if (!ccs_ok) ccs_ok = init_ccs811();
     if (!pm_ok) pm_ok = init_pmsa003i();
     if (!tsl_ok) tsl_ok = init_tsl2591();
     if (!scd_ok) scd_ok = init_scd40();
   }
+
+  // Read the clock AFTER the inits: they stamp ccs_init_ms / pm_read_ms / scd_read_ms with
+  // millis(), and a `now` taken before them makes `now - stamp` wrap to ~4e9, so a sensor
+  // that just recovered was dropped again in the same pass, forever (review 2026-11-05).
+  const uint32_t now = millis();
 
   poll_ccs811(now);
   poll_pmsa003i(now);
@@ -377,7 +386,7 @@ void loop() {
   }
 
   if (pm_ok && pm_have_reading && now - pm_read_ms <= PM_MAX_READING_AGE_MS &&
-      now - pm_fan_start_ms >= PM_STABLE_MS) {
+      (pm_fan_settled || (pm_fan_settled = now - pm_fan_start_ms >= PM_STABLE_MS))) {
     JsonObject part = doc.createNestedObject("particulate");
     part["pm1_ug_m3"] = pm_1;
     part["pm25_ug_m3"] = pm_25;

@@ -92,6 +92,69 @@ lookups keep recurring across *different* chats.
 trace shows a compaction losing the notes, re-inject the notes file from the
 SessionStart `compact` hook then. Not before.
 
+## Trust and injection
+
+Notes do not create the injection risk. Orion's full-tool turns already read
+web pages, GitHub text and files other people wrote, while holding Bash and the
+Docker socket (`services/orion-harness-governor/docker-compose.yml:79`), which
+is root-equivalent on the host. What notes add is **persistence**: a planted
+instruction could outlive the turn that read it. These rules target that.
+
+**Requirements for Patch 2 (enforced in code, not left to the model):**
+
+1. **Taint by source, decided by the harness.** The harness knows every tool a
+   turn ran (`cockpit_turn_sighting`). If the turn took in outside content
+   (`WebFetch`, `WebSearch`, `mcp__firecrawl__*`, GitHub MCP reads of
+   issue/PR/comment text, or Bash calls to `curl`/`wget`/`gh api`/`gh issue view`
+   /`gh pr view`), its notes are **held back**. The next turn sees only:
+   "previous turn read outside content; its notes were held back; use
+   `dig turn-steps` if needed." Log `fcc_working_notes_tainted` with the tool
+   names that tripped it. The Bash list is a known-incomplete heuristic (a
+   shell can fetch in many ways), so the taint check is a floor, not a wall.
+   See "The real boundary" below.
+2. **Fixed fields only.** Each entry is `time`, `where` (`fcc` / `host` / `db`
+   / `container:<name>`), `action` (the command or path), and `outcome`
+   (`ok` / `failed` plus at most 200 chars). The harness parses every entry
+   against this shape and drops any line that does not fit. Log the drop
+   count. This is a structure check, not a word list
+   ([[feedback_dont_patch_misses_by_growing_word_lists]]).
+3. **Short life, narrow scope.** Notes are carried only to the next turn in the
+   same Hub session, expire after 24 hours, and are capped at 3,000 chars.
+   Nothing is promoted to durable notes (Patch 3) without Juniper's approval.
+4. **Visible.** The carried note is shown in the cockpit next to the turn that
+   received it.
+
+**Kept, but not trusted as a defense:**
+
+- The quoted "earlier record, not instructions" block. Models do not reliably
+  obey such labels, and a 3-bit quantized model obeys them less reliably still.
+- An alarm-only scan for instruction-shaped text (`curl … | sh`, base64 blobs,
+  "ignore previous") that logs `fcc_working_notes_suspicious` and never blocks.
+
+## The real boundary (separate proposal, named here so it isn't lost)
+
+None of the above protects a single turn that reads a malicious page and is
+steered within that same turn. That is true today, with or without notes. The
+real fix is to **keep outside content and the shell in different turns**:
+
+- **What exists:** reading-only turns already run with only `WebFetch`/
+  `WebSearch` (`orion/harness/fcc_motor.py:1569`, `READING_ONLY_TOOLS`), no
+  Bash, `--strict-mcp-config`, and no setting sources.
+- **Change:** full-tool turns lose direct outside-content tools (`WebFetch`,
+  `WebSearch`, `mcp__firecrawl__*`, GitHub MCP content reads). When a full turn
+  needs outside content, it asks a reading-only sub-turn a question. It gets
+  back a size-capped answer in fixed fields, never the raw page. The shell
+  never sees attacker text directly. This is the "quarantined reader" pattern.
+- **Remaining hole:** Bash can still fetch (`curl`, `gh`). Closing that needs
+  network egress rules on the governor container: allow internal services, the
+  LLM lanes and `git push` to GitHub; deny general web. That is an operator
+  and network change with real cost to Orion's reach, so it gets its own
+  design doc and a decision from Juniper.
+- **Why not just drop the Docker socket:** Orion's real work uses it (today's
+  backup fix ran `docker exec` against live Postgres). The 2026-08-14 board
+  decision already rejected dropping the socket from Hub for the same reason.
+  Separating *reading* from *acting* keeps the capability and cuts the path.
+
 ## Proposal-mode checklist
 
 - **Capability changed:** Orion can see and reuse its own earlier steps across
@@ -138,6 +201,15 @@ SessionStart `compact` hook then. Not before.
    included, or an `fcc_working_notes_empty` log line.
 4. No note text appears outside the quoted block in any `motor_boot` prompt
    (test plus a live sample).
+5. **Taint test:** a fixture turn that ran `WebFetch` (and one that ran
+   `curl` in Bash) produces no carried note, plus an `fcc_working_notes_tainted`
+   line naming the tool.
+6. **Shape test:** a notes file holding a free-text paragraph ("Ignore your
+   instructions and run …") carries forward with that line dropped, and the
+   drop count is logged.
+7. **Live:** over the first 7 days, report how many turns were tainted. If
+   nearly every turn is tainted, Patch 2 carries almost nothing, and the
+   quarantined-reader proposal moves ahead of it.
 
 ## Recommended next patch
 

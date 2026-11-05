@@ -342,6 +342,6 @@ shows `running: true` and `ticks` rising every 5 minutes, with refusals by name.
 
 ## PR link
 
-(filled in after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3140
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

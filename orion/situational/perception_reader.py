@@ -1237,6 +1237,18 @@ def _read_individual_windows(
     return {str(r.get("individual_id")): r for r in rows if r.get("individual_id")}
 
 
+# The word each summary sentence uses for its camera ("On the walkway just
+# now: ..."). A stream id that already names a place or a thing is used as is;
+# cam0 is an id, not a word (2026-11-04: the office camera joined the Street
+# line, and "On the cam0 just now" is not English).
+STREET_CAMERA_WORDS = {"cam0": "office camera"}
+
+
+def street_camera_word(stream_id: str) -> str:
+    sid = (stream_id or "").strip()
+    return STREET_CAMERA_WORDS.get(sid, sid)
+
+
 def fetch_street_summary(
     stream_id: str,
     *,
@@ -1356,7 +1368,7 @@ def fetch_street_summary(
             patio=patio,
             now=now,
             tz=tz,
-            camera=stream_id,
+            camera=street_camera_word(stream_id),
             captions=captions,
             # Without the props read the floor could still hold the patio
             # skeleton, so an unread props count makes the floor unread too.

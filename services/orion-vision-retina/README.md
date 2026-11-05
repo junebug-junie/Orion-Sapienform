@@ -83,6 +83,31 @@ cp .env_example .env
 | `RETINA_RTSP_HEAL_WINDOW_SECONDS` | `120.0` | Corruption must persist this long before a heal |
 | `RETINA_RTSP_HEAL_MIN_SHARE` | `0.8` | Share of checks in the window that must be corrupt |
 
+### Office camera instance, cam0 (2026-11-04)
+
+`orion-vision-retina-office` (profile `office`) captures the indoor Reolink in the
+room where Juniper works, as stream/camera id `cam0`. It reads the camera's
+2560x1920 main stream (`OFFICE_RTSP_URL`) at `OFFICE_RETINA_FPS` (2), the same
+size and rate as the walkway. Before this, `orion-vision-edge` captured cam0
+from the 640x480 substream and opened the main stream only for one still per
+face check. The edge no longer captures anything.
+
+Downstream, cam0 now gets what the walkway gets: person crops with body and
+face vectors (`config/vision_frame_router.yaml` `streams.cam0`, the whole-frame
+`office` zone in `config/vision_zones.yaml`), individuals and naming asks
+(orion-sql-writer), activity captions from the Qwen lane, and the "who is
+around" summary in Orion's situation brief.
+
+First start (once; afterwards the post-pull rebuild re-ups it):
+
+```bash
+scripts/safe_docker_build.sh orion-vision-retina --profile office up -d --build orion-vision-retina-office
+```
+
+Live check: `curl -fsS http://127.0.0.1:8030/health` shows frames published,
+and `ls -t /mnt/telemetry/vision/frames | grep -m3 '^cam0_cam0'` shows new
+frames.
+
 ### Ring doorbell source (2026-10-17)
 
 `RETINA_SOURCE_TYPE=ring` (`app/ring_source.py`), deployed as

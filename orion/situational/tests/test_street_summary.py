@@ -256,7 +256,8 @@ def _stub_room(monkeypatch, percept=None):
 
 
 def test_street_defaults_to_walkway_and_empty_disables() -> None:
-    assert _cfg().street_stream_ids == ["doorbell", "walkway"]
+    # cam0 (the office camera) joined 2026-11-04: who is in the room, by name.
+    assert _cfg().street_stream_ids == ["doorbell", "cam0", "walkway"]
     cfg = situation_mod.settings_from_runtime(SimpleNamespace(orion_situation_street_stream_ids=""))
     assert cfg.street_stream_ids == []
 
@@ -326,10 +327,30 @@ def test_one_failed_street_read_does_not_hide_the_other(monkeypatch) -> None:
     monkeypatch.setattr(situation_mod, "fetch_street_summary", _fetch)
     diag = SituationDiagnosticsV1()
     ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
-    assert ctx.street_stream_id == "walkway"
+    assert ctx.street_stream_id == "cam0"  # first camera after the failed doorbell
+    assert "Two people walked by." in (ctx.street_summary or "")
     # The error stays visible; it is not overwritten with "ok".
     assert diag.provider_status["perception_street"] == "error"
     assert diag.provider_errors["perception_street"] == "db hiccup"
+
+
+def test_office_camera_reads_as_a_word_not_an_id() -> None:
+    """2026-11-04: "On the cam0 just now" is not English; the summary's
+    camera word for cam0 is "office camera". Other ids are already words."""
+    from orion.situational.perception_reader import street_camera_word, summarize_street
+    from datetime import datetime, timezone
+
+    assert street_camera_word("cam0") == "office camera"
+    assert street_camera_word("walkway") == "walkway"
+    now = datetime(2026, 11, 4, 23, 15, tzinfo=timezone.utc)
+    lines = summarize_street(
+        sightings=[{"individual_id": "i1", "kind": "person", "label": "Juniper", "distinct_days": 3,
+                    "first_at": now, "last_at": now}],
+        expectations=[], unresolved=[], patio=[], now=now, tz=timezone.utc,
+        camera=street_camera_word("cam0"),
+    )
+    text = " ".join(lines)
+    assert "office camera" in text and "Juniper" in text and "cam0" not in text
 
 
 def test_quiet_or_unread_street_leaves_no_field(monkeypatch) -> None:

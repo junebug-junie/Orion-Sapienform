@@ -96,25 +96,46 @@ def _thumb_store() -> ThumbStore | None:
     return _THUMB_STORE
 
 
-def _resolve_latest_frame_path() -> Path:
+# The camera "look now" means when the caller names none: the office camera.
+LATEST_FRAME_DEFAULT_STREAM = "cam0"
+
+
+def _latest_frame_prefix(stream_id: str) -> str:
+    """File prefix of one camera's frames: retina naming ``<camera>_<stream>_``
+    (orion-vision-retina app/frame_store.py; every camera's retina uses its
+    stream id as its camera id)."""
+    safe = __import__("re").sub(r"[^A-Za-z0-9._-]+", "_", stream_id).strip("_") or "unknown"
+    return f"{safe}_{safe}_"
+
+
+def _resolve_latest_frame_path(stream_id: str | None = None) -> Path:
     """The "on-demand capture" primitive P1's design doc calls for --
     docs/superpowers/specs/2026-08-12-perception-frontier-design.md names
     this explicitly as separate, larger work from the passive window/
     council pipeline ("bypassing window/council... a direct vision-host
-    RPC"). Doesn't trigger a NEW capture (vision-edge already captures
-    continuously regardless of any downstream consumer, confirmed live at
-    ~5s cadence) -- resolves to whatever it captured most recently, which
-    for a slow-moving room is the practical equivalent of "look now" without
-    inventing a second capture path. Raises (not a fabricated/empty result)
-    if the frames directory is empty or unreadable -- an honest "nothing to
-    look at" is the caller's problem to handle, not this function's to hide.
+    RPC"). Doesn't trigger a NEW capture (the camera's retina captures
+    continuously regardless of any downstream consumer) -- resolves to the
+    newest frame of ONE camera, ``stream_id`` (default: the office camera,
+    cam0), which for a slow-moving room is the practical equivalent of "look
+    now" without inventing a second capture path. Raises (not a
+    fabricated/empty result) if that camera has no frame -- an honest
+    "nothing to look at" is the caller's problem to handle, not this
+    function's to hide.
+
+    One camera, never "the newest file" (2026-11-04): the frames directory
+    is shared by every athena retina. The walkway writes 2 frames/s there,
+    so once the office camera moved from orion-vision-edge (15 frames/s) to
+    its own 2 frames/s retina, "look at the room" would have answered from
+    the walkway about half the time.
     """
     frames_dir = Path(settings.VISION_FRAMES_DIR)
     if not frames_dir.is_dir():
         raise FileNotFoundError(f"frames directory not found: {frames_dir}")
-    candidates = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    stream = str(stream_id or "").strip() or LATEST_FRAME_DEFAULT_STREAM
+    prefix = _latest_frame_prefix(stream)
+    candidates = sorted(frames_dir.glob(f"{prefix}*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        raise FileNotFoundError(f"no frames found in: {frames_dir}")
+        raise FileNotFoundError(f"no frames found for stream {stream!r} in: {frames_dir}")
     return candidates[0]
 
 
@@ -185,7 +206,8 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
       request.image_path (preferred)
       request.frame_path (alias)
       request.use_latest_frame: true -- resolves to the most recently
-        captured frame instead of a caller-supplied path (see
+        captured frame of request.stream_id (default cam0, the office camera)
+        instead of a caller-supplied path (see
         _resolve_latest_frame_path). Opt-in, not a silent fallback when
         image_path is merely absent -- every existing caller that relies on
         the prior "image_path is required" error for a genuinely missing
@@ -201,7 +223,7 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
             # percept store expires its own copy on its own schedule.
             return _load_image_from_percept_store(sha)
         if request.get("use_latest_frame"):
-            p = _resolve_latest_frame_path()
+            p = _resolve_latest_frame_path(request.get("stream_id"))
             img = Image.open(p).convert("RGB")
             return img
         raise ValueError(

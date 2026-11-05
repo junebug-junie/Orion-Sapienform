@@ -709,7 +709,7 @@ class Settings(BaseSettings):
     # false = the reducer does not run (readers then see no new rows).
     vision_rollup_enabled: bool = Field(True, alias="VISION_ROLLUP_ENABLED")
     vision_rollup_interval_sec: float = Field(300.0, alias="VISION_ROLLUP_INTERVAL_SEC")
-    vision_rollup_streams: str = Field("walkway", alias="VISION_ROLLUP_STREAMS")
+    vision_rollup_streams: str = Field("walkway,cam0", alias="VISION_ROLLUP_STREAMS")
     # A vehicle individual seen in this many different clock hours of the
     # trailing 24 h is a parked car the stationary rule missed: not a passing.
     vision_rollup_parked_min_hours: int = Field(4, ge=1, alias="VISION_ROLLUP_PARKED_MIN_HOURS")
@@ -747,7 +747,7 @@ class Settings(BaseSettings):
     # Whole days older than this are deleted. 0 = keep forever.
     vision_hourly_frames_retention_days: float = Field(14.0, ge=0.0, alias="VISION_HOURLY_FRAMES_RETENTION_DAYS")
     vision_hourly_frames_streams: str = Field(
-        "walkway,cam0=frame,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
+        "walkway,cam0,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.

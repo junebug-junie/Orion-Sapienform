@@ -50,36 +50,76 @@ global:
 streams:
   cam0:
     enabled: true
+    # The office camera (interior Reolink, the room where Juniper works). Since
+    # 2026-11-04 it is captured by orion-vision-retina-office from the 2560x1920
+    # main stream at 2 fps, no longer by orion-vision-edge's 640x480 substream
+    # (Juniper: "it should do most of the things the walkway cam does").
+    # Walkway parity: person/dog crops get body + face vectors in both tiers
+    # (individuals, naming asks, person learning), and captions come from the
+    # Qwen lane (caption_dispatch below) instead of the host's BLIP. Both tiers
+    # are spelled out in full: resolve_stream_policy's shallow merge replaces
+    # the whole `baseline`/`triggered` key, and `request` wholesale.
+    baseline:
+      task_type: retina_fast
+      # 2 fps from the retina: every 5th frame, at most one task per 5 s --
+      # the same GPU budget the edge's 15 fps feed had (every 10th, 5 s).
+      every_n_frames: 5
+      min_seconds_between_tasks_per_camera: 5
+      max_inflight_per_camera: 1
+      request:
+        want_caption: false
+        want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog]
     # Opt-in identity_face secondary dispatch (2026-08-26, docs/superpowers/
     # specs/2026-08-21-...-design.md section 4/6.1) -- deliberately NOT in
-    # defaults.triggered above. This fully overrides defaults.triggered
-    # (resolve_stream_policy's shallow merge replaces the whole `triggered`
-    # key, not a per-field merge), so it repeats defaults.triggered's other
-    # fields rather than silently losing them. cam0 is the interior room
-    # camera; carbon (Juniper's laptop webcam) and every other camera stay
-    # opted out by default -- see policy.py's decide_identity docstring for
-    # why a global default would be wrong here.
+    # defaults.triggered above; see policy.py's decide_identity docstring for
+    # why a global default would be wrong here. carbon stays opted out.
     triggered:
       task_type: retina_fast
-      trigger_labels: [person]
+      trigger_labels: [person, dog]
       trigger_ttl_seconds: 8
       min_seconds_between_tasks_per_camera: 2
       max_inflight_per_camera: 1
       request:
-        want_caption: true
+        want_caption: false
         want_embeddings: true
+        want_crop_embeddings: true
+        want_crop_faces: true
+        crop_embedding_labels: [person, dog]
       identity_dispatch:
         enabled: true
         # 5s, was 30s (2026-10-10, Juniper: "we need to loosen that"): at 30s a 45-second wave
         # at the camera got exactly one face check. identity_face inference is 0.06-0.14 s on
         # cuda:0, so ~9 checks per short visit is cheap.
         min_seconds_between_dispatch: 5
-        # Face checks run on a full-resolution still (2560x1920), not the 640x480 substream frame
-        # (2026-10-11): at 640 px Juniper's face at the desk is ~25 px and her own frames scored
-        # 0.09-0.18 against each other. orion-vision-edge grabs it from the main stream in 2-5 s;
-        # any failure falls back to the substream frame. Remove still_url to go back.
-        still_url: http://orion-athena-vision-edge:7100/still
-        still_timeout_sec: 10
+        # No still_url (2026-11-04): the frame itself is the 2560x1920 main stream now. The
+        # 2026-10-11 still from orion-vision-edge existed only because the edge fed the
+        # 640x480 substream (Juniper's face at the desk was ~25 px there).
+    # Activity captions from the Qwen lane (same mechanism as the walkway).
+    # Asked only when the detector saw a person or dog, cropped to the boxes so
+    # the VLM sees the person, not the furniture. Juniper sits still for hours:
+    # the same-scene skip below turns a seated person into one caption per
+    # same_scene_ttl_sec instead of one every 8 s.
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog]
+      min_score: 0.25
+      min_seconds_between_dispatch: 8
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
+      max_inflight: 1
+      # Equal to orion-vision-window's WINDOW_CAPTION_MAX_AGE_SEC.
+      timeout_sec: 20
+      crop_to_detections: true
+      crop_pad: 0.5
+      # Describe, never an existence question: Qwen2-VL-2B answers "no" to
+      # "is there a person" even when one is plainly visible (walkway,
+      # 2026-10-16). Asking what the person is doing names the activity.
+      prompt: >-
+        In one short sentence, describe what the person in this image is doing.
 
   carbon:
     enabled: true

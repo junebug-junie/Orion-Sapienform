@@ -813,7 +813,7 @@ def test_self_senses_are_read_live_per_camera(monkeypatch) -> None:
     loop = _self_loop(_FakeBus(), camera_stream_ids=("cam0", "walkway", "cam0"), camera_street_stream_ids=("walkway",))
     clauses = asyncio.run(loop._read_self_senses())
     assert seen == {"streams": ["cam0", "walkway"], "counted": ["walkway"]}
-    assert clauses[0].startswith("your room camera (cam0") and clauses[0].endswith("receiving frames (newest within the last 15 min)")
+    assert clauses[0].startswith("your office camera (cam0") and clauses[0].endswith("receiving frames (newest within the last 15 min)")
     # Stale walkway: says so, and drops the people range it can no longer vouch for.
     assert "your outdoor camera (walkway" in clauses[1]
     assert clauses[1].endswith("no frames arriving, last frame 2 h ago")
@@ -837,7 +837,7 @@ def test_self_inquiry_kickoff_puts_the_eyes_in_the_prompt(monkeypatch) -> None:
     loop = _self_loop(_FakeBus(), reader=_DefinitionReader(), conn=_GrantConn(), kickoff_via_cortex=False)
     # The module's own globals (conftest may re-import it under another name).
     ci_globals = type(loop).tick_self_inquiry.__globals__
-    clauses = ["your room camera (cam0): receiving frames (newest within the last 15 min)"]
+    clauses = ["your office camera (cam0): receiving frames (newest within the last 15 min)"]
     seen = {}
 
     async def _senses(self):

@@ -462,8 +462,12 @@ class OfficeReachOut:
                     return summary
                 pending = self._pending(sessions, now)
                 if pending:
-                    failures = {str(r["sid"]): int(r["n"]) for r in await conn.fetch(
-                        FAILURES_SQL, now - self.lookback - timedelta(days=1), sorted(FAILED_REASONS))}
+                    failures: dict[str, int] = {}
+                    try:
+                        failures = {str(r["sid"]): int(r["n"]) for r in await conn.fetch(
+                            FAILURES_SQL, now - self.lookback - timedelta(days=1), sorted(FAILED_REASONS))}
+                    except Exception:  # noqa: BLE001 -- the in-process count still caps the attempts
+                        logger.warning("office_reach_out_failures_unread", exc_info=True)
                     pending = [s for s in pending if max(failures.get(s["session_id"], 0),
                                                          self._failures.get(s["session_id"], 0)) < self.max_attempts]
         if self.reach_out_enabled:

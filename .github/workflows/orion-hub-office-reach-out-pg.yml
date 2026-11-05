@@ -1,0 +1,85 @@
+# Workflow: the office reach-out (services/orion-hub/scripts/office_reach_out.py) against a real
+# Postgres: the "already told" claim column survives a Hub restart, and a refused delivery releases it.
+# The hub full-suite job has no database, so these tests skip there; here they must not skip.
+
+name: orion-hub-office-reach-out-pg
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-hub/scripts/office_reach_out.py"
+      - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/tests/test_office_reach_out_pg.py"
+      - "services/orion-sql-db/manual_migration_vision_office_session*.sql"
+      - "services/orion-sql-db/manual_migration_endogenous_outreach_decisions_v1.sql"
+      - ".github/workflows/orion-hub-office-reach-out-pg.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-hub/scripts/office_reach_out.py"
+      - "services/orion-hub/scripts/endogenous_outreach.py"
+      - "services/orion-hub/tests/test_office_reach_out_pg.py"
+      - "services/orion-sql-db/manual_migration_vision_office_session*.sql"
+      - "services/orion-sql-db/manual_migration_endogenous_outreach_decisions_v1.sql"
+      - ".github/workflows/orion-hub-office-reach-out-pg.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  office-reach-out-pg:
+    name: Hub office reach-out — Postgres (must not skip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16 (Docker Hub rate-limits shared runners)
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: conjourney
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        # Same install as orion-hub-full-suite (faster-whisper has no build for this runner).
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^faster-whisper' services/orion-hub/requirements.txt > /tmp/hub-requirements.txt
+          python -m pip install -r /tmp/hub-requirements.txt -r requirements-dev.txt \
+            "fakeredis[lua]>=2.23,<3" "mcp>=1,<2" "pytest-timeout>=2.3,<3"
+      - name: Apply migrations
+        run: |
+          python - <<'PY'
+          import pathlib, psycopg2
+          conn = psycopg2.connect("postgresql://postgres:postgres@localhost:5432/conjourney")
+          conn.autocommit = True
+          for f in ("vision_office_session_v1", "vision_office_session_reach_out_v1", "endogenous_outreach_decisions_v1"):
+              conn.cursor().execute(pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
+          PY
+      - name: Run office reach-out Postgres tests (must not skip)
+        working-directory: services/orion-hub
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-hub
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:cacheprovider --timeout=180 tests/test_office_reach_out_pg.py | tee /tmp/office_pg.out
+          if grep -q "SKIPPED" /tmp/office_pg.out; then echo "office reach-out Postgres tests skipped" >&2; exit 1; fi

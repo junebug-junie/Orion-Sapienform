@@ -27,7 +27,7 @@ def test_strip_lives_inside_the_cabinet_subview() -> None:
 def test_filter_chips_cover_exactly_the_js_series() -> None:
     chips = re.findall(r'data-climate-overlay-series="([^"]+)"', INDEX_HTML)
     js_keys = re.findall(r'\{ key: "([a-z_]+)", label:', OVERLAY_JS)
-    assert chips == js_keys == ["office_temp_c", "cabinet_temp_c", "outdoor_temp_c", "orion_watts"]
+    assert chips == js_keys == ["office_temp_c", "cabinet_temp_c", "closet_temp_c", "outdoor_temp_c", "orion_watts"]
 
 
 def test_window_buttons_match_the_supported_windows() -> None:
@@ -47,3 +47,18 @@ def test_shared_hover_loads_before_every_chart_that_uses_it() -> None:
 def test_office_charts_wire_the_shared_hover() -> None:
     office_js = (HUB_ROOT / "static" / "js" / "office-env.js").read_text(encoding="utf-8")
     assert "chartHover.attachSeriesHover(" in office_js
+
+
+def test_chip_swatch_colors_match_the_js_series_colors() -> None:
+    chips = dict(re.findall(
+        r'data-climate-overlay-series="([^"]+)"[^>]*><span[^>]*style="background:(#[0-9a-f]{6})"', INDEX_HTML))
+    js = dict(re.findall(r'\{ key: "([a-z_]+)", label: "[^"]+", color: "(#[0-9a-f]{6})"', OVERLAY_JS))
+    assert chips == js
+    assert len(set(js.values())) == len(js)
+
+
+def test_cabinet_nano_tiles_sit_under_a_cabinet_sensors_heading() -> None:
+    grid = INDEX_HTML.index('id="cabinetSensorGrid"')
+    heading = INDEX_HTML.rindex("<h3", 0, grid)
+    assert "Cabinet sensors" in INDEX_HTML[heading:grid]
+    assert INDEX_HTML.index('id="energyStrip"') < heading

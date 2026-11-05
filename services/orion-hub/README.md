@@ -3087,6 +3087,12 @@ helpers). Same pan-1 publisher and cadence, so it uses the same `OFFICE_ENV_NODE
 yet (Hub deployed first), the routes answer "no samples yet" (`sample: null`, `points: []`), not an
 error. Same script (`static/js/office-env.js`). Tests: `tests/test_closet_env_routes.py`.
 
+The closet temperature (not CO2) also draws on the **Climate and power — overlay** chart as
+`closet_temp_c` (`GET /api/cabinet/climate/overlay`, `scripts/cabinet_climate_routes.py`), next to the
+office, cabinet and outdoor lines. A missing `closet_env_sample` table reads as no closet line, not an
+error. The Athena Nano tiles further down sit under a **Cabinet sensors — Athena Nanos** heading; a
+sensor not wired to those Nanos (the PMSA003I now lives on the office pan-1 array) shows `absent`.
+
 After deploying sql-writer and Hub on Athena, prove the live path rather than only the
 container state:
 

@@ -15,9 +15,12 @@ What a producer does:
        physiology_shadow_bid family=thought.painting want_id=<id> shadow=funded reason=net_positive
            lane=diffusion real=blocked:thermal_refused act_correlation_id=-
 
-   ``want_id`` is the correlation id of the act the producer opens (grammar_acts), so
-   scripts/analysis/body_economy_shadow_vs_real.py can join the shadow decision (want_ledger) to
-   the real act. ``act_correlation_id`` is set only when the act ended up on a different id.
+   The shadow decision (want_ledger) joins the real act (grammar_acts) in
+   scripts/analysis/body_economy_shadow_vs_real.py by correlation id or by ``object_ref``. For a
+   dream hop ``want_id`` is the act's correlation id; for a waking painting it is the run's
+   correlation id and the join is by ``object_ref`` (``durable_run:<run_id>``), because the act
+   takes the generate step's own correlation id. ``act_correlation_id`` is set only when the act
+   ended up on a different id.
 
 Producers here:
 
@@ -25,7 +28,8 @@ Producers here:
   ``thought.painting``: a hunger (clock) want placed when the baseline schedule issues a painting,
   BEFORE its run exists. want_id = the run's correlation id; object_ref = ``durable_run:<run_id>``,
   the act's own object_ref, so want_ledger joins the act. Real outcome: ``submitted`` or
-  ``blocked:<reason>``.
+  ``blocked:<reason>``. Its reservation is released when the run ends, painted or not
+  (app/visual_steps.py ``_release_self_start_want``), not at the reservation's expiry.
 * the ``generate`` step of a dream-carry image hop (app/visual_steps.py), family
   ``thought.dream_hop``, whose first real generation opens the hop's ``make`` act. want_id = the
   generate step's correlation id, which is the act's correlation id when this step opens it.

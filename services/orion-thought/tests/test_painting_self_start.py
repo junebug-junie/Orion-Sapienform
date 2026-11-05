@@ -201,6 +201,33 @@ def test_self_monitor_probe_is_claimed_when_the_run_is_submitted():
     assert gate.claimed == ["act.thought.painting.make"]
 
 
+def test_a_failed_submit_keeps_the_probe():
+    clock = Clock()
+    gate = Gate(GateDecision("act.thought.painting.make", True, True, "broken", "probe", None))
+    t, _, _ = _trigger(clock, gate=gate, submit_error="http_503")
+    assert _tick(t, NOW) == "submit_failed:http_503"
+    assert gate.claimed == []
+
+
+def test_the_run_deadline_is_the_painting_acts_horizon():
+    """The act's 5400 s horizon (visual_steps.PAINTING_HORIZON_SEC) is the run's own deadline. Fails if
+    the shipped interval and the act horizon drift apart (replaces the dispatch-route horizon test)."""
+    from orion.reverie.baseline import load_baseline_policy
+    from app.visual_steps import PAINTING_HORIZON_SEC
+
+    shipped = load_baseline_policy()
+    clock = Clock()
+    need, _ = clock.eligibility(clock.activity(), now=NOW, policy=shipped)
+    req = pss.build_run_request(need, NOW, shipped)
+    assert (req.admission.deadline_at - NOW).total_seconds() == PAINTING_HORIZON_SEC
+
+
+def test_the_dispatch_prefix_is_the_one_visual_steps_releases_on():
+    from app import visual_steps
+
+    assert visual_steps.SELF_START_DISPATCH_PREFIX == pss.DISPATCH_PREFIX
+
+
 def test_submit_failure_settles_blocked_and_retries_on_the_schedule():
     clock = Clock()
     t, sent, shadows = _trigger(clock, submit_error="unreachable:URLError")
@@ -272,11 +299,21 @@ def test_post_run_refuses_a_receipt_for_another_run(monkeypatch):
 
     import json
 
-    monkeypatch.setattr(pss.urllib.request, "urlopen",
-                        lambda r, timeout: Resp(json.dumps({"run_id": req.run_id, "status": "waiting_resource"}).encode()))
+    good = {"run_id": req.run_id, "status": "waiting_resource", "workflow_kind": "reverie.visual",
+            "requested_resource": "service.route.diffusion"}
+    monkeypatch.setattr(pss.urllib.request, "urlopen", lambda r, timeout: Resp(json.dumps(good).encode()))
     assert pss.post_run("http://durable-runs:8121", req) is None
-    monkeypatch.setattr(pss.urllib.request, "urlopen", lambda r, timeout: Resp(b'{"run_id": "other"}'))
-    assert pss.post_run("http://durable-runs:8121", req) == "receipt_mismatch"
+    for wrong in ({"run_id": "other"}, {"workflow_kind": "curiosity.investigate"},
+                  {"requested_resource": "llm.route.agent"}):
+        body = json.dumps({**good, **wrong}).encode()
+        monkeypatch.setattr(pss.urllib.request, "urlopen", lambda r, timeout, body=body: Resp(body))
+        assert pss.post_run("http://durable-runs:8121", req) == "receipt_mismatch", wrong
+
+    def conflict(r, timeout):
+        raise pss.urllib.error.HTTPError(r.full_url, 409, "Conflict", {}, None)
+
+    monkeypatch.setattr(pss.urllib.request, "urlopen", conflict)
+    assert pss.post_run("http://durable-runs:8121", req) == "http_409"
 
     def down(r, timeout):
         raise OSError("refused")
@@ -374,3 +411,49 @@ async def test_a_self_started_run_opens_and_closes_the_painting_act(env, monkeyp
         assert ev["act"]["test_before"] == f"visual_dispatch:{visual.dispatch_id}"
     assert opened["act"]["act_id"] == closed["act"]["act_id"]
     assert closed["act"]["outcome"]["value"] == 1.0
+
+
+# --- the hunger want's reservation ends with its run ------------------------------------------
+
+def _step_pair(step, status, *, dispatch_id, outcome=None, reason=None, dream=False):
+    from orion.schemas.reverie_visual import VisualRunRequestV1
+    from orion.schemas.reverie_visual_run import DreamHopImageV1, ReverieVisualStepResultV1
+
+    visual = VisualRunRequestV1(dispatch_id=dispatch_id, correlation_id="want-1")
+    req = ReverieVisualStepRequestV1(
+        run_id="run-1", correlation_id="c", step=step, visual_request=visual,
+        attempt_id=None if step in ("prepare", "abandon") else "a1",
+        dream_hop=DreamHopImageV1(carry_run_id="carry", hop_index=1, prompt="p") if dream else None)
+    res = ReverieVisualStepResultV1(run_id="run-1", correlation_id="c", step=step, status=status,
+                                    outcome=outcome, reason=reason, attempt_id="a1", elapsed_sec=1.0)
+    return req, res
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step,status,outcome,reason,dispatch_id,dream,released", [
+    ("caption", "done", "produced", "ok", "painting_self_start:n:1", False, True),
+    ("caption", "terminal", "failed", "deadline", "painting_self_start:n:1", False, True),
+    ("prepare", "terminal", "already_satisfied", "activity_changed", "painting_self_start:n:1", False, True),
+    ("abandon", "done", "unknown", "run_abandoned", "painting_self_start:n:1", False, True),
+    ("caption", "retry", None, "needs_generate", "painting_self_start:n:1", False, False),
+    ("caption", "done", "produced", "ok", "dispatch:proposal:render_scene:t1", False, False),
+    ("caption", "done", "produced", "ok", "painting_self_start:n:1", True, False),
+])
+async def test_the_want_is_released_when_its_run_ends(monkeypatch, step, status, outcome, reason,
+                                                      dispatch_id, dream, released):
+    """Fails before the review fix: a self-started run that ended unpainted kept its funded shadow
+    reservation until expiry (the trigger settles ``submitted`` at the POST)."""
+    from app import visual_steps
+    import orion.physiology.client as client
+
+    calls = []
+
+    async def fake_release(want_id, **_):
+        calls.append(want_id)
+        return 1
+
+    monkeypatch.setattr(client, "arelease", fake_release)
+    req, res = _step_pair(step, status, dispatch_id=dispatch_id, outcome=outcome, reason=reason, dream=dream)
+    visual_steps._release_self_start_want(req, res)
+    await asyncio.sleep(0.01)
+    assert calls == (["want-1"] if released else [])

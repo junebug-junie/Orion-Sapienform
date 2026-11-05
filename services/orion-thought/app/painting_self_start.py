@@ -24,7 +24,8 @@ One tick (every ``ORION_PAINTING_SELF_START_TICK_SEC``, default 60 s):
    broken or unreliable is refused ``track_record_failing``, except one re-test probe per 6 h.
 4. The hunger bid: a SHADOW clock want on ``thought.painting`` (no event: hunger alone) through the
    body-economy market (``orion.physiology.client`` via app/physiology_shadow.py). Logged beside
-   the real outcome, never obeyed: painting is fourth in Juniper's binding order, so its bids bind
+   the real outcome, never obeyed; its reservation is released when the run ends (app/visual_steps.py
+   ``_release_self_start_want``): painting is fourth in Juniper's binding order, so its bids bind
    only in attention patch 3. ``want_id`` is the run's correlation id; ``object_ref`` is
    ``durable_run:<run_id>``, which is also the act's ``object_ref``, so want_ledger joins the act.
 5. Submit one ``reverie.visual`` durable run to orion-durable-runs (``POST /runs``). From there
@@ -46,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -116,9 +118,15 @@ def post_run(base_url: str, request: DurableRunRequestV1, *, timeout_sec: float 
             if resp.status not in (200, 202):
                 return f"http_{resp.status}"
             data = json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:   # 409: durable-runs refused the request (ValueError there)
+        return f"http_{exc.code}"
     except Exception as exc:  # noqa: BLE001 -- any failure is "not submitted"
         return f"unreachable:{type(exc).__name__}"
-    if not isinstance(data, dict) or data.get("run_id") != request.run_id:
+    # The same proof cortex-exec's kickoff required (durable_kickoff.receipt_mismatch): durable-runs
+    # registered THIS run, as this workflow, on this resource.
+    if (not isinstance(data, dict) or data.get("run_id") != request.run_id
+            or data.get("workflow_kind") != request.workflow
+            or data.get("requested_resource") != request.admission.resource):
         return "receipt_mismatch"
     return None
 
@@ -176,8 +184,9 @@ class PaintingSelfStart:
         object_ref = f"durable_run:{request.run_id}"
         decision = None
         if self._gate is not None:
-            self._gate.begin(now)
-            decision = self._gate.decide(PAINT_ACTOR, PAINT_VERB, object_ref, now=now)
+            # Both may block (a Redis GET; a ledger read when the faculty is failing): off the loop.
+            await asyncio.to_thread(self._gate.begin, now)
+            decision = await asyncio.to_thread(self._gate.decide, PAINT_ACTOR, PAINT_VERB, object_ref, now=now)
             if not decision.admit:
                 # The schedule already set its retry clock: the same need is asked again in retry_sec.
                 return self._done(now, f"refused:{decision.reason}", need_id=eligibility.need_id)
@@ -188,12 +197,11 @@ class PaintingSelfStart:
                 shadow = self._shadow_bid(request)
             except Exception:  # noqa: BLE001 -- shadow only
                 shadow = None
-        if decision is not None and decision.probe and not self._gate.claim_probe(decision.faculty, now=now):
-            if shadow is not None:
-                shadow.settle("blocked:track_record_failing")
-            return self._done(now, "refused:track_record_failing", need_id=eligibility.need_id)
-
         error = await self._submit(request)
+        if error is None and decision is not None and decision.probe:
+            # Spent only once the attempt really started (the run exists): a failed submit keeps the
+            # window's probe. One trigger per process, so the claim cannot lose a race here.
+            self._gate.claim_probe(decision.faculty, now=now)
         if shadow is not None:
             shadow.settle("submitted" if error is None else f"blocked:submit_failed:{error}")
         if error is not None:

@@ -1001,7 +1001,42 @@ async def run_visual_step(bus, req: ReverieVisualStepRequestV1, *,
     """Execute one stage, then mirror it into the act ledger. Never raises."""
     result = await _run_visual_step_inner(bus, req, cortex_client=cortex_client, now_fn=now_fn)
     await _mirror_painting_act(bus, req, result)
+    _release_self_start_want(req, result)
     return result
+
+
+SELF_START_DISPATCH_PREFIX = "painting_self_start:"   # app/painting_self_start.DISPATCH_PREFIX
+
+
+def run_ended(req: ReverieVisualStepRequestV1, result: ReverieVisualStepResultV1) -> bool:
+    """True when this step result ends the run: produced, any terminal, or a finished abandon."""
+    return (getattr(result, "outcome", None) == "produced" or result.status == "terminal"
+            or (req.step == "abandon" and result.status == "done"))
+
+
+def _release_self_start_want(req: ReverieVisualStepRequestV1, result: ReverieVisualStepResultV1) -> None:
+    """A self-started painting's trigger placed a shadow want (want_id = the run's correlation id).
+    When the run ends -- painted, refused or abandoned -- its shadow reservation ends with it
+    (Patch C3a release), instead of holding diffusion shadow capacity until expiry. Best-effort,
+    in the background; never touches the step. Dream hops and manual runs placed no such want."""
+    visual = req.visual_request
+    if (req.dream_hop is not None or not visual.correlation_id
+            or not str(visual.dispatch_id or "").startswith(SELF_START_DISPATCH_PREFIX)
+            or not run_ended(req, result)):
+        return
+    try:
+        if not bool(getattr(settings, "thought_physiology_shadow_bid_enabled", True)):
+            return
+        from orion.physiology.client import arelease
+
+        task = asyncio.get_running_loop().create_task(arelease(visual.correlation_id))
+        _release_tasks.add(task)
+        task.add_done_callback(_release_tasks.discard)
+    except Exception:  # noqa: BLE001 -- shadow only
+        logger.info("painting_self_start_release_not_sent run=%s", req.run_id)
+
+
+_release_tasks: set[asyncio.Task] = set()
 
 
 async def _run_visual_step_inner(bus, req: ReverieVisualStepRequestV1, *,

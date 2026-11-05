@@ -11,9 +11,12 @@ shed RPC is sent (closes the agency-episode audit's ``expectation_precommitted``
     (shed_id) -> dispatch result (settlement_state) -> substrate_action_outcomes (outcome.outcome_row_id)
     -> attention_loop_outcome (loop_outcome_id) -> next broadcast tick
 
-Writers: orion-execution-dispatch-runtime (decision + settlement), orion-sql-writer (scoring, via
+Writers: orion-durable-runs' cooling act (decision + settlement, services/orion-durable-runs/app/
+cooling_act.py; execution dispatch until 2026-11-05, ladder retirement PR 5), orion-sql-writer (scoring, via
 orion/autonomy/world_settlement_store.py; it was orion-feedback-runtime until that rung retired 2026-11-04).
-Readers: orion-proposal-runtime (in-flight check), the attend-act eval. Created lazily under a short
+Readers: the cooling act (in-flight and admission checks), the attend-act eval. Since PR 5 an episode has no
+broadcast log, open loop, proposal or dispatch frame: ``decision_id`` is the want market's decision and the
+eligibility snapshot carries the want (``eligibility.want``). Created lazily under a short
 lock_timeout (never blocks a boot); the same DDL is in
 services/orion-sql-db/manual_migration_world_action_episodes_v1.sql.
 """
@@ -62,6 +65,15 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 CREATE INDEX IF NOT EXISTS {TABLE}_unscored_idx ON {TABLE} (scoring_due_at) WHERE scored_at IS NULL;
 CREATE INDEX IF NOT EXISTS {TABLE}_decided_idx ON {TABLE} (decided_at DESC)
 """
+
+
+def stable_draw(episode_id: str) -> float:
+    """Uniform [0, 1) from the decision's id: a crash-and-replay of the same decision always lands in the
+    same arm (a re-roll could send an act on a row already recorded as control). The one draw rule every
+    randomized holdback uses (the cooling act, execution dispatch's act and reading holdbacks)."""
+    import hashlib
+
+    return int(hashlib.sha256(episode_id.encode()).hexdigest()[:13], 16) / float(16 ** 13)
 
 
 def ensure_table(conn, *, lock_timeout_ms: int = 3000) -> None:
@@ -169,4 +181,4 @@ def unsettled_treated(conn, *, limit: int = 20) -> list[dict[str, Any]]:
 
 
 __all__ = ["ARMS", "DDL", "IN_FLIGHT_HORIZON_SEC", "TABLE", "due_for_scoring", "ensure_table", "in_flight",
-           "insert_decision", "record_score", "record_settlement", "unsettled_treated"]
+           "insert_decision", "record_score", "record_settlement", "stable_draw", "unsettled_treated"]

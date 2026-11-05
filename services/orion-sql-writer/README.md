@@ -1190,7 +1190,8 @@ decision within 72 h? Read-only over its sources; writes only `act_downstream_us
 ## World-action settle scoring (moved here 2026-11-04)
 
 `app/world_settlement_loop.py` scores each attend-to-act world-action episode (the
-`shed_background_gpu` trial, treated or randomized-holdback control) on the cabinet sensor once its
+`shed_background_gpu` trial, treated or randomized-holdback control; written by orion-durable-runs'
+cooling act since 2026-11-05, by execution dispatch before) on the cabinet sensor once its
 settle window closes. It writes the outcome row and posterior (treated) or the control cell, Orion's
 non-final `acted` loop verdict, and the episode's score
 (`orion/autonomy/world_settlement_store.py`). It moved here unchanged from orion-feedback-runtime when

@@ -25,6 +25,17 @@ on:
       - "config/physiology/**"
       - "services/orion-sql-db/manual_migration_physiology_state_v1.sql"
       - "orion/autonomy/cabinet_heat.py"
+      - "orion/autonomy/shed_act.py"          # the cooling world act (ladder retirement PR 5): app/cooling_act.py
+      - "orion/autonomy/shed_settlement.py"
+      - "orion/autonomy/self_shed.py"
+      - "orion/autonomy/world_episodes.py"
+      - "orion/autonomy/world_settlement.py"
+      - "orion/autonomy/world_settlement_store.py"
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/hardware_watch/rules.py"
+      - "orion/autonomy/contrast.py"
+      - "orion/autonomy/prediction.py"
+      - "orion/substrate/bus_synaptic_surprise.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
@@ -104,6 +115,18 @@ on:
       - "config/physiology/**"
       - "scripts/analysis/body_economy_binding_replay.py"
       - "orion/schemas/physiology_report.py"
+      - "orion/autonomy/cabinet_heat.py"
+      - "orion/autonomy/shed_act.py"          # the cooling world act (ladder retirement PR 5): app/cooling_act.py
+      - "orion/autonomy/shed_settlement.py"
+      - "orion/autonomy/self_shed.py"
+      - "orion/autonomy/world_episodes.py"
+      - "orion/autonomy/world_settlement.py"
+      - "orion/autonomy/world_settlement_store.py"
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/hardware_watch/rules.py"
+      - "orion/autonomy/contrast.py"
+      - "orion/autonomy/prediction.py"
+      - "orion/substrate/bus_synaptic_surprise.py"
       - "orion/energy/overhead.py"
       - "orion/personality/**"
       - "orion/schemas/personality.py"
@@ -244,6 +267,10 @@ jobs:
         run: |
           python services/orion-durable-runs/evals/curiosity_binding_replay.py
           python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_binding_replay.py
+      - name: Cooling world act eval (ladder retirement PR 5 -- the market decides, only funded sheds, the scorer scores every episode)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/cooling_act_replay.py
       - name: Felt-state binding arcs eval (onset/release anti-flap, no_reading never releases, one arc per constraint)
         env:
           PYTHONPATH: ${{ github.workspace }}

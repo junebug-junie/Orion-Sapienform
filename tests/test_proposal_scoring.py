@@ -494,10 +494,8 @@ def test_every_template_sets_an_explicit_base_priority():
 # this set is a decision, not a default.
 _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
     {"inspect_field_topology_catalog", "inspect_attended_target", "analyze_self_study_source",
-     # 2026-10-01: a workspace.winner world action is never scored on field-pressure dimensions --
-     # orion/proposals/builder.py::_build_workspace_candidates builds it from the winner + its own
-     # physical eligibility rules, so a `dimensions` map here would be a decoration nothing reads.
-     "shed_background_gpu",
+     # (shed_background_gpu, a workspace.winner world action, was here until 2026-11-05: it left the
+     # proposal policy for the want market in ladder retirement PR 5.)
      # 2026-10-21 (thinking rung 3 follow-up, reading pull): a timer on purpose. Nothing in the field
      # measures "worth reading", so a dimension weight would be a hand-typed float. Its pacing is
      # elsewhere and measured: the allocator scores it on the look act's own belief and cost, a

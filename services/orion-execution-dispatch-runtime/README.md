@@ -635,28 +635,18 @@ ordinary extras without a justified signal remain unmeasurable. This is not an
 image-quality or continuity reward.
 
 
-## World actions (attend-to-act loop, 2026-10-01)
+## World actions: moved out 2026-11-05
 
-`shed_background_gpu` is the first SELF_REVERSIBLE_SCOPE route (`config/execution_dispatch/...`
-`template_to_cortex.shed_background_gpu`, executor key `orion.gpu_pool.shed.v1` -> one
-`orion:gpu_pool:shed:request` RPC). Gated three ways: `mode.allow_self_reversible_dispatch` (yaml),
-`ORION_WORLD_ACTIONS_ENABLED` and the template in `ORION_WORLD_ACTIONS_ALLOWED` (both OFF by default;
-blocked candidates say `world_actions_disabled` / `world_action_not_allowed`). Per decision:
-eligibility snapshot older than `ORION_WORLD_ACTION_ELIGIBILITY_MAX_AGE_SEC` -> `world_eligibility_stale`;
-template holdback 0.5 -> control episode row, nothing sent; treated -> precommit row in
-`substrate_world_action_episodes` + `shed_pending` result BEFORE the RPC, latency = RPC wall time (the
-allocator's cost), settled from the pool ledger by `_reconcile_shed_settlements`
-(`orion/execution_dispatch/shed_settlement.py`; orphan at t0 + TTL + 300 s).
-
-Before the treated/control draw, `_world_admission_refusal` drops (records, never decides) anything
-still in flight or that the pool would refuse (`pool_gap`, `pool_daily_cap`, `pool_refusing:*`, using
-`ORION_SHED_MIN_GAP_SEC` / `ORION_SHED_MAX_SEC_PER_DAY`, which must mirror the pool's caps), so both
-arms come from one population. The draw is a hash of `dispatch_id` (a replay lands in the same arm).
-Dependencies: orion-sql-writer's settle scoring (`SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC` > 0; moved
-there from the retired feedback runtime 2026-11-04) must be on -- an unscored
-episode stays "in flight" (6 h horizon), so with scoring off the action fires at most once per 6 h.
-The per-template draw is the only holdback a world action sees (the global per-tick holdback was
-removed 2026-11-04 with the feedback rung), so the treated rate is 0.5.
+The only SELF_REVERSIBLE_SCOPE route, `shed_background_gpu` (the cooling world act), left this service in
+ladder retirement PR 5 (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md). It
+is decided by the want market in orion-durable-runs (`app/cooling_act.py`, family `self_regulate.shed`)
+with the same eligibility, admission, 0.5 treated/control draw, precommitted episode row, shed RPC and
+settlement (`orion/autonomy/shed_act.py`, `orion/autonomy/shed_settlement.py`). This service no longer
+sends `orion:gpu_pool:shed:request` and no longer writes `substrate_world_action_episodes`; the
+`ORION_WORLD_ACTIONS_*`, `ORION_WORLD_ACTION_ELIGIBILITY_MAX_AGE_SEC`, `ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC`
+and `ORION_SHED_*` keys are gone from it. Live 10-26..10-31, the old path blocked nearly every eligible shed
+candidate `world_eligibility_stale` (the proposal -> policy -> dispatch hop took ~160 s against a 120 s
+limit), so it drew no episode after 10-25.
 
 ## Rung-2 acts in the allocator (thinking rung 3, 2026-10-21)
 

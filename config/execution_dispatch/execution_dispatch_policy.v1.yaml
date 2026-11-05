@@ -33,11 +33,10 @@ mode:
   # that flag on purpose: this can be closed without stopping docker pruning,
   # and pruning can be closed without stopping this.
   allow_express_dispatch: true
-  # 2026-10-01: opens SELF_REVERSIBLE_SCOPE (attend-to-act loop A1, shed_background_gpu). Structural
-  # only: the runtime's ORION_WORLD_ACTIONS_ENABLED (default false) and ORION_WORLD_ACTIONS_ALLOWED
-  # (default empty) must ALSO name the template, and the GPU pool must have
-  # GPU_POOL_ORION_SHED_ENABLED -- each closes it on its own.
-  allow_self_reversible_dispatch: true
+  # 2026-10-01..2026-11-05: opened SELF_REVERSIBLE_SCOPE for shed_background_gpu. Closed again in ladder
+  # retirement PR 5: the act left dispatch for the want market (orion-durable-runs app/cooling_act.py), and
+  # no self-reversible route is left here.
+  allow_self_reversible_dispatch: false
 
 allowed_policy_decisions:
   - approved_read_only
@@ -158,15 +157,8 @@ template_to_cortex:
   # cortex-exec's own thought_http_timeout_sec=150, the same staggered-budget
   # discipline the two prune routes use: the innermost hop times out first, so a
   # slow generation is reported rather than severed at an outer layer.
-  # 2026-10-01: attend-to-act loop A1. Not a cortex verb: orion.gpu_pool.shed.v1 is the executor key
-  # the dispatch runtime maps to one orion:gpu_pool:shed:request RPC (set orion_self_shed). No
-  # kind-level fallback for self_regulate on purpose -- there is exactly one such action.
-  shed_background_gpu:
-    dispatch_kind: self_regulate
-    cortex_verb: orion.gpu_pool.shed.v1
-    cortex_mode: brain
-    allowed_scope: self_reversible
-    rpc_timeout_sec: 10
+  # 2026-11-05 (ladder retirement PR 5): the shed_background_gpu route (executor orion.gpu_pool.shed.v1)
+  # is gone. The cooling world act is decided by the want market in orion-durable-runs (app/cooling_act.py).
 
   # 2026-10-21 (thinking rung 3): this dispatch IS the thought.painting `make` act -- the act's
   # key is reverie_visual_run_id(dispatch_id) and its test_before is visual_dispatch:<dispatch_id>

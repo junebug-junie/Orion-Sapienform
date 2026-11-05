@@ -11,7 +11,7 @@
 
 This is the same market's record, not a second menu: nothing here scores or re-decides a want. The
 label is the source row's own words (a read's title, an ask's question), so Prime can say what the
-event is.
+event is; a cooling-act want's label comes from its own ref (the cabinet reading's node and time).
 """
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ from orion.schemas.physiology_want import FundedEventWantsV1, FundedEventWantV1
 
 READ_PREFIX = "world_pulse_read_seed:"
 ASK_PREFIX = "orion_ask:"
+# The cooling world act (ladder retirement PR 5, orion/autonomy/shed_act.py): cabinet_reading:<node>:<UTC second>.
+CABINET_PREFIX = "cabinet_reading:"
 MAX_HOURS = 72.0
 MAX_LIMIT = 50
 
@@ -102,6 +104,11 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
         if read_ids:
             for r in await (await conn.execute(READ_LABELS_SQL, {"ids": read_ids})).fetchall():
                 labels[f"{READ_PREFIX}{r['seed_id']}"] = f"a read finished: {r['title'] or r['url']}"[:300]
+        for ref in refs:
+            if ref.startswith(CABINET_PREFIX):
+                # The ref is the reading itself (node and time), so the label needs no source-row read.
+                node, _, at = ref[len(CABINET_PREFIX):].partition(":")
+                labels[ref] = f"the {node} cabinet was warming at {at} (Orion's cooling act)"[:300]
         if ask_ids:
             for r in await (await conn.execute(ASK_LABELS_SQL, {"ids": ask_ids})).fetchall():
                 ref = f"{ASK_PREFIX}{r['ask_id']}"

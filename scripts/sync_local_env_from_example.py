@@ -406,17 +406,17 @@ SYNC_PREFIXES = (
     # The curiosity replica (orion-mind, 2026-11-04 patch 3): loop-library instance #2. Hub's side
     # (HUB_CURIOSITY_REPLICA_ARM_*) is already covered by HUB_CURIOSITY_.
     "CURIOSITY_REPLICA_",
-    # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
-    # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
-    # (sql-writer since 2026-11-04; was the feedback runtime) and the cabinet attention bridge
-    # (substrate runtime). The pool's own
+    # Attend-to-act loop (2026-10-01): settle-time scoring (sql-writer since 2026-11-04; was the feedback
+    # runtime) and the cabinet attention bridge (substrate runtime). Since 2026-11-05 (ladder retirement
+    # PR 5) the cooling world act lives in orion-durable-runs: ORION_COOLING_ACT_*, the hardware-watch URL,
+    # the rise threshold, the shed RPC/TTL/caps and the outcome channel. The pool's own
     # GPU_POOL_ORION_SHED_* keys are already covered by GPU_POOL_.
-    "ORION_WORLD_ACTION",
     "SQL_WRITER_WORLD_SETTLEMENT_",
-    "ORION_WORKSPACE_WINNER_",
+    "ORION_COOLING_ACT_",
     "ORION_HARDWARE_WATCH_HEALTH_URL",
     "ORION_SHED_",
     "ORION_GPU_POOL_SHED_",
+    "BUS_ACTION_OUTCOME_OUT",
     "SUBSTRATE_CABINET_HEAT_",
     # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
     "ORION_SITUATION_PERCEPTION_",

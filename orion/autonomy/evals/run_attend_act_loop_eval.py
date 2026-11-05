@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from orion.autonomy.allocator import allocate, candidate_from_dispatch, expected_information_gain_nats  # noqa: E402
-from orion.autonomy.attend_act_loop import check_chain, contrast  # noqa: E402
+from orion.autonomy.attend_act_loop import check_chain, contrast, is_market_episode  # noqa: E402
 from orion.autonomy.cabinet_heat import cabinet_heat_pressure, read_cabinet_heat  # noqa: E402
 from orion.autonomy.prediction import DEFAULT_OBSERVATION_VARIANCE, DEFAULT_PRIOR_VARIANCE  # noqa: E402
 from orion.hardware_watch.rules import TempPoint  # noqa: E402
@@ -88,6 +88,21 @@ def fixture_checks() -> list[tuple[str, bool]]:
     m["episode"]["outcome"] = {"excluded_reason": "overlap:reflex", "overlap": ["overlap:reflex"], "posterior_updated": False}
     m["outcome_row"] = None
     checks.append(("preempted_by_reflex_chain_is_clean", check_chain(m) == []))
+
+    # The market chain (ladder retirement PR 5): the cooling act decided by the want market.
+    mt, mc = src["market_treated"], src["market_control"]
+    checks += [("complete_market_treated_chain_passes", check_chain(mt) == []),
+               ("complete_market_control_chain_passes", check_chain(mc) == [])]
+    for link in ("want_decision", "pool_shed", "outcome_row"):
+        m = deepcopy(mt)
+        m[link] = None
+        fails(f"market_missing_{link}_fails", m, "missing_link")
+    m = deepcopy(mc)
+    m["want_decision"] = {"outcome": "deferred", "reason": "sated"}
+    fails("market_episode_from_a_deferral_fails", m, "episode_without_a_funded_decision")
+    m = deepcopy(mt)
+    m["episode"]["created_at"] = "2026-10-02T12:00:05+00:00"
+    fails("market_late_expectation_fails", m, "expectation_not_precommitted")
 
     # Check 1: the outcome scale, on the thermal gate's own constants.
     checks.append(("check1_pressure_scale", cabinet_heat_pressure(27.9) == 0.0 and cabinet_heat_pressure(29.5) == 0.375
@@ -158,6 +173,23 @@ def live(days: float) -> dict:
             chains = []
             for ep in eps:
                 ch: dict = {"episode": ep}
+                if is_market_episode(ep):
+                    # The cooling act since 2026-11-05: the market's decision, the pool's shed, the outcome row.
+                    cur.execute("SELECT outcome, reason, decision_id FROM want_ledger WHERE decision_id = %s LIMIT 1",
+                                (ep.get("decision_id"),))
+                    ch["want_decision"] = cur.fetchone()
+                    ch["pool_shed"] = None
+                    if ep["arm"] == "treated":
+                        cur.execute("SELECT * FROM gpu_pool_orion_shed WHERE dispatch_id = %s", (ep["episode_id"],))
+                        ch["pool_shed"] = cur.fetchone()
+                    cur.execute("SELECT id FROM substrate_action_outcomes WHERE dispatch_id = %s "
+                                "AND signal_id = 'cabinet_heat_pressure'", (ep["episode_id"],))
+                    ch["outcome_row"] = cur.fetchone()
+                    cur.execute("SELECT rule, opened_at FROM hardware_watch_incident WHERE opened_at >= %s AND opened_at <= %s",
+                                (ep["decided_at"], ep["decided_at"] + timedelta(minutes=25)))
+                    ch["incidents"] = [dict(r) for r in cur.fetchall()]
+                    chains.append(ch)
+                    continue
                 cur.execute("SELECT generated_at, projection_json->>'selected_open_loop_id' AS selected_open_loop_id, "
                             "(projection_json->>'dwell_ticks')::int AS dwell_ticks FROM substrate_attention_broadcast_log "
                             "WHERE log_id = %s", (ep.get("broadcast_log_id"),))

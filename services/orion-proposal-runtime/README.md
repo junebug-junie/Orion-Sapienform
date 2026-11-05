@@ -143,10 +143,11 @@ Arousal is consulted only after every other baseline check passed, so it can onl
 withhold an image, never issue one; the thermal gate downstream does not read it.
 
 
-## Workspace-winner world candidates (attend-to-act loop, 2026-10-01)
+## Workspace-winner world candidates: retired 2026-11-05
 
-`ORION_WORKSPACE_WINNER_PROPOSALS_ENABLED` (record-only on its own; ON in .env_example): reads the
-workspace broadcast winner; only when it binds to a `workspace.winner` template (<= 90 s, dwell >= 2,
-node in `binds_to_nodes`) does it read the cabinet history, hardware-watch `/health`
-(`ORION_HARDWARE_WATCH_HEALTH_URL`), pool background occupancy and the episode ledger, and evaluate
-`orion/autonomy/self_shed.py`. Ineligible or unbindable -> a frame warning, never a silent drop.
+The only `workspace.winner` template, `shed_background_gpu` (the cooling world act), left the proposal
+policy in ladder retirement PR 5 (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md).
+The act is now decided by the want market in orion-durable-runs (`app/cooling_act.py`, family
+`self_regulate.shed`). This runtime no longer reads the workspace winner, the cabinet, hardware-watch or the
+episode ledger; `ORION_WORKSPACE_WINNER_PROPOSALS_ENABLED`, `ORION_HARDWARE_WATCH_HEALTH_URL` and
+`ORION_SHED_RISE_THRESHOLD_C` are gone from this service.

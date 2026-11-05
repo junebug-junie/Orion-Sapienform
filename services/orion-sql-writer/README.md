@@ -596,6 +596,17 @@ tick at most every `VISION_PERSON_MODEL_INTERVAL_SEC` (600), flag
 answers (design: `docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md`).
 Each tick it:
 
+**Camera priors** (2026-11-04, the office camera). `config/person_model/camera_priors.example.yaml`
+(committed, only Juniper) and its gitignored `camera_priors.local.yaml` (household names, read first)
+say who is usually in front of a camera. On such a camera, when no album match is confident, the
+guess is the most likely person there instead of the highest raw score (an office crop scored
+another household member higher than Juniper by body); a reject bound fitted on other cameras is
+ignored until the person's album has a crop from this camera; an `accept` still wins. The guess
+carries `basis = prior` (`vision_person_attribution.basis`, manual_migration_vision_person_basis_v1.sql),
+so the existing "Is this Juniper?" asks ask the right name, and the office line says
+"probably Juniper (my guess from who is usually here, not confirmed)". Live replay, read-only:
+`evals/run_office_prior_replay.py`.
+
 1. Reconciles the album (`vision_person_exemplar`). A cluster Juniper named
    (typed: `cluster_label`; carried by a "same person" answer: `pair_same`)
    adds its crops as +1 for that name. A "different" picture adds its crop as

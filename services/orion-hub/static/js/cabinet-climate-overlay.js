@@ -25,6 +25,7 @@
   var SERIES = [
     { key: "office_temp_c", label: "office", color: "#3987e5", unit: "°C", digits: 1, panel: "temp" },
     { key: "cabinet_temp_c", label: "cabinet", color: "#d95926", unit: "°C", digits: 1, panel: "temp" },
+    { key: "closet_temp_c", label: "closet", color: "#e09a00", unit: "°C", digits: 1, panel: "temp" },
     { key: "outdoor_temp_c", label: "outdoor", color: "#199e70", unit: "°C", digits: 1, panel: "temp" },
     { key: "orion_watts", label: "Orion power", color: "#9085e9", unit: "W", digits: 0, panel: "watts" },
   ];
@@ -32,7 +33,7 @@
   var els = {};
   var state = {
     window: "24h",
-    enabled: { office_temp_c: true, cabinet_temp_c: true, outdoor_temp_c: true, orion_watts: true },
+    enabled: { office_temp_c: true, cabinet_temp_c: true, closet_temp_c: true, outdoor_temp_c: true, orion_watts: true },
     payload: null,
     lastFetchAt: 0,
     request: 0,

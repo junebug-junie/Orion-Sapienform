@@ -225,7 +225,7 @@ a sign of a new bug.
 
 Chroma and Convex are non-critical services (an internal vector store and an
 AI-town simulation backend, not user-facing production data paths), so the
-downtime during the 03:45 backup window is an acceptable trade for actual
+downtime during the 05:00 Mountain backup window is an acceptable trade for actual
 consistency -- unlike Postgres/FalkorDB above, which stay fully up via their
 own online-backup mechanisms.
 
@@ -292,8 +292,11 @@ sudo systemctl enable --now orion-backup-databases.timer
 systemctl list-timers orion-backup-databases.timer
 ```
 
-Runs at 03:45 local time, offset 30 minutes after the `/mnt/scripts` backup's
-03:15 slot to avoid the two jobs contending for disk I/O at the same moment.
+Runs at 05:00 Mountain time (`OnCalendar=*-*-* 05:00:00 America/Denver`; the host
+clock is UTC, so this is 12:00 UTC in winter and 11:00 UTC in summer). Moved from
+03:45 UTC on 2026-11-05: that is evening in Mountain time, and a running `pg_dump`
+holds post-pull migrations and the deploys that need them. It no longer sits next to
+the `/mnt/scripts` backup's 03:15 UTC slot, so the two jobs never contend for disk I/O.
 
 ### Notifications
 

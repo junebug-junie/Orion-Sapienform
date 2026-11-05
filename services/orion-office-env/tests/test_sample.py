@@ -164,7 +164,7 @@ def test_particulate_and_light_carry_readings() -> None:
     assert (m.office_pm1_ug_m3, m.office_pm25_ug_m3, m.office_pm10_ug_m3) == (1, 3, 4)
     assert m.office_lux == 412.5
     assert m.office_temp_c is None  # SHT40 absent: omitted, not zero
-    assert s.state.light_saturated is False
+    assert s.state.light_saturated is None
 
 
 def test_saturated_light_has_no_lux_and_says_so() -> None:
@@ -180,7 +180,7 @@ def test_saturated_light_has_no_lux_and_says_so() -> None:
 def test_saturated_light_alone_is_not_a_fresh_reading() -> None:
     s = _build(_raw(light={"saturated": True}), age_sec=1.0)
     assert s.state.stale is True
-    assert s.state.light_saturated is False
+    assert s.state.light_saturated is None
 
 
 def test_out_of_range_pm_and_lux_are_dropped_not_clamped() -> None:

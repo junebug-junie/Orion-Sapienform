@@ -76,3 +76,21 @@ async def test_closet_room_publishes_closet_kind_on_closet_channel() -> None:
     assert envelope.payload["measurements"] == {
         "closet_co2_ppm": 612, "closet_temp_c": 29.1, "closet_humidity_pct": 23.0,
     }
+
+
+@pytest.mark.asyncio
+async def test_office_payload_stays_valid_for_a_pre_pm_light_consumer() -> None:
+    """A sample with no PM/lux readings must not carry the new keys at all, so a sql-writer
+    whose extra="forbid" model predates them still accepts it (deploy-order safety)."""
+    store = FrameStore()
+    store.put(parse_line(GOOD), NOW)
+    settings = get_settings()
+    bus = MagicMock()
+    bus.enabled = True
+    bus.publish = AsyncMock()
+    await office_main.publish_sample(bus, settings, office_main.make_sample(store, settings, now_fn=lambda: NOW))
+    payload = bus.publish.await_args.args[1].payload
+    new_keys = {"office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux"}
+    assert not new_keys & payload["measurements"].keys()
+    assert "light_saturated" not in payload["state"]
+    assert payload["measurements"] == {"office_temp_c": 22.0, "office_humidity_pct": 28.0}

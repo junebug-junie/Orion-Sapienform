@@ -143,7 +143,9 @@ class OfficeEnvStateV1(BaseModel):
     air_warming: bool = False
     # True when the TSL2591 overflowed even at its lowest gain: brighter than it can
     # measure (direct sun on the windowsill). ``office_lux`` is then absent, not zero.
-    light_saturated: bool = False
+    # None (omitted on the wire) otherwise, so a payload without a saturated light stays
+    # valid for consumers that predate this field (extra="forbid" deploy order).
+    light_saturated: Optional[bool] = None
 
 
 class OfficeEnvProvenanceV1(BaseModel):

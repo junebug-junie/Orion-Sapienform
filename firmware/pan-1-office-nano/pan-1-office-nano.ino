@@ -23,7 +23,8 @@
  * PMSA003I: values are sent only 30 s after each sensor start (datasheet: the fan
  *   needs 30 s before data is stable). CF=1 "standard" values, same as Athena.
  * TSL2591: gain is auto-ranged. A reading saturated even at the lowest gain sends
- *   `light.saturated=true` with no lux (too bright to measure, not zero light).
+ *   `light.saturated=true` with no lux (too bright to measure, not zero light). A reading
+ *   too dark for the current gain (full == 0) also has no lux; the gain steps up.
  * SCD40: photoacoustic CO2 (a real CO2 measurement), new reading every 5 s.
  *   Automatic self-calibration stays at the factory default (on).
  *
@@ -32,6 +33,7 @@
  */
 
 #include <Wire.h>
+#include <math.h>
 #include <ArduinoJson.h>
 #include <Adafruit_SHT4x.h>
 #include <Adafruit_CCS811.h>
@@ -89,6 +91,9 @@ static const tsl2591Gain_t kTslGains[] = {TSL2591_GAIN_LOW, TSL2591_GAIN_MED, TS
                                           TSL2591_GAIN_MAX};
 static const uint16_t kTslGainX[] = {1, 25, 428, 9876};
 static uint8_t tsl_gain_idx = 1;
+// ADC full scale at the 100 ms integration time (ams datasheet). The Adafruit library only
+// flags 0xFFFF, which a 100 ms channel never reaches, so saturation is checked against this.
+static constexpr uint16_t TSL_MAX_COUNT_100MS = 36863;
 
 static uint32_t scd_read_ms = 0, scd_last_poll_ms = 0;
 static bool scd_have_reading = false;
@@ -232,15 +237,17 @@ static void add_light(JsonDocument &doc) {
   const uint16_t full = lum & 0xFFFF;
   const uint8_t used_gain = tsl_gain_idx;
   const float lux = tsl.calculateLux(full, ir);
-  // calculateLux returns a negative value when a channel overflowed.
-  const bool saturated = lux < 0 || full >= 0xFFFF || ir >= 0xFFFF;
+  const bool saturated = lux < 0 || full >= TSL_MAX_COUNT_100MS || ir >= TSL_MAX_COUNT_100MS;
+  // full == 0 (darker than this gain can see) divides by zero, and ir > full is low-count
+  // noise that yields a positive garbage lux. Both are unmeasurable: lux is omitted.
+  const bool measurable = !saturated && full > 0 && ir <= full && isfinite(lux);
   JsonObject light = doc.createNestedObject("light");
   light["full"] = full;
   light["ir"] = ir;
   light["gain_x"] = kTslGainX[used_gain];
   // Saturated at a higher gain just means "step down"; only the lowest gain means too bright.
   light["saturated"] = saturated && used_gain == 0;
-  if (!saturated) light["lux"] = lux;
+  if (measurable) light["lux"] = lux;
   // Auto-range for the next frame.
   if (saturated || full > 30000) {
     if (tsl_gain_idx > 0) tsl_gain_idx--;
@@ -259,6 +266,9 @@ void setup() {
   ccs_ok = init_ccs811();
   pm_ok = init_pmsa003i();
   tsl_ok = init_tsl2591();
+  // The SCD40 needs ~1 s after power-up before it accepts commands; the Serial wait above
+  // returns at once when the host already has the port open.
+  while (millis() < 1000) delay(10);
   scd_ok = init_scd40();
 }
 

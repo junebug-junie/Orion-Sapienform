@@ -101,7 +101,9 @@ async def publish_sample(bus: OrionBusAsync, settings: Settings, sample: EnvSamp
         source=ServiceRef(
             name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.INSTANCE_ID
         ),
-        payload=sample.model_dump(mode="json", by_alias=True),
+        # exclude_none: absent readings are omitted on the wire, never sent as null. It also
+        # keeps a payload without PM/lux readings valid for a sql-writer that predates them.
+        payload=sample.model_dump(mode="json", by_alias=True, exclude_none=True),
     )
     try:
         await bus.publish(channel, envelope)

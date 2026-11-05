@@ -96,9 +96,13 @@ no rebuild hook. Deploy from the clean primary `main` checkout:
 
 ```bash
 cd /mnt/scripts/Orion-Sapienform
-cp services/orion-office-env/.env_example services/orion-office-env/.env   # first time; then set OFFICE_SERIAL_DEVICE_HOST
-ls /dev/serial/by-id/
-scripts/safe_docker_build.sh orion-office-env up -d --build
+cp services/orion-office-env/.env_example services/orion-office-env/.env   # first time
+python scripts/sync_local_env_from_example.py --all-keys orion-office-env   # later: adds new keys
+ls /dev/serial/by-id/   # set OFFICE_SERIAL_DEVICE_HOST and CLOSET_SERIAL_DEVICE_HOST in .env
+# Deploy each container by name: a missing device (unplugged Nano, CHANGE-ME placeholder)
+# makes compose refuse that container, and must not block the other room.
+scripts/safe_docker_build.sh orion-office-env up -d --build orion-office-env
+scripts/safe_docker_build.sh orion-office-env up -d --build orion-closet-env
 ```
 
 **Deploy order for a schema change (e.g. the CCS811 fields, 2026-11-03):** the bus schema
@@ -128,8 +132,8 @@ docker logs --tail 20 orion-pan-1-orion-closet-env
 let `orion-sql-writer` rebuild on athena, and check that its boot DDL added
 `office_pm1_ug_m3`, `office_pm25_ug_m3`, `office_pm10_ug_m3`, `office_lux`, `light_saturated`
 and that `create_all` made `closet_env_sample`. Then on pan-1: pull main, set
-`CLOSET_SERIAL_DEVICE_HOST` in `services/orion-office-env/.env`, flash the office Nano, and
-`scripts/safe_docker_build.sh orion-office-env up -d --build` (starts both containers).
+`CLOSET_SERIAL_DEVICE_HOST` in `services/orion-office-env/.env`, and bring up each container
+by name (commands above).
 
 ## Closet CO2 calibration
 

@@ -128,7 +128,7 @@ def build_sample(
         state=OfficeEnvStateV1(
             stale=stale,
             air_warming=warming and not stale,
-            light_saturated=saturated and not stale,
+            light_saturated=True if saturated and not stale else None,
         ),
         provenance=OfficeEnvProvenanceV1(
             frame_seq=frame.seq if frame is not None else None,

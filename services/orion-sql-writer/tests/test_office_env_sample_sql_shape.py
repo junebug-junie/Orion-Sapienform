@@ -115,7 +115,7 @@ def test_particulate_and_light_round_trip_to_columns() -> None:
     row = _write_keys(sample.model_dump(mode="json", by_alias=True))
     assert (row["office_pm1_ug_m3"], row["office_pm25_ug_m3"], row["office_pm10_ug_m3"]) == (1, 3, 4)
     assert row["office_lux"] == 812.25
-    assert row["light_saturated"] is False
+    assert "light_saturated" not in row  # omitted unless saturated: NULL, not false
 
 
 def test_saturated_light_stores_null_lux_and_the_flag() -> None:

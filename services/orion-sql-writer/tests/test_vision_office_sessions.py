@@ -63,6 +63,23 @@ def test_open_visit_dark_camera_and_producer_restart():
 
 def test_a_stretch_opened_before_the_rows_given_is_not_a_visit():
     assert vos.build_spans([tr("recent", 0, "present", 1), tr("absent", 100, "recent", 2)]) == []
+    # A keepalive with no open visit opens nothing (its start is unknown).
+    assert vos.build_spans([tr("present", 0, "present", 1), tr("recent", 50, "present", 2)]) == []
+
+
+def test_a_visit_whose_producer_died_closes_stale_at_its_last_row():
+    rows = [tr("present", 0, "absent", 1), tr("present", 600, "present", 2)]
+    (s,) = vos.build_spans(rows, now=at(600 + 1499))
+    assert s.ended_at is None
+    (s,) = vos.build_spans(rows, now=at(600 + 1501))
+    assert s.ended_at == at(600) and s.end_reason == "stale"
+
+
+def test_one_crowded_frame_is_not_a_second_person():
+    assert vos.sustained_peak([1, 1, 2, 1]) == 1
+    assert vos.sustained_peak([1, 2, 2, 1]) == 2
+    assert vos.sustained_peak([3, 2, 1]) == 2
+    assert vos.sustained_peak([2]) == 2 and vos.sustained_peak([]) == 0
 
 
 # --------------------------------------------------------------------------- timeline
@@ -147,6 +164,21 @@ def test_evidence_outside_the_household_is_a_stranger_and_not_also_juniper():
     w = who_of_session([rec("r1", "Neighbor", basis="evidence")], peak_people=1, prior=PRIOR)
     assert w["text"] == "someone I don't know" and w["unknown_reason"] == "evidence"
     assert w["stranger_ids"] == ["r1"]
+    # The same stranger split into a second record that got the prior's guess: still one head.
+    w = who_of_session([rec("r1", "Juniper"), rec("r2", "Neighbor", basis="evidence")], peak_people=1, prior=PRIOR)
+    assert w["text"] == "someone I don't know" and w["unassigned_ids"] == ["r1"]
+    # An album person who is not usually here is "maybe", not "someone I don't know".
+    w = who_of_session([rec("r1", "Neighbor", basis="evidence")], peak_people=1, prior=PRIOR, known_names=["Neighbor"])
+    assert w["text"] == "Neighbor (maybe)" and w["unknown"] == 0
+
+
+def test_a_named_person_is_not_also_probably_juniper():
+    # One head: the name Juniper gave explains it; the prior adds nobody.
+    for other in (rec("r2", "Juniper"), rec("r2")):
+        w = who_of_session([rec("r1", label="Sibling"), other], peak_people=1, prior=PRIOR)
+        assert w["text"] == "Sibling" and w["unknown"] == 0
+    w = who_of_session([rec("r1", label="Sibling"), rec("r2", "Juniper")], peak_people=2, prior=PRIOR)
+    assert w["text"] == "Sibling and Juniper (probably)"
 
 
 def test_household_member_by_score_and_a_confident_match():

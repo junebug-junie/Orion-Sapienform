@@ -86,7 +86,13 @@ class Span:
     refs: List[str] = field(default_factory=list)
 
 
-def build_spans(rows: Iterable[Mapping[str, Any]]) -> List[Span]:
+# Same as the Temporal Self's company_stale_sec: vision-window writes a keepalive every 600 s while
+# someone is present, so no row for 2.5x that means the producer died without a closing row.
+STALE_SEC = 1500.0
+
+
+def build_spans(rows: Iterable[Mapping[str, Any]], now: Optional[datetime] = None,
+                stale_sec: float = STALE_SEC) -> List[Span]:
     """Presence rows (one stream, oldest first) -> visits, the same rules as the Temporal Self
     company arc (``orion/temporal_self/arcs.py`` ``_fold_presence``), so a session and its arc
     cover the same stretch:
@@ -98,8 +104,11 @@ def build_spans(rows: Iterable[Mapping[str, Any]]) -> List[Span]:
     * a row with ``from_state`` NULL / absent / unknown while a visit is open means the closing
       row was lost (a producer restart): the visit ends at its last row.
 
+    * no row for ``stale_sec`` before ``now`` while a visit is open (the producer died without a
+      closing row): it ends at its last row, ``end_reason = 'stale'``.
+
     A stretch whose opening row is before the rows given is not a visit here (its start is
-    unknown)."""
+    unknown), and a keepalive with no open visit opens nothing."""
     out: List[Span] = []
     cur: Optional[Span] = None
     left_at: Optional[datetime] = None   # the 'recent' row: when the person was last seen
@@ -108,8 +117,9 @@ def build_spans(rows: Iterable[Mapping[str, Any]]) -> List[Span]:
         ref = str(r.get("transition_id") or "")
         if t is None:
             continue
-        if cur is not None and frm is not None and frm == to_state:
-            cur.last_seen_at = max(cur.last_seen_at, t)
+        if frm is not None and frm == to_state:
+            if cur is not None:
+                cur.last_seen_at = max(cur.last_seen_at, t)
             continue
         if cur is not None and frm in (None, "absent", "unknown"):
             cur.ended_at, cur.end_reason = cur.last_seen_at, "producer_restart"
@@ -142,6 +152,8 @@ def build_spans(rows: Iterable[Mapping[str, Any]]) -> List[Span]:
             out.append(cur)
             cur, left_at = None, None
     if cur is not None:
+        if now is not None and (now - cur.last_seen_at).total_seconds() > stale_sec:
+            cur.ended_at, cur.end_reason = cur.last_seen_at, "stale"
         out.append(cur)
     return out
 
@@ -261,7 +273,8 @@ def _dominant(prior: Mapping[str, float], dominance: float) -> Optional[str]:
 
 
 def who_of_session(records: Sequence[Record], *, peak_people: Optional[int], props: int = 0,
-                   prior: Optional[Mapping[str, float]] = None, dominance: float = 0.5) -> dict:
+                   prior: Optional[Mapping[str, float]] = None, dominance: float = 0.5,
+                   known_names: Iterable[str] = ()) -> dict:
     """Who was probably in the visit.
 
     Each unnamed record is classified: a name Juniper gave (``named``), a confident album match
@@ -278,7 +291,9 @@ def who_of_session(records: Sequence[Record], *, peak_people: Optional[int], pro
     """
     spelled = {str(k).strip().casefold(): str(k).strip() for k in (prior or {}) if str(k).strip()}
     prior = {str(k).strip().casefold(): float(v) for k, v in (prior or {}).items() if str(k).strip()}
-    household = set(prior)
+    # Names an unsure score may honestly say "(maybe)" for: the camera prior's household and every
+    # person in the album (a known person, even if not usually here, is not "someone I don't know").
+    household = set(prior) | {str(n).strip().casefold() for n in known_names if str(n).strip()}
     dominant = _dominant(prior, dominance)
     # casefolded name -> (rank, display name, individual ids)
     people: Dict[str, List[Any]] = {}
@@ -304,7 +319,9 @@ def who_of_session(records: Sequence[Record], *, peak_people: Optional[int], pro
             if r.band == "accept":
                 add(r.guess, "matched", r.individual_id)
             elif (r.basis or "evidence") == "prior":
-                add(r.guess, "prior", r.individual_id)
+                # The prior's guess is not evidence: it may fill one head below, never a head
+                # a name or a stranger already explains.
+                covered.append(r.individual_id)
             elif g in household:
                 add(r.guess, "likely", r.individual_id)
             else:
@@ -318,14 +335,19 @@ def who_of_session(records: Sequence[Record], *, peak_people: Optional[int], pro
     heads = max(1, int(peak_people) - max(0, int(props))) if peak_people is not None else 1
     # A stranger record is one unknown head (several stranger records may be one split person).
     stranger_heads = 1 if strangers else 0
-    if dominant is not None and (covered or (dominant not in people and heads > len(people) + stranger_heads)):
-        # The prior covers ONE person: the records with no guess yet, or a person in view with no
-        # record at all (visits before the office crop pipeline, PR #3125). Spelled as the config
-        # spells it, or as a record already has it.
-        display = people[dominant][1] if dominant in people else spelled[dominant]
-        add(display, "prior", None)
+    unassigned: List[str] = []
+    if dominant is not None and dominant not in people and heads > len(people) + stranger_heads:
+        # The prior covers ONE head nobody else explains: the prior-guessed and not-yet-guessed
+        # records, or a person in view with no record at all (visits before the office crop
+        # pipeline, PR #3125). Spelled as the config spells it.
+        add(spelled[dominant], "prior", None)
         for iid in covered:
-            add(display, "prior", iid)
+            add(spelled[dominant], "prior", iid)
+    elif dominant is not None and dominant in people:
+        for iid in covered:   # the same name already stands for a head: these records are probably it
+            add(spelled[dominant], "prior", iid)
+    else:
+        unassigned = list(covered)   # every head is explained; these are split records of those people
     by_count = max(0, heads - len(people) - stranger_heads)
     unknown = stranger_heads + by_count
     ordered = sorted(people.values(), key=lambda p: (_RANK[p[0]], p[1].casefold()))
@@ -345,6 +367,7 @@ def who_of_session(records: Sequence[Record], *, peak_people: Optional[int], pro
         # record's own scores point outside the household, or nothing can cover it), or both.
         "unknown_reason": "+".join(w for w, on in (("count", by_count > 0), ("evidence", bool(strangers))) if on) or None,
         "stranger_ids": sorted(strangers),
+        "unassigned_ids": sorted(unassigned),
         "peak_people": peak_people,
         "props": int(props),
         "records": len(records),
@@ -446,6 +469,16 @@ def _captions(conn, stream: str, lo: datetime, hi: datetime) -> List[dict]:
     return out
 
 
+def album_names(conn) -> List[str]:
+    """The people in the person model's album (names Juniper gave), or none before its migration."""
+    from sqlalchemy import text
+
+    if not _present(conn, "vision_person_exemplar"):
+        return []
+    return [r[0] for r in conn.execute(text(
+        "SELECT DISTINCT person_label FROM vision_person_exemplar WHERE revoked_at IS NULL AND polarity = 1"))]
+
+
 def _records(conn, stream: str, lo: datetime, hi: datetime) -> Tuple[List[Record], int, Dict[str, List[Tuple]]]:
     """(person records sighted in [lo, hi], stationary person records, record -> sighting rows)."""
     from sqlalchemy import text
@@ -501,20 +534,34 @@ def _peak(conn, stream: str, lo: datetime, hi: datetime) -> Tuple[Optional[int],
         "WHERE stream_id = :s AND observed_at >= :lo AND observed_at <= :hi"), {"s": stream, "lo": lo, "hi": hi}).fetchall()
     if not rows:
         return None, []
-    peak = 0
-    crowded: List[Tuple[datetime, datetime]] = []
+    per: List[Tuple[int, datetime, datetime]] = []
     for r in rows:
         counts = r.counts if isinstance(r.counts, dict) else json.loads(r.counts or "{}")
         try:
             n = int(counts.get("person") or 0)
         except (TypeError, ValueError):
             n = 0
-        peak = max(peak, n)
-        if n > 1:
-            a = datetime.fromtimestamp(r.window_start_ts, timezone.utc) if r.window_start_ts else r.observed_at
-            b = datetime.fromtimestamp(r.window_end_ts, timezone.utc) if r.window_end_ts else r.observed_at
-            crowded.append((a, b))
+        a = datetime.fromtimestamp(r.window_start_ts, timezone.utc) if r.window_start_ts else r.observed_at
+        b = datetime.fromtimestamp(r.window_end_ts, timezone.utc) if r.window_end_ts else r.observed_at
+        per.append((n, a, b))
+    peak = sustained_peak([n for n, _, _ in per])
+    crowded = [(a, b) for n, a, b in per if n > 1 and peak > 1]
     return peak, crowded
+
+
+# A people count only counts when at least this many windows held it: counts.person is a per-frame max
+# per window (orion-vision-window projection.py), so one frame with a doubled box, a mirror or a monitor
+# would otherwise read as a second person and open a card about Juniper's own crop.
+CROWDED_MIN_WINDOWS = 2
+
+
+def sustained_peak(counts: Sequence[int], min_windows: int = CROWDED_MIN_WINDOWS) -> int:
+    """The largest n that at least ``min_windows`` windows reached (all of them when fewer were read)."""
+    if not counts:
+        return 0
+    if len(counts) < min_windows:
+        return max(counts)
+    return sorted(counts, reverse=True)[min_windows - 1]
 
 
 def _overlaps(sightings: Sequence[Tuple], windows: Sequence[Tuple[datetime, datetime]]) -> bool:
@@ -559,7 +606,8 @@ def compute_session(conn, span: Span, now: datetime, cfg: OfficeSessionsConfig,
     peak, crowded = _peak(conn, span.stream_id, lo, hi)
     from app.vision_person_model import PRIOR_DOMINANCE
 
-    who = who_of_session(records, peak_people=peak, props=props, prior=prior, dominance=PRIOR_DOMINANCE)
+    who = who_of_session(records, peak_people=peak, props=props, prior=prior, dominance=PRIOR_DOMINANCE,
+                         known_names=album_names(conn))
     place = PLACE_WORDS.get(span.stream_id, f"view of {span.stream_id}")
     overlap = {iid: _overlaps(s, crowded) for iid, s in sightings.items()}
     settled = span.ended_at is not None and now >= span.ended_at + timedelta(seconds=cfg.settle_sec)
@@ -652,7 +700,7 @@ def run_office_sessions(conn, now: datetime, cfg: OfficeSessionsConfig, icfg,
     lo = now - timedelta(hours=cfg.lookback_hours)
     for stream in cfg.streams:
         stored = _stored(conn, stream, lo)
-        for span in build_spans(_transitions(conn, stream, lo, now)):
+        for span in build_spans(_transitions(conn, stream, lo, now), now=now):
             summary["office_sessions_seen"] += 1
             prev = stored.get(span.session_id)
             if prev is not None and prev["status"] == "closed":

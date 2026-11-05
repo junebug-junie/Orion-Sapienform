@@ -827,14 +827,18 @@ person record (one 8-minute visit on 11-05 was split into 10 records). Each row 
 - **who** (`who_of_session`): names Juniper gave, confident album matches, the camera prior's guess
   ("Juniper (probably)"), household members by score ("(maybe)"), and "someone I don't know". The prior covers
   ONE person: two people in one window (`vision_scene_inventory.counts.person`) never read as two "probably
-  Juniper"s. Known limit: a lone stranger reads "Juniper (probably)" -- the prior, said as a guess.
+  Juniper"s, and never stands in for a head a name or a stranger record already explains. A people count
+  only counts when at least 2 windows held it (`CROWDED_MIN_WINDOWS`: one frame with a doubled box is not a
+  second person). An unsure score for anyone in the album reads "(maybe)", not "someone I don't know".
+  Known limit: a lone stranger reads "Juniper (probably)" -- the prior, said as a guess.
 - **timeline**: the stream's `camera_caption` rows (frame time from `frame_ts:`), opener "The person in the image
   is" removed, consecutive repeats folded. Council `visual_observation` rows are not activity.
 - **label**: "Juniper (probably) in the office: <activities>", at most 300 characters (the Temporal Self arc
   label; orion-durable-runs source `office_session` relabels the office company arc from the final row).
 - **image_refs**: person crop thumbnails of the visit (unknown first); thumbnails are kept forever by the host.
 
-A row is `open` while the visit goes on and for `VISION_OFFICE_SESSIONS_SETTLE_SEC` (660 s, longer than the
+A visit with no presence row for 1500 s (the producer died without a closing row) ends at its last row,
+`end_reason = 'stale'`. A row is `open` while the visit goes on and for `VISION_OFFICE_SESSIONS_SETTLE_SEC` (660 s, longer than the
 person model's 600 s interval) after it ended; then `closed` and never rewritten (except `ask_id`). When a
 session has an unknown person, the existing "Who is this?" card (`orion_ask`, `vision_individual`) opens right
 away -- also while the visit is still going on -- about the record most likely to be the stranger, under its

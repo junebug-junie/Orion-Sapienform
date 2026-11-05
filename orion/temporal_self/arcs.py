@@ -730,8 +730,8 @@ def _fold_office_session(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> 
         if arc.kind != "company" or arc.subject_ref != e.subject_ref or arc.status != "closed":
             continue
         ov = _overlap_sec(arc.began_at, arc.ended_at or arc.last_seen_at, start, end)
-        if ov < 0:
-            continue
+        if ov < 0 or (ov == 0 and end > start):
+            continue  # an arc that only touches the visit is another stretch
         key = (ov, arc.began_at)
         if best_key is None or key > best_key:
             best, best_key = arc, key
@@ -745,11 +745,18 @@ def _fold_office_session(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> 
     best.related_refs.append(ref)
     activities = str(e.payload.get("activities") or "")
     place = str(e.payload.get("place") or "")
-    if confirmed and not e.payload.get("unknown_people") and place:
-        # A face match the presence row confirmed beats the camera prior: keep that name, add what
-        # happened. With an unknown person in the session, the session's own "who" is kept instead.
-        best.subject_label = clip(f"{best.subject_label} in {place}: {activities}" if activities
-                                  else f"{best.subject_label} in {place}")
+    if confirmed and place:
+        # A face match the presence row confirmed beats the camera prior: keep that name (never
+        # downgraded to "probably"), add anyone the session did not know, and what happened.
+        name = best.subject_label.strip()
+        who = name[:1].upper() + name[1:]
+        try:
+            unknown = int(e.payload.get("unknown_people") or 0)
+        except (TypeError, ValueError):
+            unknown = 0
+        if unknown:
+            who += " and " + ("someone I don't know" if unknown == 1 else f"{unknown} people I don't know")
+        best.subject_label = clip(f"{who} in {place}: {activities}" if activities else f"{who} in {place}")
     else:
         best.subject_label = e.label
 

@@ -115,12 +115,21 @@ def test_no_overlapping_closed_arc_changes_nothing():
 def test_a_confirmed_identity_keeps_its_name_and_gains_the_activities():
     s = fold(initial_state(), events=visit(confirmed=True) + S.adapt("office_session", [session_row()]))
     (arc,) = company(s)
-    assert arc.subject_label.startswith("juniper in the office: sitting at a desk, opening a box")
-    # With an unknown person in the visit, the session's own who wins over the confirmed name.
+    assert arc.subject_label.startswith("Juniper in the office: sitting at a desk, opening a box")
+    # With an unknown person in the visit, the confirmed name is kept (never "probably") and the
+    # unknown person is added.
     who = "Juniper (probably) and someone I don't know"
     s = fold(initial_state(), events=visit(confirmed=True) + S.adapt("office_session", [
         session_row(label=f"{who} in the office", who_text=who, unknown_people=1)]))
-    assert company(s)[0].subject_label == f"{who} in the office"
+    assert company(s)[0].subject_label == "Juniper and someone I don't know in the office"
+
+
+def test_an_arc_that_only_touches_the_visit_is_not_labelled():
+    # The visit's own arc is missing; the previous stretch ended exactly when this visit began.
+    rows = S.adapt("presence_transition", [presence("present", at(-10), "absent", 1),
+                                           presence("absent", at(0), "present", 2)])
+    s = fold(initial_state(), events=rows + S.adapt("office_session", [session_row()]))
+    assert company(s)[0].subject_label == ""
 
 
 def test_other_cameras_arcs_are_never_labelled():

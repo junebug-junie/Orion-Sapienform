@@ -14,7 +14,7 @@
 --   status         open (the visit is going on, or ended less than VISION_OFFICE_SESSIONS_SETTLE_SEC
 --                  ago) | closed (final: never rewritten after this, except ask_id).
 --   ended_at       the last sighting (the 'recent' row, or the absent/unknown row); NULL while open.
---   end_reason     left | camera_dark | producer_restart.
+--   end_reason     left | camera_dark | producer_restart | stale (no presence row for 1500 s: producer gone).
 --   closed_at      when the row became final; the Temporal Self reads it at this time.
 --   who            {"text", "people": [{"name","basis","individual_ids"}], "unknown", "peak_people", ...}
 --   timeline       [{"at","text","repeats","event_id"}], oldest first.

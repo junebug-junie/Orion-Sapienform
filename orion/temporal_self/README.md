@@ -199,7 +199,7 @@ prose in the label). Available at `closed_at` (`arcs.AVAILABLE_AT_KINDS`, like s
 arc: `arcs._fold_office_session` sets the label of today's CLOSED `company` arc of the same camera that
 overlaps the visit most ("Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a
 cabinet") and adds `vision_office_session:<id>` to its `related_refs`. A name the presence row confirmed is
-kept when the session found nobody unknown ("juniper in the office: ..."). Open arcs are never relabelled,
+always kept, never downgraded to "probably" ("Juniper and someone I don't know in the office: ..."). Open arcs are never relabelled,
 so the stance cue's "Someone has been here since" is unchanged. Recent arcs show the label without the
 "company:" prefix. Known limit: a visit final after local midnight labels nothing. Kill switch:
 `TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED` (orion-durable-runs). Tests: `tests/test_office_session_arcs.py`.

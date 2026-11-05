@@ -144,6 +144,7 @@ def juniper_visit(conn, *, peak: int = 1) -> None:
         counts(conn, sec, 1)
     if peak > 1:
         counts(conn, 260, peak)
+        counts(conn, 275, peak)   # two windows: one crowded frame alone is not a second person
 
 
 @needs_pg

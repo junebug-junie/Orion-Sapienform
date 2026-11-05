@@ -1,9 +1,14 @@
-name: Attend-to-act loop (shed_background_gpu)
+name: Attend-to-act loop (shed_background_gpu, the cooling world act)
 on:
   pull_request:
     paths:
       - 'orion/autonomy/cabinet_heat.py'
       - 'orion/autonomy/self_shed.py'
+      - 'orion/autonomy/shed_act.py'
+      - 'orion/autonomy/shed_settlement.py'
+      - 'orion/physiology/event_wants.py'
+      - 'orion/physiology/binding.py'
+      - 'config/physiology/families.yaml'
       - 'orion/autonomy/world_episodes.py'
       - 'orion/autonomy/attend_act_loop.py'
       - 'orion/autonomy/agency_episode*.py'
@@ -28,8 +33,7 @@ on:
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_cabinet_heat_tick.py'
       - 'scripts/analysis/replay_attention_eligibility.py'
-      - 'tests/test_shed_background_gpu_pipeline.py'
-      - 'tests/test_world_action_dispatch.py'
+      - 'tests/test_cooling_act_rules.py'
       - 'tests/test_world_settlement_scoring.py'
       - '.github/workflows/attend-act-loop.yml'
   workflow_dispatch:
@@ -46,13 +50,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r services/orion-thought/requirements.txt pytest pytest-asyncio psycopg2-binary
-      - name: Signal, eligibility, proposal -> policy -> dispatch, settle-time scoring
+      # 2026-11-05 (ladder retirement PR 5): the act's trigger is the want market (orion-durable-runs
+      # app/cooling_act.py, tested in orion-durable-runs-tests.yml). Here: the pure rules and the scorer.
+      - name: Signal, eligibility, the event want, binding rule, admission, draw, settle-time scoring
         run: >-
-          python -m pytest -q tests/test_shed_background_gpu_pipeline.py tests/test_world_settlement_scoring.py
-          tests/test_world_action_dispatch.py tests/test_proposal_policy_loader.py tests/test_proposal_scoring.py
+          python -m pytest -q tests/test_cooling_act_rules.py tests/test_world_settlement_scoring.py
+          tests/test_proposal_policy_loader.py tests/test_proposal_scoring.py
       # One process per service: each service's tests import a top-level `app` package.
-      - name: Proposal runtime (workspace winner context)
-        run: python -m pytest -q services/orion-proposal-runtime/tests/test_workspace_winner_context.py
       - name: sql-writer (settle-time world scoring pass; moved from the retired feedback runtime 2026-11-04)
         run: |
           pip install -r services/orion-sql-writer/requirements.txt

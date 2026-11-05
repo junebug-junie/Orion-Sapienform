@@ -1,17 +1,19 @@
-"""Settle a ``shed_background_gpu`` dispatch from the GPU pool's ``orion_self_shed`` record.
+"""Settle a cooling-act shed (``shed_background_gpu``) from the GPU pool's ``orion_self_shed`` record.
 
-Sibling of ``visual_settlement.py`` (the ``render_scene`` pattern every world action copies): the
-dispatch writes ``shed_pending`` BEFORE the RPC, the pool's terminal state settles it, and the
-outcome is emitted once, at settlement. Spec: docs/superpowers/specs/2026-09-29-attend-to-act-loop-
-design.md, "Amendment 2026-09-29" -> "Settle rule".
+Moved unchanged from ``orion/execution_dispatch/`` when the act left execution dispatch (2026-11-05,
+docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md "PR 5"). The caller is now
+``services/orion-durable-runs/app/cooling_act.py``: the act writes ``shed_pending`` on the episode's own
+settlement (``substrate_world_action_episodes.settlement``) BEFORE the RPC, the pool's terminal state
+settles it, and the outcome is emitted once, at settlement. Spec of the rule: docs/superpowers/specs/
+2026-09-29-attend-to-act-loop-design.md, "Amendment 2026-09-29" -> "Settle rule".
 
 Terminal pool states: ``expired`` (TTL ended -- the only state that may update the posterior),
 ``cancelled`` (clear verb or kill switch), ``preempted_by_reflex`` (a cabinet AC incident opened),
 ``refused:<reason>`` (never started). No terminal state by ``t0 + TTL + 300 s`` -> orphan,
-``settlement_timeout``. Its own state name (``shed_pending``, not the render path's ``pending``) so
-the render-only parking and replay logic never mistakes one for the other.
+``settlement_timeout``. Its own state name (``shed_pending``) so it is never mistaken for another
+act's ``pending``.
 
-Pure: the caller reads the result row and the pool row and persists what comes back.
+Pure: the caller reads the episode and the pool row and persists what comes back.
 """
 
 from __future__ import annotations

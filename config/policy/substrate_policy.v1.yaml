@@ -70,9 +70,8 @@ proposal_kind_rules:
   # 2026-10-01 (attend-to-act loop A1): a bounded, self-reverting action on Orion's own resources
   # (the GPU pool's orion_self_shed reason). Its own decision so it can be allowed without
   # allowing maintain or express. Every review trigger still applies (risk, reversibility,
-  # confidence); the builder sets confidence from a fresh physical reading. What actually lets it
-  # fire is execution dispatch: mode.allow_self_reversible_dispatch AND ORION_WORLD_ACTIONS_ENABLED
-  # AND the template named in ORION_WORLD_ACTIONS_ALLOWED, then the pool's own caps.
+  # confidence). Since 2026-11-05 (ladder retirement PR 5) no proposal of this kind exists: the
+  # cooling world act is decided by the want market in orion-durable-runs. Inert until PR 6 deletes it.
   self_regulate:
     allowed_scope: self_reversible
     default_decision: approved_self_reversible

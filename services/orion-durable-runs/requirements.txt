@@ -12,3 +12,6 @@ jinja2>=3.1,<4
 SQLAlchemy==2.0.*
 # orion/prediction/grading.py (the self-monitor's Brier skill; same pin as orion-prediction)
 numpy==2.2.6
+# The cooling act reads orion.substrate.bus_synaptic_surprise (orion/substrate/__init__ imports requests);
+# pinned to the version the image already resolved transitively (2026-11-05).
+requests==2.34.2

@@ -50,8 +50,10 @@ TRUE_CALLS = [
     # services/orion-durable-runs/app/cooling_act.py read_hardware_watch(settings.hardware_watch_health_url)
     # (moved from orion-proposal-runtime's worker on 2026-11-05, ladder retirement PR 5)
     ("orion-durable-runs", "http://hardware-watch:8131/health"),
-    # services/orion-proposal-runtime/app/worker.py:162 urlopen(baseline_policy.thought_url + "/visual-chain/activity")
-    ("orion-proposal-runtime", "http://orion-athena-thought:7155"),
+    # services/orion-thought/app/painting_self_start.py post_run(settings.painting_self_start_durable_runs_url)
+    # + "/runs": the painting trigger submits its reverie.visual run (ladder retirement PR 2, 2026-11-05;
+    # replaced orion-proposal-runtime's urlopen(baseline_policy.thought_url + "/visual-chain/activity"))
+    ("orion-thought", "http://orion-athena-durable-runs:8121"),
     # services/orion-graphiti-adapter/app/main.py:148 embed_url=settings.CRYSTALLIZER_EMBED_HOST_URL
     ("orion-graphiti-adapter", "http://orion-athena-vector-host:8320/embedding"),
     # services/orion-thought/app/physiology_shadow.py:62 orion.physiology.client.abid -> DEFAULT_URL
@@ -66,6 +68,8 @@ FALSE_CALLS = [
     # thought_url default is config. orion-policy-runtime never reads .thought_url
     ("orion-policy-runtime", "http://orion-athena-thought:7155"),
     ("orion-execution-dispatch-runtime", "http://orion-athena-thought:7155"),
+    # 2026-11-05: orion-proposal-runtime no longer reads thought (the baseline schedule moved to thought)
+    ("orion-proposal-runtime", "http://orion-athena-thought:7155"),
     # services/orion-world-pulse/app/settings.py:157 actions_url: no code reads the field
     ("orion-world-pulse", "http://actions:8110"),
     # ConceptSettings.embedding_base_url is read only by the concept inducer, not by cortex-exec
@@ -75,7 +79,14 @@ FALSE_CALLS = [
 TRUE_KEYS = [
     ("orion-durable-runs", "orion:regulation:latest", "writes"),  # app/main.py:307 rpc_bus.redis.setex
     ("orion-dream", "orion:regulation:latest", "reads"),  # orion/regulation/arousal_read.py client.get
-    ("orion-proposal-runtime", "orion:regulation:latest", "reads"),
+    # services/orion-thought/app/painting_self_start.py arousal_level -> read_arousal_sync client.get (moved
+    # from orion-proposal-runtime's worker with the baseline schedule, 2026-11-05)
+    ("orion-thought", "orion:regulation:latest", "reads"),
+    # services/orion-thought/app/painting_self_start.py build_live: ActGate(read_view=read_view_sync) ->
+    # orion/self_monitor/gate.py redis.Redis.from_url(...).get(SELF_MONITOR_REDIS_KEY) (the self-monitor gate
+    # moved with the painting act from execution-dispatch, 2026-11-05). Found only through the Redis
+    # constructor, so the "scan with no Redis constructor" mutation still has a fact to miss.
+    ("orion-thought", "orion:self_monitor:latest", "reads"),
     ("orion-durable-runs", "equilibrium:state", "reads"),  # app/main.py:674 hgetall(EQUILIBRIUM_STATE_REDIS_KEY)
     ("orion-durable-runs", "orion:situation:latest", "writes"),  # app/main.py:229 setex(SITUATION_STATE_REDIS_KEY)
     ("orion-dream", "orion:drive:rest:latest", "writes"),  # app/main.py:236 setex(REST_DRIVE_REDIS_KEY)

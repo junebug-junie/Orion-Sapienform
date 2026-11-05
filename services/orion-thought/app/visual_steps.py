@@ -286,7 +286,7 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
         now = now_fn()
         if baseline and baseline.due_at > now:
             # Due-ness only ever becomes true, so it is checked against the real clock;
-            # early (e.g. clock skew with proposal-runtime) waits rather than failing.
+            # early (e.g. clock skew with the scheduler) waits rather than failing.
             return step.retry("visual_baseline_not_due",
                               retry_after_sec=(baseline.due_at - now).total_seconds())
         attempt_id, replay = await asyncio.to_thread(

@@ -11,6 +11,9 @@ everything did.
 physical resource to make. These tests pin the parts that make it real: the kind
 is accepted, the route resolves, and the gate is genuinely independent of the
 docker-pruning one.
+
+2026-11-05 (ladder retirement PR 2): the first express action, painting (render_scene), left
+dispatch; the express kind and scope still carry retro_leisure_session and aitown_session.
 """
 
 from __future__ import annotations
@@ -53,10 +56,6 @@ def _dispatch_policy() -> ExecutionDispatchPolicyV1:
     return ExecutionDispatchPolicyV1.model_validate(yaml.safe_load(DISPATCH_POLICY.read_text()))
 
 
-def _render_scene_template() -> dict:
-    return yaml.safe_load(PROPOSAL_POLICY.read_text())["proposal_templates"]["render_scene"]
-
-
 class TestKindIsAccepted:
     """`express` had to be added to three closed Literals. Missing any one of
     them means the proposal is built and then rejected downstream."""
@@ -92,25 +91,28 @@ class TestScopeGateIsIndependent:
     def test_the_live_policy_opens_it_deliberately(self) -> None:
         assert _dispatch_policy().mode.allow_express_dispatch is True
 
-    def test_express_route_uses_the_express_scope_not_maintenance(self) -> None:
-        route = _dispatch_policy().template_to_cortex["render_scene"]
-        assert route.allowed_scope == EXPRESS_SCOPE, (
+    def test_express_routes_use_the_express_scope_not_maintenance(self) -> None:
+        policy = _dispatch_policy()
+        express = [r for r in policy.template_to_cortex.values() if r.dispatch_kind == "express"]
+        assert express, "retro_leisure_session and aitown_session are express routes"
+        assert all(r.allowed_scope == EXPRESS_SCOPE for r in express), (
             "borrowing maintenance_bounded would make the route table lie about "
             "what the action does, and couple two unrelated kill switches"
         )
 
 
 class TestRouteResolves:
-    def test_template_route_points_at_the_render_verb(self) -> None:
-        route = _dispatch_policy().template_to_cortex["render_scene"]
-        assert route.cortex_verb == "skills.imagination.render_scene.v1"
-        assert route.dispatch_kind == "express"
-
-    def test_the_kind_fallback_resolves_too(self) -> None:
-        """A kind with no mapping cannot dispatch at all."""
-        route = _dispatch_policy().proposal_kind_to_cortex["express"]
-        assert route.cortex_verb == "skills.imagination.render_scene.v1"
-        assert route.allowed_scope == EXPRESS_SCOPE
+    def test_painting_has_no_dispatch_route_any_more(self) -> None:
+        """Ladder retirement PR 2 (2026-11-05): painting starts itself in orion-thought
+        (app/painting_self_start.py). Fails while dispatch can still send the render verb -- by its
+        template route or by the old `express` kind fallback, which turned any express proposal
+        without a route of its own into a painting."""
+        policy = _dispatch_policy()
+        assert "render_scene" not in policy.template_to_cortex
+        assert "express" not in policy.proposal_kind_to_cortex
+        routes = [*policy.template_to_cortex.values(), *policy.proposal_kind_to_cortex.values()]
+        assert all(r.cortex_verb != "skills.imagination.render_scene.v1" for r in routes)
+        assert "render_scene" not in yaml.safe_load(PROPOSAL_POLICY.read_text())["proposal_templates"]
 
     def test_the_verb_definition_exists_on_disk(self) -> None:
         verb = REPO / "orion/cognition/verbs/skills.imagination.render_scene.v1.yaml"
@@ -119,31 +121,10 @@ class TestRouteResolves:
         assert spec["name"] == "skills.imagination.render_scene.v1"
         assert spec["requires_gpu"] is True, "this action's whole point is that it costs watts"
 
-    def test_timeouts_are_staggered_innermost_first(self) -> None:
-        """A slow generation must be reported by the innermost hop, not severed
-        by an outer one -- the same discipline the two prune routes use.
-
-        Pins the DIRECT path (CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED=false or a
-        manual run), which still blocks on thought. The durable path only submits
-        (a 20s kickoff RPC); its bound is tested in orion-cortex-exec's
-        test_render_scene_durable_kickoff.py."""
-        verb = yaml.safe_load(
-            (REPO / "orion/cognition/verbs/skills.imagination.render_scene.v1.yaml").read_text()
-        )
-        route = _dispatch_policy().template_to_cortex["render_scene"]
-        cortex_exec_http = 150.0  # settings.thought_http_timeout_sec
-        assert cortex_exec_http < route.rpc_timeout_sec < verb["timeout_ms"] / 1000.0
-
-
 class TestItWillActuallyBeChosen:
     """The point of the whole exercise. A cold action has to clear the
     information floor, or it is refused like everything else and Orion stays
     silent."""
-
-    def test_render_scene_does_not_learn_resource_pressure_as_value(self) -> None:
-        t = _render_scene_template()
-        assert t.get("expected_signal") is None
-        assert t.get("expected_direction") is None
 
     def test_a_cold_action_clears_the_information_floor(self) -> None:
         """Hand-computed against the live defaults: cold prior variance 0.25,
@@ -162,10 +143,6 @@ class TestItWillActuallyBeChosen:
         cold = expected_information_gain_nats(0.25) / 5.0
         known = expected_information_gain_nats(5.2e-06) / 5.0
         assert cold > known * 100
-
-    def test_it_is_kind_express_so_it_is_not_introspection(self) -> None:
-        assert _render_scene_template()["kind"] == "express"
-
 
 class TestColdStartExemption:
     """The floor is an absorbing state for EXPENSIVE actions without this.

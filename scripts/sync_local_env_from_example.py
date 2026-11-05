@@ -131,6 +131,8 @@ SYNC_PREFIXES = (
     # (SELF_MONITOR_ACT_GATE_ENABLED, SELF_MONITOR_PROBE_INTERVAL_SEC) and E2 in Hub
     # (SELF_MONITOR_QUESTIONS_*). Without this the default run visited all three and added nothing.
     "SELF_MONITOR_",
+    # Ladder retirement PR 2 (2026-11-05): orion-thought's painting trigger (app/painting_self_start.py).
+    "ORION_PAINTING_SELF_START_",
     # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
     "ORION_PHYSIOLOGY_",
     "CHANNEL_PHYSIOLOGY_",
@@ -492,7 +494,8 @@ SYNC_EXACT = frozenset(
         # Temporal Self R3 reader 1: the dream reads arousal (orion-dream). No DREAM_ prefix is synced.
         "DREAM_IDLE_FROM_AROUSAL_ENABLED",
         "DREAM_AROUSAL_MAX_HOLD_HOURS",
-        # Temporal Self R3 reader 4 (orion-proposal-runtime): no ORION_VISUAL_ prefix is synced.
+        # Temporal Self R3 reader 4 (orion-thought's painting trigger since 2026-11-05; was
+        # orion-proposal-runtime): no ORION_VISUAL_ prefix is synced.
         "ORION_VISUAL_BASELINE_AROUSAL_ENABLED",
         # Temporal Self R3 reader 6 (orion-hub mutation cycle): no SUBSTRATE_AUTONOMY_ prefix is synced.
         "SUBSTRATE_AUTONOMY_AROUSAL_ENABLED",

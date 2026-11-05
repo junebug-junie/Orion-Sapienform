@@ -1,15 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 791,
+  "metric_count": 789,
   "_last_change": {
-    "change_count": 5,
-    "high_severity_count": 3,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome",
-      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request",
-      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:shed:reply:* (declared_consumers: ['orion-execution-dispatch-runtime'] -> ['orion-durable-runs'])",
-      "medium added metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome",
-      "medium added metric://bus_channel/orion-durable-runs/orion:gpu_pool:shed:request"
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request",
+      "high   removed metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*"
     ]
   },
   "definitions": {
@@ -1657,17 +1654,6 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request": {
-      "schema_id": "RetroLeisureStartRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request": {
       "schema_id": "WorldPulseReadPullRequestV1",
       "all_producers": [
@@ -2473,17 +2459,6 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*": {
-      "schema_id": "RetroLeisureStartResultV1",
-      "all_producers": [
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-hub/orion:room:claude:request": {

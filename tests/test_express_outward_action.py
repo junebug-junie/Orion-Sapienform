@@ -13,7 +13,7 @@ is accepted, the route resolves, and the gate is genuinely independent of the
 docker-pruning one.
 
 2026-11-05 (ladder retirement PR 2): the first express action, painting (render_scene), left
-dispatch; the express kind and scope still carry retro_leisure_session and aitown_session.
+dispatch; the express kind and scope still carry aitown_session (retro_leisure_session left on 2026-11-05).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ class TestScopeGateIsIndependent:
     def test_express_routes_use_the_express_scope_not_maintenance(self) -> None:
         policy = _dispatch_policy()
         express = [r for r in policy.template_to_cortex.values() if r.dispatch_kind == "express"]
-        assert express, "retro_leisure_session and aitown_session are express routes"
+        assert express, "aitown_session is an express route"
         assert all(r.allowed_scope == EXPRESS_SCOPE for r in express), (
             "borrowing maintenance_bounded would make the route table lie about "
             "what the action does, and couple two unrelated kill switches"

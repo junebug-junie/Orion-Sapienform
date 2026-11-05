@@ -731,28 +731,18 @@ dispatch is one extra `hub.world_pulse_read` `look` act on the seed Hub's own la
   (`HUB_WORLD_PULSE_READ_PULL_ENABLED`) and runs every gate.
 - Replay: `orion/autonomy/evals/run_rung3_reading_replay_eval.py [--live --hours 48]`.
 
-### Retro leisure session (2026-10-22, Orion plays Zelda section E)
+### Retro leisure session (2026-10-22 .. 2026-11-05, retired)
 
-Route `retro_leisure_session` (template of the same name, kind `express`, `express_bounded`). Its
-executor key `orion.retro_leisure.start.v1` is one bus RPC to Hub (`orion:retro_leisure:start:request`,
-`app/retro_leisure_dispatch.py`). The dispatch is one `hub.retro_leisure` `play` act: Hub opens it when
-the session starts (key `retro_leisure_dispatch:<dispatch_id>`) and closes it at session end
-(`artifact_produced` = a session summary with at least one real planner decision).
-
-- Cost: the play act's own median open->close time (a session's wall time). Until the first session
-  closes, the route's `cold_cost_ceiling_sec` (1800 s, the runner's session cap): the worst case, not a
-  typical guess. An unreadable cost is still refused `no_cost_estimate`.
-- In flight: any open play act or proven-path episode holds the route (one session at a time).
-- Object minted by the dispatch: no control arm. A proven-path row is voided when Hub refuses.
-- A Hub refusal blocks the candidate `doer_refused:<why>` and holds the route for Hub's
-  `retry_after_sec` (300 s when none is given or Hub did not answer). On the frame: `allocator:<reason>`.
-- Kill switch: `ORION_DISPATCH_RETRO_LEISURE_ENABLED` (ON). Hub has its own (`RETRO_LEISURE_ENABLED`)
-  and runs every gate.
+Ladder retirement PR 1 removed the `retro_leisure_session` route, its template, the
+`orion.retro_leisure.start.v1` executor key, `app/retro_leisure_dispatch.py`, the
+`orion:retro_leisure:start:*` RPC and `ORION_DISPATCH_RETRO_LEISURE_*`. Hub starts leisure on its own
+timer now (`services/orion-hub/scripts/retro_leisure_self_start.py`) and still opens and closes the
+`hub.retro_leisure` `play` act itself. The act-duration cost (`_act_duration_or_ceiling_cost`) moved to
+`app/aitown_session_dispatch.py`; AI Town is its only user.
 
 ### AI Town session (2026-10-30, Juniper: a want Orion chooses, 2 h a day)
 
-Route `aitown_session` (template of the same name, kind `express`, `express_bounded`). Same shape as
-`retro_leisure_session`. Its executor key `orion.aitown_session.start.v1` is one bus RPC to
+Route `aitown_session` (template of the same name, kind `express`, `express_bounded`). Its executor key `orion.aitown_session.start.v1` is one bus RPC to
 orion-embodiment (`orion:aitown_session:start:request`, `app/aitown_session_dispatch.py`). The dispatch
 is one `aitown.session` `play` act: the embodiment session controller opens it when it unpauses the
 town (key `aitown_session_dispatch:<dispatch_id>`) and closes it when it pauses it (`artifact_produced`

@@ -501,10 +501,9 @@ _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
      # elsewhere and measured: the allocator scores it on the look act's own belief and cost, a
      # decision holds it 12000 s, and Hub gates it (cap 8/day, arousal, thermal, the lane's window).
      "read_world_pulse",
-     # 2026-10-22 (Orion plays Zelda, leisure): same reason as read_world_pulse. Paced by Hub's runner
-     # (1 per 3 h, 90 min/day) and a 2400 s act hold, scored on the play act's own belief and cost.
-     "retro_leisure_session",
-     # 2026-10-30 (AI Town sessions): same reason as retro_leisure_session. Paced and capped by
+     # (retro_leisure_session was here 2026-10-22..2026-11-05: Hub starts leisure on its own timer
+     # now, ladder retirement PR 1.)
+     # 2026-10-30 (AI Town sessions): same reason as read_world_pulse. Paced and capped by
      # orion-embodiment's controller (30 min per session, 2 h per local day, 1 h apart) and a 2400 s
      # act hold, scored on the play act's own belief and cost.
      "aitown_session"}

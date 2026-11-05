@@ -11,11 +11,9 @@ import pytest
 
 from app.aitown_session_dispatch import AITownSessionDispatchMixin
 from app.result_status import status_for_stored_settlement
-from app.retro_leisure_dispatch import RetroLeisureDispatchMixin
 from app.store import ExecutionDispatchRuntimeStore
 from app.worker import ExecutionDispatchRuntimeWorker
 from orion.schemas.aitown_session import AITownSessionStartResultV1
-from orion.schemas.retro_leisure import RetroLeisureStartResultV1
 from orion.schemas.world_pulse_read_pull import WorldPulseReadPullResultV1
 
 NOW = datetime(2026, 11, 3, tzinfo=timezone.utc)
@@ -74,15 +72,7 @@ def _route_worker(route: str, state: str):
         worker._aitown_session_rpc = AsyncMock(return_value=result)
         method = worker._send_aitown_session
     else:
-        worker = object.__new__(RetroLeisureDispatchMixin)
-        worker._settings = SimpleNamespace(orion_dispatch_retro_leisure_enabled=True)
-        result = RetroLeisureStartResultV1(
-            dispatch_id=_Candidate.dispatch_id, state=state,
-            session_id="session:test" if state == "started" else None,
-            refusal="cabinet_hot" if state == "refused" else None,
-        )
-        worker._retro_leisure_rpc = AsyncMock(return_value=result)
-        method = worker._send_retro_leisure
+        raise AssertionError(route)
 
     worker._store = store
     worker._last_proven = {}
@@ -92,14 +82,14 @@ def _route_worker(route: str, state: str):
     return store.saved["status"], recorded
 
 
-@pytest.mark.parametrize("route", ["reading_pull", "aitown_session", "retro_leisure"])
+@pytest.mark.parametrize("route", ["reading_pull", "aitown_session"])
 def test_started_custom_route_is_productive_for_tripwire(route: str) -> None:
     stored, recorded = _route_worker(route, "started")
     assert stored == "success"
     assert recorded == ["success"]
 
 
-@pytest.mark.parametrize("route", ["reading_pull", "aitown_session", "retro_leisure"])
+@pytest.mark.parametrize("route", ["reading_pull", "aitown_session"])
 def test_refused_custom_route_is_real_but_unproductive(route: str) -> None:
     stored, recorded = _route_worker(route, "refused")
     assert stored == "empty"
@@ -132,16 +122,14 @@ def _replay_route(route: str, state: str):
         worker._settings = SimpleNamespace(orion_dispatch_aitown_session_enabled=True)
         method = worker._send_aitown_session
     else:
-        worker = object.__new__(RetroLeisureDispatchMixin)
-        worker._settings = SimpleNamespace(orion_dispatch_retro_leisure_enabled=True)
-        method = worker._send_retro_leisure
+        raise AssertionError(route)
     worker._store = store
     worker._record_dispatch_status = lambda status, live=True: recorded.append(status)
     asyncio.run(method(None, SimpleNamespace(frame_id="frame:test"), _Candidate(), now=NOW))
     return store, recorded
 
 
-@pytest.mark.parametrize("route", ["reading_pull", "aitown_session", "retro_leisure"])
+@pytest.mark.parametrize("route", ["reading_pull", "aitown_session"])
 @pytest.mark.parametrize(("state", "expected"), [("started", "success"), ("refused", "empty")])
 def test_legacy_replay_repairs_durable_status_before_feedback(
     route: str, state: str, expected: str

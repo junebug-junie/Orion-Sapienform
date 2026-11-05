@@ -2,10 +2,11 @@
 
 Spec: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md.
 
-There is no scheduler here. The allocator admits a ``play`` act (Lane C), the
-``retro_leisure_session`` dispatch consumer calls ``should_start(config)`` and, when that
-returns None, ``run_leisure_session(config, act_id=...)``. The runner re-checks the gate
-itself (time passes between the two calls).
+There is no scheduler here. Hub's leisure timer (``scripts/retro_leisure_self_start.py``, every
+300 s; ladder retirement PR 1 replaced the allocator's ``retro_leisure_session`` dispatch) calls
+``should_start(config)`` and, when that returns None, ``run_leisure_session(config, act_id=...)``.
+The runner re-checks the gate itself (time passes between the two calls). Every age here is taken at
+its own read time, never against the caller's earlier clock.
 
 Doer-side gates (``leisure_block_reason``), checked at start and every RECHECK_SEC:
   disabled / retro_disabled / game_not_allowed     RETRO_LEISURE_ENABLED, HUB_RETRO_ENABLED, allowlist
@@ -262,7 +263,7 @@ async def gather_gate_inputs(config, deps: LeisureDeps, *, own_leisure_id=None, 
 
 
 async def should_start(config, deps: Optional[LeisureDeps] = None) -> Optional[str]:
-    """Lane C's dispatch consumer calls this before ``run_leisure_session``. None = may start."""
+    """Hub's leisure timer calls this before ``run_leisure_session``. None = may start."""
     s = _settings(config)
     if not s['enabled']:
         return 'disabled'

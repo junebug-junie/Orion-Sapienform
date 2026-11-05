@@ -4,7 +4,7 @@ Spec: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md, sections E 
 
 Two call sites:
 - Leisure: ``scripts.retro_leisure.run_leisure_session`` returns a ``LeisureOutcome``; when
-  ``outcome.ended`` is set, the caller (the ``retro_leisure_session`` dispatch consumer) passes
+  ``outcome.ended`` is set, the caller (Hub's leisure timer, ``scripts.retro_leisure_self_start``) passes
   it to the session summary / memory card writer.
 - Co-play: ``scripts.retro_routes`` watches every browser cognition handoff on a Zelda
   session and, when it ends (stop, takeover, expiry, disconnect), passes a ``RetroSessionEnded``

@@ -1056,7 +1056,19 @@ def health():
         "listeners_ok": listeners["ok"],
         "listeners_down": listeners["down"],
         "listeners": listeners["listeners"],
+        "retro_leisure_self_start": _retro_leisure_self_start_health(),
     }
+
+
+def _retro_leisure_self_start_health() -> dict[str, Any] | None:
+    """The leisure timer's last tick (scripts/retro_leisure_self_start.py), or None before startup."""
+    try:
+        import scripts.main as hub_main
+
+        timer = getattr(hub_main, "retro_leisure_self_start", None)
+        return timer.snapshot() if timer is not None else None
+    except Exception:  # noqa: BLE001 -- health never fails on a status block
+        return None
 
 
 @router.get("/api/substrate/tier-outcomes/latest")

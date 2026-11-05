@@ -82,8 +82,11 @@ _LAST_ATTEMPT_SQL = (
 
 
 def last_attempt_sql(style: str = "sqlalchemy") -> str:
-    """The ledger read, in the caller's placeholder style: ``sqlalchemy`` (:name) or ``pyformat``
-    (psycopg2's %(name)s). Params: actor, verb, secs. Columns: object_ref, test_before, opened_at."""
+    """The ledger read, in the caller's placeholder style: ``sqlalchemy`` (:name), ``pyformat``
+    (psycopg2's %(name)s) or ``asyncpg`` ($1 actor, $2 verb, $3 secs as float). Columns: object_ref,
+    test_before, opened_at."""
+    if style == "asyncpg":
+        return _LAST_ATTEMPT_SQL.format(actor="$1", verb="$2", secs="$3::float8")
     if style == "pyformat":
         return _LAST_ATTEMPT_SQL.format(actor="%(actor)s", verb="%(verb)s", secs="%(secs)s")
     return _LAST_ATTEMPT_SQL.format(actor=":actor", verb=":verb", secs=":secs")
@@ -339,9 +342,11 @@ class ActGate:
             self._jobs.note(faculty, job_key, now)
 
 
-def read_view_sync(redis_url: str, *, now: datetime, max_age_sec: float = DEFAULT_MAX_AGE_SEC,
+def read_view_sync(redis_url: str, *, now: Optional[datetime] = None, max_age_sec: float = DEFAULT_MAX_AGE_SEC,
                    timeout_sec: float = 1.0) -> SelfMonitorView:
-    """GET the published state with a short timeout. Any failure is an unknown view (changes nothing)."""
+    """GET the published state with a short timeout. Any failure is an unknown view (changes nothing).
+    ``now=None``: the age is measured at the read time, after the GET (never against a clock taken
+    before the read; that shape stopped every painting in #3134)."""
     try:
         import redis  # inside: a missing driver degrades to unknown
 
@@ -353,7 +358,8 @@ def read_view_sync(redis_url: str, *, now: datetime, max_age_sec: float = DEFAUL
     except Exception as exc:  # noqa: BLE001 -- unknown changes nothing
         logger.info("self_monitor_view_read_failed err=%s", type(exc).__name__)
         return SelfMonitorView(known=False, reason="read_failed")
-    return self_monitor_view(raw, now=now, max_age_sec=max_age_sec)
+    return self_monitor_view(raw, now=now if now is not None else datetime.now(timezone.utc),
+                             max_age_sec=max_age_sec)
 
 
 __all__ = [

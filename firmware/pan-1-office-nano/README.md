@@ -26,7 +26,7 @@ every 10 s, so plugging one in late still works.
 |--------|--------|---------|-------|
 | `environment` | SHT40 | `0x44` | Heater never enabled. Its reading compensates the CCS811 every frame. |
 | `air` | CCS811 (SparkFun Zio Qwiic) | `0x5A` | **eCO2** is a CO2 *estimate* from VOCs, plus TVOC. Not valid for 20 min after each start; the host withholds it until `since_init_ms` passes 20 min. 48-hour first-use burn-in. No baseline save/restore. |
-| `particulate` | PMSA003I | `0x12` | CF=1 "standard" mass concentrations, same as Athena. Sent only 30 s after each sensor start (fan settling, datasheet). |
+| `particulate` | PMSA003I | `0x12` | CF=1 "standard" mass concentrations, same as Athena. Read between frames; the newest good reading is sent while under 3 s old. Sent only 30 s after its fan starts (datasheet). If it still answers on the bus but has not read for 10 s, the driver is restarted (2026-11-05: it went silent for 30 min while the old firmware only skipped failed frames). |
 | `light` | TSL2591 | `0x29` | Gain auto-ranges (1x/25x/428x/9876x), 100 ms integration. `saturated=true` (and no `lux`) only when it overflows at the lowest gain: too bright to measure, not dark. |
 | `co2` | SCD40 | `0x62` | Photoacoustic CO2 — a real CO2 measurement. New reading every 5 s; the frame repeats the newest one for up to 15 s. Temperature/humidity are the SCD40's own. Automatic self-calibration is left at the factory default (on). |
 

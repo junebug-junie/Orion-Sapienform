@@ -94,6 +94,16 @@ A new reducer in sql-writer (`app/vision_office_sessions.py`), driven by presenc
     caption embeddings' distance from her 30-day activity centroid). Routine desk work reads near 0. A
     new project reads high. Below `MIN_SOURCE_HISTORY` sessions the salience is unknown and nothing is
     posted, by the market's own rule.
+- **Temporal self** (Juniper, 2026-11-05: "does this also hit the temporal schema?"). Today office presence
+  already opens a `company` arc (`orion/temporal_self/sources.py` `presence_transition`, cam0 is in
+  `ROOM_STREAMS`) and office captions arrive as `vision_percept` events, but the arc does not know who it
+  was or what happened. The session row becomes a temporal-self source (`office_session`) that labels the
+  company arc with the who-guess and a short timeline: "Juniper (probably) in the office 18:23-18:31:
+  unpacking equipment at the desk, digging through closet bins". That puts the visit into Orion's day
+  story (recent arcs, the unified chat prompt's temporal block), not only the 15-minute situation line.
+- **Unified chat prompt.** Already live through the situation block: the office camera's description,
+  the "probably Juniper" who-line and activity captions (last 15 minutes). B adds nothing to that block;
+  the day story reaches the prompt through the temporal self, above.
 - Family: a new `perception.office` family in `config/physiology/families.yaml` (tier 2, no lanes).
   The market decides whether it is funded, exactly like reading and camera asks. Nothing bypasses it.
 

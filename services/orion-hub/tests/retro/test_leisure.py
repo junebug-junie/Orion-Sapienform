@@ -696,3 +696,11 @@ def test_an_orphan_stop_that_fails_starts_nothing(world):
     assert out.started is False and out.refusal.startswith('orphan_stop_failed')
     assert 'sessions' not in [p for m, p, _ in world.retro.calls if m == 'POST']
     assert json.loads(world.redis.kv[LEDGER_KEY]) == json.loads(before)
+
+
+def test_a_store_without_the_lock_read_fails_closed(world):
+    # CI 2026-11-05: the self-start replay passes its own store with no lock_free().
+    orphan_world(world, ledger_end=None, end_reason=None, started_ago=1800 + 301)
+    async def broken(): raise AttributeError('lock_free')
+    world.deps.store.lock_free = broken
+    assert asyncio.run(L.should_start(config(RETRO_LEISURE_MIN_GAP_SEC=0), deps=world.deps)) == 'retro_session_active'

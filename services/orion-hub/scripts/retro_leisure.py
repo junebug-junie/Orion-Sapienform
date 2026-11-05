@@ -307,7 +307,10 @@ async def gather_gate_inputs(config, deps: LeisureDeps, *, own_leisure_id=None, 
     state: Optional[str] = 'unreadable'
     orphan: Optional[str] = None
     if own_leisure_id is None:
-        lock_free = await deps.store.lock_free()
+        try:   # unreadable (or a store without the read): not an orphan, the start stays refused
+            lock_free = await deps.store.lock_free()
+        except Exception:  # noqa: BLE001
+            lock_free = None
         try:
             status, ready = await deps.retro.call('GET', 'health/ready')
             if status == 200 and isinstance(ready, dict):

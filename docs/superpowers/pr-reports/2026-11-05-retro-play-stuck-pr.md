@@ -63,7 +63,10 @@ Hub only (`services/orion-hub`). No change to Retro, bus, schema, or env.
 
 ```text
 cd services/orion-hub && pytest tests/retro tests/test_retro_leisure_self_start.py tests/test_retro_leisure_self_start_health.py tests/test_physiology_shadow_bid.py -q
-280 passed
+281 passed
+
+python -P services/orion-hub/evals/retro_leisure_self_start_replay.py
+fixture replay: 9/9 checks; 6 starts, 576 ticks
 
 Against the old retro_leisure.py, the new tests fail (they reproduce the bugs):
 FAILED test_a_snapshot_older_than_the_grant_is_not_a_lost_policy   ('policy_ended_by_retro' == 'session_cap')
@@ -103,6 +106,9 @@ The review ran in a subagent. It found no must-fix bugs. It confirmed that the o
 - Finding: presence was not checked again between the gate and the stop.
   - Fix: `_stop_orphan` reads browsers and human presence again, and refuses if either changed.
   - Evidence: `test_presence_is_rechecked_just_before_an_orphan_is_stopped`.
+- Finding (CI, retro-memory job): the self-start replay passes a store without `lock_free()`, and the gate crashed.
+  - Fix: an unreadable lock means "not an orphan", so the start stays refused (fails closed).
+  - Evidence: `test_a_store_without_the_lock_read_fails_closed`; replay 9/9.
 - Nits fixed:
   - The grace test now has a lower bound.
   - New tests: a human during the grace still preempts at once; a policy seen again restarts the grace (fails with the reset removed); a failed orphan stop starts nothing and leaves the ledger as it was.

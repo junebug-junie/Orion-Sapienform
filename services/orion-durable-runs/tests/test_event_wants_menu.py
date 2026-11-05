@@ -14,7 +14,10 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(REPO), str(Path(__file__).resolve().parents[1])]
 
-from app.event_wants_menu import ASK_LABELS_SQL, LATEST_EVENT_DECISIONS_SQL, READ_LABELS_SQL, menu_from_rows, read_menu  # noqa: E402
+from app.event_wants_menu import (  # noqa: E402
+    ASK_LABELS_SQL, LATEST_EVENT_DECISIONS_SQL, OFFICE_LABELS_SQL, OFFICE_TABLE_SQL, READ_LABELS_SQL, menu_from_rows,
+    read_menu,
+)
 from app.physiology_market import EVENT_HISTORY_SQL, Market  # noqa: E402
 from orion.physiology.families import load_families  # noqa: E402
 from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R, PhysiologyStateV1  # noqa: E402
@@ -105,6 +108,23 @@ def test_a_cooling_act_want_is_labelled_from_its_own_reading_ref():
     menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
     assert [w.label for w in menu.wants] == ["the athena cabinet was warming at 2026-11-05T18:00:00Z (Orion's cooling act)"]
     assert FundedEventWantsV1.model_validate_json(menu.model_dump_json()) == menu
+
+
+def test_an_office_visit_want_is_labelled_from_its_session_row():
+    ref = "office_session:cam0-abc"
+    rows = [_row("o", ref, family="perception.office")]
+    pool = _Pool({LATEST_EVENT_DECISIONS_SQL: rows, OFFICE_TABLE_SQL: [{"present": True}],
+                  OFFICE_LABELS_SQL: [{"session_id": "cam0-abc", "who_text": "Juniper (probably)",
+                                       "label": "Juniper (probably) in the office: sitting at a desk, opening a box"}]})
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.label for w in menu.wants] == ["Juniper (probably) in the office: sitting at a desk, opening a box"]
+    # The family's 2 h window bounds it.
+    assert menu.wants[0].expires_at == rows[0]["decided_at"] + timedelta(hours=2)
+    # Before the table exists (migration not applied) the want stays on the menu, unlabelled.
+    pool = _Pool({LATEST_EVENT_DECISIONS_SQL: rows, OFFICE_TABLE_SQL: [{"present": False}]})
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.label for w in menu.wants] == [""]
+    assert not any(sql == OFFICE_LABELS_SQL for sql, _ in pool.seen)
 
 
 def _state():

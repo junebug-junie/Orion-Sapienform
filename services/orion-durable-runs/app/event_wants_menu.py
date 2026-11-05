@@ -10,7 +10,7 @@
 3. ordered by the market's net (highest first), then ``limit``.
 
 This is the same market's record, not a second menu: nothing here scores or re-decides a want. The
-label is the source row's own words (a read's title, an ask's question), so Prime can say what the
+label is the source row's own words (a read's title, an ask's question, an office visit's label), so Prime can say what the
 event is; a cooling-act want's label comes from its own ref (the cabinet reading's node and time).
 """
 from __future__ import annotations
@@ -26,6 +26,8 @@ READ_PREFIX = "world_pulse_read_seed:"
 ASK_PREFIX = "orion_ask:"
 # The cooling world act (ladder retirement PR 5, orion/autonomy/shed_act.py): cabinet_reading:<node>:<UTC second>.
 CABINET_PREFIX = "cabinet_reading:"
+# An office visit (office camera design step C, services/orion-hub/scripts/office_reach_out.py).
+OFFICE_PREFIX = "office_session:"
 MAX_HOURS = 72.0
 MAX_LIMIT = 50
 
@@ -43,6 +45,8 @@ SELECT DISTINCT ON (want_id) want_id, family, outcome, decided_at, net,
 
 READ_LABELS_SQL = "SELECT seed_id, title, url FROM world_pulse_read_seed WHERE seed_id = ANY(%(ids)s)"
 ASK_LABELS_SQL = "SELECT ask_id, question, status FROM orion_ask WHERE ask_id = ANY(%(ids)s)"
+OFFICE_TABLE_SQL = "SELECT to_regclass('vision_office_session') IS NOT NULL AS present"
+OFFICE_LABELS_SQL = "SELECT session_id, label, who_text FROM vision_office_session WHERE session_id = ANY(%(ids)s)"
 
 
 def _ts(v: Any) -> Optional[datetime]:
@@ -99,6 +103,7 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
         refs = [str(r["event_ref"] or "") for r in rows if r["outcome"] == "funded"]
         read_ids = sorted({x[len(READ_PREFIX):] for x in refs if x.startswith(READ_PREFIX)})
         ask_ids = sorted({x[len(ASK_PREFIX):] for x in refs if x.startswith(ASK_PREFIX)})
+        office_ids = sorted({x[len(OFFICE_PREFIX):] for x in refs if x.startswith(OFFICE_PREFIX)})
         labels: dict[str, str] = {}
         gone: set[str] = set()
         if read_ids:
@@ -115,7 +120,14 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
                 labels[ref] = f"an open camera question to Juniper: {r['question']}"[:300]
                 if r["status"] != "open":
                     gone.add(ref)
+        present = (await (await conn.execute(OFFICE_TABLE_SQL)).fetchall()) if office_ids else []
+        if present and present[0]["present"]:
+            # The visit row's own label: "Juniper (probably) in the office: sitting at a desk, ...". A
+            # visit that ended is still a concern until the want's window closes (Juniper may answer later).
+            for r in await (await conn.execute(OFFICE_LABELS_SQL, {"ids": office_ids})).fetchall():
+                labels[f"{OFFICE_PREFIX}{r['session_id']}"] = (
+                    r["label"] or f"{r['who_text'] or 'someone'} in the office")[:300]
     return menu_from_rows(rows, labels=labels, gone=gone, families=families, now=now, limit=limit)
 
 
-__all__ = ["LATEST_EVENT_DECISIONS_SQL", "expires_at", "menu_from_rows", "read_menu"]
+__all__ = ["LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows", "read_menu"]

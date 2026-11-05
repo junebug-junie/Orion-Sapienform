@@ -111,6 +111,9 @@ NEVER_SYNC_KEYS = frozenset(
         # Cursor Auto key + worldview graph password for orion-curiosity-peer.
         # Empty in .env_example; --force must never wipe a pasted live value.
         "CURSOR_API_KEY",
+        # Orion's own GitHub identity (classic PAT, scope repo). Empty in
+        # .env_example; --force must never wipe the live token.
+        "ORION_GITHUB_TOKEN",
         "ORION_CURIOSITY_GRAPH_PASSWORD",
         # The house meter's Green Button usage point (orion-energy). Empty in
         # .env_example; the ENERGY_ prefix below would otherwise let --force

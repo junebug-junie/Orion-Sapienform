@@ -32,8 +32,9 @@ fresh clock reads, never a read value against an earlier clock.
 
 A failure is harmless and retried: an exception, or a dependency mid-restart (Redis, Convex, the bus
 during a post-pull rebuild), is a recorded tick (``tick_failed``, or the controller's
-``ledger_unknown`` / ``town_unreachable`` / ``resume_failed``), never a hold, and the next tick comes
-ERROR_RETRY_SEC later instead of the full interval.
+``ledger_unknown`` / ``town_unreachable`` / ``resume_failed``), never a hold. ``tick_failed`` and
+``ledger_unknown`` (Redis, or the controller's boot race) are retried ERROR_RETRY_SEC later; Convex
+unreachable or a failed resume waits the full tick, as dispatch's 300 s hold did.
 """
 
 from __future__ import annotations
@@ -60,8 +61,12 @@ ACT_ID_PREFIX = "aitown_self_start:"
 FIRST_TICK_DELAY_SEC = 60.0
 #: After an error, retry sooner than the full interval (a dependency was probably mid-restart).
 ERROR_RETRY_SEC = 60.0
-#: Controller refusals that mean "could not read or reach", not "the gate said no": retried soon, never held.
+#: Controller refusals that mean "could not read or reach", not "the gate said no": never held.
 ERROR_REFUSALS = frozenset({"ledger_unknown", "town_unreachable", "resume_failed"})
+#: Of those, the ones retried after ERROR_RETRY_SEC: the ledger (Redis, or the controller's own boot race
+#: after a restart). Convex unreachable or a failed resume waits the full tick, as dispatch did (each retry
+#: is another Convex call that can take 15-25 s under contention, and another bid).
+RETRY_SOON_REFUSALS = frozenset({"ledger_unknown"})
 ERROR_RESULTS = frozenset({"tick_failed"})
 
 
@@ -192,7 +197,7 @@ class TownSelfStart:
 
     def next_delay(self, result: Optional[dict[str, Any]]) -> float:
         if result is not None and (result.get("result") in ERROR_RESULTS
-                                   or result.get("refusal") in ERROR_REFUSALS):
+                                   or result.get("refusal") in RETRY_SOON_REFUSALS):
             return min(ERROR_RETRY_SEC, self.tick_sec)
         return self.tick_sec
 
@@ -260,6 +265,7 @@ def build_act_gate(settings: Any, controller: TownSessionController) -> Any:
 __all__ = [
     "ACT_ID_PREFIX",
     "ERROR_REFUSALS",
+    "RETRY_SOON_REFUSALS",
     "ERROR_RETRY_SEC",
     "FIRST_TICK_DELAY_SEC",
     "TownSelfStart",

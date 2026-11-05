@@ -7,8 +7,8 @@ Pins:
 - an open session, the switch off, and a held refusal place no bid (dispatch sent no RPC then);
 - a controller refusal holds for its own retry_after_sec (daily cap: until local midnight; cooldown:
   the rest of the gap), then the next tick asks again;
-- a dependency mid-restart (ledger unreadable, Convex down, an exception) is retried 60 s later,
-  never held, and the tick never raises;
+- a dependency mid-restart is never held and the tick never raises: the ledger (Redis) and an
+  exception are retried 60 s later, Convex down waits the full tick (dispatch's 300 s);
 - the self-monitor gate (E1) dispatch held: a failing faculty is refused with no bid, one probe per
   6 h is offered from the controller's own session ledger and spent only on a real start;
 - read-lag ordering: the clock is read first, every read happens later, and nothing reads a later
@@ -267,13 +267,13 @@ def test_redis_mid_restart_is_retried_in_60_s_never_held(bids) -> None:
     assert tick(timer)["result"] == "started"
 
 
-def test_convex_down_is_retried_soon(bids) -> None:
+def test_convex_down_waits_the_full_tick_like_dispatch_never_held(bids) -> None:
     timer, c, redis, town, clock, acts = make(at(2026, 11, 5, 9))
     town.down = True
     out = tick(timer)
-    assert out["refusal"] == "town_unreachable" and timer.next_delay(out) == 60.0 and timer._hold is None
+    assert out["refusal"] == "town_unreachable" and timer.next_delay(out) == 300.0 and timer._hold is None
     town.down = False
-    clock.t += 60
+    clock.t += 300
     assert tick(timer)["result"] == "started"
 
 
@@ -327,6 +327,22 @@ def test_a_failing_faculty_is_refused_with_no_bid_until_its_probe_is_due(bids) -
     run(c.tick())                         # the session closes
     clock.t += 3600
     assert tick(timer)["refusal"] == "self_monitor:track_record_failing"   # the window's probe is spent
+
+
+def test_a_probe_is_spent_only_by_a_real_start(bids) -> None:
+    """A probe offered to an attempt the caps refuse stays the window's probe; a started one is claimed."""
+    timer, c, redis, town, clock, acts = make(at(2026, 11, 5, 12))
+    timer.gate = _gate(c)
+    # No play act in the last 6 h, so the probe is offered; Juniper is in town, so the caps refuse.
+    town.running = True
+    out = tick(timer)
+    assert out["refusal"] == "manual_session_open"
+    assert timer.gate._memo.get("act.aitown.session.play") is None      # the refused probe is not spent
+    town.running = False
+    clock.t += 300
+    out = tick(timer)
+    assert out["result"] == "started" and out["probe"] is True
+    assert timer.gate._memo.get("act.aitown.session.play") is not None  # the started probe is claimed
 
 
 def test_an_unknown_view_admits_with_no_ledger_read(bids) -> None:

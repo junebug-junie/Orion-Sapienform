@@ -525,3 +525,68 @@ async def test_build_act_gate_reads_the_ledger_on_the_loops_pool() -> None:
     none_gate = rs.build_act_gate(settings, pool_provider=lambda: None, loop=loop)
     with pytest.raises(RuntimeError):
         await asyncio.to_thread(none_gate._ledger_rows, "hub.retro_leisure", "play", 21600.0)
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_ledger_read_is_cancelled_not_left_holding_a_connection(monkeypatch) -> None:
+    import concurrent.futures
+
+    monkeypatch.setattr(rs, "LEDGER_READ_TIMEOUT_SEC", 0.05)
+    state = {"cancelled": False}
+
+    class _Conn:
+        async def fetch(self, sql, *args):
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                state["cancelled"] = True
+                raise
+
+    class _Acquire:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acquire()
+
+    settings = SimpleNamespace(SELF_MONITOR_ACT_GATE_ENABLED=True, SELF_MONITOR_PROBE_INTERVAL_SEC=21600.0,
+                               ORION_BUS_URL="redis://127.0.0.1:1/0")
+    gate = rs.build_act_gate(settings, pool_provider=lambda: _Pool(), loop=asyncio.get_running_loop())
+    with pytest.raises((concurrent.futures.TimeoutError, TimeoutError)):
+        await asyncio.to_thread(gate._ledger_rows, "hub.retro_leisure", "play", 21600.0)
+    for _ in range(20):
+        if state["cancelled"]:
+            break
+        await asyncio.sleep(0.01)
+    assert state["cancelled"]
+
+
+def test_the_live_view_reader_ages_the_view_at_read_time(monkeypatch) -> None:
+    """build_act_gate's reader passes now=None, so read_view_sync measures the age after its GET."""
+    import orion.self_monitor.gate as G
+
+    published = datetime.now(timezone.utc) + timedelta(seconds=2)   # written after any earlier clock
+    calls = []
+
+    class _R:
+        def get(self, key):
+            return _monitor_state("reliable", published)
+
+        def close(self):
+            pass
+
+    import redis as _redis
+
+    monkeypatch.setattr(_redis.Redis, "from_url", staticmethod(lambda *a, **k: _R()))
+    view = G.read_view_sync("redis://x/0")
+    assert view.known and view.reason == "fresh", view
+    settings = SimpleNamespace(SELF_MONITOR_ACT_GATE_ENABLED=True, SELF_MONITOR_PROBE_INTERVAL_SEC=21600.0,
+                               ORION_BUS_URL="redis://x/0")
+    monkeypatch.setattr(G, "read_view_sync", lambda url, **kw: calls.append(kw) or view)
+    gate = rs.build_act_gate(settings, pool_provider=lambda: None, loop=None)
+    gate.begin(datetime(2020, 1, 1, tzinfo=timezone.utc))   # a stale clock must not reach the reader
+    assert calls == [{}]

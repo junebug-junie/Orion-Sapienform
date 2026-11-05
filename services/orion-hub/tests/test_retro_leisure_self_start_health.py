@@ -14,11 +14,12 @@ def test_health_carries_the_timers_last_tick(monkeypatch) -> None:
 
     timer = RetroLeisureSelfStart(config_provider=lambda: None, pool_provider=lambda: None,
                                   runner_provider=lambda: None)
-    timer.last = {"result": "refused", "refusal": "cooldown", "ticked_at": "x"}
+    timer._record(1_800_000_000.0, "refused", refusal="cooldown")   # what a tick records
     monkeypatch.setattr(hub_main, "retro_leisure_self_start", timer, raising=False)
     body = api_routes.health()
     block = body["retro_leisure_self_start"]
     assert block["last"]["refusal"] == "cooldown" and block["tick_sec"] == 300.0 and block["enabled"] is True
+    assert block["refusals"] == {"cooldown": 1} and block["running"] is False
     json.dumps(body)
 
 

@@ -23,6 +23,13 @@ the nearest verdict within 450 s of each read:
 
 A session lasts the median real leisure session (``retro_play_sessions`` kind ``leisure``).
 
+What this proves, and what it does not. The world is "open" only near a real ``started``,
+``cooldown`` or ``daily_cap`` verdict, so the replay can only start where the old path's record
+shows an open gate (the summary prints that ceiling as ``open_verdicts``). It is a check that the
+timer loses no start and adds none in timing ("no regression"), not a check that Orion plays more or
+better. After the retirement no new verdict rows are written, so live mode can only replay the
+time before it; the post-deploy evidence is Hub ``/health`` -> ``retro_leisure_self_start``.
+
 Limits, said plainly: a verdict shows only the FIRST gate that refused, so a gate hidden behind it
 is not seen; the self-monitor act gate is not modelled (the faculty read ``unknown``, which admits);
 a session's own effect on the world (heat) is not modelled.
@@ -155,13 +162,22 @@ def _regulation(world: World, clock: Clock):
 
 
 class Runner:
-    """Lane B's interface over the replay world: the REAL gate, and a session of real length."""
+    """Lane B's interface over the replay world: the REAL gate, and a session of real length. A
+    session runs on the replay clock: it ends when the replay loop passes its end time, so a long
+    session is still running at the next ticks (``session_running``)."""
 
     def __init__(self, world: World, clock: Clock, store: Store):
         self.clock, self.store, self.world = clock, store, world
         self.deps = L.LeisureDeps(store=store, retro=Retro(world, clock), regulation=_regulation(world, clock),
                                   plan=None, clock=clock)
         self.started: list[float] = []
+        self.running: list[tuple[float, asyncio.Event]] = []
+
+    def end_due(self, now: float) -> None:
+        for end, ev in self.running:
+            if end <= now:
+                ev.set()
+        self.running = [(e, ev) for e, ev in self.running if not ev.is_set()]
 
     async def should_start(self, config):
         return await L.should_start(config, self.deps)
@@ -175,6 +191,10 @@ class Runner:
                                        "ended_at": start + self.world.session_sec,
                                        "seconds": self.world.session_sec})
         self.started.append(start)
+        if self.world.session_sec > TICK_SEC / 2:
+            ev = asyncio.Event()
+            self.running.append((start + self.world.session_sec, ev))
+            await ev.wait()
         return SimpleNamespace(started=True, refusal=None, ended=None)
 
 
@@ -205,14 +225,16 @@ async def replay(world: World, start: float, end: float) -> dict:
     tick_at = start
     while tick_at < end:
         clock.t = tick_at
+        runner.end_due(tick_at)
+        for _ in range(5):          # let an ended session's follower finish before the tick
+            await asyncio.sleep(0)
         out = await timer.tick()
         out["_t"] = tick_at
         results.append(out)
-        # A session lasts session_sec; the follower finishes before the next tick.
-        await asyncio.sleep(0)
-        if timer._followers:
-            await asyncio.gather(*list(timer._followers), return_exceptions=True)
         tick_at += timer.next_delay(out)
+    runner.end_due(float("inf"))
+    if timer._followers:
+        await asyncio.gather(*list(timer._followers), return_exceptions=True)
     refusals = Counter(r.get("refusal") for r in results if r["result"] == "refused")
     return {"ticks": len(results), "starts": runner.started, "bids": len(bids), "refusals": refusals,
             "results": Counter(r["result"] for r in results), "rows": results}
@@ -257,8 +279,10 @@ def fixture_checks(out: dict, world: World, t0: float) -> list[tuple[str, bool, 
     checks.append(("no start while Juniper's game runs (16-20 h)", not any(16 <= h < 20 for h in hours), ""))
     checks.append(("no start on an unobserved stretch (day 2, 00-02 h)", not any(24 <= h < 26 for h in hours), ""))
     checks.append(("the first open window starts at once (06 h)", bool(hours) and 6 <= hours[0] < 6.1, f"{hours[:1]}"))
-    checks.append(("one bid per tick that reached the gate", out["bids"] == out["ticks"] - out["results"]["session_running"],
-                   f"bids {out['bids']} ticks {out['ticks']}"))
+    checks.append(("a running session holds the timer: no bid, no second start",
+                   out["results"]["session_running"] > 0
+                   and out["bids"] == out["ticks"] - out["results"]["session_running"],
+                   f"bids {out['bids']} ticks {out['ticks']} session_running {out['results']['session_running']}"))
     checks.append(("refusals carry the doer's own names",
                    {"arousal_strained", "cabinet_hot", "human_recent", "retro_session_active", "cooldown",
                     "presence_unknown", "daily_cap"} <= set(out["refusals"]), f"{sorted(out['refusals'])}"))
@@ -292,7 +316,7 @@ def live_world(days: float) -> tuple[World, float, float, dict]:
     durations = [float(s[1]) for s in sessions]
     world = World(times, verdicts, session_sec=statistics.median(durations) if durations else 1.0)
     real = {"sends": len(rows), "verdicts": Counter(verdicts), "sessions": [float(s[0]) for s in sessions],
-            "durations": durations}
+            "durations": durations, "open_verdicts": sum(1 for v in verdicts if v in OPEN_VERDICTS)}
     return world, start, end, real
 
 
@@ -333,7 +357,8 @@ def main() -> int:
         "real": {"sessions": len(real["sessions"]), "sends": real["sends"],
                  "verdicts": dict(real["verdicts"].most_common()),
                  "starts": [datetime.fromtimestamp(s, tz=timezone.utc).isoformat() for s in sorted(real["sessions"])],
-                 "median_session_sec": world.session_sec},
+                 "median_session_sec": world.session_sec,
+                 "open_verdicts": real["open_verdicts"]},
         "per_day_new_real": {d: [new_days.get(d, 0), real_days.get(d, 0)]
                              for d in sorted(set(new_days) | set(real_days))},
     }
@@ -342,6 +367,8 @@ def main() -> int:
     new_reasons = set(out["refusals"]) - {"presence_unknown", "cooldown", "daily_cap"}
     same = new_reasons <= real_reasons
     close = abs(len(out["starts"]) - len(real["sessions"])) <= max(2, round(0.5 * len(real["sessions"])))
+    print(f"ceiling: the record shows an open gate {real['open_verdicts']} times in {real['sends']} verdicts; "
+          "the replay can start only there (a no-regression check, not a plays-more check)")
     print(f"acceptance: sessions new {len(out['starts'])} vs real {len(real['sessions'])} "
           f"({'PASS' if close else 'FAIL'}); world refusal reasons a subset of the real ones "
           f"({'PASS' if same else 'FAIL'}: new {sorted(new_reasons)} real {sorted(real_reasons)})")

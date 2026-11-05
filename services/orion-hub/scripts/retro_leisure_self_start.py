@@ -23,10 +23,12 @@ One tick (every ``RETRO_LEISURE_SELF_START_TICK_SEC``, default 300 s):
    ``scripts.retro_memory_export.export_leisure_outcome`` writes the memory and closes the act.
 
 Clock and freshness: the tick reads its own clock FIRST and only uses it as a label
-(``ticked_at``). Every age the gate checks is computed by the reader at its own read time
+(``ticked_at``) and as the self-monitor gate's "now" for the age of past attempts (always in the
+past). Every age of a READ value is computed by the reader at its own read time
 (``retro_leisure.read_regulation`` -> ``arousal_view(now=datetime.now())`` after the GET;
-``PresenceStore.seconds_since_human`` after its GET). Never compare a later read against
-``ticked_at``: #3134 stopped every painting that way.
+``PresenceStore.seconds_since_human`` after its GET; the self-monitor view through
+``read_view_sync(now=None)``, after its GET). Never compare a later read against ``ticked_at``:
+#3134 stopped every painting that way.
 
 A failure is harmless and retried: an exception or an unreadable dependency (Redis, Retro, the
 regulation key mid-restart during a post-pull rebuild) is a refused tick, recorded on ``/health``, and
@@ -59,6 +61,8 @@ FIRST_TICK_DELAY_SEC = 60.0
 # After an error, retry sooner than the full interval (a dependency was probably mid-restart).
 ERROR_RETRY_SEC = 60.0
 ERROR_RESULTS = frozenset({"gate_failed", "start_failed", "tick_failed"})
+# The self-monitor gate's ledger read (only when the faculty is failing). A timeout = unreadable ledger.
+LEDGER_READ_TIMEOUT_SEC = 10.0
 
 
 def import_runner() -> Any:
@@ -120,6 +124,8 @@ class RetroLeisureSelfStart:
         self.refusals: Counter = Counter()
         self.last: dict[str, Any] | None = None
         self.last_started: dict[str, Any] | None = None
+        # Rebuilt by the loop after each tick; /health (a threadpool thread) only reads this.
+        self._published: dict[str, Any] = self._build_snapshot()
 
     # --- one tick ---------------------------------------------------------------------------
 
@@ -132,6 +138,7 @@ class RetroLeisureSelfStart:
         self.last = out
         if result == "started":
             self.last_started = out
+        self._published = self._build_snapshot()
         return out
 
     async def tick(self) -> dict[str, Any]:
@@ -158,11 +165,11 @@ class RetroLeisureSelfStart:
 
         decision = None
         if self.gate is not None:
-            # A Redis GET, and a ledger read when the faculty is failing: off the loop. The view's age
-            # is checked against this time with a 300 s future-skew allowance, so a view published
-            # after the tick's clock still reads fresh.
+            # A Redis GET, and a ledger read when the faculty is failing: off the loop. ``now`` here
+            # only ages past attempts; the live view reader (build_act_gate) ages the view itself at
+            # its read time.
             now = datetime.fromtimestamp(ticked_at, tz=timezone.utc)
-            await asyncio.to_thread(self.gate.begin, now)
+            await asyncio.to_thread(self.gate.begin, now)   # live: the view's age is taken at read time
             decision = await asyncio.to_thread(self.gate.decide, PLAY_ACTOR, PLAY_VERB, "", now=now)
             if not decision.admit:
                 return self._record(ticked_at, "refused", refusal=f"self_monitor:{decision.reason}")
@@ -184,7 +191,9 @@ class RetroLeisureSelfStart:
         shadow.settle("ran" if result == "started" else f"blocked:{extra.get('refusal') or result}")
         if result == "started" and decision is not None and decision.probe:
             # Spent only once the session really started: a refused start keeps the window's probe.
-            self.gate.claim_probe(decision.faculty, now=datetime.fromtimestamp(ticked_at, tz=timezone.utc))
+            # One timer per Hub process, so the claim cannot lose a race; logged if it ever does.
+            if not self.gate.claim_probe(decision.faculty, now=datetime.fromtimestamp(ticked_at, tz=timezone.utc)):
+                logger.warning("retro_leisure_probe_lost_race act_id=%s", act_id)
             extra["probe"] = True
         return self._record(ticked_at, result, act_id=act_id, **extra)
 
@@ -267,6 +276,7 @@ class RetroLeisureSelfStart:
             logger.info("retro_leisure_self_start_disabled")
             return
         self.task = asyncio.create_task(self._run())
+        self._published = self._build_snapshot()
 
     async def stop(self) -> None:
         tasks = [t for t in (self.task, self.session_task, *self._followers) if t is not None]
@@ -277,18 +287,24 @@ class RetroLeisureSelfStart:
                 await t
         self.task = self.session_task = None
 
-    def snapshot(self) -> dict[str, Any]:
-        """For Hub's /health: a silent hold is visible here, not only in the logs."""
+    def _build_snapshot(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "running": self.task is not None and not self.task.done(),
             "tick_sec": self.tick_sec,
             "ticks": self.ticks,
             "results": dict(self.results),
             "refusals": dict(self.refusals),
-            "session_running": self.session_task is not None and not self.session_task.done(),
             "last": self.last,
             "last_started": self.last_started,
+        }
+
+    def snapshot(self) -> dict[str, Any]:
+        """For Hub's /health: a silent hold is visible here, not only in the logs. Safe from another
+        thread: the counters are copied by the loop after each tick, never iterated here."""
+        return {
+            **self._published,
+            "running": self.task is not None and not self.task.done(),
+            "session_running": self.session_task is not None and not self.session_task.done(),
         }
 
 
@@ -311,12 +327,18 @@ def build_act_gate(settings: Any, *, pool_provider: Callable[[], Any], loop: asy
             return [dict(r) for r in await conn.fetch(sql, actor, verb, float(secs))]
 
     def ledger_rows(actor: str, verb: str, secs: float) -> list[dict]:
-        return asyncio.run_coroutine_threadsafe(_rows(actor, verb, secs), loop).result(timeout=10.0)
+        fut = asyncio.run_coroutine_threadsafe(_rows(actor, verb, secs), loop)
+        try:
+            return fut.result(timeout=LEDGER_READ_TIMEOUT_SEC)
+        except BaseException:
+            fut.cancel()   # a timed-out query must not keep holding a pool connection
+            raise
 
     return ActGate(
         enabled=bool(getattr(settings, "SELF_MONITOR_ACT_GATE_ENABLED", True)),
         probe_interval_sec=float(getattr(settings, "SELF_MONITOR_PROBE_INTERVAL_SEC", 21600.0)),
-        read_view=lambda now: read_view_sync(settings.ORION_BUS_URL, now=now),
+        # now=None: the view's age is measured after the GET, never against the tick's earlier clock.
+        read_view=lambda _now: read_view_sync(settings.ORION_BUS_URL),
         ledger_rows=ledger_rows,
     )
 

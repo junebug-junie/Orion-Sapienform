@@ -342,9 +342,11 @@ class ActGate:
             self._jobs.note(faculty, job_key, now)
 
 
-def read_view_sync(redis_url: str, *, now: datetime, max_age_sec: float = DEFAULT_MAX_AGE_SEC,
+def read_view_sync(redis_url: str, *, now: Optional[datetime] = None, max_age_sec: float = DEFAULT_MAX_AGE_SEC,
                    timeout_sec: float = 1.0) -> SelfMonitorView:
-    """GET the published state with a short timeout. Any failure is an unknown view (changes nothing)."""
+    """GET the published state with a short timeout. Any failure is an unknown view (changes nothing).
+    ``now=None``: the age is measured at the read time, after the GET (never against a clock taken
+    before the read; that shape stopped every painting in #3134)."""
     try:
         import redis  # inside: a missing driver degrades to unknown
 
@@ -356,7 +358,8 @@ def read_view_sync(redis_url: str, *, now: datetime, max_age_sec: float = DEFAUL
     except Exception as exc:  # noqa: BLE001 -- unknown changes nothing
         logger.info("self_monitor_view_read_failed err=%s", type(exc).__name__)
         return SelfMonitorView(known=False, reason="read_failed")
-    return self_monitor_view(raw, now=now, max_age_sec=max_age_sec)
+    return self_monitor_view(raw, now=now if now is not None else datetime.now(timezone.utc),
+                             max_age_sec=max_age_sec)
 
 
 __all__ = [

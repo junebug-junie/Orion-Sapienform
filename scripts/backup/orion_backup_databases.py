@@ -302,7 +302,7 @@ def capture_stopped_container_tree(
     like the sqlite-only case already confirmed live for Convex. Stopping
     for the copy window is the simple, actually-consistent alternative --
     both of these are non-critical services where a few seconds of downtime
-    during the 03:45 backup window is an acceptable trade, unlike Postgres/
+    during the 05:00 Mountain backup window is an acceptable trade, unlike Postgres/
     FalkorDB above which stay up via their own online-backup mechanisms.
     """
     dest_dir.mkdir(parents=True)

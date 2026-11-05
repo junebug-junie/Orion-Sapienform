@@ -190,6 +190,19 @@ families:
     tier: 2
     deferrable_window_s: 86400
     lanes: []
+  perception.office:
+    # 2026-11-05, office camera design step C (docs/superpowers/specs/2026-11-05-office-camera-attention-and-
+    # reach-out-design.md): an office visit with a story (vision_office_session, >= 4 timeline entries over
+    # >= 3 minutes) posts an EVENT want (event_ref office_session:<session_id>, verb look). Salience = how much
+    # of the visit's activity is new against the office visits of the last 30 days, as a percentile of those
+    # visits (source_salience; nothing is posted under 20 past visits). Producer:
+    # services/orion-hub/scripts/office_reach_out.py. Shadow: no caller obeys it; Prime reads the funded ones
+    # as concerns. The Hub chat reach-out for the visit does NOT wait for funding (Juniper, 2026-11-05).
+    # TIER 2 IS A PROPOSAL: Juniper signs off in PR review. No act-ledger actor (the want opens no act).
+    # 7200: a visit is minutes to an hour; past two hours "what are you up to" is stale.
+    tier: 2
+    deferrable_window_s: 7200
+    lanes: []
   aitown.session:
     # 2026-10-30 (Juniper): an AI Town session Orion chooses (orion-embodiment session controller,
     # act play:aitown.session). New family, tier 2 like the other leisure wants; Juniper signs off on

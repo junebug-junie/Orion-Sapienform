@@ -3,6 +3,8 @@ notes, 2026-11-04: #3107's hold seam, with this check as its recheck): a claim c
 every reference it cites is on a live flow of the claimed part and the flows fit the job."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from pathlib import Path
 
 from orion.body_atlas import capacities as K
@@ -157,7 +159,10 @@ def test_a_withdrawn_claim_is_not_checked_and_a_later_claim_stands_again():
     claim = _c("orion-ctl", "S3", S3_OK, at="2026-11-04T05:00:00+00:00")
     back = C.withdraw_claim(atlas, [claim], "orion-ctl", "s3", dig="t")
     assert C.check_claims(atlas, [claim, back], _REPO) == []
-    again = _c("orion-ctl", "S3", S3_OK, at="2026-11-05T05:00:00+00:00")
+    # After the withdrawal, whenever the test runs: withdraw_claim stamps the real clock, so a
+    # fixed date here started failing once that date passed (main, 2026-11-05 05:00 UTC).
+    later = (datetime.fromisoformat(back.at) + timedelta(days=1)).isoformat()
+    again = _c("orion-ctl", "S3", S3_OK, at=later)
     assert len(C.check_claims(atlas, [claim, back, again], _REPO)) == 1
 
 

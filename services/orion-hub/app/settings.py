@@ -1110,6 +1110,23 @@ class Settings(BaseSettings):
     HUB_SELF_FINDING_OUTREACH_MAX_ATTEMPTS: int = Field(
         default=3, alias="HUB_SELF_FINDING_OUTREACH_MAX_ATTEMPTS"
     )
+    # Office camera design step C (scripts/office_reach_out.py): an office visit with a story
+    # (vision_office_session: >= MIN_ENTRIES timeline entries over >= MIN_MINUTES) gets ONE Hub chat
+    # message asking Juniper what she is up to, composed through the real unified turn, with the
+    # camera's notes under it. No daily cap or cooldown (Juniper 2026-11-05: every visit); quiet hours,
+    # turn-in-flight, recent-chat and arousal strained still hold it. Needs the reach-out columns
+    # (manual_migration_vision_office_session_reach_out_v1.sql); without them nothing is sent.
+    HUB_OFFICE_REACH_OUT_ENABLED: bool = Field(default=True, alias="HUB_OFFICE_REACH_OUT_ENABLED")
+    # The same visit posts an event want (family perception.office, salience = activity novelty as a
+    # percentile of 30 days of visits; nothing under 20 past visits). Shadow; Prime reads the funded ones.
+    HUB_OFFICE_EVENT_WANTS_ENABLED: bool = Field(default=True, alias="HUB_OFFICE_EVENT_WANTS_ENABLED")
+    HUB_OFFICE_REACH_OUT_TICK_SEC: float = Field(default=60.0, alias="HUB_OFFICE_REACH_OUT_TICK_SEC")
+    # A visit that started longer ago than this is never messaged (a quiet-hours night holds at most this).
+    HUB_OFFICE_REACH_OUT_LOOKBACK_HOURS: float = Field(default=12.0, alias="HUB_OFFICE_REACH_OUT_LOOKBACK_HOURS")
+    HUB_OFFICE_REACH_OUT_MIN_ENTRIES: int = Field(default=4, alias="HUB_OFFICE_REACH_OUT_MIN_ENTRIES")
+    HUB_OFFICE_REACH_OUT_MIN_MINUTES: float = Field(default=3.0, alias="HUB_OFFICE_REACH_OUT_MIN_MINUTES")
+    # Composition failures (empty, PASS, no question, ungrounded name) before a visit is dropped.
+    HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS: int = Field(default=3, alias="HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS")
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and
     # production, aligned 2026-10-10) — kill switch for the peer

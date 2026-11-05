@@ -3676,6 +3676,35 @@ endogenous curiosity and never written as a node prediction_error. Kill switch:
   `reading_finding_outreach_blocked seed=<id> reason=<gate>`,
   `reading_finding_beliefs_unchecked reason=<...>`.
 
+### Office visits get attention and one curious message (`scripts/office_reach_out.py`)
+
+**What it does.** When Juniper (probably) spends a few minutes in the office, Orion asks her in Hub
+chat what she is up to. Orion writes the message through the real unified turn. Under it, the camera's
+own notes are delivered as recorded: the times, what it saw, and who it probably was ("probably you.
+That is a guess"). One message per visit, every visit (Juniper, 2026-11-05). Office camera design
+step C (`docs/superpowers/specs/2026-11-05-office-camera-attention-and-reach-out-design.md`).
+
+- **Source.** `vision_office_session` (orion-sql-writer, step B). A visit qualifies when its timeline has
+  `HUB_OFFICE_REACH_OUT_MIN_ENTRIES` (4) entries over `HUB_OFFICE_REACH_OUT_MIN_MINUTES` (3).
+- **Gates.** No daily cap or cooldown (`skip_rate_gates`). Turn-in-flight, recent-chat, quiet hours and
+  arousal strained hold it; it retries next tick. Orion answering PASS, or a message with no question,
+  is retried up to `HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS` (3) times, then dropped.
+- **Once only.** `vision_office_session.reached_out_at` is claimed just before delivery and released if
+  delivery is refused (migration `manual_migration_vision_office_session_reach_out_v1.sql`; without it
+  nothing is sent).
+- **Attention.** The same visit posts one event want (family `perception.office`, event_ref
+  `office_session:<id>`). Salience = how new the visit's activities are against the visits of the last
+  30 days, as a percentile of those visits. Under 20 past visits nothing is posted. Shadow: Prime reads
+  funded ones as concerns. The message does not wait for funding.
+- **Evidence.** Each decision row (`endogenous_outreach_decisions`, `source='office_reach_out'`) carries
+  `office_session_id`, `timeline_times`, `timeline_event_ids`, `who_basis`.
+- **Env.** `HUB_OFFICE_REACH_OUT_ENABLED` (on), `HUB_OFFICE_EVENT_WANTS_ENABLED` (on), `_TICK_SEC` (60),
+  `_LOOKBACK_HOURS` (12), `_MIN_ENTRIES`, `_MIN_MINUTES`, `_MAX_ATTEMPTS`.
+- **Checks.** `tests/test_office_reach_out.py`, `tests/test_office_reach_out_pg.py` (real Postgres);
+  dry run (read-only, live): `evals/run_office_reach_out_dry_run.py --dsn <dsn>`.
+- **Logs.** `office_reach_out_result session=<id> reason=<sent|...>`, `office_reach_out_blocked`,
+  `office_event_want`, `office_event_want_skipped reason=no_history`.
+
 ### Self findings reach Juniper (`scripts/self_finding_outreach.py`)
 
 **What it does.** When one of Orion's faculties breaks, comes back, or stops being reliable,

@@ -270,3 +270,10 @@ def test_settings_ship_on_and_match_env_example():
 
     cfg = office_sessions_config(s)
     assert cfg.streams == ("cam0",) and cfg.ask_daily_cap == 4
+
+
+def test_the_rebuild_never_touches_the_hub_reach_out_mark():
+    # orion-hub (scripts/office_reach_out.py) claims a visit in these columns; a rebuild of an open visit
+    # that rewrote them would let the Hub message the same visit twice.
+    for col in ("reached_out_at", "reach_out_decision_id"):
+        assert col not in vos.UPSERT_SQL

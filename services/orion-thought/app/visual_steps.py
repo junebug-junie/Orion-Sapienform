@@ -585,7 +585,9 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
 
     # Body economy Patch C3b: a SHADOW bid at the point this step would spend GPU work. Logged
     # beside the real outcome, never obeyed (app/physiology_shadow.py). Replays, adoptions and the
-    # in-flight guard above return before it: they are not a new want.
+    # in-flight guard above return before it: they are not a new want. Dream hops only since
+    # 2026-11-05: a waking painting's want is bid once, before its run exists, by the trigger
+    # (app/painting_self_start.py), so the market sees the want and not the aftermath.
     shadow = _painting_shadow(req)
     trace = _GenerateTrace()
     result: ReverieVisualStepResultV1 | None = None
@@ -606,13 +608,17 @@ class _GenerateTrace:
 
 
 def _painting_shadow(req: ReverieVisualStepRequestV1):
-    """The generate step's shadow want, placed. want_id = this step's correlation id: the act's
-    correlation id when this step opens the act (grammar_acts keeps the first one it sees).
-    None if the shadow could not be built: the step never depends on it."""
+    """A dream hop's generate-step shadow want, placed. want_id = this step's correlation id: the
+    act's correlation id when this step opens the act (grammar_acts keeps the first one it sees).
+    None for a waking painting (its trigger already bid, app/painting_self_start.py: a second bid
+    for the same want would double its shadow reservation) and when the shadow could not be built:
+    the step never depends on it."""
+    if req.dream_hop is None:
+        return None
     try:
         from .physiology_shadow import ShadowBid
 
-        shadow = ShadowBid(family="thought.painting" if req.dream_hop is None else "thought.dream_hop", verb="make",
+        shadow = ShadowBid(family="thought.dream_hop", verb="make",
                            tier=2, want_id=req.correlation_id, object_ref=f"durable_run:{req.run_id}",
                            component="visual_steps.generate")
         shadow.place()

@@ -2,15 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import json
-from datetime import datetime, timezone
-from urllib.request import urlopen
-from orion.reverie.baseline import load_baseline_policy
-from orion.schemas.reverie_visual import VisualActivityV1
 from pathlib import Path
 
 
-from orion.regulation.arousal_read import read_arousal_sync
 from orion.proposals.builder import build_proposal_frame
 from orion.proposals.templates import FORBIDDEN_TRANSPORT_PROPOSAL_KEYS, TRANSPORT_PROPOSAL_TEMPLATE_KEYS
 from orion.proposals.policy import load_proposal_policy
@@ -49,23 +43,6 @@ class ProposalRuntimeWorker:
                 continue
             except asyncio.CancelledError:
                 break
-
-    def _baseline_arousal_level(self) -> str | None:
-        """R3 reader 4: Orion's arousal at the moment a baseline image would be issued.
-
-        Called by ``orion.reverie.baseline.schedule`` only after every other baseline check
-        passed (about 16 times a day, plus retries), so this is one Redis GET per due image,
-        not per tick. None (unknown, flag off, Redis down) changes nothing."""
-        view = read_arousal_sync(
-            self._settings.orion_bus_url,
-            enabled=bool(self._settings.visual_baseline_arousal_enabled),
-            reader="visual_baseline",
-            max_age_sec=float(self._settings.regulation_reader_max_age_sec),
-        )
-        if view.level == "strained":
-            logger.info("visual_baseline_deferred reason=arousal_strained since=%s reasons=%s",
-                        view.since, ",".join(view.reasons))
-        return view.level if view.known else None
 
     def _tick(self) -> None:
         # 2026-07-22 (SelfStateV1 burn): polls FieldStateV1 directly instead of
@@ -109,30 +86,13 @@ class ProposalRuntimeWorker:
         if reverie_candidates:
             external_candidates.extend(reverie_candidates)
 
-        eligibility = None
-        baseline_reason = None
-        baseline_policy = load_baseline_policy()
-        if baseline_policy.enabled:
-            try:
-                with urlopen(baseline_policy.thought_url.rstrip("/") + "/visual-chain/activity", timeout=baseline_policy.timeout_sec) as response:
-                    activity = VisualActivityV1.model_validate(json.load(response))
-                eligibility, baseline_reason = self._store.baseline_eligibility(activity,
-                    now=datetime.now(timezone.utc), policy=baseline_policy,
-                    arousal_level=self._baseline_arousal_level)
-            except Exception:
-                baseline_reason = "visual_activity_unavailable"
-                logger.warning("visual_baseline_activity_unavailable", exc_info=True)
-
         frame = build_proposal_frame(
             field=field,
             attention=attention,
             policy=self._policy,
             previous_frame=previous,
             external_candidates=external_candidates or None,
-            baseline_eligibility=eligibility,
         )
-        if baseline_reason:
-            frame.warnings.append(baseline_reason)
         if not self._settings.enable_transport_proposals:
             filtered = [
                 c

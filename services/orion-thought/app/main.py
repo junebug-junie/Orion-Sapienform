@@ -22,6 +22,8 @@ from .settings import settings
 from .store import warm_pool
 from .visual_chain import run_visual_chain_watchdog, run_visual_chain_worker
 from .visual_chain_health_monitor import run_visual_painting_gap_watchdog
+from .painting_self_start import health as painting_self_start_health
+from .painting_self_start import run_painting_self_start
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,6 +105,13 @@ async def lifespan(app: FastAPI):
     app.state.visual_painting_gap_task = asyncio.create_task(
         run_visual_painting_gap_watchdog(app.state.visual_painting_gap_stop_event)
     )
+    # Ladder retirement PR 2 (2026-11-05): the ONLY trigger of a waking painting -- the
+    # visual-baseline schedule plus a shadow hunger bid, then one reverie.visual durable run.
+    # No-op unless ORION_PAINTING_SELF_START_ENABLED (shipped on). app/painting_self_start.py.
+    app.state.painting_self_start_stop_event = asyncio.Event()
+    app.state.painting_self_start_task = asyncio.create_task(
+        run_painting_self_start(app.state.painting_self_start_stop_event)
+    )
     # Warm store.py's shared Postgres pool so the first real caller of any
     # kind (reverie/salience/etc. writes) doesn't pay a cold TCP+auth
     # handshake cost -- unconditional since every store.py consumer shares
@@ -157,6 +166,7 @@ async def lifespan(app: FastAPI):
     app.state.visual_chain_stop_event.set()
     app.state.visual_chain_watchdog_stop_event.set()
     app.state.visual_painting_gap_stop_event.set()
+    app.state.painting_self_start_stop_event.set()
     with suppress(asyncio.TimeoutError):
         await asyncio.wait_for(app.state.bus_task, timeout=125.0)
     if not app.state.bus_task.done():
@@ -170,6 +180,7 @@ async def lifespan(app: FastAPI):
         app.state.visual_chain_task,
         app.state.visual_chain_watchdog_task,
         app.state.visual_painting_gap_task,
+        app.state.painting_self_start_task,
         app.state.pool_warmup_task,
         app.state.self_readings_warm_task,
         app.state.self_track_record_warm_task,
@@ -193,6 +204,7 @@ async def health() -> JSONResponse:
             "version": settings.service_version,
             "bus_enabled": settings.orion_bus_enabled,
             "channel_thought_request": settings.channel_thought_request,
+            "painting_self_start": painting_self_start_health(),
         }
     )
 

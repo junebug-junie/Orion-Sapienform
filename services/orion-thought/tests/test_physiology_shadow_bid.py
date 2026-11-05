@@ -1,9 +1,14 @@
-"""Body economy Patch C3b: orion-thought's SHADOW bid at the painting generate step.
+"""Body economy Patch C3b: orion-thought's SHADOW bid at a dream hop's generate step.
 
 The contract: the step's result, its GPU work and its act events are identical whatever the
 economy answers (funded, deferred, no answer, an error), and the logged shadow decision carries
 the generate step's correlation id (the act's correlation id when this step opens it) and the
 step's real outcome.
+
+Since 2026-11-05 (ladder retirement PR 2) a WAKING painting bids once, at its trigger, before its
+run exists (app/painting_self_start.py, tests/test_painting_self_start.py), so its generate step
+places no bid; ``test_a_waking_painting_generate_places_no_bid`` pins that. Every other test here
+runs the dream-hop generate, the one generate that still bids.
 """
 
 from __future__ import annotations
@@ -15,7 +20,13 @@ from datetime import datetime, timezone
 import pytest
 
 from orion.schemas.physiology_want import WantDecisionV1, WantV1
-from test_visual_steps import _dream_req, _GrammarBus, _req, _run_on, env  # noqa: F401 -- env is a fixture
+from test_visual_steps import _dream_req, _GrammarBus, _run_on, env  # noqa: F401 -- env is a fixture
+from test_visual_steps import _req as _waking_req
+
+
+def _req(step, *, attempt_id=None, correlation_id="corr-1"):
+    """A dream hop's step (the generate that still bids), with this file's correlation ids."""
+    return _dream_req(step, attempt_id=attempt_id, correlation_id=correlation_id)
 
 ANSWERS = ["funded", "deferred", "none", "raises"]
 
@@ -93,7 +104,7 @@ async def test_generate_is_identical_for_every_answer_and_joins_the_act(env, eco
         (want,) = economy.wants
         # The join: want_id == the act_opened event's correlation id.
         assert want.want_id == want.correlation_id == opened[0]["correlation_id"] == "gen-corr"
-        assert (want.family, want.verb, want.tier) == ("thought.painting", "make", 2)
+        assert (want.family, want.verb, want.tier) == ("thought.dream_hop", "make", 2)
         (line,) = _lines(caplog)
         assert (line["want_id"], line["real"]) == ("gen-corr", "ran")
         assert economy.released == []       # it ran: the reservation stands until the act closes
@@ -130,7 +141,7 @@ async def test_thermal_refusal_is_unchanged_and_logged_blocked(env, economy, cap
     assert (out.status, out.reason) == ("retry", "thermal_refused") and env.generate_calls == []
     assert bus.sent == []
     (line,) = _lines(caplog)
-    assert (line["family"], line["want_id"], line["real"]) == ("thought.painting", "corr-1", "blocked:thermal_refused")
+    assert (line["family"], line["want_id"], line["real"]) == ("thought.dream_hop", "corr-1", "blocked:thermal_refused")
     assert line["shadow"] == {"funded": "funded", "deferred": "deferred"}.get(answer, "none")
     # A funded want the real gate refused frees its shadow reservation.
     assert economy.released == (["corr-1"] if answer == "funded" else [])
@@ -144,6 +155,19 @@ async def test_replayed_generate_does_not_bid_again(env, economy):
     await _run_on(env, bus, _req("generate", attempt_id=prepared.attempt_id, correlation_id="corr-2"))
     await _drain()
     assert [w.want_id for w in economy.wants] == ["corr-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_waking_painting_generate_places_no_bid(env, economy, caplog):
+    """Fails on pre-PR-2 code: the waking generate bid ``thought.painting`` here, AFTER the run had
+    been admitted. Its want is now bid by the trigger, so a second bid would double-reserve."""
+    caplog.set_level(logging.INFO, logger="orion-thought.physiology_shadow")
+    bus = _GrammarBus()
+    prepared = await _run_on(env, bus, _waking_req("prepare"))
+    out = await _run_on(env, bus, _waking_req("generate", attempt_id=prepared.attempt_id))
+    await _drain()
+    assert out.status == "done" and len(env.generate_calls) == 1
+    assert economy.wants == [] and _lines(caplog) == []
 
 
 @pytest.mark.asyncio

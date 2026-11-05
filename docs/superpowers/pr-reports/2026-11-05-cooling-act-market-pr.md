@@ -182,7 +182,7 @@ deferred 8 bids, and every deferred want was funded on a later bid inside its wi
 ## Replay: 14 days of real cabinet history
 
 `python -P services/orion-durable-runs/evals/cooling_act_replay.py --live --days 14`, window
-2026-10-22 02:29 to 2026-11-05 02:29 UTC. It runs the shipped loop each minute, with the real market rule
+2026-10-22 03:21 to 2026-11-05 03:21 UTC (re-run after the review fixes; same counts as the first run). It runs the shipped loop each minute, with the real market rule
 on a price-free body (what this family meets live), a fake pool that runs each shed to its TTL, and the real
 scorer. Background GPU work is assumed present (live there are hundreds of background leases a day).
 
@@ -203,6 +203,11 @@ The old path's dispatch frames over the same 14 days, for the record: 4,498 shed
 dispatch. 2,796 were blocked `world_eligibility_stale`, 92 `world_action_in_flight`, 1 was held back as a
 control, 3 were sent, and 1,606 were prepared but never sent. That is why the new loop draws many more
 episodes from about the same eligible moments: it does not lose them on the way.
+
+What the replay does not exercise: it calls the real decision rule (`choice.decide`) on a synthetic,
+price-free body with no act history, not `Market.bid` itself (no Redis body state, no `want_ledger`
+publish, no Prime path). So the funded share is built in here; live it should be the same, because this
+family holds no lane and meets no price.
 
 The fixture replay (CI) passes 9 of 9 checks: no want outside the warm band; no want while the reflex
 covers it (critical, unknown); episodes on the warm afternoon; the treated share inside 0.5 +- 0.35; one
@@ -265,7 +270,33 @@ real funded shed and a `[WORLD_SETTLEMENT] scored=` line for a new episode wait 
 
 ## Review findings fixed
 
-(filled in after the review subagent; see below)
+A code-review subagent read the whole diff, ran the suites and pulled 30 days of live cabinet data.
+
+- Finding (blocker): a funded bid after the event window ended still shed. The market funds a passed
+  window (it only warns), a long deferral's retry is clamped to exactly the window end, and the next tick
+  bid again.
+  - Fix: the tick closes a want whose window has ended before any bid; `shed_verdict` checks the end before
+    `funded`.
+  - Evidence: `test_a_deferral_clamped_to_the_events_end_never_bids_or_sheds_late` (deferred, then funded
+    at end + 40 s: no bid, no row, no RPC) and `test_a_funded_bid_at_or_after_the_events_end_never_sheds`.
+- Finding: `families.yaml` said the salience was the temperature's percentile and the event "warm".
+  - Fix: it now says the 15-minute rise, and "warming" (elevated or hot and rising >= 0.5 C).
+- Finding: the market almost never says no to this act (no lanes, heat unpriced).
+  - Fix: said plainly in the gate section and in Risks; the tier waits for Juniper. Not changed in code.
+- Finding: a treated row could be precommitted when no bus exists.
+  - Fix: the bus is checked before the draw; no bus means no row. Evidence: `test_no_bus_writes_no_row_and_sends_nothing`.
+- Finding: two stale comments (`shed_rise_threshold_c`, `is_warming`). Fix: reworded.
+- Finding: the lazy DDL ran on the first insert after every boot (lock risk). Fix: it runs only when the
+  ledger table is missing. Evidence: the real-Postgres store test still passes.
+- Finding: the ledger was read twice per tick. Fix: read once, reused for admission.
+- Finding: the replay docstring overstated what it runs. Fix: reworded (and stated above).
+- Finding: CI path filters missed `orion/autonomy/contrast.py`, `prediction.py` and
+  `orion/substrate/bus_synaptic_surprise.py`. Fix: added to both path blocks.
+- Not fixed (low, same as the old dispatch path): after a failed precommit or control write, the next tick
+  can post a new event and draw again. A DB blip can change one moment's arm. Recorded here.
+- Not fixed, by plan: the spec this PR cites lives on PR #3121 (docs only); merge #3121 first or with this
+  one. `WorkspaceWinnerContext`, the `self_reversible` gate and `approved_self_reversible` have no user now;
+  PR 6 (retire the three services) deletes them.
 
 ## Restart required
 
@@ -303,6 +334,6 @@ Live check after the deploy: `curl -fsS http://localhost:8124/health | jq .cooli
 
 ## PR link
 
-(filled in after the PR opens)
+(added after the PR opens)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

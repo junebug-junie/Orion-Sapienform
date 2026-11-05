@@ -301,7 +301,7 @@ class Settings(BaseSettings):
     # not eligible. Moved from orion-proposal-runtime with the act.
     hardware_watch_health_url: str = Field(
         "http://hardware-watch:8131/health", alias="ORION_HARDWARE_WATCH_HEALTH_URL")
-    # The rise threshold recorded on the eligibility snapshot (cabinet_warming_error); no rise is required.
+    # "Warming": the event needs a rise >= this (C in 15 min) while elevated or hot (orion.autonomy.shed_act.is_warming).
     shed_rise_threshold_c: float = Field(0.5, gt=0.0, le=5.0, alias="ORION_SHED_RISE_THRESHOLD_C")
     # The shed RPC and the TTL it asks for (the pool caps it anyway). Moved from execution dispatch.
     gpu_pool_shed_rpc_timeout_sec: float = Field(5.0, gt=0.0, le=60.0, alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC")

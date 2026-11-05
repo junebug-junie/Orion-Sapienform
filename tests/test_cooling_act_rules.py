@@ -342,3 +342,11 @@ def test_settle_rules_terminal_states_and_orphan():
     orphan = settle_shed_result(result_json=pending, pool_row=None, now=decided + timedelta(seconds=1201))
     assert orphan.terminal == "settlement_timeout"
     assert settle_shed_result(result_json=pending, pool_row=None, now=decided + timedelta(seconds=1100)) is None
+
+
+def test_a_funded_bid_at_or_after_the_events_end_never_sheds():
+    """Review blocker 2026-11-05: the market still funds a passed window; the end must win."""
+    end = NOW + timedelta(seconds=60)
+    for at in (end, end + timedelta(seconds=40)):
+        v = shed_act.shed_verdict(_decision("funded", "net_positive", net=0.5), at, end)
+        assert v.close and not v.proceed and v.why == "event_expired"

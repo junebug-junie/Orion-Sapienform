@@ -301,3 +301,25 @@ def test_main_starts_the_loop_only_with_a_market_and_a_bus():
     src = (Path(ca.__file__).parent / "main.py").read_text()
     assert "cooling_act_enabled" in src and "CoolingAct(" in src and "no_market" in src
     assert ca.BID_TIMEOUT_SEC <= 10.0
+
+
+def test_a_deferral_clamped_to_the_events_end_never_bids_or_sheds_late(monkeypatch):
+    """Review blocker 2026-11-05: deferred with a long retry -> retry_at == end; the next tick lands after it."""
+    monkeypatch.setattr(shed_act, "arm_for", lambda eid, f=0.5: "treated")
+    market = _Market(_dec("deferred", "price", net=-0.1, retry=3600))
+    act, store, _, bus = _act(market=market)
+    assert _run(act.tick(NOW)).startswith("deferred")
+    end = act._open.end
+    assert act._open.retry_at == end
+    market.decision = _dec()                                   # would be funded now
+    late = end + timedelta(seconds=40)
+    act._store.points = _points(29.6, 30.6, now=late)
+    assert _run(act.tick(late)) == "event_expired"
+    assert len(market.bids) == 1 and store.episodes == {} and bus.requests == []
+
+
+def test_no_bus_writes_no_row_and_sends_nothing(monkeypatch):
+    monkeypatch.setattr(shed_act, "arm_for", lambda eid, f=0.5: "treated")
+    act, store, _, _ = _act(bus=False)
+    assert _run(act.tick(NOW)) == "acted:no_bus"
+    assert store.episodes == {} and "insert" not in store.calls

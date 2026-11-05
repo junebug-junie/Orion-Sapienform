@@ -117,7 +117,9 @@ class CoolingActStore:
         from orion.autonomy import world_episodes
 
         with self._engine.begin() as conn:
-            if not self._ready:
+            # Only when the ledger is missing: CREATE INDEX IF NOT EXISTS still takes a lock, and a 3 s
+            # lock timeout on a busy table would fail the first precommit after every boot (review 2026-11-05).
+            if not self._ready and not self._ledger_exists(conn):
                 world_episodes.ensure_table(conn)
             inserted = world_episodes.insert_decision(conn, row)
         self._ready = True
@@ -250,7 +252,11 @@ class CoolingAct:
         o = self._open
         if o is not None and now < o.retry_at:
             return self._note(now, "holding", want_id=o.want_id, why=o.why)
-        elig, cabinet = await asyncio.to_thread(self._eligibility, now)
+        if o is not None and now >= o.end:
+            # The warm moment has passed: never bid on it again, never shed it late.
+            self._close("event_expired", now)
+            return self._note(now, "event_expired", want_id=o.want_id)
+        elig, cabinet, ledger = await asyncio.to_thread(self._eligibility, now)
         if not elig["eligible"]:
             if o is not None:
                 self._close(f"event_over:{','.join(elig['refusals'])}"[:200], now)
@@ -258,14 +264,13 @@ class CoolingAct:
         if o is None and not shed_act.is_warming(cabinet):
             # Eligible but not warming: no event. (A held want keeps its event until its window ends.)
             return self._note(now, "not_warming", rise_c=cabinet.rise_c, state=cabinet.thermal_state)
-        try:
-            in_flight, treated = await asyncio.to_thread(self._store.admission_inputs, now=now)
+        if ledger is None:                            # fail closed: no ledger read, no decision
+            refusal = "world_ledger_unavailable"
+        else:
+            in_flight, treated = ledger
             refusal = shed_act.admission_refusal(
                 in_flight=in_flight, treated=treated, now=now, ttl_sec=float(self._s.shed_ttl_sec),
                 min_gap_sec=float(self._s.shed_min_gap_sec), max_sec_per_day=float(self._s.shed_max_sec_per_day))
-        except Exception:  # noqa: BLE001 -- fail closed: no ledger read, no decision
-            logger.warning("cooling_act_admission_unreadable", exc_info=True)
-            refusal = "world_ledger_unavailable"
         if refusal is not None:
             if o is not None:
                 self._close(f"admission:{refusal}", now)
@@ -346,14 +351,15 @@ class CoolingAct:
             logger.warning("cooling_act_pool_occupancy_unavailable", exc_info=True)
             granted, queued = None, None
         try:
-            in_flight = self._store.admission_inputs(now=now)[0]
+            ledger = self._store.admission_inputs(now=now)       # read once; admission reuses it
+            in_flight = ledger[0]
         except Exception:  # noqa: BLE001 -- no ledger read means we cannot prove nothing is in flight
             logger.warning("cooling_act_episode_ledger_unavailable", exc_info=True)
-            in_flight = ["episode_ledger_unavailable"]
+            ledger, in_flight = None, ["episode_ledger_unavailable"]
         elig = evaluate_shed_eligibility(
             cabinet=cabinet, hardware_watch=hw, background_granted=granted, background_queued=queued,
             in_flight_episode_ids=in_flight, holdback_fraction=float(self._s.cooling_act_holdback_fraction), now=now)
-        return elig, cabinet
+        return elig, cabinet, ledger
 
     async def _salience(self, cabinet, now: datetime) -> Optional[float]:
         # On the loop's own clock (``now``), so a replay refreshes on simulated time as the live loop does.
@@ -369,6 +375,10 @@ class CoolingAct:
 
     # --- the experiment ---------------------------------------------------------------------------
     async def _act(self, *, want, detail: dict, elig: dict, salience: float, now: datetime) -> str:
+        if self._bus() is None:
+            # No bus, no shed RPC: write no row at all (a treated row with no shed teaches nothing).
+            self._count("no_bus")
+            return "no_bus"
         episode_id = shed_act.episode_id_for(want.want_id)
         holdback = float(self._s.cooling_act_holdback_fraction)
         arm = shed_act.arm_for(episode_id, holdback)

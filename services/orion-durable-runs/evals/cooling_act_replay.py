@@ -4,8 +4,10 @@
 Runs the SHIPPED loop (``app.cooling_act.CoolingAct``) tick by tick (60 s) with:
 
 * a store backed by cabinet readings (``orion_biometrics_summary``) and an in-memory episode ledger;
-* the REAL market decision (``orion.physiology.choice.decide`` on a fresh body state with no prices, which is
-  what this zero-lane family meets live; the family's own event history grows as it bids);
+* the real decision rule (``orion.physiology.choice.decide``) on a SYNTHETIC, price-free body state with no act
+  history -- not ``app.physiology_market.Market.bid`` (no Redis body state or staleness, no want_ledger publish,
+  no Prime path). A zero-lane family meets no price live either, so the funded share is close to what live
+  would give, but it is built in here; the family's own event history grows as it bids;
 * a fake pool that starts each shed and expires it at its TTL (the pool's own caps are the loop's admission);
 * the REAL settle-time scorer (``orion.autonomy.world_settlement.score_world_episode``), run once each
   episode's window closes -- the proof that sql-writer can score what the new loop writes.
@@ -150,12 +152,12 @@ class ReplayMarket:
 
 
 class ReplayAct(CoolingAct):
-    """The shipped loop; only the bus is replaced (a fake pool that starts each shed)."""
+    """The shipped loop; only the bus is replaced (this object stands in for it; a fake pool starts each shed)."""
 
     def __init__(self, store: ReplayStore, market: ReplayMarket, clock, incidents) -> None:
         self.clock_box = clock
         self.rpcs: list[str] = []
-        super().__init__(settings=_settings(), store=store, market_getter=lambda: market, bus_getter=lambda: None,
+        super().__init__(settings=_settings(), store=store, market_getter=lambda: market, bus_getter=lambda: self,
                          hardware_watch=self._hw, clock=lambda: clock["now"])
         self._incidents = incidents
 

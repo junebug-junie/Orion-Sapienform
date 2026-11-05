@@ -85,8 +85,8 @@ def _utc(v: datetime) -> datetime:
 # --- the event and its salience ------------------------------------------------------------------------
 def is_warming(cabinet: Any) -> bool:
     """The event: the cabinet is in Orion's band (the thermal gate reads elevated or hot) AND rising by at least
-    its rise threshold within 15 minutes (``cabinet_rise_c``, the reflex's own definition of "rising"). Critical
-    and unknown are not Orion's (the reflex covers them; eligibility refuses them too)."""
+    its rise threshold within 15 minutes (``cabinet_rise_c``, the reflex's own definition of "rising"). Unknown is
+    never warming (no reading, no rise), and critical is refused by eligibility (the reflex covers both)."""
     rise = getattr(cabinet, "rise_c", None)
     return (getattr(cabinet, "thermal_state", None) in WARM_STATES and rise is not None
             and rise >= float(getattr(cabinet, "rise_threshold_c", DEFAULT_RISE_THRESHOLD_C)))
@@ -169,10 +169,12 @@ def shed_verdict(decision: Any, now: datetime, end: datetime) -> ShedVerdict:
     * ``queued_at_pool`` (a capacity deferral with a positive net) does not apply: the act holds no lane.
       It is treated as a deferral, never as funded."""
     v = bind_verdict(decision, now, end)
-    if v.why == "funded":
-        return ShedVerdict(True, False, "funded", detail=v.detail)
+    # The event's end comes FIRST: the market still funds a want whose window has passed (it only warns
+    # window_passed), and a funded bid on a passed moment would shed late (review 2026-11-05).
     if now >= end or v.why == "window_end":
         return ShedVerdict(False, True, "event_expired", detail=v.detail)
+    if v.why == "funded":
+        return ShedVerdict(True, False, "funded", detail=v.detail)
     if v.why.startswith("no_answer"):
         return ShedVerdict(False, False, v.why, retry_at=min(end, now + timedelta(seconds=NO_ANSWER_RETRY_SEC)),
                            detail=v.detail)

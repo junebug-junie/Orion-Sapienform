@@ -165,20 +165,22 @@ The tables are `substrate_proposal_frames` (2.3 GB), `substrate_policy_decision_
 `substrate_dispatch_results` (514 MB). This is a hand-applied DESTRUCTIVE migration with a
 `pg_dump` first, merged in the same sitting, as with #3116.
 
-## Missing questions (defaults in brackets)
+## Decided (Juniper, 2026-11-05: "all default options are good")
 
-1. **Cooling act: does it bind in the market from day one?** [Yes. It is a single, reversible,
-   capped act; the 50% control group stays; the reflex stays separate.]
-2. **Painting rate after the move?** [Today's rate, about 9 a day, with the baseline schedule plus
-   a hunger bid. The market can raise or lower it later when painting binds.]
-3. **Reading pull's treated/control experiment:** keep it somewhere, or end it? [End it. The read
-   loop runs anyway, and patch 2 makes reading an event source.]
-4. **Pruning:** hardware-watch rule for images only, or for all three prunes? [Images only. 145 of
-   156 runs found nothing; the others stay hand-run.]
-5. **Order of the switch-over PRs?** [Cooling act (5) first, because it is the most important act;
-   then painting (2), retro (1), AI Town (3), pruning (4); then retire (6).]
-6. **Dream compaction gate:** when apply is turned on one day, what approves a delta? [The
-   market's consent gate from attention patch 3. Apply stays off until then.]
+1. **The cooling act binds in the market from day one.** The 50% control group stays, and the
+   pool's thermal reflex stays separate.
+2. **Painting keeps today's rate,** about 9 a day: the baseline schedule plus a hunger bid.
+3. **The reading pull's treated/control experiment ends.**
+4. **The hardware-watch disk rule prunes images only.** Build cache and stopped containers stay
+   hand-run.
+5. **Order:** cooling act (PR 5), painting (PR 2), retro (PR 1), AI Town (PR 3), pruning (PR 4),
+   then retire (PR 6) and the drop (PR 7).
+6. **Dream compaction apply stays off** until the market's consent gate exists (attention patch 3).
+
+Also decided the same day, for attention patch 2 (#3122):
+- no self-grade option is adopted yet (wait for a world-graded success signal);
+- `vision.ask` is approved at Tier 2;
+- camera-ask salience is decided in patch 4.
 
 ## Proposal-mode checklist
 

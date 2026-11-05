@@ -19,7 +19,11 @@ COPY config/vision_zones.yaml /app/config/vision_zones.yaml
 COPY config/vision_topology.yaml /app/config/vision_topology.yaml
 # People Orion knows by name and stated pronouns (app/person_record.py,
 # orion/person_model/person.py resolves it as /app/config/person_model/people.yaml).
-COPY config/person_model/people.yaml /app/config/person_model/people.yaml
+# people.yaml, plus the camera priors: the committed example and, when the build
+# checkout has it, its gitignored camera_priors.local.yaml (orion/person_model/camera_priors.py).
+# Only these: other *.local.yaml files in the folder are personal and not needed here.
+# A changed camera_priors.local.yaml takes effect after a rebuild of orion-sql-writer.
+COPY config/person_model/people.yaml config/person_model/camera_priors.*.yaml /app/config/person_model/
 # Act energy cost (orion/grammar/act_energy_fill.py): card -> host/nvidia-smi index, and the heat fit.
 COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml

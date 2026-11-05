@@ -8,6 +8,10 @@ rides on every room-percept path.
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -541,3 +545,113 @@ def test_person_caveat_only_when_a_person_phrase_is_shown() -> None:
                                now=_ROWAN_NOW, tz=TZ, individual_windows={"am": _NAMED})
     assert "Rowan" not in line
     assert "person match" not in line
+
+
+# --- office camera prior guesses (2026-11-04) -------------------------------------------------
+
+
+def _office_sighting(iid: str, guess, now):
+    return {"individual_id": iid, "kind": "person", "label": None, "distinct_days": 1,
+            "first_at": now, "last_at": now, "guess": guess}
+
+
+def test_office_prior_guess_reads_as_a_guess_not_as_unfamiliar_people() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import street_camera_word, summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    # One visit split into three records, all guessed Juniper by the office prior.
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(3)]
+    lines = summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now, tz=timezone.utc,
+                             camera=street_camera_word("cam0"), people_windows=[{"counts": {"person": 1}}],
+                             stationary_people={})
+    text_ = " ".join(lines)
+    assert "probably Juniper (my guess from who is usually here, not confirmed)" in text_
+    assert "unfamiliar" not in text_
+    # Two people in one window: one is the guess, the other is still someone Orion does not know.
+    lines = summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now, tz=timezone.utc,
+                             camera=street_camera_word("cam0"), people_windows=[{"counts": {"person": 2}}],
+                             stationary_people={})
+    assert "unfamiliar" in " ".join(lines)
+
+
+def test_a_name_she_gave_wins_over_the_same_guess() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [{**_office_sighting("o1", None, now), "label": "Juniper"}, _office_sighting("o2", "Juniper", now)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera"))
+    assert "Juniper" in text_ and "probably Juniper" not in text_
+    # Review finding: the named record and the guess are one person, so a second
+    # person in the same window is still said.
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera",
+                                      people_windows=[{"counts": {"person": 2}}], stationary_people={}))
+    assert "unfamiliar" in text_
+
+
+def test_unread_window_counts_never_collapse_guessed_records_into_one() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(3)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera"))
+    assert "probably Juniper" in text_ and "up to 2 unfamiliar people" in text_
+
+
+def test_a_stationary_prop_never_reads_as_up_to_zero_people() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(2)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera",
+                                      people_windows=[{"counts": {"person": 2}}], stationary_people={"person": 1}))
+    assert "up to 0" not in text_ and "unfamiliar" not in text_
+
+
+def test_prior_guess_read_fails_open() -> None:
+    from orion.situational import perception_reader as pr
+
+    class _Boom:
+        def execute(self, *a, **k):
+            raise RuntimeError("column basis does not exist")
+
+        def rollback(self):
+            pass
+
+    assert pr._read_prior_guesses(_Boom(), [{"individual_id": "o1", "label": None}]) == {}
+    assert pr._read_prior_guesses(_Boom(), [{"individual_id": "o1", "label": "Juniper"}]) == {}
+
+
+_PG = os.getenv("ORION_TEST_PG_URI", "")
+
+
+@pytest.mark.skipif(not _PG, reason="ORION_TEST_PG_URI not set (throwaway Postgres only)")
+def test_prior_guess_sql_reads_only_prior_unsure_unrevoked_guesses() -> None:
+    from sqlalchemy import create_engine, text as sql
+
+    from orion.situational import perception_reader as pr
+
+    eng = create_engine(_PG)
+    with eng.begin() as conn:
+        conn.execute(sql("TRUNCATE vision_person_attribution"))
+        for iid, band, basis, revoked in (("a", "unsure", "prior", None), ("b", "unsure", "evidence", None),
+                                          ("c", "accept", "prior", None), ("d", "unsure", "prior", "2026-11-05")):
+            conn.execute(sql("INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, "
+                             "band, model_version, decided_at, basis, revoked_at) VALUES (:i, 'Juniper', 'body', "
+                             "0.7, :b, 'v', now(), :basis, CAST(:r AS timestamptz))"),
+                         {"i": iid, "b": band, "basis": basis, "r": revoked})
+    with eng.connect() as conn:
+        got = pr._read_prior_guesses(conn, [{"individual_id": i, "label": None} for i in "abcd"])
+    eng.dispose()
+    assert got == {"a": "Juniper"}

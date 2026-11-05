@@ -2384,8 +2384,20 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
     budget = remaining_ask_budget(daily_cap=cfg.person_confirm_ask_daily_cap, asked_today=int(asked_today))
     if budget <= 0:
         return []
+    from app.vision_person_model import attribution_has_basis
+
+    # Camera-prior guesses (basis = 'prior', the office camera) rank after guesses the
+    # scores chose, and at most one is open per name: one office visit is split into
+    # several records, and each would otherwise take one of the day's asks.
+    has_basis = attribution_has_basis(conn)
+    basis_col = "g.basis" if has_basis else "NULL"
+    open_prior_names = {str(n).casefold() for (n,) in conn.execute(text("""
+        SELECT g2.person_label FROM orion_ask o JOIN vision_person_attribution g2
+          ON o.source_ref = g2.individual_id || '|' || g2.person_label
+        WHERE o.source_kind = 'vision_person_confirm' AND o.status = 'open'
+          AND g2.revoked_at IS NULL AND g2.basis = 'prior'"""))} if has_basis else set()
     cands = conn.execute(text(f"""
-        SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days
+        SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days, {basis_col} AS basis
         FROM vision_person_attribution g JOIN vision_individual i USING (individual_id)
         WHERE g.revoked_at IS NULL AND g.band = 'unsure' AND i.label IS NULL AND NOT i.stationary
           AND i.sighting_count >= :min_s
@@ -2397,12 +2409,16 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
           AND NOT EXISTS (SELECT 1 FROM orion_ask o WHERE o.status = 'open' AND (
                 (o.source_kind = 'vision_individual' AND o.source_ref = g.individual_id) OR
                 (o.source_kind = 'vision_person_confirm' AND o.source_ref LIKE g.individual_id || '|%')))
-        ORDER BY g.score DESC, g.individual_id
+        ORDER BY ({basis_col} IS NOT DISTINCT FROM 'prior'), g.score DESC, g.individual_id
     """), {"cool": now - timedelta(days=cfg.ask_cooldown_days), "min_s": PERSON_CONFIRM_MIN_SIGHTINGS}).fetchall()
     out: List[dict] = []
-    for iid, person, sc, dd in cands:
+    for iid, person, sc, dd, basis in cands:
         if len(out) >= budget:
             break
+        if basis == "prior":
+            if str(person).casefold() in open_prior_names:
+                continue
+            open_prior_names.add(str(person).casefold())
         srows = _sighting_rows(conn, iid)
         images = _images(srows, now, cfg)
         if not images:

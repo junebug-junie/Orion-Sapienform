@@ -94,6 +94,7 @@ static uint16_t ccs_eco2 = 0, ccs_tvoc = 0;
 // stayed powered does NOT reset it: the fan never stopped.
 static uint32_t pm_fan_start_ms = 0;
 static bool pm_fan_known = false;
+static bool pm_driver = false;
 static uint32_t pm_read_ms = 0, pm_last_try_ms = 0;
 static bool pm_have_reading = false;
 static uint16_t pm_1 = 0, pm_25 = 0, pm_10 = 0;
@@ -164,7 +165,17 @@ static bool init_ccs811() {
 
 static bool init_pmsa003i() {
   pm_ch = find_channel(PM_ADDR);
-  if (!select_channel(pm_ch) || !pm.begin_I2C(&Wire)) return false;
+  if (!select_channel(pm_ch)) return false;
+  // Adafruit PM25 AQI 2.0 begin_I2C() returns false on EVERY call after the first (it
+  // refuses when its driver object already exists), so the driver is created once and a
+  // restart only re-finds the channel. Calling it again killed particulates until the Nano
+  // rebooted (live 2026-11-05).
+  if (!pm_driver) {
+    if (!pm.begin_I2C(&Wire)) return false;
+    pm_driver = true;
+  } else if (!probe(PM_ADDR)) {
+    return false;
+  }
   if (!pm_fan_known) {
     pm_fan_start_ms = millis();
     pm_fan_known = true;
@@ -229,22 +240,20 @@ static void poll_ccs811(uint32_t now) {
 static void poll_pmsa003i(uint32_t now) {
   if (!pm_ok || now - pm_last_try_ms < PM_POLL_INTERVAL_MS) return;
   pm_last_try_ms = now;
-  if (!select_channel(pm_ch) || !probe(PM_ADDR)) {
-    pm_ok = false;  // gone from the bus: unplugged or unpowered, so its fan restarts too
-    pm_have_reading = false;
-    pm_fan_known = false;
-    return;
-  }
   PM25_AQI_Data data;
-  if (pm.read(&data)) {
+  // About 2 in 5 reads land mid-update and come back cut short (0xFF padding); the sensor
+  // can NACK a probe at that moment too. One miss is never treated as a lost sensor.
+  if (select_channel(pm_ch) && pm.read(&data)) {
     pm_1 = data.pm10_standard;
     pm_25 = data.pm25_standard;
     pm_10 = data.pm100_standard;
     pm_read_ms = now;
     pm_have_reading = true;
   } else if (now - pm_read_ms > PM_STALL_REINIT_MS) {
-    pm_ok = false;  // still on the bus but never reads: re-run begin_I2C via the retry path
+    pm_ok = false;  // no good read for 10 s: back to the retry path
     pm_have_reading = false;
+    // Gone from the bus means unplugged or unpowered, so its fan restarts too.
+    if (!select_channel(pm_ch) || !probe(PM_ADDR)) pm_fan_known = false;
   }
 }
 

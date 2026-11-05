@@ -31,8 +31,10 @@ def extend_mcp_argv(
     so the model would waste turns on a CLI fallback that could not work.
     That premise is dead: ``gh`` 2.63.2 is bind-mounted into BOTH containers
     that spawn ``claude -p`` (``/home/athena/.local/bin/gh`` ->
-    ``/usr/local/bin/gh``) and authenticated as ``junebug-junie`` with
-    ``repo`` scope via ``/root/.config/gh``.
+    ``/usr/local/bin/gh``). Since 2026-11-05 it authenticates as Orion's own
+    GitHub user ``orion-sapienform`` via ``GH_TOKEN`` (from
+    ``ORION_GITHUB_TOKEN``); the operator's ``/root/.config/gh`` is no longer
+    mounted.
 
     Keeping the deny actively broke Orion's only route to opening a PR, and
     a deny rule beats ``--permission-mode bypassPermissions`` -- so ``gh``

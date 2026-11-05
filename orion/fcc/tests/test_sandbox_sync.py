@@ -478,3 +478,23 @@ def test_sync_replaces_previous_identitys_token_everywhere(origin_and_clone, tmp
         "url.https://x-access-token:ghp_orion_own@github.com/.insteadOf",
     ).stdout.split()
     assert sorted(keys) == ["git@github.com:", "https://github.com/"]
+
+
+def test_sync_with_no_token_still_scrubs_the_old_one(origin_and_clone, tmp_path, monkeypatch):
+    """Empty ORION_GITHUB_TOKEN must leave NO credential behind (not keep the old
+    operator's), including a credentialed pushurl."""
+    _, clone = origin_and_clone
+    old = "gho_OLD_OPERATOR_TOKEN"
+    _git(clone, "config", "--local", "remote.origin.pushurl", "https://junebug-junie:" + old + "@github.com/o/r.git")
+    _git(clone, "config", "--local", "--add", f"url.https://x-access-token:{old}@github.com/.insteadOf", "git@github.com:")
+    fcc_env_path = tmp_path / "fcc.env"
+    fcc_env_path.write_text("OTHER=1\n")
+    monkeypatch.setenv("HARNESS_FCC_ENV_PATH", str(fcc_env_path))
+
+    from orion.fcc.sandbox_sync import _configure_push_auth
+
+    _configure_push_auth(clone)
+
+    everything = _git(clone, "config", "--local", "--list").stdout
+    assert old not in everything
+    assert "x-access-token" not in everything

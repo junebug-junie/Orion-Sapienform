@@ -17,6 +17,7 @@ ORION_CONTAINERS = ("orion-hub", "orion-harness-governor")
 
 def _volumes(service: str) -> list[str]:
     doc = yaml.safe_load((ROOT / "services" / service / "docker-compose.yml").read_text())
+    # str() of a long-form dict volume still contains its source path.
     return [str(v) for svc in doc["services"].values() for v in svc.get("volumes", [])]
 
 
@@ -32,8 +33,8 @@ def _environment(service: str) -> list[str]:
 def test_orion_containers_do_not_mount_the_operators_github_login() -> None:
     for service in ORION_CONTAINERS:
         for vol in _volumes(service):
-            assert ".config/gh:" not in vol, f"{service} mounts the operator's gh login: {vol}"
-            assert ".ssh:" not in vol, f"{service} mounts the operator's SSH keys: {vol}"
+            assert ".config/gh" not in vol, f"{service} mounts the operator's gh login: {vol}"
+            assert ".ssh" not in vol, f"{service} mounts the operator's SSH keys: {vol}"
 
 
 def test_orion_containers_get_their_own_token() -> None:

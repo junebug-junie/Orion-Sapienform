@@ -95,7 +95,7 @@ def _configure_push_auth(workspace: Path) -> None:
     _scrub_stale_push_credentials(workspace)
     token = _load_fcc_env_value("GITHUB_PAT")
     if not token:
-        logger.info("fcc_sandbox_push_auth_skipped_no_token")
+        logger.warning("fcc_sandbox_push_auth_skipped_no_token (fetch works anonymously; push will fail)")
         return
     for prefix in ("git@github.com:", "https://github.com/"):
         result = _run_git(
@@ -116,16 +116,17 @@ _CREDENTIAL_IN_URL = re.compile(r"^(https://)[^/@]+@(github\.com/)")
 def _scrub_stale_push_credentials(workspace: Path) -> None:
     """Remove any token a previous identity left in this clone's git config.
 
-    Two places hold one: ``remote.origin.url`` (``https://user:TOKEN@github.com/..``)
+    Places that hold one: ``remote.origin.url`` / ``pushurl`` (``https://user:TOKEN@github.com/..``)
     and ``url.https://x-access-token:TOKEN@github.com/.insteadOf`` (the token is
     part of the KEY, so writing a new token adds a second key instead of replacing
     the first). Without this, switching Orion to its own GitHub token would leave
     the previous operator's token in place and ``origin`` would keep using it.
     """
-    origin = _run_git(workspace, "config", "--local", "--get", "remote.origin.url").stdout.strip()
-    clean = _CREDENTIAL_IN_URL.sub(r"\1\2", origin)
-    if clean != origin:
-        _run_git(workspace, "remote", "set-url", "origin", clean)
+    for key in ("remote.origin.url", "remote.origin.pushurl"):
+        current = _run_git(workspace, "config", "--local", "--get", key).stdout.strip()
+        clean = _CREDENTIAL_IN_URL.sub(r"\1\2", current)
+        if current and clean != current:
+            _run_git(workspace, "config", "--local", key, clean)
     listing = _run_git(
         workspace, "config", "--local", "--name-only", "--get-regexp", r"^url\..*x-access-token.*\.insteadof$"
     )

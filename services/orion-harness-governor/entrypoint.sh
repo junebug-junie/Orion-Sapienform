@@ -9,9 +9,12 @@ set -e
 mkdir -p ~/.fcc
 touch ~/.fcc/.env
 if grep -q "^GITHUB_PAT=" ~/.fcc/.env; then
+  # Write a sibling file and rename it over the original: readers (the hub mounts
+  # this directory) never see a half-written or empty .env. ~/.fcc is a directory
+  # mount, so the rename is visible to them.
   grep -v "^GITHUB_PAT=" ~/.fcc/.env > ~/.fcc/.env.tmp || true
-  cat ~/.fcc/.env.tmp > ~/.fcc/.env   # same inode: host bind mount keeps working
-  rm -f ~/.fcc/.env.tmp
+  chmod --reference=$HOME/.fcc/.env ~/.fcc/.env.tmp 2>/dev/null || true
+  mv ~/.fcc/.env.tmp ~/.fcc/.env
 fi
 if [ -n "$ORION_GITHUB_TOKEN" ]; then
   echo "GITHUB_PAT=$ORION_GITHUB_TOKEN" >> ~/.fcc/.env

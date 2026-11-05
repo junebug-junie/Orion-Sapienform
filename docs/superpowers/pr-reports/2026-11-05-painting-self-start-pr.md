@@ -366,6 +366,6 @@ Within a day: `thought.painting` acts with `test_before LIKE 'visual_dispatch:pa
 
 ## PR link
 
-(filled in after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3134
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-"""Office environment contracts (pan-1 Nano ESP32 + SHT40 + CCS811).
+"""Office environment contracts (pan-1 Nano ESP32 + SHT40 + CCS811 + PMSA003I + TSL2591).
 
 Two shapes live here:
 
-* ``OfficeEnvFrameV1`` -- host-local NDJSON the Nano firmware writes over USB
+* ``OfficeEnvFrameV1`` -- host-local NDJSON the pan-1 Nano firmware writes over USB
   serial (``orion.office_env_frame.v1``). NOT a bus payload; deliberately not in
-  ``orion/schemas/registry.py``. Same role as ``cabinet_sensor_frame.py``.
+  ``orion/schemas/registry.py``. Same role as ``cabinet_sensor_frame.py``. Both pan-1
+  Nanos (office and server closet) run the same firmware and send this frame; the
+  closet's bus sample lives in ``closet_env.py``.
 * ``OfficeEnvSampleV1`` -- the bus payload ``orion-office-env`` publishes on
   ``orion:office:env:sample``.
 
@@ -44,6 +46,41 @@ class OfficeEnvFrameAirV1(BaseModel):
     since_init_ms: Optional[int] = Field(default=None, ge=0)
 
 
+class OfficeEnvFrameParticulateV1(BaseModel):
+    """PMSA003I CF=1 mass concentrations (ug/m3). uint16 register bounds; the sample
+    builder applies the datasheet range."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    pm1_ug_m3: Optional[int] = Field(default=None, ge=0, le=65535)
+    pm25_ug_m3: Optional[int] = Field(default=None, ge=0, le=65535)
+    pm10_ug_m3: Optional[int] = Field(default=None, ge=0, le=65535)
+
+
+class OfficeEnvFrameLightV1(BaseModel):
+    """TSL2591. ``lux`` is absent when a channel overflowed; ``saturated`` is true only
+    when it overflowed at the lowest gain (too bright to measure, not dark)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    lux: Optional[float] = Field(default=None, ge=0.0)
+    full: Optional[int] = Field(default=None, ge=0, le=65535)
+    ir: Optional[int] = Field(default=None, ge=0, le=65535)
+    gain_x: Optional[int] = Field(default=None, ge=1)
+    saturated: bool = False
+
+
+class OfficeEnvFrameCo2V1(BaseModel):
+    """SCD40 (closet Nano). Photoacoustic CO2: a real CO2 measurement, unlike eCO2."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # SCD4x output range is 0..40000 ppm.
+    co2_ppm: Optional[int] = Field(default=None, ge=0, le=40000)
+    temp_c: Optional[float] = Field(default=None, ge=-10.0, le=60.0)
+    humidity_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+
+
 class OfficeEnvFrameV1(BaseModel):
     """One firmware tick. Every sub-payload is optional."""
 
@@ -54,6 +91,9 @@ class OfficeEnvFrameV1(BaseModel):
     uptime_ms: int = Field(ge=0)
     environment: Optional[OfficeEnvFrameEnvironmentV1] = None
     air: Optional[OfficeEnvFrameAirV1] = None
+    particulate: Optional[OfficeEnvFrameParticulateV1] = None
+    light: Optional[OfficeEnvFrameLightV1] = None
+    co2: Optional[OfficeEnvFrameCo2V1] = None
 
     @field_validator("schema_name")
     @classmethod
@@ -83,6 +123,12 @@ class OfficeEnvMeasurementsV1(BaseModel):
     # CCS811 datasheet output ranges. eCO2 is estimated from VOCs, not measured CO2.
     office_eco2_ppm: Optional[int] = Field(default=None, ge=400, le=29206)
     office_tvoc_ppb: Optional[int] = Field(default=None, ge=0, le=32768)
+    # PMSA003I CF=1 mass concentration, datasheet maximum range 0..1000 ug/m3.
+    office_pm1_ug_m3: Optional[int] = Field(default=None, ge=0, le=1000)
+    office_pm25_ug_m3: Optional[int] = Field(default=None, ge=0, le=1000)
+    office_pm10_ug_m3: Optional[int] = Field(default=None, ge=0, le=1000)
+    # TSL2591 at the office windowsill. Datasheet range 188 ulux..88,000 lux.
+    office_lux: Optional[float] = Field(default=None, ge=0.0, le=88000.0)
 
 
 class OfficeEnvStateV1(BaseModel):
@@ -95,6 +141,9 @@ class OfficeEnvStateV1(BaseModel):
     # True while the CCS811 is inside its 20-minute conditioning period after a start:
     # its readings exist but are not yet valid, so they are omitted from measurements.
     air_warming: bool = False
+    # True when the TSL2591 overflowed even at its lowest gain: brighter than it can
+    # measure (direct sun on the windowsill). ``office_lux`` is then absent, not zero.
+    light_saturated: bool = False
 
 
 class OfficeEnvProvenanceV1(BaseModel):

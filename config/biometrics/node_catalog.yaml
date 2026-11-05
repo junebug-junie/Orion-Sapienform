@@ -132,16 +132,17 @@ unmonitored_nodes:
     hardware: HP ProDesk 600 G2 DM mini PC, Core i7-6700T, 16 GB RAM, 1 TB NVMe
     expected_online: false
   pan-1:
-    # services/orion-office-env/README.md: "It runs on pan-1 only" (Nano ESP32 + SHT40 by USB).
+    # services/orion-office-env/README.md: "It runs on pan-1 only". Two Nano ESP32s on USB
+    # (firmware/pan-1-office-nano/README.md): the office node and the server-closet node.
     aliases:
       - pan-1
       - pan-1.tail348bbe.ts.net
     role: office_sensor_host
-    # Hardware not recorded: no ssh login reaches pan-1 from athena (2026-10-30). Its sensor is
-    # an Arduino Nano ESP32 + SHT40 on USB (firmware/pan-1-office-nano/README.md).
+    hardware: Raspberry Pi 4 Model B Rev 1.2, 4 GB RAM, Ubuntu aarch64 (ssh pan-1@pan-1, 2026-11-04)
     expected_online: false
     runs_services:
       - orion-office-env
+      - orion-closet-env
 
 # Hosts that no longer exist. Not part of the live fleet: NodeCatalog keeps them out of
 # `profiles`, resolves their names (and aliases) to expected_online=false so historical

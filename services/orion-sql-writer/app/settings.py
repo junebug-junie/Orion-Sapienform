@@ -35,6 +35,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "cabinet.ambient.spike.v1": "CabinetAmbientSpikeSQL",
     "home.cooling.sample.v1": "HomeCoolingSampleSQL",
     "office.env.sample.v1": "OfficeEnvSampleSQL",
+    "closet.env.sample.v1": "ClosetEnvSampleSQL",
     "energy.usage.observed.v1": "EnergyUsageIntervalSQL",
     "energy.cost.accrued.v1": "EnergyCostAccruedSQL",
     "energy.run_cost.estimated.v1": "EnergyRunCostSQL",
@@ -181,6 +182,7 @@ class Settings(BaseSettings):
             "orion:cabinet:ambient:spike",
             "orion:home:cooling:sample",
             "orion:office:env:sample",
+            "orion:closet:env:sample",
             "orion:energy:usage:observed",
             "orion:energy:cost:accrued",
             "orion:energy:run_cost:estimated",
@@ -958,6 +960,8 @@ class Settings(BaseSettings):
             channels.append("orion:home:cooling:sample")
         if "orion:office:env:sample" not in channels:
             channels.append("orion:office:env:sample")
+        if "orion:closet:env:sample" not in channels:
+            channels.append("orion:closet:env:sample")
         # Same guarantee as cooling: SQL_WRITER_SUBSCRIBE_CHANNELS replaces rather
         # than merges, so a pre-energy operator .env would leave these routes inert.
         for energy_channel in (

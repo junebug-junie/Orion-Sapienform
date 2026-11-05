@@ -23,6 +23,11 @@ _OFFICE_ENV_REQUIRED_COLUMN_SHAPES = {
     "office_eco2_ppm": ("integer", "YES"),
     "office_tvoc_ppb": ("integer", "YES"),
     "air_warming": ("boolean", "YES"),
+    "office_pm1_ug_m3": ("integer", "YES"),
+    "office_pm25_ug_m3": ("integer", "YES"),
+    "office_pm10_ug_m3": ("integer", "YES"),
+    "office_lux": ("double precision", "YES"),
+    "light_saturated": ("boolean", "YES"),
 }
 
 
@@ -39,6 +44,11 @@ def _ensure_office_env_columns() -> None:
         ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_eco2_ppm INTEGER;")
         ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_tvoc_ppb INTEGER;")
         ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS air_warming BOOLEAN;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_pm1_ug_m3 INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_pm25_ug_m3 INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_pm10_ug_m3 INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_lux DOUBLE PRECISION;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS light_saturated BOOLEAN;")
         actual_shapes = {
             row[0]: (row[1], row[2])
             for row in conn.exec_driver_sql(

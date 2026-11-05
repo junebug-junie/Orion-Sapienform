@@ -178,10 +178,21 @@ def _require_container_zstd(*, container: str, log: list[str]) -> None:
     Checked inside the container because that is where zstd runs -- the athena
     host has no zstd binary (confirmed live 2026-11-05).
     """
-    proc = _run(["docker", "exec", container, "zstd", "--version"], log=log, timeout=30)
-    if proc.returncode != 0:
+    try:
+        proc = _run(["docker", "exec", container, "zstd", "--version"], log=log, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        # A wedged daemon hangs docker exec; without this the bare
+        # TimeoutExpired escapes instead of the RuntimeError the caller's
+        # manifest path expects, same as _terminate_stale_pg_dump_backends guards.
         raise RuntimeError(
-            f"zstd binary not found in container {container}: "
+            f"zstd probe in container {container} timed out (wedged docker daemon?)"
+        ) from exc
+    if proc.returncode != 0:
+        # Not "zstd binary not found": a stopped or restarting container also
+        # fails this probe ("No such container" / "is not running"), and naming
+        # only the missing-binary cause sends the operator to the wrong fix.
+        raise RuntimeError(
+            f"zstd probe failed in container {container} (rc {proc.returncode}): "
             f"{proc.stderr.decode(errors='replace')[:300]}"
         )
 
@@ -202,7 +213,14 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     dest_dir.mkdir(parents=True)
     dest_file = dest_dir / "pg_dumpall.sql.zst"
     cmd = ["docker", "exec", container, "pg_dumpall", "-U", pg_user]
-    comp_cmd = ["docker", "exec", container, "zstd", "-3", "-q"]
+    # -i is load-bearing, not decoration: without it Docker never forwards
+    # stdin to the in-container zstd, which then reads an empty stream, writes
+    # a 13-byte empty frame, and exits 0 while pg_dumpall's client dies of
+    # SIGPIPE (rc -13). Reproduced live on athena 2026-11-05.
+    # -T0 lets zstd use the container's cores; measured ~620 MB/s per docker
+    # attach hop, so the stream copy is not the bottleneck (detoast is), but
+    # parallel compression is free headroom either way.
+    comp_cmd = ["docker", "exec", "-i", container, "zstd", "-3", "-q", "-T0"]
     log.append("$ " + " ".join(cmd) + " | " + " ".join(comp_cmd) + f" > {dest_file}")
     dump: subprocess.Popen | None = None
     comp: subprocess.Popen | None = None
@@ -228,8 +246,16 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
                 finally:
                     # Drop our own handle so the compressor sees EOF when pg_dumpall exits.
                     dump.stdout.close()
+                # One deadline shared across both waits, not two full
+                # timeouts in series: communicate() plus wait() at
+                # POSTGRES_DUMP_TIMEOUT_SEC each would allow 2x7200s, which
+                # equals the service's TimeoutStartSec=4h and lets a hung
+                # pg_dumpall client after compressor EOF eat the whole unit
+                # window before systemd kills it, starving falkordb/chroma.
+                dump_started = time.monotonic()
                 _, comp_err = comp.communicate(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
-                dump.wait(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+                remaining = POSTGRES_DUMP_TIMEOUT_SEC - (time.monotonic() - dump_started)
+                dump.wait(timeout=max(1, round(remaining)))
         except BaseException:
             # Not just TimeoutExpired: if starting the compressor raises
             # (FileNotFoundError, or OSError on fork), pg_dumpall is already
@@ -258,6 +284,13 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     if comp.returncode != 0:
         failures.append(f"zstd failed ({comp.returncode}): {comp_err.decode(errors='replace')[:500]}")
     if failures:
+        # Sweep here too, not only on the exception path: a compressor that
+        # exits early kills the local docker-exec client while the *server-side*
+        # pg_dump backend survives it and holds locks on every table until the
+        # next night's pre-flight sweep -- the documented 2026-08-16/17/18 lock
+        # storm. A non-zero returncode without an exception (e.g. SIGPIPE -13)
+        # is exactly that case.
+        _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
         dest_file.unlink(missing_ok=True)
         raise RuntimeError("; ".join(failures))
 

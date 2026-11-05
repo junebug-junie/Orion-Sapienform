@@ -13,8 +13,10 @@ One tick (``ORION_COOLING_ACT_TICK_SEC``, default 60 s):
 3. read the world (cabinet points, hardware-watch /health, background leases, the episode ledger) and
    run ``evaluate_shed_eligibility`` + ``admission_refusal``. Not eligible: an open want closes (its event
    is over); otherwise nothing;
-4. post (or re-post) the event want with the cabinet's salience and OBEY ``shed_verdict``: funded ->
-   draw the arm, precommit the episode, and (treated) send the one shed RPC.
+4. no want is open and the cabinet is not WARMING (``shed_act.is_warming``: elevated or hot and rising
+   >= the threshold in 15 min): nothing;
+5. post (or re-post) the event want with the rise's salience and OBEY ``shed_verdict``: funded -> draw the
+   arm, precommit the episode, and (treated) send the one shed RPC.
 
 Never raises out of a tick. Every read failure is a refusal on the snapshot, never a silent allow.
 """

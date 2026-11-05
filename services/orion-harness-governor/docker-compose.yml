@@ -57,8 +57,6 @@ services:
       # This is NEVER the operator's own ~/.claude, and the operator's
       # ~/.claude.json is not mounted either (see the note above).
       - harness-claude-config:/root/.claude
-      # GitHub CLI credentials — read-only, for GITHUB_PAT injection into FCC subprocess.
-      - ${HOME}/.config/gh:/root/.config/gh:ro
       # Orion's disposable FCC sandbox checkout (see orion/fcc/sandbox_sync.py and
       # services/orion-hub/docker-compose.yml's identical mount). Same host directory
       # as orion-hub's sandbox mount -- one clone, refreshed once per browser session
@@ -68,17 +66,17 @@ services:
       # /mnt/scripts/Orion-Sapienform. The only path back to the real repo is git
       # push to a non-main branch, gated by GitHub branch protection.
       - ${HARNESS_ORION_FCC_SANDBOX_HOST:-/mnt/orion-fcc}:/mnt/orion-fcc
-      # `git push` to the SSH remote (git@github.com:...) needs the operator's
-      # existing host SSH key/known_hosts -- read-only, same identity this host's
-      # own git operations already use, nothing stored in this repo.
-      # NOT ${HOME}/.gitconfig -- a read-only bind mount there fully replaces the
-      # file, which shadows this image's own baked-in safe.directory config below
-      # (line ~24-25) and can't be written to at runtime either (confirmed live:
-      # "could not write config file /root/.gitconfig: Device or resource busy").
-      - ${HOME}/.ssh:/root/.ssh:ro
+      # No ${HOME}/.ssh and no ${HOME}/.config/gh: Orion pushes over HTTPS as its
+      # own GitHub user (ORION_GITHUB_TOKEN -> GITHUB_PAT, see entrypoint.sh and
+      # orion/fcc/sandbox_sync.py), never as the operator.
+      # tests/test_orion_own_github_identity.py fails if either mount comes back.
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
+      # Orion's own GitHub identity (entrypoint.sh turns it into GITHUB_PAT;
+      # gh prefers GH_TOKEN over any login file).
+      - ORION_GITHUB_TOKEN=${ORION_GITHUB_TOKEN:-}
+      - GH_TOKEN=${ORION_GITHUB_TOKEN:-}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - NODE_NAME=${NODE_NAME}
       - HARNESS_GOVERNOR_PORT=${HARNESS_GOVERNOR_PORT:-7156}

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -91,19 +92,45 @@ def _configure_push_auth(workspace: Path) -> None:
     live (env | grep -i GITHUB found nothing, git push failed with no SSH agent
     and no HTTPS credential available).
     """
+    _scrub_stale_push_credentials(workspace)
     token = _load_fcc_env_value("GITHUB_PAT")
     if not token:
         logger.info("fcc_sandbox_push_auth_skipped_no_token")
         return
-    result = _run_git(
-        workspace,
-        "config",
-        "--local",
-        "url.https://x-access-token:" + token + "@github.com/.insteadOf",
-        "git@github.com:",
+    for prefix in ("git@github.com:", "https://github.com/"):
+        result = _run_git(
+            workspace,
+            "config",
+            "--local",
+            "--add",
+            "url.https://x-access-token:" + token + "@github.com/.insteadOf",
+            prefix,
+        )
+        if result.returncode != 0:
+            logger.warning("fcc_sandbox_push_auth_config_failed err=%s", result.stderr.strip())
+
+
+_CREDENTIAL_IN_URL = re.compile(r"^(https://)[^/@]+@(github\.com/)")
+
+
+def _scrub_stale_push_credentials(workspace: Path) -> None:
+    """Remove any token a previous identity left in this clone's git config.
+
+    Two places hold one: ``remote.origin.url`` (``https://user:TOKEN@github.com/..``)
+    and ``url.https://x-access-token:TOKEN@github.com/.insteadOf`` (the token is
+    part of the KEY, so writing a new token adds a second key instead of replacing
+    the first). Without this, switching Orion to its own GitHub token would leave
+    the previous operator's token in place and ``origin`` would keep using it.
+    """
+    origin = _run_git(workspace, "config", "--local", "--get", "remote.origin.url").stdout.strip()
+    clean = _CREDENTIAL_IN_URL.sub(r"\1\2", origin)
+    if clean != origin:
+        _run_git(workspace, "remote", "set-url", "origin", clean)
+    listing = _run_git(
+        workspace, "config", "--local", "--name-only", "--get-regexp", r"^url\..*x-access-token.*\.insteadof$"
     )
-    if result.returncode != 0:
-        logger.warning("fcc_sandbox_push_auth_config_failed err=%s", result.stderr.strip())
+    for key in listing.stdout.split():
+        _run_git(workspace, "config", "--local", "--unset-all", key)
 
 
 class _SyncAbort(Exception):

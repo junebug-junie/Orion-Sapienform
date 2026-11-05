@@ -1,3 +1,8 @@
+# Catch-all: every path needs the repo owner. Without it, any Write collaborator
+# (including Orion, or a bot App) could supply the one required approval on paths
+# not listed below. Later, more specific lines still win, so keep this FIRST.
+*                                   @junebug-junie
+
 # Body economy (docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Phase 2, Gate 3).
 # Changes to the paths that decide what Orion may spend -- heat, GPU, money, Juniper's attention --
 # need Juniper's review. Keep this list in step with config/physiology/contract.yaml protected_paths;

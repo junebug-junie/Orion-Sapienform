@@ -115,7 +115,7 @@ def create_router(config, presence=None, experience=None):
     coplay_counts = {}  # session id -> {'sheds': n, 'rejections': n} from plan_v2
     watching = set()    # (sid, port, epoch) co-play handoffs being watched to their end
     coplay_turns = {}   # (sid, port, epoch) -> the handoff's play act correlation id
-    coplay_rooms = {}   # 'memory' -> retro_planner.RoomMemory (dungeon rooms walked; resets per session)
+    coplay_rooms = {}   # session id -> retro_planner.RoomMemory (dungeon rooms walked); one game at a time
 
     async def emit_session_end(app, ended):
         sink = getattr(getattr(app, 'state', None), 'retro_session_end_sink', None)
@@ -238,7 +238,9 @@ def create_router(config, presence=None, experience=None):
             if r.status == 200: atlas = await r.json()
         retro_sid = sid.rsplit('/', 1)[-1]
         # Inside a dungeon Retro's atlas is empty: without this every side looks new (live 2026-11-06).
-        rooms = coplay_rooms.setdefault('memory', retro_planner.RoomMemory())
+        if retro_sid not in coplay_rooms:
+            coplay_rooms.clear()   # one game at a time, like ``histories``
+        rooms = coplay_rooms.setdefault(retro_sid, retro_planner.RoomMemory())
         atlas = rooms.atlas_for(retro_sid, decision, atlas)
         # Action bets: settle the previous goal's bet, quote this decision's options (None when
         # off or the prediction service is unreachable: the plain #2870 prompt, and no bet).

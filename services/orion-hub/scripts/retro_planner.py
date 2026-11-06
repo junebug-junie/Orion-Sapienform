@@ -357,9 +357,10 @@ class RoomMemory:
         self.visits: dict[int, int] = {}
         self.exits: dict[int, dict[str, int]] = {}
         self.last_room: Optional[int] = None
+        self.room_decisions: set = set()   # decision ids offered while Link stood in last_room
 
     def _clear(self) -> None:
-        self.visits, self.exits, self.last_room = {}, {}, None
+        self.visits, self.exits, self.last_room, self.room_decisions = {}, {}, None, set()
 
     def observe(self, session_id: str, decision: Any) -> None:
         """Count one offered decision (each decision_id once). An arrival in a new room is a visit."""
@@ -376,21 +377,27 @@ class RoomMemory:
             self._clear()   # out of the dungeon: the next one reuses room ids
             return
         room = obs.get('room')
-        if obs.get('mode') != 'play' or not isinstance(room, int) or not 0 <= room <= 127:
+        if (obs.get('mode') != 'play' or not isinstance(room, int) or isinstance(room, bool)
+                or not 0 <= room <= 127):
             return
         if room == self.last_room:
+            self.room_decisions.add(self.decision_id)
             return
         self.visits[room] = self.visits.get(room, 0) + 1
-        # A crossed side only when the goal that just ended walked that way from the room next
-        # door (co-play: a human may have walked other rooms in between; that proves no side).
+        # A crossed side only when the goal that just ended was offered in the previous room, walked
+        # that way, finished on its own (no human, no interruption) and landed in the room next door.
+        # Retro's ``previous`` stays the same until another goal finishes, and in co-play a human
+        # may walk other rooms in between: grid adjacency alone proves no door.
         last = self.last_room
         previous = decision.get('previous') if isinstance(decision.get('previous'), dict) else {}
         moved = previous.get('goal') if isinstance(previous.get('goal'), dict) else {}
         d = moved.get('dir') if moved.get('kind') in ('exit', 'explore') else None
-        if last is not None and d in _ROOM_STEP and _neighbour(last, d) == room:
+        walked = (previous.get('decision_id') in self.room_decisions and not previous.get('human_intervention')
+                  and previous.get('outcome') in ('completed', 'prediction_met', 'prediction_refuted'))
+        if last is not None and walked and d in _ROOM_STEP and _neighbour(last, d) == room:
             self.exits.setdefault(last, {})[d] = room
             self.exits.setdefault(room, {})[_OPPOSITE[d]] = last
-        self.last_room = room
+        self.last_room, self.room_decisions = room, {self.decision_id}
 
     def fill(self, decision: Any, atlas: Optional[dict]) -> Optional[dict]:
         """Retro's atlas, or (inside a dungeon Retro cannot record) the atlas view rebuilt from this
@@ -398,7 +405,7 @@ class RoomMemory:
         obs = decision.get('observation') if isinstance(decision, dict) else None
         room = obs.get('room') if isinstance(obs, dict) else None
         if (not isinstance(obs, dict) or obs.get('level') != 'unknown' or obs.get('mode') != 'play'
-                or not isinstance(room, int) or room not in self.visits
+                or not isinstance(room, int) or isinstance(room, bool) or room not in self.visits
                 or (isinstance(atlas, dict) and isinstance(atlas.get('level'), int))):
             return atlas
         def exits_of(r):
@@ -412,7 +419,8 @@ class RoomMemory:
                         'learned_blocked': [], 'deaths': 0},
             'adjacent': adjacent, 'rooms_known': len(self.visits),
             'rooms_with_unvisited_sides': sorted(f'unknown:{r}' for r in self.visits
-                                                 if any(v is None for v in exits_of(r).values())),
+                                                 if any(v is None and _neighbour(r, d) is not None
+                                                        for d, v in exits_of(r).items())),
             'map': {f'unknown:{r}': {'visits': n, 'exits': exits_of(r), 'caves': 0, 'deaths': 0}
                     for r, n in self.visits.items()},
             'caves': [], 'deaths': []}

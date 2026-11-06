@@ -61,7 +61,7 @@ Hub only (`services/orion-hub`). No change to Retro, the bus, schemas, env or Do
 ## Tests run
 
 ```text
-python -m pytest services/orion-hub/tests/retro -q          -> 231 passed
+python -m pytest services/orion-hub/tests/retro -q          -> 232 passed (after review fixes)
 python -m pytest services/orion-hub/tests/retro/test_room_memory.py -q (fill() forced to return Retro's atlas) -> 5 failed: the tests catch the bug
 ```
 
@@ -84,7 +84,20 @@ Not run: no Dockerfile, dependency, or env change. Hub code only, and Hub import
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A code-review subagent reviewed commit 16c069d. It found one should-fix and four nits. All five are fixed.
+
+- Finding (should-fix): a side could be marked as crossed by a goal that never crossed it. Retro's `previous` stays the same until another goal finishes. In co-play a human can walk rooms between plan calls and end up next to the old room, so grid adjacency alone proved nothing.
+  - Fix: `RoomMemory` keeps the decision ids offered in the last room. A side counts as crossed only when the finished goal was offered in that room, had `human_intervention` false, and has an outcome of `completed`, `prediction_met` or `prediction_refuted`.
+  - Evidence: new test `test_a_stale_or_interrupted_previous_goal_proves_no_side` covers the human walk 20 -> 21 -> 5 -> 4 with a stale "exit N", a human-intervention row and an `interrupted:stuck` row.
+- Finding (nit): every co-play session shared one memory slot.
+  - Fix: the memory is now keyed by Retro session id and cleared when the session changes, the same way `histories` works.
+- Finding (nit): `isinstance(room, int)` also accepts `bool`.
+  - Fix: a `bool` room is now refused in `observe` and in `fill`.
+- Finding (nit): the side-crossing test did not cover the human-walk case.
+  - Fix: the new test above covers it.
+- Finding (nit): `rooms_with_unvisited_sides` listed the grid's outer edges as sides never crossed.
+  - Fix: a side with no grid neighbour is now left out.
+- Re-run: `services/orion-hub/tests/retro` 232 passed. Eval PASS 4/4.
 
 ## Restart required
 

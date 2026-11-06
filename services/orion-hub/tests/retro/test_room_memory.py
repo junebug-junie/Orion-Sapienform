@@ -115,6 +115,28 @@ def test_a_side_is_crossed_only_by_the_goal_that_walked_it():
     assert atlas['adjacent']['S'] == {'room': 36, 'known': True, 'seen_exit': None}
 
 
+def test_a_stale_or_interrupted_previous_goal_proves_no_side():
+    """Retro's ``previous`` stays the same until another goal finishes. Co-play: Orion exits N from
+    36 to 20 (2:1 -> 2:2), then a human walks 20 -> E 21 -> N 5 -> W 4 with no goal finishing. The
+    next offer, in room 4 (north of 20 on the grid), still carries 2:1's "exit N": no door proven."""
+    memory = P.RoomMemory()
+    memory.observe(SID, offer('2:1'))
+    memory.observe(SID, offer('2:2'))
+    assert memory.exits == {36: {'N': 20}, 20: {'S': 36}}
+    stale = offer('2:3')
+    stale['decision_id'] = '2:7'
+    stale['observation']['room'] = 4
+    stale['previous'] = offer('2:2')['previous']          # 2:1's exit N, offered back in room 36
+    memory.observe(SID, stale)
+    assert memory.visits[4] == 1 and 4 not in memory.exits and 'N' not in memory.exits[20]
+    for change in ({'human_intervention': True}, {'outcome': 'interrupted:stuck'}):
+        m = P.RoomMemory()
+        m.observe(SID, offer('2:1'))
+        d = offer('2:2'); d['previous'] = dict(d['previous'], **change)
+        m.observe(SID, d)
+        assert m.exits == {}, change
+
+
 def test_non_play_and_unknown_observations_are_ignored():
     memory = P.RoomMemory()
     d = offer('2:1'); d['observation']['mode'] = 'stairs'

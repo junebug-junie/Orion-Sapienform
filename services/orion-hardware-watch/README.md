@@ -10,6 +10,8 @@ Watches the cabinet's temperature, the cabinet AC, and the machines' temperature
   investigation (at most one of each per 6 h).
 - GPU/CPU heat opens an incident only at a fixed ceiling (GPU 85 C, CPU 90 C).
 - Between 29.5 and 34 C it does nothing itself: that band belongs to Orion's learned shed.
+- When the docker volume is at or above 70 % full, it asks orion-cortex-exec to prune dangling docker
+  images, at most once every 12 h (the disk rule, below).
 
 - Spec (v2): `docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md`
 - Spec (v1, superseded rules): `docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md` (Part 4)
@@ -71,9 +73,39 @@ times with a matching temperature and prior rise (`orion/hardware_watch/shed_eff
 has >= 3 measured episodes it says `enough_to_judge: false`. If the effect stays ~0, drop the shed
 tier rather than tune it.
 
+## The disk rule: dangling docker images (ladder retirement PR 4, 2026-11-06)
+
+Before this, only the proposal -> policy -> dispatch ladder asked for the image prune (the
+`prune_dangling_images` template, 156 runs in 14 days, 145 of them "nothing to reclaim"). This rule is
+now the image prune's only automatic trigger. Build cache and stopped containers are pruned by hand only
+(Juniper, decision 4).
+
+Every tick (`app/image_prune.py`, pure verdict `orion/hardware_watch/rules.py::image_prune_verdict`):
+
+1. Read the docker data volume: `shutil.disk_usage` on the read-only bind of `ORION_HOST_DOCKER_DATA_ROOT`
+   at `/hostfs/docker`. That is the same filesystem and formula the skill measures. A path that is not a
+   mount point reads as unreadable, never as the container's own disk.
+2. Take the clock after that read (the #3134 lesson: an ask that finished during the read is age 0).
+3. Decide, in order: one ask at a time; no ask in the first 10 min after a start; no ask on an unreadable
+   disk; no ask below 70 % (the skill's own `IMAGE_PRUNE_MIN_DISK_PCT`, pinned by
+   `tests/test_image_prune_disk_rule_parity.py`); then 12 h after an answered ask, or 30 min after an
+   unanswered one (no reply, an unreadable reply, the skill could not measure).
+4. An ask is one bus RPC to cortex-exec on `orion:cortex:exec:request:background`: the same
+   `PlanExecutionRequest` dispatch sent, with `skill_args.mode=execute`. The skill still runs its own gate
+   (disk >= 70 % AND >= 100 dangling images) and its own `docker image prune -f` (never `-a`).
+
+`GET /health` -> `image_prune`: the last tick's disk reading and verdict, the ask in flight, the last
+answer (decision, dangling count, images removed, bytes reclaimed, or the error), and counts of every
+verdict and outcome.
+
+Replay over 14 real days (`evals/run_image_prune_replay_eval.py`, fixture from live Postgres): the disk
+sat at 79.1-81.5 % the whole time, so the cooldown sets the rate: 28 asks (2 a day) -> 11 prunes and 17
+declines, 1,925 images removed. The real dispatch record: 156 runs -> 11 prunes, 145 declines, 1,993
+images removed.
+
 ## HTTP
 
-- `GET /health` — flags, controller, last tick, per-rule verdicts (incl. `cabinet`, `reflex`), open incidents, `reflex_shed`.
+- `GET /health` — flags, controller, last tick, per-rule verdicts (incl. `cabinet`, `reflex`), open incidents, `reflex_shed`, `image_prune` (the disk rule).
 - `GET /incidents?limit=50` — newest incidents.
 - `POST /incidents/{id}/resolve` `{"by": "juniper"}` — close by hand; the same rule+subject+reason
   does not re-open for `HARDWARE_WATCH_OPERATOR_SNOOZE_SEC` (1 h). In v2 an incident never sheds, so
@@ -90,6 +122,7 @@ tier rather than tune it.
 | `HARDWARE_WATCH_SHED_ENABLED` | the watcher never asks the pool to shed (`/health` still shows `would_shed`) |
 | `HARDWARE_WATCH_HEAT_CONTROLLER=v1` | the 2026-09-29 rules (rollback, one week) |
 | `HARDWARE_WATCH_URGENT_ENABLED` | no urgent runs (AC alerts still go out) |
+| `HARDWARE_WATCH_IMAGE_PRUNE_ENABLED` | the disk rule never asks for the image prune |
 | `GPU_POOL_SHED_ENABLED` (pool) | the pool ignores every shed reason |
 
 Kill switches default false in code, true in `.env_example` (test hook stays false). The controller
@@ -128,4 +161,7 @@ cd services/orion-hardware-watch
 PYTHONPATH=../..:. python -m pytest tests -q
 python evals/run_rules_replay_eval.py            # replays the committed real-history fixture
 python evals/run_rules_replay_eval.py --export   # refresh the fixture from live Postgres
+python evals/run_image_prune_replay_eval.py           # disk rule over 14 real days (committed fixture)
+python evals/run_image_prune_replay_eval.py --sweep   # the same at 1/3/6/12/24 h cooldowns
+python evals/run_image_prune_replay_eval.py --export  # refresh that fixture from live Postgres
 ```

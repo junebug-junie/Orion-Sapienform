@@ -29,6 +29,8 @@ def gh(world, monkeypatch):  # noqa: F811
     monkeypatch.setattr(dig, "_gh_pr", lambda n: prs[n])
     monkeypatch.setattr(dig, "_gh_file_at", lambda sha, p: "\n".join(f"spec line {i}" for i in range(80)))
     monkeypatch.setattr(dig, "_live_atlas", _whole_atlas)
+    from orion.body_atlas import field_notes as fn
+    monkeypatch.setattr(fn, "NOTES_BEGAN_AT", "2025-01-01T00:00:00+00:00")  # the fixtures merge in 2025
     deny = world / "repo" / "config" / "privacy" / "personal_terms.sha256"
     deny.parent.mkdir(parents=True)
     deny.write_text(hashlib.sha256(b"zorblax").hexdigest() + "\n")
@@ -167,3 +169,40 @@ def test_help_lists_the_commands_and_bad_numbers_are_refused(world, capsys):  # 
     assert "field-note <pr> [write|rewrite" in out and "field-notes <days>" in out
     code, _, err = run(capsys, "field-note", "abc")
     assert code == 1 and "not a PR number" in err
+
+
+def test_coverage_does_not_count_prs_merged_before_notes_began(gh, capsys, monkeypatch):
+    # live 2026-11-06: `field-notes 3` said "coverage 45/94 ... 48 neither", but all 48 merged before the
+    # no-backfill cutoff (Juniper's decision 3). Every PR merged after it had a record: 100%, not 47%.
+    from orion.body_atlas import field_notes as fn
+    monkeypatch.setattr(fn, "NOTES_BEGAN_AT", "2025-07-03T12:00:00+00:00")
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [
+        {"number": 5, "title": "old", "mergedAt": "2025-07-03T10:00:00Z", "body": ""},
+        {"number": 6, "title": "older, noted by hand", "mergedAt": "2025-07-03T09:00:00Z", "body": ""},
+        {"number": 7, "title": "feat: pr 7", "mergedAt": "2025-07-03T18:00:00Z", "body": ""},
+        {"number": 10, "title": "feat: pr 10", "mergedAt": "2025-07-03T19:00:00Z", "body": ""}])
+    gh[6] = _pr(6, mergedAt="2025-07-03T09:00:00Z")
+    note = "[pr_text] The builders moved the plan step into the executor."
+    run(capsys, "field-note", "6", "write", note, "because", "#6")
+    run(capsys, "field-note", "7", "write", note, "because", "#7")
+    code, out, err = run(capsys, "field-notes", "2025-07-03", "2025-07-03")
+    assert code == 0, err
+    assert ("coverage 2/3 merged PRs have a note (66%), 0 a code record, 1 neither; "
+            "1 merged before notes began, not counted (no backfill)") in out
+    assert "no note yet: #10" in out and "#5" not in out.split("no note yet:")[1]
+    code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
+    assert "#5 2025-07-03 old\n" in out + "\n" and "#10 2025-07-03 feat: pr 10 (no note)" in out
+
+
+def test_an_empty_ledger_counts_only_prs_merged_after_the_cutoff(gh, capsys, monkeypatch):
+    # review: with no records, coverage used to count every PR as owed (pre-cutoff ones as "neither")
+    from orion.body_atlas import field_notes as fn
+    monkeypatch.setattr(fn, "NOTES_BEGAN_AT", "2025-07-03T12:00:00+00:00")
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [
+        {"number": 5, "title": "old", "mergedAt": "2025-07-03T10:00:00Z", "body": ""},
+        {"number": 10, "title": "feat: pr 10", "mergedAt": "2025-07-03T19:00:00Z", "body": ""}])
+    code, out, err = run(capsys, "field-notes", "2025-07-03", "2025-07-03")
+    assert code == 0, err
+    assert "coverage 0/1 merged PRs have a note (0%), 0 a code record, 1 neither; 1 merged before notes began" in out
+    code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
+    assert "(no note)" not in out  # an empty ledger still marks nothing

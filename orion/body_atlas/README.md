@@ -117,6 +117,12 @@ Gates:
   this checkout against hand-checked facts (true ones, and false ones an earlier version
   claimed). Precision must be 1.0 and no false claim may come back. `--live` runs it on the live whole body; `--export F`
   refreshes a fixture.
+- `python orion/body_atlas/evals/run_field_note_truth_eval.py`: Orion's PR field notes (spec
+  `2026-11-04-pr-field-notes-design.md`, acceptance check 7). Built-in cases: a clean note passes, and a
+  note with a ref outside its PR, an organ outside its body map, or a changed spec it never read each
+  fails exactly that check. `--live` re-checks every live note in the ledger against the PR on GitHub
+  (read-only, through `gh`): refs per label, organs, read, plus two printed rates (figures in `pr_text`
+  sentences found in the PR's own text, and flags equal to today's flag rule).
 
 Live results:
 

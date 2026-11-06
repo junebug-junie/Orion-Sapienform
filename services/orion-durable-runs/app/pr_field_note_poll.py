@@ -162,6 +162,7 @@ def gh_shape(item: dict[str, Any], files: list[dict[str, Any]], pull: dict[str, 
         "changedFiles": int(pull["changed_files"]) if "changed_files" in pull
         else (len(fl) + 1 if len(fl) >= FILES_PAGE else len(fl)),
         "headRefName": (pull.get("head") or {}).get("ref") or "",
+        "author": {"login": (pull.get("user") or item.get("user") or {}).get("login") or ""},
         "mergeCommit": {"oid": pull.get("merge_commit_sha") or ""},
         "commits": [{"authors": [{"email": ((c.get("commit") or {}).get("author") or {}).get("email") or ""}]}
                     for c in (commits or [])],

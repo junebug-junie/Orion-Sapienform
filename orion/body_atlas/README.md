@@ -286,3 +286,19 @@ markers, #3090 (an agent PR) reads `unknown`.
 Ledger `$ORION_DIG_HOME/self/pr_field_notes.jsonl`, append-only, partitioned from recall
 (`tests/test_organ_names_partition.py`). Patch 1 is the dig commands only; the durable run and
 poller are Patch 2.
+
+## Portrait (`portrait.py`)
+
+Rung 5 (spec `docs/superpowers/specs/2026-11-06-self-portrait-design.md`): one page that puts
+rungs 1-4 together, rebuilt from the live atlas and the self ledgers on every read
+(`python -P -m orion.dig portrait`), plus one append-only ledger of Orion's words,
+`$ORION_DIG_HOME/self/portrait.jsonl`: one sentence per machine (`host:<name>`) and the "I am"
+paragraph (`whole`). A machine's **reach** (`machine_reach`) is what runs there (live parts with a
+`runs_on` flow to it) and what those parts send to, call or write (`claims.flow_dirs`, direction
+`out` or unknown, census channels left out). A machine line may name only ids in its reach, and
+must cite something that runs there or an organ placed there. `check_write` and the read run the same
+check (`check_line`), so a write that would not hold writes nothing, and a written line that stops
+holding prints STALE with the failing id. Hosts never become capacity holders (placement is not
+function). Eval: `evals/run_portrait_eval.py` (reach vs an independent oracle on the 2026-10-31
+body, reviewed cases, full-ledger size, three mutations). Partitioned from recall
+(`tests/test_organ_names_partition.py`).

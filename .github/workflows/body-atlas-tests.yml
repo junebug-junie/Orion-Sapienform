@@ -51,3 +51,5 @@ jobs:
         run: python orion/body_atlas/evals/run_capacity_roles_eval.py
       - name: Wire eval (HTTP calls + Redis keys vs hand-checked facts, v2 gap rules, mutations must fail)
         run: python orion/body_atlas/evals/run_wire_eval.py
+      - name: Portrait eval (reach vs an independent oracle, reviewed cases, full-ledger size, mutations must fail)
+        run: python orion/body_atlas/evals/run_portrait_eval.py

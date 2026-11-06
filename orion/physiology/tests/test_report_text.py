@@ -337,3 +337,58 @@ def test_town_sessions_read_in_plain_words():
     assert "AI Town today (2026-10-30): I spent 30 min of my 2.0 h cap" in text
     assert "Juniper opened it for 10 min (not counted)" in text
     assert "I chose it; ended: session_cap; 2 line(s) I spoke" in text
+
+
+# --- why bids were deferred (2026-11-06): the reason the want_ledger wrote, in plain words ------
+
+
+def _wants_with_reasons() -> dict:
+    rep = live()
+    rep["wants"]["families"] = [
+        {"family": "durable.self_inquiry", "tier": 2, "funded": 0, "deferred": 7, "deferred_by": [
+            {"reason": "capacity_reserved", "binding_constraint": "lane:agent-gpu2", "count": 4},
+            {"reason": "capacity_reserved", "binding_constraint": "lane:agent", "count": 3}]},
+        {"family": "hub.retro_leisure", "tier": 1, "funded": 257, "deferred": 58, "deferred_by": [
+            {"reason": "sated", "binding_constraint": None, "count": 56},
+            {"reason": "physiology_unavailable", "binding_constraint": "physiology_unavailable", "count": 2}]},
+        {"family": "hub.outreach", "tier": 2, "funded": 3, "deferred": 5, "deferred_by": [
+            {"reason": "price", "binding_constraint": "heat", "count": 5}]},
+        {"family": "actions.journal", "tier": 1, "funded": 18, "deferred": 0, "deferred_by": []}]
+    return rep
+
+
+def test_wants_line_says_why_each_family_was_deferred():
+    text = rt.render_report_text(_wants_with_reasons(), ("wants",))
+    assert ("durable.self_inquiry (tier 2): 0 funded, 7 deferred (why: lane full 7: agent-gpu2 4, agent 3)"
+            in text)
+    assert "hub.retro_leisure (tier 1): 257 funded, 58 deferred (why: just acted 56; body reading unavailable 2)" in text
+    assert "hub.outreach (tier 2): 3 funded, 5 deferred (why: cost beat value 5: heat 5)" in text
+    assert "actions.journal (tier 1): 18 funded, 0 deferred\n" in text + "\n"      # no "why" when nothing was cut
+
+
+def test_every_decision_reason_has_plain_words():
+    from typing import get_args
+
+    from orion.schemas.physiology_want import WantDecisionV1
+    deferring = set(get_args(WantDecisionV1.model_fields["reason"].annotation)) - {"net_positive", "exploration_floor"}
+    assert deferring <= set(rt.DEFER_REASON_WORDS)
+
+
+def test_overview_with_reasons_still_fits_a_turn():
+    text = rt.render_report_text(_wants_with_reasons())
+    assert "(why: lane full 7: agent-gpu2 4, agent 3)" in text
+    assert len(text.splitlines()) <= 40 and len(text) <= 4000
+    assert len(rt.render_report_text(_wants_with_reasons(), rt.SECTIONS)) <= 4000
+
+
+def test_report_without_deferred_by_renders_as_before():
+    assert "hub.outreach (tier 2): 237 funded, 548 deferred\n" in rt.render_report_text(live(), ("wants",)) + "\n"
+
+
+def test_overview_keeps_two_reasons_and_two_lanes_full_keeps_all():
+    pairs = [{"reason": "capacity_reserved", "binding_constraint": f"lane:l{i}", "count": 10 - i} for i in range(3)] + [
+        {"reason": "sated", "binding_constraint": None, "count": 2},
+        {"reason": "price", "binding_constraint": "heat", "count": 1}]
+    assert rt._deferred_why(pairs, full=False) == "lane full 27: l0 10, l1 9; just acted 2"
+    assert rt._deferred_why(pairs, full=True) == "lane full 27: l0 10, l1 9, l2 8; just acted 2; cost beat value 1: heat 1"
+    assert rt._deferred_why([], full=True) == ""

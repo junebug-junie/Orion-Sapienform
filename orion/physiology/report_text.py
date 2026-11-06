@@ -238,6 +238,39 @@ def render_town(report: Mapping, *, full: bool) -> list[str]:
     return out
 
 
+#: WantDecisionV1.reason in plain words (what a deferral reason means, said once).
+DEFER_REASON_WORDS = {
+    "price": "cost beat value",
+    "sated": "just acted",
+    "capacity_reserved": "lane full",
+    "no_acceptable_lane": "no lane fits",
+    "physiology_unavailable": "body reading unavailable",
+    "unknown_family": "unknown family",
+    "family_never_bids": "family never bids",
+}
+
+
+def _deferred_why(pairs: Sequence[Mapping], *, full: bool) -> str:
+    """``deferred_by`` as words: "lane full 7: agent-gpu2 4, agent 3; just acted 2"."""
+    by_reason: dict[str, list] = {}
+    for p in pairs or []:
+        reason = str(p.get("reason") or "unknown")
+        entry = by_reason.setdefault(reason, [0, []])
+        n = int(p.get("count") or 0)
+        entry[0] += n
+        c = p.get("binding_constraint")
+        if c and c != reason:
+            entry[1].append((c[5:] if reason == "capacity_reserved" and c.startswith("lane:") else c, n))
+    ranked = sorted(by_reason.items(), key=lambda kv: -kv[1][0])
+    parts = []
+    for reason, (n, cons) in ranked[: (len(ranked) if full else 2)]:
+        part = f"{DEFER_REASON_WORDS.get(reason, reason)} {n}"
+        if cons:
+            part += ": " + ", ".join(f"{c} {k}" for c, k in cons[: (len(cons) if full else 2)])
+        parts.append(part)
+    return "; ".join(parts)
+
+
 def render_wants(report: Mapping, *, full: bool) -> list[str]:
     town = render_town(report, full=full)
     fams = (report.get("wants") or {}).get("families") or []
@@ -248,7 +281,9 @@ def render_wants(report: Mapping, *, full: bool) -> list[str]:
     out = [f"Wants (shadow bids, except curiosity investigate and the dream cycle, which obey their bids since 2026-10-30): {tot_f} funded, {tot_d} deferred."]
     rows = fams if full else fams[:6]
     for f in rows:
-        out.append(f"- {f['family']} (tier {f.get('tier', '?')}): {f.get('funded', 0)} funded, {f.get('deferred', 0)} deferred")
+        line = f"- {f['family']} (tier {f.get('tier', '?')}): {f.get('funded', 0)} funded, {f.get('deferred', 0)} deferred"
+        why = _deferred_why(f.get("deferred_by") or [], full=full) if f.get("deferred") else ""
+        out.append(line + (f" (why: {why})" if why else ""))
     if len(fams) > len(rows):
         out.append(f"- ... {len(fams) - len(rows)} more famil{'y' if len(fams) - len(rows) == 1 else 'ies'}")
     return out + town

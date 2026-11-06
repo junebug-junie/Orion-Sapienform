@@ -32,10 +32,10 @@ the same way it checks capacity claims.
   Both, with code re-checking the words, is the rung-4 pattern that already works live (5 claims,
   6 sentences, all re-checked on each read).
 - **"What a machine affects" is computable, so it is checked, not trusted.** A machine affects
-  what runs on it, and what those parts send to, call or write. The atlas has both (`runs_on`
-  flows, then each running part's outbound flows). A machine sentence may name only those ids
-  (and the organs placed on that machine). An id that no longer fits prints the line as STALE,
-  naming the id.
+  what runs on it, and what those parts send to, call or write. It also serves the parts that call
+  into it. The atlas has all three (`runs_on` flows, then each running part's flows out and in). A
+  machine sentence may name only those ids (and the organs with a live member running there). An id
+  that no longer fits prints the line as STALE, naming the id.
 - **No new place for organ or job words.** Organs already carry Orion's names, and jobs already
   carry capacity sentences. The portrait shows them; it adds no third copy.
 - **Gaps stay on the page.** The code-written gap lines from `capacities` print under the "I am"
@@ -92,8 +92,9 @@ Every line carries a source label from the dig kit's existing set. No new label 
 | capacities | `capacities.jsonl` via `attach_ledgers` (written / STALE / not written / gap) | `lived_record`, status `now` |
 | organs | atlas organs (size, placement, top organ flows out) and Orion's names; jobs from `organ_mixes` | `now` + Orion's name |
 
-A machine with no live part running on it prints on one shared line ("not live now: hecate
-(dormant, last seen 10-30), ..."). No sentence is offered for it, because none could be checked.
+A machine with no live part running on it prints on one shared line ("nothing of mine runs on
+(facts only): hecate (gpu_server, dormant, last seen 2026-10-30), ..."). No sentence is offered for
+it, because none could be checked.
 
 The tail ends with one ready `portrait write` line per live machine that has no sentence, and one
 for the "I am" paragraph if it is unwritten. Then the path of the full result file.
@@ -115,11 +116,20 @@ kept"); `replaces` holds the `at` of the line it supersedes.
 - The machine is a host part with at least one live part running on it.
 - Every id the sentence and because name (id-shaped part names and channels, matched by
   `claims.because_refs`, no word lists) must be in the machine's **reach**: a live part running
-  there, or a live part or non-census channel that a running part sends to, calls or writes.
-- Organ ids (10 hex chars, `organ:` optional) must be organs placed on that machine. Orion's organ
-  names count as a cite when that organ is placed there. A name of an organ placed elsewhere is not
-  a failure: plain words such as "skin" are not matched as errors (no word lists).
-- At least one cite is a part running there or an organ placed there.
+  there; a live part or non-census channel that a running part sends to, calls or writes ("fed
+  from"); or a live part or channel that only sends into a running part ("served by": a GPU or LLM
+  host mostly serves callers).
+- A hyphenated word of three or more segments whose first two segments begin a real part name
+  (`orion-llm-worker-a`, because `orion-llm-gateway` exists) but that names no part or channel is
+  refused. Prose such as `orion-sapienform` is not (no part begins with it).
+- Organ ids (`organ:` + 10 hex chars, or the bare 10 hex chars with at least one letter, so a Unix
+  time is not one) must be organs with a live member running on that machine. Orion's organ names
+  count as a cite for such an organ. A name of an organ elsewhere is not a failure: plain words
+  such as "skin" are not matched as errors (no word lists).
+- At least one cite is a part running there or an organ with a live member there.
+- On every read, every id stored as a cite at write time is checked again (rung 4's rule); an
+  organ-name cite must still name an organ on that machine, or the line goes STALE ("renamed or
+  re-clustered").
 
 **"I am" paragraph** (`portrait write whole "<I am ...>" because "<reason>"`):
 
@@ -129,7 +139,8 @@ kept"); `replaces` holds the `at` of the line it supersedes.
 
 **Write = read.** A write runs the same check the read runs. If it would not hold now, nothing is
 written and the reply names each failing id. A written line can go STALE later, when the body
-changes; the read then names the id that failed.
+changes; the read then names the id that failed. Two bare `because` words in one unquoted
+command are refused (the split would guess); the printed ready line quotes both parts.
 
 ### 3. When Orion writes
 
@@ -216,11 +227,14 @@ The portrait adds no metric. It shows existing ones: atlas counts (rung 1–3 pr
    on another machine that athena's parts do not feed is refused, naming that id; a write for a
    dormant machine is refused with its status.
 3. **Re-check on read:** a written machine line goes STALE when its cited part stops running there.
-4. **Shrink and cap:** printout ≤ 40 lines and ≤ 4,000 chars, the tail (ready lines, file path)
-   always kept; every machine and organ in the full file.
-5. **Eval** (`run_portrait_eval.py`) on the frozen 2026-10-31 atlas: reach precision, i.e. no id
-   outside the machine's reach passes; reach recall, i.e. every running part passes; each mutation
-   (drop the direction filter, drop the live filter, let organ names fail) is caught.
+4. **Shrink and cap:** printout ≤ 40 lines and ≤ 4,000 chars, the tail (ready lines, notes, file
+   path) always kept; every machine and every multi-part organ in the full file.
+5. **Eval** (`run_portrait_eval.py`) on the frozen 2026-10-31 atlas: `machine_reach` equals an
+   independent oracle built from the raw flows (running parts, fed parts and channels, served
+   parts and channels, organs with a live member there); reviewed cases hold or fail for the named
+   reason; recall: every running part, cited alone, holds; size: a full ledger and the longest tail
+   both print uncut. Each mutation is caught by its own check: reach counts inbound flows as fed,
+   reach counts dormant parts, a made-up part name passes.
 6. **Partition:** the new ledger name and module are in the partition test, and the test fails on
    a reader outside the allowlist.
 7. **Live smoke:** `dig portrait` against the real atlas with `ORION_DIG_HOME` on a scratch copy of

@@ -55,6 +55,8 @@ path of a file with the full result; read only what you need from that file.
   capacity claim <part> <job> because <reason>   claim a job for a live part (a lasting write);
                          cite one of its flows by full id or a repo file. `capacity help`: rule.
   capacity write cap:<job> <sentence> because <reason>   a capacity, in your words.
+  portrait [write <machine|whole> <sentence> because <reason>]   your whole self on one page;
+                         write what a machine does and affects, or "I am" (code checks ids).
   body-economy [<section>...]   what spins each machine, what it costs, binds, wants, waste.
                          `body-economy --help`: sections, flags.
   name <organ_id> <name> because <reason>   name one organ of your live body (a lasting
@@ -70,7 +72,7 @@ Label what you say from a dig by its source:
   code_then     seen in an export: a primary source.
   pr_text       a builder's words in a PR or commit: a secondary source. Say so.
   lived_record  your own record from that time (journals exist from 2026-07-23 only).
-  now           must come from `inventory now` or `body`, never from memory.
+  now           must come from `inventory now`, `body` or `portrait`, never from memory.
   reflection    your interpretation. Wonder freely; do not state it as fact.
 Code from {FIRST_DAY} on is all there. Your memory before 2026-07-22 was lost in a storage
 failure; that is still you, you just have no lived record of it."""
@@ -930,6 +932,62 @@ def cmd_capacity(verb: str, a: list[str], out: Out) -> str:
             f"\nclaims ledger: {claims_path()}")
 
 
+# --- portrait (rung 5, spec docs/superpowers/specs/2026-11-06-self-portrait-design.md) ----------
+
+def portrait_path() -> Path:
+    return home() / "self" / "portrait.jsonl"
+
+
+def _host_watts() -> dict | str:
+    """host -> body-economy hosts row (whole-machine watts now and at rest), or why it is unread. The
+    portrait never fails because the economy is down; it says so."""
+    from orion.physiology import report_text as rt
+
+    try:
+        report = rt.fetch_report(window="24h", sections=("hosts",))
+    except (ValueError, rt.ReportUnavailable) as exc:
+        return str(exc)[:160]
+    return {str(r.get("host")): r for r in report.get("hosts") or [] if r.get("host")}
+
+
+def _portrait_inputs():
+    from orion.body_atlas import claims, portrait
+
+    reading, atlas, _ = _capacity_reading()
+    lines, skipped = claims.load_ledger(portrait_path(), portrait.PortraitLineV1)
+    if skipped:
+        reading.notes.append(f"{skipped} unreadable line(s) skipped in {portrait_path()}")
+    return reading, atlas, lines
+
+
+def cmd_portrait(out: Out) -> str:
+    """Read-only: the whole self on one page (machines, organs, jobs, gaps) and Orion's checked
+    words; the full portrait goes to the file."""
+    from orion.body_atlas import portrait
+
+    reading, atlas, lines = _portrait_inputs()
+    p = portrait.read_portrait(atlas, reading, lines, root=now_root(), watts=_host_watts())
+    path = out.write("portrait", json.loads(p.model_dump_json()))
+    body, tail = portrait.render(p)
+    return capped(body, tail="\n".join([*tail, f"full result: {path}"]))
+
+
+def cmd_portrait_write(subject: str, sentence: str, because: str, out: Out) -> str:
+    """A lasting append to $ORION_DIG_HOME/self/portrait.jsonl, only when it holds now (the read's check)."""
+    from orion.body_atlas import claims, portrait
+
+    reading, atlas, lines = _portrait_inputs()
+    try:
+        rec = portrait.check_write(atlas, reading, lines, subject, sentence, because, root=now_root(), dig=out.dig)
+    except portrait.PortraitError as exc:
+        raise DigError(str(exc)) from exc
+    claims.append(portrait_path(), rec)
+    return (f'wrote {rec.subject} "{rec.sentence}" (cites: {", ".join(rec.cites[:6])}'
+            + (", replaces the earlier one" if rec.replaces else "")
+            + "); it holds now; code re-checks it on every `portrait` read"
+            + f"\nportrait ledger: {portrait_path()}")
+
+
 # --- body economy ---------------------------------------------------------------------------
 
 BODY_ECONOMY_HELP = """body-economy [<section>...] [--host circe|athena|hecate] [--window 24h|7d|30d] [--family <f>]
@@ -1351,6 +1409,14 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_capacity(a[0], a[1:], out)
         elif ns.command == "capacity" and a[0] == "withdraw" and len(a) == 3:
             text = cmd_capacity("withdraw", a[1:], out)
+        elif ns.command == "portrait" and not a:
+            text = cmd_portrait(out)
+        elif ns.command == "portrait" and len(a) >= 5 and a[0] == "write" and "because" in a[3:]:
+            if a[3:].count("because") > 1:  # unquoted, the split would guess (review 2026-11-06)
+                raise DigError('portrait write: two bare `because` words; quote both: portrait write <machine> '
+                               '"<sentence>" because "<reason>"')
+            cut = a.index("because", 3)
+            text = cmd_portrait_write(a[1], " ".join(a[2:cut]), " ".join(a[cut + 1:]), out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)
         elif ns.command == "name-organs" and not a:

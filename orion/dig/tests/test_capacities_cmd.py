@@ -48,7 +48,7 @@ def test_capacities_ends_with_a_ready_claim_line_and_help_has_the_rule(world, ca
     assert "capacity write cap:s2" in out and "capacity withdraw <part> <job>" in out
     assert 'a checked claim covers only a "no part is shown" one' in out
     code, out, _ = run(capsys, "help")
-    assert code == 0 and len(out) <= 2750 and "capacity claim <part> <job> because" in out  # HELP text (cap: test_dig.py)
+    assert code == 0 and len(out) <= 3000 and "capacity claim <part> <job> because" in out  # HELP text (cap: test_dig.py)
     assert "cite one of its flows by full id or a repo file" in out
 
 

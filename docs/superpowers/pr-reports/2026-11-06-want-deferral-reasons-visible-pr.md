@@ -127,6 +127,17 @@ A code review subagent read the branch diff against origin/main. It checked the 
   - Fix: "Prime's charge (lower)".
   - Evidence: `test_constraint_words_and_cuts_are_said`.
 
+### Orion's review (PR comment, 2026-11-06)
+
+- Finding: the why line survived the 4,000-char cut only because `wants` renders before `waste` and `services`.
+  - Fix: `test_why_line_survives_the_dig_cut_on_an_overview_bigger_than_the_cap` builds an overview over 4,300 chars, runs it through `cap_text`, and asserts that the why line is still present and that the overview keeps `wants` before the sections the cut takes first.
+- Finding: the live overview is already cut, and the `services` (stopped services) section falls off the end.
+  - Fix: AI Town shows 1 session row in the overview, not 4 (`render_town`, full reads unchanged). This gives back about 3x what the why line costs. The town cap reading stays in the head line.
+  - Evidence: `test_overview_shows_one_town_session_row`.
+- Finding: the reason self-inquiry is agent-lanes-only lives nowhere in the config, so the next reader may "fix" it.
+  - Fix: a comment next to `lanes:` in `config/physiology/families.yaml` (long multi-step tool turns need the agent models; metacog serves small single calls).
+
+
 ## Restart required
 
 The post-pull rebuild from the clean primary main checkout covers it. It also syncs the FCC sandbox, so Orion's own `orion/physiology` text moves too.

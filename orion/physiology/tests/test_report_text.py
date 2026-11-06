@@ -411,3 +411,29 @@ def test_constraint_words_and_cuts_are_said():
     # the report's deferred total above the listed pairs (pairs cut upstream) is said, not hidden
     assert rt._deferred_why([{"reason": "sated", "count": 3}], full=True, total=5) == "not hungry yet 3; other 2"
     assert rt._deferred_why([], full=True) == ""
+
+
+
+def test_why_line_survives_the_dig_cut_on_an_overview_bigger_than_the_cap():
+    # Orion's review of #3152: the live overview is ~4.2k chars and the 4,000-char cut eats the tail.
+    # The why line must survive by guarantee, not by luck of section order.
+    rep = live()
+    rep["wants"] = _wants_with_reasons()["wants"]
+    while len(rt.render_report_text(rep)) < 4300:
+        rep["waste"]["top"] = list(rep["waste"]["top"]) * 2
+        rep["services"]["down"] = list(rep["services"]["down"]) * 2
+    full = rt.render_report_text(rep)
+    capped = rt.cap_text(full, max_chars=4000)
+    assert len(full) > 4000 and "ask for fewer sections to see the rest" in capped
+    assert "- why deferred (from the want ledger):" in capped
+    # and wants renders before the sections the cut eats first
+    assert rt.OVERVIEW.index("wants") < rt.OVERVIEW.index("waste") < rt.OVERVIEW.index("services")
+
+
+def test_overview_shows_one_town_session_row():
+    rep = live()
+    rep.setdefault("wants", {})["town"] = {"local_date": "2026-11-05", "orion_seconds_today": 600,
+                                         "daily_cap_seconds": 3600, "manual_seconds_today": 0, "sessions": [{"kind": "orion", "started_at": f"2026-11-0{i}T10:00", "seconds": 600,
+                                 "stop_reason": "cap", "utterances": 3} for i in range(1, 6)]}
+    brief = rt.render_town(rep, full=False)
+    assert sum(1 for ln in brief if ln.startswith("- ")) <= 1

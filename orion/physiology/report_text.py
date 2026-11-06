@@ -230,7 +230,9 @@ def render_town(report: Mapping, *, full: bool) -> list[str]:
         head += " Juniper has the town open now."
     out = [head]
     sessions = town.get("sessions") or []
-    for row in sessions[: (20 if full else 4)]:
+    # overview: one session row (the cap reading is in the head line). The overview already outgrows
+    # the dig kit's 4,000-char cut; trim town rows before anything in wants (Orion's review of #3152)
+    for row in sessions[: (20 if full else 1)]:
         who = "I chose it" if row.get("kind") == "orion" else "Juniper opened it"
         end = row.get("stop_reason") or "still open"
         out.append(f"- {str(row.get('started_at', '?'))[:16]}Z: {_dur(row.get('seconds'))}, {who}; "

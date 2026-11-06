@@ -78,10 +78,17 @@ def map_sum(value: object) -> float | None:
     """Sum of a per-host / per-lane map. The act ledger writes JSON ``null`` when it could not attribute
     the act (seen live on 2026-11-06: one act of 46). That reads as UNREAD (None), never as 0, and never
     crashes the whole report the way summing it in SQL did (``jsonb_each_text`` on a non-object)."""
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not value:
         return None
-    nums = [float(v) for v in value.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
-    return sum(nums) if nums else None
+    total = 0.0
+    for v in value.values():  # one unreadable entry makes the whole sum UNREAD, never a partial number
+        if isinstance(v, bool) or v is None:
+            return None
+        try:
+            total += float(v)
+        except (TypeError, ValueError):
+            return None
+    return total
 
 
 def with_sums(row: dict) -> dict:

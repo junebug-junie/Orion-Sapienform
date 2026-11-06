@@ -52,3 +52,9 @@ def test_a_null_energy_map_reads_unread_and_does_not_crash_the_report():
 
 def test_the_sql_no_longer_sums_maps_that_may_be_json_null():
     assert "jsonb_each_text" not in cost.SQL
+
+
+def test_a_partly_unreadable_map_reads_unread_not_a_partial_sum():
+    assert cost.map_sum({"circe": None, "athena": 1.0}) is None
+    assert cost.map_sum({"circe": "2.5"}) == 2.5 and cost.map_sum({"circe": "n/a"}) is None
+    assert cost.map_sum({"circe": True}) is None

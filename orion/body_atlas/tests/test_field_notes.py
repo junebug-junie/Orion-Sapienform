@@ -239,4 +239,6 @@ def test_notes_began_at_is_the_pollers_no_backfill_cutoff():
     compose = re.search(r"PR_FIELD_NOTES_NOT_BEFORE:-([^}]+)\}", (svc / "docker-compose.yml").read_text()).group(1)
     began = datetime.fromisoformat(fn.NOTES_BEGAN_AT)
     assert datetime.fromisoformat(example) == began == datetime.fromisoformat(compose)
-    assert "datetime(2026, 11, 4, 6, 0, tzinfo=timezone.utc)" in (svc / "app" / "settings.py").read_text()
+    field = re.search(r"field_note_not_before: datetime = Field\((datetime\([^)]*\))\s*,\s*alias=\"PR_FIELD_NOTES_NOT_BEFORE\"",
+                      (svc / "app" / "settings.py").read_text())
+    assert field and field.group(1) == "datetime(2026, 11, 4, 6, 0, tzinfo=timezone.utc)"

@@ -12,7 +12,7 @@ a hand-edited line, or a flag rule that changed shows up. Per note:
   needs no live atlas and no word list.
 * **read**: when the PR added or changed a spec, plan or PR report, ``read`` is not empty.
 * **numbers** (printed, not gated): a figure of 2+ digits in a ``pr_text`` sentence appears in the PR's
-  title, body, its line/file counts, or the whole text of the docs the note read. A low rate means a pr_text sentence carries figures the
+  title, body, its line/file counts, or the part of the docs the note read (the packet's own cut). A low rate means a pr_text sentence carries figures the
   builders never wrote.
 * **flags** (printed, not gated): the stored flags equal ``flags_for`` run again on today's PR data. A
   note written before a flag rule changed disagrees, which is history, not a bad note.
@@ -215,6 +215,16 @@ def run_cases() -> int:
         ok &= good
         print(f"  {'ok  ' if good else 'FAIL'} {name}: failed {got or 'nothing'}, want {want or 'nothing'}"
               + (f"; flag diff {res.flag_diff}" if res.flag_diff else ""))
+    # authorship drift: a record stored before the GitHub-user rule shows a flag diff, and fails nothing
+    mine = _pr(6, ["services/orion-hub/app/x.py"], login="orion-sapienform")
+    old = _rec(mine, "[pr_text] The hub part changed in a small way.", [["#6"]], bmap=[HUB])
+    old.flags.authored_by_me = "unknown"
+    drift = judge(old, mine, "", names)
+    if drift.failed or drift.flag_diff != ["authored_by_me: unknown -> yes"]:
+        ok = False
+        print(f"  FAIL authorship drift: failed {drift.failed}, flag diff {drift.flag_diff}")
+    else:
+        print("  ok   authorship drift: shown as a flag diff, no gated check fails")
     clean = judge(cs[0][1], cs[0][2], cs[0][3], names)
     if clean.numbers != [1, 1]:  # "900" is in the PR body
         ok = False
@@ -276,7 +286,8 @@ def run_live(ledger: Path, sample: int | None, sandbox: Path) -> int:
         except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
             print(f"cannot read #{rec.pr_number} from GitHub: {exc}")
             return 2
-        docs = " ".join(gh_file(rec.merge_sha, d.path) for d in rec.read)
+        # the same cut the writer saw (first lines of each doc, the char cap), not the whole files
+        docs = fn.excerpt_docs([(d.path, gh_file(rec.merge_sha, d.path)) for d in rec.read])[0]
         results.append(judge(rec, pr, docs, names, local_branches=branches))
     lines, ok = report(results)
     print(f"ledger {ledger} ({skipped} unreadable lines)")

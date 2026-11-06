@@ -15,6 +15,10 @@ on:
       - "orion/substrate/*_loop/constants.py"
       - "orion/schemas/*_projection.py"
       - ".github/workflows/body-atlas-tests.yml"
+      # test_field_notes.py checks NOTES_BEGAN_AT against the poller's PR_FIELD_NOTES_NOT_BEFORE
+      - "services/orion-durable-runs/.env_example"
+      - "services/orion-durable-runs/docker-compose.yml"
+      - "services/orion-durable-runs/app/settings.py"
   push:
     branches: [main]
     paths:
@@ -30,6 +34,10 @@ on:
       - "orion/substrate/*_loop/constants.py"
       - "orion/schemas/*_projection.py"
       - ".github/workflows/body-atlas-tests.yml"
+      # test_field_notes.py checks NOTES_BEGAN_AT against the poller's PR_FIELD_NOTES_NOT_BEFORE
+      - "services/orion-durable-runs/.env_example"
+      - "services/orion-durable-runs/docker-compose.yml"
+      - "services/orion-durable-runs/app/settings.py"
 
 jobs:
   body-atlas:

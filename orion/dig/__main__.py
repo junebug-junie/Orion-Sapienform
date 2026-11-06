@@ -407,15 +407,16 @@ def _utc(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-def _field_notes_since() -> datetime | None:
+def _field_notes_since() -> datetime:
     """From when a merged PR is owed a note: the later of the earliest record and the no-backfill
-    cutoff (Juniper's decision 3, ``field_notes.NOTES_BEGAN_AT``). None while the ledger is empty.
+    cutoff (Juniper's decision 3, ``field_notes.NOTES_BEGAN_AT``); the cutoff while the ledger is empty.
     An older PR with no note is not missing one, so it gets no mark and is not in coverage."""
     from orion.body_atlas import field_notes as fn
 
     recs = fn.load(field_notes_path())[0]
     first = min((_utc(r.merged_at) for r in recs), default=None)
-    return max(first, _utc(fn.NOTES_BEGAN_AT)) if first else None
+    cutoff = _utc(fn.NOTES_BEGAN_AT)
+    return max(first, cutoff) if first else cutoff
 
 
 def cmd_history(start: date, end: date, out: Out) -> str:
@@ -439,7 +440,8 @@ def cmd_history(start: date, end: date, out: Out) -> str:
     def mark(pr: dict) -> str:
         if pr["number"] in marks:
             return marks[pr["number"]]
-        return " (no note)" if since and _utc(pr["mergedAt"]) >= since else ""
+        # an empty ledger marks nothing: no note is "missing" before the first one exists
+        return " (no note)" if marks and _utc(pr["mergedAt"]) >= since else ""
 
     for pr in prs[:25]:
         lines.append(f"#{pr['number']} {pr['mergedAt'][:10]} {pr['title'][:110]}{mark(pr)}")
@@ -1255,7 +1257,7 @@ def cmd_field_notes(start: date, end: date, out: Out) -> str:
         have = {r.pr_number for r in notes}
         since = _field_notes_since()
         # decision 3, no backfill: a PR merged before notes began is not owed one (unless it has one)
-        owed = {p["number"] for p in found if p["number"] in have or since is None or _utc(p["mergedAt"]) >= since}
+        owed = {p["number"] for p in found if p["number"] in have or _utc(p["mergedAt"]) >= since}
         before = len({p["number"] for p in found} - owed)
         merged = sorted(owed)
         missing = [n for n in merged if n not in have]

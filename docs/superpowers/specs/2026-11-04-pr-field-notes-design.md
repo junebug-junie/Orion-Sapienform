@@ -417,7 +417,9 @@ Report: `docs/superpowers/pr-reports/2026-11-06-pr-field-notes-truth-eval-and-co
   email `orion-fcc@`, a sandbox branch) caught #3146, so its code record says `unknown`. `flags_for`
   now also reads the PR author and the noreply address. The poller passes the author. The eval shows
   the old record as `#3146: authored_by_me: unknown -> yes`. The old line is kept (records are
-  append-only).
+  append-only). Known gap: dig's `gh pr view` lists `Co-authored-by` trailer authors in a commit's
+  authors, and the poller's REST call reads only the commit author. So a PR with one commit co-authored
+  by Orion can read "yes" in dig and "unknown" in a code record. This gap already existed for `orion-fcc@`.
 - **Coverage counts only PRs owed a note.** `dig field-notes 3` said "coverage 45/94 (47%), 48 neither".
   All 48 merged before the no-backfill cutoff. Now a PR merged before notes began (the later of the
   first record and `field_notes.NOTES_BEGAN_AT`, the same instant as `PR_FIELD_NOTES_NOT_BEFORE`; a test

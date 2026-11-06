@@ -192,3 +192,17 @@ def test_coverage_does_not_count_prs_merged_before_notes_began(gh, capsys, monke
     assert "no note yet: #10" in out and "#5" not in out.split("no note yet:")[1]
     code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
     assert "#5 2025-07-03 old\n" in out + "\n" and "#10 2025-07-03 feat: pr 10 (no note)" in out
+
+
+def test_an_empty_ledger_counts_only_prs_merged_after_the_cutoff(gh, capsys, monkeypatch):
+    # review: with no records, coverage used to count every PR as owed (pre-cutoff ones as "neither")
+    from orion.body_atlas import field_notes as fn
+    monkeypatch.setattr(fn, "NOTES_BEGAN_AT", "2025-07-03T12:00:00+00:00")
+    monkeypatch.setattr(dig, "_gh_merged", lambda s, e: [
+        {"number": 5, "title": "old", "mergedAt": "2025-07-03T10:00:00Z", "body": ""},
+        {"number": 10, "title": "feat: pr 10", "mergedAt": "2025-07-03T19:00:00Z", "body": ""}])
+    code, out, err = run(capsys, "field-notes", "2025-07-03", "2025-07-03")
+    assert code == 0, err
+    assert "coverage 0/1 merged PRs have a note (0%), 0 a code record, 1 neither; 1 merged before notes began" in out
+    code, out, _ = run(capsys, "history", "2025-07-01", "2025-07-03")
+    assert "(no note)" not in out  # an empty ledger still marks nothing

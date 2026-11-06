@@ -97,7 +97,7 @@ gives the measured cost. Coverage reads 100%. Orion's own PRs get the "this may 
 PYTHONPATH=. .venv/bin/python -m pytest -q -p no:cacheprovider orion/dig/tests \
   orion/harness/tests/test_stance_scope_hierarchy.py orion/harness/tests/test_harness_prefix.py   -> passed
 PYTHONPATH=. .venv/bin/python -m pytest -q orion/body_atlas/tests                                  -> passed
-cd services/orion-durable-runs && PYTHONPATH=../.. .venv/bin/python -m pytest tests -q              -> 780 passed, 127 skipped
+cd services/orion-durable-runs && PYTHONPATH=../.. .venv/bin/python -m pytest tests -q              -> 781 passed, 127 skipped
 .venv/bin/python -m pytest -q tests/test_no_personal_terms.py tests/test_organ_names_partition.py \
   tests/test_gitignore_no_bare_catchall.py                                                          -> 17 passed
 ```
@@ -108,7 +108,7 @@ cd services/orion-durable-runs && PYTHONPATH=../.. .venv/bin/python -m pytest te
 python orion/body_atlas/evals/run_organ_structure_eval.py      -> PASS
 python orion/body_atlas/evals/run_capacity_roles_eval.py       -> PASS
 python orion/body_atlas/evals/run_wire_eval.py                 -> PASS
-python orion/body_atlas/evals/run_field_note_truth_eval.py     -> PASS (2 clean cases pass; 3 planted bad notes each fail only their own check)
+python orion/body_atlas/evals/run_field_note_truth_eval.py     -> PASS (2 clean cases pass; 3 planted bad notes each fail only their own check; authorship drift shows as a flag diff)
 python orion/body_atlas/evals/run_field_note_truth_eval.py --live   (real ledger, read-only gh)
   field notes judged: 45
   pr_text    claims whose refs resolve: 82/82 (100%)
@@ -146,7 +146,29 @@ No Docker build: no image input changed, except a script and the poller's gh_sha
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A subagent reviewed `git diff origin/main...HEAD`. It found no correctness bugs, 2 material findings and 5 nits. 6 are fixed, and 1 is recorded in the spec.
+
+- Finding (material): the cutoff parity test lives in the body-atlas workflow. That workflow did not run when the durable-runs files changed.
+  - Fix: the workflow now also triggers on durable-runs `.env_example`, `docker-compose.yml` and `app/settings.py`.
+  - Evidence: `.github/workflows/body-atlas-tests.yml` path lists.
+- Finding (material): with an empty ledger, coverage counted PRs from before the cutoff as missing, and `history` disagreed.
+  - Fix: `_field_notes_since()` returns the cutoff when the ledger is empty. With an empty ledger, `history` still marks nothing.
+  - Evidence: new test `test_an_empty_ledger_counts_only_prs_merged_after_the_cutoff`.
+- Finding (nit): no CI eval case tested the flag-diff path or the authorship rule.
+  - Fix: new case "authorship drift". A record stored as `unknown` for an `orion-sapienform` PR shows `unknown -> yes`, and no gated check fails.
+  - Evidence: the CI eval prints `ok authorship drift`.
+- Finding (nit): the figure check used the whole text of each doc. Orion saw only the packet's cut.
+  - Fix: live mode now runs the fetched docs through `fn.excerpt_docs`, which is the same cut the writer saw.
+  - Evidence: the live eval still reads 117/117.
+- Finding (nit): `map_sum` gave a partial sum when some values in a map were null, and it ignored values stored as numeric strings.
+  - Fix: any unreadable value makes the sum UNREAD. Numeric strings are parsed.
+  - Evidence: `test_a_partly_unreadable_map_reads_unread_not_a_partial_sum`.
+- Finding (nit): the `settings.py` parity check matched a loose substring.
+  - Fix: the regex is now anchored to the `field_note_not_before` field with alias `PR_FIELD_NOTES_NOT_BEFORE`.
+  - Evidence: the test passes.
+- Finding (nit): dig and the poller can disagree on authorship. dig sees `Co-authored-by` authors, and the poller does not.
+  - Fix: not changed. It is recorded as a known gap in the spec's "Patch 3 as built". The gap already existed for `orion-fcc@`.
+  - Evidence: spec text.
 
 ## Restart required
 
@@ -162,9 +184,6 @@ REVIEW_PLACEHOLDER
   does not know its run id. Mitigation: nothing reads them today, because the cost script joins runs
   to acts by run id. Filling them needs the harness step to pass the run id into the turn's
   environment. That is a separate change, and it is recorded in the spec.
-- Severity: low. Concern: the truth eval's figure check uses the whole text of the docs a note read,
-  but Orion saw only the first 60 lines. So a figure from lower in a doc counts as found. Mitigation:
-  the check is printed, not gated.
 - Severity: low. Concern: `NOTES_BEGAN_AT` is a second copy of `PR_FIELD_NOTES_NOT_BEFORE`.
   Mitigation: a test fails when the two disagree.
 - Acceptance check 5 (95% coverage over 7 days) is due on 2026-11-11. So far coverage is 100% after
@@ -172,4 +191,4 @@ REVIEW_PLACEHOLDER
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3149

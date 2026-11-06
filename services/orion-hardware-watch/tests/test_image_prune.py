@@ -70,7 +70,7 @@ def test_an_answered_ask_holds_the_full_cooldown(outcome):
 
 
 @pytest.mark.parametrize("outcome", ["rpc_error", "unreadable_reply", "exec_error", "declined_unmeasurable",
-                                     "failed"])
+                                     "failed", "would_act"])
 def test_an_unanswered_ask_waits_only_the_retry(outcome):
     st = _state(last_finished_at=LATE, last_outcome=outcome)
     v = image_prune_verdict(DiskReading(81.0), LATE + timedelta(minutes=29), st)
@@ -304,3 +304,56 @@ def test_the_bus_ask_sends_dispatchs_request_for_the_verb_in_execute_mode():
     assert body["context"]["skill_args"] == {"mode": "execute"}
     assert body["args"]["trigger_source"] == "orion-hardware-watch"
     assert body["args"]["request_id"] == "image_prune_disk_rule:abc"
+
+
+def test_a_preview_answer_is_retried_and_warned_not_held(caplog):
+    """would_act can only mean the execute mode was lost on the way: retry after 30 min, log a warning."""
+    async def ask(attempt_id):
+        return _skill_reply("would_act")
+
+    async def go():
+        clock = _Clock(T0)
+        rule = _rule(clock, ask)
+        clock.t = LATE
+        await rule.tick()
+        await asyncio.gather(rule._in_flight)
+        clock.t = LATE + timedelta(minutes=30)
+        return await rule.tick()
+    with caplog.at_level("WARNING", logger="orion-hardware-watch.image_prune"):
+        again = asyncio.run(go())
+    assert again.reason == "ask"
+    assert any("image_prune_preview_despite_execute" in r.getMessage() for r in caplog.records)
+
+
+def test_a_stuck_disk_read_times_out_as_unreadable(monkeypatch):
+    import time
+
+    import app.image_prune as ip
+
+    monkeypatch.setattr(ip, "DISK_READ_TIMEOUT_SEC", 0.05)
+
+    async def ask(attempt_id):  # pragma: no cover - must not be called
+        raise AssertionError("asked on a stuck disk")
+
+    async def go():
+        clock = _Clock(T0)
+        rule = ImagePruneRule(enabled=True, mount_path="/hostfs/docker", cfg=CFG, ask=ask,
+                              read_disk=lambda _p: (time.sleep(0.3), DiskReading(81.0))[1], clock=clock)
+        clock.t = LATE
+        return await rule.tick(), rule
+    v, rule = asyncio.run(go())
+    assert v.reason == "disk_unreadable" and rule.last_tick["disk_error"] == "read_timeout"
+
+
+def test_the_settings_default_ships_the_rule_on_like_the_env_template():
+    from pathlib import Path
+
+    from app.settings import Settings
+
+    example = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    line = [x for x in example.splitlines() if x.startswith("HARDWARE_WATCH_IMAGE_PRUNE_ENABLED=")]
+    assert line == ["HARDWARE_WATCH_IMAGE_PRUNE_ENABLED=true"]
+    assert Settings.model_fields["image_prune_enabled"].default is True
+    assert Settings.model_fields["image_prune_cooldown_sec"].default == CFG.cooldown_sec
+    assert Settings.model_fields["image_prune_retry_sec"].default == CFG.retry_sec
+    assert Settings.model_fields["image_prune_start_delay_sec"].default == CFG.start_delay_sec

@@ -15,8 +15,9 @@
   execute mode. The image prune has one trigger.
 - Build cache and stopped containers are no longer pruned automatically. Their skills stay, hand-run
   (Juniper, decision 4). In the 14-day window dispatch sent neither of them (0 runs).
-- A replay over 14 real days runs the shipped rule on the real disk record: 28 asks (2 a day) -> 11 prunes,
-  1,925 images removed. The real record: 156 runs -> 11 prunes, 1,993 images removed.
+- A replay over 14 real days runs the shipped rule on the real disk record. Result: 28 asks (2 a day) -> 12
+  prunes, 1,924 images removed, 60 dangling images left on the host on average. The real record: 156 runs
+  -> 11 prunes, 1,993 images removed, 97 left on average.
 
 Spec: `docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md` ("PR 4. Docker pruning").
 
@@ -24,7 +25,8 @@ Spec: `docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.m
 
 - **The image prune no longer depends on the ladder.** PR 6 can retire proposal, policy and dispatch
   without silencing it.
-- **About 80 % fewer asks for the same result.** 28 asks against 156 runs, the same 11 prunes.
+- **About 80 % fewer asks, and a cleaner host.** 28 asks against 156 runs. 12 prunes against 11, and an
+  average of 60 dangling images left on the host against 97.
 - **Each tick is visible.** `GET /health` -> `image_prune` shows the disk reading, the verdict, the ask in
   flight, the last answer (decision, dangling count, images removed, bytes reclaimed, or the error) and a
   count of every verdict and outcome.
@@ -124,48 +126,58 @@ Command: `cd services/orion-hardware-watch && PYTHONPATH=../..:. python evals/ru
 How the replay works:
 - It runs the shipped `ImagePruneRule` every 30 s on a simulated clock.
 - The disk comes from athena's biometrics `disk_capacity`. The fixture keeps the max reading per 5 min.
-- The skill's answer comes from the real dangling-image counts in dispatch's 156 real runs. New dangling
-  images between two real runs are spread evenly over that gap. The replay keeps its own count: it prunes
-  at >= 100 dangling images and >= 70 % disk, and resets the count to 0 after a prune.
+- The skill's answer comes from the real dangling-image counts in dispatch's real runs (156 in the window,
+  plus the runs from the 30 days before it as the seed). New dangling images between two real runs are
+  spread evenly over that gap. The replay keeps its own count: it prunes at >= 100 dangling images and
+  >= 70 % disk, and resets the count to 0 after a prune.
+- The "backlog" is the time-weighted mean of dangling images on the host, every tick, on both sides.
 
-| | Asks | Prunes | Declined | Images removed |
-|---|---|---|---|---|
-| Real (dispatch) | 156 | 11 | 145 | 1,993 |
-| Disk rule, 12 h cooldown (shipped) | 28 (2.0/day) | 11 | 17 | 1,925 |
+| | Asks | Prunes | Declined | Images removed | Mean backlog |
+|---|---|---|---|---|---|
+| Real (dispatch) | 156 | 11 | 145 | 1,993 | 97.0 |
+| Disk rule, 12 h cooldown (shipped) | 28 (2.0/day) | 12 | 16 | 1,924 | 59.9 |
 
 - Every one of the 11 real prunes has a replay prune within 12 h of it.
 - The disk was readable on all but 10 ticks (a gap in the biometrics record).
 
 Cooldown sweep (`--sweep`):
 
-| Cooldown | Asks | Prunes | Declined | Images removed |
-|---|---|---|---|---|
-| 1 h | 336 | 15 | 321 | 1,955 |
-| 3 h | 112 | 14 | 98 | 1,971 |
-| 6 h | 56 | 12 | 44 | 1,971 |
-| **12 h** | **28** | **11** | **17** | **1,925** |
-| 24 h | 14 | 9 | 5 | 1,831 |
+| Cooldown | Asks | Prunes | Declined | Images removed | Mean backlog |
+|---|---|---|---|---|---|
+| 1 h | 336 | 16 | 320 | 1,956 | 44.1 |
+| 3 h | 112 | 15 | 97 | 1,970 | 53.0 |
+| 6 h | 56 | 13 | 43 | 1,970 | 58.8 |
+| **12 h** | **28** | **12** | **16** | **1,924** | **59.9** |
+| 24 h | 14 | 10 | 4 | 1,830 | 79.1 |
+| 48 h | 7 | 6 | 1 | 1,701 | 124.3 |
 
-Why 12 h: it keeps up with the real dangling-image growth (97 % of the real images removed) with half the
-asks of 6 h. Each prune reclaims only 2-8 MB (one reclaimed 861 MB), so pruning sooner buys almost nothing.
+Why 12 h:
+- Going from 6 h to 12 h halves the asks and barely moves the backlog (58.8 -> 59.9).
+- 24 h is the first step where the backlog rises clearly (79.1).
+- 48 h is worse than dispatch (124.3 against 97.0), and the backlog gate below refuses it.
+- Each prune reclaims only 2-8 MB (one reclaimed 861 MB), so pruning sooner buys almost nothing.
 
 Gates, all PASS:
 - asks only on a readable disk at or above 70 %;
 - never two asks inside the cooldown (minimum gap 43,200 s);
 - at most one ask per cooldown;
-- the replay removes >= 90 % of the images the real record removed.
+- the replay removes >= 90 % of the images the real record removed;
+- the host carries no more dangling images on average than under dispatch (59.9 <= 97.0).
 
 Fault injection, both PASS:
 - the disk held at 69 % for a whole day: 0 asks that day;
-- the disk reading silent for 2 h: 0 asks while it is silent.
+- a 2 h gap in the disk record: 0 asks in it. This checks the replay's own stale-reading rule. Live, the
+  rule reads the disk itself, and the unit tests cover an unreadable or stuck read.
 
 What the replay does not model:
 - **Restarts.** Each restart resets the in-memory cooldown, so the first ask comes 10 min after the start.
   hardware-watch was rebuilt on 10 of the last 15 days, so live asks can be about 2-4 a day, not 2.
 - **RPC failures.**
 - **Hand prunes.**
-- **The seed.** No real run falls before the window's first one (10-22 11:23), so its 428 dangling images
-  are taken as already there at 00:00. That is slightly optimistic for the replay.
+- **The seed.** The count at the window start comes from the last real run before it (10-18) plus the
+  arrivals spread to 10-22. Dispatch sent no run between 10-18 and 10-22 11:23, so that gap's 428 new images
+  are spread over 4 days. The real backlog side uses the same model, so the two are compared on the same
+  terms.
 
 ## Files changed
 
@@ -178,12 +190,16 @@ Disk rule:
   `image_prune`, cancels an in-flight ask on shutdown.
 - `services/orion-hardware-watch/app/settings.py`, `.env_example`, `docker-compose.yml`: eight new keys
   and the read-only `/hostfs/docker` bind.
-- `services/orion-hardware-watch/tests/test_image_prune.py` (22 tests): new.
+- `services/orion-hardware-watch/tests/test_image_prune.py` (29 tests): new.
+- `services/orion-cortex-exec/tests/test_image_prune_hardware_watch_request.py`: new. The disk rule's own
+  payload, fed through cortex-exec's `build_exec_ctx` -> `_plan_request_from_step_ctx` -> `_skill_args`
+  -> `_resolve_docker_prune_run_mode`, comes out `execute`.
 - `services/orion-hardware-watch/evals/run_image_prune_replay_eval.py` and
   `evals/fixtures/image_prune_replay.json.gz`: new.
 - `services/orion-hardware-watch/README.md`: the disk rule section, the kill switch and the eval commands.
-- `.github/workflows/orion-hardware-watch-tests.yml`: runs the replay and the parity test. Its paths
-  include the verb, the plan loader, the cortex schemas and the skill's adapter.
+- `.github/workflows/orion-hardware-watch-tests.yml`: runs the replay and the parity test, plus a new
+  `cortex-exec-contract` job (cortex-exec's requirements) for the execute-mode test. Its paths include
+  the verb, the plan loader, the cortex schemas, and cortex-exec's adapter, executor and exec_ctx.
 
 Old trigger removed:
 - `config/proposals/proposal_policy.v1.yaml`: the three templates are removed, with a tombstone.
@@ -268,8 +284,10 @@ Tests:
 ## Tests run
 
 ```text
-services/orion-hardware-watch/tests (whole folder)                       106 passed (22 new)
-  same, in a throwaway venv with only requirements.txt + pytest (the CI job's install)   106 passed
+services/orion-hardware-watch/tests (whole folder)                       110 passed (29 new)
+  same, in a throwaway venv with only requirements.txt + pytest (the CI job's install)   106 passed (before the review fixes)
+services/orion-cortex-exec tests/test_image_prune_hardware_watch_request.py
+  + test_executor_docker_prune_skill_args.py + test_skill_verbs.py (both orders)          all pass
 tests/test_maintenance_dispatch_gating.py, test_image_prune_disk_rule_parity.py,
   test_dispatch_starvation.py, test_execution_dispatch_policy_loader.py,
   test_execution_dispatch_result_extraction.py, test_express_outward_action.py,
@@ -281,18 +299,21 @@ orion-static-gates commands run locally (pip steps skipped)              all OK 
 scripts/check_definition_drift.py --gate                                 PASS (re-locked: 2 routing changes)
 ```
 
-Note: two failures do not come from this branch.
+Note: three failures do not come from this branch.
 - `test_self_study_analysis_wiring.py::test_the_verb_is_registered_under_that_exact_name` passes on its
   own. It fails only in a combined run, because an `app` package from another service is already
   imported.
 - `tests/test_execution_dispatch_runtime_worker.py` needs a local Postgres on :5432. It fails the same way
   on main.
+- The whole `services/orion-cortex-exec/tests` folder in one run has 14 collection errors ("Verb already
+  registered") with or without the new file. That is a pre-existing double-import between test files.
 
 ## Evals run
 
 ```text
-python evals/run_image_prune_replay_eval.py           28 asks -> 11 prunes, 1,925 images; 6/6 gates PASS
-python evals/run_image_prune_replay_eval.py --sweep   1/3/6/12/24 h table above
+python evals/run_image_prune_replay_eval.py           28 asks -> 12 prunes, 1,924 images, backlog 59.9 vs 97.0; 7/7 gates PASS
+python evals/run_image_prune_replay_eval.py --sweep   1/3/6/12/24/48 h table above
+python orion/body_atlas/evals/run_wire_eval.py (body-atlas-tests workflow, run locally)   PASS
 python evals/run_rules_replay_eval.py                 PASS (unchanged heat/AC replay)
 ```
 
@@ -313,7 +334,43 @@ prune was run by hand for this PR.
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+A code-review subagent read the whole diff. It traced the disk rule's payload through cortex-exec's real
+functions to the skill's run mode (`execute`) and the reply decode against `CortexExecResultPayload`. It
+also checked the clock order and the shutdown order, and grepped the repo for leftovers. It found no
+blockers.
+
+- Finding (should-fix): the settings default for `HARDWARE_WATCH_IMAGE_PRUNE_ENABLED` was false, while
+  `.env_example` and compose say true.
+  - Fix: true in code, and the README states the exception.
+  - Evidence: `test_the_settings_default_ships_the_rule_on_like_the_env_template` pins the flag and the
+    three timing defaults to `.env_example` and the rule config.
+- Finding (should-fix): no test pinned the cortex-exec side. If cortex-exec stopped carrying
+  `ctx["skill_args"]`, the skill would quietly answer `would_act` twice a day.
+  - Fix: `services/orion-cortex-exec/tests/test_image_prune_hardware_watch_request.py`, plus a CI job that
+    installs cortex-exec's requirements.
+  - Evidence: 4 passed with the docker-prune skill-args tests, in either order with `test_skill_verbs.py`.
+- Finding (should-fix): `would_act` counted as an answer and held the 12 h cooldown.
+  - Fix: it is out of `IMAGE_PRUNE_ANSWERED`, so it now waits the 30 min retry and logs
+    `image_prune_preview_despite_execute` as a warning.
+  - Evidence: `test_a_preview_answer_is_retried_and_warned_not_held`, and `would_act` added to the retry
+    parametrisation.
+- Finding (nit): the replay's seed window held no run, so the seed path was dead.
+  - Fix: `SEED_DAYS` 3 -> 30 (seeds from the 10-18 run) and the fixture re-exported. The numbers above
+    are from the new fixture.
+- Finding (nit): the "keeps up" gate could not tell 12 h from 24 h.
+  - Fix: a time-weighted mean-backlog metric on both sides, a gate that it is no worse than dispatch, and a
+    48 h row in the sweep. The 12 h choice is argued from the sweep (see "Why 12 h").
+- Finding (nit): the 2 h silence check mostly tests the eval itself.
+  - Fix: renamed to say so ("replay check ... live reads the disk itself").
+- Finding (nit): a stuck disk read would stall the heat rules in the same loop.
+  - Fix: a 5 s `asyncio.wait_for` maps to `DiskReading(None, "read_timeout")`.
+  - Evidence: `test_a_stuck_disk_read_times_out_as_unreadable`.
+- Finding (nit): the cooldown is lost on a restart, and a shutdown leaves cortex-exec's prune running.
+  - Fix: both are stated in the README (and the restart point in "Risks / concerns"). No code change: one
+    extra cheap ask per restart.
+- Finding (nit): `skill_answer` reads only `result.final_text`.
+  - Fix: the docstring says so and why: it is what cortex-exec sets for one local skill step, and what
+    dispatch's stored results show.
 
 ## Restart required
 

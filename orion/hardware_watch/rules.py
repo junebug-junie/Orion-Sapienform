@@ -394,8 +394,10 @@ IMAGE_PRUNE_MIN_DISK_PCT = 70.0
 #: Skill decisions that mean "the skill measured and answered": the next ask waits the full cooldown.
 #: Anything else (no reply, an unreadable reply, the skill could not measure, a failed prune) waits
 #: only ``retry_sec``: a missed prune costs a few MB, a retry storm costs a docker call per tick.
+#: ``would_act`` is NOT an answer here: the rule always asks in execute mode, so a preview answer means
+#: the execute mode was lost on the way (the watcher logs it as a warning and retries).
 IMAGE_PRUNE_ANSWERED = frozenset({
-    "pruned", "pruned_nothing", "declined_nothing_to_reclaim", "declined_no_pressure", "would_act",
+    "pruned", "pruned_nothing", "declined_nothing_to_reclaim", "declined_no_pressure",
 })
 
 

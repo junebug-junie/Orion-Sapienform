@@ -50,7 +50,7 @@ from app.image_prune import ImagePruneRule  # noqa: E402
 FIXTURE = HERE / "fixtures" / "image_prune_replay.json.gz"
 START = "2026-10-22T00:00:00+00:00"     # 14 days, the spec's audit window
 END = "2026-11-05T00:00:00+00:00"
-SEED_DAYS = 3                           # dispatch runs before START seed the dangling count
+SEED_DAYS = 30                          # the last dispatch run before START seeds the dangling count
 TICK_SEC = 30.0
 # A reading older than this reads as unreadable. Live, the rule reads the disk itself every tick, so
 # only a gap in the biometrics record can make it stale here. 300 s plus one 5-min fixture bucket.
@@ -117,6 +117,7 @@ class DanglingModel:
 
     def __init__(self, runs: list[dict]):
         self.segments: list[tuple[float, float, float]] = []   # (t0, t1, arrivals)
+        self.marks: list[tuple[float, float]] = []             # (t, count the real run left)
         prev_left = None
         prev_t = None
         for r in runs:
@@ -126,6 +127,16 @@ class DanglingModel:
                     self.segments.append((prev_t, r["t"], float(arrivals)))
             left = r["after"] if (r["decision"] == "pruned" and r["after"] is not None) else r["before"]
             prev_left, prev_t = left, r["t"]
+            self.marks.append((r["t"], float(left)))
+        self._mark_ts = [m[0] for m in self.marks]
+
+    def real_count(self, t: float) -> float | None:
+        """The real record's dangling count at ``t`` (the last real run's leftover plus arrivals since)."""
+        i = bisect.bisect_right(self._mark_ts, t) - 1
+        if i < 0:
+            return None
+        t0, left = self.marks[i]
+        return left + self.arrivals(t0, t)
 
     def arrivals(self, a: float, b: float) -> float:
         total = 0.0
@@ -157,6 +168,7 @@ def replay(data: dict, *, cooldown_sec: float = ImagePruneRuleConfig().cooldown_
         first = data["runs"][0]
         state["count"], state["since"] = float(first["before"]), max(start, first["t"])
     asks: list[dict] = []
+    backlog = {"replay": 0.0, "real": 0.0, "n": 0}
 
     def clock() -> datetime:
         return datetime.fromtimestamp(sim_t["t"], tz=timezone.utc)
@@ -195,6 +207,11 @@ def replay(data: dict, *, cooldown_sec: float = ImagePruneRuleConfig().cooldown_
             await rule.tick()
             if rule._in_flight is not None:
                 await asyncio.gather(rule._in_flight)
+            real_now = model.real_count(sim_t["t"])
+            if real_now is not None:
+                backlog["replay"] += state["count"] + model.arrivals(state["since"], sim_t["t"])
+                backlog["real"] += real_now
+                backlog["n"] += 1
             sim_t["t"] += TICK_SEC
         return rule
 
@@ -226,6 +243,9 @@ def replay(data: dict, *, cooldown_sec: float = ImagePruneRuleConfig().cooldown_
         "disk_min_pct": min(d[1] for d in disk if start <= d[0] < end),
         "disk_max_pct": max(d[1] for d in disk if start <= d[0] < end),
         "max_dangling_at_an_ask": max((a["dangling"] for a in asks), default=0),
+        # Time-weighted mean dangling images left on the host, every tick (lower = pruned sooner).
+        "mean_backlog_replay": round(backlog["replay"] / backlog["n"], 1) if backlog["n"] else None,
+        "mean_backlog_real": round(backlog["real"] / backlog["n"], 1) if backlog["n"] else None,
         "asks_detail": asks,
     }
 
@@ -249,6 +269,9 @@ def gates(data: dict, r: dict | None = None) -> list[tuple[str, bool, str]]:
          r["replay_images_removed"] >= 0.9 * r["real_images_removed"],
          f"replay {r['replay_images_removed']} vs real {r['real_images_removed']}"),
     ]
+    out.append(("the host carries no more dangling images on average than under dispatch",
+                r["mean_backlog_replay"] is not None and r["mean_backlog_replay"] <= r["mean_backlog_real"],
+                f"mean backlog replay {r['mean_backlog_replay']} vs real {r['mean_backlog_real']}"))
     # Fault injection: the disk below the floor for a whole day -> no ask that day.
     day0, day1 = start + 3 * 86400, start + 4 * 86400
     low = replay(data, mutate=lambda d: _dip(d, day0, day1, 69.0))
@@ -258,7 +281,8 @@ def gates(data: dict, r: dict | None = None) -> list[tuple[str, bool, str]]:
     s0, s1 = start + 5 * 86400, start + 5 * 86400 + 7200
     gap = replay(data, mutate=lambda d: [x for x in d if not (s0 <= x[0] < s1)])
     in_gap = [a for a in gap["asks_detail"] if s0 + STALE_SEC < a["t"] < s1]
-    out.append(("disk reading silent for 2 h -> 0 asks while silent", not in_gap and
+    out.append(("replay check: a 2 h gap in the disk record -> 0 asks in it (live reads the disk itself)",
+                not in_gap and
                 gap["verdicts"].get("disk_unreadable", 0) > 0,
                 f"{len(in_gap)} asks, {gap['verdicts'].get('disk_unreadable', 0)} unreadable ticks"))
     return out
@@ -279,11 +303,12 @@ def main() -> int:
         return 0
     data = load()
     if args.sweep:
-        for c in (3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600):
+        for c in (3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600, 48 * 3600):
             r = replay(data, cooldown_sec=float(c))
             print(f"cooldown {c / 3600:>4.0f} h: asks {r['asks']:>4} ({r['asks_per_day']}/day)  "
                   f"prunes {r['replay_prunes']:>3}  declines {r['replay_declines']:>4}  "
-                  f"images {r['replay_images_removed']:>5}  real prunes matched "
+                  f"images {r['replay_images_removed']:>5}  mean backlog {r['mean_backlog_replay']:>6} "
+                  f"(real {r['mean_backlog_real']})  real prunes matched "
                   f"{r['real_prunes_matched_within_one_cooldown']}/{r['real_prunes']}")
         return 0
     r = replay(data)
@@ -297,6 +322,7 @@ def main() -> int:
               f"{r['replay_declines']} declined, {r['replay_images_removed']} images removed")
         print(f"real (dispatch): {r['real_runs']} runs -> {r['real_prunes']} prunes, {r['real_declines']} declined, "
               f"{r['real_images_removed']} images removed")
+        print(f"mean dangling backlog: replay {r['mean_backlog_replay']}, real {r['mean_backlog_real']}")
         print(f"real prunes with a replay prune within one cooldown: "
               f"{r['real_prunes_matched_within_one_cooldown']}/{r['real_prunes']}")
     failed = 0

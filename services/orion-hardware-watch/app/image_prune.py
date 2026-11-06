@@ -40,6 +40,9 @@ logger = logging.getLogger("orion-hardware-watch.image_prune")
 
 IMAGE_PRUNE_VERB = "skills.runtime.image_prune.v1"
 ORIGIN = "hardware_watch.disk_rule"
+#: A disk read that takes longer than this reads as unreadable, so a stuck mount cannot stall the
+#: heat and AC rules that share the tick loop.
+DISK_READ_TIMEOUT_SEC = 5.0
 
 #: (request) -> reply payload dict. Raises on a transport failure or timeout.
 Ask = Callable[[str], Awaitable[dict]]
@@ -69,8 +72,10 @@ def read_docker_volume(path: str) -> DiskReading:
 
 def skill_answer(payload: dict) -> dict[str, Any]:
     """The skill's own result from a cortex-exec reply: ``result.final_text`` is the skill's JSON
-    (``verb_adapters._skill_result_output``). Returns ``{"outcome": <decision>, ...}``, or
-    ``{"outcome": "unreadable_reply"}`` when the reply carries no skill result."""
+    (``verb_adapters._skill_result_output``; cortex-exec sets it for a single local skill step, which is
+    what dispatch's stored results show too). It does not fall back to ``steps[*].result``. Returns
+    ``{"outcome": <decision>, ...}``, or ``{"outcome": "unreadable_reply"}`` when the reply carries no
+    skill result."""
     if isinstance(payload, dict) and payload.get("ok") is False:
         return {"outcome": "exec_error", "error": str(payload.get("error") or "")[:300]}
     result = payload.get("result") if isinstance(payload, dict) else None
@@ -126,7 +131,11 @@ class ImagePruneRule:
         """One evaluation. Returns the verdict (None when the rule is switched off)."""
         if not self.enabled:
             return None
-        disk = await asyncio.to_thread(self._read_disk, self.mount_path)
+        try:
+            disk = await asyncio.wait_for(asyncio.to_thread(self._read_disk, self.mount_path),
+                                          timeout=DISK_READ_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            disk = DiskReading(None, "read_timeout")
         state = self._state()
         now = self.clock()   # after both reads: an ask that just finished is age 0, never negative
         verdict = image_prune_verdict(disk, now, state, self.cfg)
@@ -153,6 +162,10 @@ class ImagePruneRule:
         self.outcomes[self._last_outcome] += 1
         if self.last_ask is not None and self.last_ask.get("attempt_id") == attempt_id:
             self.last_ask.update(answer, finished_at=finished.isoformat())
+        if self._last_outcome == "would_act":
+            # The rule always asks in execute mode: a preview answer means that mode was lost between
+            # here and the skill. Retried after retry_sec, not held for the cooldown, and said loudly.
+            logger.warning("image_prune_preview_despite_execute attempt=%s reply=%s", attempt_id, answer)
         logger.info("image_prune_answer attempt=%s outcome=%s dangling_before=%s bytes_reclaimed=%s err=%s",
                     attempt_id, answer.get("outcome"), answer.get("dangling_before"),
                     answer.get("bytes_reclaimed"), answer.get("error"))

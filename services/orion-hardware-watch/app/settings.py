@@ -90,7 +90,8 @@ class Settings(BaseSettings):
 
     # --- docker image prune (ladder retirement PR 4): the disk rule asks cortex-exec for
     # skills.runtime.image_prune.v1 when the docker volume is at/above the skill's own 70 % floor.
-    image_prune_enabled: bool = Field(False, alias="HARDWARE_WATCH_IMAGE_PRUNE_ENABLED")
+    # ON in code too (ship flags on): a process started without the compose env still asks.
+    image_prune_enabled: bool = Field(True, alias="HARDWARE_WATCH_IMAGE_PRUNE_ENABLED")
     # The docker data-root, bind-mounted read-only (docker-compose.yml), as in orion-cortex-exec.
     image_prune_mount_path: str = Field("/hostfs/docker", alias="HARDWARE_WATCH_IMAGE_PRUNE_MOUNT_PATH")
     image_prune_cooldown_sec: float = Field(43200.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC")

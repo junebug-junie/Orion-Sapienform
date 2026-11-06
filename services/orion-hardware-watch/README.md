@@ -99,9 +99,18 @@ answer (decision, dangling count, images removed, bytes reclaimed, or the error)
 verdict and outcome.
 
 Replay over 14 real days (`evals/run_image_prune_replay_eval.py`, fixture from live Postgres): the disk
-sat at 79.1-81.5 % the whole time, so the cooldown sets the rate: 28 asks (2 a day) -> 11 prunes and 17
-declines, 1,925 images removed. The real dispatch record: 156 runs -> 11 prunes, 145 declines, 1,993
-images removed.
+sat at 79.1-81.5 % the whole time, so the cooldown sets the rate: 28 asks (2 a day) -> 12 prunes and 16
+declines, 1,924 images removed, 59.9 dangling images left on average. The real dispatch record: 156 runs
+-> 11 prunes, 145 declines, 1,993 images removed, 97.0 left on average.
+
+Notes:
+- The cooldown lives in memory, so a restart gives one ask 10 min after the start.
+- A shutdown cancels the ask, but not a prune cortex-exec is already running. If the next ask overlaps
+  it, docker refuses ("a prune operation is already running"). That reads as `failed` and is retried
+  after 30 min.
+- A `would_act` answer (preview) means the execute mode was lost on the way to the skill. It is logged
+  as `image_prune_preview_despite_execute` and retried after 30 min, never held for 12 h.
+- A disk read that takes over 5 s reads as unreadable (`read_timeout`), so it cannot stall the heat rules.
 
 ## HTTP
 
@@ -125,7 +134,8 @@ images removed.
 | `HARDWARE_WATCH_IMAGE_PRUNE_ENABLED` | the disk rule never asks for the image prune |
 | `GPU_POOL_SHED_ENABLED` (pool) | the pool ignores every shed reason |
 
-Kill switches default false in code, true in `.env_example` (test hook stays false). The controller
+Kill switches default false in code, true in `.env_example` (test hook stays false). Exception:
+`HARDWARE_WATCH_IMAGE_PRUNE_ENABLED` is true in code too. The controller
 defaults to `v2` in code, compose and `.env_example`.
 
 ## Deploy (consumer first)

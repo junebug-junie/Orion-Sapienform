@@ -18,11 +18,13 @@ MAX_DISPATCH_RPC_TIMEOUT_SEC = 720.0
 class DispatchModeConfigV1(BaseModel):
     default_dispatch_mode: str = "dry_run"
     allow_dispatch_read_only: bool = False
-    allow_mutating_dispatch: bool = False
+    # 2026-11-06 (ladder retirement PR 4): `allow_mutating_dispatch` is gone. It gated only
+    # MAINTENANCE_SCOPE (maintenance_bounded), whose docker prune routes left with their trigger:
+    # orion-hardware-watch's disk rule asks cortex-exec for the image prune now. An old policy file
+    # that still names the key is ignored (this model ignores extra keys); no scope reads it.
     # Gates EXPRESS_SCOPE routes. Default False: an action whose product exists
     # outside Orion and costs a physical resource does not become dispatchable
-    # by a config file appearing -- it takes a deliberate operator decision,
-    # same posture allow_mutating_dispatch has held since 2026-08-12.
+    # by a config file appearing -- it takes a deliberate operator decision.
     allow_express_dispatch: bool = False
     # 2026-10-01: gates SELF_REVERSIBLE_SCOPE routes (attend-to-act loop A1). Closed since 2026-11-05: the
     # only route (shed_background_gpu) left dispatch for the want market, and the runtime no longer passes
@@ -30,18 +32,11 @@ class DispatchModeConfigV1(BaseModel):
     allow_self_reversible_dispatch: bool = False
 
 
-# The single non-read-only route scope. Lives here, not in builder.py, because
-# BOTH builder and envelopes need it and builder already imports envelopes --
-# putting it in builder makes that a cycle. (Learned the same day, from
-# orion/field/action_warrant.py's own circular import; see PR #1581.)
-MAINTENANCE_SCOPE = "maintenance_bounded"
+# 2026-11-06 (ladder retirement PR 4): MAINTENANCE_SCOPE ("maintenance_bounded", 2026-08-12) is gone with
+# its three docker prune routes. builder.py's scope check no longer admits it, so a route that still
+# names it is blocked by scope.
 
-# 2026-08-30: the second non-read-only scope, for Orion's first OUTWARD action.
-# Its own scope and its own gate rather than borrowing maintenance_bounded's,
-# for two reasons. It is not maintenance -- overloading that name would make the
-# route table lie about what the action does. And it must be switchable
-# independently: turning off image generation should not also stop docker
-# pruning, and vice versa. A shared flag makes both an all-or-nothing choice.
+# 2026-08-30: a non-read-only scope, for Orion's first OUTWARD action, with its own gate.
 EXPRESS_SCOPE = "express_bounded"
 
 # 2026-10-01 (attend-to-act loop A1): a bounded, auto-reverting action on Orion's OWN resources. Its only
@@ -99,19 +94,19 @@ class CortexRouteTemplateV1(BaseModel):
     act: ActRouteRefV1 | None = None
     # 2026-08-12: per-route RPC budget, None = use the runtime's global
     # EXECUTION_DISPATCH_RPC_TIMEOUT_SEC. Exists because the two needs are
-    # genuinely opposed: a real build-cache prune can run for minutes, while
-    # this consumer is single-threaded, so a global ceiling large enough for
-    # the prune would let ONE hung inspect stall all dispatch for that long.
-    # Only routes that actually need a longer budget get one.
+    # genuinely opposed: a long route (the build-cache prune, until 2026-11-06)
+    # can run for minutes, while this consumer is single-threaded, so a global
+    # ceiling large enough for it would let ONE hung inspect stall all dispatch
+    # for that long. Only routes that actually need a longer budget get one.
     rpc_timeout_sec: float | None = Field(
         None, gt=0.0, le=MAX_DISPATCH_RPC_TIMEOUT_SEC
     )
 
     # 2026-08-25: static per-route arguments for the target verb, merged into
     # the envelope's `context.skill_args` (orion/execution_dispatch/
-    # envelopes.py). Exists because `maintain` routes already needed exactly
-    # this and had it hardcoded there as a single `mode` key -- so a second
-    # route wanting any argument at all had nowhere to put it.
+    # envelopes.py). Exists because `maintain` routes (until 2026-11-06) needed
+    # exactly this and had it hardcoded there as a single `mode` key -- so a
+    # second route wanting any argument at all had nowhere to put it.
     #
     # STATIC ONLY, and deliberately so: these are config, chosen by the
     # operator writing the policy file, never derived from candidate state.
@@ -119,15 +114,14 @@ class CortexRouteTemplateV1(BaseModel):
     # decision, and a decision belongs in the proposal arena or inside the
     # skill, not smuggled through a route table.
     #
-    # `mode` is REFUSED here outright, not merely overridden. envelopes.py
-    # forces the derived `mode` only for MAINTENANCE_SCOPE routes, and
-    # `allowed_scope` / `cortex_verb` are independent unvalidated config
-    # fields -- so a route declaring a mutating verb under `summarize_only`
-    # (which builder.py::scope_allowed admits unconditionally, without
-    # mode.allow_mutating_dispatch) plus `skill_args: {mode: execute}` would
-    # reach that verb with `mode=execute` regardless of dry_run. Before route
-    # skill_args existed there was no such channel at all; this validator is
-    # what keeps it that way. Caught in review, 2026-08-25.
+    # `mode` is REFUSED here outright. `allowed_scope` / `cortex_verb` are
+    # independent unvalidated config fields -- so a route declaring a mutating
+    # verb under `summarize_only` (which builder.py::scope_allowed admits
+    # unconditionally) plus `skill_args: {mode: execute}` would reach that verb
+    # with `mode=execute` regardless of dry_run. Since 2026-11-06 no route gets
+    # a derived `mode` at all (the maintenance scope is gone), so a mutating
+    # skill reached through dispatch always runs in its default preview. Caught
+    # in review, 2026-08-25.
     skill_args: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("skill_args")

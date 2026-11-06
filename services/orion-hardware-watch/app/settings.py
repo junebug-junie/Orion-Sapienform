@@ -88,6 +88,20 @@ class Settings(BaseSettings):
     # An open heat incident whose sensor is silent this long resolves as sensor_lost (C12).
     heat_sensor_lost_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_HEAT_SENSOR_LOST_SEC")
 
+    # --- docker image prune (ladder retirement PR 4): the disk rule asks cortex-exec for
+    # skills.runtime.image_prune.v1 when the docker volume is at/above the skill's own 70 % floor.
+    image_prune_enabled: bool = Field(False, alias="HARDWARE_WATCH_IMAGE_PRUNE_ENABLED")
+    # The docker data-root, bind-mounted read-only (docker-compose.yml), as in orion-cortex-exec.
+    image_prune_mount_path: str = Field("/hostfs/docker", alias="HARDWARE_WATCH_IMAGE_PRUNE_MOUNT_PATH")
+    image_prune_cooldown_sec: float = Field(21600.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC")
+    image_prune_retry_sec: float = Field(1800.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_RETRY_SEC")
+    image_prune_start_delay_sec: float = Field(600.0, ge=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_START_DELAY_SEC")
+    # Above the verb's own timeout_ms (660 s), which is above the docker subprocess's 600 s: the
+    # innermost budget fires first (the staggering dispatch's route used).
+    image_prune_rpc_timeout_sec: float = Field(720.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_RPC_TIMEOUT_SEC")
+    cortex_exec_channel: str = Field("orion:cortex:exec:request:background", alias="CORTEX_EXEC_CHANNEL")
+    cortex_exec_result_prefix: str = Field("orion:exec:result", alias="CORTEX_EXEC_RESULT_PREFIX")
+
     @model_validator(mode="after")
     def _shed_signal_outlives_refresh(self) -> "Settings":
         # The pool's copy of a shed request lapses at shed_valid_sec; the watcher must re-publish

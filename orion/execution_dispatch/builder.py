@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from orion.execution_dispatch.envelopes import build_cortex_request_envelope
 from orion.execution_dispatch.policy import (
     EXPRESS_SCOPE,
-    MAINTENANCE_SCOPE,
     SELF_REVERSIBLE_SCOPE,
     CortexRouteTemplateV1,
     DispatchLimitsV1,
@@ -358,14 +357,8 @@ def build_execution_dispatch_frame(
     dispatched: list[ExecutionDispatchCandidateV1] = []
     warnings: list[str] = list(policy_frame.warnings)
 
-    # 2026-08-12: this flag used to append a warning and do nothing else --
-    # set it and mutating dispatch stayed off, silently. That is the inverse of
-    # CLAUDE.md 0A's "kill means kill": a switch that reports success while
-    # changing nothing. It now actually gates the `maintenance_bounded` scope
-    # below, and its OFF state is announced rather than its ON state, because
-    # off is the state that silently blocks something an operator asked for.
-    if not policy.mode.allow_mutating_dispatch:
-        warnings.append("mutating_dispatch_disabled_by_policy")
+    # 2026-11-06 (ladder retirement PR 4): the `mutating_dispatch_disabled_by_policy` warning is gone with
+    # mode.allow_mutating_dispatch and the maintenance_bounded scope it gated.
 
     dispatch_status_default, dispatch_mode_candidate = _candidate_status_for_mode(dispatch_mode)
     prev_counts = dict(prev_starvation_counts or {})
@@ -493,18 +486,14 @@ def build_execution_dispatch_frame(
             blocked.append(make_blocked(decision, candidate, reasons=["visual_baseline_route_mismatch"], blocked_by=["route"]))
             continue
 
-        # `maintenance_bounded` is the only non-read-only scope, and it passes
-        # here ONLY when mode.allow_mutating_dispatch is open (ON since
-        # 2026-08-12, by explicit operator decision). This is THE gate: the
-        # decision record's own allowed_scope is never consulted here, so this
-        # route-table check is what actually decides whether a mutating verb
-        # can be dispatched at all.
+        # THE gate: the decision record's own allowed_scope is never consulted
+        # here, so this route-table check is what actually decides whether a
+        # non-read-only verb can be dispatched at all. 2026-11-06 (ladder
+        # retirement PR 4): `maintenance_bounded` (the docker prunes) is no
+        # longer admitted -- a route that still names it is blocked by scope.
         scope_allowed = (
             route.allowed_scope in ("inspect_only", "summarize_only")
-            or (route.allowed_scope == MAINTENANCE_SCOPE and policy.mode.allow_mutating_dispatch)
-            # EXPRESS_SCOPE has its own flag on purpose -- see policy.py. An
-            # outward action must be switchable without also switching docker
-            # pruning, and neither should be able to ride on the other's gate.
+            # EXPRESS_SCOPE has its own flag on purpose -- see policy.py.
             or (route.allowed_scope == EXPRESS_SCOPE and policy.mode.allow_express_dispatch)
             or (route.allowed_scope == SELF_REVERSIBLE_SCOPE and policy.mode.allow_self_reversible_dispatch)
         )
@@ -662,9 +651,7 @@ def build_execution_dispatch_frame(
             # the stored candidate -- the same class of false-audit-record
             # defect as the decision literal one layer up.
             reasons=[
-                "approved_maintenance_dispatch_v1"
-                if route.allowed_scope == MAINTENANCE_SCOPE
-                else "approved_self_reversible_dispatch_v1"
+                "approved_self_reversible_dispatch_v1"
                 if route.allowed_scope == SELF_REVERSIBLE_SCOPE
                 else "approved_read_only_dispatch_v1"
             ],

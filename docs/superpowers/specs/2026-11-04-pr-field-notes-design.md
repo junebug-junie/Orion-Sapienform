@@ -418,6 +418,12 @@ Report: `docs/superpowers/pr-reports/2026-11-06-pr-field-notes-truth-eval-and-co
   now also reads the PR author and the noreply address. The poller passes the author. The eval shows
   the old record as `#3146: authored_by_me: unknown -> yes`. The old line is kept (records are
   append-only).
+- **Coverage counts only PRs owed a note.** `dig field-notes 3` said "coverage 45/94 (47%), 48 neither".
+  All 48 merged before the no-backfill cutoff. Now a PR merged before notes began (the later of the
+  first record and `field_notes.NOTES_BEGAN_AT`, the same instant as `PR_FIELD_NOTES_NOT_BEFORE`; a test
+  checks they agree) is left out and counted on its own: "coverage 45/46 ... 1 a code record, 0 neither;
+  48 merged before notes began, not counted". `history` stops marking the 10 PRs merged on 11-04 between
+  #3090 (written by hand) and the cutoff as "(no note)".
 - **Found, not fixed:** `run_id` and `correlation_id` are empty in every note. The turn does not know its
   run id, so `field-note write` cannot fill them. Nothing reads them today: the cost script joins runs to
   acts by run id, not through the note. Filling them needs the harness step to pass the run id into the

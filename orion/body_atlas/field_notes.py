@@ -47,6 +47,10 @@ LABELS = ("pr_text", "code_then", "reflection")
 ORION_GIT_EMAIL = "orion-fcc@orion-sapienform.local"  # services/orion-harness-governor/Dockerfile
 # Orion's own GitHub user since 2026-11-05 (#3145, orion/fcc/claude_spawn.py): a PR Orion opens has this
 # author, and its commits carry this user's noreply email (seen live on #3146 and #3147).
+# Juniper's decision 3 (2026-11-04): notes for new merges only. A PR merged before this is not owed a
+# note, so coverage does not count it. Same instant as orion-durable-runs' PR_FIELD_NOTES_NOT_BEFORE
+# (tests/test_field_notes.py checks the two agree).
+NOTES_BEGAN_AT = "2026-11-04T06:00:00+00:00"
 ORION_GITHUB_LOGIN = "orion-sapienform"
 ORION_NOREPLY_SUFFIX = "+orion-sapienform@users.noreply.github.com"
 

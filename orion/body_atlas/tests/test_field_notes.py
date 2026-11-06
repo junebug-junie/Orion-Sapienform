@@ -226,3 +226,17 @@ def test_a_bad_ledger_line_is_skipped_not_fatal(tmp_path):
         fh.write("{not json\n")
     records, skipped = fn.load(path)
     assert len(records) == 1 and skipped == 1
+
+
+def test_notes_began_at_is_the_pollers_no_backfill_cutoff():
+    # dig's coverage and orion-durable-runs' poller must agree on which PRs are owed a note
+    import re
+    from datetime import datetime
+    from pathlib import Path
+
+    svc = Path(__file__).resolve().parents[3] / "services" / "orion-durable-runs"
+    example = re.search(r"^PR_FIELD_NOTES_NOT_BEFORE=(\S+)$", (svc / ".env_example").read_text(), re.M).group(1)
+    compose = re.search(r"PR_FIELD_NOTES_NOT_BEFORE:-([^}]+)\}", (svc / "docker-compose.yml").read_text()).group(1)
+    began = datetime.fromisoformat(fn.NOTES_BEGAN_AT)
+    assert datetime.fromisoformat(example) == began == datetime.fromisoformat(compose)
+    assert "datetime(2026, 11, 4, 6, 0, tzinfo=timezone.utc)" in (svc / "app" / "settings.py").read_text()

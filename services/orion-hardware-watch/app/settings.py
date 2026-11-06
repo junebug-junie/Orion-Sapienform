@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     image_prune_enabled: bool = Field(False, alias="HARDWARE_WATCH_IMAGE_PRUNE_ENABLED")
     # The docker data-root, bind-mounted read-only (docker-compose.yml), as in orion-cortex-exec.
     image_prune_mount_path: str = Field("/hostfs/docker", alias="HARDWARE_WATCH_IMAGE_PRUNE_MOUNT_PATH")
-    image_prune_cooldown_sec: float = Field(21600.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC")
+    image_prune_cooldown_sec: float = Field(43200.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC")
     image_prune_retry_sec: float = Field(1800.0, gt=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_RETRY_SEC")
     image_prune_start_delay_sec: float = Field(600.0, ge=0, alias="HARDWARE_WATCH_IMAGE_PRUNE_START_DELAY_SEC")
     # Above the verb's own timeout_ms (660 s), which is above the docker subprocess's 600 s: the

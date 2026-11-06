@@ -14,7 +14,8 @@ from orion.hardware_watch.rules import (
 from app.image_prune import ImagePruneRule, read_docker_volume, skill_answer
 
 T0 = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
-CFG = ImagePruneRuleConfig()          # 70 %, 6 h cooldown, 30 min retry, 10 min start delay
+CFG = ImagePruneRuleConfig()          # 70 %, 12 h cooldown, 30 min retry, 10 min start delay
+COOL = timedelta(seconds=CFG.cooldown_sec)
 LATE = T0 + timedelta(hours=1)        # well past the start delay
 
 
@@ -63,9 +64,9 @@ def test_one_ask_at_a_time():
                                      "declined_no_pressure"])
 def test_an_answered_ask_holds_the_full_cooldown(outcome):
     st = _state(last_finished_at=LATE, last_outcome=outcome)
-    v = image_prune_verdict(DiskReading(81.0), LATE + timedelta(hours=5, minutes=59), st)
+    v = image_prune_verdict(DiskReading(81.0), LATE + COOL - timedelta(seconds=1), st)
     assert (v.ask, v.reason) == (False, "cooldown")
-    assert image_prune_verdict(DiskReading(81.0), LATE + timedelta(hours=6), st).ask
+    assert image_prune_verdict(DiskReading(81.0), LATE + COOL, st).ask
 
 
 @pytest.mark.parametrize("outcome", ["rpc_error", "unreadable_reply", "exec_error", "declined_unmeasurable",
@@ -83,7 +84,7 @@ def test_an_ask_finished_after_the_ticks_clock_is_age_zero_not_negative():
     now = LATE
     st = _state(last_finished_at=now + timedelta(seconds=2.4), last_outcome="pruned")
     v = image_prune_verdict(DiskReading(81.0), now, st)
-    assert (v.ask, v.reason) == (False, "cooldown") and v.wait_sec == pytest.approx(21600.0)
+    assert (v.ask, v.reason) == (False, "cooldown") and v.wait_sec == pytest.approx(CFG.cooldown_sec)
 
 
 # --- reading the disk ------------------------------------------------------------------------
@@ -171,7 +172,7 @@ def test_a_tick_asks_once_in_the_background_then_holds_for_the_cooldown():
         await asyncio.gather(rule._in_flight)
         clock.t = LATE + timedelta(hours=1)
         v3 = await rule.tick()
-        clock.t = LATE + timedelta(hours=6, seconds=1)
+        clock.t = LATE + COOL + timedelta(seconds=1)
         v4 = await rule.tick()
         await asyncio.gather(rule._in_flight)
         return rule, [v1.reason, v2.reason, v3.reason, v4.reason]
@@ -186,7 +187,7 @@ def test_a_tick_asks_once_in_the_background_then_holds_for_the_cooldown():
 
 def test_a_failed_first_ask_after_a_restart_is_harmless_and_retried():
     """cortex-exec mid-restart: the RPC raises. The tick does not crash, the outcome is rpc_error, and
-    the next ask comes after the 30 min retry, not the 6 h cooldown."""
+    the next ask comes after the 30 min retry, not the 12 h cooldown."""
     calls = []
 
     async def ask(attempt_id):
@@ -230,15 +231,15 @@ def test_the_clock_is_taken_after_the_disk_read_with_a_real_read_lag():
         await asyncio.gather(rule._in_flight)
         finished = rule._last_finished_at
         assert finished == LATE + timedelta(seconds=2.4)
-        clock.t = LATE + timedelta(hours=6) - timedelta(seconds=3)
-        before = await rule.tick()   # read ends at 6 h - 0.6 s: still in cooldown
-        clock.t = LATE + timedelta(hours=6)
-        after = await rule.tick()    # read ends at 6 h + 2.4 s: 6 h after the finish
+        clock.t = LATE + COOL - timedelta(seconds=3)
+        before = await rule.tick()   # read ends 0.6 s before the cooldown ends: still in cooldown
+        clock.t = LATE + COOL
+        after = await rule.tick()    # read ends 2.4 s later: one cooldown after the finish
         await asyncio.gather(rule._in_flight)
         return before, after, rule
     before, after, rule = asyncio.run(go())
     assert before.reason == "cooldown" and after.reason == "ask"
-    assert rule.last_tick["at"] == (LATE + timedelta(hours=6, seconds=2.4)).isoformat()
+    assert rule.last_tick["at"] == (LATE + COOL + timedelta(seconds=2.4)).isoformat()
 
 
 def test_health_exposes_the_rule():

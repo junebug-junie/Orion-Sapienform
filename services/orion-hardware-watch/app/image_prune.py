@@ -12,7 +12,7 @@ One tick (the watcher's own 30 s loop):
 2. Take the clock AFTER that read, and after reading this rule's own state.
 3. ``orion.hardware_watch.rules.image_prune_verdict`` decides: one ask at a time, a start delay, never
    on an unreadable disk, never below the skill's own 70 % floor, then the cooldown after an answered
-   ask (6 h) or the retry wait after an unanswered one (30 min).
+   ask (12 h) or the retry wait after an unanswered one (30 min).
 4. An ask runs in the background: one bus RPC to cortex-exec on ``orion:cortex:exec:request:background``,
    the same request dispatch sent (``PlanExecutionRequest`` for the verb, ``skill_args.mode=execute``).
    The skill then runs its own gate (disk >= 70 % AND >= 100 dangling images) and its own prune.

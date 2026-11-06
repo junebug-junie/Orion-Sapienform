@@ -410,9 +410,11 @@ class DiskReading:
 @dataclass(frozen=True)
 class ImagePruneRuleConfig:
     min_disk_pct: float = IMAGE_PRUNE_MIN_DISK_PCT
-    # How long after an answered ask before the next one. The disk sat above the floor for the whole
-    # 14-day replay window, so this, not the disk, sets the ask rate (see the replay eval).
-    cooldown_sec: float = 21600.0
+    # How long after an answered ask before the next one (12 h). The disk sat above the floor for the
+    # whole 14-day replay window, so this, not the disk, sets the ask rate: 2 asks a day. The replay
+    # sweep (evals/run_image_prune_replay_eval.py --sweep) kept up with the real dangling-image growth
+    # at 12 h (1,925 images against the real 1,993) with half the asks of 6 h (28 against 56).
+    cooldown_sec: float = 43200.0
     # How long after an unanswered ask (RPC error, unreadable reply, skill could not measure).
     retry_sec: float = 1800.0
     # No ask until this long after the process starts: the post-pull rebuild restarts services one by

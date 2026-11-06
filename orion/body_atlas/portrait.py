@@ -40,7 +40,9 @@ MACHINE_MAX_CHARS = 200
 WHOLE_MIN_CHARS = 40
 WHOLE_MAX_CHARS = 600
 SHOWN_CHARS = 85  # a quoted line in the printout; the full text is in the file
-_ORGAN_ID_RE = re.compile(r"(?<![0-9a-z])(?:organ:)?([0-9a-f]{10})(?![0-9a-z])")
+# an organ id: ``organ:`` + 10 hex chars, or the bare 10 hex chars with at least one letter (so a Unix
+# time or any 10-digit number is not read as one; review 2026-11-06)
+_ORGAN_ID_RE = re.compile(r"(?<![0-9a-z:])(?:organ:([0-9a-f]{10})|((?=[0-9]*[a-f])[0-9a-f]{10}))(?![0-9a-z])")
 _CAP_ID_RE = re.compile(r"(?<![\w:])(cap:[a-z0-9_]+)(?![\w:])")
 
 
@@ -78,7 +80,9 @@ class ReachV1(BaseModel):
 
     running: list[str] = Field(default_factory=list)  # live part names with a runs_on flow to it
     feeds: list[str] = Field(default_factory=list)  # live part / non-census channel a running part sends to
-    organs: dict[str, int] = Field(default_factory=dict)  # organ id -> members placed there
+    # live part / non-census channel that only sends INTO a running part (a caller it serves)
+    serves: list[str] = Field(default_factory=list)
+    organs: dict[str, int] = Field(default_factory=dict)  # organ id -> live members running there
 
 
 class MachineViewV1(BaseModel):
@@ -148,12 +152,21 @@ def machine_reach(atlas: BodyAtlasV1, host_name: str, census: set[str]) -> Reach
     ids_sorted = sorted(ids, key=lambda pid: (-busy.get(pid, 0), live[pid]))  # busiest first (the hint)
     running = [live[pid] for pid in ids_sorted]
     feeds: set[str] = set()
+    serves: set[str] = set()
     for pid in ids_sorted:
         for ref, dirs in flow_dirs(atlas, pid, census).items():
             if dirs & {"out", "?"}:  # it sends, calls or writes there ("?": a uses flow, direction unknown)
                 feeds.add(ref)
-    organs = {o.organ_id: o.placement[host_name] for o in atlas.organs if o.placement.get(host_name)}
-    return ReachV1(running=running, feeds=sorted(feeds - set(running)), organs=organs)
+            else:  # it only receives from there: a caller this machine serves (review 2026-11-06)
+                serves.add(ref)
+    # live members only: a dormant member placed here is no anchor (carbon-x1's dormant camera)
+    organs: dict[str, int] = {}
+    for o in atlas.organs:
+        n = sum(1 for m in o.members if m in ids)
+        if n:
+            organs[o.organ_id] = n
+    here = set(running)
+    return ReachV1(running=running, feeds=sorted(feeds - here), serves=sorted(serves - feeds - here), organs=organs)
 
 
 # --- the check (write and read) -------------------------------------------------------------------
@@ -163,24 +176,23 @@ def _organ_label(atlas: BodyAtlasV1, organ_id: str) -> str:
     return o.name if o is not None and o.name else organ_id.removeprefix("organ:")
 
 
-NAME_FAMILY_MIN = 3  # a first word shared by this many part names is a naming family (``orion-``, ``vision-``)
+def _two(name: str) -> str | None:
+    segs = name.split("-")
+    return "-".join(segs[:2]) if len(segs) >= 3 else None
 
 
 def _unknown_names(atlas: BodyAtlasV1, text: str) -> list[str]:
-    """Hyphenated words that look like a part name of mine but name no part: their first word is shared
-    by at least NAME_FAMILY_MIN part names (read from the atlas, never a hand list). ``because_refs``
-    sees only ids with a ``prefix:``, so "orion-llm-worker-a" (no such part) would pass unseen.
-    Smoke 2026-11-06: a circe line naming it was refused only for its missing anchor."""
-    names = {p.name.lower() for p in atlas.parts}
-    first: dict[str, int] = {}
-    for n in names:
-        if "-" in n and ":" not in n:
-            first[n.split("-", 1)[0]] = first.get(n.split("-", 1)[0], 0) + 1
-    families = {f for f, k in first.items() if k >= NAME_FAMILY_MIN}
+    """Hyphenated words of three or more segments that look like a part name of mine but name no part
+    or channel: their first two segments begin a real part name (read from the atlas, never a hand
+    list). ``because_refs`` sees only ids with a ``prefix:``, so "orion-llm-worker-a" (no such part;
+    "orion-llm-" begins orion-llm-gateway) would pass unseen (smoke 2026-11-06). "orion-sapienform" or
+    "orion-wide" are prose: no part begins with them (review 2026-11-06)."""
+    names = {p.name.lower() for p in atlas.parts} | {ch.lower() for f in atlas.flows for ch in f.channels}
+    stems = {t for n in names if ":" not in n and (t := _two(n))}
     out = []
-    for m in re.finditer(r"(?<![\w:/.-])([a-z][a-z0-9]*(?:-[a-z0-9]+)+)(?![\w:/-])", _plain(text)):
+    for m in re.finditer(r"(?<![\w:/.-])([a-z][a-z0-9]*(?:-[a-z0-9]+){2,})(?![\w:/-])", _plain(text)):
         tok = m.group(1)
-        if tok.split("-", 1)[0] in families and tok not in names:
+        if _two(tok) in stems and tok not in names:
             out.append(tok)
     return list(dict.fromkeys(out))
 
@@ -203,6 +215,7 @@ def check_machine(atlas: BodyAtlasV1, host_name: str, text: str, census: set[str
         return PortraitCheckV1(subject=subject, holds=False, failed=failed)
     running = {n.lower(): n for n in reach.running}
     feeds = {n.lower(): n for n in reach.feeds}
+    serves = {n.lower(): n for n in reach.serves}
     parts = {p.name.lower(): p for p in atlas.parts}
     census_low = {c.lower() for c in census}
     found, unknown, files = because_refs(atlas, f"part:{subject}", text)
@@ -212,6 +225,8 @@ def check_machine(atlas: BodyAtlasV1, host_name: str, text: str, census: set[str
             anchored = True
         elif ref in feeds:
             held.append(f"{feeds[ref]} (fed from {host_name})")
+        elif ref in serves:
+            held.append(f"{serves[ref]} (served by {host_name})")
         elif ref in census_low:
             failed.append(f"{ref}: the census, which every part sends")
         elif ref in parts and parts[ref].kind == "host":
@@ -219,7 +234,7 @@ def check_machine(atlas: BodyAtlasV1, host_name: str, text: str, census: set[str
         elif ref in parts and parts[ref].status != "live":
             failed.append(f"{ref}: {parts[ref].status}, not live")
         else:
-            failed.append(f"{ref}: neither runs on {host_name} nor is fed by a part that does")
+            failed.append(f"{ref}: not on {host_name}, and no flow joins it to a part that runs there")
     failed += [f"{tok}: in no part or channel of my atlas" for tok in [*unknown, *_unknown_names(atlas, text)]]
     for rel in files:
         if repo_files(rel, root) == [rel]:
@@ -229,11 +244,12 @@ def check_machine(atlas: BodyAtlasV1, host_name: str, text: str, census: set[str
     low = _plain(text)
     organ_ids = {o.organ_id.removeprefix("organ:") for o in atlas.organs}
     for m in _ORGAN_ID_RE.finditer(low):
-        oid = f"organ:{m.group(1)}"
+        bare = m.group(1) or m.group(2)
+        oid = f"organ:{bare}"
         if oid in reach.organs:
             held.append(f"{oid} (organ on {host_name})")
             anchored = True
-        elif m.group(1) in organ_ids:
+        elif bare in organ_ids:
             failed.append(f"{oid}: an organ with no member running on {host_name}")
         else:
             failed.append(f"{oid}: no such organ in today's body (organ ids change; names carry)")
@@ -282,11 +298,22 @@ def check_whole(atlas: BodyAtlasV1, reading: CapacityReadingV1, text: str, root:
 
 
 def check_line(atlas: BodyAtlasV1, reading: CapacityReadingV1, line: PortraitLineV1, root: Path) -> PortraitCheckV1:
-    text = f"{line.sentence} {line.because}"
+    """The read's check, also run by the write. Every id cited at write time is checked again (rung 4's
+    second 2026-11-04 decision): an id cite through the text, an organ-name cite on its own, since a
+    plain name never fails in prose (review 2026-11-06)."""
+    ids = [c for c in line.cites if "-" in c or ":" in c or "/" in c]
+    text = " ".join([line.sentence, line.because, *ids])
     if line.subject == WHOLE:
         return check_whole(atlas, reading, text, root)
     census = {c.channel for c in reading.census if c.census}
-    return check_machine(atlas, line.subject.removeprefix("host:"), text, census, root)
+    host = line.subject.removeprefix("host:")
+    chk = check_machine(atlas, host, text, census, root)
+    names = {_organ_label(atlas, oid).lower() for oid in machine_reach(atlas, host, census).organs}
+    gone = [c for c in line.cites if c not in ids and c.lower() not in names]
+    if gone:
+        chk.failed += [f'"{c}": no organ of that name runs on {host} now (renamed or re-clustered)' for c in gone]
+        chk.holds = not chk.failed
+    return chk
 
 
 def _ref(held: str) -> str:
@@ -386,10 +413,11 @@ def read_portrait(atlas: BodyAtlasV1, reading: CapacityReadingV1, lines: list[Po
                                   gives_to=[_organ_label(atlas, f.target) for f in out[:3]],
                                   jobs={k: [p.removeprefix("part:") for p in mixes[o.organ_id][k]]
                                         for k in JOBS if k in mixes.get(o.organ_id, {})}))
-    notes = list(reading.notes)
+    notes = []
     unknown = [s for s in mine if s != WHOLE and host_part(atlas, s) is None]
     if unknown:
         notes.append(f"portrait lines for machines no longer in my atlas: {', '.join(unknown)}")
+    notes += reading.notes
     return PortraitV1(atlas_as_of=atlas.as_of, whole=whole,
                       cannot_yet=[f"{g.job}: {g.text}" for g in reading.gaps], machines=machines, organs=organs,
                       capacities=list(reading.capacities),
@@ -457,8 +485,7 @@ def render(p: PortraitV1) -> tuple[list[str], list[str]]:
         lines.append(f"  {label} [{o.size}{'; ' + on if on else ''}]"
                      + (f" -> {', '.join(o.gives_to[:2])}" if o.gives_to else "")
                      + (f" · jobs {' '.join(o.jobs)}" if o.jobs else ""))
-    lines += [f"note: {n[:90]}" for n in p.notes[:2]]
-    tail: list[str] = []
+    tail: list[str] = [f"note: {n[:110]}" for n in p.notes[:2]]  # in the tail: the cut never drops them
     todo = [m for m in p.machines if m.line == "not written"]
     stale = [m for m in p.machines if m.line == "stale"] + ([p.whole] if p.whole.line == "stale" else [])
     if todo or p.whole.line == "not written":

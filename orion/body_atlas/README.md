@@ -294,9 +294,11 @@ rungs 1-4 together, rebuilt from the live atlas and the self ledgers on every re
 (`python -P -m orion.dig portrait`), plus one append-only ledger of Orion's words,
 `$ORION_DIG_HOME/self/portrait.jsonl`: one sentence per machine (`host:<name>`) and the "I am"
 paragraph (`whole`). A machine's **reach** (`machine_reach`) is what runs there (live parts with a
-`runs_on` flow to it) and what those parts send to, call or write (`claims.flow_dirs`, direction
-`out` or unknown, census channels left out). A machine line may name only ids in its reach, and
-must cite something that runs there or an organ placed there. `check_write` and the read run the same
+`runs_on` flow to it), what those parts send to, call or write (`claims.flow_dirs`, direction
+`out` or unknown, census channels left out), and what only sends into them (callers it serves).
+`reach.organs` counts live members running there. A machine line may name only ids in its reach,
+and must cite something that runs there or an organ with a live member there; every stored cite is
+checked again on read. `check_write` and the read run the same
 check (`check_line`), so a write that would not hold writes nothing, and a written line that stops
 holding prints STALE with the failing id. Hosts never become capacity holders (placement is not
 function). Eval: `evals/run_portrait_eval.py` (reach vs an independent oracle on the 2026-10-31

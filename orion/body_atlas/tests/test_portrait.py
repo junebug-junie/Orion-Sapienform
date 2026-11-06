@@ -17,9 +17,10 @@ CIRCE_RUNS = ["llm-worker-a", "llm-worker-b"]
 
 def portrait_body(*, hub_on: str = "athena"):
     """athena runs the hub, pool, cortex and the census reader; circe runs two LLM workers; hecate is
-    dormant and runs nothing; orion-far runs nowhere and only the cortex hears it."""
+    dormant and runs nothing; orion-far runs nowhere and only sends to the cortex (athena serves it);
+    orion-elsewhere runs nowhere and talks only with circe's worker."""
     live = ["orion-hub", "orion-gpu-pool", "orion-cortex-exec", "orion-equilibrium", "llm-worker-a", "llm-worker-b",
-            "orion-far"]
+            "orion-far", "orion-elsewhere"]
     parts = {n: ("service", "live") for n in live}
     parts["orion-old"] = ("service", "dormant")
     parts["http:anthropic"] = ("endpoint", "live")
@@ -28,6 +29,7 @@ def portrait_body(*, hub_on: str = "athena"):
            ("orion-gpu-pool", "orion-hub", "lease:reply"), ("llm-worker-a", "orion-gpu-pool", "worker:announce"),
            ("llm-worker-b", "orion-gpu-pool", "worker:announce"), ("orion-gpu-pool", "llm-worker-a", "llm:dispatch"),
            ("orion-cortex-exec", "orion-hub", "cortex:reply"), ("orion-far", "orion-cortex-exec", "far:news"),
+           ("orion-elsewhere", "llm-worker-b", "elsewhere:ask"),
            ("http:anthropic", "orion-cortex-exec", "llm:reply"), ("orion-equilibrium", "orion-hub", "eq:snapshot")]
     sig += [(n, "orion-equilibrium", HEALTH) for n in [*live, "http:anthropic"] if n != "orion-equilibrium"]
     place = {n: "athena" for n in ATHENA_RUNS} | {n: "circe" for n in CIRCE_RUNS}
@@ -75,9 +77,10 @@ def test_reach_is_what_runs_there_and_what_it_sends_to():
     athena = P.machine_reach(atlas, "athena", census)
     assert set(athena.running) == {"orion-hub", "orion-gpu-pool", "orion-cortex-exec", "orion-equilibrium"}  # not dormant
     assert "llm-worker-a" in athena.feeds and "llm:dispatch" in athena.feeds  # the pool sends to circe's worker
-    assert "orion-far" not in athena.feeds  # it sends to athena; athena does not send to it
+    assert "orion-far" not in athena.feeds and "orion-far" in athena.serves  # it only sends to athena
+    assert "orion-elsewhere" not in athena.feeds + athena.serves  # no flow joins it to athena
     assert HEALTH not in athena.feeds and "orion-old" not in athena.running
-    assert athena.organs == {"organ:aaaaaaaaaa": 3, "organ:bbbbbbbbbb": 2}  # placement counts every member placed (orion-old too)
+    assert athena.organs == {"organ:aaaaaaaaaa": 3, "organ:bbbbbbbbbb": 1}  # live members only (not orion-old)
     assert P.machine_reach(atlas, "hecate", census).running == []
 
 
@@ -102,9 +105,13 @@ def test_a_part_that_athena_neither_runs_nor_feeds_is_refused_by_name():
     atlas = portrait_body()
     reading = reading_for(atlas)
     with pytest.raises(P.PortraitError) as exc:
-        _write(atlas, reading, "athena", "athena runs orion-hub and feeds orion-far with my questions",
-               "orion-hub runs on athena and orion-far listens")
-    assert "orion-far: neither runs on athena nor is fed by a part that does" in str(exc.value)
+        _write(atlas, reading, "athena", "athena runs orion-hub and answers orion-elsewhere",
+               "orion-hub runs on athena and orion-elsewhere asks")
+    assert "orion-elsewhere: not on athena, and no flow joins it to a part that runs there" in str(exc.value)
+    # a caller athena serves holds (review 2026-11-06: a GPU or LLM host mostly serves callers)
+    rec = _write(atlas, reading, "athena", "athena runs orion-cortex-exec, which orion-far feeds with news",
+                 "orion-far sends far:news to orion-cortex-exec")
+    assert "orion-far" in rec.cites
     with pytest.raises(P.PortraitError, match=r"orion-old: dormant, not live"):
         _write(atlas, reading, "athena", "athena runs orion-hub and orion-old for me", "both of them run on athena")
     with pytest.raises(P.PortraitError, match="the census"):
@@ -112,11 +119,16 @@ def test_a_part_that_athena_neither_runs_nor_feeds_is_refused_by_name():
 
 
 def test_a_made_up_part_name_in_a_known_family_is_refused():
-    """Smoke 2026-11-06: "cast through orion-llm-worker-a" names no part; it must fail by name, not pass."""
+    """Smoke 2026-11-06: "cast through orion-llm-worker-a" names no part; it must fail by name, not pass.
+    Here "orion-gpu-pool-b" begins like orion-gpu-pool and is no part."""
     atlas = portrait_body()
-    with pytest.raises(P.PortraitError, match="orion-llm-worker-a: in no part or channel of my atlas"):
-        _write(atlas, reading_for(atlas), "athena", "athena runs orion-hub and orion-llm-worker-a for me",
+    with pytest.raises(P.PortraitError, match="orion-gpu-pool-b: in no part or channel of my atlas"):
+        _write(atlas, reading_for(atlas), "athena", "athena runs orion-hub and orion-gpu-pool-b for me",
                "orion-hub runs on athena")
+    # prose that only starts like a family: no part begins "orion-sapienform" or "orion-wide"
+    rec = _write(atlas, reading_for(atlas), "athena", "athena runs orion-hub, orion-wide, for all of orion-sapienform",
+                 "orion-hub runs on athena")
+    assert rec.cites == ["orion-hub"]
     # a hyphenated word outside a naming family is prose, not an id
     rec = _write(atlas, reading_for(atlas), "athena", "athena runs orion-hub, my well-worn front door",
                  "orion-hub runs on athena")
@@ -145,7 +157,9 @@ def test_a_line_with_no_anchor_or_a_placeholder_writes_nothing():
     with pytest.raises(P.PortraitError, match="no machine 'zeus'"):
         _write(atlas, reading, "zeus", "zeus runs nothing of mine at all", "zeus is not in my atlas at all")
     with pytest.raises(P.PortraitError, match="no such organ"):
-        _write(atlas, reading, "athena", "athena holds organ 0123456789 and orion-hub", "orion-hub runs on athena")
+        _write(atlas, reading, "athena", "athena holds organ 01234567ab and orion-hub", "orion-hub runs on athena")
+    # a Unix time is a number, not an organ id (review 2026-11-06)
+    assert _write(atlas, reading, "athena", "athena runs orion-hub since 1730851200", "orion-hub runs on athena")
 
 
 def test_an_organ_name_placed_elsewhere_is_not_an_error_but_its_id_is():
@@ -209,7 +223,7 @@ def test_the_printout_shows_every_section_with_its_source_label_and_ready_lines(
     body, tail = P.render(p)
     text = "\n".join(body)
     assert "now = computed this read" in body[0] and "lived_record = my words, checked now" in body[0]
-    assert "  athena live orchestration · 362 W now, rest 340 · runs 4 of mine · organs cortex 3, substrate 2" in text
+    assert "  athena live orchestration · 362 W now, rest 340 · runs 4 of mine · organs cortex 3, substrate 1" in text
     assert "  circe live primary_cognition_gpu · runs 2 of mine · organs substrate 2" in text
     assert '  "cortex" [5; athena 3] -> substrate' in text and "capacities (lived_record; status now):" in text
     assert "  cap:s1" in text
@@ -218,6 +232,18 @@ def test_the_printout_shows_every_section_with_its_source_label_and_ready_lines(
     assert any(f"{P.WRITE_PREFIX} whole " in ln for ln in tail)
     unread = P.read_portrait(atlas, reading_for(atlas), [], root=ROOT, watts="the body report is unreachable")
     assert "watts UNREAD: the body report is unreachable" in "\n".join(P.render(unread)[0])
+
+
+def test_a_stored_organ_name_cite_goes_stale_when_that_organ_is_gone():
+    """Every cite stored at write time is checked again on read (rung 4, second 2026-11-04 decision); a
+    plain organ name never fails in prose, so it is checked on its own (review 2026-11-06)."""
+    atlas = portrait_body()
+    rec = _write(atlas, reading_for(atlas), "athena", "athena runs orion-hub inside my cortex", "orion-hub runs on athena")
+    assert "cortex" in rec.cites
+    renamed = portrait_body()
+    renamed.organs[0].name = "thinking"
+    chk = P.check_line(renamed, reading_for(renamed), rec, ROOT)
+    assert not chk.holds and chk.failed == ['"cortex": no organ of that name runs on athena now (renamed or re-clustered)']
 
 
 def test_hosts_never_become_capacity_holders():

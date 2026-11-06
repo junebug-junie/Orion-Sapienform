@@ -3,14 +3,17 @@
 Runs ``orion/body_atlas/portrait.py`` over the frozen 2026-10-31 whole body (no portrait knob was set
 on it). Checks:
 
-* **reach vs an independent oracle**: for every machine, the parts it runs and the live parts its
-  running parts send to, call or write, recomputed here straight from the raw flows (a second
-  implementation, not a call into ``portrait``), must equal ``machine_reach`` (parts only);
+* **reach vs an independent oracle**: for every machine, the parts it runs, the live parts and
+  non-census channels its running parts send to, call or write, the live parts that only send into
+  them (callers it serves), and the organs with a live member running there, recomputed here straight
+  from the raw flows (a second implementation, not a call into ``portrait``), must equal
+  ``machine_reach``;
 * **reviewed cases**: sentences a reviewer checked by hand against the fixture must hold or fail
   as listed, each failure for the reason named;
 * **recall**: every part a machine runs, cited alone, holds;
 * **shrink**: a full ledger (a 200-char line for every machine with a live part, a 600-char "I am"
-  paragraph) still prints uncut within 40 lines and 4,000 chars, tail included.
+  paragraph), and the longest tail (nothing written, one STALE line, two notes), each print uncut
+  within 40 lines and 4,000 chars, tail included.
 
 Then the **mutations** (code changes, patched in); each must be CAUGHT by its own check:
 reach counts flows *into* a machine's parts (the direction filter dropped), reach counts dormant
@@ -42,10 +45,10 @@ MAX_LINES, MAX_CHARS = 40, 4000  # orion/dig/__main__.py (the eval does not impo
 CASES = [
     ("circe", "circe runs orion-gpu-lane-controller, my GPU lane switch", True, ""),
     ("circe", "circe runs orion-world-model, and what it does reaches orion-gpu-pool", True, ""),
-    # only sends INTO circe's parts; nothing on circe sends to it
-    ("circe", "circe runs orion-gpu-lane-controller and feeds orion-mesh-guardian:gpu-watch", False,
-     "orion-mesh-guardian:gpu-watch: neither runs on circe"),
-    ("circe", "circe runs orion-gpu-lane-controller and feeds orion-hub", False, "orion-hub: neither runs on circe"),
+    # only sends INTO circe's parts: a caller circe serves, which holds (review 2026-11-06)
+    ("circe", "circe runs orion-gpu-lane-controller, which orion-mesh-guardian:gpu-watch drives", True, ""),
+    ("circe", "circe runs orion-gpu-lane-controller and feeds orion-hub", False,
+     "orion-hub: not on circe, and no flow joins it"),
     ("circe", "circe feeds orion-gpu-pool with my GPU lane state", False, "anchor: cite at least one part"),
     # the laptop camera is placed on carbon-x1 but dormant: nothing live runs there
     ("carbon-x1", "carbon-x1 holds camera:carbon, Juniper's laptop eye", False, "nothing live of mine runs there"),
@@ -54,6 +57,8 @@ CASES = [
     ("athena", "athena carries organ:356db659c0 and runs orion-hub", False, "an organ with no member running on athena"),
     ("athena", "athena runs orion-hub and orion-llm-worker-a for me", False, "orion-llm-worker-a: in no part or channel"),
     ("pan-1", "pan-1 runs orion-office-env, my office's air", True, ""),
+    # prose, not ids: the repo's own name, and a Unix time (review 2026-11-06)
+    ("athena", "athena runs orion-hub for all of orion-sapienform since 1730851200", True, ""),
 ]
 BECAUSE = "checked by hand against the 2026-10-31 atlas"
 
@@ -63,13 +68,15 @@ def _atlas():
     return build_atlas(catalog, observed, now=now, body=body)
 
 
-def oracle(atlas, host: str, census: set[str]) -> tuple[set[str], set[str]]:
-    """(running, fed parts) from the raw flows: the data's own direction per relation."""
+def oracle(atlas, host: str, census: set[str]) -> tuple[set[str], set[str], set[str], dict[str, int]]:
+    """(running, fed parts and channels, served-only parts and channels, organs with a live member there)
+    from the raw flows: the data's own direction per relation."""
     live = {p.part_id: p.name for p in atlas.parts
             if p.status == "live" and p.kind != "host" and not p.name.startswith(K.OPERATOR_PREFIX)}
     running = {f.source for f in atlas.flows
                if f.relation == "runs_on" and f.target == f"part:host:{host}" and f.source in live}
     fed: set[str] = set()
+    into: set[str] = set()
     for f in atlas.flows:
         if f.relation == "runs_on" or (f.channels and set(f.channels) <= census):
             continue
@@ -79,8 +86,14 @@ def oracle(atlas, host: str, census: set[str]) -> tuple[set[str], set[str]]:
             pairs = [(f.source, f.target), (f.target, f.source)]
         else:
             pairs = [(f.source, f.target)]
-        fed |= {to for frm, to in pairs if frm in running and to in live and to not in running}
-    return {live[p] for p in running}, {live[p] for p in fed}
+        chans = {c for c in f.channels if c not in census}
+        for frm, to in pairs:
+            if frm in running and to in live:
+                fed |= ({live[to]} if to not in running else set()) | chans
+            if to in running and frm in live:
+                into |= ({live[frm]} if frm not in running else set()) | chans
+    organs = {o.organ_id: n for o in atlas.organs if (n := sum(1 for m in o.members if m in running))}
+    return {live[p] for p in running}, fed, into - fed, organs
 
 
 def _census(atlas) -> set[str]:
@@ -90,14 +103,14 @@ def _census(atlas) -> set[str]:
 def reach_failures(atlas) -> list[str]:
     census = _census(atlas)
     out = []
-    parts = {p.name for p in atlas.parts}
     for h in (p.name.removeprefix("host:") for p in atlas.parts if p.kind == "host"):
         reach = P.machine_reach(atlas, h, census)
-        run, fed = oracle(atlas, h, census)
-        got_fed = {x for x in reach.feeds if x in parts}
-        if set(reach.running) != run or got_fed != fed:
-            out.append(f"reach {h}: running +{sorted(set(reach.running) - run)[:3]} -{sorted(run - set(reach.running))[:3]}"
-                       f" fed +{sorted(got_fed - fed)[:3]} -{sorted(fed - got_fed)[:3]}")
+        run, fed, into, organs = oracle(atlas, h, census)
+        for what, got, want in (("running", set(reach.running), run), ("fed", set(reach.feeds), fed),
+                                ("served", set(reach.serves), into), ("organs", set(reach.organs.items()),
+                                                                     set(organs.items()))):
+            if got != want:
+                out.append(f"reach {h} {what}: +{sorted(got - want)[:3]} -{sorted(want - got)[:3]}")
     return out
 
 
@@ -141,10 +154,18 @@ def size_failures(atlas) -> list[str]:
     out = []
     if any(m.line == "stale" for m in p.machines) or p.whole.line != "holds":
         out.append(f"size: a full-length line does not hold: {[m.failed for m in p.machines if m.failed]} {p.whole.failed}")
-    body, tail = P.render(p)
-    text = "\n".join(body + tail + ["full result: /mnt/orion-fcc/dig/2026-11-06/portrait-10.json"])
-    if len(text.splitlines()) > MAX_LINES or len(text) > MAX_CHARS:
-        out.append(f"size: full ledger prints {len(text.splitlines())} lines, {len(text)} chars (cap {MAX_LINES}/{MAX_CHARS})")
+    # the longest tail: nothing written but one STALE machine line, and two notes
+    stale = P.PortraitLineV1(subject="host:athena", sentence="athena runs orion-hub and orion-gpu-pool-b " + "z" * 150,
+                             because=BECAUSE, cites=["orion-hub"], at="2026-11-06T00:00:00+00:00", dig="e")
+    worst = P.read_portrait(atlas, reading, [stale], root=_REPO, watts="the eval reads no meter")
+    worst.notes = ["n" * 200, "m" * 200]
+    if [m.line for m in worst.machines if m.name == "athena"] != ["stale"]:
+        out.append("size: the longest-tail case has no STALE line, so it does not test one")
+    for label, pp in (("full ledger", p), ("longest tail", worst)):
+        body, tail = P.render(pp)
+        text = "\n".join(body + tail + ["full result: /mnt/orion-fcc/dig/2026-11-06/portrait-10.json"])
+        if len(text.splitlines()) > MAX_LINES or len(text) > MAX_CHARS:
+            out.append(f"size: {label} prints {len(text.splitlines())} lines, {len(text)} chars (cap {MAX_LINES}/{MAX_CHARS})")
     return out
 
 
@@ -165,8 +186,8 @@ def _patched(name: str):
 
 
 MUTANTS = {
-    "direction": ("reach counts flows into a machine's parts", ("reach circe", "case circe 'circe runs orion-gpu-lane-controller and feeds")),
-    "live": ("reach counts dormant parts", ("reach carbon-x1", "case carbon-x1")),
+    "direction": ("reach counts flows into a machine's parts as fed", ("reach circe fed",)),
+    "live": ("reach counts dormant parts", ("reach carbon-x1 running", "case carbon-x1")),
     "names": ("a made-up part name passes", ("case athena 'athena runs orion-hub and orion-llm-worker-a",)),
 }
 

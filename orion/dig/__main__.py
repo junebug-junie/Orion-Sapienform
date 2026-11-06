@@ -1412,7 +1412,10 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.command == "portrait" and not a:
             text = cmd_portrait(out)
         elif ns.command == "portrait" and len(a) >= 5 and a[0] == "write" and "because" in a[3:]:
-            cut = len(a) - 1 - a[::-1].index("because")  # the last one: a sentence may say "because"
+            if a[3:].count("because") > 1:  # unquoted, the split would guess (review 2026-11-06)
+                raise DigError('portrait write: two bare `because` words; quote both: portrait write <machine> '
+                               '"<sentence>" because "<reason>"')
+            cut = a.index("because", 3)
             text = cmd_portrait_write(a[1], " ".join(a[2:cut]), " ".join(a[cut + 1:]), out)
         elif ns.command == "body-economy":
             text = cmd_body_economy(a, out)

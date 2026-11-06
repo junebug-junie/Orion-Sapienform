@@ -54,9 +54,9 @@ def test_turn_2544158f_machine_claim_is_saved_says_it_holds_and_reads_back(world
 
 def test_a_write_that_would_not_hold_writes_nothing_and_names_the_id(world, capsys, monkeypatch):  # noqa: F811
     _setup(monkeypatch)
-    code, _, err = run(capsys, "portrait", "write", "athena", "athena feeds orion-far with my questions",
-                       "because", "orion-far listens to athena")
-    assert code == 1 and "not written" in err and "orion-far: neither runs on athena nor is fed by a part" in err
+    code, _, err = run(capsys, "portrait", "write", "athena", "athena runs orion-hub and answers orion-elsewhere",
+                       "because", "orion-elsewhere asks orion-hub")
+    assert code == 1 and "not written" in err and "orion-elsewhere: not on athena, and no flow joins it" in err
     code, _, err = run(capsys, "portrait", "write", "hecate", "hecate is my deep thinking node, asleep",
                        "because", "one V100 seated, one in the mail")
     assert code == 1 and "hecate: nothing live of mine runs there now (dormant)" in err
@@ -79,10 +79,14 @@ def test_the_portrait_says_when_watts_are_unread_and_still_prints(world, capsys,
     assert code == 0 and "watts UNREAD: the body report at http://x is unreachable" in out
 
 
-def test_a_sentence_may_say_because_the_last_because_splits(world, capsys, monkeypatch):  # noqa: F811
+def test_two_bare_becauses_are_refused_and_a_quoted_one_is_kept(world, capsys, monkeypatch):  # noqa: F811
     _setup(monkeypatch)
-    code, out, err = run(capsys, "portrait", "write", "circe", "circe", "matters", "because", "llm-worker-a", "speaks",
-                         "for", "me", "because", "llm-worker-a runs on circe")
+    code, _, err = run(capsys, "portrait", "write", "circe", "circe", "matters", "because", "llm-worker-a", "speaks",
+                       "because", "llm-worker-a runs on circe")
+    assert code == 1 and "two bare `because` words; quote both" in err
+    assert not any(f.startswith("self/") for f in _files(world))
+    code, out, err = run(capsys, "portrait", "write", "circe", "circe matters because llm-worker-a speaks for me",
+                         "because", "llm-worker-a runs on circe")
     assert code == 0, err
     assert out.startswith('wrote host:circe "circe matters because llm-worker-a speaks for me"')
 

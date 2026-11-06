@@ -1,7 +1,7 @@
 # PR field notes: Orion writes a short note after each merged PR
 
-Status: DESIGN, APPROVED by Juniper 2026-11-04 (see Decisions). Patch 1 merged (#3100). Patch 2 built
-(see "Patch 2 as built" at the end).
+Status: DESIGN, APPROVED by Juniper 2026-11-04 (see Decisions). Patch 1 merged (#3100). Patch 2 merged
+(#3111, #3114; see "Patch 2 as built"). Patch 3 built (see "Patch 3 as built" at the end).
 Date: 2026-11-04. Decision being designed: Juniper, 2026-10-30.
 
 ## Arsonist summary
@@ -195,7 +195,7 @@ read in chat and curiosity through the dig kit only.
 - Runs go one at a time. The busiest day on record (10-20, 58 PRs) is about 3-4 h of serial
   agent-lane time.
 
-### Cost per note (ESTIMATE until 20 real notes are measured)
+### Cost per note (the ESTIMATE below is replaced by the measured table in "Patch 3 as built")
 
 | | Per note | Per day (~24 PRs) |
 |---|---|---|
@@ -376,3 +376,49 @@ the text above, or settles what the text left open:
   20 notes exist (acceptance check 6). It reads time, whole-machine Wh and slot seconds from the act, and
   the tokens of every attempt from `llm_call_usage`.
 
+
+## Patch 3 as built (2026-11-06)
+
+Report: `docs/superpowers/pr-reports/2026-11-06-pr-field-notes-truth-eval-and-cost-pr.md`.
+
+- **Live check before building.** From the cutoff (`2026-11-04T06:00Z`) to 2026-11-06 04:20Z, 45 PRs
+  merged and 45 have a record: 44 notes by Orion and 1 code record (#3146). The 10 PRs merged on 11-04
+  before the cutoff have none, as decision 3 says. Runs: 44 completed, 2 failed (#3104 and #3105, both
+  before the 420 -> 900 s fix; each got a second run that wrote the note). Merge to record: median 3.0 h,
+  worst 11.0 h (#3134 and #3137). On 11-05 seven PRs merged in 5 h and waited in line, one note
+  run at a time; two of those runs took 2.5-3 h from submit to done (#3132, #3133), mostly waiting for
+  the agent lane. All 45 are inside the 24 h window. Coverage so far: 100%. Acceptance check 5 (7 days)
+  is due on 2026-11-11.
+- **Measured cost (acceptance check 6), 44 completed runs, 2026-11-04..06.** Replaces the ESTIMATE
+  table above. `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py --days 7`:
+
+  | | median | p90 |
+  |---|---|---|
+  | wall time, first grant to end | 456 s | 4,420 s |
+  | GPU slot time | 296 s | 1,035 s |
+  | whole-machine energy above rest | 5.0 Wh (n=43) | 14.9 Wh |
+  | prompt tokens (all attempts) | 159k | 319k |
+  | cached prompt tokens | 103k | 223k |
+  | completion tokens | 5.1k | 10.4k |
+  | turns (attempts) | 1 | 3 |
+  | Hub harness steps | 22.5 | 50 |
+
+  Against the estimate: energy is lower (5 Wh, not 10-40 Wh; about 0.12 kWh/day at 24 notes, well
+  under $1/month). Prompt tokens are about 3x the estimate (159k, not 30-60k), about two thirds cached.
+  The script crashed on its first real run: one act (#3108) has `wh_by_host: null`, and summing that in
+  SQL failed the whole query. The sums now run in Python, and a null map reads UNREAD for that run.
+- **Truth eval (acceptance check 7):** `orion/body_atlas/evals/run_field_note_truth_eval.py`. CI runs
+  built-in cases. `--live` re-checks every live note against GitHub. First live run, 45 notes: refs
+  resolve for 82/82 `pr_text` and 10/10 `code_then` claims; organs 45/45; read 45/45; figures in
+  `pr_text` sentences found in the PR text, its line counts or the docs read: 117/117. Organs are
+  matched by name, not id: atlas rebuilds give the same organ a new id ("substrate" has had several).
+- **`authored_by_me` reads Orion's own GitHub user.** Since #3145, Orion opens PRs as
+  `orion-sapienform`, and those commits carry that user's noreply address. Neither old marker (commit
+  email `orion-fcc@`, a sandbox branch) caught #3146, so its code record says `unknown`. `flags_for`
+  now also reads the PR author and the noreply address. The poller passes the author. The eval shows
+  the old record as `#3146: authored_by_me: unknown -> yes`. The old line is kept (records are
+  append-only).
+- **Found, not fixed:** `run_id` and `correlation_id` are empty in every note. The turn does not know its
+  run id, so `field-note write` cannot fill them. Nothing reads them today: the cost script joins runs to
+  acts by run id, not through the note. Filling them needs the harness step to pass the run id into the
+  turn's environment.

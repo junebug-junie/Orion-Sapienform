@@ -322,6 +322,16 @@ def test_gh_shape_classifies_like_the_dig_cli():
     assert gh_shape(item(1), cut)["changedFiles"] == 101           # a full page may be cut: never "tiny"
 
 
+def test_gh_shape_carries_the_github_author_so_a_code_record_knows_orions_own_pr():
+    # live 2026-11-06: #3146 (opened by Orion as orion-sapienform) got a code record marked "unknown";
+    # flags_for reads this author (orion/body_atlas/tests/test_field_notes.py tests that side)
+    mine = {**item(3146), "user": {"login": "orion-sapienform"}}
+    assert gh_shape(mine, TINY_DOCS)["author"] == {"login": "orion-sapienform"}
+    pull_wins = gh_shape(item(1), CODE_FILES, {"user": {"login": "junebug-junie"}})
+    assert pull_wins["author"] == {"login": "junebug-junie"}
+    assert gh_shape(item(1), CODE_FILES)["author"] == {"login": ""}   # no user field: no claim either way
+
+
 def test_run_request_is_a_valid_durable_request():
     req = run_request(item(3105), "pr-field-note-3105", now=NOW, timeout_sec=420)
     again = run_request(item(3105), "pr-field-note-3105", now=NOW + timedelta(minutes=1), timeout_sec=420)

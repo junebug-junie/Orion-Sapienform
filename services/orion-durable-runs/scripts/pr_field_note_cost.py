@@ -54,8 +54,7 @@ SELECT json_build_object(
   'turns', tok.turns, 'llm_calls', tok.calls, 'prompt', tok.prompt, 'cached', tok.cached,
   'completion', tok.completion, 'harness_steps', steps.harness_steps,
   'seconds', (act.cost_json->>'seconds')::float,
-  'wh', (SELECT sum(value::float) FROM jsonb_each_text(coalesce(act.cost_json->'wh_by_host', '{}'::jsonb))),
-  'gpu_slot_s', (SELECT sum(value::float) FROM jsonb_each_text(coalesce(act.cost_json->'gpu_slot_s_by_lane', '{}'::jsonb))),
+  'wh_by_host', act.cost_json->'wh_by_host', 'gpu_slot_s_by_lane', act.cost_json->'gpu_slot_s_by_lane',
   'usd', (act.cost_json->>'usd')::float)
 FROM runs LEFT JOIN tok USING (run_id) LEFT JOIN steps USING (run_id) LEFT JOIN act USING (run_id)
 ORDER BY runs.run_id
@@ -72,7 +71,23 @@ def query(days: int, container: str, db: str) -> list[dict]:
                           capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip()[:500])
-    return [json.loads(ln) for ln in proc.stdout.splitlines() if ln.strip()]
+    return [with_sums(json.loads(ln)) for ln in proc.stdout.splitlines() if ln.strip()]
+
+
+def map_sum(value: object) -> float | None:
+    """Sum of a per-host / per-lane map. The act ledger writes JSON ``null`` when it could not attribute
+    the act (seen live on 2026-11-06: one act of 46). That reads as UNREAD (None), never as 0, and never
+    crashes the whole report the way summing it in SQL did (``jsonb_each_text`` on a non-object)."""
+    if not isinstance(value, dict):
+        return None
+    nums = [float(v) for v in value.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return sum(nums) if nums else None
+
+
+def with_sums(row: dict) -> dict:
+    row["wh"] = map_sum(row.pop("wh_by_host", None))
+    row["gpu_slot_s"] = map_sum(row.pop("gpu_slot_s_by_lane", None))
+    return row
 
 
 def pct(values: list[float], q: float) -> float:

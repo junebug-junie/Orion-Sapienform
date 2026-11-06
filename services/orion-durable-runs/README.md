@@ -459,7 +459,8 @@ runs the automatic half.
   in `config/physiology/families.yaml` with a 24 h deferrable window (Juniper's decision 1). Bids are
   shadow. Measured cost per note (wall time, whole-machine Wh, GPU slot seconds from the act; tokens of
   every attempt from `llm_call_usage`; Hub harness steps):
-  `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py`.
+  `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py`. An act the ledger could not
+  attribute (`wh_by_host: null`) reads as UNREAD for that run; it does not fail the report.
 - **Surfaces.** `/health` -> `field_note_poll` (the last tick). `POST /pr-field-notes/poll` runs one tick
   now. `?since=<iso>` re-polls a longer window after an outage over the lookback. When nothing has run
   for longer than the lookback, a tick searches the stretch the lookback lost and logs

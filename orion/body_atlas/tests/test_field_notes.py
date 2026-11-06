@@ -39,6 +39,19 @@ def test_authored_by_me_is_yes_only_with_a_sandbox_marker_never_no():
     assert fn.flags_for(_pr(["a.py"]), local_branches={"main"}).authored_by_me == "unknown"
 
 
+def test_authored_by_me_reads_orions_own_github_user():
+    # live 2026-11-06: #3146 was opened by Orion as GitHub user orion-sapienform (#3145), with commits by
+    # 353038244+orion-sapienform@users.noreply.github.com. Neither old marker fired, so its code record
+    # said "unknown". The poller has no sandbox branches, so the author and the noreply email must count.
+    seat = fn.flags_for({**_pr(["docs/a.md"]), "author": {"login": "orion-sapienform"}})
+    assert seat.authored_by_me == "yes"
+    noreply = fn.flags_for(_pr(["a.py"], emails=("353038244+orion-sapienform@users.noreply.github.com",)))
+    assert noreply.authored_by_me == "yes"
+    assert fn.flags_for({**_pr(["a.py"]), "author": {"login": "junebug-junie"}}).authored_by_me == "unknown"
+    assert fn.flags_for(_pr(["a.py"], emails=("1+not-orion-sapienform@users.noreply.github.com",))
+                        ).authored_by_me == "unknown"
+
+
 def test_classify():
     assert fn.classify("services/orion-hub/app/x.py") == ("service", "orion-hub")
     assert fn.classify("services/orion-hub/tests/test_x.py") == ("not_body", "tests")

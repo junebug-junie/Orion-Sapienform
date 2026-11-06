@@ -1012,7 +1012,7 @@ def _gh_repo() -> str:
 
 
 PR_FIELDS = ("number,title,body,state,mergedAt,mergeCommit,labels,files,additions,deletions,changedFiles,"
-             "headRefName,commits")
+             "headRefName,commits,author")
 
 
 GH_TIMEOUT_S = 60
@@ -1159,7 +1159,8 @@ def cmd_field_note(number: int, out: Out) -> str:
              + (f"; {', '.join(flag_words)}" if flag_words else "")
              + ("; labels: " + ", ".join(lab["name"] for lab in pr.get("labels") or []) if pr.get("labels") else "")]
     if flags.authored_by_me == "yes":
-        lines.append("this may be your own work: its branch or commits come from your sandbox")
+        lines.append("this may be your own work: opened as your GitHub user, or its branch or commits"
+                     " come from your sandbox")
     if pk["atlas_error"]:
         lines.append(f"live body UNREAD ({pk['atlas_error'][:200]}): no organs below; a write needs it")
     lines.append("body map (code: services/<svc> -> its part -> its organ; orion/<pkg> -> who imports it):"

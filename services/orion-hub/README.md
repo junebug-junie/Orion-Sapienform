@@ -4539,6 +4539,17 @@ unreachable: no menu, no bet, log line `action_quote_unavailable`. Kill switch
 `HUB_ACTION_BETS_ENABLED` (ON); off restores the #2870 planner exactly. Offline eval:
 `evals/zelda_experience_replay.py`. Spec: `docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md`.
 
+**Dungeon room memory (2026-11-06, `scripts/retro_planner.py` `RoomMemory`).** Inside a dungeon
+Retro reports `level: 'unknown'` (the dungeon number in RAM is not settled yet), so its atlas
+records nothing there and shows no neighbouring rooms. Every side then looked never visited, both
+sides of a corridor scored the same, the menu took the first one in N-S-E-W order, and Link walked
+between two rooms for a whole 30 min session. The Hub now remembers, for the current session and
+dungeon only, which rooms Link arrived in and which sides the last goal walked through. It fills
+the atlas view with that (neighbours, visits, crossed sides), so a visited room is worth less and
+an exit predicts `reach_room <id>`. It is cleared when the level is known again, never written
+anywhere, and does nothing while Retro knows the level. Leisure counts every decision Retro
+offers; co-play counts only the decisions it plans. Eval: `evals/zelda_dungeon_bounce_replay.py`.
+
 ### Cabinet sonification (live instrument)
 
 In Biometrics → Cabinet, **Listen** starts a quiet magnetic-field tone. Pitch rises

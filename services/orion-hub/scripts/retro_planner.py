@@ -294,6 +294,9 @@ def atlas_neighbourhood(atlas: Optional[dict]) -> str:
     level, room = atlas.get('level'), atlas.get('room')
     here = atlas.get('current')
     lines = []
+    if atlas.get('session_memory'):
+        lines.append('(inside a dungeon: Retro cannot read which one, so this is only what you walked '
+                     'through this session)')
     if not isinstance(here, dict):
         lines.append(f'this room {level}:{room}: first visit (not in the atlas yet)')
     else:
@@ -317,6 +320,107 @@ def atlas_neighbourhood(atlas: Optional[dict]) -> str:
     lines.append(f'rooms known on this level: {atlas.get("rooms_known", 0)}; with sides never crossed: '
                  + (', '.join(frontier[:12]) or 'none'))
     return '\n'.join(lines)
+
+
+# Retro's room grid (services/orion-retro/app/zelda/atlas.py DELTA): 8 rows x 16 columns, overworld
+# and dungeons alike. Live 2026-11-06 (session 3bf6973a): dungeon room 36 -> N -> room 20.
+_ROOM_STEP = {'N': -16, 'S': 16, 'E': 1, 'W': -1}
+_OPPOSITE = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+
+
+def _neighbour(room: int, d: str) -> Optional[int]:
+    other = room + _ROOM_STEP[d]
+    if not 0 <= other <= 127 or (d in 'EW' and other // 16 != room // 16):
+        return None
+    return other
+
+
+class RoomMemory:
+    """The rooms this session walked through on a level Retro's atlas cannot record.
+
+    Retro reads the dungeon number from RAM only once that address is settled by a live probe
+    (services/orion-retro/app/zelda/observe.py VERDICTS 'level_dungeon': UNSETTLED), so inside every
+    dungeon ``level`` is 'unknown', the atlas writes nothing (atlas.py ``observe``) and its view has
+    no neighbours. Without neighbours every side looks never visited, every side is worth the same,
+    the menu breaks the tie by N-S-E-W order, and Link walks 36 -> N -> 20 -> S -> 36 forever
+    (live 2026-11-06: 676 decisions over two 30 min sessions, 0 new rooms, every prediction unknown).
+
+    This keeps visits and crossed sides per room from the decisions Retro offers, for this session
+    and this dungeon only: it is cleared when the level is known again (Link left the dungeon; the
+    next dungeon would reuse room ids) and is never written anywhere. ``fill`` hands it to the menu
+    and the prompt in the atlas's own shape. When Retro knows the level, ``fill`` returns Retro's
+    atlas untouched, so settling 'level_dungeon' makes this class a no-op (then delete it)."""
+
+    def __init__(self) -> None:
+        self.session_id: Optional[str] = None
+        self.decision_id: Optional[str] = None
+        self.visits: dict[int, int] = {}
+        self.exits: dict[int, dict[str, int]] = {}
+        self.last_room: Optional[int] = None
+
+    def _clear(self) -> None:
+        self.visits, self.exits, self.last_room = {}, {}, None
+
+    def observe(self, session_id: str, decision: Any) -> None:
+        """Count one offered decision (each decision_id once). An arrival in a new room is a visit."""
+        if session_id != self.session_id:
+            self.session_id, self.decision_id = session_id, None
+            self._clear()
+        if not isinstance(decision, dict) or decision.get('decision_id') == self.decision_id:
+            return
+        self.decision_id = decision.get('decision_id')
+        obs = decision.get('observation')
+        if not isinstance(obs, dict) or obs.get('status') != 'observed':
+            return
+        if obs.get('level') != 'unknown':
+            self._clear()   # out of the dungeon: the next one reuses room ids
+            return
+        room = obs.get('room')
+        if obs.get('mode') != 'play' or not isinstance(room, int) or not 0 <= room <= 127:
+            return
+        if room == self.last_room:
+            return
+        self.visits[room] = self.visits.get(room, 0) + 1
+        # A crossed side only when the goal that just ended walked that way from the room next
+        # door (co-play: a human may have walked other rooms in between; that proves no side).
+        last = self.last_room
+        previous = decision.get('previous') if isinstance(decision.get('previous'), dict) else {}
+        moved = previous.get('goal') if isinstance(previous.get('goal'), dict) else {}
+        d = moved.get('dir') if moved.get('kind') in ('exit', 'explore') else None
+        if last is not None and d in _ROOM_STEP and _neighbour(last, d) == room:
+            self.exits.setdefault(last, {})[d] = room
+            self.exits.setdefault(room, {})[_OPPOSITE[d]] = last
+        self.last_room = room
+
+    def fill(self, decision: Any, atlas: Optional[dict]) -> Optional[dict]:
+        """Retro's atlas, or (inside a dungeon Retro cannot record) the atlas view rebuilt from this
+        session's walk. Call ``observe`` for the same decision first."""
+        obs = decision.get('observation') if isinstance(decision, dict) else None
+        room = obs.get('room') if isinstance(obs, dict) else None
+        if (not isinstance(obs, dict) or obs.get('level') != 'unknown' or obs.get('mode') != 'play'
+                or not isinstance(room, int) or room not in self.visits
+                or (isinstance(atlas, dict) and isinstance(atlas.get('level'), int))):
+            return atlas
+        def exits_of(r):
+            return {d: self.exits.get(r, {}).get(d) for d in 'NSEW'}
+        adjacent = {d: {'room': other, 'known': other in self.visits, 'seen_exit': exits_of(room)[d]}
+                    for d in 'NSEW' if (other := _neighbour(room, d)) is not None}
+        view = dict(atlas) if isinstance(atlas, dict) else {}
+        return view | {
+            'level': 'unknown', 'room': room, 'session_memory': True,
+            'current': {'visits': self.visits[room], 'exits_seen': exits_of(room), 'caves': [],
+                        'learned_blocked': [], 'deaths': 0},
+            'adjacent': adjacent, 'rooms_known': len(self.visits),
+            'rooms_with_unvisited_sides': sorted(f'unknown:{r}' for r in self.visits
+                                                 if any(v is None for v in exits_of(r).values())),
+            'map': {f'unknown:{r}': {'visits': n, 'exits': exits_of(r), 'caves': 0, 'deaths': 0}
+                    for r, n in self.visits.items()},
+            'caves': [], 'deaths': []}
+
+    def atlas_for(self, session_id: str, decision: Any, atlas: Optional[dict]) -> Optional[dict]:
+        """``observe`` then ``fill``: what both callers (leisure, co-play) run per decision."""
+        self.observe(session_id, decision)
+        return self.fill(decision, atlas)
 
 
 def _goal_text(goal: Any) -> str:

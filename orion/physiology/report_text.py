@@ -238,36 +238,58 @@ def render_town(report: Mapping, *, full: bool) -> list[str]:
     return out
 
 
-#: WantDecisionV1.reason in plain words (what a deferral reason means, said once).
+#: WantDecisionV1.reason in plain words, the same words the Hub #body-economy page uses.
 DEFER_REASON_WORDS = {
-    "price": "cost beat value",
-    "sated": "just acted",
-    "capacity_reserved": "lane full",
-    "no_acceptable_lane": "no lane fits",
+    "price": "costs more than it is worth now",
+    "sated": "not hungry yet",
+    "capacity_reserved": "no room",
+    "no_acceptable_lane": "no lane could take it",
     "physiology_unavailable": "body reading unavailable",
     "unknown_family": "unknown family",
     "family_never_bids": "family never bids",
+    "other": "other reasons",
 }
 
 
-def _deferred_why(pairs: Sequence[Mapping], *, full: bool) -> str:
-    """``deferred_by`` as words: "lane full 7: agent-gpu2 4, agent 3; just acted 2"."""
+def _constraint_words(c: str) -> str:
+    if c.startswith("lane:"):
+        return f"lane {c[5:]}"
+    if c == "attention:juniper":
+        return "Juniper's attention"
+    if c.startswith("prime:"):
+        return f"Prime's charge ({c[6:]})"
+    return c
+
+
+def _deferred_why(pairs: Sequence[Mapping], *, full: bool, total: Optional[int] = None) -> str:
+    """``deferred_by`` pairs as words, e.g. "no room 7: lane agent-gpu2 4, lane agent 3; not hungry
+    yet 2". The brief form keeps the 2 biggest reasons (2 constraints each). Whatever is not shown
+    (cut here, or ``total`` above the listed counts) is said as "other N"."""
     by_reason: dict[str, list] = {}
     for p in pairs or []:
         reason = str(p.get("reason") or "unknown")
-        entry = by_reason.setdefault(reason, [0, []])
+        entry = by_reason.setdefault(reason, [0, {}])
         n = int(p.get("count") or 0)
         entry[0] += n
         c = p.get("binding_constraint")
         if c and c != reason:
-            entry[1].append((c[5:] if reason == "capacity_reserved" and c.startswith("lane:") else c, n))
-    ranked = sorted(by_reason.items(), key=lambda kv: -kv[1][0])
+            entry[1][c] = entry[1].get(c, 0) + n
+    ranked = sorted(by_reason.items(), key=lambda kv: (kv[0] == "other", -kv[1][0], kv[0]))
+    shown = ranked if full else ranked[:2]
     parts = []
-    for reason, (n, cons) in ranked[: (len(ranked) if full else 2)]:
+    for reason, (n, cons) in shown:
         part = f"{DEFER_REASON_WORDS.get(reason, reason)} {n}"
-        if cons:
-            part += ": " + ", ".join(f"{c} {k}" for c, k in cons[: (len(cons) if full else 2)])
+        top = sorted(cons.items(), key=lambda kv: (-kv[1], kv[0]))
+        if top:
+            part += ": " + ", ".join(f"{_constraint_words(c)} {k}" for c, k in (top if full else top[:2]))
+            if not full and len(top) > 2:
+                part += f", {sum(k for _, k in top[2:])} elsewhere"
         parts.append(part)
+    rest = sum(n for _, (n, _) in ranked) - sum(n for _, (n, _) in shown)
+    if total is not None:
+        rest = max(rest, total - sum(n for _, (n, _) in shown))
+    if rest > 0:
+        parts.append(f"other {rest}")
     return "; ".join(parts)
 
 
@@ -279,10 +301,17 @@ def render_wants(report: Mapping, *, full: bool) -> list[str]:
     tot_f = sum(int(f.get("funded") or 0) for f in fams)
     tot_d = sum(int(f.get("deferred") or 0) for f in fams)
     out = [f"Wants (shadow bids, except curiosity investigate and the dream cycle, which obey their bids since 2026-10-30): {tot_f} funded, {tot_d} deferred."]
+    # One line for every family's deferrals, so the reason is seen even for families the brief
+    # list leaves out. Only when the report carries reasons (older reports do not).
+    if any(f.get("deferred_by") for f in fams) and tot_d:
+        every = [p for f in fams for p in (f.get("deferred_by") or [])]
+        out.append(f"- why deferred (from the want ledger): {_deferred_why(every, full=full, total=tot_d)}")
     rows = fams if full else fams[:6]
     for f in rows:
         line = f"- {f['family']} (tier {f.get('tier', '?')}): {f.get('funded', 0)} funded, {f.get('deferred', 0)} deferred"
-        why = _deferred_why(f.get("deferred_by") or [], full=full) if f.get("deferred") else ""
+        # Per-family reasons only in a one- or two-section read; the overview has the line above.
+        why = (_deferred_why(f.get("deferred_by") or [], full=True, total=int(f.get("deferred") or 0))
+               if full and f.get("deferred") and f.get("deferred_by") else "")
         out.append(line + (f" (why: {why})" if why else ""))
     if len(fams) > len(rows):
         out.append(f"- ... {len(fams) - len(rows)} more famil{'y' if len(fams) - len(rows) == 1 else 'ies'}")

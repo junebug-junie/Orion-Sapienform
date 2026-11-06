@@ -226,8 +226,10 @@ WHERE decided_at >= %(since)s AND decided_at < %(until)s
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3
 """
-# Why bids were deferred, per hour like WANTS_HOURLY_SQL so each pair counts the same way the
-# family's ``deferred`` total does (distinct wants per hour, summed over the window).
+# Why bids were deferred, per hour like WANTS_HOURLY_SQL so each pair counts the way the family's
+# ``deferred`` total does (distinct wants per hour, summed over the window). One want deferred
+# twice in an hour for two different reasons counts under both, so the pairs can sum a little
+# above ``deferred``.
 WANTS_DEFERRED_BY_SQL = """
 SELECT date_trunc('hour', decided_at) AS h, family, reason, binding_constraint, COUNT(DISTINCT want_id) AS n
 FROM want_ledger
@@ -718,7 +720,11 @@ DEFERRED_BY_MAX = 6
 
 def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Mapping[str, int],
                 family: Optional[str] = None,
-                deferred_rows: Sequence[Mapping] = ()) -> tuple[dict, list[dict]]:
+                deferred_rows: Sequence[Mapping] = (),
+                deferred_error: Optional[str] = None) -> tuple[dict, list[dict]]:
+    """``deferred_rows`` (WANTS_DEFERRED_BY_SQL) fill each family's ``deferred_by``: at most
+    DEFERRED_BY_MAX pairs, largest first, the rest folded into one ``other`` pair so the counts
+    still add up. ``deferred_error``: that read failed; the counts stand and ``missing`` says so."""
     hourly: dict[tuple, dict] = {}
     fam: dict[str, dict] = {}
     for r in rows:
@@ -740,8 +746,11 @@ def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Ma
         why[f][key] = why[f].get(key, 0) + int(r.get("n") or 0)
     for f, tot in fam.items():
         pairs = sorted(why.get(f, {}).items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1] or ""))
-        tot["deferred_by"] = [{"reason": k[0], "binding_constraint": k[1], "count": n}
-                              for k, n in pairs[:DEFERRED_BY_MAX] if n > 0]
+        pairs = [kv for kv in pairs if kv[1] > 0]
+        if len(pairs) > DEFERRED_BY_MAX:
+            rest = sum(n for _, n in pairs[DEFERRED_BY_MAX - 1:])
+            pairs = pairs[: DEFERRED_BY_MAX - 1] + [(("other", None), rest)]
+        tot["deferred_by"] = [{"reason": k[0], "binding_constraint": k[1], "count": n} for k, n in pairs]
     out = {"families": sorted(fam.values(), key=lambda x: -(x["funded"] + x["deferred"])),
            "hourly": [hourly[k] for k in sorted(hourly, key=lambda k: (k[0], k[1]))]}
     missing = []
@@ -750,6 +759,8 @@ def shape_wants(rows: Sequence[Mapping], first_at: Optional[datetime], tiers: Ma
                  else "want_ledger is empty (shadow bids began 2026-10-27)")
         scope = f" for family {family}" if family else ""
         missing.append({"section": "wants", "reason": f"no bid decision{scope} in the window; {first}"})
+    elif deferred_error and any(f["deferred"] for f in fam.values()):
+        missing.append({"section": "wants", "reason": f"why bids were deferred is unavailable (read failed: {deferred_error})"})
     return out, missing
 
 
@@ -1692,8 +1703,13 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
     async def wants():
         r = await _rows(pool, WANTS_HOURLY_SQL, {**base, "synthetic": syn, "family": q.family})
         first = ((await _rows(pool, WANTS_FIRST_SQL, {"synthetic": syn})) or [{}])[0].get("first_at")
-        why = await _rows(pool, WANTS_DEFERRED_BY_SQL, {**base, "synthetic": syn, "family": q.family})
-        return r, _utc(first), why
+        # The reasons are extra: their read failing must not blank the counts above.
+        try:
+            why, why_err = await _rows(pool, WANTS_DEFERRED_BY_SQL, {**base, "synthetic": syn, "family": q.family}), None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("physiology_report_read_failed read=wants_deferred_by", exc_info=True)
+            why, why_err = [], f"{type(exc).__name__}: {exc}"[:200]
+        return r, _utc(first), why, why_err
 
     async def act_costs():
         return act_costs_by_family(await _rows(pool, ACT_COST_SQL, {**base, "family": q.family}))
@@ -1829,7 +1845,7 @@ async def build_report(deps: ReportDeps, q: ReportQuery, now: Optional[datetime]
         add("limits", lambda: shape_limits(results["limits"][0], latest_row, results["limits"][1], since))
     if "wants" in wanted and results.get("wants") is not None:
         add("wants", lambda: shape_wants(results["wants"][0], results["wants"][1], deps.tiers, q.family,
-                                                 results["wants"][2]))
+                                                 results["wants"][2], results["wants"][3]))
     if want_town and results.get("town") is not None:
         try:
             town, miss = shape_town(results["town"][0], results["town"][1], now, since, deps.tz)

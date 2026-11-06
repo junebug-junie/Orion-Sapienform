@@ -946,6 +946,18 @@ def test_deferred_by_is_empty_without_rows_and_capped_per_family():
     fams = {f["family"]: f for f in out["families"]}
     assert set(fams) == {"f"}                                               # reasons never invent a family
     by = fams["f"]["deferred_by"]
-    assert len(by) == pr.DEFERRED_BY_MAX and [d["count"] for d in by] == [10, 9, 8, 7, 6, 5]
+    # the cut is folded into one "other" pair, so the counts still add up (55 = 10 + ... + 1)
+    assert len(by) == pr.DEFERRED_BY_MAX and [d["count"] for d in by] == [10, 9, 8, 7, 6, 15]
+    assert by[-1] == {"reason": "other", "binding_constraint": None, "count": 15}
     out, _ = pr.shape_wants([{"h": H0, "family": "f", "outcome": "deferred", "n": 2, "tier": 2}], None, {})
     assert out["families"][0]["deferred_by"] == []
+
+
+def test_deferred_by_read_failing_keeps_the_counts_and_says_why():
+    rows = full_rows()
+    rep = _build(rows, fail={"outcome = 'deferred'"})                     # only WANTS_DEFERRED_BY_SQL has this
+    fam = {f.family: f for f in rep.wants.families}
+    assert fam["hub.outreach"].deferred == 30 and fam["hub.outreach"].funded == 1
+    assert fam["hub.outreach"].deferred_by == []
+    assert any("why bids were deferred is unavailable" in r for r in _reasons(rep, "wants"))
+    assert not any(m.section == "wants" and m.reason.startswith("read failed") for m in rep.missing)

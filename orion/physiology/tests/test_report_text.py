@@ -359,11 +359,20 @@ def _wants_with_reasons() -> dict:
 
 def test_wants_line_says_why_each_family_was_deferred():
     text = rt.render_report_text(_wants_with_reasons(), ("wants",))
-    assert ("durable.self_inquiry (tier 2): 0 funded, 7 deferred (why: lane full 7: agent-gpu2 4, agent 3)"
+    assert ("durable.self_inquiry (tier 2): 0 funded, 7 deferred (why: no room 7: lane agent-gpu2 4, lane agent 3)"
             in text)
-    assert "hub.retro_leisure (tier 1): 257 funded, 58 deferred (why: just acted 56; body reading unavailable 2)" in text
-    assert "hub.outreach (tier 2): 3 funded, 5 deferred (why: cost beat value 5: heat 5)" in text
+    assert "hub.retro_leisure (tier 1): 257 funded, 58 deferred (why: not hungry yet 56; body reading unavailable 2)" in text
+    assert "hub.outreach (tier 2): 3 funded, 5 deferred (why: costs more than it is worth now 5: heat 5)" in text
     assert "actions.journal (tier 1): 18 funded, 0 deferred\n" in text + "\n"      # no "why" when nothing was cut
+
+
+def test_overview_has_one_why_line_covering_every_family():
+    # self_inquiry is 3rd here; with many big families it would be cut from the brief list, so the
+    # why line sums every family, not only the rows shown.
+    text = rt.render_report_text(_wants_with_reasons())
+    assert ("- why deferred (from the want ledger): not hungry yet 56; no room 7: lane agent-gpu2 4, "
+            "lane agent 3; other 7") in text
+    assert "(why:" not in text                                               # per-family detail only in a full read
 
 
 def test_every_decision_reason_has_plain_words():
@@ -374,21 +383,31 @@ def test_every_decision_reason_has_plain_words():
     assert deferring <= set(rt.DEFER_REASON_WORDS)
 
 
-def test_overview_with_reasons_still_fits_a_turn():
-    text = rt.render_report_text(_wants_with_reasons())
-    assert "(why: lane full 7: agent-gpu2 4, agent 3)" in text
-    assert len(text.splitlines()) <= 40 and len(text) <= 4000
-    assert len(rt.render_report_text(_wants_with_reasons(), rt.SECTIONS)) <= 4000
+def test_why_adds_one_overview_line_and_nothing_else():
+    # The overview's size cap (cap_text, 4,000 chars) already cuts the live overview's tail; the
+    # reasons must cost it one line, not one per family.
+    with_reasons = rt.render_report_text(_wants_with_reasons())
+    rep = _wants_with_reasons()
+    for f in rep["wants"]["families"]:
+        f.pop("deferred_by")
+    without = rt.render_report_text(rep)
+    assert len(with_reasons.splitlines()) == len(without.splitlines()) + 1
+    assert len(with_reasons) - len(without) < 160
 
 
 def test_report_without_deferred_by_renders_as_before():
-    assert "hub.outreach (tier 2): 237 funded, 548 deferred\n" in rt.render_report_text(live(), ("wants",)) + "\n"
+    text = rt.render_report_text(live(), ("wants",))
+    assert "hub.outreach (tier 2): 237 funded, 548 deferred\n" in text + "\n" and "why deferred" not in text
 
 
-def test_overview_keeps_two_reasons_and_two_lanes_full_keeps_all():
+def test_constraint_words_and_cuts_are_said():
     pairs = [{"reason": "capacity_reserved", "binding_constraint": f"lane:l{i}", "count": 10 - i} for i in range(3)] + [
+        {"reason": "capacity_reserved", "binding_constraint": "attention:juniper", "count": 1},
         {"reason": "sated", "binding_constraint": None, "count": 2},
-        {"reason": "price", "binding_constraint": "heat", "count": 1}]
-    assert rt._deferred_why(pairs, full=False) == "lane full 27: l0 10, l1 9; just acted 2"
-    assert rt._deferred_why(pairs, full=True) == "lane full 27: l0 10, l1 9, l2 8; just acted 2; cost beat value 1: heat 1"
+        {"reason": "price", "binding_constraint": "prime:lower", "count": 1}]
+    assert rt._deferred_why(pairs, full=False) == "no room 28: lane l0 10, lane l1 9, 9 elsewhere; not hungry yet 2; other 1"
+    assert rt._deferred_why(pairs, full=True) == ("no room 28: lane l0 10, lane l1 9, lane l2 8, Juniper's attention 1; "
+                                                  "not hungry yet 2; costs more than it is worth now 1: Prime's charge (lower) 1")
+    # the report's deferred total above the listed pairs (pairs cut upstream) is said, not hidden
+    assert rt._deferred_why([{"reason": "sated", "count": 3}], full=True, total=5) == "not hungry yet 3; other 2"
     assert rt._deferred_why([], full=True) == ""

@@ -67,7 +67,21 @@ None (docs only).
 
 ## Review findings fixed
 
-See the PR comment thread / Patch 1 report; the design was reviewed together with Patch 1.
+A subagent reviewed the design together with Patch 1 (`git diff origin/main...feat/self-portrait-patch1`).
+Design-side findings, all fixed in this PR:
+
+- Finding: the reach rule refused callers a machine serves (a GPU or LLM host mostly serves callers).
+  - Fix: reach now holds three sets: what runs there, what those parts feed ("fed from"), and what
+    only sends into them ("served by").
+  - Evidence: design section 2; Patch 1 tests and eval cases.
+- Finding: stored cites were not re-checked on read, unlike rung 4.
+  - Fix: design says every stored cite is checked again; an organ-name cite goes STALE when the
+    organ is renamed or re-clustered.
+  - Evidence: design section 2; Patch 1 test.
+- Finding: text did not match the code (the facts-only line, singleton organs, the mutation list,
+  channel precision, organs anchoring through dormant members, 10-digit numbers as organ ids).
+  - Fix: design sections 1, 2 and the acceptance checks updated.
+  - Evidence: this PR's diff.
 
 ## Restart required
 

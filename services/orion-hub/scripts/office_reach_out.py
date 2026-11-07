@@ -634,7 +634,10 @@ class OfficeReachOut:
             self._record_block_once(outreach, session, meta, str(blocked), correlation_id)
             return {"session_id": sid, "reason": str(blocked)}
         prompt = build_prompt(session, self.tz, now=self._clock())
-        text, debug = await outreach.compose(prompt, correlation_id, retrieval_query=session.get("label") or None)
+        # Chat lane only (Juniper, 2026-11-07): she is in the room now; the agent lane's
+        # 210 s timeout made the first office message 5 minutes late.
+        text, debug = await outreach.compose(prompt, correlation_id, retrieval_query=session.get("label") or None,
+                                             lane="chat")
         text = str(text or "").strip()
         if not text:
             return self._fail(outreach, session, meta, "empty_generation", correlation_id)

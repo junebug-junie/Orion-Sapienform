@@ -651,7 +651,11 @@ so the existing "Is this Juniper?" asks ask the right name, and the office line 
 4. Asks *"Is this <name>?"* (`source_kind=vision_person_confirm`,
    `source_ref=<individual_id>|<name>`) about the strongest unsure guesses of
    individuals seen at least twice, under their own cap
-   `VISION_PERSON_CONFIRM_ASK_DAILY_CAP` (6). Until 2026-10-22 they shared
+   `VISION_PERSON_CONFIRM_ASK_DAILY_CAP` (6). Guesses the office camera's prior
+   chose ("probably Juniper") have their own slots,
+   `VISION_PERSON_CONFIRM_PRIOR_ASK_DAILY_CAP` (2; 0 = never asked), marked
+   `rule:camera_prior` and left out of the shared count (2026-11-07: walkway
+   guesses used all 6 every day, so none was asked). Until 2026-10-22 they shared
    `ORION_ASK_DAILY_CAP` with the slow rule, which opens first and used both
    slots every day, so none were ever asked. Same rules as
    the other openers: no picture, no ask; a skipped candidate never uses up a

@@ -203,7 +203,9 @@ def test_long_episode_sends_one_grounded_report(monkeypatch):
     text = h.delivered[0]["text"]
     assert f"[arc:{ARC_ID}]" in text and "Causes now: gpu_queue_sustained" in text
     assert h.delivered[0]["source_tag"] == "strain_report"
-    assert "curiosity investigations wait" in h.composed[0]
+    assert "self-inquiry waits (it runs only at idle)" in h.composed[0]
+    # Retired 2026-11-07: strain no longer holds curiosity investigations, so Orion must not say it does.
+    assert "curiosity investigations wait" not in h.composed[0]
     # Once per episode.
     r2 = h.tick()
     assert (r2["outreach"], r2["reason"], r2["strain_report"]) == (False, "arousal_strained", "already_reported_episode")
@@ -352,7 +354,7 @@ def _prompt_facts(causes_now, *, holding=False, queue_holding=False, deferrable=
         episode_since=since, observed_at=since + timedelta(hours=3), causes_now=tuple(causes_now),
         causes_seen=("gpu_queue_sustained", "cabinet_hot"), holding=holding, cabinet_temp_c=33.6,
         cabinet_reflex="cabinet_hot", gpu_queue_depth=9, gpu_queue_self_deferrable=deferrable,
-        arc_id="26011418aad1aaa2", holds=("curiosity investigations wait",), queue_holding=queue_holding,
+        arc_id="26011418aad1aaa2", holds=("self-inquiry waits (it runs only at idle)",), queue_holding=queue_holding,
     )
     return facts, since + timedelta(hours=3), ZoneInfo("America/Denver")
 

@@ -2760,13 +2760,19 @@ class EndogenousOutreach:
             self._last_spoke_ago = await self._spoke_ago()
 
     async def compose(
-        self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None
+        self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None,
+        lane: str = "agent_first",
     ) -> Tuple[str, Dict[str, Any]]:
         """Orion writes a message through this module's real unified turn (``_generate``),
-        for a caller that brings its own prompt (reading findings). ("", debug) on failure."""
+        for a caller that brings its own prompt (reading findings). ("", debug) on failure.
+
+        ``lane="chat"``: one attempt on the chat lane with the full ``timeout_sec``, no
+        agent-lane first try (2026-11-07, office visits: the agent lane timed out at 210 s
+        and the message reached Juniper 5 minutes into her visit). Default unchanged."""
         return await self._generate(
             prompt, self._active_session_id(), correlation_id,
             **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+            lane=lane,
         )
 
     def record_blocked(
@@ -3093,7 +3099,7 @@ class EndogenousOutreach:
 
     async def _generate(
         self, prompt: str, session_id: str, correlation_id: str,
-        retrieval_query: Optional[str] = None,
+        retrieval_query: Optional[str] = None, lane: str = "agent_first",
     ) -> Tuple[str, Dict[str, Any]]:
         """Real unified-turn generation -- see module docstring's "THROUGH THE
         REAL UNIFIED TURN, NOT A LOOKALIKE" section. Returns ("", debug) on
@@ -3147,6 +3153,19 @@ class EndogenousOutreach:
             return "", {"error": "no_bus"}
 
         from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
+
+        if lane == "chat":
+            text, debug = await self._attempt_unified_turn(
+                prompt=prompt,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                fcc_model_label=None,
+                timeout_sec=self.timeout_sec,
+                retrieval_query=retrieval_query,
+            )
+            debug["lane"] = "chat"
+            debug["correlation_id"] = correlation_id
+            return text, debug
 
         text, debug = await self._attempt_unified_turn(
             prompt=prompt,

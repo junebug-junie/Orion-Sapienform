@@ -217,6 +217,10 @@ battle test.
 
 ### The episode: durable run `reminiscence.episode`
 
+Design for this section, 2026-11-07: `2026-11-07-daily-reminiscence-design.md`. It keeps the five
+hops, one week per day and the partition gate, and stores hops in a checked ledger under
+`/mnt/orion-fcc/self/` (like every self rung since) instead of the `reminiscence_episode` table.
+
 The episode is an admitted durable workflow in orion-durable-runs, shaped like `orion_day.letter`.
 
 ```text

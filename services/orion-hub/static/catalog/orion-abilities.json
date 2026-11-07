@@ -459,7 +459,7 @@
           "message": "How has your sense of yourself changed recently? Please check your own self-model records.",
           "hint": "(Orion reads `self_concept_history` and `self_sense_eval_log` read-only with psql)",
           "keywords": ["self-concept", "identity", "self model"],
-          "source": "orion/harness/operator_brief.py:_self_model_access_line"
+          "source": "orion/harness/operator_brief.py:_SELF_MODEL_MENTION_TABLES,self_concept_history,self_sense_eval_log"
         }
       ]
     },
@@ -505,7 +505,7 @@
           "message": "Please read this page now and tell me what it says: ",
           "hint": "(tools: WebFetch, or `mcp__firecrawl__firecrawl_scrape`)",
           "keywords": ["web", "page", "scrape", "fetch"],
-          "source": "orion/fcc/fcc_claude_mcp.template.json; orion/fcc/mcp_config.py"
+          "source": "orion/fcc/fcc_claude_mcp.template.json:firecrawl; orion/fcc/mcp_config.py:firecrawl"
         }
       ]
     },
@@ -539,7 +539,7 @@
     {
       "id": "world",
       "title": "Play & world",
-      "blurb": "AI Town: a small simulated town Orion can visit (only while a session is open).",
+      "blurb": "AI Town: a small simulated town Orion can visit. It runs only in sessions (Orion's own, or when Juniper presses Unfreeze in Hub).",
       "entries": [
         {
           "id": "town-status",
@@ -574,13 +574,13 @@
         },
         {
           "id": "town-engine",
-          "title": "The town seems stuck",
-          "description": "Orion nudges the town's simulation loop when it looks frozen, or stops the simulation.",
-          "message": "AI Town looks stuck. Can you check it and give the engine a kick?",
-          "hint": "(tools: `mcp__orion-aitown__aitown_kick_engine`, `aitown_stop_world`)",
-          "keywords": ["stuck", "frozen", "kick", "stop"],
-          "covers": {"mcp": ["mcp__orion-aitown__aitown_kick_engine", "mcp__orion-aitown__aitown_stop_world"]},
-          "source": "services/orion-ai-town/mcp/orion_aitown_mcp/server.py:aitown_kick_engine"
+          "title": "Town stuck during a session",
+          "description": "The town only runs in sessions; outside one it is frozen on purpose, and Hub's Unfreeze button opens it. If it seems stuck while a session is open, Orion can nudge its simulation loop.",
+          "message": "AI Town is open but seems stuck. Can you check whether a session is running, and if it is, give the engine a kick?",
+          "hint": "(tools: `mcp__orion-aitown__aitown_world_status`, `aitown_kick_engine`)",
+          "keywords": ["stuck", "frozen", "kick", "session", "unfreeze"],
+          "covers": {"mcp": ["mcp__orion-aitown__aitown_kick_engine"]},
+          "source": "services/orion-ai-town/mcp/orion_aitown_mcp/server.py:aitown_kick_engine,aitown_resume_world"
         }
       ]
     }
@@ -591,7 +591,8 @@
     },
     "mcp": {
       "mcp__orion-aitown__aitown_resume_world": "Refused by design since 2026-10-30: Juniper opens the town with Hub's Unfreeze button.",
-      "mcp__orion-aitown__aitown_send_input": "Raw god-mode input to the world; there is no plain request that maps to it safely."
+      "mcp__orion-aitown__aitown_send_input": "Raw god-mode input to the world; there is no plain request that maps to it safely.",
+      "mcp__orion-aitown__aitown_stop_world": "Stops the simulation, and nothing in chat can restart it (resume is refused); Juniper uses Hub's controls instead."
     }
   }
 }

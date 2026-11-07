@@ -103,6 +103,8 @@
 .oa-list { flex: 1; min-height: 0; overflow-y: auto; padding: 1rem 1.25rem 1.5rem; }
 .oa-section + .oa-section { margin-top: 1.5rem; }
 .oa-section-head { margin-bottom: 0.6rem; scroll-margin-top: 0.5rem; }
+.oa-section-title:focus { outline: none; }
+.oa-section-title:focus-visible { outline: 2px solid rgb(165 180 252); outline-offset: 2px; }
 .oa-section-title { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: rgb(165 180 252); }
 .oa-section-blurb { margin-top: 0.15rem; font-size: 0.75rem; color: rgb(156 163 175); }
 .oa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.75rem; }
@@ -161,7 +163,7 @@
   padding: 0.5rem 1.25rem;
   border-top: 1px solid rgb(31 41 55);
   font-size: 0.7rem;
-  color: rgb(107 114 128);
+  color: rgb(156 163 175);
 }
 
 @media (max-width: 640px) {

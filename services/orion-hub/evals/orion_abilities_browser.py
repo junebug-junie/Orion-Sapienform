@@ -146,6 +146,12 @@ def run(screenshot: str | None) -> int:
         check(any("?v=" in h for h in catalog_hits), "catalog fetched with the cache-busting version")
         if screenshot:
             page.screenshot(path=screenshot)
+        check(page.evaluate("() => !!document.getElementById('sendButton').closest('[inert]')"),
+              "the page behind the dialog is inert while it is open")
+        check(page.evaluate("() => !document.getElementById('orionAbilitiesDialog').closest('[inert]')"),
+              "the dialog itself is not inert")
+        page.locator("#orionAbilitiesNav .oa-chip").nth(2).click()
+        check(active_id(page) == f"oa-sec-{CATALOG['sections'][2]['id']}-h", "a section chip moves focus to that section")
 
         # 3. focus trap + Esc
         page.keyboard.press("Shift+Tab")
@@ -155,6 +161,7 @@ def run(screenshot: str | None) -> int:
         check(focus_in_dialog(page), "Tab stays in the dialog")
         page.keyboard.press("Escape")
         check(not page.locator("#orionAbilitiesModalRoot").is_visible(), "Esc closes the modal")
+        check(page.evaluate("() => !document.querySelector('body [inert]')"), "closing removes inert from the page")
         check(active_id(page) == "orionAbilitiesButton", "focus returns to the button")
         check(page.locator("#chatInput").input_value() == TYPED, "closing changed nothing in the chat box")
 
@@ -165,6 +172,7 @@ def run(screenshot: str | None) -> int:
         cards = page.locator("#orionAbilitiesList .oa-card")
         n = cards.count()
         check(0 < n < total, f"search 'portrait' narrows the cards ({n} of {total})")
+        page.wait_for_timeout(450)  # the live count is debounced so screen readers hear it once
         check(f"{n} of {total} shown" in page.locator("#orionAbilitiesCount").inner_text(), "count says how many match")
         target = page.locator('#orionAbilitiesList .oa-card[data-entry-id="portrait-write"]')
         check(target.count() == 1, "the portrait-write card is among the matches")

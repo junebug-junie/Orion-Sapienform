@@ -123,6 +123,31 @@
     // Where the caret sat in the chat box when the modal opened. A textarea
     // keeps its selection after blur, but read it now so nothing moves it.
     var savedCaret = null;
+    var countTimer = null;
+    // A textarea nobody has clicked or typed in reports caret 0 even when code filled it;
+    // only trust its caret once Juniper has put it somewhere herself.
+    var caretTouched = false;
+    ["focus", "keyup", "mouseup", "select"].forEach(function (ev) {
+      input.addEventListener(ev, function () { caretTouched = true; });
+    });
+    // While open, everything else on the page is inert (aria-modal alone is weak in some readers).
+    var inerted = [];
+    function setBackgroundInert(on) {
+      if (on) {
+        // The modal sits inside the page's own containers, so inert every sibling along the
+        // path from the modal up to <body>, never one of its ancestors.
+        inerted = [];
+        for (var node = root; node && node !== document.body && node.parentElement; node = node.parentElement) {
+          Array.prototype.forEach.call(node.parentElement.children, function (n) {
+            if (n !== node && !n.hasAttribute("inert") && n.tagName !== "SCRIPT" && n.tagName !== "STYLE") inerted.push(n);
+          });
+        }
+        inerted.forEach(function (n) { n.setAttribute("inert", ""); });
+      } else {
+        inerted.forEach(function (n) { n.removeAttribute("inert"); });
+        inerted = [];
+      }
+    }
 
     function load() {
       if (catalog) return Promise.resolve(catalog);
@@ -159,7 +184,12 @@
       var groups = filterCatalog(catalog, search.value);
       var total = countEntries(filterCatalog(catalog, ""));
       var shown = countEntries(groups);
-      if (count) count.textContent = search.value.trim() ? shown + " of " + total + " shown" : total + " things to ask";
+      // aria-live: say the count once typing pauses, not on every keystroke
+      var countText = search.value.trim() ? shown + " of " + total + " shown" : total + " things to ask";
+      if (count) {
+        clearTimeout(countTimer);
+        countTimer = setTimeout(function () { count.textContent = countText; }, search.value.trim() ? 300 : 0);
+      }
       if (!groups.length) {
         list.appendChild(el("p", "oa-empty", "Nothing matches “" + search.value.trim() + "”. Try a plainer word, like body, cost or past."));
         return;
@@ -171,6 +201,7 @@
         var head = el("div", "oa-section-head");
         var h = el("h3", "oa-section-title", g.section.title);
         h.id = sec.id + "-h";
+        h.tabIndex = -1;
         head.appendChild(h);
         if (g.section.blurb) head.appendChild(el("p", "oa-section-blurb", g.section.blurb));
         sec.appendChild(head);
@@ -180,9 +211,7 @@
           card.setAttribute("data-entry-id", entry.id);
           card.appendChild(el("h4", "oa-card-title", entry.title));
           card.appendChild(el("p", "oa-card-desc", entry.description));
-          var preview = el("p", "oa-card-preview", entry.message);
-          preview.setAttribute("aria-hidden", "true");
-          card.appendChild(preview);
+          card.appendChild(el("p", "oa-card-preview", entry.message));
           if (entry.hint) card.appendChild(el("code", "oa-card-hint", entry.hint));
           var btn = el("button", "oa-insert", "Insert");
           btn.type = "button";
@@ -197,7 +226,9 @@
           var chip = el("button", "oa-chip", g.section.title + " · " + g.entries.length);
           chip.type = "button";
           chip.addEventListener("click", function () {
-            sec.scrollIntoView({ behavior: "smooth", block: "start" });
+            var calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            sec.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+            h.focus({ preventScroll: true });
           });
           nav.appendChild(chip);
         }
@@ -206,9 +237,10 @@
 
     function open() {
       returnFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : openBtn;
-      savedCaret = typeof input.selectionEnd === "number" ? input.selectionEnd : null;
+      savedCaret = caretTouched && typeof input.selectionEnd === "number" ? input.selectionEnd : null;
       root.classList.remove("hidden");
       root.setAttribute("aria-hidden", "false");
+      setBackgroundInert(true);
       openBtn.setAttribute("aria-expanded", "true");
       document.documentElement.classList.add("oa-scroll-lock");
       search.value = "";
@@ -223,6 +255,7 @@
 
     function close(restoreFocus) {
       if (root.classList.contains("hidden")) return;
+      setBackgroundInert(false);
       root.classList.add("hidden");
       root.setAttribute("aria-hidden", "true");
       openBtn.setAttribute("aria-expanded", "false");

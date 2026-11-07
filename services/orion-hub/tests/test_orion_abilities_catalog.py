@@ -38,6 +38,9 @@ MCP_BRIEFS = {
     "gitnexus": REPO / "orion" / "fcc" / "self_index_brief.py",
 }
 MCP_SERVER_CONST = {"ORION_INTROSPECT": "orion-introspect", "ORION_READING": "orion-reading", "GITNEXUS": "gitnexus"}
+#: The servers themselves: a tool added there with no brief line must still fail the gate.
+INTROSPECT_TOOLS = REPO / "orion" / "introspect" / "tools.py"          # ToolSpec("name", ...)
+READING_SERVER = REPO / "orion" / "world_pulse_read" / "mcp_server.py"  # Tool(name="name", ...)
 #: AI Town has no brief line; its tools are the ``@mcp.tool()`` functions of its server.
 AITOWN_SERVER = REPO / "services" / "orion-ai-town" / "mcp" / "orion_aitown_mcp" / "server.py"
 HELP_ALIASES = {"help", "-h", "--help"}
@@ -105,6 +108,10 @@ def dig_commands_from_dispatch() -> tuple[set[str], set[str]]:
         subs |= set(re.findall(r'a\[0\] == "([^"]+)"', line))
         if '["help"]' in line:
             subs.add("help")
+    # and every verb the `capacity help` text teaches (a wrapped or dict-dispatched verb still shows there)
+    help_fn = src[src.index("def cmd_capacity_help"):src.index("def cmd_capacity(")]
+    claim_cmd = re.search(r'^CLAIM_CMD = (.+)$', src, re.M)
+    subs |= set(re.findall(r"orion\.dig capacity ([a-z]+)", help_fn + (claim_cmd.group(1) if claim_cmd else "")))
     return cmds - HELP_ALIASES, subs
 
 
@@ -134,6 +141,14 @@ def mcp_tools_told_to_chat() -> set[str]:
                     and isinstance(node.args[0], ast.Name) and isinstance(node.args[1], ast.Constant)
                     and MCP_SERVER_CONST.get(node.args[0].id) == server):
                 tools.add(f"mcp__{server}__{node.args[1].value}")
+    for path, server, ctor in ((INTROSPECT_TOOLS, "orion-introspect", "ToolSpec"), (READING_SERVER, "orion-reading", "Tool")):
+        assert path.is_file(), f"{path} moved: update the server list"
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == ctor:
+                name = next((k.value.value for k in node.keywords if k.arg == "name" and isinstance(k.value, ast.Constant)),
+                            node.args[0].value if node.args and isinstance(node.args[0], ast.Constant) else None)
+                if isinstance(name, str):
+                    tools.add(f"mcp__{server}__{name}")
     assert AITOWN_SERVER.is_file(), f"{AITOWN_SERVER} moved: update AITOWN_SERVER"
     for node in ast.parse(AITOWN_SERVER.read_text(encoding="utf-8")).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
@@ -194,6 +209,10 @@ def test_catalog_covers_nothing_that_does_not_exist():
         "body_economy": body_economy_sections() | {"overview", "all"},
         "mcp": mcp_tools_told_to_chat(),
     }
+    for kind, names in (cat.get("hidden") or {}).items():
+        assert kind in real, f"hidden: unknown kind {kind!r}"
+        stale = sorted(set(names) - real[kind] - (HELP_ALIASES if kind == "dig" else set()))
+        assert not stale, f"hidden.{kind} names things that no longer exist: {stale}"
     for e in _entries(cat):
         for kind, names in (e.get("covers") or {}).items():
             assert kind in real, f"{e['id']}: unknown covers kind {kind!r}"
@@ -231,8 +250,13 @@ def test_entries_are_well_formed():
             src = e.get("source", "")
             assert src, f"{eid}: say where this ability is defined"
             for ref in src.split(";"):
-                file_part = ref.strip().split(":")[0].split(" ")[0]
-                assert (REPO / file_part).exists(), f"{eid}: source {file_part} does not exist"
+                file_part, _, symbols = ref.strip().partition(":")
+                path = REPO / file_part
+                assert path.exists(), f"{eid}: source {file_part} does not exist"
+                # "file:sym1,sym2": each symbol must still be in that file, so an entry with no
+                # covers (self-model, read-now) still fails when what it describes goes away
+                for sym in filter(None, (x.strip() for x in symbols.split(","))):
+                    assert path.is_file() and sym in path.read_text(encoding="utf-8"), f"{eid}: {sym!r} not in {file_part}"
     for kind, reasons in (cat.get("hidden") or {}).items():
         for name, reason in reasons.items():
             assert len(reason.strip()) >= 15, f"hidden.{kind}.{name}: give a real reason"

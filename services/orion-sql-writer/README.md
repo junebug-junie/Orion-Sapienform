@@ -84,10 +84,11 @@ Legacy spark introspection channels/kinds are disabled by default; you can re-ad
 ## Grammar/substrate table retention
 
 `grammar_events`, `grammar_edges`, `grammar_atoms`, `substrate_organ_emissions`,
-`grammar_traces`, `substrate_proposal_frames`, `orion_biometrics_cluster`,
+`grammar_traces`, `orion_biometrics_cluster`,
 `power_intent_settled`, `substrate_attention_schema` and `substrate_durable_run_state` all get bounded retention
-(`*_RETENTION_DAYS` env keys, **default 3** for the grammar tables, **10** for
-`substrate_proposal_frames`, **30/90/90** for the last three). Each is a batched `DELETE ... LIMIT batch_size` loop
+(`*_RETENTION_DAYS` env keys, **default 3** for the grammar tables, **30/90/90** for the last three).
+`substrate_proposal_frames` was on this list from 2026-08-20 until the proposal rung retired
+(2026-11-07, ladder retirement PR 6); see below. Each is a batched `DELETE ... LIMIT batch_size` loop
 (`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`,
 shared across all seven tables), capped so a huge backlog can't turn a pass into an
 unbounded operation. See `app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
@@ -166,82 +167,23 @@ the periodic loop only, not by `main.py`'s startup pass. It was added last (2026
 until then its children were pruned at 3 days while the trace rows lived forever, so 42%
 of traces expanded into empty graphs.
 
-`substrate_proposal_frames` (2026-08-20) is the first stage of the substrate pipeline
-(proposal -> policy decision -> execution dispatch -> feedback) and had **no bound at all**:
-474,230 rows / 1,758 MB live, oldest 2026-07-23, growing ~27k rows and ~105 MB a day. It
-uses its own floor, `_substrate_chain_floor`, not the grammar cursor floor -- later stages
-can reach back into it by `frame_id`, so the floor asks each stage's **pending marker**
-(`policy_pending` / `dispatch_pending`, from `manual_migration_substrate_pending_markers.sql`)
-for the oldest row still owed work. Anything at or above that timestamp survives regardless
-of age. The feedback stage and its `feedback_pending` probe were removed when the feedback
-rung retired (2026-11-04): that marker defaults TRUE and nothing clears it any more, so a
-probe on it would pin the floor forever.
-
-Two details in that floor are load-bearing and were both wrong in the first draft:
-
-* **Every probe resolves back to the PROPOSAL row**, by joining through
-  `source_proposal_frame_id` -- not to the pending row's own timestamp. A pending row in a
-  downstream table is always *newer* than the proposal it needs (it is a child, written
-  later), so flooring at the child's timestamp leaves the parent below the floor and
-  deletable, which is backwards from the safety being claimed. Live: dispatch rows are
-  created a mean 123.2s and max 920.2s after their parent proposal; 0 of 55,573 before it.
-* **`OFFSET 0` fences the min-aggregate.** Written plainly, Postgres rewrites
-  `SELECT MIN(created_at) ... WHERE dispatch_pending` into `ORDER BY created_at LIMIT 1`
-  over the *full* `created_at` index with the marker as a filter. Pending rows are always
-  the newest rows, so the ascending scan discards the whole table first: measured live at
-  490 ms / 102,343 buffers, every 60 seconds. With the fence: 0.18 / 5.4 / 1.6 ms. Note the
-  cost was *highest when the pipeline was caught up* and would have fallen as a backlog
-  developed, so it would never have looked like a backlog problem.
-
-The floor's distinction from the grammar cursor floor is deliberate and the two are not
-interchangeable. A reduction cursor stops moving when its *source* goes quiet, which is
-indistinguishable from a stall, so the grammar floor asks "are there unconsumed rows below
-the cutoff" instead. A pending marker has much less ambiguity -- it is set at insert and
-cleared in the same transaction as the downstream write. The same migration's header records
-that a *time* bound was tried for this pipeline and reverted: the dispatch->feedback hop
-legitimately ran p50 34.6 hours and max 11.3 days behind. Like every other managed table, this one is
-pruned only by the periodic loop; `main.py` has no startup retention pass any more (see
-above).
-
-**The window is 10 days, and the reason is consumer windows, not disk.** Two live readers
-reach back further than a week: `orion/autonomy/evals/run_attention_bound_proposal_eval.py`
-uses `WINDOW_DAYS = 7`, and `scripts/analysis/measure_proposal_feedback_correlation.py`
-(deleted with the feedback rung, 2026-11-04) defaulted to 200 hours (8.33 days). A 7-day retention window would tie exactly to the first
-and sit *inside* the second, racing both at their oldest edge -- and both degrade quietly to
-"insufficient data" rather than failing loudly. 10 days clears the longer of the two with a
-~1.7-day margin. Live: 10 days keeps 202,276 of 474,861 rows; 7 days would have kept 113,060.
-
-`scripts/analysis/measure_proposal_feedback_correlation.py`'s chain-completeness check was
-bounded to its window in the same patch. It previously joined **every** feedback frame ever
-written against the upstream tables with no `WHERE` clause at all, which was correct only
-while those tables were unbounded; under retention it would have reported `INCOMPLETE`
-forever for the entirely expected reason that pruned rows do not resolve. It now reports the
-excluded count explicitly, so a shrinking denominator cannot be mistaken for a clean result.
-
-**Two hazards worth knowing about before extending any of this:**
-
-1. **`_verify_delete_safe` does not mean what it says here.** It checks `pg_constraint` for
-   incoming foreign keys and reports
-   `substrate_proposal_frames_delete_is_child_safe; no incoming FK constraints found`. That
-   check was written for the grammar tables, which genuinely have no children. This table
-   has three referencing tables -- they store `source_proposal_frame_id` as a plain `text`
-   column with **no FK declared** -- so "no incoming FK" here means the database will not
-   *tell* you when you orphan something, not that nothing can be orphaned. The chain floor
-   is what provides the actual safety; the FK check is not a second opinion.
-2. **`reconcile_policy_pending` is a third writer of the marker.**
-   `services/orion-policy-runtime/app/store.py` re-sets `policy_pending = true`, on a 900s
-   timer, for any proposal with no matching policy decision frame, with **no time bound**.
-   It can only ever add work, so today it is harmless. It becomes a trap the moment
-   `substrate_policy_decision_frames` gets retention of its own: pruning a decision frame
-   makes its proposal look unprocessed, reconcile re-flags it, the chain floor pins at the
-   oldest re-flagged row, and proposal retention stops permanently while policy-runtime
-   reprocesses hundreds of thousands of ancient proposals. Bound reconcile's anti-join
-   first.
+`substrate_proposal_frames` (2026-08-20 .. 2026-11-07) was the first stage of the substrate
+pipeline (proposal -> policy decision -> execution dispatch -> feedback). It was pruned behind its
+own floor, `_substrate_chain_floor`, which probed the `policy_pending` and `dispatch_pending`
+markers for the oldest proposal a later stage still owed work on. The feedback probe went when
+the feedback rung retired (2026-11-04); the other two probes, the floor and the proposal-frame
+retention job went when the proposal, policy and dispatch rungs retired (2026-11-07,
+`docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md`). Nothing writes those
+tables now, and a drop migration follows; a probe on a dropped table would raise, and the floor
+would then refuse to prune forever. The generic `floor_resolver` seam of
+`_apply_bounded_table_retention` stays for any future chained table. The full history (the
+`OFFSET 0` fence, the parent/child clock trap) is in
+`docs/superpowers/pr-reports/2026-08-20-substrate-proposal-frames-retention-pr.md`.
 
 **Retention does not reclaim disk.** `DELETE` returns space for reuse inside the relation,
-not to the OS. `substrate_proposal_frames` stays ~1.76 GB on disk after pruning; 84% of that
-is TOAST (1,471 MB of 1,760 MB), with only 145 MB of heap and 144 MB of indexes. Recovering
-it would need `VACUUM FULL` (exclusive lock) or `pg_repack` (not in the image), and neither
+not to the OS. `substrate_proposal_frames` stayed ~1.76 GB on disk after pruning; 84% of that
+was TOAST (1,471 MB of 1,760 MB), with only 145 MB of heap and 144 MB of indexes. Recovering
+it would have needed `VACUUM FULL` (exclusive lock) or `pg_repack` (not in the image), and neither
 is worth it -- the volume has 619 GB free. **The win here is bounding future growth, not
 reclaiming what is already allocated.**
 

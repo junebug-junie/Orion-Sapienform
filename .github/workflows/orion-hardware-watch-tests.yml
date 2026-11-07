@@ -59,7 +59,7 @@ jobs:
         run: cd services/orion-hardware-watch && PYTHONPATH=../..:. python evals/run_rules_replay_eval.py
       - name: "Disk rule replay (14 real days -- 2 asks a day, keeps up with the real dangling-image prunes, fault injection)"
         run: cd services/orion-hardware-watch && PYTHONPATH=../..:. python evals/run_image_prune_replay_eval.py
-      - name: "Disk rule floor is the skill's own; the dispatch prune trigger is gone"
+      - name: "Disk rule floor is the skill's own; the dispatch ladder (the other prune sender) is gone"
         run: PYTHONPATH=. python -m pytest tests/test_image_prune_disk_rule_parity.py -q -p no:cacheprovider
 
   cortex-exec-contract:

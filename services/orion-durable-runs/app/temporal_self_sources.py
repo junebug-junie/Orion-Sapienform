@@ -124,12 +124,17 @@ FROM dream_hypothesis WHERE created_at >= %(lo)s AND created_at < %(hi)s
 """),
     # Time is observed_at, else created_at; observed_at is indexed (and never null live: 0 of
     # 144,909 on 10-10), so the two branches keep the read off a 201 MB seq scan.
+    # Act rows only (2026-11-07, ladder retirement PR 6): the act ledger's ``act:<verb>`` rows and the
+    # cooling world act's ``self_regulate`` rows. The dispatch ladder's own kinds (summarize, maintain,
+    # inspect) stopped with dispatch; reading a kind that cannot arrive any more is a dead source.
     SourceQuery("action_outcome", """
 SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
 FROM substrate_action_outcomes WHERE observed_at >= %(lo)s AND observed_at < %(hi)s
+  AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
 UNION ALL
 SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
 FROM substrate_action_outcomes WHERE observed_at IS NULL AND created_at >= %(lo)s AND created_at < %(hi)s
+  AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
 """),
     # Time is the trigger's naive-UTC timestamp; the metacog row is written up to ~9 min later
     # (live p99 12.7 s, max 532 s), so the TEXT row time is only a lower-bounded superset. The

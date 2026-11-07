@@ -549,3 +549,21 @@ def test_office_session_labels_the_office_company_arc_and_the_flag_and_a_missing
         assert not [e for e in gone if e.source_kind == "office_session"]
 
     with_db(scenario_fn)
+
+
+def test_action_outcome_source_reads_act_rows_only():
+    """Ladder retirement PR 6 (2026-11-07): the dispatch ladder's own outcome kinds (summarize,
+    maintain, inspect) stopped with dispatch. The source reads only act rows: the act ledger's
+    ``act:<verb>`` and the cooling world act's ``self_regulate``."""
+    async def scenario_fn(pool):
+        at = T0 + timedelta(minutes=10)
+        rows = [{"id": n, "dispatch_id": f"d{n}", "dispatch_kind": kind, "target_id": "t", "observed_at": at,
+                 "created_at": at, "claim_upheld": True, "prediction_error": 0.1}
+                for n, kind in enumerate(("act:make", "self_regulate", "summarize", "maintain", "inspect"), start=1)]
+        async with pool.connection() as conn:
+            await fdb.load(conn, {"action_outcome": rows})
+        _, events = await SourceReader(pool, TZ).read(T0, T0 + timedelta(hours=1))
+        kinds = sorted(e.payload["dispatch_kind"] for e in events if e.source_kind == "action_outcome")
+        assert kinds == ["act:make", "self_regulate"]
+
+    with_db(scenario_fn)

@@ -11,7 +11,6 @@ from unittest import mock
 
 import pytest
 
-from orion.field.channel_glossary import classify_channel_series
 from orion.metrics.liveness import (
     CONNECT_TIMEOUT_SECONDS,
     DEFAULT_POSTGRES_URI,
@@ -19,11 +18,7 @@ from orion.metrics.liveness import (
     FlatColumnSource,
     LivenessOutcome,
     ScalarFieldSource,
-    ThroughputSource,
-    _classify_unbounded_series,
-    _normalize_to_unit_scale,
     _resolve_source_kind,
-    _worst_of,
     has_registered_source,
     liveness_for_node,
     open_readonly_connection,
@@ -271,52 +266,6 @@ def test_flat_column_source_reports_truncated_when_over_max_rows():
     assert len(values) == 50_000
 
 
-# ------------------------------------------------------------- ThroughputSource
-
-
-def test_throughput_source_returns_bucket_counts():
-    source = ThroughputSource(
-        table="t", ts_column="ts", window_hours=1.0, bucket_hours=1.0 / 60
-    )
-    cur = _FakeCursor(fetchall_result=[(0.0,), (3.0,), (5.0,)])
-    conn = _FakeConn([cur])
-    values = source.fetch(conn)
-    assert values == [0.0, 3.0, 5.0]
-    query, params = cur.executed[0]
-    assert params == (1.0, 1.0 / 60, 1.0 / 60)
-
-
-# ------------------------------------------------------------------- _worst_of
-
-
-def test_worst_of_all_live_is_live():
-    assert _worst_of(["live", "live", "live"]) == "live"
-
-
-def test_worst_of_live_and_quiet_mix_is_live_not_quiet():
-    """The bug found live 2026-08-19: an earlier severity table ranked quiet
-    above live, so 4 live stages + 1 expectedly-quiet slow stage rolled up to
-    QUIET -- misleadingly making a healthy ladder look concerning."""
-    assert _worst_of(["live", "live", "live", "live", "quiet"]) == "live"
-
-
-def test_worst_of_all_quiet_is_quiet():
-    assert _worst_of(["quiet", "quiet"]) == "quiet"
-
-
-def test_worst_of_dead_beats_live_and_quiet():
-    assert _worst_of(["live", "live", "dead", "quiet"]) == "dead"
-
-
-def test_worst_of_never_produced_beats_dead():
-    assert _worst_of(["dead", "never_produced", "live"]) == "never_produced"
-
-
-def test_worst_of_ratchet_suspect_beats_clean_but_loses_to_dead():
-    assert _worst_of(["live", "ratchet_suspect"]) == "ratchet_suspect"
-    assert _worst_of(["dead", "ratchet_suspect"]) == "dead"
-
-
 # ------------------------------------------------------------- _resolve_source_kind
 
 
@@ -325,9 +274,13 @@ def test_resolve_source_kind_attention_self_model_field():
     assert _resolve_source_kind(node) == "attention_self_model"
 
 
-def test_resolve_source_kind_ladder_signal_node():
+def test_the_retired_ladder_node_has_no_source():
+    """l7_l11_ladder retired 2026-11-07 (ladder retirement PR 6): its tables are dropped, so it must
+    read NOT_COMPUTED, never a throughput verdict over tables that no longer exist."""
     node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
-    assert _resolve_source_kind(node) == "ladder"
+    assert _resolve_source_kind(node) is None
+    assert has_registered_source(node) is False
+    assert liveness_for_node(node, _FakeConn([])) is None
 
 
 def test_resolve_source_kind_none_for_unrelated_node():
@@ -380,11 +333,6 @@ def test_has_registered_source_and_liveness_for_node_agree_on_every_kind():
 
 def test_has_registered_source_true_for_attention_self_model_field():
     node = _FakeNode(name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence")
-    assert has_registered_source(node) is True
-
-
-def test_has_registered_source_true_for_ladder_signal_node():
-    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
     assert has_registered_source(node) is True
 
 
@@ -460,17 +408,6 @@ def test_liveness_for_node_broadcast_lane_age_with_real_resets_reads_live():
     assert outcome.verdict == "live"
 
 
-def test_liveness_for_node_computes_ladder_throughput_rollup():
-    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
-    # 3 stages, each its own cursor -- fetch() opens one cursor per stage.
-    cursors = [_FakeCursor(fetchall_result=[(1.0,), (2.0,), (3.0,)]) for _ in range(3)]
-    conn = _FakeConn(cursors)
-    outcome = liveness_for_node(node, conn)
-    assert isinstance(outcome, LivenessOutcome)
-    assert outcome.verdict == "live"
-    assert "substrate_proposal_frames=" in outcome.detail
-
-
 def test_liveness_for_node_returns_none_for_unregistered_node():
     node = _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None)
     conn = _FakeConn([])
@@ -520,21 +457,6 @@ def test_liveness_for_node_repair_pressure_dead_when_all_zero():
     assert outcome.verdict == "dead"
 
 
-def test_liveness_for_node_ladder_sample_count_is_real_row_sum_not_bucket_count():
-    """Regression: an earlier version counted non-empty buckets (~1 per
-    bucket regardless of how many rows it held), not actual rows -- so a
-    ~2s-cadence stage with ~28 rows/bucket understated its real volume by
-    ~28x. sample_count must be a true row total, comparable to the scalar
-    source's `len(values)`."""
-    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
-    cursors = [_FakeCursor(fetchall_result=[(10.0,), (0.0,), (20.0,)]) for _ in range(3)]
-    conn = _FakeConn(cursors)
-    outcome = liveness_for_node(node, conn)
-    # 10+0+20 per stage, 3 stages (proposal, policy, attention; feedback and consolidation
-    # retired 2026-11-04).
-    assert outcome.sample_count == 3 * 30
-
-
 def test_liveness_for_node_propagates_query_failure():
     """liveness_for_node() does NOT swallow a query-time DB error itself --
     scripts/check_metric_lineage.py's _liveness_for_nodes is the one place
@@ -549,52 +471,6 @@ def test_liveness_for_node_propagates_query_failure():
     conn = _FakeConn([_BrokenCursor()])
     with pytest.raises(RuntimeError):
         liveness_for_node(node, conn)
-
-
-# --------------------------------------------------------- _normalize_to_unit_scale
-
-
-def test_normalize_scales_by_own_max():
-    assert _normalize_to_unit_scale([5.0, 10.0, 20.0]) == [0.25, 0.5, 1.0]
-
-
-def test_normalize_leaves_all_zero_series_unchanged():
-    """Dividing by a zero max would raise -- an all-zero series (dead) must
-    pass through unchanged so classify_channel_series still sees it as dead,
-    not crash."""
-    assert _normalize_to_unit_scale([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
-
-
-def test_normalize_leaves_empty_series_unchanged():
-    assert _normalize_to_unit_scale([]) == []
-
-
-def test_normalize_alone_does_not_fix_ratchet_false_positive():
-    """Documents why _classify_unbounded_series() exists instead of just
-    calling classify_channel_series(_normalize_to_unit_scale(series)):
-    rescaling to unit scale does NOT stop a monotonic series from tripping
-    ratchet_suspect, because climbed = last-first is measured against the
-    series' own new max of 1.0 -- almost any monotonic climb clears
-    LIVE_VARIANCE_THRESHOLD=0.05 regardless of the original scale."""
-    raw_counts = [5.0, 12.0, 18.0, 25.0, 30.0]  # non-decreasing, climbs by 25
-    assert classify_channel_series(raw_counts) == "ratchet_suspect"
-    assert classify_channel_series(_normalize_to_unit_scale(raw_counts)) == "ratchet_suspect"
-
-
-def test_classify_unbounded_series_downgrades_ratchet_to_live():
-    """The actual fix: a monotonic climb -- unremarkable for a pipeline
-    throughput count or an unbounded age, unlike a never-decaying [0,1]
-    channel -- reads as LIVE, not as a suspected stuck accumulator."""
-    raw_counts = [5.0, 12.0, 18.0, 25.0, 30.0]
-    assert _classify_unbounded_series(raw_counts) == "live"
-
-
-def test_classify_unbounded_series_still_detects_dead():
-    assert _classify_unbounded_series([0.0, 0.0, 0.0, 0.0]) == "dead"
-
-
-def test_classify_unbounded_series_still_detects_never_produced():
-    assert _classify_unbounded_series([]) == "never_produced"
 
 
 def test_statement_timeout_ms_is_a_positive_bound():

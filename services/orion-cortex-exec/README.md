@@ -199,8 +199,11 @@ service and the four self-study verbs were retired on 2026-10-30 (proposal
 their output; curiosity's self-inquiry, the dig kit and the body atlas do that work now.
 
 Kept: the Layer 1 timer (it feeds Self Atlas), and `skills.self_study.analyze.v1`
-(hourly telemetry analysis, now tier 0 `autonomic`; the reverie painter reads its
-journals). Self Atlas and the Layer 1 feed are the next retirement candidates.
+(telemetry window analysis, tier 0 `autonomic`). Since 2026-11-07 (ladder retirement PR 6)
+nothing triggers it automatically: its only trigger was the dispatch rung's
+`analyze_self_study_source` template, and the reverie painter now reads curiosity's
+self-inquiry answers instead of its journals. It stays in the verb catalog as a
+callable skill. Self Atlas and the Layer 1 feed are the next retirement candidates.
 
 ### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
 

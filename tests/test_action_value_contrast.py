@@ -214,67 +214,7 @@ class TestPooledTreatedMean:
         assert pooled.n == 300
 
 
-class TestExpectedEffectAcrossBins:
-    """Review finding 21: multi-bin pooling is the actual behaviour change in
-    builder.py and nothing exercised it -- the existing declaration tests only
-    bumped their single-bin keys."""
-
-    def _candidate(self, signal, direction, target="capability:orchestration"):
-        from orion.schemas.proposal_frame import ProposalCandidateV1
-
-        return ProposalCandidateV1(
-            proposal_id="p1",
-            proposal_kind="inspect",
-            title="t",
-            description="d",
-            target_id=target,
-            target_kind="capability",
-            priority_score=0.5,
-            urgency_score=0.4,
-            confidence_score=0.9,
-            risk_score=0.05,
-            reversibility_score=1.0,
-            proposed_effect="increase_observability",
-            required_policy_gate="none",
-            expected_signal=signal,
-            expected_direction=direction,
-        )
-
-    def test_prediction_pools_every_bin_weighted_by_volume(self):
-        from orion.execution_dispatch.builder import build_expected_effect
-
-        cells = {
-            ("inspect", "capability:orchestration", "execution_pressure", 1): EffectPosterior(
-                mean=+0.162, variance=0.002, n=285
-            ),
-            ("inspect", "capability:orchestration", "execution_pressure", 7): EffectPosterior(
-                mean=-0.376, variance=0.001, n=1135
-            ),
-        }
-        effect = build_expected_effect(
-            self._candidate("execution_pressure", "decrease"), "inspect", cells
-        )
-        # (285*0.162 + 1135*-0.376) / 1420 = (46.17 - 426.76)/1420 = -0.26802...
-        assert effect.predicted_delta == pytest.approx(-0.2680, abs=1e-4)
-        assert effect.predictor_n == 1420
-        assert effect.cold_start is False
-
-    def test_a_bin_with_no_history_does_not_dilute_the_prediction(self):
-        from orion.execution_dispatch.builder import build_expected_effect
-
-        cells = {
-            ("inspect", "capability:orchestration", "execution_pressure", 7): EffectPosterior(
-                mean=-0.376, variance=0.001, n=1135
-            ),
-            ("inspect", "capability:orchestration", "execution_pressure", 2): EffectPosterior(
-                mean=0.0, variance=0.25, n=0
-            ),
-        }
-        effect = build_expected_effect(
-            self._candidate("execution_pressure", "decrease"), "inspect", cells
-        )
-        assert effect.predicted_delta == pytest.approx(-0.376)
-        assert effect.predictor_n == 1135
+# TestExpectedEffectAcrossBins (dispatch's build_expected_effect) retired with the dispatch rung, 2026-11-07.
 
 
 class TestTheFrozenInstrumentGuard:

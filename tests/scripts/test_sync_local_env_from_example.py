@@ -276,16 +276,14 @@ def test_gpu_pool_keys_are_reached_by_the_default_sync() -> None:
             assert should_sync_key(key, all_keys=False), key
 
 
-def test_substrate_reconcile_keys_are_reached_by_the_default_sync() -> None:
-    """The bounded-reconciler keys (2026-09-25) must land in local .env on a default sync."""
-    for service, prefix in (("orion-policy-runtime", "POLICY_RECONCILE_"),
-                            ("orion-execution-dispatch-runtime", "DISPATCH_RECONCILE_")):
-        assert service in sync_mod.DEFAULT_SERVICES
-        keys = [k for k in sync_mod.parse_kv(ROOT / "services" / service / ".env_example")
-                if k.startswith(prefix)]
-        assert len(keys) == 4, (service, keys)
-        for key in keys:
-            assert should_sync_key(key, all_keys=False), key
+def test_retired_ladder_services_and_their_prefixes_are_gone() -> None:
+    """Ladder retirement PR 6 (2026-11-07): the proposal, policy and dispatch services are deleted.
+    A default sync must not visit their directories, and their prefixes must not linger."""
+    for service in ("orion-proposal-runtime", "orion-policy-runtime", "orion-execution-dispatch-runtime"):
+        assert service not in sync_mod.DEFAULT_SERVICES
+    for prefix in ("POLICY_RECONCILE_FULL_SWEEP_HOUR_UTC", "DISPATCH_RECONCILE_WINDOW_SEC",
+                   "TRANSPORT_PROPOSAL_MODE"):
+        assert not should_sync_key(prefix, all_keys=False), prefix
 
 
 def test_secret_values_never_printed(tmp_path) -> None:

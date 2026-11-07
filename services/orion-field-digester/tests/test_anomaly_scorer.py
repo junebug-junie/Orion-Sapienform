@@ -249,10 +249,9 @@ class _FakeLiveCursor:
 
 class _FakeLiveConn:
     """Same query-sequenced shape as orion/mood_arc/tests/test_corpus_enrichment.py's
-    _SequencedFakeConn -- resolve_live_enrichment() issues two queries per
-    call (action_warrant, then attention_self_model) with differently-shaped
-    row tuples, so a single fixed `rows` list (like the plain _FakeConn used
-    elsewhere) can't serve both."""
+    _SequencedFakeConn -- resolve_live_enrichment() issues one query per call
+    (attention_self_model; action_warrant left it on 2026-11-07, when the digester
+    began computing it in-process), and each queued entry is one call's rows."""
 
     def __init__(self, rows_sequence: list[list[tuple]]) -> None:
         self.rows_sequence = rows_sequence
@@ -268,7 +267,7 @@ class _FakeLiveConn:
 
 
 def test_append_row_merges_live_enrichment_fields_into_buffer(tmp_path: Path, monkeypatch) -> None:
-    """action_warrant (or any of the 5 attention_self_model fields) resolved
+    """Any of the 5 attention_self_model fields resolved
     live must land in the buffered row's channels -- these aren't in
     _FIELDS/the manifest's channel_names for this fixture, but append_row()
     must still merge whatever resolve_live_enrichment() returns; whether a
@@ -278,7 +277,7 @@ def test_append_row_merges_live_enrichment_fields_into_buffer(tmp_path: Path, mo
 
     models_root = _write_tiny_encoder(tmp_path)
     now = datetime.now(timezone.utc)
-    fake_conn = _FakeLiveConn([[(now, 0.77)], []])  # action_warrant hit, attention_self_model empty
+    fake_conn = _FakeLiveConn([[(now, "0.77", None)]])  # heartbeat_mean_ratio hit, no prediction_error
     monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
 
     scorer = FieldChannelAnomalyScorer(
@@ -288,7 +287,7 @@ def test_append_row_merges_live_enrichment_fields_into_buffer(tmp_path: Path, mo
 
     buffered = list(scorer._buffer)
     assert len(buffered) == 1
-    assert buffered[0].channels["action_warrant"] == 0.77
+    assert buffered[0].channels["heartbeat_mean_ratio"] == 0.77
     assert buffered[0].channels["cpu_pressure"] == 0.0  # original field untouched
 
 
@@ -302,7 +301,7 @@ def test_append_row_does_not_mutate_the_passed_in_row(tmp_path: Path, monkeypatc
 
     models_root = _write_tiny_encoder(tmp_path)
     now = datetime.now(timezone.utc)
-    fake_conn = _FakeLiveConn([[(now, 0.5)], []])
+    fake_conn = _FakeLiveConn([[(now, "0.5", None)]])
     monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
 
     scorer = FieldChannelAnomalyScorer(
@@ -316,10 +315,10 @@ def test_append_row_does_not_mutate_the_passed_in_row(tmp_path: Path, monkeypatc
 
     assert original_row.channels is original_channels_obj
     assert original_row.channels == original_channels_copy
-    assert "action_warrant" not in original_row.channels
+    assert "heartbeat_mean_ratio" not in original_row.channels
     # ...but the buffered copy DID get it -- confirms this isn't just "live
     # enrichment silently did nothing".
-    assert scorer._buffer[0].channels["action_warrant"] == 0.5
+    assert scorer._buffer[0].channels["heartbeat_mean_ratio"] == 0.5
 
 
 def test_append_row_leaves_channels_untouched_when_postgres_uri_unset(
@@ -340,7 +339,7 @@ def test_append_row_leaves_channels_untouched_when_postgres_uri_unset(
     scorer.append_row(row)
 
     assert len(scorer._buffer) == 1
-    assert "action_warrant" not in scorer._buffer[0].channels
+    assert "heartbeat_mean_ratio" not in scorer._buffer[0].channels
 
 
 def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> None:
@@ -361,7 +360,7 @@ def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> 
     models_root = _write_tiny_encoder(tmp_path)
     now = datetime.now(timezone.utc)
     call_count = {"n": 0}
-    fake_conn = _FakeLiveConn([[(now, 0.9)], []])
+    fake_conn = _FakeLiveConn([[(now, "0.9", None)]])
 
     def _flaky_connect(*args, **kwargs):
         call_count["n"] += 1
@@ -378,7 +377,7 @@ def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> 
     scorer.append_row(_row(0, base=now))
     assert scorer._load_failed is False
     assert len(scorer._buffer) == 1
-    assert "action_warrant" not in scorer._buffer[0].channels
+    assert "heartbeat_mean_ratio" not in scorer._buffer[0].channels
     assert scorer._db_connect_retry_after is not None  # cooldown armed
 
     # A real second tick landing inside the cooldown window must not even
@@ -386,13 +385,13 @@ def test_live_enrichment_db_error_is_non_sticky(tmp_path: Path, monkeypatch) -> 
     # not just that a later retry eventually succeeds.
     scorer.append_row(_row(1, base=now))
     assert call_count["n"] == 1
-    assert "action_warrant" not in scorer._buffer[1].channels
+    assert "heartbeat_mean_ratio" not in scorer._buffer[1].channels
 
     scorer._db_connect_retry_after = None  # simulate the cooldown having elapsed
     scorer.append_row(_row(2, base=now))
     assert len(scorer._buffer) == 3
     assert call_count["n"] == 2
-    assert scorer._buffer[2].channels["action_warrant"] == 0.9
+    assert scorer._buffer[2].channels["heartbeat_mean_ratio"] == 0.9
 
 
 # --- status() (2026-09-04, operator visibility) ------------------------------
@@ -433,7 +432,7 @@ def test_status_reports_loaded_encoder_and_live_enrichment_field_names(
 
     models_root = _write_tiny_encoder(tmp_path)
     now = datetime.now(timezone.utc)
-    fake_conn = _FakeLiveConn([[(now, 0.42)], []])  # action_warrant hit, attention_self_model empty
+    fake_conn = _FakeLiveConn([[(now, "0.42", None)]])  # heartbeat_mean_ratio hit, no prediction_error
     monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
 
     scorer = FieldChannelAnomalyScorer(
@@ -447,7 +446,7 @@ def test_status_reports_loaded_encoder_and_live_enrichment_field_names(
     assert status["window_size"] == _WINDOW_SIZE
     assert status["channels"] == list(_FIELDS)
     assert status["live_enrichment_configured"] is True
-    assert status["last_live_enrichment_fields"] == ["action_warrant"]
+    assert status["last_live_enrichment_fields"] == ["heartbeat_mean_ratio"]
     assert status["last_live_enrichment_at"] is not None
     assert status["last_live_enrichment_attempt_at"] == status["last_live_enrichment_at"]
     assert status["last_live_enrichment_error"] is None
@@ -464,7 +463,7 @@ def test_status_distinguishes_a_stale_success_from_a_live_outage(tmp_path, monke
 
     models_root = _write_tiny_encoder(tmp_path)
     now = datetime.now(timezone.utc)
-    fake_conn = _FakeLiveConn([[(now, 0.42)], []])
+    fake_conn = _FakeLiveConn([[(now, "0.42", None)]])
     monkeypatch.setattr(anomaly_scorer_module, "open_readonly_connection", lambda *a, **k: fake_conn)
 
     scorer = FieldChannelAnomalyScorer(

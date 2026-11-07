@@ -14,13 +14,13 @@ so this is an upper bound on what the gate would have refused, not a reconstruct
 Same-job retries (option A, 2026-11-03): at a seam that has a job identity, an attempt whose own job
 already opened an act inside the probe window is admitted as a retry (no probe spent), exactly as the
 live gate does. ``job_key`` names it per row: orion-actions journals -> ``test_before``
-(``journal:<dedupe_key>``), Prime's concern bets -> ``object_ref``; the allocator has none. Per
+(``journal:<dedupe_key>``), Prime's concern bets -> ``object_ref``; the self-start seams have none. Per
 faculty the replay also counts jobs: ``jobs_worked`` (a real attempt of the job worked) and
 ``jobs_lost`` (that worked attempt is one the gate would have refused).
 
-``reach``: which doers pass a gated seam today. ``allocator`` = an act-backed route in
-config/execution_dispatch/execution_dispatch_policy.v1.yaml (for hub.world_pulse_read only the
-reading PULL passes it; Hub's own scheduled read lane opens the same act without it);
+``reach``: which doers pass a gated seam today. (``allocator``, the dispatch rung's act-backed routes,
+retired 2026-11-07 with the dispatch rung; its last route was the reading pull. Hub's own scheduled
+read lane opens the same ``hub.world_pulse_read`` act without a gate, so it reads ``not_gated``.)
 ``painting_self_start`` = orion-thought's painting trigger (thought.painting since 2026-11-05);
 ``actions_journal`` = orion-actions' ``_dispatch_journal``; ``prime`` = Prime's own act opener in
 orion-mind (services/orion-mind/app/prime_loop.py and its loop library orion/mindloop/runtime.py); everything else is ``not_gated``.
@@ -41,14 +41,13 @@ from orion.self_monitor.gate import DEFAULT_PROBE_INTERVAL_SEC, FAILING_STATUSES
 from orion.self_monitor.questions import self_questions_for
 from orion.self_monitor.view import SelfMonitorView
 
-# Acts that left the allocator start themselves, and each trigger holds the same E1 gate, with no job key,
-# like dispatch: thought.painting (ladder retirement PR 2, services/orion-thought/app/painting_self_start.py)
+# Acts that left the (retired) dispatch allocator start themselves, and each trigger holds the same E1
+# gate, with no job key: thought.painting (ladder retirement PR 2, services/orion-thought/app/painting_self_start.py)
 # hub.retro_leisure (PR 1, services/orion-hub/scripts/retro_leisure_self_start.py) and aitown.session
 # (PR 3, services/orion-embodiment/app/town_self_start.py), all 2026-11-05.
 SELF_START_SEAMS = {("thought.painting", "make"): "painting_self_start",
                     ("hub.retro_leisure", "play"): "retro_leisure_self_start",
                     ("aitown.session", "play"): "town_self_start"}
-ALLOCATOR_ACTORS = {("hub.world_pulse_read", "look")}
 
 
 PRIME_GATED_VERBS = frozenset({"infer", "predict", "ask", "regulate"})
@@ -57,8 +56,6 @@ PRIME_GATED_VERBS = frozenset({"infer", "predict", "ask", "regulate"})
 def reach(actor: str, verb: str) -> str:
     if (actor, verb) in SELF_START_SEAMS:
         return SELF_START_SEAMS[(actor, verb)]
-    if (actor, verb) in ALLOCATOR_ACTORS:
-        return "allocator"
     if actor == "actions.journal":
         return "actions_journal"
     if actor == "prime" and verb in PRIME_GATED_VERBS:

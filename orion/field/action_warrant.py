@@ -124,46 +124,27 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field as dc_field
 
+from orion.field.pressure_dimensions import (
+    DIMENSION_PRECISION_EWMA_MIN_SAMPLES,
+    DIMENSION_PRECISION_MIN_VARIANCE,
+    PRESSURE_DIMENSIONS,
+)
 from orion.schemas.field_state import FieldStateV1
 
 
 def _scoring_constants() -> tuple[frozenset[str], dict[str, float], int]:
-    """The dimension set and precision floors this signal reads, imported
-    lazily to break a circular import.
+    """The dimension set and precision floors this signal reads.
 
     Deliberately imported rather than re-declared -- if `PRESSURE_DIMENSIONS`
     gains a member, this statistic must see it (and its count-aware null means
     it can, without recalibration). A local copy would silently diverge.
 
-    LAZY, because a module-level import here is a cycle (introduced by PR #1571
-    and live on main until this patch):
-
-        orion/field/action_warrant.py
-          -> orion.proposals.scoring
-             triggers orion/proposals/__init__.py:1
-          -> orion.proposals.builder
-          -> orion.field.action_warrant     <- partially initialized, ImportError
-
-    It did not break production because `orion-proposal-runtime` imports
-    `orion.proposals` first, which puts it in `sys.modules` before the cycle
-    closes. Anything importing `orion.field.action_warrant` DIRECTLY -- this
-    module's own eval, its tests -- hit it. A latent break that only fires for
-    the callers most likely to be checking the signal is worse than a loud one.
-
-    The deeper problem this papers over: `orion/field/` is a lower layer than
-    `orion/proposals/`, so a field module depending on proposals is a layering
-    inversion. These three constants describe field dimensions, not proposal
-    policy, and belong in `orion/field/`. Moving them changes
-    `orion.proposals.scoring`'s public surface and every importer of it, so it
-    is deliberately NOT bundled into a bug fix -- but it is the real fix, and
-    this docstring is the tombstone that says so.
+    History: these constants lived in `orion.proposals.scoring` and were imported
+    lazily here, because a module-level import closed a cycle back through
+    `orion.proposals.builder` (PR #1571). They moved to
+    `orion.field.pressure_dimensions` (stdlib only, no cycle) when the proposal
+    rung retired, 2026-11-07 (ladder retirement PR 6).
     """
-    from orion.proposals.scoring import (
-        DIMENSION_PRECISION_EWMA_MIN_SAMPLES,
-        DIMENSION_PRECISION_MIN_VARIANCE,
-        PRESSURE_DIMENSIONS,
-    )
-
     return (
         PRESSURE_DIMENSIONS,
         DIMENSION_PRECISION_MIN_VARIANCE,

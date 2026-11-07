@@ -679,16 +679,16 @@ Its runtime backend is `orion-substrate-runtime`, an event-native reducer worker
 
 ```text
 Layer 5  orion-attention-runtime          FieldStateV1 → FieldAttentionFrameV1
-Layer 7  orion-proposal-runtime           SelfStateV1 (+context) → ProposalFrameV1 (possible actions, not automatic)
-Layer 8  orion-policy-runtime             ProposalFrameV1 vs SubstratePolicyV1 → PolicyDecisionFrameV1 (governed decision)
-Layer 9  orion-execution-dispatch-runtime PolicyDecisionFrameV1 + ProposalFrameV1 → ExecutionDispatchFrameV1
+Layer 7  (retired 2026-11-07)             each real act starts itself through the body-economy want market
+Layer 8  (retired 2026-11-07)             its consent checks become the want market's consent gate
+Layer 9  (retired 2026-11-07)             the act ledger grades every real act
 Layer 10 (retired 2026-11-04)             the act ledger grades every real act; world-action scoring runs in orion-sql-writer
 Layer 11 (retired 2026-11-04)             killed outright
 ```
 
 `reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 5 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat, route, bus-synaptic) feed this pipeline. A sixth domain, transport, was retired 2026-07-26 in favor of the mesh-wide `bus_synaptic_prediction_error()` successor — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers). These predict/observe/surprise signals operate at multiple real timescales — micro (per-tick prediction error) and macro (drift across the drive/policy history; the meso Layer 11 consolidation window retired 2026-11-04) — rather than one fixed cadence.
 
-**The action economy went from logging to enforcing.** Layer 9 (`orion-execution-dispatch-runtime`) used to log candidate actions without acting on the numbers; it now enforces a real motor budget, and a starvation-resistant slot reservation keeps a stream of introspective actions from crowding out mutating ones. Every candidate carries a real per-action cost and a control-arm-corrected outcome ledger, so dispatch scores value-per-second instead of firing on vibes. On 2026-08-31, `express` shipped as the first action kind whose effect leaves the machine at all — every action kind before it (maintain, inspect, summarize, observe, and more — roughly 17 families) stayed introspective. Live-verified: Orion spent 53 motor-seconds generating an image through `orion-diffusion-host` and declined ten other candidates on value-per-second, unprompted, with no cron job or operator in the loop. A separately-shipped power-intent loop (declare expected draw, measure it on real hardware, settle the difference) went from wired-but-silent to its first live-verified settlement the same week (Circe, 2026-08-29: 102W above baseline, measured not estimated).
+**The action economy went from logging to enforcing** (history: layers 7-9 retired 2026-11-07, ladder retirement PR 6, after every real act moved to a trigger of its own). Layer 9 (`orion-execution-dispatch-runtime`) used to log candidate actions without acting on the numbers; it now enforces a real motor budget, and a starvation-resistant slot reservation keeps a stream of introspective actions from crowding out mutating ones. Every candidate carries a real per-action cost and a control-arm-corrected outcome ledger, so dispatch scores value-per-second instead of firing on vibes. On 2026-08-31, `express` shipped as the first action kind whose effect leaves the machine at all — every action kind before it (maintain, inspect, summarize, observe, and more — roughly 17 families) stayed introspective. Live-verified: Orion spent 53 motor-seconds generating an image through `orion-diffusion-host` and declined ten other candidates on value-per-second, unprompted, with no cron job or operator in the loop. A separately-shipped power-intent loop (declare expected draw, measure it on real hardware, settle the difference) went from wired-but-silent to its first live-verified settlement the same week (Circe, 2026-08-29: 102W above baseline, measured not estimated).
 
 Autonomy still draws pressure from Spark drift, metacog warnings, recall failures, topic repetition, social repair signals, workflow failures, equilibrium distress, operator corrections, and service health — but it must never bypass policy, trace, review, rollback, or audit. No silent substrate mutation. No hidden permission expansion. No social autonomy escalation without policy. No high-risk code edits without operator review.
 
@@ -767,8 +767,7 @@ Memory / stores / writers:
 
 Sentience Striving Program / substrate runtime:
   orion-substrate-runtime, orion-substrate-organs, orion-substrate-telemetry,
-  orion-attention-runtime, orion-proposal-runtime, orion-policy-runtime,
-  orion-execution-dispatch-runtime, orion-field-digester, orion-cocreation-signals,
+  orion-attention-runtime, orion-field-digester, orion-cocreation-signals,
   orion-world-model
 
 Reflection / state / sensemaking:

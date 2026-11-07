@@ -230,7 +230,7 @@ recomputation only happens every `FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC`
 `sustained_load_pressure` in the returned dims dict on the tick that
 ACTUALLY recomputed it (`sustained_load_computed_at == generated_at`) — an
 unconditional read would feed ~15 duplicate "fresh" observations per real
-computation into `orion/proposals/scoring.py`'s per-dimension EWMA precision
+computation into the per-dimension EWMA precision
 tracking, biasing its variance estimate low. `deviation_pressure` has no
 such gate because it genuinely is fresh every tick.
 
@@ -243,7 +243,7 @@ measure_sustained_load_pressure.py --include-volatile`, 24h real replay,
 2026-08-18): `loaded_steady`-only correlates with `deviation_pressure` at
 r=-0.0313; widening to also count `loaded_volatile` gives r=-0.0021 — both
 essentially zero, so the correlation number does not itself justify the
-scope choice. See `orion/proposals/scoring.py`'s `PRESSURE_DIMENSIONS`
+scope choice. See `orion/field/pressure_dimensions.py`'s `PRESSURE_DIMENSIONS`
 comment and `orion/field/significance.py`'s own module docstring for the
 full write-up, including the disclosed flat-repeat-channel limitation (a
 channel held at an exactly flat value for the whole window reads `static` →
@@ -337,7 +337,7 @@ Requires a real trained artifact (`manifest.json` + `weights.npz`, written by `o
 
 **Converged onto `orion/mood_arc`'s own promotion mechanism, 2026-09-03.** Before this, `FIELD_CHANNEL_ANOMALY_ENCODER_DIR` was a literal versioned directory under a separate tree (`/mnt/telemetry/models/field_channel_anomaly/`), manually re-pointed by hand on every retrain -- disconnected from `orion/mood_arc/fit_encoder.py`'s own `promote`/`active.json` mechanism (`/mnt/telemetry/models/mood_arc/`). Two parallel "which model is active" mechanisms for the same encoder code was a real architectural gap (see `orion/mood_arc/README.md`'s "Status" note and `orion/inner_state_registry.py`'s `mood_arc_encoder.v1` entry for the full history of that disconnect and its correction). `FIELD_CHANNEL_ANOMALY_MODELS_ROOT` now points at that same shared tree -- train and promote a new version with `orion/mood_arc/fit_encoder.py train` + `promote` (see that module's own README), restart this service to pick it up, done. The old `field_channel_anomaly/` tree is retired; the table below is now a historical record of it, not a live path.
 
-Since `v4`'s manifest also needs 6 channels (`action_warrant`, `heartbeat_mean_ratio`, `prediction_error_{execution,chat,biometrics,bus_synaptic}`) that this service's own in-process row-building (`collect_field_channel_pressures()`) never produces, `app/anomaly_scorer.py` also does its own small live Postgres lookup for those 6 fields every tick (`orion.mood_arc.corpus_enrichment.resolve_live_enrichment()`, a live "latest value in a narrow trailing window" counterpart to the offline `enrich-corpus` batch join) -- reuses `POSTGRES_URI`, no new env key. A field with nothing in the trailing window is left absent from that tick's row (never fabricated as `0.0`), same convention as the offline join; a transient DB error skips live enrichment for one tick and self-heals the next, without disabling scoring itself.
+**Since 2026-11-07 (ladder retirement PR 6), `action_warrant` is computed in-process:** `app/worker.py` calls `orion.field.action_warrant.action_warrant(state)` on the tick's final state and writes it into the corpus row (absent, never `0.0`, when nothing can be scored), so the JSONL corpus and the anomaly scorer both carry it. Until then it was read back from `substrate_proposal_frames`, which the retired proposal runtime wrote from the same persisted state (300 of 300 live ticks recompute to the exact stored value). Since `v4`'s manifest also needs 5 more channels (`heartbeat_mean_ratio`, `prediction_error_{execution,chat,biometrics,bus_synaptic}`) that this service's own in-process row-building (`collect_field_channel_pressures()`) never produces, `app/anomaly_scorer.py` also does its own small live Postgres lookup for those 5 fields every tick (`orion.mood_arc.corpus_enrichment.resolve_live_enrichment()`, a live "latest value in a narrow trailing window" counterpart to the offline `enrich-corpus` batch join) -- reuses `POSTGRES_URI`, no new env key. A field with nothing in the trailing window is left absent from that tick's row (never fabricated as `0.0`), same convention as the offline join; a transient DB error skips live enrichment for one tick and self-heals the next, without disabling scoring itself.
 
 Every `FIELD_CHANNEL_ANOMALY_CHECK_INTERVAL_SEC` (default 60s -- the encoder's own `window_size` is ~30 rows / ~60s at the default 2s tick cadence, so this scores a genuinely new window each check), the most recent complete window's reconstruction loss is published on `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` (`orion:field_channel:anomaly_score`) alongside the encoder's own train-time `recon_error_p95` reference. `orion-equilibrium-service`'s `telemetry_anomaly_metacog_gate.py` is one consumer -- it applies its own threshold multiplier rather than trusting this service's `FIELD_CHANNEL_ANOMALY_THRESHOLD_MULTIPLIER` (informational only here), so trigger sensitivity is tunable on the equilibrium side without redeploying this service. See `services/orion-equilibrium-service/README.md`'s matching section. A second, independent consumer: this same published score feeds the Hub's main-page Cognitive EKG / Substrate Brain State viz's "Field Anomaly" region, via `orion-substrate-runtime`'s `brain_frame_producer.py` -- see `orion/mood_arc/README.md`'s "Status" note for the full chain.
 
@@ -2049,7 +2049,7 @@ loads). New additive `FieldStateV1` fields: `dimension_precision_ewma`/`_var`/`_
 keyed by dimension id). A dimension absent from a given tick's `field_pressures()` is left
 untouched rather than absorbing a fabricated reading — same "absent this tick holds, doesn't fake
 zero" convention `_update_recent_perturbation_baseline` above already uses. Each dimension has its
-own hand-verified `min_variance` floor (`orion.proposals.scoring.DIMENSION_PRECISION_MIN_VARIANCE`)
+own hand-verified `min_variance` floor (`DIMENSION_PRECISION_MIN_VARIANCE`, in `orion/field/pressure_dimensions.py` since the proposal rung retired on 2026-11-07)
 — deliberately *not* reusing `execution_prediction_error`'s calibrated floor from PR #1434 the same
 night, after that PR found a shared default five orders of magnitude wrong when borrowed across
 domains without re-verification.

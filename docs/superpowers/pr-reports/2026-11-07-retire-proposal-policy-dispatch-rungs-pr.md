@@ -64,6 +64,9 @@ maintain, inspect) has been written in 48 h.
    nothing can be scored.
 5. **Temporal Self.** The `action_outcome` source reads act rows only (`act:%` and the cooling act's
    `self_regulate`). A Postgres test pins it, and a mutation (filter removed) makes that test fail.
+   The pure adapter (`orion/temporal_self/sources.py::action_outcome`) applies the same rule, so
+   the replay over stored fixtures and the live chronicle read the same events.
+
 6. **The dream compaction gate.** The `PolicyDecisionFrameV1` gate is replaced by an injected
    `consent` callable. It fails closed: there is no consent, a non-True answer is no, and an
    exception is no. Apply stays off (`ORION_DREAM_COMPACTION_APPLY_ENABLED=false`, Juniper's
@@ -339,6 +342,13 @@ The code review ran in a subagent (read-only, against `git diff origin/main...HE
 - Not changed (nit): `agency_episode.py` still builds dispatch/proposal links from sources that now
   read `retired`. The result is correctly "unverified". The Hub message tray still handles two
   dispatch alert kinds nothing sends. Both are harmless, and they go with PR 7 or a tray cleanup.
+- Finding (CI, durable-runs "Temporal Self live replay"): `closed_day_equals_pure_one_pass` was false.
+  The 10-09 fixture holds one ladder-kind outcome row (`action_outcome:144909`). The live SQL now
+  drops it, but the pure adapter still read it (expectations resolved: 330 vs 331).
+  - Fix: the act-rows rule moves into the shared adapter too (`is_act_outcome_kind`), with a test.
+  - Evidence: the replay run locally on a throwaway Postgres 16 shows `closed_day_equals_pure_one_pass`
+    true, `score_equals_patch2` true and `passed` true. `orion/temporal_self/tests` 279 passed; arc
+    precision and play-cue evals PASS; the durable-runs temporal/chronicle tests 124 passed.
 - Found and fixed during the build, before review:
   - `visual_baseline.v1.yaml` had to move with its readers' Dockerfiles. A missing file silently
     disables waking paintings, so it is pinned by a test and checked in both images.

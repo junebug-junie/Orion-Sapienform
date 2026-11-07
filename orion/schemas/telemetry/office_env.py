@@ -124,7 +124,9 @@ class OfficeEnvSensorV1(BaseModel):
     id: str
     model: str = "SHT40"  # primary sensor; the same node also carries the CCS811
     # True when the serial link produced a valid frame inside the stale window carrying
-    # a usable reading from either sensor (SHT40 or CCS811).
+    # a usable reading from any office sensor (SHT40, CCS811, PMSA003I, TSL2591 or the
+    # sound meter). The sound meter is not on the I2C bus, so with every I2C sensor gone it
+    # alone keeps the sample fresh and ``online`` true; the other measurements are then absent.
     online: bool
 
 

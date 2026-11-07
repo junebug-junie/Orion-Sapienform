@@ -73,7 +73,13 @@ Built with ArduinoJson 6.21.5 and the documented libraries in a scratch library 
 
 ## Review findings fixed
 
-Pending (code review run after this report).
+- Finding (should): the pull-down presence test did not pull down. arduino-esp32 re-runs `pinMode(pin, ANALOG)` on every analog read, which switches the pull off.
+  - Fix: discharge via pull-down then read within microseconds (5 ms settle), at boot, on the retry path and once per frame, so an unplugged meter is also dropped. Core source read at `esp32-hal-adc.c` `__analogReadRaw` -> `__adcAttachPin` -> `pinMode(pin, ANALOG)`.
+  - Evidence: compiles; hardware behaviour still UNVERIFIED (unplug test).
+- Finding (should): a sound-only frame is fresh and `sensor.online` is true.
+  - Fix: kept on purpose (works with the multiplexer unplugged); `online` docstring now says so.
+- Finding (should): deploy order. Checked `rg OfficeEnvSampleV1|office.env.sample` in services: only `orion-sql-writer` validates the sample model (prediction does not); Hub reads the DB. README order stands: sql-writer first, Nano last.
+- Nits: mean-of-dBA vs energy average is now noted in the firmware README; `_NEW_COLUMNS` in the Hub test means "never a bare SQL column" and still holds.
 
 ## Restart required
 
@@ -87,7 +93,7 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Risks / concerns
 
-- Severity: medium. A meter that is unplugged while the board runs, with the pin floating inside 0.4..3.3 V, could read as a plausible level. Mitigation: pull-down presence test on every retry; UNVERIFIED on hardware until an unplug test is run.
+- Severity: medium. Presence is a discharge probe, not a real identity check. An unplugged meter should read ~0 and be dropped within a frame, but this is UNVERIFIED on hardware until the unplug test is run. Mitigation: probe every frame.
 - Severity: low. A 5 V meter on VBUS: output is under 3.3 V, so the pin is safe.
 
 ## PR link

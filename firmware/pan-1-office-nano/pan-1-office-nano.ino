@@ -30,8 +30,9 @@
  * Sound meter: DFRobot SEN0232 on A0 (analog, NOT on the I2C bus or the multiplexer; powered
  *   from VBUS). Output 0.6..2.6 V = 30..130 dBA. The frame carries `sound.level_mv`, the
  *   mean pin voltage over the frame interval; the host converts to dBA and range-checks.
- *   The meter is "found" by a pull-down test: a powered meter drives the pin to >= 0.6 V,
- *   a pin with nothing on it (the closet Nano) reads ~0 and is never reported.
+ *   The meter is "found" by a discharge test (pull the pin low, read at once): a powered meter
+ *   drives the pin to >= 0.6 V, a pin with nothing on it (the closet Nano) reads ~0 and is
+ *   never reported. The test is repeated every frame, so an unplugged meter is dropped.
  * SCD40: photoacoustic CO2 (a real CO2 measurement), new reading every 5 s.
  *   Automatic self-calibration stays at the factory default (on).
  *
@@ -299,19 +300,22 @@ static void poll_scd40(uint32_t now) {
   scd_have_reading = true;
 }
 
-// Pull the pin low and see whether something drives it back up. Run at boot and on the retry
-// path, so a meter plugged in later is found without a reflash.
-static bool init_sound() {
+// Is something driving the pin? Discharge it through the internal pull-down, then read.
+// arduino-esp32 re-runs pinMode(pin, ANALOG) on EVERY analog read (esp32-hal-adc.c
+// __adcAttachPin), which turns the pull off again; so the pull-down only helps because the
+// read follows it by microseconds: an undriven pad is still discharged (reads ~0), a pad
+// driven by the meter reads >= 0.6 V. Costs 5 ms.
+static bool sound_pin_driven() {
   pinMode(SOUND_PIN, INPUT_PULLDOWN);
-  delay(20);
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < 8; i++) {
-    sum += analogReadMilliVolts(SOUND_PIN);
-    delay(2);
-  }
+  delay(5);
+  return analogReadMilliVolts(SOUND_PIN) >= SOUND_PRESENT_MIN_MV;
+}
+
+// Run at boot and on the retry path, so a meter plugged in later is found without a reflash.
+static bool init_sound() {
   sound_sum_mv = 0;
   sound_count = 0;
-  return sum / 8 >= SOUND_PRESENT_MIN_MV;
+  return sound_pin_driven();
 }
 
 static void poll_sound(uint32_t now) {
@@ -321,9 +325,10 @@ static void poll_sound(uint32_t now) {
   sound_count++;
 }
 
-// Mean pin voltage since the last frame. A window with too few samples, or one that reads
-// below what a powered meter can output, is not a reading: omitted, and the retry path
-// re-tests the pin. Always restarts the window.
+// Mean pin voltage since the last frame. A window with too few samples, one that reads below
+// what a powered meter can output, or a pin that fails the discharge probe (meter unplugged
+// while running: the pad would otherwise keep reading its last charge) is not a reading:
+// omitted, and the retry path re-tests the pin. Always restarts the window.
 static void add_sound(JsonDocument &doc) {
   if (!sound_ok) return;
   const uint32_t n = sound_count;
@@ -332,6 +337,10 @@ static void add_sound(JsonDocument &doc) {
   sound_count = 0;
   if (n < SOUND_MIN_SAMPLES) return;
   if (mean_mv < SOUND_PRESENT_MIN_MV) {
+    sound_ok = false;  // nothing driving the pin: retry path, no sound object
+    return;
+  }
+  if (!sound_pin_driven()) {
     sound_ok = false;  // nothing driving the pin: retry path, no sound object
     return;
   }

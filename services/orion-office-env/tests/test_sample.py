@@ -230,3 +230,40 @@ def test_closet_sample_stale_without_scd40_or_when_old() -> None:
         s = _closet(frame, age)
         assert s.state.stale is True
         assert s.measurements.model_dump(exclude_none=True) == {}
+
+
+def test_sound_meter_converts_volts_to_dba() -> None:
+    # DFRobot SEN0232: dBA = volts x 50. 1.2 V -> 60 dBA.
+    s = _build(_raw(sound={"level_mv": 1200}), age_sec=1.0)
+    assert s.measurements.office_sound_dba == 60.0
+    assert s.state.stale is False  # a meter reading alone is a fresh reading (mux unplugged)
+    assert s.measurements.office_temp_c is None
+
+
+def test_sound_meter_range_edges_are_readings_and_outside_is_not() -> None:
+    assert _build(_raw(sound={"level_mv": 600}), age_sec=1.0).measurements.office_sound_dba == 30.0
+    assert _build(_raw(sound={"level_mv": 2600}), age_sec=1.0).measurements.office_sound_dba == 130.0
+    for mv in (0, 599, 2601, 3300):
+        s = _build(_raw(environment={"temp_c": 21.0}, sound={"level_mv": mv}), age_sec=1.0)
+        assert s.measurements.office_sound_dba is None, mv  # dropped, never clamped or zeroed
+        assert s.state.stale is False  # SHT40 still carries the sample
+
+
+def test_sound_alone_out_of_range_is_stale() -> None:
+    s = _build(_raw(sound={"level_mv": 80}), age_sec=1.0)
+    assert s.state.stale is True
+    assert s.measurements.model_dump(exclude_none=True) == {}
+
+
+def test_old_sound_frame_is_stale_with_no_reading() -> None:
+    s = _build(_raw(sound={"level_mv": 1200}), age_sec=60.0)
+    assert s.state.stale is True
+    assert s.measurements.office_sound_dba is None
+
+
+def test_closet_sample_ignores_sound() -> None:
+    s = build_closet_sample(
+        frame=_raw(sound={"level_mv": 1200}), received_at=NOW - timedelta(seconds=1), now=NOW,
+        stale_after_sec=10.0, node="pan-1", sensor_id="scd40-closet",
+    )
+    assert s.state.stale is True

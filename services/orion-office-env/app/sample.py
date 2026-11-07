@@ -16,6 +16,7 @@ from orion.schemas.telemetry.office_env import (
     OfficeEnvFrameAirV1,
     OfficeEnvFrameLightV1,
     OfficeEnvFrameParticulateV1,
+    OfficeEnvFrameSoundV1,
     OfficeEnvFrameV1,
     OfficeEnvMeasurementsV1,
     OfficeEnvProvenanceV1,
@@ -33,6 +34,9 @@ TVOC_RANGE_PPB = (0, 32768)
 PM_RANGE_UG_M3 = (0, 1000)
 # TSL2591 datasheet range (upper end; the lower end is 188 micro-lux).
 LUX_MAX = 88000.0
+# DFRobot SEN0232: output 0.6..2.6 V maps to 30..130 dBA, dBA = volts x 50 (+-1.5 dB).
+SOUND_VOLTS_TO_DBA = 50.0
+SOUND_RANGE_MV = (600, 2600)
 
 
 def _in_range(value: Optional[int], bounds: tuple[int, int]) -> Optional[int]:
@@ -72,6 +76,14 @@ def _light_reading(light: Optional[OfficeEnvFrameLightV1]) -> tuple[Optional[flo
     return lux, False
 
 
+def _sound_reading(sound: Optional[OfficeEnvFrameSoundV1]) -> Optional[float]:
+    """dBA from the meter's mean pin voltage. Outside its output range it is not a reading."""
+    mv = sound.level_mv if sound is not None else None
+    if mv is None or not SOUND_RANGE_MV[0] <= mv <= SOUND_RANGE_MV[1]:
+        return None
+    return mv / 1000.0 * SOUND_VOLTS_TO_DBA
+
+
 def _age(received_at: Optional[datetime], now: datetime) -> Optional[float]:
     return max(0.0, (now - received_at).total_seconds()) if received_at is not None else None
 
@@ -89,7 +101,7 @@ def build_sample(
 
     "Stale" covers: no frame ever, last frame older than ``stale_after_sec``, and a
     fresh frame carrying no usable reading from any office sensor (SHT40, CCS811,
-    PMSA003I, TSL2591). Each sensor's readings are otherwise independent: one failing
+    PMSA003I, TSL2591, sound meter). Each sensor's readings are otherwise independent: one failing
     does not drop the others.
     """
     age = _age(received_at, now)
@@ -100,11 +112,12 @@ def build_sample(
     eco2, tvoc, warming = _air_readings(air)
     pm1, pm25, pm10 = _pm_readings(frame.particulate if frame is not None else None)
     lux, saturated = _light_reading(frame.light if frame is not None else None)
+    sound_dba = _sound_reading(frame.sound if frame is not None else None)
     stale = (
         frame is None
         or age is None
         or age > stale_after_sec
-        or all(v is None for v in (temp, humidity, eco2, tvoc, pm1, pm25, pm10, lux))
+        or all(v is None for v in (temp, humidity, eco2, tvoc, pm1, pm25, pm10, lux, sound_dba))
     )
     if stale:
         measurements = OfficeEnvMeasurementsV1()
@@ -118,6 +131,7 @@ def build_sample(
             office_pm25_ug_m3=pm25,
             office_pm10_ug_m3=pm10,
             office_lux=lux,
+            office_sound_dba=sound_dba,
         )
     return OfficeEnvSampleV1(
         ts=now,

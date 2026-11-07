@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-"""Office environment contracts (pan-1 Nano ESP32 + SHT40 + CCS811 + PMSA003I + TSL2591).
+"""Office environment contracts (pan-1 Nano ESP32 + SHT40 + CCS811 + PMSA003I + TSL2591
++ DFRobot SEN0232 analog sound level meter on A0).
 
 Two shapes live here:
 
@@ -70,6 +71,19 @@ class OfficeEnvFrameLightV1(BaseModel):
     saturated: bool = False
 
 
+class OfficeEnvFrameSoundV1(BaseModel):
+    """DFRobot SEN0232 analog sound level meter on the Nano's A0 pin (not on the I2C bus).
+
+    ``level_mv`` is the mean pin voltage over the frame interval. The firmware sends the raw
+    voltage; ``build_sample`` converts it to dBA (volts x 50) and applies the meter's range.
+    Bound is the ESP32 ADC span, so one odd reading cannot reject the whole frame.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    level_mv: Optional[int] = Field(default=None, ge=0, le=3300)
+
+
 class OfficeEnvFrameCo2V1(BaseModel):
     """SCD40 (closet Nano). Photoacoustic CO2: a real CO2 measurement, unlike eCO2."""
 
@@ -93,6 +107,7 @@ class OfficeEnvFrameV1(BaseModel):
     air: Optional[OfficeEnvFrameAirV1] = None
     particulate: Optional[OfficeEnvFrameParticulateV1] = None
     light: Optional[OfficeEnvFrameLightV1] = None
+    sound: Optional[OfficeEnvFrameSoundV1] = None
     co2: Optional[OfficeEnvFrameCo2V1] = None
 
     @field_validator("schema_name")
@@ -109,7 +124,9 @@ class OfficeEnvSensorV1(BaseModel):
     id: str
     model: str = "SHT40"  # primary sensor; the same node also carries the CCS811
     # True when the serial link produced a valid frame inside the stale window carrying
-    # a usable reading from either sensor (SHT40 or CCS811).
+    # a usable reading from any office sensor (SHT40, CCS811, PMSA003I, TSL2591 or the
+    # sound meter). The sound meter is not on the I2C bus, so with every I2C sensor gone it
+    # alone keeps the sample fresh and ``online`` true; the other measurements are then absent.
     online: bool
 
 
@@ -129,6 +146,8 @@ class OfficeEnvMeasurementsV1(BaseModel):
     office_pm10_ug_m3: Optional[int] = Field(default=None, ge=0, le=1000)
     # TSL2591 at the office windowsill. Datasheet range 188 ulux..88,000 lux.
     office_lux: Optional[float] = Field(default=None, ge=0.0, le=88000.0)
+    # DFRobot SEN0232, A-weighted, factory calibrated: 30..130 dBA (0.6..2.6 V x 50), +-1.5 dB.
+    office_sound_dba: Optional[float] = Field(default=None, ge=30.0, le=130.0)
 
 
 class OfficeEnvStateV1(BaseModel):

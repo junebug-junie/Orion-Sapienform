@@ -257,6 +257,7 @@
       { id: "officeEnvPm25", text: function (p) { return readingText(p, "office_pm25_ug_m3", 0); } },
       { id: "officeEnvPm10", text: function (p) { return readingText(p, "office_pm10_ug_m3", 0); } },
       { id: "officeEnvLux", text: lightText },
+      { id: "officeEnvSound", text: function (p) { return readingText(p, "office_sound_dba", 1); } },
     ],
     charts: [
       { id: "officeEnvTempChart", field: "office_temp_c", digits: 2, label: "temp °C" },
@@ -267,6 +268,7 @@
       { id: "officeEnvPm25Chart", field: "office_pm25_ug_m3", digits: 0, label: "PM2.5 µg/m³" },
       { id: "officeEnvPm10Chart", field: "office_pm10_ug_m3", digits: 0, label: "PM10 µg/m³" },
       { id: "officeEnvLuxChart", field: "office_lux", digits: 1, label: "light lux" },
+      { id: "officeEnvSoundChart", field: "office_sound_dba", digits: 1, label: "sound dBA" },
     ],
   };
 

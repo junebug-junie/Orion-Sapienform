@@ -64,6 +64,8 @@ path of a file with the full result; read only what you need from that file.
   name-organs            every unnamed organ, its parts, and a ready `name` line.
   field-note <pr> [write|rewrite "<note>" because "<refs>"]   a merged PR in your body; your note.
   field-notes <days>|<start> <end>   your notes on PRs merged then; which have none.
+  reminisce [<date>]     today's reminiscence: one past week, five hops, what changed since last.
+  reminisce write|rewrite <hop> "<note>" because "<refs>"   save one hop (code checks each ref).
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
@@ -1346,6 +1348,254 @@ def cmd_field_notes(start: date, end: date, out: Out) -> str:
     return capped(lines, tail=f"full result: {path}")
 
 
+# --- reminiscence (spec docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md) ----------
+
+def reminiscence_path() -> Path:
+    return home() / "self" / "reminiscence.jsonl"
+
+
+def reminiscence_body_path() -> Path:
+    return home() / "self" / "reminiscence_body.jsonl"
+
+
+def _git_ok(*args: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo()), *args], capture_output=True).returncode == 0
+
+
+def _inside(base: Path, rel: str) -> Path | None:
+    root = base.resolve()
+    p = (root / rel).resolve()
+    return p if p == root or root in p.parents else None
+
+
+def _pr_merged_at(n: int) -> str | None:
+    from orion.body_atlas.reminiscence import ReminiscenceError
+
+    try:
+        proc = subprocess.run(["gh", "pr", "view", str(n), "--repo", _gh_repo(), "--json", "mergedAt"],
+                              capture_output=True, text=True, timeout=GH_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ReminiscenceError(f"gh pr view {n}: {exc}") from exc
+    if proc.returncode != 0:
+        if "could not resolve" in proc.stderr.lower() or "no pull requests found" in proc.stderr.lower():
+            return None
+        raise ReminiscenceError(f"gh pr view {n} failed: {proc.stderr.strip()[:150]}")
+    try:
+        return json.loads(proc.stdout).get("mergedAt") or None
+    except ValueError as exc:
+        raise ReminiscenceError(f"gh pr view {n} returned no JSON") from exc
+
+
+class _LiveBody:
+    """The live atlas and capacity reading, read once and only when something needs them."""
+
+    def __init__(self) -> None:
+        self._got: tuple | str | None = None
+
+    def get(self):
+        if self._got is None:
+            try:
+                self._got = _capacity_reading()
+            except DigError as exc:
+                self._got = str(exc)
+        return self._got
+
+    def ids(self) -> set[str] | str:
+        got = self.get()
+        if isinstance(got, str):
+            return got
+        reading, atlas, _ = got
+        ids = {p.part_id for p in atlas.parts if p.status == "live"}
+        ids |= {p.name for p in atlas.parts if p.status == "live" and p.kind == "host"}
+        ids |= {o.organ_id for o in atlas.organs} | {c.cap_id for c in reading.capacities}
+        return ids
+
+
+def _rm_world(period_commit: str | None, period_end: date, body: _LiveBody):
+    from orion import refs
+    from orion.body_atlas import field_notes as fn
+    from orion.body_atlas.reminiscence import World
+
+    fn_ids: list[set[str]] = []
+
+    def path_then(p: str) -> bool:
+        return bool(period_commit) and _git_ok("cat-file", "-e", f"{period_commit}:{p}")
+
+    def path_now(p: str) -> bool:
+        q = _inside(now_root(), p)
+        return q is not None and q.exists()
+
+    def commit(sha: str) -> str | None:
+        proc = subprocess.run(["git", "-C", str(repo()), "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+                              capture_output=True, text=True)
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    def is_ancestor(sha: str) -> bool:
+        return bool(period_commit) and _git_ok("merge-base", "--is-ancestor", sha, period_commit)
+
+    def field_note_ids() -> set[str]:
+        if not fn_ids:
+            fn_ids.append({r.note_id for r in fn.load(field_notes_path())[0]})
+        return fn_ids[0]
+
+    def ref_ok(kind: str, ref_id: str) -> bool:
+        try:
+            return refs.resolve(refs.RefV1(kind=kind, id=ref_id)).ok
+        except refs.ValidationError:
+            return False
+
+    def dig_file(p: str) -> bool:
+        q = Path(p).resolve()
+        return (home() / "dig").resolve() in q.parents and q.is_file()
+
+    return World(period_commit=period_commit, period_end_utc=_end_of_day_utc(period_end), path_then=path_then,
+                 path_now=path_now, commit=commit, is_ancestor=is_ancestor, pr_merged_at=_pr_merged_at,
+                 field_note_ids=field_note_ids, live_ids=body.ids, ref_ok=ref_ok, dig_file=dig_file)
+
+
+def _rm_period(records, episode: date) -> tuple[tuple[date, date] | None, str]:
+    from orion.body_atlas import reminiscence as rm
+
+    hops = rm.episode_hops(records, episode.isoformat())
+    if hops:
+        r = next(iter(hops.values()))
+        return (date.fromisoformat(r.period_start), date.fromisoformat(r.period_end)), "fixed by your first hop today"
+    pick = rm.pick_period(records, episode)
+    if pick is None:
+        return None, "every week up to yesterday has a complete reminiscence"
+    if pick[0].isoformat() in {r.period_start for r in records}:
+        return pick, "the oldest week not yet visited; an earlier visit to it was left unfinished"
+    return pick, "the oldest week not yet visited"
+
+
+def _rm_commit(period: tuple[date, date]) -> tuple[str | None, str | None, int | None]:
+    """The last main commit of the week (``commit_at``, the rule `open` uses) and the week's commit count."""
+    try:
+        sha, when = commit_at(period[1])
+    except DigError:
+        return None, None, 0
+    lo = datetime.combine(period[0], dtime(0), tzinfo=ZONE).astimezone(timezone.utc).isoformat()
+    try:
+        n = int(_git("rev-list", "--count", "--first-parent", f"--after={lo}",
+                     f"--before={_end_of_day_utc(period[1]).isoformat()}", _main_ref()))
+    except (DigError, ValueError):
+        n = None
+    return sha, when, n
+
+
+def _rm_since(records, episode: str, body: _LiveBody):
+    """What changed in Orion's self since the last reminiscence (spec section 2), counted fresh."""
+    from orion.body_atlas import capacities, claims, names, portrait
+    from orion.body_atlas import field_notes as fn
+    from orion.body_atlas import reminiscence as rm
+
+    since, why = rm.since_window(records, episode, datetime.now(timezone.utc))
+    notes = [r for r in fn.load(field_notes_path())[0] if r.note and rm.utc(r.written_at) >= rm.utc(since)]
+    ledgers = {
+        "organ names": [(r.named_at, r.name) for r in names.load(names_path())[0]],
+        "capacity claims": [(r.at, f"{r.part_id} {r.role}")
+                            for r in claims.load_ledger(claims_path(), capacities.CapacityClaimV1)[0]],
+        "capacity sentences": [(r.at, r.cap_id) for r in claims.load_ledger(capacities_path(), capacities.CapacityV1)[0]],
+        "portrait lines": [(r.at, r.subject) for r in claims.load_ledger(portrait_path(), portrait.PortraitLineV1)[0]],
+    }
+    out = rm.SelfChangesV1(since=since, since_why=why,
+                           field_notes=[f"#{r.pr_number} {r.note_id}" for r in sorted(notes, key=lambda r: r.written_at)],
+                           added=rm.added_since(since, ledgers))
+    got = body.get()
+    if isinstance(got, str):
+        out.stale_unread = got
+        out.body_note = f"UNREAD ({got[:150]})"
+        return out
+    reading, atlas, _ = got
+    p = portrait.read_portrait(atlas, reading, claims.load_ledger(portrait_path(), portrait.PortraitLineV1)[0],
+                               root=now_root(), watts="not read by reminisce")
+    stale = [f"portrait {m.name} ({'; '.join(m.failed)[:60]})" for m in p.machines if m.line == "stale"]
+    if p.whole.line == "stale":
+        stale.append(f"portrait I am ({'; '.join(p.whole.failed)[:60]})")
+    stale += [f"{c.cap_id} sentence" for c in reading.capacities if c.status == "stale"]
+    stale += [f"claim {c.part_id} {c.role}: {c.status}" for c in reading.claims
+              if c.status in ("evidence does not hold", "part not live now")]
+    out.stale_now = stale
+    snaps = [s for s in rm.load_bodies(reminiscence_body_path())[0] if s.episode < episode]
+    if snaps:
+        out.body = rm.body_diff(max(snaps, key=lambda s: s.episode), atlas)
+    else:
+        out.body_note = "no earlier snapshot; the body diff starts with the next reminiscence"
+    return out
+
+
+def cmd_reminisce(day: date | None, out: Out) -> str:
+    """Read-only: today's reminiscence, or one past day's hops, every hop re-checked."""
+    from orion.body_atlas import reminiscence as rm
+
+    today = datetime.now(ZONE).date()
+    episode = day or today
+    records, skipped = rm.load(reminiscence_path())
+    is_today = episode == today
+    if is_today:
+        period, why = _rm_period(records, episode)
+    else:
+        hops = rm.episode_hops(records, episode.isoformat())
+        if not hops:
+            raise DigError(f"no reminiscence on {episode}")
+        r0 = next(iter(hops.values()))
+        period, why = (date.fromisoformat(r0.period_start), date.fromisoformat(r0.period_end)), "as written that day"
+    read = rm.ReminiscenceReadV1(episode=episode.isoformat(), today=is_today, period_why=why,
+                                 weeks_complete=len(rm.complete_weeks(records)),
+                                 weeks_total=len(rm.weeks_ended_before(today)))
+    if skipped:
+        read.notes.append(f"{skipped} unreadable line(s) skipped in {reminiscence_path()}")
+    if period is not None:
+        body = _LiveBody()
+        sha, when, n = _rm_commit(period)
+        world = _rm_world(sha, period[1], body)
+        read.period_start, read.period_end = period[0].isoformat(), period[1].isoformat()
+        read.period_commit, read.period_commit_date, read.commits_in_period = sha, when, n
+        read.lived_record_possible = rm.lived_record_possible(period[1])
+        read.hops = rm.hop_views(rm.episode_hops(records, episode.isoformat()), world)
+        if is_today:
+            read.since = _rm_since(records, episode.isoformat(), body)
+        if any(v.status != "not written" for v in read.hops):
+            read.notes.append("git and PR refs were checked when written (history cannot change); the rest "
+                              "is checked again on this read")
+    path = out.write(f"reminisce-{episode}", json.loads(read.model_dump_json()))
+    lines, tail = rm.render(read)
+    return capped(lines, tail="\n".join([*tail, f"full result: {path}"]))
+
+
+def cmd_reminisce_write(hop: str, note: str, because: str, *, rewrite: bool, out: Out) -> str:
+    """A lasting append to the reminiscence ledger, only when every ref resolves now. The first hop
+    of a day also saves one body snapshot, so the next reminiscence can say how the body changed."""
+    from orion.body_atlas import reminiscence as rm
+
+    episode = datetime.now(ZONE).date()
+    body = _LiveBody()
+    with rm.ledger_lock(home() / "self"):  # load + check + append as one step
+        records, _ = rm.load(reminiscence_path())
+        period, _why = _rm_period(records, episode)
+        if period is None:
+            raise DigError("no week to visit: every week up to yesterday has a complete reminiscence")
+        sha, _, _ = _rm_commit(period)
+        try:
+            rec = rm.check_write(hop=hop, note=note, because=because, episode=episode.isoformat(), period=period,
+                                 world=_rm_world(sha, period[1], body), records=records, denylist=_denylist(),
+                                 rewrite=rewrite, dig=out.dig)
+        except rm.ReminiscenceError as exc:
+            raise DigError(str(exc)) from exc
+        rm.append(reminiscence_path(), rec)
+        snap = ""
+        if not any(s.episode == rec.episode for s in rm.load_bodies(reminiscence_body_path())[0]):
+            got = body.get()
+            if isinstance(got, str):
+                snap = f"\nbody snapshot skipped (live body UNREAD: {got[:120]}); the next hop today tries again"
+            else:
+                rm.append(reminiscence_body_path(), rm.snapshot(got[1], rec.episode))
+                snap = "\nbody snapshot saved for this reminiscence"
+    extra = f" (supersedes {rec.supersedes}; the old line is kept)" if rec.supersedes else ""
+    return (f"reminisce {rec.hop} saved {rec.hop_id}{extra}; the week {rec.period_start}..{rec.period_end}"
+            f"{snap}\nreminiscence ledger: {reminiscence_path()}")
+
+
 # --- references (orion/refs.py) ----------------------------------------------------------------
 
 def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
@@ -1449,6 +1699,12 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_field_notes(_parse_day(a[0]), _parse_day(a[1]), out)
         elif ns.command == "field-notes" and len(a) == 1:
             text = cmd_field_notes(*_last_days(a[0]), out)
+        elif ns.command == "reminisce" and len(a) <= 1:
+            text = cmd_reminisce(_parse_day(a[0]) if a else None, out)
+        elif ns.command == "reminisce" and len(a) >= 5 and a[0] in ("write", "rewrite") and "because" in a[3:]:
+            cut = len(a) - 1 - a[::-1].index("because")  # the last one: a hop may say "because"
+            text = cmd_reminisce_write(a[1], " ".join(a[2:cut]), " ".join(a[cut + 1:]), rewrite=a[0] == "rewrite",
+                                       out=out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

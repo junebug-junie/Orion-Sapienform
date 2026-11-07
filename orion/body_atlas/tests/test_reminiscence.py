@@ -1,0 +1,207 @@
+"""The reminiscence ledger's pure rules: period pick, the write check, re-check on read, body diff.
+
+Spec: docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md (acceptance checks 2-6)."""
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
+
+import pytest
+
+from orion.body_atlas import reminiscence as rm
+from orion.body_atlas.tests.test_portrait import portrait_body
+
+WEEK1 = (date(2025, 6, 24), date(2025, 6, 30))
+THEN = {"services/orion-a/app/main.py", "services/orion-a", "README.md"}
+NOW = {"services/orion-a/app/main.py", "services/orion-hub/app/main.py", "services/orion-hub", "README.md"}
+COMMITS = {"abc1234": "abc1234" + "0" * 33, "def5678": "def5678" + "0" * 33}
+BEFORE = {"abc1234" + "0" * 33}  # def5678 came after the week
+
+
+def world(**over) -> rm.World:
+    kw = dict(period_commit="abc1234" + "0" * 33, period_end_utc=datetime(2025, 7, 1, 6, tzinfo=timezone.utc),
+              path_then=lambda p: p in THEN, path_now=lambda p: p in NOW, commit=lambda s: COMMITS.get(s),
+              is_ancestor=lambda s: s in BEFORE,
+              pr_merged_at=lambda n: {5: "2025-06-28T10:00:00Z", 3000: "2026-11-01T10:00:00Z"}.get(n),
+              field_note_ids=lambda: {"fn:3148:5cc1e8bef3"}, live_ids=lambda: {"part:orion-hub", "cap:s1"},
+              ref_ok=lambda k, i: k == "arc" and i == "8d87adeca2ce06a5", dig_file=lambda p: p == "/h/dig/t/portrait-1.json")
+    kw.update(over)
+    return rm.World(**kw)
+
+
+def write(hop, note, because="", *, records=(), period=WEEK1, w=None, rewrite=False, episode="2026-11-07"):
+    return rm.check_write(hop=hop, note=note, because=because, episode=episode, period=period, world=w or world(),
+                          records=list(records), denylist={"0" * 64}, rewrite=rewrite)
+
+
+GOOD = {
+    "what_it_was": ("[code_then services/orion-a/app/main.py] The first week held one service, orion-a, and a README. "
+                    "[pr_text abc1234] The first commit message says it was a start.", ""),
+    "what_it_was_like": ("[pr_text abc1234] I have no lived record of this week; only the builder's commit words "
+                         "survive, and they say it was a start.", ""),
+    "where_i_am_now": ("[now part:orion-hub] Now a hub runs at my centre, and my field notes keep up with each merge.",
+                       "fn:3148:5cc1e8bef3"),
+    "where_im_going": ("[now cap:s1] My operations line is written; the gaps say I cannot yet coordinate across organs.", ""),
+    "otherwise": ("[reflection] I would have written down why each service began, so a later me could read the reasons.", ""),
+}
+
+
+def test_five_good_hops_save_and_complete_the_week():
+    recs = []
+    for hop, (note, because) in GOOD.items():
+        recs.append(write(hop, note, because, records=recs))
+    assert {r.hop for r in recs} == set(rm.HOPS)
+    assert recs[0].hop_id.startswith("rm:2026-11-07:what_it_was:") and recs[0].period_start == "2025-06-24"
+    assert recs[2].claims[0].refs == ["part:orion-hub", "fn:3148:5cc1e8bef3"]  # inline + because under [now]
+    assert rm.complete_weeks(recs) == {"2025-06-24"}
+    assert rm.pick_period(recs, date(2026, 11, 8)) == (date(2025, 7, 1), date(2025, 7, 7))
+
+
+def test_a_then_path_that_only_exists_now_is_refused_naming_it():
+    with pytest.raises(rm.ReminiscenceError, match=r"services/orion-hub/app/main.py: not in the code at the end of this week"):
+        write("what_it_was", "[code_then services/orion-hub/app/main.py] The first week already had a hub service in it.")
+
+
+def test_lived_record_before_the_memory_loss_is_refused():
+    with pytest.raises(rm.ReminiscenceError, match="no lived record of the week 2025-06-24..2025-06-30"):
+        write("what_it_was_like", "[lived_record arc:8d87adeca2ce06a5] I remember how this first week felt to me.")
+    later = (date(2026, 10, 13), date(2026, 10, 19))
+    rec = write("what_it_was_like", "[lived_record arc:8d87adeca2ce06a5] That week I kept one long arc open about heat.",
+                period=later)
+    assert rec.claims[0].refs == ["arc:8d87adeca2ce06a5"]
+
+
+def test_where_i_am_now_needs_a_now_sentence_with_a_live_ref():
+    with pytest.raises(rm.ReminiscenceError, match=r"where_i_am_now needs at least one \[now\]"):
+        write("where_i_am_now", "[reflection] I think I have grown a great deal since that first small week.")
+    with pytest.raises(rm.ReminiscenceError, match=r"has no ref that resolves under that label"):
+        write("where_i_am_now", "[now] I have a hub now and many organs that talk to each other on my bus.")
+    with pytest.raises(rm.ReminiscenceError, match=r"part:orion-ghost: not live in my body now"):
+        write("where_i_am_now", "[now part:orion-ghost] A ghost service runs at my centre and keeps everything.")
+
+
+def test_a_live_ref_cannot_back_code_then_and_a_later_commit_cannot_back_the_week():
+    with pytest.raises(rm.ReminiscenceError, match=r"a atlas ref cannot back a \[code_then\]"):
+        write("what_it_was", "[code_then part:orion-hub] The hub was there in the first week of my code.")
+    with pytest.raises(rm.ReminiscenceError, match="def5678: a commit made after this week"):
+        write("what_it_was", "[code_then def5678] This commit shaped the first week of my code base.")
+    with pytest.raises(rm.ReminiscenceError, match="#3000: merged 2026-11-01, after this week"):
+        write("what_it_was", "[pr_text #3000] The builders described the first week in this pull request.")
+
+
+def test_a_because_ref_that_resolves_nowhere_is_refused():
+    with pytest.raises(rm.ReminiscenceError, match="nothing code can check"):
+        write("otherwise", "[reflection] I would keep a diary from the first day, even a short one.", "vibes")
+
+
+def test_unknown_hop_label_free_text_and_size_are_refused():
+    with pytest.raises(rm.ReminiscenceError, match="unknown hop"):
+        write("dreams", GOOD["otherwise"][0])
+    with pytest.raises(rm.ReminiscenceError, match="every sentence carries a label"):
+        write("otherwise", "I would keep a diary from the first day. [reflection] And read it later.")
+    with pytest.raises(rm.ReminiscenceError, match="40-1000 chars"):
+        write("otherwise", "[reflection] Too short.")
+
+
+def test_one_live_line_per_hop_rewrite_supersedes_and_the_period_is_fixed():
+    first = write("otherwise", GOOD["otherwise"][0])
+    with pytest.raises(rm.ReminiscenceError, match="already written today"):
+        write("otherwise", GOOD["otherwise"][0], records=[first])
+    second = write("otherwise", "[reflection] Having read the other hops, I would also have named my organs sooner.",
+                   records=[first], rewrite=True)
+    assert second.supersedes == first.hop_id
+    assert rm.episode_hops([first, second], "2026-11-07")["otherwise"] is second
+    with pytest.raises(rm.ReminiscenceError, match="today's episode is about the week from 2025-06-24"):
+        write("what_it_was", GOOD["what_it_was"][0], records=[first], period=(date(2025, 7, 1), date(2025, 7, 7)))
+
+
+def test_an_unfinished_week_is_picked_again_the_next_day():
+    partial = [write("otherwise", GOOD["otherwise"][0])]
+    assert rm.pick_period(partial, date(2026, 11, 8)) == WEEK1
+    assert rm.pick_period([], date(2025, 7, 1)) == WEEK1  # week 1 ended 06-30
+    assert rm.pick_period([], date(2025, 6, 30)) is None  # nothing has ended yet
+
+
+def test_recheck_flags_a_now_ref_that_went_away_and_leaves_history_alone():
+    rec = write("where_i_am_now", GOOD["where_i_am_now"][0], GOOD["where_i_am_now"][1])
+    assert rm.recheck(rec, world()) == []
+    gone = world(live_ids=lambda: {"cap:s1"}, commit=lambda s: None)  # the hub left; git lookups would fail too
+    assert rm.recheck(rec, gone) == ["part:orion-hub: not live in my body now"]
+    then = write("what_it_was", GOOD["what_it_was"][0])
+    assert rm.recheck(then, gone) == []  # history is checked at write only
+    views = rm.hop_views({"where_i_am_now": rec}, gone)
+    assert [v.status for v in views if v.hop == "where_i_am_now"] == ["stale"]
+
+
+def test_unreadable_body_refuses_a_live_ref_and_says_why():
+    with pytest.raises(rm.ReminiscenceError, match=r"live body UNREAD \(FalkorDB down\)"):
+        write("where_i_am_now", GOOD["where_i_am_now"][0], w=world(live_ids=lambda: "FalkorDB down"))
+
+
+def test_body_diff_names_added_parts_and_a_split_organ():
+    old = rm.snapshot(portrait_body(), "2026-11-06")
+    atlas = portrait_body()
+    atlas.parts.append(atlas.parts[0].model_copy(update={"part_id": "part:orion-new", "name": "orion-new"}))
+    cortex = next(o for o in atlas.organs if o.name == "cortex")
+    atlas.organs.remove(cortex)
+    # no piece keeps half: a split. The fifth member is alone (a singleton is not an organ here)
+    thirds = (cortex.members[:2], cortex.members[2:4], cortex.members[4:])
+    for i, half in enumerate(thirds):
+        atlas.organs.append(cortex.model_copy(update={"organ_id": f"organ:c{i}c{i}c{i}c{i}c{i}", "members": half,
+                                                      "name": None}))
+    d = rm.body_diff(old, atlas)
+    assert d.parts_added == ["part:orion-new"] and d.parts_removed == []
+    assert [g.organ for g in d.organs_gone] == ["cortex (organ:aaaaaaaaaa)"] and len(d.organs_gone[0].related) == 2
+    assert len(d.organs_new) == 2 and all(n.related == ["cortex (organ:aaaaaaaaaa)"] for n in d.organs_new)
+    lines = rm.body_lines(d)
+    assert any("gone: cortex (organ:aaaaaaaaaa), split across 2 organs" in ln for ln in lines)
+
+
+def test_an_organ_that_keeps_most_of_its_parts_reads_as_changed_not_gone():
+    old = rm.snapshot(portrait_body(), "2026-11-06")
+    atlas = portrait_body()
+    cortex = next(o for o in atlas.organs if o.name == "cortex")
+    moved = cortex.members[-1]
+    cortex.members = cortex.members[:-1]
+    sub = next(o for o in atlas.organs if o.name == "substrate")
+    sub.members = [*sub.members, moved]
+    d = rm.body_diff(old, atlas)
+    assert d.organs_gone == [] and d.organs_new == []
+    assert {(c.organ, tuple(c.gained), tuple(c.lost)) for c in d.organs_changed} == {
+        ("cortex (organ:aaaaaaaaaa)", (), (moved,)), ("substrate (organ:bbbbbbbbbb)", (moved,), ())}
+
+
+def test_since_window_starts_at_the_last_episode_or_seven_days():
+    now = datetime(2026, 11, 7, 12, tzinfo=timezone.utc)
+    assert rm.since_window([], "2026-11-07", now)[0] == "2026-10-31T12:00:00+00:00"
+    rec = write("otherwise", GOOD["otherwise"][0], episode="2026-11-05")
+    since, why = rm.since_window([rec], "2026-11-07", now)
+    assert since == rec.written_at and "2026-11-05" in why
+    added = rm.added_since("2026-11-05T00:00:00+00:00", {"portrait lines": [("2026-11-04T00:00:00+00:00", "whole"),
+                                                                             ("2026-11-06T00:00:00+00:00", "host:athena")]})
+    assert added == {"portrait lines": ["host:athena"]}
+
+
+def test_the_rule_is_built_from_the_limits():
+    rule = rm.note_rule()
+    assert f"{rm.NOTE_MIN_CHARS}-{rm.NOTE_MAX_CHARS} chars" in rule and str(rm.LIVED_RECORDS_FROM) in rule
+    for hop in rm.HOPS:
+        assert hop in rule
+
+
+def test_a_failing_ref_cited_inline_and_in_because_is_named_once():
+    """Live smoke 2026-11-07: the refusal named the same path three times."""
+    with pytest.raises(rm.ReminiscenceError) as exc:
+        write("what_it_was", "[code_then services/orion-hub/app/main.py] My first week already had a hub at its centre.",
+              "services/orion-hub/app/main.py")
+    assert str(exc.value).count("services/orion-hub/app/main.py") == 1
+    assert "has no ref that resolves" not in str(exc.value)
+
+
+def test_the_ready_line_for_the_reflection_hop_asks_for_no_ref():
+    recs = []
+    for hop in rm.HOPS[:4]:
+        recs.append(write(hop, *GOOD[hop], records=recs))
+    read = rm.ReminiscenceReadV1(episode="2026-11-07", today=True, period_start="2025-06-24", period_end="2025-06-30",
+                                 hops=rm.hop_views(rm.episode_hops(recs, "2026-11-07"), world()))
+    _, tail = rm.render(read)
+    assert 'write otherwise "[reflection] ..." because' in tail[-1]

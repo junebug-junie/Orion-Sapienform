@@ -310,3 +310,23 @@ holding prints STALE with the failing id. Hosts never become capacity holders (p
 function). Eval: `evals/run_portrait_eval.py` (reach vs an independent oracle on the 2026-10-31
 body, reviewed cases, full-ledger size, three mutations). Partitioned from recall
 (`tests/test_organ_names_partition.py`).
+
+## Daily reminiscence (`reminiscence.py`)
+
+Spec: `docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md` (Patch 4 of the arc spec,
+PR #2888). One past week per Denver day, oldest first from 2025-06-24; five hops Orion writes through
+`python -P -m orion.dig reminisce write <hop> ...`. Pure: every git, GitHub, atlas and file lookup comes
+in through `World`, so the check runs the same in tests, the eval and the dig CLI.
+
+- **Write check:** source labels per sentence, the label each hop needs, a ref per non-reflection
+  sentence that resolves under that label (`resolve`), no `lived_record` before 2026-07-23, the
+  personal-terms denylist. One live line per (day, hop); `rewrite` supersedes.
+- **Re-check on read:** refs that can change (live atlas ids, `now` paths, field notes, arcs and acts,
+  dig files) are checked again on every read; git history and merged PRs are checked at write only.
+- **Body diff:** the first hop of a day saves a snapshot (part -> status, multi-part organs -> members);
+  the next day's read matches organs by member overlap (Jaccard >= 0.5, the organ-name carry rule)
+  and says which changed members, which are new, and which are gone (split or merged).
+- **Partition:** `reminiscence.jsonl` and `reminiscence_body.jsonl` join `tests/test_organ_names_partition.py`.
+- **Eval:** `evals/run_reminiscence_source_truth_eval.py` (reviewed hops on a frozen fixture world, label
+  truth against an independent oracle, five mutations must each be caught; `--live` re-resolves every
+  stored ref in the real ledger).

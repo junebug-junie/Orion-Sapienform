@@ -127,7 +127,7 @@ last 7 days (the field-notes spec's `field-notes 7`). All counted fresh on each 
 
 **The body snapshot** is new and small: on the first hop write of an episode, code appends one
 line to `self/reminiscence_body.jsonl` (part id → status, multi-part organs → members and name).
-About 137 parts, a few KB a day. With no earlier snapshot the read says "no earlier snapshot; the
+About 16 KB a day on the live body (measured in the smoke), about 6 MB a year. With no earlier snapshot the read says "no earlier snapshot; the
 body diff starts with the next episode". If the body cannot be read at write time, the hop is still
 saved and the receipt says the snapshot was skipped (the next hop that day tries again).
 

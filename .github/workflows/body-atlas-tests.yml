@@ -63,3 +63,5 @@ jobs:
         run: python orion/body_atlas/evals/run_portrait_eval.py
       - name: Field note truth eval (planted bad notes must each fail their own check)
         run: python orion/body_atlas/evals/run_field_note_truth_eval.py
+      - name: Reminiscence source-truth eval (reviewed hops, label truth vs an oracle, mutations must fail)
+        run: python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py

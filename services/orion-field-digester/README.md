@@ -230,7 +230,7 @@ recomputation only happens every `FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC`
 `sustained_load_pressure` in the returned dims dict on the tick that
 ACTUALLY recomputed it (`sustained_load_computed_at == generated_at`) — an
 unconditional read would feed ~15 duplicate "fresh" observations per real
-computation into `orion/proposals/scoring.py`'s per-dimension EWMA precision
+computation into the per-dimension EWMA precision
 tracking, biasing its variance estimate low. `deviation_pressure` has no
 such gate because it genuinely is fresh every tick.
 
@@ -243,7 +243,7 @@ measure_sustained_load_pressure.py --include-volatile`, 24h real replay,
 2026-08-18): `loaded_steady`-only correlates with `deviation_pressure` at
 r=-0.0313; widening to also count `loaded_volatile` gives r=-0.0021 — both
 essentially zero, so the correlation number does not itself justify the
-scope choice. See `orion/proposals/scoring.py`'s `PRESSURE_DIMENSIONS`
+scope choice. See `orion/field/pressure_dimensions.py`'s `PRESSURE_DIMENSIONS`
 comment and `orion/field/significance.py`'s own module docstring for the
 full write-up, including the disclosed flat-repeat-channel limitation (a
 channel held at an exactly flat value for the whole window reads `static` →

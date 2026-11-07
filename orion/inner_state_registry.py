@@ -1107,7 +1107,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "resolve_live_enrichment(), a live per-tick counterpart to the "
             "offline enrich-corpus batch join. Full detail in "
             "orion/mood_arc/README.md's corrected 'Status' note "
-            "and its v4 section."
+            "and its v4 section. Since 2026-11-07 (ladder retirement PR 6) "
+            "action_warrant is computed in-process by orion-field-digester "
+            "(its source table, substrate_proposal_frames, retired); the live "
+            "lookup carries the other 5."
         ),
     ),
     InnerStateSignal(

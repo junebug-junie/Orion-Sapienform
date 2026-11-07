@@ -86,7 +86,7 @@ jobs:
         run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider evals/test_self_track_record_truth_eval.py
 
   effects:
-    # E1 at orion-actions' journal seam, E2 in Hub (the dispatch-runtime half runs in thinking-rung3).
+    # E1 at orion-actions' journal seam, E2 in Hub (the dispatch-runtime half retired with dispatch, 2026-11-07).
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

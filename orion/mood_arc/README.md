@@ -378,7 +378,7 @@ still-open, deliberately deferred second half). What it actually took to get the
 recording in full, since two of the three problems found were genuine methodology gaps, not
 mistakes specific to this one retrain.
 
-**What's new in `v4` vs `v3`'s 15 channels:** `action_warrant` (`substrate_proposal_frames` until 2026-11-07; since then the field digester writes it into the corpus row itself, so `enrich-corpus` no longer joins it),
+**What's new in `v4` vs `v3`'s 15 channels:** `action_warrant` (`substrate_proposal_frames` until 2026-11-07; since then the field digester writes it into the corpus row itself, so `enrich-corpus` no longer joins it; **gap:** a raw corpus row written before that date has no `action_warrant` unless it was already enriched, and once the ladder-drop migration removes `substrate_proposal_frames` the only way to add it to such a row is to recompute `orion.field.action_warrant.action_warrant(state)` from the matching `substrate_field_state` row),
 `heartbeat_mean_ratio` + per-domain `prediction_error_{execution,chat,biometrics,bus_synaptic}`
 (`substrate_attention_self_model`) — joined onto the existing `field_channel_corpus.v1` corpus by
 `orion/mood_arc/corpus_enrichment.py` (new module) via `fit_encoder.py enrich-corpus` (new

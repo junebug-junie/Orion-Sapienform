@@ -680,6 +680,8 @@ Each retirement lands in the same patch as its replacement. None is left as a pa
 | zombie `ORION_ATTENTION_HABITUATION_ENABLED`, synthetic goal in `capability_policy` | nothing (dead) | A |
 | `2026-07-07` internal-economy spec | this doc (status line updated) | this PR |
 
+- **2026-11-07, curiosity investigation line: Hub `arousal_strained` veto deleted** (`scheduling_block_reason` in `services/orion-hub/scripts/curiosity_investigation.py`; branch `chore/retire-curiosity-strain-veto`). Its replacement, the binding `durable.curiosity_investigate` bid (#3010, `ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on`, confirmed on in the live durable-runs container), ran from 10-31 to 11-06: 49 `run.economy_admitted` (17 funded, 32 queued_at_pool), 0 `run.economy_held`. Arousal read strained for 41.5 of the last 336 h. Caveat: that window was measured while the Hub veto still filtered strained periods, so "0 held" does not show the bid holding under strain; what the market prices instead of strain is the heat constraint and the lane (GPU queue) prices in `physiology_state`. Post-deploy check: in the next strained window, count investigation runs started vs `run.economy_held`. The engaged cooldown and self-inquiry's idle-only hold stay (pacing; `durable.self_inquiry` bids do not bind yet). The strain report no longer tells Orion that curiosity investigations wait.
+
 ---
 
 ## Non-goals

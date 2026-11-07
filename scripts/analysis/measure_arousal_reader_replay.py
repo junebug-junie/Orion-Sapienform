@@ -18,7 +18,7 @@ rules (the gate functions' own branches, restated here as a level check):
   dream       non-forced sleeps (``dream_cycle.trigger = 'pressure'``). Held if engaged or strained
               and that level began less than ``--dream-max-hold-hours`` (6) before the sleep.
   curiosity   non-urgent investigation-line runs (``durable_admission_runs``, workflow
-              ``curiosity.investigate``, line ``investigate``). Held if strained, or if
+              ``curiosity.investigate``, line ``investigate``). Held if
               engaged and the gap since the previous run was under base cooldown x multiplier.
   self_inquiry  self-inquiry runs (same table, line ``self_inquiry``). Held unless idle.
   outreach    sent background outreach (``endogenous_outreach_decisions``: outreach, not
@@ -154,9 +154,10 @@ def held(reader, level, gap_sec, *, curiosity_base_sec, engaged_multiplier,
     if reader in ("outreach", "visual_baseline", "reverie_chain", "mutation"):
         return "arousal_strained" if level == "strained" else None
     if reader == "curiosity":
-        if level == "strained":
-            return "arousal_strained"
-        if engaged_multiplier > 1.0 and gap_sec is not None and gap_sec < curiosity_base_sec * engaged_multiplier:
+        # No strained branch: Hub's strain veto on this line was retired 2026-11-07
+        # (its durable-runs body-economy bid decides now). Replays of history before that
+        # date therefore understate how many investigation runs the shipped gate held then.
+        if level == "engaged" and engaged_multiplier > 1.0 and gap_sec is not None and gap_sec < curiosity_base_sec * engaged_multiplier:
             return "arousal_engaged_cooldown"
     return None
 

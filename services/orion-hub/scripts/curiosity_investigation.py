@@ -565,10 +565,11 @@ class SchedulingGateInputs:
     rest_drive_cooldown_sec: Optional[float] = None
     # Arousal (scripts/arousal_reader.py, Temporal Self R3). `arousal_level` is a fresh
     # "engaged" / "idle" / "strained", or None when unknown or this line's flag is off --
-    # None is exactly the behaviour before arousal existed. `strained` holds the run;
-    # `arousal_engaged_cooldown_sec` is the stretched cooldown kept while Juniper is talking
-    # (investigation line); `arousal_idle_only` makes the line run only at `idle`
-    # (self-inquiry). The daily cap, the hour window and `enabled` never read any of it.
+    # None is exactly the behaviour before arousal existed. `arousal_engaged_cooldown_sec` is
+    # the stretched cooldown kept while Juniper is talking (investigation line; strain does
+    # not hold that line -- its body-economy bid does); `arousal_idle_only` makes the line run
+    # only at `idle`, so engaged and strained both hold it (self-inquiry). The daily cap, the
+    # hour window and `enabled` never read any of it.
     arousal_level: Optional[str] = None
     arousal_engaged_cooldown_sec: Optional[float] = None
     arousal_idle_only: bool = False
@@ -751,8 +752,12 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
     ):
         return REST_DRIVE_BLOCK_REASON
     # Arousal, last: it only ever adds a hold after every pacing gate has passed, so the
-    # reason names exactly what arousal blocked. Unknown (None) skips all three.
-    if inp.arousal_level == "strained":
+    # reason names exactly what arousal blocked. Unknown (None) skips all of it.
+    # Strain no longer holds the investigation line (retired 2026-11-07): those runs obey
+    # their body-economy bid in durable-runs (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on,
+    # #3010), which is what decides now. Self-inquiry (idle-only) still runs only at idle,
+    # so strained and engaged both hold it; its family's bid does not bind yet.
+    if inp.arousal_idle_only and inp.arousal_level == "strained":
         return AROUSAL_STRAINED_REASON
     if inp.arousal_idle_only and inp.arousal_level == "engaged":
         return AROUSAL_ENGAGED_REASON
@@ -1215,7 +1220,7 @@ class CuriosityInvestigation:
         # multiplied. Unknown/off leaves every gate exactly as it was.
         self.rest_drive_reader = rest_drive_reader
         # Orion's arousal (one Redis GET per tick, shared by two lines, two flags):
-        # investigation line -- strained holds, engaged stretches the cooldown;
+        # investigation line -- engaged stretches the cooldown (strain is the bid's call);
         # self-inquiry -- runs only at idle. Unknown/off leaves every gate as it was.
         self.arousal_reader = arousal_reader
         self.arousal_pacing_enabled = bool(arousal_pacing_enabled)

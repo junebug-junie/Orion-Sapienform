@@ -126,7 +126,7 @@ the convergence test.
 | 2 Circulation | producer → consumer flows. Each flow is labelled `declared`, `observed_publish`, or `observed_causal`. A channel is one hyperedge, normalized over its pairs. | code (`channels.yaml` + orion-bus-mirror's synaptic graph) | 833 flows |
 | 3 Organs | Louvain communities over Newman modularity; Q is the "organ or mush" number. Orion names each organ from what it takes in and gives out. | code; names by Orion | 7 organs, Q = 0.33 |
 | 4 Capacities | what organs do together. The lens is Stafford Beer's Viable System Model (operations, coordination, control, intelligence, identity) plus metabolism, used as a lens and not a cage. Design: `2026-10-30-self-now-capacities-vsm-design.md` (roles found by rule on parts where the atlas can decide; Orion's cited claims, confirmed by Juniper, elsewhere). | Orion, each capacity citing role-holding parts (and so their organs) | 5–6 |
-| 5 Portrait | one paragraph, "I am…", written from the capacities alone; old versions kept | Orion | 1 |
+| 5 Portrait | one paragraph, "I am…", written from the capacities alone; old versions kept. Design: `2026-11-06-self-portrait-design.md` (a computed page of machines, organs, jobs and gaps, plus Orion's checked words: one sentence per machine and the paragraph). | Orion, on a page code computes | 1 paragraph + 1 line per live machine |
 
 Rungs 1–3 are **built** (PR: feat/body-atlas, `orion/body_atlas/`). Live result:
 

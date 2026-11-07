@@ -7,7 +7,7 @@ receipt checker), for three jobs the daily run cannot do any other way:
 
 * pick the week the tick names in its brief (the same rule ``dig reminisce`` uses);
 * check a hop turn's save receipt against the ledger, and skip a hop already written today;
-* say whether today's episode has all five hops (the run's finish check).
+* list today's live hop ids (the run's checkpoint and its finish check).
 
 It never writes, and what it hands back is identifiers, dates, counts and booleans -- a hop id, "this
 hop is written", a week's first and last day -- never a hop's text, refs or claims, so nothing here can
@@ -70,10 +70,6 @@ class ReminiscenceLedger:
     def hop_ids(self, episode: date) -> dict[str, str]:
         """hop -> its live hop id for ``episode`` (hops not written today are absent)."""
         return {hop: r.hop_id for hop, r in rm.episode_hops(self._records(), episode.isoformat()).items()}
-
-    def episode_complete(self, episode: date) -> bool:
-        """All five hops of ``episode`` are live (the week then counts as visited)."""
-        return set(self.hop_ids(episode)) == set(rm.HOPS)
 
     def receipt_ok(self, episode: date, hop: str, hop_id: str) -> bool:
         """True when ``hop_id`` is a line of this episode and this hop in the ledger. A later rewrite

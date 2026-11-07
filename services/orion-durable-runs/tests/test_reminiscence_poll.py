@@ -19,7 +19,7 @@ import pytest
 from app.reminiscence_ledger import ReminiscenceLedger
 from app.reminiscence_poll import ReminiscenceTicker, next_run_id, window
 from orion.schemas.durable_run import DurableRunRequestV1
-from orion.schemas.reminiscence_run import REMINISCENCE_HOPS, base_run_id, episode_of_run
+from orion.schemas.reminiscence_run import REMINISCENCE_HOPS, base_run_id
 
 # 2026-11-08 04:00 Denver (MST = UTC-7).
 NOW = datetime(2026, 11, 8, 11, 0, tzinfo=timezone.utc)
@@ -80,8 +80,10 @@ class Submitted:
 
 
 def ticker(tmp_path, *, rows=None, now=NOW, lines=(), **kw):
+    if lines:
+        tmp_path.mkdir(parents=True, exist_ok=True)
     for ln in lines:
-        with (tmp_path / "reminiscence.jsonl").open("a") as fh:   # the ledger file name, as the dig writes it
+        with ReminiscenceLedger(tmp_path).path.open("a") as fh:   # the ledger file, as the dig writes it
             fh.write(ln + "\n")
     pool = FakePool(rows)
     submit = Submitted(pool)
@@ -141,6 +143,19 @@ def test_five_hops_written_today_means_no_run(tmp_path):
     assert asyncio.run(t.tick_once()).decision == "complete" and submit.requests == []
 
 
+def test_five_hops_and_a_failed_run_retry_for_the_cross_read(tmp_path):
+    """Review 2026-11-07: a run whose cross-read ran out of attempts left five live hops; the next tick must
+    not call that day complete, or the cross-read never runs."""
+    failed = {"run_id": "reminiscence-2026-11-08", "terminal": "failed", "created_at": NOW - timedelta(hours=1),
+              "updated_at": NOW - timedelta(hours=1)}
+    t, submit, _ = ticker(tmp_path, rows=[failed], lines=[hop_line(h) for h in REMINISCENCE_HOPS])
+    r = asyncio.run(t.tick_once())
+    assert r.decision == "submitted" and r.run_id == "reminiscence-2026-11-08-a2"
+    done = dict(failed, terminal="completed")
+    t, submit, _ = ticker(tmp_path / "b", rows=[done], lines=[hop_line(h) for h in REMINISCENCE_HOPS])
+    assert asyncio.run(t.tick_once()).decision == "complete" and submit.requests == []
+
+
 def test_a_failed_day_gets_one_more_run_only_while_a_step_still_fits(tmp_path):
     failed = {"run_id": "reminiscence-2026-11-08", "terminal": "failed", "created_at": NOW - timedelta(hours=1),
               "updated_at": NOW - timedelta(hours=1)}
@@ -174,7 +189,8 @@ def test_a_dry_run_builds_the_request_and_submits_nothing(tmp_path):
     t, submit, _ = ticker(tmp_path, now=NOW.replace(hour=20))   # 13:00 Denver, outside the window
     r = asyncio.run(t.tick_once(dry_run=True, ignore_window=True))
     assert r.decision == "would_submit" and r.dry_run and submit.requests == []
-    assert t.last_request.brief.period_start == date(2025, 6, 24) and t.last is None   # health keeps real ticks only
+    assert r.request.brief.period_start == date(2025, 6, 24) and t.last is None   # health keeps real ticks only
+    assert "request" not in r.as_dict()
 
 
 def test_an_unmounted_ledger_never_reads_as_nothing_written(tmp_path):
@@ -185,7 +201,7 @@ def test_an_unmounted_ledger_never_reads_as_nothing_written(tmp_path):
 
 def test_the_ledger_hands_back_ids_and_rewrites(tmp_path):
     ledger = ReminiscenceLedger(tmp_path)
-    (tmp_path / "reminiscence.jsonl").write_text("\n".join([
+    ledger.path.write_text("\n".join([
         hop_line("otherwise"), hop_line("otherwise", n=1, supersedes="rm:2026-11-08:otherwise:0000000000"),
         hop_line("otherwise", episode="2026-11-07", n=2), "not json"]) + "\n")
     assert ledger.hop_ids(EPISODE) == {"otherwise": "rm:2026-11-08:otherwise:0000000001"}
@@ -194,12 +210,10 @@ def test_the_ledger_hands_back_ids_and_rewrites(tmp_path):
     assert not ledger.receipt_ok(EPISODE, "otherwise", "rm:2026-11-07:otherwise:0000000002")
     assert ledger.rewrite_ok(EPISODE, "rm:2026-11-08:otherwise:0000000001")
     assert not ledger.rewrite_ok(EPISODE, "rm:2026-11-08:otherwise:0000000000")
-    assert not ledger.episode_complete(EPISODE)
 
 
 def test_run_ids_round_trip():
     assert base_run_id(EPISODE) == "reminiscence-2026-11-08"
-    assert episode_of_run("reminiscence-2026-11-08-a2") == "2026-11-08" and episode_of_run("pr-field-note-1") is None
 
 
 def test_the_settings_ship_the_tick_on_with_an_overnight_window(monkeypatch):
@@ -211,3 +225,5 @@ def test_the_settings_ship_the_tick_on_with_an_overnight_window(monkeypatch):
     with pytest.raises(ValueError):
         Settings(_env_file=None, POSTGRES_URI="postgresql://unused", REMINISCENCE_HOUR_LOCAL=9,
                  REMINISCENCE_END_HOUR_LOCAL=3)
+    with pytest.raises(ValueError):   # time(24) would crash every tick (review 2026-11-07)
+        Settings(_env_file=None, POSTGRES_URI="postgresql://unused", REMINISCENCE_END_HOUR_LOCAL=24)

@@ -353,6 +353,11 @@ Built as section 6 says, on the `pr.field_note` seams (no parallel runner). Wher
   learn the run id (the governor passes no env, and a new CLI argument would grow every write line). The
   link is kept on the run side instead: each step record and the run's finish detail carry the hop ids
   (`GET /runs/<id>`, `durable_admission_runs` / the state row).
+- **The cross-read is never skipped silently.** A day whose five hops are live but whose run failed (the
+  cross-read ran out of attempts) gets the retry run, which is then only the cross-read. A day whose five
+  hops were all written in chat gets no run.
+- **No hop words outside the ledger from the run.** A step record keeps only the receipts it proved; a
+  failed attempt's error names the reply's length, not its words.
 - **Week pick in the brief.** The tick reads the ledger (ids and dates only) and puts the week in the brief
   so the prompt names it. The dig still decides at write time, and the receipt check does not depend on
   the brief's week.

@@ -137,8 +137,9 @@ families:
     # only the agent models run. Those lanes are contended by day (durable.self_inquiry lost 7/7 bids to "no
     # room" on agent/agent-gpu2 on 11-05), so the run is overnight: 21600 s is the 03:00-09:00 Denver window
     # its deadline closes (REMINISCENCE_HOUR_LOCAL / REMINISCENCE_END_HOUR_LOCAL); a week it misses is picked
-    # again the next day, nothing is lost. Bids are shadow (not a binding family in app/run_bids.py). No
-    # receptors: a once-a-day act has nothing for a charge to bind on.
+    # again the next day, nothing is lost. The run asks for llm.route.agent with agent preferred; the pool may
+    # place it on agent-gpu2 (field-note acts land there too), so both lanes are listed. Bids are shadow (not
+    # a binding family in app/run_bids.py). No receptors: a once-a-day act has nothing for a charge to bind on.
     tier: 2
     deferrable_window_s: 21600
     lanes: [agent, agent-gpu2]

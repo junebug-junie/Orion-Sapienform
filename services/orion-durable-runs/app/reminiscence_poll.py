@@ -4,7 +4,10 @@ Design: docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md, section 
 REMINISCENCE_POLL_SEC (600 s), inside the Denver window [REMINISCENCE_HOUR_LOCAL, REMINISCENCE_END_HOUR_LOCAL)
 (03:00-09:00 by default: the agent lanes are contended by day, and lane time is this run's real cost):
 
-1. Today's episode is the Denver date. If its five hops are already live (Juniper asked in chat), nothing.
+1. Today's episode is the Denver date. If its five hops are already live and no run of today failed
+   (Juniper asked in chat, or today's run completed), nothing. If they are live but today's run failed (its
+   cross-read ran out of attempts), the retry below runs: its hops are all ``already_written``, so it is the
+   one cross-read turn.
 2. The week: the one today's first hop fixed, else the oldest week that ended before today with no
    complete episode (``app/reminiscence_ledger.py``, the same rule ``dig reminisce`` uses). None left:
    nothing.
@@ -105,9 +108,11 @@ class TickResult:
     deadline_at: str | None = None
     dry_run: bool = False
     error: str | None = None
+    # The request built for a submit or a would-submit (not in as_dict: /health keeps the decision only).
+    request: DurableRunRequestV1 | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        return {k: v for k, v in self.__dict__.items() if k != "request"}
 
 
 class ReminiscenceTicker:
@@ -119,7 +124,6 @@ class ReminiscenceTicker:
         self.ledger = ledger
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.last: TickResult | None = None
-        self.last_request: DurableRunRequestV1 | None = None
         self._lock = asyncio.Lock()
 
     async def _runs(self, episode: date) -> tuple[list[dict[str, Any]], int]:
@@ -130,7 +134,7 @@ class ReminiscenceTicker:
         return [dict(r) for r in rows], int(row["n"]) if row else 0
 
     async def tick_once(self, *, dry_run: bool = False, ignore_window: bool = False) -> TickResult:
-        """One decision. ``dry_run``: decide and build the request (``last_request``), submit nothing.
+        """One decision. ``dry_run``: decide and build the request (``result.request``), submit nothing.
         ``ignore_window``: decide as if inside the window (a read-only check by day; never with a submit)."""
         async with self._lock:
             result = await self._tick(dry_run=dry_run or ignore_window, ignore_window=ignore_window)
@@ -162,10 +166,10 @@ class ReminiscenceTicker:
         result.period_start, result.period_end = pick.period_start.isoformat(), pick.period_end.isoformat()
         result.week_fixed_by_hop = pick.fixed_by_hop
         result.weeks_complete, result.weeks_total = pick.weeks_complete, pick.weeks_total
-        if len(written) == 5:
+        runs, in_flight = await self._runs(episode)
+        if len(written) == 5 and (not runs or any(r.get("terminal") == "completed" for r in runs)):
             result.decision = "complete"
             return result
-        runs, in_flight = await self._runs(episode)
         timeout = float(self.settings.reminiscence_turn_timeout_sec)
         # A by-day check outside the window decides as of the window's opening.
         at = lo if ignore_window and not (lo <= now < hi) else now
@@ -181,7 +185,7 @@ class ReminiscenceTicker:
             period_end=pick.period_end, weeks_complete=pick.weeks_complete, weeks_total=pick.weeks_total,
             timeout_sec=timeout)
         request = run_request(run_id, brief, now=now, deadline=hi)
-        self.last_request = request
+        result.request = request
         result.run_id = run_id
         if dry_run:
             result.decision = "would_submit"

@@ -2,8 +2,12 @@
 week, then reads them together once.
 
     precheck -> resource_request -> resource_wait -> step -> step -> ... -> finish
-    precheck (today's five hops are already live) -> finish        (no hold, no turn)
     step (failed attempt) -> retry_wait -> precheck -> resource_request
+
+precheck records every hop already live today (written in chat, or saved by an attempt that replied
+badly) as ``already_written`` before any hold is asked for, so those hops take no hold and no turn. The
+cross-read always runs (one turn), also on a day whose five hops were all written before the run: the
+tick starts no run for such a day unless an earlier run of it failed, i.e. the cross-read is what is left.
 
 Design: docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md, section 6. Contract:
 orion/schemas/reminiscence_run.py. The tick (app/reminiscence_poll.py) submits these runs.
@@ -13,9 +17,8 @@ all six are done: five hop steps (``hop:what_it_was`` ... ``hop:otherwise``), th
 is one harness turn on the #2958 seam (app/harness_step.py) with its own source tag, so each hop is a
 fresh claude session and only a retry of the same step resumes one.
 
-The ledger is the checkpoint: before a hop's turn, code looks in the ledger, and a hop already live
-today (written in chat, or saved by a failed attempt that replied badly) is recorded as
-``already_written`` with no turn. verify_receipt (code, inside the step, under the hold, before the step
+The ledger is the checkpoint: precheck and each step look in the ledger first, and a hop already live
+today is recorded as ``already_written`` with no turn. verify_receipt (code, inside the step, under the hold, before the step
 is checkpointed): the reply must hold ``reminisce <hop> saved rm:<episode>:<hop>:<hex>`` for THIS hop
 and today's episode, and the ledger must hold that id. The cross-read reply must end with
 ``reminisce cross-read done``, and every rewrite receipt in it must be a rewrite in the ledger. finish
@@ -82,7 +85,7 @@ def _what_to_read(hop: str, brief: ReminiscenceRunBriefV1) -> str:
                     f"{LIVED_RECORDS_FROM}. Say so plainly, and use [pr_text] for what the builders wrote "
                     f"(`{DIG} history {start} {end}`); [lived_record] is refused for this week. Needs at least one "
                     "[pr_text] sentence.")
-        return ("what that week was like: the read's lived_record line names what can cover it (`dig arc <id>`). "
+        return (f"what that week was like: the read's lived_record line names what can cover it (`{DIG} arc <id>`). "
                 "Needs at least one [lived_record] or [pr_text] sentence.")
     if hop == "where_i_am_now":
         return (f"where you are now: the read's 'since' block (what changed in you since your last reminiscence) "
@@ -163,7 +166,9 @@ def verify_hop_receipt(text: str, episode: date, hop: str, receipt_ok: Callable[
     fails here)."""
     ids = [hop_id for h, hop_id in _receipts(text, episode) if h == hop]
     if not ids:
-        raise HarnessStepFailed(f"reminiscence_no_receipt:{hop}:{(text or '').strip()[:200]!r}")
+        # Only the reply's length: the turn's own trace (its turn_correlation_id) keeps the words; a state
+        # row never does.
+        raise HarnessStepFailed(f"reminiscence_no_receipt:{hop}:reply_len={len((text or '').strip())}")
     for hop_id in ids:
         if receipt_ok(episode, hop, hop_id):
             return hop_id
@@ -174,7 +179,7 @@ def verify_cross_read(text: str, episode: date, rewrite_ok: Callable[[date, str]
     """The rewrite ids the cross-read reply proves; raises HarnessStepFailed when the closing line is
     missing or a receipt it carries is not a rewrite in the ledger."""
     if CROSS_READ_DONE not in (text or ""):
-        raise HarnessStepFailed(f"reminiscence_cross_read_not_done:{(text or '').strip()[:200]!r}")
+        raise HarnessStepFailed(f"reminiscence_cross_read_not_done:reply_len={len((text or '').strip())}")
     ids = [hop_id for _hop, hop_id in _receipts(text, episode)]
     bad = [i for i in ids if not rewrite_ok(episode, i)]
     if bad:
@@ -209,7 +214,7 @@ class ReminiscenceState(TypedDict, total=False):
     last_error: str | None
     steps: dict[str, dict[str, Any]]
     harness_turn_meta: dict[str, Any]
-    outcome: str | None            # complete | already_complete
+    outcome: str | None            # complete
     hop_ids: dict[str, str] | None
 
 
@@ -239,27 +244,28 @@ def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkp
         return admission.now().astimezone(ZONE).date()
 
     async def precheck(state: ReminiscenceState) -> dict:
-        """The day passed (hops would land in another episode): fail. All five hops of today are already
-        live and no step ran yet: finish with no hold. Runs at the start and before every retry."""
+        """The day passed (hops would land in another episode): fail. Else record every pending hop already
+        live today as ``already_written`` -- before any hold is asked for. Runs at the start and before
+        every retry (an attempt that saved its hop but replied badly then costs no new hold)."""
         brief = ReminiscenceRunBriefV1.model_validate(state["brief"])
         if today() != brief.episode:
             return {"status": "failed", "last_error": f"reminiscence_day_passed:{brief.episode}"}
-        if state.get("steps"):
-            return {"status": "running"}
         try:
             ids = await asyncio.to_thread(ledger.hop_ids, brief.episode)
         except OSError as exc:
             return {"status": "failed", "last_error": f"reminiscence_ledger_unreadable: {exc}"[:500]}
-        if set(ids) == set(REMINISCENCE_HOPS):
-            return {"status": "running", "outcome": "already_complete", "hop_ids": ids}
-        return {"status": "running"}
+        steps = dict(state.get("steps") or {})
+        for key in REMINISCENCE_STEPS:
+            hop = key.removeprefix("hop:")
+            if key in steps or key == CROSS_READ_STEP or hop not in ids:
+                continue
+            steps[key] = {"step_key": key, "outcome": "already_written", "hop_id": ids[hop]}
+        return {"status": "running", "steps": steps}
 
     def after_precheck(state: ReminiscenceState) -> str:
         if state.get("status") == "failed":
             return "failed"
-        if state.get("outcome") == "already_complete":
-            return "finish"
-        return "resource_request"
+        return "resource_request" if pending_step(state) is not None else "finish"
 
     async def step(state: ReminiscenceState) -> dict:
         state = dict(state)
@@ -298,10 +304,15 @@ def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkp
                 record["hop_id"] = await asyncio.to_thread(
                     verify_hop_receipt, record["text"], brief.episode, hop, ledger.receipt_ok)
                 record["outcome"] = "written"
+                kept = [f"reminisce {hop} saved {record['hop_id']}"]
             else:
                 record["rewrites"] = await asyncio.to_thread(
                     verify_cross_read, record["text"], brief.episode, ledger.rewrite_ok)
                 record["outcome"] = "cross_read"
+                kept = [f"reminisce rewrite saved {i}" for i in record["rewrites"]] + [CROSS_READ_DONE]
+            # The checkpoint and the state row keep the proven receipts, never the reply's other words (a
+            # reply may repeat hop text; the ledger stays the only place hop words live). final_len stays.
+            record["text"] = "\n".join(kept)
             return record
 
         try:
@@ -340,9 +351,6 @@ def build_reminiscence_graph(run_turn: RunTurn, admission: AdmissionDeps, checkp
 
     async def finish(state: ReminiscenceState) -> dict:
         state = dict(state)
-        if state.get("outcome") == "already_complete":
-            released = await admission.release(state, "completed")
-            return {**released, "status": "completed"}
         brief = ReminiscenceRunBriefV1.model_validate(state["brief"])
         try:
             ids = await asyncio.to_thread(ledger.hop_ids, brief.episode)

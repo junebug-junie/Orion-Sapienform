@@ -116,7 +116,7 @@ def test_a_reminiscence_run_writes_six_steps_under_the_hold_and_completes(tmp_pa
     asyncio.run(with_database(scenario))
 
 
-def test_a_complete_day_finishes_without_a_hold_or_a_turn(tmp_path):
+def test_a_day_with_five_hops_runs_only_the_cross_read(tmp_path):
     async def scenario(pool, saver, store):
         gpu = await InProcessPool().boot()
         rt = runtime(pool, saver, store, gpu=gpu, REMINISCENCE_LEDGER_DIR=str(tmp_path))
@@ -128,8 +128,10 @@ def test_a_complete_day_finishes_without_a_hold_or_a_turn(tmp_path):
         req = request(episode)
         await rt.submit(req)
         row = await drive_until_terminal(rt, store, req.run_id)
-        assert row["terminal"] == "completed" and calls == []
-        assert gpu.leases(holder="durable-runs:" + req.run_id, kind="hold") == []
-        assert (await rt.status(req.run_id))["reminiscence"]["outcome"] == "already_complete"
+        assert row["terminal"] == "completed" and [c.source_tag for c in calls] == [step_tag("cross_read")]
+        status = await rt.status(req.run_id)
+        assert status["reminiscence"]["outcome"] == "complete"
+        assert {k: v["outcome"] for k, v in status["harness_steps"].items() if k.startswith("hop:")} == \
+            {f"hop:{h}": "already_written" for h in REMINISCENCE_HOPS}
         await rt.close()
     asyncio.run(with_database(scenario))

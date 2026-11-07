@@ -189,14 +189,76 @@ def test_hops_written_in_chat_take_no_turn(tmp_path):
     asyncio.run(scenario())
 
 
-def test_a_complete_episode_takes_no_hold_and_no_turn(tmp_path):
+def test_five_hops_already_written_leave_only_the_cross_read(tmp_path):
+    """The tick starts such a run only after a run of the day failed its cross-read (review 2026-11-07)."""
     async def scenario():
         world, saver = World(tmp_path), InMemorySaver()
         for h in REMINISCENCE_HOPS:
             world.write(h, hop_id(h, 3))
-        result = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
-        assert result["status"] == "completed" and result["outcome"] == "already_complete"
-        assert world.turns == [] and world.registers == 0 and world.releases == []
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "completed" and result["outcome"] == "complete"
+        assert [t.source_tag for t in world.turns] == [step_tag(CROSS_READ_STEP)]
+        assert all(result["steps"][f"hop:{h}"]["outcome"] == "already_written" for h in REMINISCENCE_HOPS)
+    asyncio.run(scenario())
+
+
+def test_a_retry_after_a_saved_hop_records_it_before_asking_for_a_hold(tmp_path):
+    """Review 2026-11-07 (nit 7): precheck reads the ledger, so the saved hop costs no fresh hold."""
+    async def scenario():
+        world, saver = World(tmp_path, replies=["Saved it."]), InMemorySaver()
+        real_turn = world.turn
+
+        async def writes_then_mumbles(req):
+            if not world.turns:
+                world.write("what_it_was", hop_id("what_it_was"))
+            return await real_turn(req)
+        world.turn = writes_then_mumbles
+        r1 = await start_and_grant(world, saver)
+        assert r1["status"] == "retrying" and world.registers == 1
+        snap = await world.graph(saver).aget_state(CFG)
+        world.now = datetime.fromisoformat(snap.values["retry_at"]) + timedelta(seconds=1)
+        await asyncio.wait_for(world.graph(saver).ainvoke(Command(resume=True), CFG), 5)
+        snap = await world.graph(saver).aget_state(CFG)
+        assert snap.next == ("resource_wait",)          # waiting for the second hold...
+        assert snap.values["steps"]["hop:what_it_was"]["outcome"] == "already_written"   # ...hop already recorded
+    asyncio.run(scenario())
+
+
+def test_the_checkpoint_keeps_receipts_never_the_replys_other_words(tmp_path):
+    """Review 2026-11-07: a reply may repeat hop text; the step record keeps only the proven receipt."""
+    async def scenario():
+        chatty = (f"I wrote that my first week was two folders and a reflection chain.\n"
+                  f"reminisce what_it_was saved {hop_id('what_it_was')}; the week 2025-06-24..2025-06-30")
+        world, saver = World(tmp_path, replies=[chatty]), InMemorySaver()
+        real_turn = world.turn
+
+        async def writes(req):   # the chatty reply does not start with the receipt, so write its hop here
+            if req.source_tag == step_tag("hop:what_it_was"):
+                world.write("what_it_was", hop_id("what_it_was"))
+            return await real_turn(req)
+        world.turn = writes
+        result = await start_and_grant(world, saver)
+        rec = result["steps"]["hop:what_it_was"]
+        assert rec["text"] == f"reminisce what_it_was saved {hop_id('what_it_was')}" and rec["final_len"] == len(chatty)
+        assert "folders" not in json.dumps(finish_detail(result))
+    asyncio.run(scenario())
+
+
+def test_the_restart_cancel_derives_the_id_each_step_used(tmp_path):
+    """Review 2026-11-07 (nit 5): for every checkpoint about to run ``step``, the id the restart cancel derives
+    from it (AdmissionRuntime._cancel_harness via HARNESS_MULTI_STEP_WORKFLOWS) is a turn the step really ran."""
+    async def scenario():
+        world, saver = World(tmp_path, replies=["mumble"]), InMemorySaver()
+        await start_and_grant(world, saver)
+        await after_backoff(world, saver)
+        from app.admission_runtime import HARNESS_MULTI_STEP_WORKFLOWS
+        derived = set()
+        async for snap in world.graph(saver).aget_state_history(CFG):
+            if snap.next == ("step",) and snap.values.get("lease"):
+                key = HARNESS_MULTI_STEP_WORKFLOWS[REMINISCENCE_WORKFLOW](snap.values)
+                if key:
+                    derived.add(harness_step_correlation_id(snap.values, key))
+        assert {t.correlation_id for t in world.turns} <= derived and len(world.turns) == 7
     asyncio.run(scenario())
 
 

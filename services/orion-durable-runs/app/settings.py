@@ -391,7 +391,8 @@ class Settings(BaseSettings):
     reminiscence_enabled: bool = Field(True, alias="REMINISCENCE_ENABLED")
     reminiscence_poll_sec: float = Field(600.0, ge=60.0, alias="REMINISCENCE_POLL_SEC")
     reminiscence_hour_local: int = Field(3, ge=0, le=23, alias="REMINISCENCE_HOUR_LOCAL")
-    reminiscence_end_hour_local: int = Field(9, ge=1, le=24, alias="REMINISCENCE_END_HOUR_LOCAL")
+    # At most 23: a step after midnight would write into the next day's episode (the graph fails it).
+    reminiscence_end_hour_local: int = Field(9, ge=1, le=23, alias="REMINISCENCE_END_HOUR_LOCAL")
     # The reminiscence ledger's directory inside this container: the same /mnt/orion-fcc/self bind mount the
     # field-notes poller uses (docker-compose.yml mounts PR_FIELD_NOTES_SELF_HOST at PR_FIELD_NOTES_LEDGER_DIR).
     reminiscence_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="REMINISCENCE_LEDGER_DIR")

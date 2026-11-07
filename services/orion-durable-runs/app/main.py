@@ -734,8 +734,9 @@ async def reminiscence_plan(any_hour: bool = False) -> dict[str, Any]:
     if reminiscence is None:
         raise HTTPException(503, "reminiscence is off (REMINISCENCE_ENABLED / admission)")
     result = await reminiscence.tick_once(dry_run=True, ignore_window=any_hour)
-    req = reminiscence.last_request if result.decision == "would_submit" else None
+    req = result.request if result.decision == "would_submit" else None
     first = next((k for k in REMINISCENCE_STEPS if k.removeprefix("hop:") not in result.hops_written), None)
+    # (five hops written and a failed run today: the first step is the cross-read)
     return {**result.as_dict(), "first_step": first,
             "first_prompt": build_prompt(req.brief, first) if req is not None and first else None}
 

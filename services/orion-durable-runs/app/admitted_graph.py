@@ -291,6 +291,9 @@ async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseExcepti
     ``extra`` is merged into every outcome (e.g. the failed turn's identity, partial answers).
     ``backoff=False`` for a graph with no ``retry_wait`` node: the retry starts now, so the
     deadline check uses now and no ``retry_at`` is written (it would be a lie)."""
+    parked = await listener_wait(admission, state, exc, waiting=waiting, extra=extra, attempt_sec=attempt_sec)
+    if parked is not None:
+        return parked
     attempt = int(state.get("attempt") or 0) + 1
     error = f"{type(exc).__name__}: {exc}"[:500]
     extra = extra or {}

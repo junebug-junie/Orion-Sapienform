@@ -60,10 +60,6 @@ def base_run_id(episode: date | str) -> str:
     return f"{REMINISCENCE_RUN_PREFIX}{episode if isinstance(episode, str) else episode.isoformat()}"
 
 
-def episode_of_run(run_id: str) -> str | None:
-    """``reminiscence-2026-11-08`` / ``reminiscence-2026-11-08-a2`` -> ``2026-11-08``; anything else -> None."""
-    m = re.fullmatch(re.escape(REMINISCENCE_RUN_PREFIX) + r"(\d{4}-\d{2}-\d{2})(?:-a\d+)?", run_id or "")
-    return m.group(1) if m else None
 
 
 class ReminiscenceRunBriefV1(BaseModel):

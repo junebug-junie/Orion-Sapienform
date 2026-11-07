@@ -481,7 +481,8 @@ runs the daily half.
 - **Tick** (`app/reminiscence_poll.py`, every `REMINISCENCE_POLL_SEC`=600 s), only inside the Denver window
   `[REMINISCENCE_HOUR_LOCAL, REMINISCENCE_END_HOUR_LOCAL)` = 03:00-09:00. Agent-lane time is the real cost
   and the agent lanes are contended by day. Today's episode is the Denver date. Five hops already live
-  today (Juniper asked in chat): nothing. Else the week is the one today's first hop fixed, or the oldest
+  today and no failed run today (Juniper asked in chat, or the run completed): nothing. Five hops live
+  but today's run failed (its cross-read ran out of attempts): the retry runs only the cross-read. Else the week is the one today's first hop fixed, or the oldest
   week that ended before today with no complete episode (the same rule `dig reminisce` uses). One run
   `reminiscence-<episode>` (agent lane, background priority, deadline = the window's end). A day whose run
   failed gets one more (`-a2`) 30 min later, only while two step attempts still fit before 09:00. At most
@@ -493,8 +494,10 @@ runs the daily half.
   `cross_read` (read all five, rewrite at most two, `dig close <week end>`). Each step is one harness turn
   on the #2958 seam with its own source tag (`reminiscence_<step>`: its own claude session; session
   `reminiscence`), each attempt bounded by `REMINISCENCE_TURN_TIMEOUT_SEC`=900 s (540 s of motor), each
-  step its own `DURABLE_RUNS_RETRY_MAX_ATTEMPTS`. The ledger is the checkpoint: a hop already live today
-  takes no turn (`already_written`).
+  step its own `DURABLE_RUNS_RETRY_MAX_ATTEMPTS`. The ledger is the checkpoint: `precheck` records every hop
+  already live today as `already_written` before it asks for a hold, so such a hop takes no hold and no
+  turn. A step record keeps only the receipts it proved, never the rest of the reply (a reply may repeat
+  hop words; the ledger stays the only place they live); a failed attempt's error names the reply length.
 - **Done only with receipts.** A hop step needs `reminisce <hop> saved rm:<episode>:<hop>:<hex>` for THIS
   hop and today in the reply AND that id in the ledger for that hop. The cross-read needs the line
   `reminisce cross-read done`, and every rewrite receipt in it must be a rewrite in the ledger. `finish`

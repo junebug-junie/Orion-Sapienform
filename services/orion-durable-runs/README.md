@@ -88,6 +88,7 @@ by `hold = {"retry_at", "listener_wait"}`, which `AdmissionRuntime.register` wai
 with a `retry_wait` node also get `retry_at` on the state.
 
 Wired into: `curiosity.investigate`, `self_sense_eval`, `harness.echo_smoke`, `pr.field_note`,
+`reminiscence.episode`,
 `curiosity.compaction` (via `failed_attempt`), `reading.turn`, `compactor.digest`,
 `journal.compose`, `memory.episode_distill`, `orion_day.letter`. `reverie.visual` and
 `dream.carry` already treat any transport error as a backed-off deferral that spends no attempt.
@@ -470,6 +471,56 @@ runs the automatic half.
 - **Deploy order:** `pr.field_note` is an additive `DurableWorkflowV1` value. Deploy orion-sql-writer,
   orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
 - **Off:** `PR_FIELD_NOTES_ENABLED=false` and restart: no poll, no runs, no code records.
+
+### Daily reminiscence: overnight tick + `reminiscence.episode` (2026-11-07, design Patch 2)
+
+Once a day Orion visits one week of their own past and writes five short hops about it (design
+`docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md`; the dig half is #3163). This service
+runs the daily half.
+
+- **Tick** (`app/reminiscence_poll.py`, every `REMINISCENCE_POLL_SEC`=600 s), only inside the Denver window
+  `[REMINISCENCE_HOUR_LOCAL, REMINISCENCE_END_HOUR_LOCAL)` = 03:00-09:00. Agent-lane time is the real cost
+  and the agent lanes are contended by day. Today's episode is the Denver date. Five hops already live
+  today and no failed run today (Juniper asked in chat, or the run completed): nothing. Five hops live
+  but today's run failed (its cross-read ran out of attempts): the retry runs only the cross-read. Else the week is the one today's first hop fixed, or the oldest
+  week that ended before today with no complete episode (the same rule `dig reminisce` uses). One run
+  `reminiscence-<episode>` (agent lane, background priority, deadline = the window's end). A day whose run
+  failed gets one more (`-a2`) 30 min later, only while two step attempts still fit before 09:00. At most
+  one reminiscence run is unfinished at a time. A week left unfinished is picked again the next day.
+- **Run** (`app/reminiscence_graph.py`, contract `orion/schemas/reminiscence_run.py`):
+  `precheck -> resource_request -> resource_wait -> step (x6) -> finish`, a retry goes
+  `retry_wait -> precheck`. `step` runs the next of six steps under the run's one hold: the five hops
+  (`what_it_was`, `what_it_was_like`, `where_i_am_now`, `where_im_going`, `otherwise`), then one
+  `cross_read` (read all five, rewrite at most two, `dig close <week end>`). Each step is one harness turn
+  on the #2958 seam with its own source tag (`reminiscence_<step>`: its own claude session; session
+  `reminiscence`), each attempt bounded by `REMINISCENCE_TURN_TIMEOUT_SEC`=900 s (540 s of motor), each
+  step its own `DURABLE_RUNS_RETRY_MAX_ATTEMPTS`. The ledger is the checkpoint: `precheck` records every hop
+  already live today as `already_written` before it asks for a hold, so such a hop takes no hold and no
+  turn. A step record keeps only the receipts it proved, never the rest of the reply (a reply may repeat
+  hop words; the ledger stays the only place they live); a failed attempt's error names the reply length.
+- **Done only with receipts.** A hop step needs `reminisce <hop> saved rm:<episode>:<hop>:<hex>` for THIS
+  hop and today in the reply AND that id in the ledger for that hop. The cross-read needs the line
+  `reminisce cross-read done`, and every rewrite receipt in it must be a rewrite in the ledger. `finish`
+  completes the run only when all five hops are live (`outcome: complete`). A step whose day has passed
+  fails (its hops would land in another episode).
+- **Ledger access.** The same `/mnt/orion-fcc/self` mount as field notes (`REMINISCENCE_LEDGER_DIR`).
+  Only `app/reminiscence_ledger.py` touches the reminiscence ledger: read-only, the second named exception
+  in `tests/test_organ_names_partition.py`, and it hands back ids, dates, counts and booleans, never a
+  hop's text, refs or claims (a test checks no `.note`/`.because`/`.claims` use, no write call, and every
+  public return type). The gate to recall stays closed: that test's reader allowlist is unchanged.
+- **Cost.** Each run is an act `make:durable.reminiscence` (`app/run_acts.py`). Its family is tier 2 in
+  `config/physiology/families.yaml` (the design's default), agent lanes, a 6 h window, shadow bids. The
+  design's estimate is ~30 min of agent-lane GPU slot a day (median), ~100 (p90). Measure it:
+  `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py --workflow reminiscence.episode`
+  (wall time, whole-machine Wh, GPU slot seconds, tokens of all six turns and every attempt; it says how
+  many of the 7 episodes the design asks for are in).
+- **Surfaces.** `/health` -> `reminiscence_tick` (the last real tick's decision). `GET /reminiscence/plan`
+  (`?any_hour=true` decides as if inside the window) shows what the tick would do now and the first step's
+  prompt, and submits nothing. `GET /runs/<id>` shows `reminiscence` (episode, week, outcome, hop ids, next
+  step) and `harness_steps`.
+- **Deploy order:** `reminiscence.episode` is an additive `DurableWorkflowV1` value. Deploy
+  orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+- **Off:** `REMINISCENCE_ENABLED=false` and restart: no tick, no runs. This is not the privacy gate.
 
 ### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
 

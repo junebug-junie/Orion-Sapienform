@@ -230,6 +230,8 @@
       } catch (err) {
         if (id !== state.historyRequest) return;
         setText(els.status, "history error (" + (err.message || err) + ")");
+        // Do not leave the previous window's summary under the newly selected window.
+        (config.historyTiles || []).forEach(function (t) { setText(els[t.id], "—"); });
       }
     }
 
@@ -267,7 +269,8 @@
       els.windowButtons.forEach(function (b) {
         b.addEventListener("click", function () {
           var next = b.getAttribute(config.windowAttr) || "24h";
-          if (next === state.window) return;
+          // Shared buttons: the owning module ignores a click on the active window; match it.
+          if (config.ownWindowButtons === false && next === state.window) return;
           state.window = next;
           refreshButtons();
           fetchHistory();

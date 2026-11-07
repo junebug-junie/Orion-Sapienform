@@ -48,7 +48,8 @@ def fetch_office_sound(
     recent_minutes: int = 10,
     now: Optional[datetime] = None,
 ) -> Optional[OfficeSound]:
-    """None on no DSN, no row, a newest row without a sound reading, or any error.
+    """None on no DSN, no row with a sound reading, or any error. The newest row
+    WITH a reading is used: one out-of-range read (no value) must not hide the last one.
 
     Staleness is the caller's call: it gets `received_at`, not a verdict."""
     engine = _get_engine()
@@ -61,7 +62,8 @@ def fetch_office_sound(
                 text(
                     "WITH latest AS ("
                     f"  SELECT ts, {_DBA} AS dba FROM office_env_sample"
-                    "   WHERE node = :node AND NOT stale ORDER BY ts DESC LIMIT 1"
+                    "   WHERE node = :node AND NOT stale"
+                    f"   AND {_DBA} IS NOT NULL ORDER BY ts DESC LIMIT 1"
                     "), band AS ("
                     "  SELECT count(*) AS n, "
                     f"  percentile_cont(0.1) WITHIN GROUP (ORDER BY {_DBA}) AS p10, "

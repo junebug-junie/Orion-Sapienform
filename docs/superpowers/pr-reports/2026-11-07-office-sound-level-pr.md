@@ -103,7 +103,7 @@ TBD
 ## Live verification (2026-11-07, after deploy and flash)
 
 - Flashed the office Nano (`E8F60AD53FB4`) with the merged firmware; deployed sql-writer, hub and all 11 other changed services on athena; rebuilt both readers on pan-1.
-- First sound sample reached the Hub API: 37.45 dBA at 02:47:40Z (via Nano -> reader -> bus -> sql-writer -> Postgres -> Hub). Path VERIFIED.
+- First sound sample reached the Hub API: 37.45 dBA at 01:47:40Z (via Nano -> reader -> bus -> sql-writer -> Postgres -> Hub). Path VERIFIED.
 - Unplugging the signal lead dropped `office_sound_dba` and marked the sample stale within one frame (01:55:41Z). Absent-meter handling VERIFIED.
 - The 37.4 dBA value was wrong: a wrong lead was on A0 (steady ~0.75 V, never moved with music at the mic or a ~74 dB room). After swapping leads: 77.05 dBA at 02:05:38Z, 77.2 at 02:06:08Z, 90.2 at 02:06:38Z. Meter tracking sound VERIFIED against a ~74 dB reference.
 - Not exercised: the closet Nano still runs the old firmware, so "closet sends no `sound`" is UNVERIFIED (the host ignores `sound` for the closet either way).

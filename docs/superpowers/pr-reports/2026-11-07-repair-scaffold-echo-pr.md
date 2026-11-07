@@ -13,7 +13,7 @@
 
 ## Outcome moved
 
-- 30-day replay over 430 real replies: 2 flagged. One is the 10-09 leak. The other (11-04) is a normal reply that mentions "the draft" of something; in that case the cost is that the draft ships instead of the repair. The guard runs only on repair output, which happens on a small share of turns.
+- 30-day replay over 430 real replies (after the review fixes): 2 flagged, 0 contain NO_CHANGE. One is the 10-09 leak. The other (11-04) is a normal reply that mentions "the draft" of something; in that case the cost is that the draft ships instead of the repair. The guard runs only on repair output, which happens on a small share of turns.
 
 ## Files changed
 
@@ -24,11 +24,22 @@
 ## Tests run
 
 ```text
-orion/harness/tests                718 passed
+orion/harness/tests                728 passed
 mutation: guard disabled -> 3 of the new tests fail
 orion/cognition/tests              3 collection errors, same as main
 gates: check_personal_terms, check_definition_drift --gate, check_metric_lineage --gate, check_env_key_single_source, git diff --check   ok
 ```
+
+## Review findings fixed
+
+The review ran in a subagent.
+
+- Finding (HIGH): a decorated NO_CHANGE (`NO_CHANGE.`, backticks, bold, quotes, a reason after it) would ship as the reply. Fix: `is_repair_no_change` matches the token anywhere unless the draft itself has it. Evidence: 6 parametrized variants.
+- Finding (HIGH): on the unsupported-claim path, a second repair that kept the text was traced as "repaired twice". Fix: new reason `unsupported_claim_kept_after_recheck` with a WARNING. The prompt now says never to answer NO_CHANGE when an unsupported claim is listed. Evidence: `test_no_change_twice_on_a_flagged_claim_is_reported_kept_not_repaired`.
+- Finding (MEDIUM): a kept draft was invisible. Fix: `response_repair_reason` gets `_kept_draft:no_change|scaffold_echo` (persisted in the run artifact, no schema change), plus an INFO log for no_change.
+- Finding (MEDIUM): bare "the draft" would catch everyday replies. Fix: it counts only next to the task's own words (aligned, correction, reflection, verdict, repair). Evidence: window draft, letter draft and drafted plan are all clean; both live leaks are still caught.
+- Finding (LOW): a whitespace-only draft could be kept. Fix: it raises into the existing finalize-failure path.
+- Finding (LOW): test realism. Fix: real payload-path test; the prompt assertion no longer depends on line wrapping.
 
 ## Restart required
 

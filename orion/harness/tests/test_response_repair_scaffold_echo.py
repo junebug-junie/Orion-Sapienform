@@ -31,6 +31,13 @@ def test_scaffold_echo_catches_both_live_leaks_and_spares_a_real_reply() -> None
     assert repair_scaffold_echo("You're right: the cabinet sensor read 31 C, not hot.", draft_text=DRAFT) is None
 
 
+def test_the_draft_in_everyday_english_is_not_an_echo() -> None:
+    for text in ("The draft from the window is why the office reads cold tonight.",
+                 "The draft reads better now that the second paragraph leads.",
+                 "Looks like the drafted plan for the shelves is on the desk."):
+        assert repair_scaffold_echo(text, draft_text=DRAFT) is None, text
+
+
 def test_a_draft_juniper_is_talking_about_is_not_an_echo() -> None:
     text = "I reread the draft of your letter -- the second paragraph is the strongest."
     assert repair_scaffold_echo(text, draft_text="", user_message="can you look at the draft of my letter?") is None
@@ -69,10 +76,39 @@ async def test_a_scaffold_echo_ships_the_draft_not_the_notes(leak: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_change_ships_the_draft() -> None:
-    chain = await _chain(f"  {REPAIR_NO_CHANGE}\n")
+@pytest.mark.parametrize("answer", ["  NO_CHANGE\n", "NO_CHANGE.", "`NO_CHANGE`", "**NO_CHANGE**", '"NO_CHANGE"',
+                                    "NO_CHANGE\n\nThe reply is fine as written."])
+async def test_no_change_in_any_decoration_ships_the_draft(answer: str) -> None:
+    chain = await _chain(answer)
     assert chain.final_text == DRAFT
     assert chain.finalize_changed is False
+    assert chain.response_repair_reason.endswith("_kept_draft:no_change")
+
+
+@pytest.mark.asyncio
+async def test_a_scaffold_echo_is_traced_as_kept() -> None:
+    chain = await _chain(LEAK_1004)
+    assert chain.response_repair_reason.endswith("_kept_draft:scaffold_echo")
+
+
+@pytest.mark.asyncio
+async def test_an_empty_draft_is_never_kept() -> None:
+    from orion.harness.finalize import HarnessFinalizeFailedError
+
+    global DRAFT
+    saved, DRAFT = DRAFT, "   "
+    try:
+        with pytest.raises(HarnessFinalizeFailedError):
+            await _chain("NO_CHANGE")
+    finally:
+        DRAFT = saved
+
+
+def test_the_real_payload_path_reads_no_change() -> None:
+    from orion.harness.finalize import extract_response_repair_text, is_repair_no_change
+
+    text = extract_response_repair_text({"ok": True, "final_text": "NO_CHANGE."})
+    assert is_repair_no_change(text, draft_text=DRAFT)
 
 
 @pytest.mark.asyncio
@@ -87,4 +123,5 @@ def test_the_prompt_asks_for_no_change_and_no_notes() -> None:
 
     p = Path(__file__).resolve().parents[2] / "cognition" / "prompts" / "orion_response_repair.j2"
     text = p.read_text(encoding="utf-8")
-    assert "NO_CHANGE" in text and "never\nnotes about the draft" in text
+    flat = " ".join(text.split())
+    assert "NO_CHANGE" in flat and "notes about the draft" in flat and "Never answer NO_CHANGE when an unsupported" in flat

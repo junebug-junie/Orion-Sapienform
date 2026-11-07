@@ -199,6 +199,6 @@ Log: `docker logs orion-athena-hub 2>&1 | grep 'physiology_bind family=hub.outre
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3165
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

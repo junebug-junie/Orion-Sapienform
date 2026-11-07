@@ -942,107 +942,57 @@ def load_latest_reverie_interpretation(
 # budget.
 MAX_SELF_STUDY_CONTEXT_CHARS = 150
 
-# The ONLY four source_ref prefixes self_study_analysis.py's SOURCE_SPECS
-# actually writes (services/orion-cortex-exec/app/self_study_analysis.py,
-# `source_ref=f"{result.source}:{result.finding_digest}"`) -- deterministic,
-# templated, numeric window-contrast prose, never free-form LLM narration.
-# A whitelist, not a "source_ref NOT LIKE 'curiosity:%'" blacklist: safer
-# against a future new producer writing source_kind='self_study' under some
-# other prefix this list doesn't yet know about (fails closed -- an unknown
-# prefix is excluded, not admitted by default).
+# Where the self-study seed comes from (repointed 2026-11-07, ladder retirement PR 6).
 #
-# Real incident this list exists because of (2026-08-27): the SAME
-# source_kind='self_study' also covers a separate, free-form LLM-narrated
-# "Curiosity" reflection (source_ref prefix "curiosity:") that turned out to
-# quote real, sensitive personal content when reflecting on memory patterns
-# (a live sample referenced "[spouse name] + [health detail]" while discussing which
-# crystallizations get kept vs rejected) -- confirmed live before this list
-# was written, not a hypothetical. The four prefixes below are the deliberate
-# subset of source_kind='self_study' this reader will EVER touch.
+# Until then it read `journal_entries` rows from cortex-exec's `skills.self_study.analyze.v1`
+# (four window-contrast analyses: vision events, affective state, co-creation signals, concept
+# induction). The ONLY trigger of that skill was the dispatch rung's `analyze_self_study_source`
+# template, so when dispatch went read-only on 2026-11-05 those rows stopped (last one 11-05
+# 16:24Z) and with the dispatch retirement they never come back.
 #
-# Derived from orion.schemas.self_study_analysis.ANALYSIS_SOURCES at call
-# time (review finding: an earlier version hardcoded a private duplicate of
-# that shared schema tuple with no import tying them together -- if the real
-# producer's source list ever changed, this privacy-critical allowlist would
-# silently go stale instead of failing loud). Computed inside the function
-# below, not at module import time -- this module's own docstring: "never
-# the heavy orion.substrate package", and its top-level imports are
-# stdlib-only by convention (see `SpontaneousThoughtV1`'s own TYPE_CHECKING-
-# only import above) even though `self_study_analysis` itself is confirmed
-# pydantic/stdlib-only and safe to import.
+# Curiosity has owned self-study since commit a41aa36ea (2026-10-30). Its answer of record for
+# each self-inquiry run is one `self_concept_history` row, `produced_by='curiosity_self_inquiry'`:
+# first-person prose about what Orion went and counted ("Four prediction-error loops hold 97,976
+# of my 201,515 attention rows ..."), ~1,150-1,200 chars, ~6 a day. Read live 2026-11-07: a 6 h
+# window holds a fresh row 78.7% of the last 7 days, against 70.7% for the old analysis rows
+# over their last 12 days -- the same `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` still fits.
 #
-# NOT wired to grow automatically if ANALYSIS_SOURCES gains a fifth source:
-# a new analysis producer must be independently reviewed for real content
-# (the same live-data check that qualified these four) before this allowlist
-# admits it -- see this comment's own reasoning for why an allowlist that
-# silently grows with new producers would defeat the point.
+# Not the `journal_entries` "curiosity:" rows: those bodies open with bookkeeping ("The answer
+# of record is in the graph at 1,192 characters ..."), so their first 150 chars would be no
+# self-observation at all. The old prefix allowlist excluded them for a 2026-08-27 privacy
+# concern; Juniper's standing rule (2026-10-07) is that there is no privacy boundary between her
+# and Orion, so this seed does not re-impose one.
+SELF_STUDY_PRODUCED_BY = "curiosity_self_inquiry"
 
 
 def load_latest_self_study_reflection(
     *, char_limit: int | None = None, max_age_sec: float | None = None, with_identity: bool = False
 ) -> str | None:
-    """Most recent real self-study analysis body -- a second, richer
-    context-seed for the visual chain alongside `load_latest_reverie_
-    interpretation` (design doc §16).
+    """Most recent self-study answer -- a second, richer context-seed for the visual chain
+    alongside `load_latest_reverie_interpretation` (design doc §16).
 
-    Source: `journal_entries` rows self_study_analysis.py's four
-    deterministic window-contrast analyses write (concept induction, vision
-    events, affective state, co-creation signals) -- real quantified
-    self-observation ("vision events dropped 0.36x vs baseline, a status
-    category disappeared"), not a bare narration sentence. Restricted to
-    ONLY those four producers, by `source_ref` prefix -- see the module-level
-    comment above this function for the real live incident (a sibling
-    `source_kind='self_study'` producer, the free-form "Curiosity"
-    reflection, was confirmed live to quote sensitive personal content) that
-    makes this an allowlist, not "any self_study row". Matched via SQL
-    `starts_with()`, not `LIKE ... %` (review finding: every one of the four
-    prefixes contains an underscore, which `LIKE` treats as a single-
-    character wildcard, not a literal -- `starts_with()` does exact literal
-    prefix matching, closing a real gap in the allowlist's own "fails
-    closed" guarantee).
+    Source: curiosity's self-inquiry answer of record, the newest `self_concept_history` row with
+    `produced_by = 'curiosity_self_inquiry'` (see the comment above for why this, and why it moved
+    from the retired analysis rows). `with_identity` returns its `entry_id` as the source id.
 
-    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s
-    own contract exactly (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded).
-    `max_age_sec` should be looser than the reverie context's 900s default --
-    these analyses fire on their own 6-72h window-contrast cadence (real
-    values seen in bodies: "last 6h", "last 12h", "last 72h"), not a fast
-    per-tick producer, so a tight window would read as permanently absent.
+    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s own contract
+    (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded). The visual chain passes
+    `settings.self_study_context_max_age_sec`; the `created_at` index keeps the read under 1 ms
+    (live EXPLAIN ANALYZE, 2026-11-07: 0.31 ms over 8,913 rows).
 
-    Read-only, best-effort: None on any error, empty table, or nothing
-    matching the four safe prefixes -- degrades exactly like an absent
-    `context_text` does (visual_chain.build_visual_prompt).
-
-    Performance note (review finding, not fixed): with `max_age_sec=None`,
-    the `source_ref` prefix filter cannot use an index and Postgres runs a
-    full `journal_entries` scan (live `EXPLAIN ANALYZE`, 2026-08-27: ~23ms /
-    4,747 buffers against 38,886 rows, vs ~0.2ms / 85 buffers when
-    `max_age_sec` is bound). `visual_chain.py`, this function's only real
-    caller, always passes `settings.self_study_context_max_age_sec`, so this
-    is not reachable in production today -- but any future caller that
-    omits `max_age_sec` reproduces the full scan. A sibling function in this
-    codebase, `services/orion-cortex-exec/app/self_study_analysis.py::
-    recently_journaled`, deliberately moved away from this exact `source_ref`
-    pattern-match shape for this exact reason -- worth revisiting the same
-    way if a second unbounded caller ever appears.
+    Read-only, best-effort: None on any error, empty table, or nothing fresh -- degrades exactly
+    like an absent `context_text` does (visual_chain.build_visual_prompt).
     """
     try:
         from sqlalchemy import text
 
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
-        from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
 
-        safe_prefixes = tuple(f"{source}:" for source in ANALYSIS_SOURCES)
-        prefix_clauses = " OR ".join(
-            f"starts_with(source_ref, :prefix{i})" for i in range(len(safe_prefixes))
-        )
-        params: dict[str, Any] = {
-            f"prefix{i}": prefix for i, prefix in enumerate(safe_prefixes)
-        }
-        where_sql = f"source_kind = 'self_study' AND body <> '' AND ({prefix_clauses})"
+        params: dict[str, Any] = {"produced_by": SELF_STUDY_PRODUCED_BY}
+        where_sql = "produced_by = :produced_by AND content <> ''"
         if max_age_sec is not None:
             # Same now() - make_interval() freshness idiom load_latest_
-            # reverie_interpretation already uses -- see that function's own
-            # comment on the repo-wide precedent for this shape.
+            # reverie_interpretation already uses.
             where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
             params["max_age_sec"] = float(max_age_sec)
 
@@ -1051,8 +1001,8 @@ def load_latest_self_study_reflection(
             row = (
                 conn.execute(
                     text(
-                        f"SELECT body, entry_id AS source_id FROM journal_entries WHERE {where_sql} "
-                        "ORDER BY created_at DESC LIMIT 1"
+                        f"SELECT content AS body, entry_id AS source_id FROM self_concept_history "
+                        f"WHERE {where_sql} ORDER BY created_at DESC LIMIT 1"
                     ),
                     params,
                 )

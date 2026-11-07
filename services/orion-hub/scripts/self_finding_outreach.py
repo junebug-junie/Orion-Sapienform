@@ -532,8 +532,6 @@ class SelfFindingOutreach:
         outreach.record_blocked(reason, correlation_id=correlation_id, source=SELF_FINDING_TAG, extra=meta)
 
     async def _tell(self, outreach: Any, findings: list[SelfFinding]) -> dict[str, Any]:
-        from scripts.outreach_vocabulary import find_ungrounded_faculty_mentions
-
         correlation_id = str(uuid4())
         decision_id = str(uuid4())
         meta = decision_meta(findings, decision_id)
@@ -542,6 +540,28 @@ class SelfFindingOutreach:
         if blocked:
             self._record_block_once(outreach, meta, str(blocked), correlation_id)
             return {"reason": str(blocked), "finding_ids": meta["finding_ids"]}
+        # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
+        # findings stay pending and are retried next tick (the hold ends by the 1 h window at the latest).
+        # Cap-exempt: this door never counts against Juniper's daily cap.
+        key = str(meta["bundle_key"])
+        admit, economy = await outreach.economy_admit(door=SELF_FINDING_TAG, key=key, cap_counted=False)
+        if economy:
+            meta = {**meta, "economy": economy}
+        if not admit:
+            self._record_block_once(outreach, meta, "economy_held", correlation_id)
+            return {"reason": "economy_held", "finding_ids": meta["finding_ids"]}
+        sent = False
+        try:
+            result = await self._compose_and_offer(outreach, findings, meta, correlation_id, decision_id)
+            sent = result.get("reason") == "sent"
+            return result
+        finally:
+            await outreach.economy_done(door=SELF_FINDING_TAG, key=key, sent=sent)
+
+    async def _compose_and_offer(self, outreach: Any, findings: list[SelfFinding], meta: dict[str, Any],
+                                 correlation_id: str, decision_id: str) -> dict[str, Any]:
+        from scripts.outreach_vocabulary import find_ungrounded_faculty_mentions
+
         prompt = build_self_finding_prompt(findings)
         text, debug = await outreach.compose(prompt, correlation_id)
         if not text:

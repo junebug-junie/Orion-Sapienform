@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-hub, orion-execution-dispatch-runtime
+-- ORION-MIGRATION-REQUIRED-BY: none the reading pull retired 2026-11-07 (ladder retirement PR 6); Hub no longer reads or writes these columns
 -- Thinking rung 3 follow-up (2026-10-21): the motor allocator's reading pull.
 -- world_pulse_read_seed: which allocator decision pulled a seed, its arm, and when (Hub writes,
 --   orion/world_pulse_read/pull.py; Hub also adds these lazily with a short lock_timeout).

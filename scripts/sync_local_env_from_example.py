@@ -130,7 +130,7 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
-    # Self-monitor effects (rung 6, 2026-11-03): E1 act gate in dispatch-runtime + orion-actions
+    # Self-monitor effects (rung 6, 2026-11-03): E1 act gate in orion-thought (was dispatch-runtime) + orion-actions
     # (SELF_MONITOR_ACT_GATE_ENABLED, SELF_MONITOR_PROBE_INTERVAL_SEC) and E2 in Hub
     # (SELF_MONITOR_QUESTIONS_*). Without this the default run visited all three and added nothing.
     "SELF_MONITOR_",
@@ -150,11 +150,8 @@ SYNC_PREFIXES = (
     "HARDWARE_WATCH_",
     "LLM_GATEWAY_POOL_",
     "LLM_GATEWAY_EXECUTOR_",
-    # Substrate pending-marker reconcilers (2026-09-25): bounded window + full-sweep schedule.
-    # None of the policy / execution-dispatch runtimes were visited before this (the feedback
-    # runtime's FEEDBACK_* keys retired with it, 2026-11-04).
-    "POLICY_RECONCILE_",
-    "DISPATCH_RECONCILE_",
+    # POLICY_RECONCILE_ / DISPATCH_RECONCILE_ (the substrate pending-marker reconcilers) retired
+    # with the policy and dispatch rungs, 2026-11-07 (ladder retirement PR 6).
     # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff.
     "CORTEX_EXEC_RENDER_SCENE_",
     # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
@@ -226,7 +223,6 @@ SYNC_PREFIXES = (
     "CHANNEL_PRE_TURN_",
     "REPAIR_PRESSURE_WEIGHTS_",
     "REPAIR_PRESSURE_PROBE_",
-    "TRANSPORT_PROPOSAL_",
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
@@ -586,10 +582,9 @@ DEFAULT_SERVICES = (
     "orion-substrate-runtime",
     "orion-field-digester",
     "orion-attention-runtime",
-    # orion-self-state-runtime deleted 2026-07-22 (SelfStateV1 burn).
-    "orion-proposal-runtime",
-    "orion-policy-runtime",
-    "orion-execution-dispatch-runtime",
+    # orion-self-state-runtime deleted 2026-07-22 (SelfStateV1 burn); orion-proposal-runtime,
+    # orion-policy-runtime and orion-execution-dispatch-runtime deleted 2026-11-07 (ladder
+    # retirement PR 6).
     "orion-thought",
     "orion-harness-governor",
     "orion-dream",

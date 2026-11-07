@@ -29,6 +29,9 @@ shows an open gate (the summary prints that ceiling as ``open_verdicts``). It is
 timer loses no start and adds none in timing ("no regression"), not a check that Orion plays more or
 better. After the retirement no new verdict rows are written, so live mode can only replay the
 time before it; the post-deploy evidence is Hub ``/health`` -> ``retro_leisure_self_start``.
+The dispatch rung itself retired on 2026-11-07 (ladder retirement PR 6), and its tables are dropped
+by the follow-up migration; after that, run live mode only against a restored pg_dump of
+``substrate_dispatch_results``. Fixture mode (CI) needs no database.
 
 Limits, said plainly: a verdict shows only the FIRST gate that refused, so a gate hidden behind it
 is not seen; the self-monitor act gate is not modelled (the faculty read ``unknown``, which admits);

@@ -863,22 +863,6 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT: int = Field(
         default=3, ge=1, le=8, alias="HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"
     )
-    # Reading pull (thinking rung 3 follow-up, orion/world_pulse_read/pull.py): the motor
-    # allocator may admit ONE extra Stage 1 read on the seed the lane would claim next. Kill
-    # switch, shipped on. Off = every pull is refused `disabled`; the lane is unchanged either way.
-    HUB_WORLD_PULSE_READ_PULL_ENABLED: bool = Field(
-        default=True, alias="HUB_WORLD_PULSE_READ_PULL_ENABLED"
-    )
-    # Started pulls per UTC day. Default derived from data, not picked: the lane's median reading
-    # day over 30 days (orion/world_pulse_read/pull.py DERIVED_DAILY_CAP = 8).
-    HUB_WORLD_PULSE_READ_PULL_DAILY_CAP: int = Field(
-        default=8, ge=0, le=100, alias="HUB_WORLD_PULSE_READ_PULL_DAILY_CAP"
-    )
-    # Orion's arousal (Redis orion:regulation:latest): `strained` refuses a pull, the same rule the
-    # waking baseline painting follows. Unknown / stale / false changes nothing.
-    HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED: bool = Field(
-        default=True, alias="HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED"
-    )
     # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
     # deterministic summary per finished Retro session -> one memory_cards row (provenance
     # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;
@@ -1369,6 +1353,11 @@ class Settings(BaseSettings):
     # (orion.physiology.client -> durable-runs POST /physiology/bid) and log the decision beside
     # their real gate (scripts/physiology_shadow.py). Never obeyed; off = no bid, no log line.
     HUB_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True, alias="HUB_PHYSIOLOGY_SHADOW_BID_ENABLED")
+    # Body economy Patch D for hub.outreach (scripts/outreach_bind.py): ``on`` -> every Hub door that
+    # composes a message (the background tick, reading / self / office findings) obeys its binding bid
+    # (funded or lane-queued: compose; price / sated: hold and re-bid, at most the 1 h window; no
+    # answer: today's gates). ``shadow`` -> the C3b shadow bid only. Unknown -> shadow (logged).
+    ORION_PHYSIOLOGY_BID_HUB_OUTREACH: str = Field(default="on", alias="ORION_PHYSIOLOGY_BID_HUB_OUTREACH")
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"

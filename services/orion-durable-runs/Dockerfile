@@ -8,7 +8,7 @@ COPY services/orion-durable-runs/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY orion /app/orion
-COPY config/proposals/visual_baseline.v1.yaml /app/config/proposals/visual_baseline.v1.yaml
+COPY config/reverie/visual_baseline.v1.yaml /app/config/reverie/visual_baseline.v1.yaml
 # app/self_sense_graph.py imports orion.evals.self_sense_runner, which
 # transitively imports orion.evals.self_sense -- that module reads this file
 # at IMPORT time (module-scope FIELD_NODE_IDS), and self_sense_graph.py is

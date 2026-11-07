@@ -37,7 +37,7 @@ protected_paths:
   - {glob: "orion/gpu_pool/shed.py", organ: "budget / spinal (shed reasons)"}
   - {glob: "orion/gpu_pool/scheduler.py", organ: budget}
   - {glob: "orion/gpu_pool/shed_backoff.py", organ: budget}
-  - {glob: "orion/autonomy/allocator.py", organ: choice}
+  # orion/autonomy/allocator.py (choice) retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
   - {glob: "orion/grammar/act_ledger.py", organ: learning}
   - {glob: "config/physiology/**", organ: "contract"}
   # "the bid sites in each producer" (design doc) are added here as Patch D lands each bid().
@@ -50,6 +50,8 @@ protected_paths:
   - {glob: "services/orion-dream/app/physiology_bind.py", organ: "choice (Patch D bid site: the dream cycle binds)"}
   # 2026-11-05, ladder retirement PR 5: the cooling world act binds here (only funded sheds), listed below as bidder.
   - {glob: "services/orion-durable-runs/app/cooling_act.py", organ: "choice (binding bid site: the cooling world act)"}
+  # 2026-11-07, Patch D for hub.outreach: every Hub door that composes a message binds here, listed below as bidder.
+  - {glob: "services/orion-hub/scripts/outreach_bind.py", organ: "choice (Patch D bid site: Hub outreach binds)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -75,14 +77,8 @@ readers:
     role: bidder
     reason: "the waking painting's only trigger -- runs the visual-baseline schedule, whose arousal reader (R3 reader 4) defers a due painting while arousal reads strained; places a SHADOW hunger bid on thought.painting before the run exists, never obeyed."
     note: 2026-11-05, ladder retirement PR 2 (moved from orion-proposal-runtime's worker); pending Patch D (painting is fourth in the binding order)
-  - module: orion/world_pulse_read/pull.py
-    role: bidder
-    reason: world_pulse_read pull gate refuses on arousal_strained and on thermal_hot.
-    note: pending Patch D
-  - module: services/orion-hub/scripts/world_pulse_read_pipeline.py
-    role: bidder
-    reason: feeds arousal + thermal_state into the pull gate.
-    note: pending Patch D
+  # The reading pull's gate (orion/world_pulse_read/pull.py, fed by Hub's world_pulse_read_pipeline.py)
+  # retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
   - module: services/orion-hub/scripts/retro_leisure.py
     role: bidder
     reason: retro leisure refuses on cabinet_hot and arousal_strained.
@@ -122,7 +118,11 @@ readers:
   - module: services/orion-hub/scripts/endogenous_outreach.py
     role: bidder
     reason: outreach refuses on arousal_strained.
-    note: pending Patch D
+    note: 2026-11-07, its doors obey their binding bid (scripts/outreach_bind.py). The arousal_strained veto stays until that has run on for 7 days with the acceptance checks green; deleting it is the next PR
+  - module: services/orion-hub/scripts/outreach_bind.py
+    role: bidder
+    reason: Hub outreach's BINDING bid (Patch D) -- the background tick and the reading / self / office finding doors obey the market's decision (orion.physiology.binding) before composing; held at most the 1 h window.
+    note: 2026-11-07, already the Patch D shape
   - module: services/orion-hub/scripts/main.py
     role: bidder
     reason: constructs the Hub ArousalReader for the curiosity, outreach and pull vetoes.
@@ -270,9 +270,6 @@ readers:
   - module: services/orion-durable-runs/app/dream_carry_graph.py
     role: display
     reason: treats a child's deferred_thermal outcome as retryable; reacts to the outcome, no heat read.
-  - module: orion/execution_dispatch/visual_settlement.py
-    role: display
-    reason: settles a deferred_thermal visual run as a real answer, not a failure.
   - module: orion/temporal_self/body.py
     role: display
     reason: counts thermal refusals for Orion's body summary.
@@ -305,6 +302,9 @@ readers:
   - module: scripts/analysis/body_economy_binding_replay.py
     role: display
     reason: "read-only Patch D replay: re-bids each real run of a binding family with the live Choice code and app.run_bids.bind_verdict; reports holds and extra delay. Gates nothing"
+  - module: scripts/analysis/outreach_binding_replay.py
+    role: display
+    reason: "read-only Patch D replay for hub.outreach: re-bids each real outreach compose attempt with the live Choice code and orion.physiology.binding.bind_verdict; reports holds per door. Gates nothing"
 
 sources:
   - module: scripts/analysis/sample_body_economy_bids.py

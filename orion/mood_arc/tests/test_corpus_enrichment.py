@@ -197,10 +197,9 @@ def test_enrich_corpus_empty_rows_is_a_no_op() -> None:
 class _SequencedFakeCursor:
     """Like _FakeCursor, but fetchall() returns the NEXT entry of a queued
     rows-per-call sequence rather than one fixed rows list -- needed for
-    resolve_live_enrichment(), whose two underlying queries
-    (fetch_action_warrant then fetch_attention_self_model, in that fixed
-    order) expect differently-shaped row tuples and cannot share a single
-    `rows` list the way _FakeConn's single-query tests can."""
+    resolve_live_enrichment(). Since 2026-11-07 it runs one query
+    (fetch_attention_self_model; action_warrant left with the proposal rung),
+    but the queue shape keeps each test's per-call fixture explicit."""
 
     def __init__(self, conn: "_SequencedFakeConn") -> None:
         self._conn = conn
@@ -232,29 +231,17 @@ class _SequencedFakeConn:
 
 def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
     """Multiple readings per channel inside the lookback window -- only the
-    LAST (most recent) one is returned, not a series and not merged/averaged.
-
-    action_warrant_rows below is a SINGLE row, not two -- resolve_live_enrichment()
-    calls fetch_action_warrant(..., limit=1), which queries `ORDER BY generated_at
-    DESC LIMIT 1` for real (a real DB enforces the LIMIT server-side); this fake
-    conn doesn't implement WHERE/ORDER BY/LIMIT filtering at all, it just returns
-    whatever rows were pre-set, so the fixture itself must already be "what a real
-    LIMIT 1 query would return" rather than relying on the fake to filter down to
-    it. attention_rows is NOT limited (fetch_attention_self_model() has no `limit`
-    param -- see its own docstring for why), so it still exercises the multi-row
-    latest-value-per-channel behavior directly."""
+    LAST (most recent) one is returned, not a series and not merged/averaged."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
-    action_warrant_rows = [(now - timedelta(minutes=2), 0.9)]
     attention_rows = [
         (now - timedelta(minutes=5), "0.90", {"execution": 0.2, "chat": 0.3, "biometrics": 0.4, "bus_synaptic": 0.5}),
         (now - timedelta(minutes=1), "0.97", {"execution": 0.6, "chat": 0.7, "biometrics": 0.8, "bus_synaptic": 0.9}),
     ]
-    conn = _SequencedFakeConn([action_warrant_rows, attention_rows])
+    conn = _SequencedFakeConn([attention_rows])
 
     result = resolve_live_enrichment(conn, now=now, lookback_hours=1.0)
 
     assert result == {
-        "action_warrant": 0.9,
         "heartbeat_mean_ratio": 0.97,
         "prediction_error_execution": 0.6,
         "prediction_error_chat": 0.7,
@@ -264,44 +251,36 @@ def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
 
 
 def test_resolve_live_enrichment_omits_channels_with_no_reading_in_window() -> None:
-    """No action_warrant rows at all this call, but attention_self_model has
-    data -- action_warrant must be ABSENT from the result, never fabricated
-    as 0.0."""
+    """Only heartbeat_mean_ratio has a reading this call -- the prediction_error
+    channels must be ABSENT from the result, never fabricated as 0.0."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
-    conn = _SequencedFakeConn(
-        [[], [(now - timedelta(minutes=1), "0.95", None)]]
-    )
+    conn = _SequencedFakeConn([[(now - timedelta(minutes=1), "0.95", None)]])
 
     result = resolve_live_enrichment(conn, now=now, lookback_hours=1.0)
 
-    assert "action_warrant" not in result
     assert result == {"heartbeat_mean_ratio": 0.95}
 
 
-def test_resolve_live_enrichment_uses_narrow_lookback_not_full_history() -> None:
-    """A regression against accidentally reusing enrich_corpus()'s big-lookback
-    semantics: resolve_live_enrichment must pass its OWN lookback_hours
-    through to since=now-lookback, not some other default. Verified by
-    inspecting the query params fetch_action_warrant's _fetch() recorded --
-    the fake conn ignores params for its return value, so this checks the
-    actual (since, until) bounds passed to the query, not just the output."""
+def test_resolve_live_enrichment_never_reads_the_retired_proposal_table() -> None:
+    """action_warrant came from substrate_proposal_frames until the proposal rung
+    retired (2026-11-07). The digester computes it in-process now; a query against
+    the retired table (dropped after PR 7) would fail every tick."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
-    conn = _SequencedFakeConn([[], []])
+    conn = _SequencedFakeConn([[]])
 
     resolve_live_enrichment(conn, now=now, lookback_hours=0.25)
 
-    assert len(conn.queries) == 2  # action_warrant, then attention_self_model
+    assert len(conn.queries) == 1  # attention_self_model only
+    assert "substrate_proposal_frames" not in " ".join(conn.queries)
 
 
-def test_resolve_live_enrichment_covers_all_six_live_channels() -> None:
+def test_resolve_live_enrichment_covers_all_five_live_channels() -> None:
     """Mirrors test_fetch_all_series_only_wires_dense_enough_signals()'s
-    channel-set assertion: confirms action_warrant + the 4 prediction_error_*
-    domains + heartbeat_mean_ratio all round-trip when every source has a
-    reading in-window."""
+    channel-set assertion: the 4 prediction_error_* domains + heartbeat_mean_ratio
+    all round-trip when the source has a reading in-window."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
     conn = _SequencedFakeConn(
         [
-            [(now - timedelta(seconds=2), 0.5)],
             [(now - timedelta(seconds=30), "0.9", {"execution": 0.1, "chat": 0.2, "biometrics": 0.3, "bus_synaptic": 0.4})],
         ]
     )
@@ -309,7 +288,6 @@ def test_resolve_live_enrichment_covers_all_six_live_channels() -> None:
     result = resolve_live_enrichment(conn, now=now)
 
     assert set(result.keys()) == {
-        "action_warrant",
         "heartbeat_mean_ratio",
         "prediction_error_execution",
         "prediction_error_chat",
@@ -325,8 +303,10 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
     (~16min-11.6h) is far coarser than fit_encoder.py's ~60s default window, so
     forward-filling them in adds dimensionality with no real per-window trajectory signal
     (confirmed empirically: an earlier version of this module that DID wire them in failed
-    the floor gate). Only action_warrant and attention_self_model (dense enough) belong in
-    the default join until a per-window "context" representation is designed for the rest."""
+    the floor gate). Only attention_self_model (dense enough) belongs in the default join
+    until a per-window "context" representation is designed for the rest; action_warrant,
+    the other dense one, is written into the corpus row by the field digester itself since
+    2026-11-07."""
 
     conn = _FakeConn()
     since = datetime(2026, 9, 1, tzinfo=timezone.utc)
@@ -338,7 +318,6 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
     # prediction_error_{domain} channels), not one combined entry -- see
     # fetch_attention_self_model()'s docstring for why (independent LOCF per field).
     assert set(series.keys()) == {
-        "action_warrant",
         "heartbeat_mean_ratio",
         "prediction_error_execution",
         "prediction_error_chat",
@@ -351,6 +330,7 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
         "substrate_codebase_delta_log",
         "dev_economics_ledger_log",
         "doc_semantic_drift_log",
+        "substrate_proposal_frames",
     ):
         assert forbidden_table not in joined_queries, (
             f"fetch_all_series() must not query {forbidden_table} -- these signals are "

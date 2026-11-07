@@ -302,7 +302,7 @@ def render_wants(report: Mapping, *, full: bool) -> list[str]:
         return town
     tot_f = sum(int(f.get("funded") or 0) for f in fams)
     tot_d = sum(int(f.get("deferred") or 0) for f in fams)
-    out = [f"Wants (shadow bids, except curiosity investigate and the dream cycle, which obey their bids since 2026-10-30): {tot_f} funded, {tot_d} deferred."]
+    out = [f"Wants (shadow bids, except curiosity investigate and the dream cycle, which obey their bids since 2026-10-30, and Hub outreach since 2026-11-07): {tot_f} funded, {tot_d} deferred."]
     # One line for every family's deferrals, so the reason is seen even for families the brief
     # list leaves out. Only when the report carries reasons (older reports do not).
     if any(f.get("deferred_by") for f in fams) and tot_d:

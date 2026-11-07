@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from orion.bus.ewma import compute_ewma_update
 from orion.field.pressure import field_pressures
-from orion.proposals.scoring import DIMENSION_PRECISION_EWMA_ALPHA, DIMENSION_PRECISION_MIN_VARIANCE
+from orion.field.pressure_dimensions import DIMENSION_PRECISION_EWMA_ALPHA, DIMENSION_PRECISION_MIN_VARIANCE
 from orion.schemas.field_state import FieldStateV1
 
 from app.digestion.precision import update_dimension_precision_baseline

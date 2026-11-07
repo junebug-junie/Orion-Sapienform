@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-execution-dispatch-runtime
+-- ORION-MIGRATION-REQUIRED-BY: none its only writer and reader, orion-execution-dispatch-runtime, retired 2026-11-07 (ladder retirement PR 6)
 -- Compact completion receipts for structurally empty execution-dispatch frames.
 --
 -- A receipt is the durable child proving feedback-runtime folded this dispatch's untreated

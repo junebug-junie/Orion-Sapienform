@@ -40,6 +40,9 @@ def test_field_channel_corpus_appends_with_real_channel_pressures(monkeypatch, t
 
     saved_state = field_worker._store.save_field.call_args.args[0]
     expected_channels, _provenance = worker.collect_field_channel_pressures(saved_state)
+    warrant = worker.action_warrant(saved_state).score
+    if warrant is not None:
+        expected_channels["action_warrant"] = warrant
     # DEFAULT_NODE_VECTOR/DEFAULT_CAPABILITY_VECTOR seed real, non-empty
     # pressure channels (e.g. availability=1.0, confidence=1.0, plus every
     # zero-valued PRESSURE_CHANNELS entry) -- this is not an empty-shell row.
@@ -67,6 +70,57 @@ def test_anomaly_scorer_receives_row_even_when_corpus_sink_disabled(monkeypatch,
     field_worker._tick()
 
     field_worker._anomaly_scorer.append_row.assert_called_once()
+
+
+def test_action_warrant_is_computed_in_process_into_the_row(monkeypatch, tmp_path) -> None:
+    """Since 2026-11-07 (ladder retirement PR 6) the digester computes action_warrant
+    from this tick's own state; before, the corpus and the live scorer read it back
+    from substrate_proposal_frames, which the retired proposal rung wrote."""
+    from orion.field.action_warrant import ActionWarrant
+
+    corpus_path = tmp_path / "field_channel.jsonl"
+    monkeypatch.setattr(
+        worker, "_FIELD_CHANNEL_SINK", worker.InnerStateCorpusSink(str(corpus_path)), raising=False
+    )
+    seen = []
+    monkeypatch.setattr(
+        worker, "action_warrant",
+        lambda state: seen.append(state) or ActionWarrant(score=0.73, contributing=["execution_pressure"]),
+    )
+
+    field_worker = _make_worker(monkeypatch, idle_tick_enabled=True)
+    field_worker._store.fetch_new_receipts.return_value = []
+    field_worker._store.load_latest_field.return_value = empty_field_state(
+        lattice=field_worker._lattice, now=datetime.now(timezone.utc), tick_id="tick_old"
+    )
+    field_worker._anomaly_scorer = MagicMock()
+
+    field_worker._tick()
+
+    saved_state = field_worker._store.save_field.call_args.args[0]
+    assert seen == [saved_state]  # the tick's final state, the one that is persisted
+    assert _read_jsonl(corpus_path)[0]["channels"]["action_warrant"] == 0.73
+    assert field_worker._anomaly_scorer.append_row.call_args.args[0].channels["action_warrant"] == 0.73
+
+
+def test_action_warrant_is_absent_not_zero_when_it_cannot_be_scored(monkeypatch, tmp_path) -> None:
+    from orion.field.action_warrant import ActionWarrant
+
+    corpus_path = tmp_path / "field_channel.jsonl"
+    monkeypatch.setattr(
+        worker, "_FIELD_CHANNEL_SINK", worker.InnerStateCorpusSink(str(corpus_path)), raising=False
+    )
+    monkeypatch.setattr(worker, "action_warrant", lambda state: ActionWarrant(score=None))
+
+    field_worker = _make_worker(monkeypatch, idle_tick_enabled=True)
+    field_worker._store.fetch_new_receipts.return_value = []
+    field_worker._store.load_latest_field.return_value = empty_field_state(
+        lattice=field_worker._lattice, now=datetime.now(timezone.utc), tick_id="tick_old"
+    )
+
+    field_worker._tick()
+
+    assert "action_warrant" not in _read_jsonl(corpus_path)[0]["channels"]
 
 
 def test_field_channel_corpus_disabled_when_path_empty(monkeypatch, tmp_path) -> None:

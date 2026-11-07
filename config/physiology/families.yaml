@@ -131,6 +131,9 @@ families:
   durable.self_inquiry:
     tier: 2
     deferrable_window_s: 21600
+    # agent lanes only, on purpose: a self-inquiry is a long multi-step tool-using turn, which only the
+    # agent models run. metacog (gpu3, shared with fast) serves small single calls; bidding there would
+    # move the contention, not remove it (Orion's review of #3152, 2026-11-06).
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
   durable.self_sense_eval:

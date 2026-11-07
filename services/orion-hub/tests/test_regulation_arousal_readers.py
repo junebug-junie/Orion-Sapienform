@@ -186,14 +186,17 @@ def test_strained_no_longer_holds_the_investigation_line():
     assert scheduling_block_reason(_sched(arousal_level="strained", seconds_since_last=60.0)) == "cooldown"
 
 
-def test_no_investigation_line_branch_compares_against_strained():
-    """Kill means kill: the gate's investigation path has no strained branch left. The one
-    remaining `"strained"` comparison is scoped to the idle-only (self-inquiry) line."""
-    import inspect
+def test_strained_reads_like_no_arousal_on_the_investigation_line():
+    """Kill means kill: on the investigation line (not idle-only), a strained reading gives
+    exactly the decision an unknown reading (None) gives, across the pacing grid."""
+    import itertools
 
-    src = inspect.getsource(scheduling_block_reason)
-    lines = [ln.strip() for ln in src.splitlines() if '== "strained"' in ln]
-    assert lines and all(ln.startswith("if inp.arousal_idle_only and") for ln in lines), lines
+    grid = itertools.product([None, 60.0, 3000.0, 99999.0], [None, 3600.0, 200000.0], [0, 7], [None, 5000.0])
+    for since, engaged_cd, done, rest in grid:
+        base = dict(seconds_since_last=since, arousal_engaged_cooldown_sec=engaged_cd, done_today=done,
+                    rest_drive_cooldown_sec=rest)
+        assert scheduling_block_reason(_sched(arousal_level="strained", **base)) == \
+            scheduling_block_reason(_sched(arousal_level=None, **base)), base
 
 
 def test_engaged_waits_out_the_doubled_cooldown():

@@ -155,7 +155,8 @@ def held(reader, level, gap_sec, *, curiosity_base_sec, engaged_multiplier,
         return "arousal_strained" if level == "strained" else None
     if reader == "curiosity":
         # No strained branch: Hub's strain veto on this line was retired 2026-11-07
-        # (its durable-runs body-economy bid decides now).
+        # (its durable-runs body-economy bid decides now). Replays of history before that
+        # date therefore understate how many investigation runs the shipped gate held then.
         if level == "engaged" and engaged_multiplier > 1.0 and gap_sec is not None and gap_sec < curiosity_base_sec * engaged_multiplier:
             return "arousal_engaged_cooldown"
     return None

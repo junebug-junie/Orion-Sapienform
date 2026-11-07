@@ -92,7 +92,7 @@ maintain, inspect) has been written in 48 h.
 10. **Shared tables stay:** `substrate_action_outcomes`, `substrate_action_effect_posterior`,
     `substrate_signal_control_cells`, `substrate_world_action_episodes` and `gpu_pool_orion_shed`.
     These modules stay: `orion/autonomy/{prediction,contrast,world_episodes,world_settlement*,shed_act,shed_settlement}.py`.
-    The allocator is deleted: nothing outside dispatch and its evals called it.
+    The allocator and the motor-seconds budget are deleted: nothing outside dispatch and its evals called them.
 11. **The rest:**
     - **Hub:** the routes `/api/substrate/{proposals,policy,execution-dispatch}/latest` are gone.
       The lattice shows L7–L9 as `retired` and never queries their tables. The `action_ceiling`
@@ -179,8 +179,8 @@ The new shared module is `orion/field/pressure_dimensions.py`. The config move i
   - `services/orion-{proposal,policy,execution-dispatch}-runtime/`, `orion/{proposals,policy,execution_dispatch}/`;
   - `orion/schemas/{proposal_frame,policy_decision_frame,execution_dispatch_frame,world_pulse_read_pull}.py`;
   - `config/{proposals,policy,execution_dispatch}/`;
-  - `orion/autonomy/{allocator,act_candidates,act_episodes,rating}.py`, `orion/reverie/proposal.py`,
-    `orion/world_pulse_read/pull.py`, `orion/substrate/pending_marker_reconcile.py`;
+  - `orion/autonomy/{allocator,act_candidates,act_episodes,rating,budget}.py`, `orion/reverie/proposal.py`,
+    `orion/world_pulse_read/pull.py`, `orion/substrate/pending_marker_reconcile.py` and its test fake;
   - Hub `substrate_{proposal,policy,execution_dispatch}_routes.py` and `world_pulse_read_pull_listener.py`;
   - `scripts/smoke_{proposal_frame,policy_decision_frame,execution_dispatch}_v1.sh`;
   - `scripts/{rate_artifact,score_artifact_ratings}.py` and three ladder-only analysis scripts;
@@ -232,24 +232,120 @@ The new shared module is `orion/field/pressure_dimensions.py`. The config move i
 ## Tests run
 
 ```text
-TESTS_PLACEHOLDER
+static-gates workflow, every step run locally from .github/workflows/orion-static-gates.yml: 40/40 PASS
+  (includes env template parity, schema registry, bus channels, inner-state registry, definition drift
+   after re-lock, metric lineage gate, substrate ladder liveness + schema-skew tests, env-sync tests)
+scripts/check_body_economy_contract.py: OK (99 state-reading modules)
+scripts/check_migration_required_by.py: OK
+scripts/check_sql_migrations_applied.py (live, read-only): 186 replayed, every object in the window present
+
+Service suites (branch vs main at the same base, cca8ad8bb):
+  orion-hub           4 failed / 4630 passed   (main: 8 failed / 4637 passed; the 4 are a subset of main's)
+  orion-sql-writer    0 failed / 1230 passed   (main: 1 failed)
+  orion-thought       0 failed / 842 passed    (main: 2 failed)
+  orion-dream         0 failed / 339 passed
+  orion-durable-runs  0 failed / 911 passed, 1 skipped -- with a throwaway Postgres 16 (ORION_ADMISSION_TEST_DSN),
+                      so the new act-rows Temporal Self test really ran; mutation (filter removed) -> it fails
+  orion-field-digester 0 failed / 287 passed, 6 skipped (run from repo root, as the new workflow does),
+                      also in a clean venv from services/orion-field-digester/requirements.txt
+
+Root tests/ + orion/ + scripts/analysis/tests, full run: 14,881 passed, 109 failed, 42 collection errors.
+  Collection errors: 42 on the branch, 48 on main; none new (branch set is a subset of main's).
+  The 109 failures, re-run on main: 97 fail there too. The other 12 (orion/substrate/tests/test_graphdb_store.py x10,
+  tests/test_post_pull_apply_migrations_postgres.py x2) pass in isolation on the branch (44 passed): test-order effects.
+
+Focused (all green): tests/scripts/test_substrate_ladder_liveness.py, test_schema_skew_discovery.py,
+  tests/test_metric_liveness.py, scripts/test_check_metric_lineage_liveness_wiring.py (its 2 failures on main fixed),
+  scripts/test_check_metric_dead_wiring.py, orion/self_monitor/tests (126), orion/mood_arc/tests (80),
+  tests/test_field_pressure_dimensions.py, test_action_warrant.py, test_cooling_act_rules.py,
+  test_image_prune_disk_rule_parity.py, test_artifact_rating.py, orion/autonomy agency tests (35),
+  orion/reverie/tests/test_baseline_policy_file.py, every step of the edited CI workflows.
 ```
 
 ## Evals run
 
 ```text
-EVALS_PLACEHOLDER
+orion/autonomy/evals/run_agency_episode_eval.py           10/10
+orion/autonomy/evals/run_attend_act_loop_eval.py          26/26 (check 3, the allocator floor, retired with it)
+services/orion-durable-runs/evals/cooling_act_replay.py   9/9
+services/orion-thought/evals/painting_self_start_replay.py 9/9
+services/orion-hub/evals/retro_leisure_self_start_replay.py  9/9 fixture checks
+services/orion-embodiment/evals/town_self_start_replay.py 12/12
+services/orion-hardware-watch/evals/run_image_prune_replay_eval.py  PASS (fixture)
+services/orion-thought/evals/test_visual_chain_honesty_eval.py  2 passed
+orion/body_atlas/evals: wire (true facts 13/13, false 0/8, 4 mutations CAUGHT), organ structure PASS,
+  capacity roles PASS, field-note truth PASS, portrait PASS
+orion/field/evals/run_action_warrant_eval.py (live, 6 h, 10,235 ticks, moved constants): rest 0.69,
+  fire 0.07, median 0.32, 6 live dimensions -- not degenerate
+action_warrant parity (live, read-only): 300 recent ticks recomputed from substrate_field_state equal the
+  value the proposal runtime stored on the frame, exactly (max |diff| 0.0)
+Migration drift simulation for PR 7 (orion.sql_migration_drift.evaluate, live schema): PR 6 alone green;
+  drop merged but unapplied red (drop_not_applied, by design); drop applied green.
 ```
 
 ## Docker/build/smoke checks
 
 ```text
-DOCKER_PLACEHOLDER
+docker build -t l7l9-test/<svc>:pr6 -f services/<svc>/Dockerfile .   (plain build, test tag; no compose,
+  no production image touched): orion-thought, orion-durable-runs, orion-field-digester, orion-sql-writer,
+  orion-dream, orion-hub (INSTALL_DEV_DEPS=true, as compose builds it): all OK
+In-image imports (docker run --rm, test images):
+  field-digester: app.worker, orion.field.action_warrant, orion.field.pressure_dimensions OK; orion.proposals absent
+  sql-writer: app.main, act_ledger, self_shed OK; _substrate_chain_floor gone
+  thought: app.main, app.store OK; load_baseline_policy() -> enabled True, 5400 s (config/reverie found)
+  durable-runs: temporal_self_sources, cooling_act OK; load_baseline_policy() -> enabled True
+  dream: compaction_applier.consent_approves present
+  hub: scripts.main + api_routes import OK with the live .env; the pull listener module absent
+Ladder check, live: GREEN (see above).
 ```
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+The code review ran in a subagent (read-only, against `git diff origin/main...HEAD`). **No blockers.** It confirmed:
+- nothing live imports or reads a deleted module, schema, channel, env key, route or config path
+  (Dockerfiles, compose, workflows, Makefile and rebuild lists included);
+- the digester computes `action_warrant` on the same final state the proposal runtime read;
+- the Hub read lane is correct after the pull removal;
+- the Temporal Self `%%` escaping is right;
+- the moved `AttentionWinnerRefV1` is field-for-field identical.
+
+- Finding (should-fix): `orion/autonomy/budget.py` (motor-seconds budget) was orphaned. Its only
+  caller was the allocator.
+  - Fix: deleted, with `tests/test_motor_budget.py`. The autonomy README and the `thermal_gate`
+    docstring say so.
+  - Evidence: `git grep` finds no importer.
+- Finding (should-fix): `orion/substrate/tests/pending_marker_fake.py` was orphaned.
+  - Fix: deleted.
+- Finding (should-fix): `skills.self_study.analyze.v1` has no automatic trigger left, and the
+  cortex-exec README still said the painter read its journals.
+  - Fix: the verb is kept as a callable catalog skill, as the build-cache and stopped-container
+    prunes were kept in PR 4. The README, the verb YAML comment and the prefix test's docstring now
+    say that nothing triggers it and the painter reads curiosity. Retiring the verb (runner, schema,
+    two tests, an index migration) is Juniper's call (see Risks).
+- Finding (should-fix): raw corpus rows written before this deploy carry no `action_warrant`. After
+  PR 7, re-enriching them cannot add it. `fit_encoder.py`'s `enrich-corpus` help still listed it.
+  - Fix: the help text is corrected, and the gap is recorded in `orion/mood_arc/README.md`'s v4
+    section, with the way to recompute it from `substrate_field_state`.
+  - Not backfilled: the live v4 model is unaffected (the digester writes it from now on), and a
+    backfill is a data job of its own.
+- Finding (nit): `orion/temporal_self/evals/export_fixture_day.sql` is "the reference for every
+  query", and it lacked the act-rows filter.
+  - Fix: the same filter was added.
+- Finding (nit): stale comments.
+  - Fix: updated in `README.md`, `check_substrate_projection_schema_drift.py`,
+    `field_channel_glossary.v1.yaml`, the field-digester README, `anomaly_scorer.py` ("6" -> "5"
+    channels), the inner-state registry note (metric lock still clean), `self-monitor-tests.yml`,
+    `self_study_refresh.py` and the durable-runs `.env_example` port comment.
+- Not changed (nit): `agency_episode.py` still builds dispatch/proposal links from sources that now
+  read `retired`. The result is correctly "unverified". The Hub message tray still handles two
+  dispatch alert kinds nothing sends. Both are harmless, and they go with PR 7 or a tray cleanup.
+- Found and fixed during the build, before review:
+  - `visual_baseline.v1.yaml` had to move with its readers' Dockerfiles. A missing file silently
+    disables waking paintings, so it is pinned by a test and checked in both images.
+  - The thought test `test_visual_steps` imported dispatch's `DEFAULT_RETRY_WINDOW_SEC`.
+  - The image-prune parity test also pinned the disk floor; that half is kept.
+  - The self-study check failed (no curiosity output reached the painter), so the read was
+    repointed.
 
 ## Restart required
 
@@ -282,7 +378,35 @@ rm services/orion-proposal-runtime/.env services/orion-policy-runtime/.env servi
 
 ## Risks / concerns
 
-RISKS_PLACEHOLDER
+- **Severity: medium. The act ledger's workspace binding is kept, against the brief.**
+  - Concern: the brief said "retire it (0 winners bound in 24 h)". Live, it binds about 2-4 chat
+    replies a day (51 Orion `acted` verdicts since 10-15).
+  - Mitigation: it is independent of the ladder (`AttentionWinnerRefV1` moved into `self_shed`).
+    Retiring it is a one-line flag (`SQL_WRITER_ACT_WORKSPACE_BINDING_ENABLED=false`) or a follow-up
+    PR if Juniper still wants it gone.
+- **Severity: medium. The painting's self-study seed source changed.**
+  - Concern: the seed now reads curiosity's self-inquiry answers, so a painting prompt can carry a
+    person's name or other personal content.
+  - Mitigation: Juniper's standing rule is no privacy boundary between her and Orion. The seed is
+    150 chars, one of three rotating slots. To revert, point `load_latest_self_study_reflection` back
+    (the old rows will not come back, though).
+- **Severity: low. `skills.self_study.analyze.v1` stays in the catalog with no trigger.**
+  - Mitigation: documented. Retire it on Juniper's word (verb, runner, schema, two tests).
+- **Severity: low. Old raw corpus rows lack `action_warrant`.**
+  - Mitigation: documented, and recomputable from `substrate_field_state`. The live scorer and new
+    rows are unaffected.
+- **Severity: low. Three historical replay evals need a restored pg_dump for live mode after PR 7.**
+  - Mitigation: each one says so; CI uses fixtures.
+- **Severity: low. In the deploy window, the old field digester's live lookup (until it is rebuilt)
+  reads `action_warrant` from `substrate_proposal_frames`.**
+  - Mitigation: the restart order rebuilds the digester before the proposal runtime stops. If the
+    order slips, the channel reads "absent" (never 0.0) until the rebuild.
+- UNVERIFIED until deploy:
+  - the digester writing `action_warrant` into live rows;
+  - Hub's lattice page rendering L7–L9 `retired`;
+  - the three containers stopped.
+
+  Each has a check in the PR description below.
 
 ## PR link
 

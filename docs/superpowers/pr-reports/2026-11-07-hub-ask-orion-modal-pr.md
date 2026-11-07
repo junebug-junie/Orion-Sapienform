@@ -139,6 +139,6 @@ Hub only. The post-pull rebuild on main rebuilds `orion-hub` because `services/o
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3164
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -11,8 +11,8 @@
 -- NOT BEFORE: 2 days after the retirement PR (PR 6, feat/retire-l7-l9) is deployed (all three
 -- services stopped and removed, every reader rebuilt).
 --
--- ORDER: apply the feedback/consolidation drop (#3116,
--- manual_migration_retire_feedback_consolidation_rungs_drop.sql) FIRST if it has not run yet. Its last
+-- ORDER: the feedback/consolidation drop (#3116, manual_migration_retire_feedback_consolidation_rungs_drop.sql)
+-- must have run first (it did, 2026-11-07, and #3116 is merged; the check below confirms). Its last
 -- statement ALTERs substrate_execution_dispatch_frames, which this file drops; run after this one,
 -- that ALTER fails and its whole transaction (its six DROPs) rolls back.
 --   docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select to_regclass('substrate_feedback_frames')"   (must print an empty line)

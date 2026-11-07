@@ -1,7 +1,7 @@
 """Real-browser smoke for the "Ask Orion" modal (button above Send in Hub's chat).
 
 Loads the real templates/index.html, the real orion-abilities.js/.css, the real catalog
-static/data/orion-abilities.json and the real app.js in headless Chromium. Every /api/* call is
+static/catalog/orion-abilities.json and the real app.js in headless Chromium. Every /api/* call is
 answered here, so no Hub, bus or database is touched. Checks the changed interactions, not just
 page load:
 
@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 HUB = Path(__file__).resolve().parents[1]
-CATALOG = json.loads((HUB / "static" / "data" / "orion-abilities.json").read_text(encoding="utf-8"))
+CATALOG = json.loads((HUB / "static" / "catalog" / "orion-abilities.json").read_text(encoding="utf-8"))
 TYPED = "I was thinking about you today."
 
 

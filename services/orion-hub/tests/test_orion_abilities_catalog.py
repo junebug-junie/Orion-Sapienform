@@ -1,4 +1,4 @@
-"""The "Ask Orion" catalog (static/data/orion-abilities.json) cannot drift from what Orion can do.
+"""The "Ask Orion" catalog (static/catalog/orion-abilities.json) cannot drift from what Orion can do.
 
 The catalog is hand-written prose, so it would rot the day someone adds a dig command. These tests read
 the real sources by text (no imports, no services) and fail when:
@@ -27,7 +27,7 @@ import pytest
 
 HUB = Path(__file__).resolve().parents[1]
 REPO = HUB.parents[1]
-CATALOG_PATH = HUB / "static" / "data" / "orion-abilities.json"
+CATALOG_PATH = HUB / "static" / "catalog" / "orion-abilities.json"
 DIG_MAIN = REPO / "orion" / "dig" / "__main__.py"
 DIG_BRIEF = REPO / "orion" / "dig" / "brief.py"
 REPORT_TEXT = REPO / "orion" / "physiology" / "report_text.py"
@@ -254,9 +254,21 @@ def test_template_has_button_above_send_and_modal_and_assets():
         assert m, f"{asset} is not linked with the cache-busting version"
         assert (HUB / asset.lstrip("/")).is_file(), asset
     js = (HUB / "static" / "js" / "orion-abilities.js").read_text(encoding="utf-8")
-    assert '"/static/data/orion-abilities.json"' in js and CATALOG_PATH.is_file()
+    assert '"/static/catalog/orion-abilities.json"' in js and CATALOG_PATH.is_file()
 
 
 @pytest.mark.parametrize("path", [CATALOG_PATH])
 def test_catalog_is_valid_json(path):
     assert isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+
+
+def test_catalog_is_not_gitignored():
+    """The root .gitignore ignores every ``data/`` folder; the catalog first lived in static/data/ and
+    was silently left out of the commit. Keep it somewhere git (and the image) will carry."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("git") or not (REPO / ".git").exists():
+        pytest.skip("no git checkout")
+    rc = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q", str(CATALOG_PATH)], check=False).returncode
+    assert rc == 1, f"{CATALOG_PATH.relative_to(REPO)} is gitignored: move it"

@@ -7,7 +7,7 @@ const oa = require("./orion-abilities.js");
 const { composeMessage, composeInsert, insertAtCaret, filterCatalog, countEntries } = oa;
 
 const CATALOG = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "..", "data", "orion-abilities.json"), "utf8"),
+  fs.readFileSync(path.join(__dirname, "..", "catalog", "orion-abilities.json"), "utf8"),
 );
 
 test("composeMessage puts the hint on its own line after the ask", () => {

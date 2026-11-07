@@ -3,7 +3,7 @@
 // Juniper clicks the button above Send, picks a card, and the card's message is
 // put into the chat box at the cursor. Nothing is sent: she edits and sends.
 //
-// The catalog lives in one checked-in file, static/data/orion-abilities.json.
+// The catalog lives in one checked-in file, static/catalog/orion-abilities.json.
 // tests/test_orion_abilities_catalog.py fails CI when a dig command or an
 // Orion MCP tool has no entry there, so this list cannot quietly drift.
 //
@@ -12,7 +12,7 @@
 (function () {
   "use strict";
 
-  var CATALOG_URL = "/static/data/orion-abilities.json";
+  var CATALOG_URL = "/static/catalog/orion-abilities.json";
 
   // Full message text for one entry: the plain-English ask, then an optional
   // hint line with the exact command (Orion routes by topic, not by phrase).

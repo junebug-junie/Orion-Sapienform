@@ -50,7 +50,7 @@ def _outreach(monkeypatch, delivered, *, busy=False):
     monkeypatch.setattr(decisions_mod, "record_decision", lambda result, **kw: None)
     monkeypatch.setattr(eo, "_seconds_since_juniper_spoke", lambda: None)
 
-    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None):
+    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
         if busy:
             self.register_connection("c1", asyncio.Queue(), {})
             self.note_busy("c1")

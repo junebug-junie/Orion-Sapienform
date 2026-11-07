@@ -227,10 +227,12 @@ def _setup(monkeypatch, *, sessions=None, text="Looked like you were unpacking s
     monkeypatch.setattr(eo, "_seconds_since_juniper_spoke", outreach_kw.pop("spoke", lambda: None))
     composed: list[str] = []
     delivered: list[dict] = []
+    lanes: list[str] = []
     texts = list(text) if isinstance(text, list) else None
 
-    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None):
+    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
         composed.append(prompt)
+        lanes.append(lane)
         return (texts.pop(0) if texts else text), {"fcc_model_label": "test"}
 
     async def fake_deliver(self, **kw):
@@ -245,7 +247,7 @@ def _setup(monkeypatch, *, sessions=None, text="Looked like you were unpacking s
     base.update(outreach_kw)
     outreach = eo.EndogenousOutreach(**base)
     state = {"sessions": sessions if sessions is not None else [_session()], "ledger": set(), "released": [],
-             "sessions_sql": []}
+             "sessions_sql": [], "lanes": lanes}
     bids: list = []
 
     async def bid(want):
@@ -324,8 +326,8 @@ def test_juniper_typing_during_composition_releases_the_claim(monkeypatch):
 
     real_generate = eo.EndogenousOutreach._generate
 
-    async def busy_generate(self, prompt, session_id, correlation_id, retrieval_query=None):
-        out = await real_generate(self, prompt, session_id, correlation_id, retrieval_query)
+    async def busy_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
+        out = await real_generate(self, prompt, session_id, correlation_id, retrieval_query, lane)
         self.note_busy("c1")   # she starts a turn while Orion writes
         return out
 
@@ -485,3 +487,34 @@ def test_office_sends_do_not_count_toward_the_background_daily_cap():
     from scripts import endogenous_outreach_decisions as d
 
     assert "'office_reach_out'" in inspect.getsource(d.count_sent_on)
+
+
+
+def test_office_message_is_composed_on_the_chat_lane(monkeypatch) -> None:
+    """2026-11-07 (Juniper): office messages skip the agent lane. Its 210 s timeout made the
+    first live office message reach her 5 minutes into the visit."""
+    loop, _, state, _, composed, delivered, _ = _setup(monkeypatch)
+    asyncio.run(loop.tick())
+    assert composed and delivered
+    assert state["lanes"] == ["chat"]
+
+
+def test_chat_lane_compose_is_one_chat_attempt_with_the_full_budget(monkeypatch) -> None:
+    from scripts import endogenous_outreach as eo
+
+    calls: list[dict] = []
+
+    async def attempt(self, **kw):
+        calls.append(kw)
+        return "Hi -- what are you building?", {}
+
+    monkeypatch.setattr(eo.EndogenousOutreach, "_attempt_unified_turn", attempt)
+    outreach = eo.EndogenousOutreach(enabled=True, tick_interval_sec=300.0, min_cooldown_sec=0.0, daily_cap=0,
+                                     quiet_start_hour=-1, quiet_end_hour=-1, timeout_sec=300.0,
+                                     agent_lane_timeout_sec=210.0, notify_channel="orion:notify:in_app",
+                                     fallback_session_id="orion_outreach", trigger_evaluator=lambda: None,
+                                     timezone_name="UTC")
+    outreach._bus = object()
+    text, debug = asyncio.run(outreach.compose("p", "corr-1", lane="chat"))
+    assert text and debug["lane"] == "chat"
+    assert len(calls) == 1 and calls[0]["fcc_model_label"] is None and calls[0]["timeout_sec"] == 300.0

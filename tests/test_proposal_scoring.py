@@ -184,10 +184,10 @@ def test_empty_dimension_template_fallback_excludes_deviation_pressure() -> None
 
 
 def test_deviation_pressure_only_scores_templates_that_declare_it() -> None:
-    """The 3 tension-driven templates (this session) DO declare
-    deviation_pressure explicitly -- confirms the fallback fix did not
-    accidentally exclude the templates that are supposed to score on it."""
-    for key in ("observe_tension_via_camera", "prune_dangling_images", "prune_stopped_containers"):
+    """The tension-driven template DOES declare deviation_pressure explicitly -- confirms the
+    fallback fix did not accidentally exclude the templates that are supposed to score on it. (The two
+    prune templates that also did left on 2026-11-06, ladder retirement PR 4.)"""
+    for key in ("observe_tension_via_camera",):
         template = POLICY.proposal_templates[key]
         assert "deviation_pressure" in template.dimensions
         from orion.proposals.scoring import _pressure_dimension_ids

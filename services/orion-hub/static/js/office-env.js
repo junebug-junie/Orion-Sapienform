@@ -1,7 +1,7 @@
 // Office and server-closet environment strips (Biometrics -> Cabinet / Office subview).
 //
 // Read-only views of GET /api/office/env/latest + /history (office_env_routes.py), fed by
-// orion-office-env (pan-1 SHT40 + CCS811 + PMSA003I + TSL2591) via Postgres
+// orion-office-env (pan-1 SHT40 + CCS811 + PMSA003I + TSL2591 + SEN0232 sound meter) via Postgres
 // office_env_sample, and GET /api/closet/env/latest + /history (closet_env_routes.py),
 // fed by the closet Nano's SCD40 via closet_env_sample. One strip factory drives both.
 //
@@ -146,7 +146,42 @@
     return text;
   }
 
-  // tiles: [{ id, text(payload) }]; charts: [{ id, field, digits, label }].
+  // Office sound summary for one history window. Pure, so it is unit-tested without a
+  // DOM. Typical / floor / loud share come from the charted points (bucket averages on
+  // long windows); loudest prefers the server's raw max (`stats.sound_max`), which a
+  // bucket average would hide. Every value is null when the window has no readings.
+  var LOUD_DBA = 60;
+  function soundSummary(payload) {
+    var points = (payload && Array.isArray(payload.points)) ? payload.points : [];
+    var values = points
+      .map(function (p) { return p && p.office_sound_dba; })
+      .filter(function (v) { return typeof v === "number" && isFinite(v); })
+      .sort(function (a, b) { return a - b; });
+    if (values.length === 0) return { typical: null, floor: null, loudest: null, loudShare: null };
+    function pct(q) {
+      var pos = (values.length - 1) * q;
+      var lo = Math.floor(pos), hi = Math.ceil(pos);
+      return values[lo] + (values[hi] - values[lo]) * (pos - lo);
+    }
+    var rawMax = payload && payload.stats && payload.stats.sound_max;
+    var loud = values.filter(function (v) { return v >= LOUD_DBA; }).length;
+    return {
+      typical: pct(0.5),
+      floor: pct(0.1),
+      loudest: typeof rawMax === "number" && isFinite(rawMax) ? rawMax : values[values.length - 1],
+      loudShare: loud / values.length,
+    };
+  }
+
+  function summaryText(payload, key) {
+    var v = soundSummary(payload)[key];
+    if (v === null) return "—";
+    return key === "loudShare" ? Math.round(v * 100) + "%" : num(v, 1);
+  }
+
+  // tiles: [{ id, text(payload) }]; charts: [{ id, field, digits, label }];
+  // historyTiles: [{ id, text(historyPayload) }], set from the history response.
+  // ownWindowButtons: false when another module already styles the window buttons.
   function createStrip(config) {
     var els = {};
     var state = { window: "24h", lastLatestAt: 0, historyRequest: 0, latestInFlight: false };
@@ -191,13 +226,17 @@
         config.charts.forEach(function (c) {
           renderChart(els[c.id], payload.points, c.field, c.digits, c.label);
         });
+        (config.historyTiles || []).forEach(function (t) { setText(els[t.id], t.text(payload)); });
       } catch (err) {
         if (id !== state.historyRequest) return;
         setText(els.status, "history error (" + (err.message || err) + ")");
+        // Do not leave the previous window's summary under the newly selected window.
+        (config.historyTiles || []).forEach(function (t) { setText(els[t.id], "—"); });
       }
     }
 
     function refreshButtons() {
+      if (config.ownWindowButtons === false) return;
       els.windowButtons.forEach(function (b) {
         var on = b.getAttribute(config.windowAttr) === state.window;
         b.classList.toggle("border-sky-500", on);
@@ -225,10 +264,14 @@
       els.live = document.getElementById(config.liveId);
       config.tiles.forEach(function (t) { els[t.id] = document.getElementById(t.id); });
       config.charts.forEach(function (c) { els[c.id] = document.getElementById(c.id); });
+      (config.historyTiles || []).forEach(function (t) { els[t.id] = document.getElementById(t.id); });
       els.windowButtons = document.querySelectorAll("[" + config.windowAttr + "]");
       els.windowButtons.forEach(function (b) {
         b.addEventListener("click", function () {
-          state.window = b.getAttribute(config.windowAttr) || "24h";
+          var next = b.getAttribute(config.windowAttr) || "24h";
+          // Shared buttons: the owning module ignores a click on the active window; match it.
+          if (config.ownWindowButtons === false && next === state.window) return;
+          state.window = next;
           refreshButtons();
           fetchHistory();
         });
@@ -257,6 +300,7 @@
       { id: "officeEnvPm25", text: function (p) { return readingText(p, "office_pm25_ug_m3", 0); } },
       { id: "officeEnvPm10", text: function (p) { return readingText(p, "office_pm10_ug_m3", 0); } },
       { id: "officeEnvLux", text: lightText },
+      { id: "officeEnvSound", text: function (p) { return readingText(p, "office_sound_dba", 1); } },
     ],
     charts: [
       { id: "officeEnvTempChart", field: "office_temp_c", digits: 2, label: "temp °C" },
@@ -267,6 +311,32 @@
       { id: "officeEnvPm25Chart", field: "office_pm25_ug_m3", digits: 0, label: "PM2.5 µg/m³" },
       { id: "officeEnvPm10Chart", field: "office_pm10_ug_m3", digits: 0, label: "PM10 µg/m³" },
       { id: "officeEnvLuxChart", field: "office_lux", digits: 1, label: "light lux" },
+      { id: "officeEnvSoundChart", field: "office_sound_dba", digits: 1, label: "sound dBA" },
+    ],
+  };
+
+  // Office sound meter inside the Cabinet "Ambient audio" card. Same office API as the
+  // strip above; the card's 24h/3d/7d buttons (styled by cabinet-sensors.js) set its window.
+  var OFFICE_SOUND = {
+    stripId: "officeSoundStrip",
+    statusId: "officeSoundStatus",
+    ageId: "officeSoundAge",
+    liveId: "officeSoundLiveStatus",
+    windowAttr: "data-cabinet-ambient-window",
+    ownWindowButtons: false,
+    latestUrl: "/api/office/env/latest",
+    historyUrl: "/api/office/env/history?window=",
+    tiles: [
+      { id: "officeSoundNow", text: function (p) { return readingText(p, "office_sound_dba", 1); } },
+    ],
+    historyTiles: [
+      { id: "officeSoundTypical", text: function (h) { return summaryText(h, "typical"); } },
+      { id: "officeSoundFloor", text: function (h) { return summaryText(h, "floor"); } },
+      { id: "officeSoundLoudest", text: function (h) { return summaryText(h, "loudest"); } },
+      { id: "officeSoundLoudShare", text: function (h) { return summaryText(h, "loudShare"); } },
+    ],
+    charts: [
+      { id: "officeSoundChart", field: "office_sound_dba", digits: 1, label: "office sound dBA" },
     ],
   };
 
@@ -292,7 +362,7 @@
 
   function init() {
     var panel = document.getElementById("cabinet");
-    var strips = [createStrip(OFFICE), createStrip(CLOSET)].filter(function (s) { return s.init(); });
+    var strips = [createStrip(OFFICE), createStrip(OFFICE_SOUND), createStrip(CLOSET)].filter(function (s) { return s.init(); });
     if (strips.length === 0) return;
     function tickAll() {
       var visible = !!(panel && !panel.classList.contains("hidden"));
@@ -309,6 +379,9 @@
       airText: airText,
       readingText: readingText,
       lightText: lightText,
+      soundSummary: soundSummary,
+      summaryText: summaryText,
+      OFFICE_SOUND: OFFICE_SOUND,
       createStrip: createStrip,
       OFFICE: OFFICE,
       CLOSET: CLOSET,

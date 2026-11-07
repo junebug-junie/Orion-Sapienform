@@ -2,7 +2,7 @@
  * pan-1 sensor node firmware — Arduino Nano ESP32 (ABX00083).
  *
  * One sketch for both Nanos on pan-1 (same pattern as Athena's two cabinet Nanos):
- *   office Nano: SHT40 + CCS811 + PMSA003I + TSL2591
+ *   office Nano: SHT40 + CCS811 + PMSA003I + TSL2591 + sound level meter (analog, A0)
  *   closet Nano: SCD40
  * A sensor that is not on a board is simply never found, and its object is never sent.
  *
@@ -11,7 +11,8 @@
  *
  * Absent is not zero: if a sensor failed to initialise or a read fails, its object
  * (`environment` SHT40, `air` CCS811, `particulate` PMSA003I, `light` TSL2591,
- * `co2` SCD40) is omitted from that frame entirely. The SHT40 heater is never enabled.
+ * `sound` sound meter, `co2` SCD40) is omitted from that frame entirely. The SHT40 heater
+ * is never enabled.
  *
  * I2C: Wire on the Nano ESP32 default pins (SDA=A4, SCL=A5), usually through a
  * TCA9548A multiplexer at 0x70. Each sensor's channel is FOUND, not configured: at
@@ -26,6 +27,12 @@
  * TSL2591: gain is auto-ranged. A reading saturated even at the lowest gain sends
  *   `light.saturated=true` with no lux (too bright to measure, not zero light). A reading
  *   too dark for the current gain (full == 0) also has no lux; the gain steps up.
+ * Sound meter: DFRobot SEN0232 on A0 (analog, NOT on the I2C bus or the multiplexer; powered
+ *   from VBUS). Output 0.6..2.6 V = 30..130 dBA. The frame carries `sound.level_mv`, the
+ *   mean pin voltage over the frame interval; the host converts to dBA and range-checks.
+ *   The meter is "found" by a discharge test (pull the pin low, read at once): a powered meter
+ *   drives the pin to >= 0.6 V, a pin with nothing on it (the closet Nano) reads ~0 and is
+ *   never reported. The test is repeated every frame, so an unplugged meter is dropped.
  * SCD40: photoacoustic CO2 (a real CO2 measurement), new reading every 5 s.
  *   Automatic self-calibration stays at the factory default (on).
  *
@@ -64,6 +71,13 @@ static constexpr uint32_t PM_POLL_INTERVAL_MS = 250;
 // SCD40 makes a reading every 5 s; one older than this is not reported.
 static constexpr uint32_t SCD_MAX_READING_AGE_MS = 15000;
 static constexpr uint32_t SCD_POLL_INTERVAL_MS = 1000;
+
+// Sound meter on A0. The meter never outputs below 0.6 V, so a mean under SOUND_PRESENT_MIN_MV
+// means nothing is driving the pin (not connected, or it lost power): no `sound` object.
+static constexpr uint8_t SOUND_PIN = A0;
+static constexpr uint32_t SOUND_POLL_INTERVAL_MS = 10;
+static constexpr uint16_t SOUND_PRESENT_MIN_MV = 400;
+static constexpr uint16_t SOUND_MIN_SAMPLES = 20;
 
 static constexpr uint8_t MUX_ADDR = 0x70;
 static constexpr uint8_t SHT_ADDR = 0x44;
@@ -115,6 +129,9 @@ static uint32_t scd_read_ms = 0, scd_last_poll_ms = 0;
 static bool scd_have_reading = false;
 static uint16_t scd_co2 = 0;
 static float scd_temp = 0, scd_hum = 0;
+
+static bool sound_ok = false;
+static uint32_t sound_sum_mv = 0, sound_count = 0, sound_last_poll_ms = 0;
 
 static uint32_t seq = 0;
 
@@ -283,6 +300,54 @@ static void poll_scd40(uint32_t now) {
   scd_have_reading = true;
 }
 
+// Is something driving the pin? Discharge it through the internal pull-down, then read.
+// arduino-esp32 re-runs pinMode(pin, ANALOG) on EVERY analog read (esp32-hal-adc.c
+// __adcAttachPin), which turns the pull off again; so the pull-down only helps because the
+// read follows it by microseconds: an undriven pad is still discharged (reads ~0), a pad
+// driven by the meter reads >= 0.6 V. Costs 5 ms.
+static bool sound_pin_driven() {
+  pinMode(SOUND_PIN, INPUT_PULLDOWN);
+  delay(5);
+  return analogReadMilliVolts(SOUND_PIN) >= SOUND_PRESENT_MIN_MV;
+}
+
+// Run at boot and on the retry path, so a meter plugged in later is found without a reflash.
+static bool init_sound() {
+  sound_sum_mv = 0;
+  sound_count = 0;
+  return sound_pin_driven();
+}
+
+static void poll_sound(uint32_t now) {
+  if (!sound_ok || now - sound_last_poll_ms < SOUND_POLL_INTERVAL_MS) return;
+  sound_last_poll_ms = now;
+  sound_sum_mv += analogReadMilliVolts(SOUND_PIN);
+  sound_count++;
+}
+
+// Mean pin voltage since the last frame. A window with too few samples, one that reads below
+// what a powered meter can output, or a pin that fails the discharge probe (meter unplugged
+// while running: the pad would otherwise keep reading its last charge) is not a reading:
+// omitted, and the retry path re-tests the pin. Always restarts the window.
+static void add_sound(JsonDocument &doc) {
+  if (!sound_ok) return;
+  const uint32_t n = sound_count;
+  const uint32_t mean_mv = n > 0 ? sound_sum_mv / n : 0;
+  sound_sum_mv = 0;
+  sound_count = 0;
+  if (n < SOUND_MIN_SAMPLES) return;
+  if (mean_mv < SOUND_PRESENT_MIN_MV) {
+    sound_ok = false;  // nothing driving the pin: retry path, no sound object
+    return;
+  }
+  if (!sound_pin_driven()) {
+    sound_ok = false;  // nothing driving the pin: retry path, no sound object
+    return;
+  }
+  JsonObject sound = doc.createNestedObject("sound");
+  sound["level_mv"] = mean_mv;
+}
+
 static void add_light(JsonDocument &doc) {
   if (!select_channel(tsl_ch) || !probe(TSL_ADDR)) {
     tsl_ok = false;  // gone from the bus: retry path, no light object
@@ -326,6 +391,7 @@ void setup() {
   // returns at once when the host already has the port open.
   while (millis() < 1000) delay(10);
   scd_ok = init_scd40();
+  sound_ok = init_sound();
 }
 
 void loop() {
@@ -333,7 +399,7 @@ void loop() {
   static uint32_t last_init_try_ms = 0;
 
   // A sensor missing at boot (or dropped off the bus) is retried, never given up on.
-  if ((!sht_ok || !ccs_ok || !pm_ok || !tsl_ok || !scd_ok) &&
+  if ((!sht_ok || !ccs_ok || !pm_ok || !tsl_ok || !scd_ok || !sound_ok) &&
       millis() - last_init_try_ms >= REINIT_INTERVAL_MS) {
     last_init_try_ms = millis();
     if (!sht_ok) sht_ok = init_sht40();
@@ -341,6 +407,7 @@ void loop() {
     if (!pm_ok) pm_ok = init_pmsa003i();
     if (!tsl_ok) tsl_ok = init_tsl2591();
     if (!scd_ok) scd_ok = init_scd40();
+    if (!sound_ok) sound_ok = init_sound();
   }
 
   // Read the clock AFTER the inits: they stamp ccs_init_ms / pm_read_ms / scd_read_ms with
@@ -351,6 +418,7 @@ void loop() {
   poll_ccs811(now);
   poll_pmsa003i(now);
   poll_scd40(now);
+  poll_sound(now);
 
   if (now - last_frame_ms < FRAME_INTERVAL_MS) return;
   last_frame_ms = now;
@@ -394,6 +462,8 @@ void loop() {
   }
 
   if (tsl_ok) add_light(doc);
+
+  add_sound(doc);
 
   if (scd_ok && scd_have_reading && now - scd_read_ms <= SCD_MAX_READING_AGE_MS) {
     JsonObject co2 = doc.createNestedObject("co2");

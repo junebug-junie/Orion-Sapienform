@@ -10,28 +10,13 @@ mode:
   # a deployment that does NOT set the env key gets dry_run regardless of
   # this flag.
   allow_dispatch_read_only: true
-  # 2026-08-12: flipped false -> true. Juniper's explicit decision, made after
-  # the skill was live-previewed on this host (decision "would_act", disk
-  # 77.594% of 468 GiB, 142.5 GB reclaimable across 15,506 build-cache
-  # entries) -- not a default that drifted open.
-  #
-  # This opens ONE gate of three. Still in front of any real mutation:
-  #   1. orion/execution_dispatch/builder.py only lets a route through when
-  #      route.allowed_scope == "maintenance_bounded", and `maintain` is the
-  #      only route with that scope (asserted by
-  #      tests/test_maintenance_dispatch_gating.py).
-  #   2. The runtime's own EXECUTION_DISPATCH_MODE must be dispatch_read_only,
-  #      or dry_run stays true and the skill receives mode=preview.
-  #   3. The skill's own measured gate: it prunes only when the host really
-  #      reads disk >= 75% AND >= 40 GB genuinely reclaimable, and declines
-  #      (escalating) when it cannot measure either one.
-  # Risk accepted: the blast radius is Docker build cache, which rebuilds.
-  allow_mutating_dispatch: true
+  # 2026-11-06 (ladder retirement PR 4): allow_mutating_dispatch is gone. It gated only the
+  # maintenance_bounded scope, whose three docker prune routes left this policy (see
+  # template_to_cortex below). orion-hardware-watch asks for the image prune now.
   # 2026-08-30: opens EXPRESS_SCOPE. Opened for Orion's first outward action
-  # (skills.imagination.render_scene.v1, which left dispatch on 2026-11-05); it
-  # still gates the aitown_session route (retro leisure left on 2026-11-05). Separate from
-  # allow_mutating_dispatch on purpose: this can be closed without stopping docker
-  # pruning, and pruning can be closed without stopping this.
+  # (skills.imagination.render_scene.v1, which left dispatch on 2026-11-05). Since the
+  # aitown_session route left (2026-11-05, ladder retirement PR 3) no express route is left;
+  # inert until PR 6 retires the package.
   allow_express_dispatch: true
   # 2026-10-01..2026-11-05: opened SELF_REVERSIBLE_SCOPE for shed_background_gpu. Closed again in ladder
   # retirement PR 5: the act left dispatch for the want market (orion-durable-runs app/cooling_act.py), and
@@ -40,16 +25,9 @@ mode:
 
 allowed_policy_decisions:
   - approved_read_only
-  # 2026-08-12: a bounded mutating action, approved. Listing it here widens
-  # this allowlist by one value; it does NOT widen what can actually fire.
-  # The real gate is orion/execution_dispatch/builder.py's
-  # `route.allowed_scope == "maintenance_bounded"` check plus
-  # mode.allow_mutating_dispatch below. This literal exists so the decision
-  # record stops calling a 142 GB deletion read-only, not to authorize it.
-  - approved_maintenance
-  # 2026-08-30: Orion's first outward action. Separate from
-  # approved_maintenance so image generation and docker pruning can be allowed
-  # or refused independently.
+  # 2026-11-06 (ladder retirement PR 4): approved_maintenance (2026-08-12) is gone with the
+  # maintenance routes. A `maintain` decision is now blocked here (not an allowed decision).
+  # 2026-08-30: Orion's first outward action.
   - approved_express
   # 2026-10-01: attend-to-act loop A1 (see mode.allow_self_reversible_dispatch).
   - approved_self_reversible
@@ -78,59 +56,25 @@ proposal_kind_to_cortex:
     cortex_mode: brain
     allowed_scope: inspect_only
 
-  # 2026-08-12: the first MUTATING route. `maintenance_bounded` is the only
-  # non-read-only scope, and it is inert unless mode.allow_mutating_dispatch is
-  # true -- ON since 2026-08-12, see mode above. cortex_verb names a skills.* verb
-  # directly, which works because CortexRouteTemplateV1.cortex_verb is an
-  # unconstrained str and executor.py's local-adapter branch resolves on that
-  # prefix; the skill then runs in orion-cortex-exec, which already holds the
-  # docker socket.
-  #
-  # Three independent gates stand between a proposal and a real prune:
-  #   1. mode.allow_mutating_dispatch (above; ON since 2026-08-12)
-  #   2. this scope passing builder.py's allowlist
-  #   3. the skill's OWN measured gate: disk >= 75% AND reclaimable >= 40GB
-  # Any one of them says no and nothing happens.
-  #
-  # Timeouts, 2026-08-12. A real prune is minutes of work, and THREE nested
-  # budgets have to clear it or the action gets killed partway through a
-  # delete. They are deliberately staggered so a timeout is attributable to
-  # the layer that caused it -- innermost fires first:
-  #
-  #   docker subprocess   BUILDER_PRUNE_TIMEOUT_SEC   600s  (10 min)
-  #   cortex-exec step    verb yaml timeout_ms        660s
-  #   dispatch RPC        rpc_timeout_sec below       720s
-  #
-  # The binding constraint was NOT the RPC timeout: the prune's subprocess was
-  # inheriting SKILLS_MESH_OPS_TIMEOUT_SEC, which is 12 SECONDS live. A
-  # 142 GB prune would have been SIGKILLed ~12s in, mid-delete, every time.
   # 2026-11-05 (ladder retirement PR 2): the `express` kind's default route is gone. It pointed at
   # skills.imagination.render_scene.v1, and painting left dispatch (orion-thought
   # app/painting_self_start.py starts it). An express proposal with no template route of its own is
   # now blocked `no_cortex_route_for_proposal_kind` instead of silently becoming a painting.
-  maintain:
-    dispatch_kind: maintain
-    cortex_verb: skills.runtime.builder_prune.v1
-    cortex_mode: brain
-    allowed_scope: maintenance_bounded
-    rpc_timeout_sec: 720
+  # 2026-11-06 (ladder retirement PR 4): the `maintain` kind's default route is gone (2026-08-12 ..
+  # 2026-11-06; skills.runtime.builder_prune.v1, the maintenance_bounded scope). A maintain proposal
+  # is now blocked `no_cortex_route_for_proposal_kind`. Build cache is pruned by hand only.
 
 # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
 # dispatch-design.md): per-TEMPLATE overrides (orion/execution_dispatch/
 # policy.py::template_to_cortex, live since 2026-08-13, checked before the
-# proposal_kind_to_cortex map above). Without these, every `maintain`
-# proposal -- including prune_dangling_images and prune_stopped_containers
-# below -- would still resolve to skills.runtime.builder_prune.v1, the same
-# one-repertoire cap that field already fixed for future templates but that
-# nothing had yet used a second time.
+# proposal_kind_to_cortex map above).
 template_to_cortex:
   # Read-only: no new gate needed. allowed_scope=inspect_only is already
   # unconditionally allowed (orion/execution_dispatch/builder.py's
-  # scope_allowed check), independent of mode.allow_mutating_dispatch.
+  # scope_allowed check).
   # skills.perception.look_at_camera.v1 reads orion-vision-window's existing
-  # passive projection -- verb yaml timeout_ms=20000, so 40s gives the same
-  # 2x margin discipline as the two mutating routes below without needing
-  # three staggered budgets (there is no long-running subprocess here).
+  # passive projection -- verb yaml timeout_ms=20000, so 40s gives a 2x margin
+  # (there is no long-running subprocess here).
   observe_tension_via_camera:
     dispatch_kind: inspect
     cortex_verb: skills.perception.look_at_camera.v1
@@ -185,8 +129,7 @@ template_to_cortex:
   # 2026-08-25: analysis -> self-study journal entry.
   #
   # `summarize_only`, not a new scope. builder.py::scope_allowed permits
-  # inspect_only / summarize_only unconditionally and maintenance_bounded only
-  # behind mode.allow_mutating_dispatch; adding a fifth scope would mean
+  # inspect_only / summarize_only unconditionally; adding another scope would mean
   # editing that check, which is a safety gate, to buy nothing this route needs.
   # summarize_only is also the honest label: the action summarises a window.
   #
@@ -213,42 +156,10 @@ template_to_cortex:
     allowed_scope: summarize_only
     rpc_timeout_sec: 60
 
-  # Same first two gates as `maintain` above (mode.allow_mutating_dispatch,
-  # maintenance_bounded scope) -- this and prune_stopped_containers now share
-  # that one MAINTENANCE_SCOPE reserved slot (limits.reserved_slots_by_scope
-  # below) with prune_build_cache, competing among themselves for it same as
-  # any other candidates do.
-  #
-  # The THIRD gate is NOT symmetric between the two routes below (2026-08-16,
-  # code review -- see config/proposals/proposal_policy.v1.yaml's
-  # prune_dangling_images comment for the full disclosure). image_prune has
-  # a real measured decline threshold (disk>=75% AND genuinely dangling
-  # images). docker_prune_stopped_containers does not -- it prunes every
-  # matching exited container it finds in execute mode, gated only by its own
-  # env flag and label/age filters, not by a resource-pressure floor.
-  #
-  # Timeout staggering matches skills.runtime.image_prune.v1.yaml's own
-  # comment: subprocess IMAGE_PRUNE_TIMEOUT_SEC=600s < verb timeout_ms=660s <
-  # this rpc budget. Same 720s as builder_prune -- same subprocess ceiling,
-  # same margin reasoning.
-  prune_dangling_images:
-    dispatch_kind: maintain
-    cortex_verb: skills.runtime.image_prune.v1
-    cortex_mode: brain
-    allowed_scope: maintenance_bounded
-    rpc_timeout_sec: 720
-
-  # skills.runtime.docker_prune_stopped_containers.v1.yaml's own verb
-  # timeout_ms is 30000 (30s) -- far smaller than the image/build-cache
-  # prunes, so this gets its own smaller budget rather than inheriting 720s,
-  # same "only routes that actually need a longer budget get one" principle
-  # CortexRouteTemplateV1.rpc_timeout_sec's own docstring states.
-  prune_stopped_containers:
-    dispatch_kind: maintain
-    cortex_verb: skills.runtime.docker_prune_stopped_containers.v1
-    cortex_mode: brain
-    allowed_scope: maintenance_bounded
-    rpc_timeout_sec: 60
+  # 2026-11-06 (ladder retirement PR 4): the prune_dangling_images and prune_stopped_containers routes
+  # (2026-08-16 .. 2026-11-06) are gone. orion-hardware-watch's disk rule asks cortex-exec for
+  # skills.runtime.image_prune.v1 (services/orion-hardware-watch/app/image_prune.py); stopped
+  # containers are pruned by hand only. One trigger, never two.
 
 hard_blocks:
   - approved_for_execution
@@ -291,34 +202,9 @@ limits:
   # discipline as every other constant shipped in this arc.
   max_dispatches_per_tick: 5
 
-  # 2026-08-12: measured starvation fix. Over 3 live hours the same five
-  # read-only templates took all five slots on essentially every tick
-  # (inspect_bus_channel_catalog / inspect_attended_target /
-  # summarize_transport_contract_drift 267 dispatches each,
-  # inspect_field_topology_catalog 243, watch_transport_backpressure 209)
-  # while prune_build_cache was dispatched 0 times and blocked 4 times on
-  # exactly this cap. See orion/execution_dispatch/policy.py::DispatchLimitsV1
-  # for why one scalar ranking cannot arbitrate urgency against level.
-  #
-  # 1 of 5. Deliberately the smallest reservation that can work, and it is
-  # free on ticks nothing claims it -- an unclaimed reserved slot is
-  # reclaimed by the general fill in the same tick
-  # (builder._admit_candidates pass 2), so read-only throughput is unchanged
-  # except on the ticks a maintenance action actually exists.
-  #
-  # This does NOT widen what may fire. maintenance_bounded still has to clear
-  # mode.allow_mutating_dispatch, the runtime's EXECUTION_DISPATCH_MODE, and
-  # the skill's own measured disk >= 75% AND >= 40 GB gate. It removes a
-  # capacity race, not a safety gate.
-  #
-  # 2026-08-16: prune_dangling_images and prune_stopped_containers now also
-  # route through this scope (template_to_cortex above) -- 3 templates share
-  # this 1 reserved slot and compete on effective_priority for it same as any
-  # other candidates. Still 1: revisit against real post-deploy contention
-  # data if 3 mutating templates start starving each other for it, same
-  # discipline as every other number in this file.
-  reserved_slots_by_scope:
-    maintenance_bounded: 1
+  # 2026-08-12 .. 2026-11-06: reserved_slots_by_scope held 1 of 5 slots for maintenance_bounded
+  # (the docker prunes). Gone with those routes (ladder retirement PR 4); the mechanism stays
+  # (orion/execution_dispatch/policy.py::DispatchLimitsV1) and reserves nothing.
 
   # The general fix, applying to every kind rather than the one that prompted
   # it: a candidate that keeps losing accrues a bounded bonus, so starvation

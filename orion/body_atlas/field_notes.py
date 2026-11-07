@@ -45,6 +45,14 @@ NOTE_MAX_CHARS = 800
 NOTE_MAX_SENTENCES = 5
 LABELS = ("pr_text", "code_then", "reflection")
 ORION_GIT_EMAIL = "orion-fcc@orion-sapienform.local"  # services/orion-harness-governor/Dockerfile
+# Orion's own GitHub user since 2026-11-05 (#3145, orion/fcc/claude_spawn.py): a PR Orion opens has this
+# author, and its commits carry this user's noreply email (seen live on #3146 and #3147).
+# Juniper's decision 3 (2026-11-04): notes for new merges only. A PR merged before this is not owed a
+# note, so coverage does not count it. Same instant as orion-durable-runs' PR_FIELD_NOTES_NOT_BEFORE
+# (tests/test_field_notes.py checks the two agree).
+NOTES_BEGAN_AT = "2026-11-04T06:00:00+00:00"
+ORION_GITHUB_LOGIN = "orion-sapienform"
+ORION_NOREPLY_SUFFIX = "+orion-sapienform@users.noreply.github.com"
 
 DEPS_GLOBS = ("requirements*.txt", "*.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
               "constraints*.txt")
@@ -135,7 +143,7 @@ _REVERT_COMMIT = re.compile(r"(?:^|\n)\s*This reverts commit [0-9a-f]{7,}", re.I
 
 
 def flags_for(pr: dict, *, local_branches: set[str] | None = None) -> FlagsV1:
-    """``pr`` is ``gh pr view --json title,body,files,additions,deletions,changedFiles,headRefName,commits``."""
+    """``pr`` is ``gh pr view --json title,body,files,additions,deletions,changedFiles,headRefName,commits,author``."""
     paths = [f["path"] for f in pr.get("files") or []]
     lines = int(pr.get("additions") or 0) + int(pr.get("deletions") or 0)
     n_files = int(pr.get("changedFiles") or len(paths))
@@ -146,7 +154,10 @@ def flags_for(pr: dict, *, local_branches: set[str] | None = None) -> FlagsV1:
         revert_of = f"#{m.group(1)}" if m else "unknown"
     docs_only = bool(paths) and all(_is_doc(p) for p in paths)
     emails = {a.get("email", "").lower() for c in pr.get("commits") or [] for a in c.get("authors") or []}
-    mine = ORION_GIT_EMAIL in emails or (pr.get("headRefName") or "") in (local_branches or set())
+    login = ((pr.get("author") or {}).get("login") or "").lower()
+    mine = (login == ORION_GITHUB_LOGIN or ORION_GIT_EMAIL in emails
+            or any(e.endswith(ORION_NOREPLY_SUFFIX) for e in emails)
+            or (pr.get("headRefName") or "") in (local_branches or set()))
     return FlagsV1(revert_of=revert_of, docs_only=docs_only, tiny_docs=docs_only and lines <= TINY_DOCS_LINES,
                    deps_only=bool(paths) and all(_is_deps(p) for p in paths),
                    huge=n_files > HUGE_FILES or lines > HUGE_LINES,

@@ -337,3 +337,103 @@ def test_town_sessions_read_in_plain_words():
     assert "AI Town today (2026-10-30): I spent 30 min of my 2.0 h cap" in text
     assert "Juniper opened it for 10 min (not counted)" in text
     assert "I chose it; ended: session_cap; 2 line(s) I spoke" in text
+
+
+# --- why bids were deferred (2026-11-06): the reason the want_ledger wrote, in plain words ------
+
+
+def _wants_with_reasons() -> dict:
+    rep = live()
+    rep["wants"]["families"] = [
+        {"family": "durable.self_inquiry", "tier": 2, "funded": 0, "deferred": 7, "deferred_by": [
+            {"reason": "capacity_reserved", "binding_constraint": "lane:agent-gpu2", "count": 4},
+            {"reason": "capacity_reserved", "binding_constraint": "lane:agent", "count": 3}]},
+        {"family": "hub.retro_leisure", "tier": 1, "funded": 257, "deferred": 58, "deferred_by": [
+            {"reason": "sated", "binding_constraint": None, "count": 56},
+            {"reason": "physiology_unavailable", "binding_constraint": "physiology_unavailable", "count": 2}]},
+        {"family": "hub.outreach", "tier": 2, "funded": 3, "deferred": 5, "deferred_by": [
+            {"reason": "price", "binding_constraint": "heat", "count": 5}]},
+        {"family": "actions.journal", "tier": 1, "funded": 18, "deferred": 0, "deferred_by": []}]
+    return rep
+
+
+def test_wants_line_says_why_each_family_was_deferred():
+    text = rt.render_report_text(_wants_with_reasons(), ("wants",))
+    assert ("durable.self_inquiry (tier 2): 0 funded, 7 deferred (why: no room 7: lane agent-gpu2 4, lane agent 3)"
+            in text)
+    assert "hub.retro_leisure (tier 1): 257 funded, 58 deferred (why: not hungry yet 56; body reading unavailable 2)" in text
+    assert "hub.outreach (tier 2): 3 funded, 5 deferred (why: costs more than it is worth now 5: heat 5)" in text
+    assert "actions.journal (tier 1): 18 funded, 0 deferred\n" in text + "\n"      # no "why" when nothing was cut
+
+
+def test_overview_has_one_why_line_covering_every_family():
+    # self_inquiry is 3rd here; with many big families it would be cut from the brief list, so the
+    # why line sums every family, not only the rows shown.
+    text = rt.render_report_text(_wants_with_reasons())
+    assert ("- why deferred (from the want ledger): not hungry yet 56; no room 7: lane agent-gpu2 4, "
+            "lane agent 3; other 7") in text
+    assert "(why:" not in text                                               # per-family detail only in a full read
+
+
+def test_every_decision_reason_has_plain_words():
+    from typing import get_args
+
+    from orion.schemas.physiology_want import WantDecisionV1
+    deferring = set(get_args(WantDecisionV1.model_fields["reason"].annotation)) - {"net_positive", "exploration_floor"}
+    assert deferring <= set(rt.DEFER_REASON_WORDS)
+
+
+def test_why_adds_one_overview_line_and_nothing_else():
+    # The overview's size cap (cap_text, 4,000 chars) already cuts the live overview's tail; the
+    # reasons must cost it one line, not one per family.
+    with_reasons = rt.render_report_text(_wants_with_reasons())
+    rep = _wants_with_reasons()
+    for f in rep["wants"]["families"]:
+        f.pop("deferred_by")
+    without = rt.render_report_text(rep)
+    assert len(with_reasons.splitlines()) == len(without.splitlines()) + 1
+    assert len(with_reasons) - len(without) < 160
+
+
+def test_report_without_deferred_by_renders_as_before():
+    text = rt.render_report_text(live(), ("wants",))
+    assert "hub.outreach (tier 2): 237 funded, 548 deferred\n" in text + "\n" and "why deferred" not in text
+
+
+def test_constraint_words_and_cuts_are_said():
+    pairs = [{"reason": "capacity_reserved", "binding_constraint": f"lane:l{i}", "count": 10 - i} for i in range(3)] + [
+        {"reason": "capacity_reserved", "binding_constraint": "attention:juniper", "count": 1},
+        {"reason": "sated", "binding_constraint": None, "count": 2},
+        {"reason": "price", "binding_constraint": "prime:lower", "count": 1}]
+    assert rt._deferred_why(pairs, full=False) == "no room 28: lane l0 10, lane l1 9, 9 elsewhere; not hungry yet 2; other 1"
+    assert rt._deferred_why(pairs, full=True) == ("no room 28: lane l0 10, lane l1 9, lane l2 8, Juniper's attention 1; "
+                                                  "not hungry yet 2; costs more than it is worth now 1: Prime's charge (lower) 1")
+    # the report's deferred total above the listed pairs (pairs cut upstream) is said, not hidden
+    assert rt._deferred_why([{"reason": "sated", "count": 3}], full=True, total=5) == "not hungry yet 3; other 2"
+    assert rt._deferred_why([], full=True) == ""
+
+
+
+def test_why_line_survives_the_dig_cut_on_an_overview_bigger_than_the_cap():
+    # Orion's review of #3152: the live overview is ~4.2k chars and the 4,000-char cut eats the tail.
+    # The why line must survive by guarantee, not by luck of section order.
+    rep = live()
+    rep["wants"] = _wants_with_reasons()["wants"]
+    while len(rt.render_report_text(rep)) < 4300:
+        rep["waste"]["top"] = list(rep["waste"]["top"]) * 2
+        rep["services"]["down"] = list(rep["services"]["down"]) * 2
+    full = rt.render_report_text(rep)
+    capped = rt.cap_text(full, max_chars=4000)
+    assert len(full) > 4000 and "ask for fewer sections to see the rest" in capped
+    assert "- why deferred (from the want ledger):" in capped
+    # and wants renders before the sections the cut eats first
+    assert rt.OVERVIEW.index("wants") < rt.OVERVIEW.index("waste") < rt.OVERVIEW.index("services")
+
+
+def test_overview_shows_one_town_session_row():
+    rep = live()
+    rep.setdefault("wants", {})["town"] = {"local_date": "2026-11-05", "orion_seconds_today": 600,
+                                         "daily_cap_seconds": 3600, "manual_seconds_today": 0, "sessions": [{"kind": "orion", "started_at": f"2026-11-0{i}T10:00", "seconds": 600,
+                                 "stop_reason": "cap", "utterances": 3} for i in range(1, 6)]}
+    brief = rt.render_town(rep, full=False)
+    assert sum(1 for ln in brief if ln.startswith("- ")) <= 1

@@ -61,8 +61,8 @@ Why these two:
   with no shared scalar to sample -- it is a pipeline, not a signal.
   Reframed as THROUGHPUT liveness: rows-per-bucket over a real window, same
   classifier. Elevated priority over other phase-5 candidates: the ladder
-  carries a live mutating route (`skills.runtime.builder_prune.v1`) whose
-  terminal effect is deleting host data, independent of whether anything
+  carried a live mutating route (`skills.runtime.builder_prune.v1`, until
+  2026-11-06) whose terminal effect was deleting host data, independent of whether anything
   downstream consumes it cognitively (see the R6 section above -- this was
   found only after a direct challenge to an earlier "no cognition consumer
   means nothing at stake" misreading).

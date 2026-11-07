@@ -48,10 +48,10 @@ proposal_kind_rules:
   # is_read_only_candidate() from classifying this kind by its `proposed_effect`
   # (`preserve_stability`, which IS in read_only_effects below).
   #
-  # What keeps the action from firing is unchanged and lives elsewhere:
+  # What kept the action from firing lived elsewhere (until 2026-11-06):
   # mode.allow_mutating_dispatch, the maintenance_bounded scope gate in
   # orion/execution_dispatch/builder.py, and the skill's own measured
-  # disk/reclaimable check.
+  # disk/reclaimable check. The first two are gone; the skill's gate stays.
   # 2026-08-30: Orion's first OUTWARD kind. Without a rule here the policy layer
   # emits no decision for an express proposal, execution_dispatch's
   # allowed_policy_decisions never matches, and the action dies silently between
@@ -78,6 +78,10 @@ proposal_kind_rules:
     max_autonomy_tier: self_reversible
     mutating: true
 
+  # Since 2026-11-06 (ladder retirement PR 4) no proposal of this kind exists: the three docker prune
+  # templates left (orion-hardware-watch's disk rule asks for the image prune; build cache and stopped
+  # containers are hand-run). execution_dispatch no longer admits approved_maintenance or the
+  # maintenance_bounded scope. Inert until PR 6 deletes it.
   maintain:
     allowed_scope: maintenance_bounded
     default_decision: approved_maintenance

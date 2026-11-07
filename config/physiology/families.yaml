@@ -131,6 +131,9 @@ families:
   durable.self_inquiry:
     tier: 2
     deferrable_window_s: 21600
+    # agent lanes only, on purpose: a self-inquiry is a long multi-step tool-using turn, which only the
+    # agent models run. metacog (gpu3, shared with fast) serves small single calls; bidding there would
+    # move the contention, not remove it (Orion's review of #3152, 2026-11-06).
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
   durable.self_sense_eval:
@@ -253,6 +256,9 @@ families:
     tier: 1
     deferrable_window_s: 21600
     # verbs: skills.runtime.builder_prune.v1, skills.runtime.docker_prune_stopped_containers.v1, skills.runtime.image_prune.v1
+    # The name is historical. Since 2026-11-06 (ladder retirement PR 4) dispatch no longer sends these:
+    # orion-hardware-watch's disk rule asks for image_prune; the other two are hand-run. Nothing bids
+    # as this family (0 rows before and after).
     lanes: []
   memory.consolidation:
     tier: 1

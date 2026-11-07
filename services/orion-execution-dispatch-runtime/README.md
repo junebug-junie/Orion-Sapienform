@@ -36,9 +36,11 @@ What that means operationally:
 - `.env_example` ships `EXECUTION_DISPATCH_MODE=dispatch_read_only`, which is the value this host
   actually runs (corrected 2026-08-12 — the template had drifted to `dry_run` while live ran
   `dispatch_read_only`, so the operator contract was stating something untrue).
-- **Mutating dispatch is ENABLED as of 2026-08-12** (`allow_mutating_dispatch: true`), by explicit
-  operator decision after a live preview of the only route that can use it. It is not a default that
-  drifted open, and it is narrow: see "Mutating dispatch" below.
+- **Mutating dispatch is RETIRED as of 2026-11-06** (ladder retirement PR 4). It ran 2026-08-12 ..
+  2026-11-06 for the three docker prunes; their routes, the `maintain` fallback route, the reserved
+  maintenance slot, `allow_mutating_dispatch` and `approved_maintenance` are gone. orion-hardware-watch's
+  disk rule asks cortex-exec for the image prune now; build cache and stopped containers are hand-run.
+  See "Mutating dispatch" below (kept as history).
 
 Separately from dispatch traffic, this service always publishes a bus-native `SystemHealthV1`
 heartbeat to `orion:system:health` every `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own
@@ -60,7 +62,13 @@ over `orion:cortex:exec:request:background` (via `orion.execution_dispatch.corte
 result to `substrate_dispatch_results`, and promotes the candidate to a real, evidenced
 `dispatched` status.
 
-## Mutating dispatch (2026-08-12)
+## Mutating dispatch (2026-08-12 .. 2026-11-06, retired)
+
+**Retired in ladder retirement PR 4.** `builder.py`'s scope check no longer admits `maintenance_bounded`,
+so a route that still names it is blocked `route_scope_not_read_only`, and no envelope carries a derived
+`skill_args.mode` any more. The image prune's trigger is `services/orion-hardware-watch/app/image_prune.py`
+(spec `docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md`, "PR 4"). The rest of
+this section is the history of what ran.
 
 Everything above concerns **read-only** sends. A *mutating* send — one that changes the world rather
 than describing it — needs a **third** gate on top of the two above:
@@ -148,7 +156,8 @@ Three corrections, in `orion/execution_dispatch/builder.py` and `limits` in the 
    queries and dashboards survive; the detail rides behind it.
 2. **A reserved lane.** Capacity is decided once, after the whole frame is known
    (`_admit_candidates`), not first-come-first-served inside the build loop.
-   `limits.reserved_slots_by_scope` holds 1 of 5 slots for `maintenance_bounded`. This is free on
+   `limits.reserved_slots_by_scope` held 1 of 5 slots for `maintenance_bounded` (reserves nothing
+   since 2026-11-06, when the maintenance routes left; the mechanism stays). This is free on
    ticks nothing claims it — pass 2 of `_admit_candidates` reclaims any unclaimed reservation in
    the same tick, so read-only throughput is unchanged except on ticks a maintenance action
    actually exists. A reservation that cost throughput on every idle tick would just be

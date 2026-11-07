@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from orion.execution_dispatch.policy import MAINTENANCE_SCOPE, CortexRouteTemplateV1
+from orion.execution_dispatch.policy import CortexRouteTemplateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1
 
@@ -40,31 +40,12 @@ def build_cortex_request_envelope(
             "motivating_dimensions": dict(candidate.motivating_dimensions),
             "priority_score": candidate.priority_score,
             "risk_score": candidate.risk_score,
-            # Mutating routes carry an explicit run mode for the target skill.
-            # `dry_run` already flows from the dispatch runtime's own mode, so
-            # a real prune needs BOTH that and this -- and then still has to
-            # pass the skill's own measured gate. Three independent switches,
-            # none of them defaulted open.
-            # Route-declared static args first, then the maintenance `mode`.
-            # That order is intentional: `mode` is the one argument in here
-            # that is DERIVED (from the dispatch runtime's own dry_run state)
-            # rather than configured, so a typo'd `skill_args: {mode: execute}`
-            # in the policy file must not be able to promote a preview into a
-            # real prune. Config never wins over a safety-derived value.
-            **(
-                {
-                    "skill_args": {
-                        **dict(route.skill_args),
-                        **(
-                            {"mode": "execute" if not dry_run else "preview"}
-                            if route.allowed_scope == MAINTENANCE_SCOPE
-                            else {}
-                        ),
-                    }
-                }
-                if (route.skill_args or route.allowed_scope == MAINTENANCE_SCOPE)
-                else {}
-            ),
+            # Route-declared static args. 2026-11-06 (ladder retirement PR 4):
+            # the derived maintenance `mode` (execute unless dry_run) is gone
+            # with the maintenance scope, so dispatch never asks a skill to
+            # execute. Config cannot either (CortexRouteTemplateV1 refuses
+            # `mode` in skill_args).
+            **({"skill_args": dict(route.skill_args)} if route.skill_args else {}),
         },
         # NOTE on what this dict is and is not. Verified 2026-08-12: the
         # dispatch worker forwards only `envelope["context"]` to cortex-exec,
@@ -76,20 +57,13 @@ def build_cortex_request_envelope(
         # sees one. Getting them right still matters -- the stored candidate is
         # the audit record for a destructive action.
         "constraints": {
-            # 2026-08-12: was hardcoded True. Now derived from the route's own
-            # scope, because a route that has passed builder.py's
-            # `maintenance_bounded` gate is by definition not read-only.
-            "read_only": route.allowed_scope != MAINTENANCE_SCOPE,
+            # 2026-08-12 .. 2026-11-06 these three were False for the
+            # maintenance_bounded scope (the docker prunes). That scope is gone
+            # (ladder retirement PR 4), so no admitted route writes host files.
+            "read_only": True,
             "dry_run": dry_run,
-            # 2026-08-12: these two were hardcoded True alongside `read_only`
-            # and were left that way when `read_only` was derived -- so an
-            # envelope for a verb that deletes ~142 GB of host files still
-            # declared it writes no files and has no external side effects.
-            # Nothing consumes these today (see the note below), which is
-            # precisely why it went unnoticed; a false statement in a safety
-            # artifact is worth fixing before something starts reading it.
-            "no_external_side_effects": route.allowed_scope != MAINTENANCE_SCOPE,
-            "no_file_writes": route.allowed_scope != MAINTENANCE_SCOPE,
+            "no_external_side_effects": True,
+            "no_file_writes": True,
             "no_service_restarts": True,
             "no_operator_notifications": True,
             "no_stream_replay": True,

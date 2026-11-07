@@ -37,3 +37,24 @@ def test_a_missing_join_reads_unread_not_zero():
 
 def test_the_sql_counts_every_attempts_turn_and_whole_machine_energy():
     assert "step_correlation_id" in cost.SQL and "wh_by_host" in cost.SQL and "durable.pr_field_note" in cost.SQL
+
+
+def test_a_null_energy_map_reads_unread_and_does_not_crash_the_report():
+    # live 2026-11-06: one act had "wh_by_host": null; summing it in SQL failed the whole query
+    # ("cannot call jsonb_each_text on a non-object"), so acceptance check 6 could not run at all
+    r = cost.with_sums({"run_id": "pr-field-note-1", "terminal": "completed", "wh_by_host": None,
+                        "gpu_slot_s_by_lane": {"agent-gpu2": 693.793}})
+    assert r["wh"] is None and r["gpu_slot_s"] == 693.793
+    assert "wh_by_host" not in r and "gpu_slot_s_by_lane" not in r
+    assert cost.map_sum({"circe": 3.25, "athena": 1.0}) == 4.25
+    assert cost.map_sum({}) is None and cost.map_sum([1, 2]) is None and cost.map_sum("3") is None
+
+
+def test_the_sql_no_longer_sums_maps_that_may_be_json_null():
+    assert "jsonb_each_text" not in cost.SQL
+
+
+def test_a_partly_unreadable_map_reads_unread_not_a_partial_sum():
+    assert cost.map_sum({"circe": None, "athena": 1.0}) is None
+    assert cost.map_sum({"circe": "2.5"}) == 2.5 and cost.map_sum({"circe": "n/a"}) is None
+    assert cost.map_sum({"circe": True}) is None

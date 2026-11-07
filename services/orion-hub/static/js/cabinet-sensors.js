@@ -2,7 +2,8 @@
 //
 // Read-only view of Athena Nano host snapshots from
 // GET /api/cabinet/sensors/latest (cabinet_sensors_routes.py). Shows raw
-// frame channels (environment / uv / magnetic / particulate / lidar / imu)
+// frame channels (environment / uv / magnetic / lidar / imu). No particulate tile: the
+// PMSA003I is on pan-1's office Nano, not the Athena Nanos (shown in the Office strip).
 // plus Hub-local derived pressures labeled "activity (Hub)".
 //
 // Absent-is-not-zero (absent is not zero): a missing frame sub-object renders
@@ -57,15 +58,6 @@
         { path: "x_ut", label: "x_uT", digits: 2 },
         { path: "y_ut", label: "y_uT", digits: 2 },
         { path: "z_ut", label: "z_uT", digits: 2 },
-      ],
-    },
-    {
-      key: "particulate",
-      title: "Particulate (PMSA003I)",
-      fields: [
-        { path: "pm1_ug_m3", label: "pm1", digits: 1 },
-        { path: "pm25_ug_m3", label: "pm2.5", digits: 1 },
-        { path: "pm10_ug_m3", label: "pm10", digits: 1 },
       ],
     },
     {

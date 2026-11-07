@@ -86,19 +86,16 @@ def test_deviation_pressure_dimension_weight_declared() -> None:
 
 def test_tension_driven_templates_score_on_deviation_pressure() -> None:
     policy = load_proposal_policy(POLICY_PATH)
-    for key in ("observe_tension_via_camera", "prune_dangling_images", "prune_stopped_containers"):
-        assert "deviation_pressure" in policy.proposal_templates[key].dimensions
+    assert "deviation_pressure" in policy.proposal_templates["observe_tension_via_camera"].dimensions
 
 
-def test_mutating_tension_templates_use_read_only_policy_gate_like_prune_build_cache() -> None:
-    """Safety comes from execution_dispatch_policy.v1.yaml's three gates, not
-    this field -- same precedent as prune_build_cache's own comment."""
+def test_no_template_proposes_a_docker_prune() -> None:
+    """2026-11-06 (ladder retirement PR 4): the three prune templates left. orion-hardware-watch's disk
+    rule asks for the image prune; build cache and stopped containers are hand-run."""
     policy = load_proposal_policy(POLICY_PATH)
-    for key in ("prune_dangling_images", "prune_stopped_containers"):
-        tmpl = policy.proposal_templates[key]
-        assert tmpl.kind == "maintain"
-        assert tmpl.required_policy_gate == "read_only"
-        assert tmpl.reversibility == 1.0
+    for key in ("prune_build_cache", "prune_dangling_images", "prune_stopped_containers"):
+        assert key not in policy.proposal_templates
+    assert not [k for k, t in policy.proposal_templates.items() if t.kind == "maintain"]
 
 
 def test_observe_tension_via_camera_is_read_only() -> None:

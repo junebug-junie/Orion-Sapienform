@@ -405,13 +405,20 @@ def _field_note_marks() -> dict[int, str]:
     return {n: " (noted)" if r.note else " (code record)" for n, r in recs.items()}
 
 
-def _field_notes_since() -> str | None:
-    """mergedAt of the earliest PR with a record. No backfill (Juniper, 2026-11-04): an older PR
-    with no note is not missing one, so it gets no mark."""
+def _utc(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _field_notes_since() -> datetime:
+    """From when a merged PR is owed a note: the later of the earliest record and the no-backfill
+    cutoff (Juniper's decision 3, ``field_notes.NOTES_BEGAN_AT``); the cutoff while the ledger is empty.
+    An older PR with no note is not missing one, so it gets no mark and is not in coverage."""
     from orion.body_atlas import field_notes as fn
 
     recs = fn.load(field_notes_path())[0]
-    return min((r.merged_at for r in recs), default=None)
+    first = min((_utc(r.merged_at) for r in recs), default=None)
+    cutoff = _utc(fn.NOTES_BEGAN_AT)
+    return max(first, cutoff) if first else cutoff
 
 
 def cmd_history(start: date, end: date, out: Out) -> str:
@@ -435,7 +442,8 @@ def cmd_history(start: date, end: date, out: Out) -> str:
     def mark(pr: dict) -> str:
         if pr["number"] in marks:
             return marks[pr["number"]]
-        return " (no note)" if since and pr["mergedAt"] >= since else ""
+        # an empty ledger marks nothing: no note is "missing" before the first one exists
+        return " (no note)" if marks and _utc(pr["mergedAt"]) >= since else ""
 
     for pr in prs[:25]:
         lines.append(f"#{pr['number']} {pr['mergedAt'][:10]} {pr['title'][:110]}{mark(pr)}")
@@ -1070,7 +1078,7 @@ def _gh_repo() -> str:
 
 
 PR_FIELDS = ("number,title,body,state,mergedAt,mergeCommit,labels,files,additions,deletions,changedFiles,"
-             "headRefName,commits")
+             "headRefName,commits,author")
 
 
 GH_TIMEOUT_S = 60
@@ -1217,7 +1225,8 @@ def cmd_field_note(number: int, out: Out) -> str:
              + (f"; {', '.join(flag_words)}" if flag_words else "")
              + ("; labels: " + ", ".join(lab["name"] for lab in pr.get("labels") or []) if pr.get("labels") else "")]
     if flags.authored_by_me == "yes":
-        lines.append("this may be your own work: its branch or commits come from your sandbox")
+        lines.append("this may be your own work: opened as your GitHub user, or its branch or commits"
+                     " come from your sandbox")
     if pk["atlas_error"]:
         lines.append(f"live body UNREAD ({pk['atlas_error'][:200]}): no organs below; a write needs it")
     lines.append("body map (code: services/<svc> -> its part -> its organ; orion/<pkg> -> who imports it):"
@@ -1303,8 +1312,12 @@ def cmd_field_notes(start: date, end: date, out: Out) -> str:
     coverage, missing, merged = "coverage UNREAD", [], None
     try:
         found, capped_days = _prs(start, end)
-        merged = sorted({p["number"] for p in found})
         have = {r.pr_number for r in notes}
+        since = _field_notes_since()
+        # decision 3, no backfill: a PR merged before notes began is not owed one (unless it has one)
+        owed = {p["number"] for p in found if p["number"] in have or _utc(p["mergedAt"]) >= since}
+        before = len({p["number"] for p in found} - owed)
+        merged = sorted(owed)
         missing = [n for n in merged if n not in have]
         if merged:
             noted = sum(1 for r in notes if r.note and r.pr_number in merged)
@@ -1313,7 +1326,9 @@ def cmd_field_notes(start: date, end: date, out: Out) -> str:
             if capped_days:
                 coverage += f" (INCOMPLETE: search cap hit on {', '.join(capped_days)})"
         else:
-            coverage = "no merged PRs in that window"
+            coverage = "no merged PRs owed a note in that window"
+        if before:
+            coverage += f"; {before} merged before notes began, not counted (no backfill)"
     except DigError as exc:
         coverage = f"coverage UNREAD ({str(exc)[:150]})"
     path = out.write(f"field-notes-{start}-{end}", {"start": str(start), "end": str(end),

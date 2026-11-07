@@ -24,7 +24,7 @@ def test_every_element_id_the_js_binds_exists_in_the_template() -> None:
     ids = _js_bound_ids()
     for expected in (
         "officeEnvStrip", "officeEnvPm25", "officeEnvPm10", "officeEnvPm1", "officeEnvLux",
-        "officeEnvLuxChart", "closetEnvStrip", "closetEnvCo2", "closetEnvCo2Chart",
+        "officeEnvLuxChart", "officeEnvSound", "officeEnvSoundChart", "closetEnvStrip", "closetEnvCo2", "closetEnvCo2Chart",
     ):
         assert expected in ids, expected
     for element_id in ids:

@@ -24,6 +24,7 @@ from .perception_reader import (
     presence_row_age_seconds,
 )
 from .cabinet_sound_reader import fetch_cabinet_sound_history
+from .office_sound_reader import fetch_office_sound
 from .camera_eyes import CAMERA_EYES_DEADLINE_SEC, build_senses, describe_camera, fetch_camera_eyes, senses_line, street_framing
 from .presence import companions_phrase, is_child, normalize_presence_context
 from .reverie_reader import fetch_recent_reverie_snippets
@@ -56,6 +57,7 @@ from orion.schemas.situation import (
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
     EnvironmentContextV1,
+    OfficeSoundContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceContextV1,
@@ -193,6 +195,9 @@ class SituationSettings:
     ambient_audio_path: str
     ambient_audio_stale_after_sec: float
     ambient_audio_history_node: str
+    # Office sound meter (dBA, office_env_sample). Empty node = off.
+    office_sound_node: str
+    office_sound_stale_after_sec: float
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
@@ -419,6 +424,12 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         ambient_audio_history_node=str(
             getattr(settings, "orion_situation_ambient_audio_history_node", "athena") or "athena"
         ),
+        # Off ("") by default like cabinet; Hub turns it on with its own
+        # OFFICE_ENV_NODE in `hub_settings_to_runtime_namespace`.
+        office_sound_node=str(getattr(settings, "orion_situation_office_sound_node", "") or ""),
+        office_sound_stale_after_sec=float(
+            getattr(settings, "orion_situation_office_sound_stale_after_sec", 90.0)
+        ),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
         runtime_ttl_seconds=int(getattr(settings, "orion_situation_runtime_ttl_seconds", 120)),
@@ -566,6 +577,12 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         ),
         orion_situation_ambient_audio_history_node=str(
             getattr(cfg, "CABINET_AMBIENT_HISTORY_NODE", "athena")
+        ),
+        # Office sound meter: Hub's EXISTING office-env keys (already used by
+        # office_env_routes.py), no new keys.
+        orion_situation_office_sound_node=str(getattr(cfg, "OFFICE_ENV_NODE", "pan-1")),
+        orion_situation_office_sound_stale_after_sec=float(
+            getattr(cfg, "OFFICE_ENV_STALE_AFTER_SEC", 90.0)
         ),
         # 2026-10-07: was a literal False. Reads Hub's own
         # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
@@ -781,10 +798,20 @@ def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationS
             ):
                 return True
         cabinet = brief.cabinet
-        return bool(
+        if (
             cabinet.sound_available
             and cabinet.sound_age_seconds is not None
             and cabinet.sound_age_seconds + cached_age > cfg.ambient_audio_stale_after_sec
+        ):
+            return True
+        # Office sound meter: a cached "it's 45 dBA" must not outlive the
+        # meter's own freshness window.
+        office = getattr(brief, "office_sound", None)
+        return bool(
+            office is not None
+            and office.available
+            and office.age_seconds is not None
+            and office.age_seconds + cached_age > cfg.office_sound_stale_after_sec
         )
     except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
         return True
@@ -847,6 +874,7 @@ async def build_situation_for_ctx(
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
+    office_sound_ctx = await _build_office_sound_context(cfg, diagnostics)
     # Only a turn Juniper actually took may spend the shared identity-ask
     # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
     # Orion authors itself (endogenous outreach), and claiming the slot there
@@ -879,6 +907,7 @@ async def build_situation_for_ctx(
             "reverie": reverie_ctx.source,
             "runtime": runtime_ctx.source,
             "cabinet": cabinet_ctx.source,
+            "office_sound": "ok" if office_sound_ctx.available else "unavailable",
         },
         requestor=presence.requestor,
         presence=presence,
@@ -888,6 +917,7 @@ async def build_situation_for_ctx(
         environment=env_ctx,
         agenda=agenda_ctx,
         cabinet=cabinet_ctx,
+        office_sound=office_sound_ctx,
         perception=perception_ctx,
         affect=affect_ctx,
         curiosity=curiosity_ctx,
@@ -1525,6 +1555,64 @@ async def _build_cabinet_context(
         _CABINET_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
     diagnostics.provider_status["cabinet"] = "ok" if ctx.available else ctx.source
     _record_cabinet_sound_status(ctx, diagnostics)
+    return ctx
+
+
+def _fetch_office_sound_context(cfg: SituationSettings) -> OfficeSoundContextV1:
+    """Office sound meter level (dBA) and how it compares with the office's
+    last 24 h. Unavailable when the newest reading is older than
+    `office_sound_stale_after_sec`: an old number is history, not "now"."""
+    reading = fetch_office_sound(node=cfg.office_sound_node)
+    if reading is None:
+        return OfficeSoundContextV1()
+    age = float(percept_age_seconds(reading.received_at))
+    if age > cfg.office_sound_stale_after_sec:
+        return OfficeSoundContextV1()
+    ctx = OfficeSoundContextV1(
+        available=True,
+        age_seconds=age,
+        dba=round(reading.dba, 1),
+        recent_dba=(
+            round(reading.recent_median_dba, 1) if reading.recent_median_dba is not None else None
+        ),
+    )
+    if reading.median_dba is None:
+        return ctx
+    # Judged on the last-10-min median when there is one, like the cabinet
+    # mic: one door slam should not flip "louder than usual".
+    level = reading.recent_median_dba if reading.recent_median_dba is not None else reading.dba
+    return ctx.model_copy(
+        update={
+            "usual_low_dba": round(reading.p10_dba, 1),
+            "usual_dba": round(reading.median_dba, 1),
+            "usual_high_dba": round(reading.p90_dba, 1),
+            "vs_usual": (
+                "quieter" if level < reading.p10_dba
+                else "louder" if level > reading.p90_dba
+                else "usual"
+            ),
+        }
+    )
+
+
+async def _build_office_sound_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> OfficeSoundContextV1:
+    """Fail-open: an unset node, a DB fault, or a stale meter all yield
+    available=False, never a guessed level. No provider cache: one indexed
+    query, and the brief cache already gates on the reading's age."""
+    if not cfg.office_sound_node:
+        diagnostics.provider_status["office_sound"] = "disabled"
+        return OfficeSoundContextV1()
+    try:
+        ctx = await asyncio.to_thread(_fetch_office_sound_context, cfg)
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["office_sound"] = "error"
+        diagnostics.provider_errors["office_sound"] = str(exc)
+        return OfficeSoundContextV1()
+    diagnostics.provider_status["office_sound"] = (
+        "ok" if ctx.usual_dba is not None else "no_history" if ctx.available else "unavailable"
+    )
     return ctx
 
 
@@ -2517,6 +2605,32 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
             f"Your cabinet's sound (mic, heard {heard}): {vs} for your cabinet, compared with"
             " the last 24 hours. The mic isn't calibrated, so this tells you louder or quieter"
             " than usual, not how many decibels it is."
+        )
+    # Office sound meter (2026-11-07). A calibrated dBA meter, so the number
+    # itself reaches the prompt, with a scale so Orion can say how loud the
+    # office is. Named as the office so it is never read as the cabinet.
+    office = brief.office_sound
+    if office.available and office.dba is not None:
+        heard = _recency_phrase(office.age_seconds)
+        line = (
+            f"Your office's sound (sound level meter in Juniper's office, not in your cabinet"
+            f" or the closet; read {heard}): {office.dba:.0f} dBA"
+        )
+        if office.recent_dba is not None:
+            line += f", {office.recent_dba:.0f} dBA typical over the last 10 minutes"
+        if office.vs_usual is not None:
+            vs = {
+                "usual": "about as loud as usual",
+                "louder": "louder than usual",
+                "quieter": "quieter than usual",
+            }[office.vs_usual]
+            line += (
+                f". That is {vs} for the office (usual range {office.usual_low_dba:.0f}-"
+                f"{office.usual_high_dba:.0f} dBA over the last 24 hours)"
+            )
+        lines.append(
+            line + ". Scale: about 30 dBA is a very quiet room, 40-50 a quiet office,"
+            " 60 normal conversation, 70+ loud (music, TV, a raised voice)."
         )
     if brief.perception.available and brief.perception.scene_summary:
         seen = _recency_phrase(brief.perception.observation_age_seconds)

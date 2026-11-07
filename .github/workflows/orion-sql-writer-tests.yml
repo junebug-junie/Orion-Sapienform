@@ -179,7 +179,7 @@ jobs:
           for f in ("vision_split_v1", "vision_reanchor_v1", "vision_motion_story_v1",
                     "vision_motion_story_strip_v2", "vision_motion_story_edges_v1",
                     "vision_person_album_v1", "vision_person_basis_v1", "vision_scene_inventory", "vision_handoff_v1",
-                    "vision_presence_transition_v1", "vision_office_session_v1"):
+                    "vision_presence_transition_v1", "vision_office_session_v1", "person_record_v1"):
               body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
               for stmt in body.split(";"):
                   if stmt.strip():
@@ -187,6 +187,7 @@ jobs:
           PY
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs -p no:cacheprovider \
             services/orion-sql-writer/tests/test_vision_confirm_asks.py \
+            services/orion-sql-writer/tests/test_vision_person_model.py \
             services/orion-sql-writer/tests/test_vision_split.py \
             services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
             services/orion-sql-writer/tests/test_vision_body_match.py \

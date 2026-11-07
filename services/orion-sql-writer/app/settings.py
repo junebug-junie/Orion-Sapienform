@@ -642,6 +642,9 @@ class Settings(BaseSettings):
     # Daily cap for "Is this <name>?" asks (vision_person_confirm), since local
     # midnight. Separate from ORION_ASK_DAILY_CAP, which the slow rule uses up first.
     vision_person_confirm_ask_daily_cap: int = Field(6, alias="VISION_PERSON_CONFIRM_ASK_DAILY_CAP")
+    # Own daily slots for "Is this <name>?" on camera-prior guesses (the office camera):
+    # the shared cap above goes to walkway guesses first. 0 = office guesses never asked.
+    vision_person_confirm_prior_ask_daily_cap: int = Field(2, alias="VISION_PERSON_CONFIRM_PRIOR_ASK_DAILY_CAP")
     # Splitting individuals from Juniper's picture answers (2026-10-16,
     # docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md).
     # A picture she marks "someone else" moves out of the asked individual into

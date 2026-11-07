@@ -17,7 +17,9 @@ Approximations (said in the report): the attempt's time is its shadow bid's time
 ``want_ledger`` row with ``want_id`` = the attempt's correlation id) when there is one, else the decision
 row's time (minutes after the compose point for a sent message). Act history and lane levels are the REAL
 ones: a held message would have closed its act later, so hunger after a hold reads lower than it would
-have. A funded want's reservation is released at once (an outreach act is short).
+have. A funded want's reservation is released at once (an outreach act is short), and other families'
+reservations made inside the window are not added to the book, so capacity deferrals are under-counted
+(a capacity deferral worth its price is admitted anyway, so this cannot hide a hold).
 
 Writes nothing to any database.
 

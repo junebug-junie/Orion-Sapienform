@@ -43,7 +43,8 @@ restart opens a new want and a new 1 h window. An admitted want stays "admitted"
 attempt ends (``close``): a second check racing on the same want in that time is refused
 (``duplicate``) instead of composing twice.
 
-Every verdict is one log line (``physiology_bind family=hub.outreach ... obeyed=true``) with the
+One lock serializes every door's bid (a bid waits at most ~6 s behind another door's): simple, and the
+duplicate guard needs it. Every verdict that bids, admits or ends a window is one log line (``physiology_bind family=hub.outreach ... obeyed=true``) with the
 market's reason, binding constraint, net, charge and ``why``; the decision row
 (``endogenous_outreach_decisions.result_json.economy``) carries the same; the decision itself is in
 ``want_ledger`` with producer ``BINDING_PRODUCER`` (orion.physiology.binding.BINDING_PRODUCERS).
@@ -84,6 +85,10 @@ TICK_KEY = "endogenous_tick"
 # A held want nobody re-checked for this long is forgotten (a bundle a door dropped, a visit that aged
 # out). Its next check, if any, opens a new want.
 FORGET_AFTER_SEC = 24 * 3600.0
+# A held want not re-checked within this long after its relief time has LAPSED (the door stopped asking:
+# no content, quiet hours, a human gate). Its next check opens a new want with a fresh bid and a fresh
+# window, never a free ``window_end`` pass hours later (review finding 1). Above the slowest door tick (300 s).
+LAPSE_AFTER_SEC = 900.0
 # An admitted want whose attempt never closed (a crash between bind and close) stops refusing after this.
 ADMITTED_STALE_SEC = 2 * DEFERRABLE_WINDOW_S
 # Strong references to in-flight release tasks (asyncio keeps only weak ones).
@@ -166,20 +171,6 @@ class OutreachBinder:
     def end(self, want: HeldWant) -> Optional[datetime]:
         return None if want.first_bid_at is None else want.first_bid_at + timedelta(seconds=self._window)
 
-    def waiting(self, key: str, now: datetime) -> Optional[BindVerdict]:
-        """A hold still in force for ``key`` (the market named a later relief time): a check may stop
-        early without a bid. None when there is no such hold (the check goes on to its compose point,
-        where ``bind`` decides). Pure read; no bid, no log."""
-        now = _utc(now)
-        want = self.wants.get(key)
-        if want is None or want.admitted or want.retry_at is None or now >= want.retry_at:
-            return None
-        end = self.end(want)
-        if end is not None and now >= end:
-            return None
-        return BindVerdict(False, f"waiting:{want.last_reason}", retry_at=want.retry_at,
-                           detail={"why": want.last_why, "reason": want.last_reason})
-
     async def bind(self, key: str, *, door: str, now: Optional[datetime] = None, cap_counted: bool = True,
                    forced: bool = False) -> BindVerdict:
         """The verdict for this check. Never raises; any failure is an ``admit`` (today's behaviour).
@@ -197,6 +188,10 @@ class OutreachBinder:
         async with self._lock:
             self._forget(now)
             want = self.wants.get(key)
+            if (want is not None and not want.admitted and want.retry_at is not None
+                    and (now - want.retry_at).total_seconds() > LAPSE_AFTER_SEC):
+                self.wants.pop(key, None)   # lapsed: the door stopped asking; a new want bids afresh
+                want = None
             if want is not None and want.admitted:
                 if want.admitted_at is not None and (now - want.admitted_at).total_seconds() > ADMITTED_STALE_SEC:
                     self.wants.pop(key, None)   # its attempt never closed: a lost close, not a live race
@@ -231,11 +226,10 @@ class OutreachBinder:
             return v
         if want.retry_at is not None and now < want.retry_at:
             # The market named a later relief time: hold without a bid (the same prices would answer).
+            # Not logged: the tick checks every 10 s; the bid that set the hold was logged.
             self.counts["held"] += 1
-            v = BindVerdict(False, f"waiting:{want.last_reason}", retry_at=want.retry_at,
-                            detail={"why": want.last_why, "reason": want.last_reason})
-            self._log(want.key, want.door, want, v)
-            return v
+            return BindVerdict(False, f"waiting:{want.last_reason}", retry_at=want.retry_at,
+                               detail={"why": want.last_why, "reason": want.last_reason})
         from orion.schemas.grammar import ActCostV2
         from orion.schemas.physiology_want import WantV1, WantWindowV1
 
@@ -249,7 +243,11 @@ class OutreachBinder:
             decision = await asyncio.wait_for(_abid(bid, self._timeout), self._timeout + 1.0)
         except Exception:  # noqa: BLE001 -- incl. timeout: compose as before
             logger.warning("physiology_bind_bid_failed family=%s want_id=%s", FAMILY, want.want_id, exc_info=True)
-        if decision is not None:
+        if decision is None:
+            # A timed-out bid may still land in the market's book (the HTTP call runs on in its thread):
+            # release it, as run_bids.py does (review finding 4).
+            _release_soon(want.want_id)
+        else:
             self.counts["bid"] += 1
             want.bids += 1
         v = bind_verdict(decision, now, end)
@@ -269,14 +267,16 @@ class OutreachBinder:
         self._log(want.key, want.door, want, v)
         return v
 
-    async def close(self, key: str, *, sent: bool) -> None:
+    async def close(self, key: str, *, sent: bool, want_id: Optional[str] = None) -> None:
         """The door's attempt on an ADMITTED want ended: the next check opens a new want. A funded
-        reservation whose message was not sent is released now. A held want is left open (no-op)."""
+        reservation is released now, sent or not (the act is over; a sent message is counted by
+        ``sent_today`` from here), as the dream and run_bids do. A held want is left open (no-op).
+        ``want_id``: close only that want (a check that did not admit it never closes another's)."""
         want = self.wants.get(key)
-        if want is None or not want.admitted:
+        if want is None or not want.admitted or (want_id is not None and want.want_id != want_id):
             return
         self.wants.pop(key, None)
-        if want.funded and not sent:
+        if want.funded:
             try:
                 await asyncio.wait_for(_arelease(want.want_id), 2.0)
             except Exception:  # noqa: BLE001
@@ -290,7 +290,8 @@ class OutreachBinder:
 
     def record(self, key: str, v: BindVerdict) -> Dict[str, Any]:
         """What the decision row carries (``result_json.economy``): the verdict and the market's own reason."""
-        want = self.wants.get(key)
+        # A forced verdict owns no want: never borrow a held want's id (review finding 2).
+        want = None if v.why == "forced" else self.wants.get(key)
         d = v.detail or {}
         out: Dict[str, Any] = {"mode": "on", "family": FAMILY, "producer": BINDING_PRODUCER, "verdict": v.why,
                                "admit": v.admit}

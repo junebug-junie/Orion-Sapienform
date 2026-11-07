@@ -2210,10 +2210,12 @@ class EndogenousOutreach:
                 shadow.settle("blocked:error")
                 raise
             finally:
+                economy = _TICK_ECONOMY.get()
                 _TICK_ECONOMY.reset(token)
-                # Patch D: the tick's admitted want is spent by this attempt (sent or not); a held one
-                # stays open for its next check. No-op in shadow mode or when nothing was admitted.
-                await self._binder.close(TICK_KEY, sent=sent)
+                # Patch D: the want THIS attempt was admitted on is spent (sent or not); a held one stays
+                # open for its next check. Nothing else is closed (a duplicate, a forced send, shadow mode).
+                if economy and economy.get("admit") and economy.get("want_id"):
+                    await self._binder.close(TICK_KEY, sent=sent, want_id=str(economy["want_id"]))
             shadow.settle(real_from_result(result), act_correlation_id=result.get("correlation_id"))
             return result
 
@@ -2312,16 +2314,6 @@ class EndogenousOutreach:
             # mistake a stale episode for one active right now.
             self._last_tension_reason = None
             return self._record({"outreach": False, "reason": blocked}, forced=force, tension_reason=None)
-        if self.economy_binding and not force:
-            # Patch D: the tick's want is held by the body economy until a named relief time. Stop
-            # here without a bid or any content read: the same prices would answer the same.
-            waiting = self._binder.waiting(TICK_KEY, datetime.now(timezone.utc))
-            if waiting is not None:
-                self._last_tension_reason = None
-                return self._record(
-                    {"outreach": False, "reason": ECONOMY_HELD_REASON,
-                     "economy": self._binder.record(TICK_KEY, waiting)},
-                    forced=force, tension_reason=None)
 
         # Captured into a LOCAL variable, not read back from
         # `self._last_tension_reason` at each `_record()` call below --
@@ -2444,7 +2436,16 @@ class EndogenousOutreach:
         if self.economy_binding:
             # Patch D: obey the binding bid (scripts/outreach_bind.py). Held -> no compose this tick;
             # the want re-bids at the market's relief time and composes by its window's end at the latest.
-            verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force)
+            # Checked here, not before the content reads: a tick with nothing to say records why
+            # (no_tension_trigger, content_already_used), never ``economy_held``. Inside a hold this
+            # re-uses the last answer without a bid (outreach_bind ``waiting:``).
+            try:
+                verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force)
+            except Exception:  # noqa: BLE001 -- never hold a message because this code failed
+                logger.warning("outreach_economy_bind_failed", exc_info=True)
+                from orion.physiology.binding import BindVerdict
+
+                verdict = BindVerdict(True, "no_answer:bind_failed")
             economy = self._binder.record(TICK_KEY, verdict)
             _TICK_ECONOMY.set(economy)
             if not verdict.admit:
@@ -2452,6 +2453,7 @@ class EndogenousOutreach:
                     {"outreach": False,
                      "reason": DUPLICATE_ECONOMY_REASON if verdict.why == "duplicate" else ECONOMY_HELD_REASON},
                     forced=force, tension_reason=tension_reason, grounding=grounding)
+            # A forced verdict owns no want (record() leaves want_id out): a fresh id, never a held want's.
             correlation_id = str(economy.get("want_id") or uuid4())
         elif shadow is not None:
             correlation_id = shadow.want_id

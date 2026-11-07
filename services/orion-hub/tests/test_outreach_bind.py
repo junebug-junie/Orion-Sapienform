@@ -165,7 +165,6 @@ async def test_price_sated_or_worthless_deferral_holds_then_rebids(market, reaso
     assert v.retry_at == T0 + timedelta(seconds=120)
     # Every check before the relief time holds WITHOUT a bid.
     for s in range(10, 120, 10):
-        assert b.waiting("k", T0 + timedelta(seconds=s)) is not None
         vv = await b.bind("k", door="d", now=T0 + timedelta(seconds=s))
         assert not vv.admit and vv.why == f"waiting:{reason}"
     assert len(market.wants) == 1
@@ -238,15 +237,42 @@ async def test_two_checks_racing_on_one_want_compose_once(market) -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_releases_a_funded_reservation_only_when_nothing_was_sent(market) -> None:
+async def test_close_releases_a_funded_reservation_sent_or_not(market) -> None:
     b = market.ob.OutreachBinder()
     await b.bind("a", door="d", now=T0)
+    want_a = market.wants[-1].want_id
     await b.close("a", sent=True)
-    assert market.released == []
     await b.bind("b", door="d", now=T0)
     want_b = market.wants[-1].want_id
     await b.close("b", sent=False)
-    assert market.released == [want_b]
+    assert market.released == [want_a, want_b]
+    # A close naming another want closes nothing.
+    await b.bind("c", door="d", now=T0)
+    await b.close("c", sent=True, want_id="someone-else")
+    assert "c" in b.wants
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_hold_bids_afresh_instead_of_a_free_window_end(market) -> None:
+    """Review finding 1: held at 09:00, nobody re-checked (no content, quiet hours); a compose at 14:00
+    must bid again with a new want and a new window, not pass as ``window_end`` with a 5 h hold."""
+    market.answers = [("deferred", "price", -0.1, 600.0), ("funded", "net_positive", 0.3, None)]
+    b = market.ob.OutreachBinder()
+    assert not (await b.bind("k", door="d", now=T0)).admit
+    v = await b.bind("k", door="d", now=T0 + timedelta(hours=5))
+    assert v.admit and v.why == "funded" and len(market.wants) == 2
+    assert market.wants[0].want_id != market.wants[1].want_id
+    assert b.record("k", v)["held_sec"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_bid_is_released(market) -> None:
+    """Review finding 4: the HTTP call outlives the timeout and may still reserve; release it."""
+    market.answers = ["slow"]
+    b = market.ob.OutreachBinder(timeout_sec=0.05)
+    v = await b.bind("k", door="d", now=T0)
+    await _drain()
+    assert v.admit and market.released == [market.wants[0].want_id]
 
 
 # --- the background tick ---------------------------------------------------------------------
@@ -343,7 +369,7 @@ async def test_tick_price_hold_composes_nothing_and_rebids_once_per_window(marke
 
     o._binder.bind = bind_at
     reasons = []
-    for _ in range(90):   # 15 minutes of 10 s ticks
+    for _ in range(90):   # 15 minutes of 10 s ticks (re-checked every tick: never lapses)
         r = await _tick(o)
         reasons.append(r["reason"])
         clock["t"] += timedelta(seconds=10)
@@ -354,8 +380,11 @@ async def test_tick_price_hold_composes_nothing_and_rebids_once_per_window(marke
     held = rows[0]
     assert held["economy"]["verdict"] == "deferred:price" and held["economy"]["why"].startswith("hub.outreach")
     assert held["economy"]["reason"] == "price" and held["economy"]["retry_at"]
-    # The window ends: the held want composes anyway.
-    clock["t"] = T0 + timedelta(seconds=3600)
+    assert len(rows) == 90 and all(r["reason"] == "economy_held" for r in rows)
+    # Keep checking until the window ends: the held want composes anyway.
+    while clock["t"] < T0 + timedelta(seconds=3600):
+        r = await _tick(o)
+        clock["t"] += timedelta(seconds=10)
     r = await _tick(o)
     assert r["reason"] == "sent" and r["economy"]["verdict"] == "window_end"
 
@@ -385,6 +414,40 @@ async def test_tick_forced_is_never_held(market, monkeypatch) -> None:
     market.answers = [("deferred", "price", -1.0, 600.0)]
     r = await _tick(_outreach(), force=True)
     assert r["reason"] == "sent" and r["economy"]["verdict"] == "forced" and market.wants == []
+
+
+@pytest.mark.asyncio
+async def test_tick_forced_never_borrows_a_held_wants_id(market, monkeypatch) -> None:
+    """Review finding 2: a forced send during a hold gets its own correlation id, and the held want stays."""
+    generated, rows = [], []
+    _stub_tick(monkeypatch, generated, rows)
+    market.answers = [("deferred", "price", -1.0, 600.0)]
+    o = _outreach()
+    assert (await _tick(o))["reason"] == "economy_held"
+    held_id = market.wants[0].want_id
+    r = await _tick(o, force=True)
+    assert r["reason"] == "sent" and r["correlation_id"] != held_id and "want_id" not in r["economy"]
+    assert o._binder.wants["endogenous_tick"].want_id == held_id     # still held, not closed by the forced send
+
+
+@pytest.mark.asyncio
+async def test_tick_inside_a_hold_with_nothing_to_say_records_no_trigger_not_economy_held(market, monkeypatch) -> None:
+    """Review finding 3: a held tick that has no content says so; it is not counted as an economy hold."""
+    from scripts.endogenous_outreach import EndogenousOutreach
+
+    generated, rows = [], []
+    _stub_tick(monkeypatch, generated, rows)
+    market.answers = [("deferred", "price", -1.0, 600.0)]
+    o = _outreach()
+    assert (await _tick(o))["reason"] == "economy_held"
+
+    async def no_roll(self):
+        return False
+
+    monkeypatch.setattr(EndogenousOutreach, "_should_roll", no_roll)
+    monkeypatch.setattr("scripts.endogenous_outreach._fetch_open_priors", lambda: ([], []))
+    r = await _tick(o)
+    assert r["reason"] == "no_tension_trigger" and len(market.wants) == 1
 
 
 @pytest.mark.asyncio

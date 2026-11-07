@@ -16,6 +16,7 @@ on:
       - "scripts/analysis/tests/test_outreach_binding_replay.py"
       - "services/orion-hub/evals/run_outreach_binding_replay.py"
       - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
       - "orion/personality/**"
       - "orion/schemas/personality.py"
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
@@ -119,6 +120,9 @@ on:
       - "orion/physiology/**"
       - "config/physiology/**"
       - "scripts/analysis/body_economy_binding_replay.py"
+      - "scripts/analysis/outreach_binding_replay.py"
+      - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
       - "orion/schemas/physiology_report.py"
       - "orion/autonomy/cabinet_heat.py"
       - "orion/autonomy/shed_act.py"          # the cooling world act (ladder retirement PR 5): app/cooling_act.py

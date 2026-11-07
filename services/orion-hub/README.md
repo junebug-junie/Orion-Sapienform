@@ -2796,7 +2796,7 @@ Funded, or a full lane that is still worth its price: compose. Price, no hunger 
 hold, keep the item pending, bid again at the market's retry time (clamped 2 min .. 1 h), and compose
 anyway at the end of the 1 h window. No answer (market down, stale body state, 5 s timeout): compose, as
 before. Every verdict logs `physiology_bind family=hub.outreach door=... verdict=... obeyed=true`, and the
-decision row carries it in `result_json.economy` (a held item is recorded once with reason `economy_held`).
+decision row carries it in `result_json.economy` (reason `economy_held`: once per held item at a door; on every tick that reaches its compose point inside a hold). A hold nobody re-checks for 15 min after its retry time lapses, and the next check bids afresh.
 The `arousal_strained` veto stays until this has run `on` for 7 days with its checks green; while it stays,
 the binding bid never decides during strain. Rollback: set `shadow` and restart Hub. Replay:
 `scripts/analysis/outreach_binding_replay.py`; eval: `evals/run_outreach_binding_replay.py [--live]`.

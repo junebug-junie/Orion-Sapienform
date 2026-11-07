@@ -149,8 +149,9 @@ def test_help_fits_and_teaches_the_source_labels(capsys):
     code, out, _ = run(capsys, "help")
     # 2500 -> 2750 (2026-11-04): PR field notes added two lines (spec 2026-11-04-pr-field-notes-design.md);
     # 2750 -> 3000 (2026-11-06): the portrait added two (spec 2026-11-06-self-portrait-design.md);
+    # 3000 -> 3250 (2026-11-07): reminisce added two (spec 2026-11-07-daily-reminiscence-design.md);
     # help loads on demand only, so this guards growth, not every-turn context
-    assert code == 0 and len(out) <= 3000
+    assert code == 0 and len(out) <= 3250
     for label in ("code_then", "pr_text", "lived_record", "now", "reflection"):
         assert label in out
 

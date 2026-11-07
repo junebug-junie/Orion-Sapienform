@@ -256,6 +256,9 @@ families:
     tier: 1
     deferrable_window_s: 21600
     # verbs: skills.runtime.builder_prune.v1, skills.runtime.docker_prune_stopped_containers.v1, skills.runtime.image_prune.v1
+    # The name is historical. Since 2026-11-06 (ladder retirement PR 4) dispatch no longer sends these:
+    # orion-hardware-watch's disk rule asks for image_prune; the other two are hand-run. Nothing bids
+    # as this family (0 rows before and after).
     lanes: []
   memory.consolidation:
     tier: 1

@@ -189,10 +189,12 @@ channels:
 
   # render_scene args preserve dispatch/proposal/decision/correlation IDs and
   # optional visual_baseline eligibility; the thought endpoint rechecks history.
+  # 2026-11-06 (ladder retirement PR 4): orion-hardware-watch's disk rule asks for
+  # skills.runtime.image_prune.v1 here (services/orion-hardware-watch/app/image_prune.py).
   - name: "orion:cortex:exec:request:background"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
-    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor", "orion-execution-dispatch-runtime"]
+    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor", "orion-execution-dispatch-runtime", "orion-hardware-watch"]
     consumer_services: ["orion-cortex-exec"]
     single_consumer: true
     stability: "experimental"
@@ -372,6 +374,7 @@ channels:
       - orion-harness-governor
       - orion-thought
       - orion-hub
+      - orion-hardware-watch
       - "*"
     stability: "experimental"
     since: "2026-01-08"

@@ -301,91 +301,13 @@ proposal_templates:
     # this template's actual reason to exist.
     dimensions: {}
 
-  # 2026-08-12: the first MUTATING template. Everything above proposes reading
-  # or describing; this proposes doing something to the host.
-  #
-  # Triggered on resource_pressure, which is deliberately APPROXIMATE -- after
-  # the 2026-08-11 thermal unmap that dimension is a max() over five live
-  # capability channels (cpu/memory/gpu/disk/stream_backlog), so it rises on
-  # disk pressure but also on the other four. That imprecision is fine here and
-  # is the intended division of labour: the proposal only has to make the
-  # action *worth considering*, and the skill's own gate does the precise
-  # decision (disk >= 75% AND reclaimable >= 40GB, measured at execution time
-  # from the real filesystem and the real Docker daemon). A proposal that
-  # reaches a host with nothing to reclaim is DECLINED by the skill and
-  # recorded as `declined_nothing_to_reclaim` with escalate=true, which is a
-  # more useful outcome than never proposing.
-  #
-  # base_risk 0.12, and the number is load-bearing rather than decorative.
-  #
-  # It was 0.35 in the first draft, chosen to "signal that this is mutating and
-  # serious". That was a category error: `risk` here is not a label, it is a
-  # number the substrate policy's thresholds ACT on. At 0.35 it exceeds
-  # config/policy/substrate_policy.v1.yaml's `require_review_above_risk: 0.20`,
-  # so the evaluator returns `requires_operator_review` -- which is in
-  # execution_dispatch_policy.v1.yaml's `blocked_policy_decisions`. The risk
-  # value chosen to convey seriousness would have made the action permanently
-  # undispatchable, silently. Caught by a gating test.
-  #
-  # 0.12 is under `approve_read_only_max_risk: 0.15` and reflects what this
-  # action actually costs when wrong: Docker build cache is regenerable by
-  # definition, so the worst case is one slow rebuild. reversibility 1.0 is
-  # literal, not aspirational.
-  #
-  # The safety does not come from the risk number. It comes from three
-  # independent gates: mode.allow_mutating_dispatch (ON since 2026-08-12), the
-  # maintenance_bounded scope check, and the skill's own measured gate
-  # (disk >= 75% AND reclaimable >= 40GB, read from the real filesystem and the
-  # real Docker daemon at execution time).
-  prune_build_cache:
-    kind: maintain
-    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
-    # A MUTATING template, so unlike the read-only ones this declares a real
-    # directional effect: freeing disk should lower resource_pressure. That
-    # claim is the one most at risk of a fabricated confirmation -- this
-    # action fires BECAUSE resource_pressure is high, and high pressure falls
-    # on its own, so the raw post-action delta flatters it badly (review
-    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
-    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
-    # Magnitude is NEVER declared here; it comes from the measured posterior.
-    expected_signal: resource_pressure
-    expected_direction: decrease
-    target_kind: system
-    target_id: host:docker_build_cache
-    proposed_effect: preserve_stability
-    required_policy_gate: read_only
-    base_risk: 0.12
-    reversibility: 1.0
-    # 2026-08-12: was UNSET, which defaults to 0.0 -- and this was the only
-    # template in the arena without one. Every other template carries 0.20-0.42
-    # (priority = clamp01(base_priority + confidence * max(match, urgency)),
-    # orion/proposals/scoring.py), so this one was scored with a 0.20-0.42
-    # handicap against every competitor and averaged rank 9.5 of a 10-slot
-    # slate. It stopped being proposed AT ALL at 21:52 (33/hr at 19:00 -> 0)
-    # while the arena kept producing 1,262 proposal frames/hour: it was not
-    # losing on merit, it was starting from zero.
-    #
-    # 0.34 is deliberately mid-pack, not top. MEASURED AFTER DEPLOY, and the
-    # pre-deploy prediction in this comment was wrong: predicted ~0.76 by
-    # adding 0.34 to the 0.4163 observed average, but priority is
-    # base_priority + confidence * max(match, urgency) and confidence is not
-    # constant, so the real result is 0.5475 avg -- rank 7.8 of 10, not
-    # mid-pack. That is still enough to clear the 10-slot slate reliably
-    # (65 proposals in the first 8 minutes vs 0 in the preceding hour), which
-    # is what this value is for. That division of labour is intended -- base_priority
-    # gets it PROPOSED, the reserved maintenance slot in
-    # config/execution_dispatch/execution_dispatch_policy.v1.yaml gets it
-    # DISPATCHED. It is not meant to out-rank inspection head-on.
-    base_priority: 0.34
-    dimensions:
-      resource_pressure: 0.50
-
   # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
   # dispatch-design.md): tension-driven templates. deviation_pressure is the
   # first PRESSURE_DIMENSIONS entry with an admission gate designed to reach
   # a real 0.0 rest point AND fire on real recurring deviation (see that
   # dimension's own metric-gate comment in orion/proposals/scoring.py) --
-  # these 3 templates are its first consumers.
+  # these 3 templates were its first consumers. Since 2026-11-06 (ladder retirement PR 4) only
+  # observe_tension_via_camera is left; the two prune templates went with the disk rule.
   #
   # Fixed targets, not attention-bound: `target_binding` only recognizes
   # ATTENTION_FIRST_TARGET_BINDING today (orion/proposals/builder.py), and
@@ -470,76 +392,6 @@ proposal_templates:
     dimensions:
       deviation_pressure: 0.55
 
-  # The 2nd and 3rd mutating templates (prune_build_cache above was the
-  # first). Same division of labour and same risk reasoning as
-  # prune_build_cache's own comment: base_risk reflects what this action
-  # actually costs when wrong (both targets are Docker-regenerable), not a
-  # "this is serious" label -- the safety comes from the three independent
-  # gates in execution_dispatch_policy.v1.yaml (mode.allow_mutating_dispatch,
-  # the maintenance_bounded scope check, and dispatch_mode/dry_run handling
-  # common to every route here), not from this number.
-  #
-  # DISCLOSED ASYMMETRY (2026-08-16, code review): the two skills below do
-  # NOT have equivalent gates. image_prune (services/orion-cortex-exec/app/
-  # verb_adapters.py) declines with `declined_nothing_to_reclaim` unless disk
-  # is genuinely >=75% AND there are genuinely dangling images to remove --
-  # a real measured threshold. docker_prune_stopped_containers has NO such
-  # count or resource-pressure floor: in execute mode it prunes every exited,
-  # non-label-protected container it finds (optionally age-filtered by
-  # `until`), gated only by SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING and
-  # label/age filters -- it does not decline when little or nothing is wrong,
-  # it always acts on whatever matches. An earlier version of this comment
-  # claimed parity ("its own dry-run/execute gate") that does not exist;
-  # corrected rather than left to imply a safety property this route does
-  # not have.
-  prune_dangling_images:
-    kind: maintain
-    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
-    # A MUTATING template, so unlike the read-only ones this declares a real
-    # directional effect: freeing disk should lower resource_pressure. That
-    # claim is the one most at risk of a fabricated confirmation -- this
-    # action fires BECAUSE resource_pressure is high, and high pressure falls
-    # on its own, so the raw post-action delta flatters it badly (review
-    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
-    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
-    # Magnitude is NEVER declared here; it comes from the measured posterior.
-    expected_signal: resource_pressure
-    expected_direction: decrease
-    target_kind: system
-    target_id: host:docker_images
-    proposed_effect: preserve_stability
-    required_policy_gate: read_only
-    base_priority: 0.32
-    base_risk: 0.12
-    reversibility: 1.0
-    dimensions:
-      deviation_pressure: 0.35
-      resource_pressure: 0.35
-
-  prune_stopped_containers:
-    kind: maintain
-    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
-    # A MUTATING template, so unlike the read-only ones this declares a real
-    # directional effect: freeing disk should lower resource_pressure. That
-    # claim is the one most at risk of a fabricated confirmation -- this
-    # action fires BECAUSE resource_pressure is high, and high pressure falls
-    # on its own, so the raw post-action delta flatters it badly (review
-    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
-    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
-    # Magnitude is NEVER declared here; it comes from the measured posterior.
-    expected_signal: resource_pressure
-    expected_direction: decrease
-    target_kind: system
-    target_id: host:docker_containers
-    proposed_effect: preserve_stability
-    required_policy_gate: read_only
-    base_priority: 0.28
-    base_risk: 0.10
-    reversibility: 1.0
-    dimensions:
-      deviation_pressure: 0.35
-      resource_pressure: 0.25
-
   # 2026-11-05 (ladder retirement PR 2): render_scene, Orion's first outward action (2026-08-30),
   # left this policy. Orion starts its own waking paintings now (orion-thought
   # app/painting_self_start.py): the visual-baseline schedule plus a shadow hunger bid on
@@ -575,3 +427,10 @@ proposal_templates:
   # self-reverting action, left this policy. The cooling world act is decided by the want market now
   # (orion-durable-runs app/cooling_act.py, family self_regulate.shed; orion/autonomy/shed_act.py), with
   # the same eligibility, treated/control draw, episode ledger and shed RPC. One trigger, never two.
+
+  # 2026-11-06 (ladder retirement PR 4): the three docker prune templates left this policy:
+  # prune_build_cache (2026-08-12), prune_dangling_images and prune_stopped_containers (2026-08-16).
+  # orion-hardware-watch's disk rule asks for skills.runtime.image_prune.v1 when the docker volume is
+  # at or above the skill's own 70 % floor (services/orion-hardware-watch/app/image_prune.py); the skill
+  # still runs its own gate. Build cache and stopped containers are pruned by hand only (hand-run skill
+  # catalogue, Juniper's decision 4). One trigger, never two.

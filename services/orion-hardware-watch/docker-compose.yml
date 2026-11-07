@@ -66,6 +66,18 @@ services:
       - HARDWARE_WATCH_CPU_CEILING_C=${HARDWARE_WATCH_CPU_CEILING_C:-90}
       - HARDWARE_WATCH_CPU_CEILING_REARM_C=${HARDWARE_WATCH_CPU_CEILING_REARM_C:-85}
       - HARDWARE_WATCH_HEAT_SENSOR_LOST_SEC=${HARDWARE_WATCH_HEAT_SENSOR_LOST_SEC:-900}
+      - HARDWARE_WATCH_IMAGE_PRUNE_ENABLED=${HARDWARE_WATCH_IMAGE_PRUNE_ENABLED:-true}
+      - HARDWARE_WATCH_IMAGE_PRUNE_MOUNT_PATH=${HARDWARE_WATCH_IMAGE_PRUNE_MOUNT_PATH:-/hostfs/docker}
+      - HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC=${HARDWARE_WATCH_IMAGE_PRUNE_COOLDOWN_SEC:-43200}
+      - HARDWARE_WATCH_IMAGE_PRUNE_RETRY_SEC=${HARDWARE_WATCH_IMAGE_PRUNE_RETRY_SEC:-1800}
+      - HARDWARE_WATCH_IMAGE_PRUNE_START_DELAY_SEC=${HARDWARE_WATCH_IMAGE_PRUNE_START_DELAY_SEC:-600}
+      - HARDWARE_WATCH_IMAGE_PRUNE_RPC_TIMEOUT_SEC=${HARDWARE_WATCH_IMAGE_PRUNE_RPC_TIMEOUT_SEC:-720}
+      - CORTEX_EXEC_CHANNEL=${CORTEX_EXEC_CHANNEL:-orion:cortex:exec:request:background}
+      - CORTEX_EXEC_RESULT_PREFIX=${CORTEX_EXEC_RESULT_PREFIX:-orion:exec:result}
+    # Ladder retirement PR 4: the disk rule reads the docker data-root's usage here (read-only; the
+    # same bind orion-cortex-exec's image-prune skill measures). Pruning itself stays in cortex-exec.
+    volumes:
+      - ${ORION_HOST_DOCKER_DATA_ROOT:-/mnt/docker}:/hostfs/docker:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8131/health', timeout=3)\""]
       interval: 30s

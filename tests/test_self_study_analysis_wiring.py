@@ -100,9 +100,11 @@ def test_the_template_becomes_a_real_candidate_on_a_loaded_field() -> None:
 
 def test_raising_max_candidates_did_not_displace_an_existing_template() -> None:
     """The cap went 10 -> 11 for exactly one added template. If a future patch
-    adds templates without raising it, this catches the silent eviction."""
+    adds templates without raising it, this catches the silent eviction.
+    2026-11-06: 12 templates are left after the ladder retirement PRs (1-5 and the
+    three prunes in PR 4), so at most one is cut per tick."""
     policy = _proposal_policy()
-    assert len(policy.proposal_templates) - policy.limits.max_candidates == 6
+    assert len(policy.proposal_templates) - policy.limits.max_candidates == 1
     frame = build_proposal_frame(field=_loaded_field(), attention=None, policy=policy, now=NOW)
     assert len(frame.candidates) <= policy.limits.max_candidates
 
@@ -225,23 +227,20 @@ def test_config_cannot_declare_a_run_mode_at_all() -> None:
             )
 
 
-def test_a_maintenance_route_still_gets_its_derived_mode_alongside_config_args() -> None:
+def test_no_route_gets_a_derived_execute_mode_since_the_maintenance_scope_left() -> None:
+    """2026-11-06 (ladder retirement PR 4): the maintenance scope's derived `mode` (execute unless
+    dry_run) went with the docker prune routes. Even a stale route naming that scope, with dispatch
+    not in dry run, carries no `mode`, so a skill reached through dispatch runs in its own default
+    preview (and builder.py's scope check blocks such a route before any envelope is sent)."""
     route = CortexRouteTemplateV1(
         dispatch_kind="maintain",
         cortex_verb="skills.runtime.image_prune.v1",
         allowed_scope="maintenance_bounded",
         skill_args={"note": "kept"},
     )
-    assert _envelope(route, dry_run=True)["context"]["skill_args"] == {
-        "note": "kept",
-        "mode": "preview",
-    }
-
-
-def test_maintenance_routes_without_skill_args_still_get_their_mode() -> None:
-    route = CortexRouteTemplateV1(
-        dispatch_kind="maintain",
-        cortex_verb="skills.runtime.image_prune.v1",
-        allowed_scope="maintenance_bounded",
-    )
-    assert _envelope(route, dry_run=False)["context"]["skill_args"] == {"mode": "execute"}
+    env = _envelope(route, dry_run=False)
+    assert env["context"]["skill_args"] == {"note": "kept"}
+    assert env["constraints"]["read_only"] is True
+    bare = CortexRouteTemplateV1(dispatch_kind="maintain", cortex_verb="skills.runtime.image_prune.v1",
+                                 allowed_scope="maintenance_bounded")
+    assert "skill_args" not in _envelope(bare, dry_run=False)["context"]

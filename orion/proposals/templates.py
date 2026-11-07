@@ -10,11 +10,8 @@ ProposalKind = Literal[
     "defer",
     "request_policy_review",
     "prepare_action",
-    # 2026-08-12 (config/proposals/proposal_policy.v1.yaml's prune_build_cache):
-    # the first mutating kind, already live -- added here 2026-08-16 while
-    # touching this Literal for the tension-driven-dispatch templates below.
-    # cast_proposal_kind()'s cast() is a static-only no-op, so the omission
-    # was never a runtime bug, only a stale type hint.
+    # 2026-08-12: the first mutating kind (prune_build_cache). No template emits it since
+    # 2026-11-06 (ladder retirement PR 4); kept so stored frames still type-check until PR 6.
     "maintain",
     # 2026-08-30: first outward kind -- see orion/schemas/proposal_frame.py.
     "express",
@@ -92,11 +89,8 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Field deviation tension is elevated; look at the current camera window as a consumer of that signal, not a new capture source.",
         ["deviation_pressure_elevated", "perception_consumer", "read_only"],
     ),
-    "prune_dangling_images": (
-        "Prune dangling Docker images under tension",
-        "Deviation and/or resource pressure is elevated; reclaim dangling (untagged, unreferenced) image layers if the skill's own disk/count gate agrees.",
-        ["deviation_pressure_elevated", "bounded_mutation", "regenerable"],
-    ),
+    # prune_dangling_images / prune_stopped_containers deleted 2026-11-06 (ladder retirement PR 4) --
+    # see the tombstone in config/proposals/proposal_policy.v1.yaml.
     # 2026-08-25: analysis -> self-study journal entry. ONE template, not four,
     # even though there are four inputs -- the verb picks whichever input has
     # gone longest without being studied (app/self_study_analysis.py::
@@ -107,11 +101,6 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Study one lens of Orion's own recent telemetry",
         "Contrast the last window of one already-stored telemetry source against the window before it, and journal it only if a disclosed notability rule fires.",
         ["self_study", "read_only", "append_only_journal"],
-    ),
-    "prune_stopped_containers": (
-        "Prune stopped containers under tension",
-        "Deviation and/or resource pressure is elevated; prune stopped containers if the skill's own gate agrees.",
-        ["deviation_pressure_elevated", "bounded_mutation", "regenerable"],
     ),
 }
 

@@ -323,8 +323,9 @@ class Settings(BaseSettings):
     # is a seconds-scale command and must keep the short budget, so this
     # needs its own key rather than a raise of the shared one.
     #
-    # Must stay BELOW the verb's own timeout_ms (660s) and the maintenance
-    # route's rpc_timeout_sec (720s), so a real overrun is attributed to the
+    # Must stay BELOW the verb's own timeout_ms (660s) and any caller's RPC
+    # budget (720s: dispatch's maintenance route until 2026-11-06,
+    # orion-hardware-watch's disk rule for image_prune since), so a real overrun is attributed to the
     # docker command rather than surfacing as an opaque RPC timeout.
     builder_prune_timeout_sec: float = Field(600.0, alias="BUILDER_PRUNE_TIMEOUT_SEC")
     # Same footing as its sibling above. 2026-08-13 review finding: this was

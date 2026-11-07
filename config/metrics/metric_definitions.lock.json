@@ -5,8 +5,8 @@
     "change_count": 2,
     "high_severity_count": 2,
     "changes": [
-      "high   removed metric://bus_channel/orion-embodiment/orion:aitown_session:start:reply:*",
-      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:aitown_session:start:request"
+      "high   routing_changed metric://bus_channel/*/orion:exec:result:* (declared_consumers: \u2026, 'orion-harness-governo\u2026 -> \u2026, 'orion-hardware-watch', 'orion-harness-governo\u2026)",
+      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:exec:request:background (all_producers: \u2026, 'orion-harness-governo\u2026 -> \u2026, 'orion-hardware-watch', 'orion-harness-governo\u2026)"
     ]
   },
   "definitions": {
@@ -142,6 +142,7 @@
       "declared_consumers": [
         "*",
         "orion-cortex-orch",
+        "orion-hardware-watch",
         "orion-harness-governor",
         "orion-hub",
         "orion-thought"
@@ -309,6 +310,7 @@
         "orion-actions",
         "orion-cortex-orch",
         "orion-execution-dispatch-runtime",
+        "orion-hardware-watch",
         "orion-harness-governor"
       ],
       "declared_consumers": [

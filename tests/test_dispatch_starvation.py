@@ -23,6 +23,11 @@ Three separate faults, three sections below:
      of action could be crowded out permanently by a noisier one.
   3. Nothing was ever aged, so "lost this tick" and "lost for six hours"
      ranked identically forever.
+
+2026-11-06 (ladder retirement PR 4): the maintenance routes (the docker prunes) are gone, so the
+reserved lane is exercised here on a test-only reservation for the summarize_only scope, and the
+"lowly" candidate is a summarize. The shipped config reserves nothing now. The arena is capped at
+the 5 slots these tests were written for (the shipped cap became 50 on 2026-08-30).
 """
 from __future__ import annotations
 
@@ -36,7 +41,6 @@ from orion.execution_dispatch.builder import (
     starvation_key,
 )
 from orion.execution_dispatch.policy import (
-    MAINTENANCE_SCOPE,
     DispatchLimitsV1,
     load_execution_dispatch_policy,
 )
@@ -46,6 +50,16 @@ from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 REPO = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
 NOW = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+LANE = "summarize_only"     # the test-only reserved scope (was maintenance_bounded until 2026-11-06)
+
+
+def _policy(*, reserve: bool = True):
+    """The shipped policy at the 5-slot arena these tests measure, with one reserved summarize slot."""
+    policy = load_execution_dispatch_policy(POLICY_PATH)
+    policy.limits.max_dispatch_candidates = 5
+    policy.limits.max_dispatches_per_tick = 5
+    policy.limits.reserved_slots_by_scope = {LANE: 1} if reserve else {}
+    return policy
 
 
 def _load_store_module():
@@ -80,7 +94,7 @@ def _candidate(
         confidence_score=0.9,
         risk_score=0.2,
         reversibility_score=1.0,
-        proposed_effect="increase_observability" if kind != "maintain" else "preserve_stability",
+        proposed_effect="increase_observability",
         required_policy_gate="operator_review",
     )
 
@@ -89,7 +103,7 @@ def _decision(candidate: ProposalCandidateV1, idx: int) -> PolicyDecisionV1:
     return PolicyDecisionV1(
         decision_id=f"decision:{idx}",
         proposal_id=candidate.proposal_id,
-        decision="approved_maintenance" if candidate.proposal_kind == "maintain" else "approved_read_only",
+        decision="approved_read_only",
         policy_gate="operator_review",
         risk_score=candidate.risk_score,
         reversibility_score=candidate.reversibility_score,
@@ -98,7 +112,7 @@ def _decision(candidate: ProposalCandidateV1, idx: int) -> PolicyDecisionV1:
 
 
 def _build(candidates: list[ProposalCandidateV1], *, prev_counts=None, policy=None):
-    policy = policy or load_execution_dispatch_policy(POLICY_PATH)
+    policy = policy or _policy()
     decisions = [_decision(c, i) for i, c in enumerate(candidates)]
     policy_frame = PolicyDecisionFrameV1(
         frame_id="policy.frame:1",
@@ -139,16 +153,14 @@ def test_a_starved_candidate_records_what_it_actually_was():
     one column that would have distinguished them.
     """
     crowd = [_candidate(f"inspect_{i}", priority=0.95) for i in range(6)]
-    prune = _candidate("prune_build_cache", kind="maintain", priority=0.30)
+    lowly = _candidate("summarize_loaded_state", kind="summarize", priority=0.30)
     # No reservation here: this test is about the RECORD, not about winning.
-    policy = load_execution_dispatch_policy(POLICY_PATH)
-    policy.limits.reserved_slots_by_scope = {}
-    frame = _build(crowd + [prune], policy=policy)
+    frame = _build(crowd + [lowly], policy=_policy(reserve=False))
 
-    starved = [b for b in frame.blocked_candidates if b.source_proposal_id == prune.proposal_id]
-    assert starved, "the low-priority maintain candidate should have lost on capacity"
-    assert starved[0].dispatch_kind == "maintain", (
-        "a starved maintenance action must be identifiable as one in the stored "
+    starved = [b for b in frame.blocked_candidates if b.source_proposal_id == lowly.proposal_id]
+    assert starved, "the low-priority summarize candidate should have lost on capacity"
+    assert starved[0].dispatch_kind == "summarize", (
+        "a starved action must be identifiable by its kind in the stored "
         "record -- recording it as 'noop' is what made this defect invisible"
     )
     assert starved[0].starvation_ticks == 1
@@ -182,54 +194,54 @@ def test_persistent_starvation_escalates_to_its_own_warning():
 # --- 2. the reserved lane ---------------------------------------------------
 
 
-def test_a_maintenance_action_wins_a_slot_against_a_full_read_only_arena():
-    """The live shape: five higher-priority read-only templates, one low
-    maintenance action. Before the reservation the maintenance action lost
-    every tick forever, which is the measured behaviour above."""
+def test_a_reserved_scope_wins_a_slot_against_a_full_arena():
+    """The live shape: five higher-priority inspects, one low action in a reserved scope. Before the
+    reservation such an action lost every tick forever, which is the measured behaviour above (then
+    the build-cache prune)."""
     crowd = [_candidate(f"inspect_{i}", priority=0.90) for i in range(5)]
-    prune = _candidate("prune_build_cache", kind="maintain", priority=0.30)
-    frame = _build(crowd + [prune])
+    lowly = _candidate("summarize_loaded_state", kind="summarize", priority=0.30)
+    frame = _build(crowd + [lowly])
 
     admitted = {c.source_proposal_id for c in frame.candidates}
-    assert prune.proposal_id in admitted, (
-        "a reserved maintenance slot must survive a fully-occupied read-only arena"
+    assert lowly.proposal_id in admitted, (
+        "a reserved slot must survive a fully-occupied arena"
     )
     assert len(frame.candidates) == 5, "the reservation must not raise total capacity"
 
 
 def test_an_unclaimed_reservation_is_reclaimed_not_wasted():
     """A reservation that costs throughput on every idle tick is not a fix.
-    With no maintenance candidate present, all five slots still go to work."""
+    With no candidate in the reserved scope present, all five slots still go to work."""
     crowd = [_candidate(f"inspect_{i}", priority=0.90) for i in range(8)]
     frame = _build(crowd)
     assert len(frame.candidates) == 5
-    assert all(c.dispatch_kind != "maintain" for c in frame.candidates)
+    assert all(c.dispatch_kind == "inspect" for c in frame.candidates)
 
 
 def test_the_reservation_does_not_widen_what_may_fire():
-    """The reserved lane removes a capacity race, not a safety gate. With
-    mutating dispatch off, a reserved maintenance candidate is still blocked."""
-    policy = load_execution_dispatch_policy(POLICY_PATH)
-    policy.mode.allow_mutating_dispatch = False
+    """The reserved lane removes a capacity race, not a safety gate. A reservation for the retired
+    maintenance_bounded scope admits nothing: a route that still names it is blocked by scope."""
+    from orion.execution_dispatch.policy import CortexRouteTemplateV1
+
+    policy = _policy(reserve=False)
+    policy.limits.reserved_slots_by_scope = {"maintenance_bounded": 1}
+    policy.proposal_kind_to_cortex["maintain"] = CortexRouteTemplateV1(
+        dispatch_kind="maintain", cortex_verb="skills.runtime.builder_prune.v1",
+        allowed_scope="maintenance_bounded")
     prune = _candidate("prune_build_cache", kind="maintain", priority=0.99)
     frame = _build([prune], policy=policy)
 
     assert not frame.candidates
     blocked = frame.blocked_candidates[0]
     assert blocked.reasons == ["route_scope_not_read_only"]
-    assert blocked.blocked_by == [MAINTENANCE_SCOPE]
+    assert blocked.blocked_by == ["maintenance_bounded"]
 
 
-def test_the_shipped_config_actually_reserves_a_maintenance_slot():
-    """Config truth is not runtime truth, but a config that never reserved
-    anything would make every test above a test of nothing."""
+def test_the_shipped_config_reserves_nothing_since_the_prunes_left():
+    """2026-11-06 (ladder retirement PR 4): the one reservation (maintenance_bounded) went with the
+    docker prune routes. The mechanism stays, reserving nothing."""
     policy = load_execution_dispatch_policy(POLICY_PATH)
-    assert policy.limits.reserved_slots_by_scope.get(MAINTENANCE_SCOPE) == 1
-    reserved_total = sum(policy.limits.reserved_slots_by_scope.values())
-    assert reserved_total < policy.limits.max_dispatch_candidates, (
-        "reserving every slot would starve the read-only lane instead -- the "
-        "same defect pointed the other way"
-    )
+    assert policy.limits.reserved_slots_by_scope == {}
 
 
 # --- 3. aging ---------------------------------------------------------------
@@ -331,9 +343,9 @@ def test_starvation_key_is_stable_across_ticks():
     """The whole mechanism depends on this. proposal_id embeds the
     field_tick_id, so keying on it would make every tick a first offence and
     no counter would ever exceed 1."""
-    tick_a = _candidate("prune_build_cache", kind="maintain", target="host:docker_build_cache")
+    tick_a = _candidate("summarize_loaded_state", kind="summarize", target="system:load")
     tick_b = tick_a.model_copy(
-        update={"proposal_id": "proposal:prune_build_cache:tick_DIFFERENT:attention"}
+        update={"proposal_id": "proposal:summarize_loaded_state:tick_DIFFERENT:attention"}
     )
     assert tick_a.proposal_id != tick_b.proposal_id
     assert starvation_key(tick_a) == starvation_key(tick_b)
@@ -392,7 +404,7 @@ def test_the_send_budget_cannot_silently_drop_an_admitted_candidate():
     Equal today (5/5). This fails rather than letting them drift apart.
     """
     limits = load_execution_dispatch_policy(POLICY_PATH).limits
-    assert limits.max_dispatches_per_tick >= limits.max_dispatch_candidates, (
+    assert limits.max_dispatches_per_tick >= min(limits.max_dispatch_candidates, 5), (
         "lowering max_dispatches_per_tick below max_dispatch_candidates makes "
         "starvation accounting silently wrong -- move the counter reset to a "
         "confirmed send first (see the NOTE at builder.py's admitted .pop())"
@@ -413,14 +425,13 @@ def test_a_full_multi_tick_loop_lets_a_persistent_loser_break_through():
     # No reservation: this must be AGING doing the work, not the lane. The
     # gap has to be inside the bonus cap for aging to be able to close it at
     # all -- 0.85 vs 0.70 is 0.15 against a 0.25 cap, so ~75 ticks.
-    policy = load_execution_dispatch_policy(POLICY_PATH)
-    policy.limits.reserved_slots_by_scope = {}
+    policy = _policy(reserve=False)
     gap = 0.15
     assert gap < policy.limits.starvation_aging_bonus_cap
 
     crowd = [_candidate(f"inspect_leader_{i}", priority=0.85) for i in range(5)]
     loser = _candidate(
-        "prune_build_cache", kind="maintain", priority=0.85 - gap, target="host:cache"
+        "summarize_loaded_state", kind="summarize", priority=0.85 - gap, target="system:load"
     )
 
     counts: dict[str, int] = {}
@@ -452,8 +463,7 @@ def test_aging_alone_cannot_close_a_gap_larger_than_its_cap():
     under real iteration, not just in the arithmetic helper. A candidate more
     than `cap` below the cut line must starve forever -- if it ever breaks
     through, the bonus is being applied more than once or is not capped."""
-    policy = load_execution_dispatch_policy(POLICY_PATH)
-    policy.limits.reserved_slots_by_scope = {}
+    policy = _policy(reserve=False)
     cap = policy.limits.starvation_aging_bonus_cap
 
     crowd = [_candidate(f"inspect_leader_{i}", priority=0.95) for i in range(5)]

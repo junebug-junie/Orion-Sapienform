@@ -17,10 +17,11 @@ can_interrupt_others: false
 requires_gpu: false
 requires_memory: false
 # Must sit ABOVE the prune subprocess's own 600s budget
-# (IMAGE_PRUNE_TIMEOUT_SEC) and BELOW the maintenance route's 720s
-# rpc_timeout_sec -- innermost budget fires first, so a real overrun is
-# attributable to the docker command rather than to an opaque outer timeout.
-# Same staggering as skills.runtime.builder_prune.v1.
+# (IMAGE_PRUNE_TIMEOUT_SEC) and BELOW the caller's 720s RPC budget
+# (orion-hardware-watch's HARDWARE_WATCH_IMAGE_PRUNE_RPC_TIMEOUT_SEC since
+# 2026-11-06; dispatch's prune_dangling_images route before) -- innermost budget
+# fires first, so a real overrun is attributable to the docker command rather
+# than to an opaque outer timeout. Same staggering as skills.runtime.builder_prune.v1.
 timeout_ms: 660000
 max_recursion_depth: 0
 services: []

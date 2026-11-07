@@ -28,7 +28,6 @@ import yaml
 from orion.autonomy.allocator import expected_information_gain_nats
 from orion.execution_dispatch.policy import (
     EXPRESS_SCOPE,
-    MAINTENANCE_SCOPE,
     ExecutionDispatchPolicyV1,
 )
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1
@@ -80,7 +79,8 @@ class TestScopeGateIsIndependent:
     docker pruning, and neither may ride on the other's gate."""
 
     def test_the_two_scopes_are_distinct(self) -> None:
-        assert EXPRESS_SCOPE != MAINTENANCE_SCOPE
+        # maintenance_bounded left with the docker prunes (2026-11-06, ladder retirement PR 4).
+        assert EXPRESS_SCOPE != "maintenance_bounded"
 
     def test_express_defaults_closed(self) -> None:
         """An action whose product exists outside Orion does not become
@@ -88,7 +88,7 @@ class TestScopeGateIsIndependent:
         from orion.execution_dispatch.policy import DispatchModeConfigV1
 
         assert DispatchModeConfigV1().allow_express_dispatch is False
-        assert DispatchModeConfigV1().allow_mutating_dispatch is False
+        assert "allow_mutating_dispatch" not in DispatchModeConfigV1.model_fields
 
     def test_the_live_policy_opens_it_deliberately(self) -> None:
         assert _dispatch_policy().mode.allow_express_dispatch is True

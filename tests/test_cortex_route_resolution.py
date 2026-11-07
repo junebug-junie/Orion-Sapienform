@@ -202,23 +202,17 @@ def test_live_config_declares_exactly_the_shipped_template_routes():
     policy = load_execution_dispatch_policy(
         repo_root / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
     )
+    # 2026-11-06 (ladder retirement PR 4): the two prune routes left (orion-hardware-watch's disk rule
+    # asks for the image prune). read_world_pulse (2026-10-21) and analyze_self_study_source
+    # (2026-08-25) carry their own tests (test_rung3_*, test_self_study_analysis_wiring.py).
     assert set(policy.template_to_cortex) == {
         "observe_tension_via_camera",
-        "prune_dangling_images",
-        "prune_stopped_containers",
+        "read_world_pulse",
+        "analyze_self_study_source",
     }
     assert (
         policy.template_to_cortex["observe_tension_via_camera"].cortex_verb
         == "skills.perception.look_at_camera.v1"
     )
     assert policy.template_to_cortex["observe_tension_via_camera"].allowed_scope == "inspect_only"
-    assert (
-        policy.template_to_cortex["prune_dangling_images"].cortex_verb
-        == "skills.runtime.image_prune.v1"
-    )
-    assert (
-        policy.template_to_cortex["prune_stopped_containers"].cortex_verb
-        == "skills.runtime.docker_prune_stopped_containers.v1"
-    )
-    for key in ("prune_dangling_images", "prune_stopped_containers"):
-        assert policy.template_to_cortex[key].allowed_scope == "maintenance_bounded"
+    assert "maintain" not in policy.proposal_kind_to_cortex

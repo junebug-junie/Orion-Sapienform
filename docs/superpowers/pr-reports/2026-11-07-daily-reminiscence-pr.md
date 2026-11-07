@@ -229,6 +229,6 @@ The command reaches Orion's turns when the FCC sandbox (`/mnt/orion-fcc/repo`) s
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3163
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

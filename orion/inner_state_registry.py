@@ -1486,7 +1486,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "services.orion-dream.app.cycle:run_cycle_once "
             "(a due sleep is held while engaged or strained)",
             "services.orion-hub.scripts.curiosity_investigation:"
-            "CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
+            "CuriosityInvestigation.tick (engaged doubles the cooldown; strain no longer "
+            "holds it since 2026-11-07, its durable-runs bid decides)",
             "services.orion-hub.scripts.curiosity_investigation:"
             "CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
             "services.orion-hub.scripts.endogenous_outreach:"

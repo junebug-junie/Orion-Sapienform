@@ -18,7 +18,11 @@ def test_hold_rules_match_the_shipped_branches():
     for reader in ("dream", "curiosity", "self_inquiry", "outreach"):
         assert held(reader, "idle", 10.0, **KW) is None
         assert held(reader, "unknown", 10.0, **KW) is None
+    for reader in ("dream", "self_inquiry", "outreach"):
         assert held(reader, "strained", 99999.0, **KW) == "arousal_strained"
+    # Hub's strain veto on the investigation line was retired 2026-11-07.
+    assert held("curiosity", "strained", 99999.0, **KW) is None
+    assert held("curiosity", "strained", 10.0, **KW) is None
     assert held("dream", "engaged", None, **KW) == "arousal_engaged"
     assert held("self_inquiry", "engaged", None, **KW) == "arousal_engaged"
     assert held("outreach", "engaged", 10.0, **KW) is None
@@ -41,7 +45,7 @@ def test_impact_counts_per_day_and_uses_earlier_runs_only_for_gaps():
     decisions = [
         ("curiosity", T0 - timedelta(minutes=40)),          # before the window: seeds the gap only
         ("curiosity", T0 + timedelta(minutes=10)),          # idle
-        ("curiosity", T0 + timedelta(hours=2, minutes=5)),  # strained
+        ("curiosity", T0 + timedelta(hours=2, minutes=5)),  # strained -> not held (veto retired 2026-11-07)
         ("curiosity", T0 + timedelta(hours=3, minutes=5)),  # engaged, 60 min gap = 2 x 30 min -> not held
         ("curiosity", T0 + timedelta(hours=3, minutes=30)),  # engaged, 25 min gap -> held
         ("outreach", T0 + timedelta(hours=3, minutes=10)),  # engaged -> not held
@@ -49,10 +53,10 @@ def test_impact_counts_per_day_and_uses_earlier_runs_only_for_gaps():
     ]
     r = reader_impact(decisions, tl, T0, T0 + timedelta(days=1), **KW)
     day = r["per_day"][T0.date().isoformat()]
-    assert day["curiosity"] == {"decisions": 4, "held": 2}
+    assert day["curiosity"] == {"decisions": 4, "held": 1}
     assert day["outreach"] == {"decisions": 1, "held": 0}
     assert day["dream"] == {"decisions": 1, "held": 1}
-    assert r["held_reasons"]["curiosity"] == {"arousal_strained": 1, "arousal_engaged_cooldown": 1}
+    assert r["held_reasons"]["curiosity"] == {"arousal_engaged_cooldown": 1}
 
 
 def test_before_the_first_level_is_unknown():

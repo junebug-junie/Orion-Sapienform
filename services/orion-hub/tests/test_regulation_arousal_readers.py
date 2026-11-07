@@ -142,9 +142,9 @@ def _sched(**over):
 def test_curiosity_gate_level_effects():
     assert scheduling_block_reason(_sched()) is None
     assert scheduling_block_reason(_sched(arousal_level="idle")) is None
-    assert scheduling_block_reason(_sched(arousal_level="strained")) == "arousal_strained"
-    # Never run before: strained still holds (it is not a spacing rule).
-    assert scheduling_block_reason(_sched(arousal_level="strained", seconds_since_last=None)) == "arousal_strained"
+    # Strain no longer holds the investigation line (retired 2026-11-07; its bid decides).
+    assert scheduling_block_reason(_sched(arousal_level="strained")) is None
+    assert scheduling_block_reason(_sched(arousal_level="strained", seconds_since_last=None)) is None
     # Engaged: the stretched cooldown, and only the stretch.
     assert scheduling_block_reason(
         _sched(arousal_level="engaged", arousal_engaged_cooldown_sec=3600.0)) == "arousal_engaged_cooldown"
@@ -168,9 +168,32 @@ def _curiosity_tick(raw, *, enabled=True, since_last_sec=20000.0, force=False, m
     return asyncio.run(loop.tick(force=force))
 
 
-def test_strained_holds_the_investigation_line():
-    # _loop's cooldown is 14400 s; the last run was 20000 s ago: due without arousal.
-    assert _curiosity_tick(_state("strained")) == "arousal_strained"
+def test_strained_no_longer_holds_the_investigation_line():
+    """Regression for the 2026-11-07 retirement of the Hub strain veto on curiosity.
+
+    Investigation runs obey their body-economy bid in durable-runs
+    (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on, #3010); Hub must not hold them on
+    strain as well. Every pacing gate passed (_loop's cooldown is 14400 s; the last run
+    was 20000 s ago), so a strained reading lets the tick through. The pacing gates that
+    stay still hold: engaged inside the stretched cooldown, and self-inquiry's idle-only."""
+    assert _curiosity_tick(_state("strained")) is None
+    assert scheduling_block_reason(_sched(arousal_level="strained")) is None
+    # Pacing gates are untouched.
+    assert _curiosity_tick(_state("engaged"), since_last_sec=20000.0) == "arousal_engaged_cooldown"
+    assert _si_gate("engaged") == "arousal_engaged"
+    assert _si_gate("strained") == "arousal_strained"
+    # A plain cooldown under strain still names the cooldown.
+    assert scheduling_block_reason(_sched(arousal_level="strained", seconds_since_last=60.0)) == "cooldown"
+
+
+def test_no_investigation_line_branch_compares_against_strained():
+    """Kill means kill: the gate's investigation path has no strained branch left. The one
+    remaining `"strained"` comparison is scoped to the idle-only (self-inquiry) line."""
+    import inspect
+
+    src = inspect.getsource(scheduling_block_reason)
+    lines = [ln.strip() for ln in src.splitlines() if '== "strained"' in ln]
+    assert lines and all(ln.startswith("if inp.arousal_idle_only and") for ln in lines), lines
 
 
 def test_engaged_waits_out_the_doubled_cooldown():

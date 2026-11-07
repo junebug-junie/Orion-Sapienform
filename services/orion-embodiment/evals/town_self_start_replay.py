@@ -260,6 +260,21 @@ def _psql(sql: str) -> list[list[str]]:
     return [line.split("|") for line in out.stdout.splitlines() if line.strip()]
 
 
+def _old_dispatch_rpc_errors() -> list[float]:
+    """Times the old dispatch route found the town unreachable. That route retired 2026-11-07 (ladder
+    retirement PR 6) and its table is dropped by the follow-up migration: once it is gone, the replay
+    runs with no unreachable windows (stated on stderr, never silently)."""
+    present = _psql("select to_regclass('substrate_dispatch_results') is not null")
+    if not present or present[0][0] != "t":
+        print("note: substrate_dispatch_results is gone (dispatch retired); no unreachable windows modelled",
+              file=sys.stderr)
+        return []
+    return [float(t) for (t,) in _psql(
+        "select extract(epoch from created_at) from substrate_dispatch_results "
+        "where result_json->'settlement'->>'kind'='aitown_session' "
+        "and result_json->'settlement'->>'state'='rpc_error'")]
+
+
 def live_world(days: float):
     import redis
 
@@ -273,10 +288,7 @@ def live_world(days: float):
     world = World(
         manual=[(r.started_at, r.ended_at or now) for r in rows if r.kind == "manual"],
         restarts=[r.ended_at for r in rows if r.stop_reason == "embodiment_restart" and r.ended_at],
-        unreachable=[float(t) for (t,) in _psql(
-            "select extract(epoch from created_at) from substrate_dispatch_results "
-            "where result_json->'settlement'->>'kind'='aitown_session' "
-            "and result_json->'settlement'->>'state'='rpc_error'")],
+        unreachable=_old_dispatch_rpc_errors(),
     )
     real = [r for r in orion_rows if r.started_at >= start]
     return world, start, now, real

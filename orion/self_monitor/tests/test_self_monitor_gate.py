@@ -224,18 +224,13 @@ def test_unreadable_ledger_fails_toward_admit_once_per_window() -> None:
                            now=NOW + timedelta(hours=1)).admit
 
 
-def test_every_allocator_act_route_is_named_like_the_organ() -> None:
-    """Every act route in the dispatch policy must be in the replay's reach list, so a new route is
-    reviewed for its faculty name (the worker asks for the base act.<actor>.<verb> key)."""
-    from pathlib import Path
+def test_the_retired_allocator_seam_is_gone() -> None:
+    """The dispatch allocator retired 2026-11-07 (ladder retirement PR 6): no act reaches it, and Hub's
+    own read lane (the same act) was never gated."""
+    from orion.self_monitor import replay
 
-    from orion.execution_dispatch.policy import load_execution_dispatch_policy
-    from orion.self_monitor.replay import ALLOCATOR_ACTORS
-
-    repo = Path(__file__).resolve().parents[3]
-    policy = load_execution_dispatch_policy(repo / "config/execution_dispatch/execution_dispatch_policy.v1.yaml")
-    routes = {(a.actor, a.verb) for a in policy.act_refs_by_cortex_verb().values()}
-    assert routes == ALLOCATOR_ACTORS
+    assert not hasattr(replay, "ALLOCATOR_ACTORS")
+    assert replay.reach("hub.world_pulse_read", "look") == "not_gated"
 
 
 def test_view_read_failure_is_unknown() -> None:
@@ -372,7 +367,7 @@ def test_replay_option_a_admits_the_nights_retries() -> None:
     assert (out["attempts"], out["would_probe"], out["would_refuse"], out["would_retry"]) == (13, 2, 0, 11)
     assert (out["jobs"], out["jobs_worked"], out["jobs_lost"]) == (2, 2, 0)
     assert out["reach"] == "actions_journal" and reach("prime", "predict") == "prime"
-    assert reach("thought.painting", "make") == "painting_self_start" and reach("hub.world_pulse_read", "look") == "allocator" and reach("dream.cycle", "make") == "not_gated"
+    assert reach("thought.painting", "make") == "painting_self_start" and reach("hub.world_pulse_read", "look") == "not_gated" and reach("dream.cycle", "make") == "not_gated"
     assert reach("hub.retro_leisure", "play") == "retro_leisure_self_start"
     assert reach("aitown.session", "play") == "town_self_start"
 

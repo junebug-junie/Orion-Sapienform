@@ -37,11 +37,8 @@ sys.path.append(str(_HUB_ROOT.parents[1]))
 MODULES = (
     "substrate_attention_routes",
     "substrate_biometrics_routes",
-    "substrate_execution_dispatch_routes",
     "substrate_field_routes",
     "substrate_observability_routes",
-    "substrate_policy_routes",
-    "substrate_proposal_routes",
 )
 REQUESTS_PER_MODULE = 25
 

@@ -1,7 +1,17 @@
-from __future__ import annotations
+"""The field's pressure dimensions and their precision baselines.
 
-from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
-from orion.schemas.field_state import FieldStateV1
+Moved here from ``orion/proposals/scoring.py`` on 2026-11-07, when the proposal, policy and
+dispatch rungs retired (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md,
+PR 6). These constants describe field dimensions, not proposal policy, so ``orion/field/`` is
+their home: the field digester's precision baseline (``app/digestion/precision.py``) writes the
+per-dimension EWMA, and ``orion.field.action_warrant`` reads it. The comments below are the
+metric-gate records each dimension was admitted under; they moved verbatim.
+
+Stdlib only, no imports: ``action_warrant`` imports this at module level, so it must never
+import anything that imports ``orion.field`` back.
+"""
+
+from __future__ import annotations
 
 # 2026-07-22, SelfStateV1 burn: field_intensity and uncertainty removed. Both
 # were composite, hand-tuned SelfStateV1 dimensions with no principled
@@ -125,53 +135,7 @@ PRESSURE_DIMENSIONS = frozenset({
     "sustained_load_pressure",
 })
 
-# 2026-08-16, code review finding on the deviation_pressure addition above:
-# `_pressure_dimension_ids()`'s empty-`dimensions` fallback used to return
-# `list(PRESSURE_DIMENSIONS)` directly, so growing that frozenset silently
-# widened every already-shipped, already-tuned `dimensions: {}` template's
-# urgency/confidence scoring to include the new dimension too -- confirmed
-# live: 5 templates (inspect_bus_channel_catalog, summarize_transport_
-# contract_drift, watch_transport_backpressure, inspect_field_topology_
-# catalog, inspect_attended_target) would have started scoring off
-# deviation_pressure despite never being audited for that blast radius, and
-# despite deviation_pressure being always-present (unlike the other 4, which
-# are only present when a channel maps that tick) -- a real spike could pull
-# an unrelated template's priority up on ticks where its own real signal was
-# calm. This is exactly the independence-check CLAUDE.md 0A's metric gate
-# requires tracing to EVERY metric already in the model, not just the new
-# metric's own producer, and it was missed in the first pass.
-#
-# Decoupled: this constant freezes the empty-dimensions fallback to what it
-# has always meant for those 5 templates ("the original 4 core channel-merge
-# dimensions"), independent of PRESSURE_DIMENSIONS' own membership. A future
-# dimension addition must explicitly decide whether legacy empty-dimensions
-# templates should also fall back to it -- that is a real, separate
-# decision, not something a frozenset addition should make silently.
-#
-# 2026-09-25: three of those five (the transport templates) were deleted;
-# the empty-dimensions templates are now inspect_field_topology_catalog,
-# inspect_attended_target and analyze_self_study_source, pinned by
-# tests/test_proposal_scoring.py::test_no_new_empty_dimension_templates.
-_LEGACY_EMPTY_DIMENSIONS_FALLBACK = frozenset({
-    "execution_pressure",
-    "resource_pressure",
-    "reasoning_pressure",
-    "reliability_pressure",
-})
 
-
-def clamp01(x: float) -> float:
-    return max(0.0, min(1.0, float(x)))
-
-
-def dimension_score(field_pressures: dict[str, float], dimension_id: str) -> float:
-    return clamp01(field_pressures.get(dimension_id, 0.0))
-
-
-# 2026-07-28 precision-weighted confidence fix (docs/superpowers/specs/2026-
-# 07-28-precision-weighted-proposal-scoring-design.md's "Recommended next
-# patch"): dimension_confidence() used to be a binary presence flag (see git
-# history for the old docstring, preserved in that design doc's "Current
 # architecture" section). Real historical variance was measured first, not
 # assumed, per this repo's metric-quality-gate discipline
 # (scripts/analysis/measure_proposal_dimension_variance.py, 2026-07-28,
@@ -212,9 +176,8 @@ DIMENSION_PRECISION_ZSCORE_SATURATION = 3.0
 # invariance only holds when the jump is large enough that
 # alpha * jump**2 dominates that dimension's min_variance floor; for smaller
 # jumps the shape differs by domain but resolves EQUALLY FAST OR FASTER in
-# every case checked, never slower than n=8. See tests/test_proposal_
-# scoring.py::test_cold_start_min_samples_sufficient_across_jump_magnitude_
-# sweep for the swept regression test that locks this in against the real
+# every case checked, never slower than n=8. See tests/test_field_pressure_dimensions.py::test_cold_start_min_samples_
+# sufficient_across_jump_magnitude_sweep for the swept regression test that locks this in against the real
 # shipped constants, not just a synthetic one-off assertion.
 DIMENSION_PRECISION_EWMA_MIN_SAMPLES = 8
 
@@ -316,178 +279,3 @@ assert set(DIMENSION_PRECISION_MIN_VARIANCE) == PRESSURE_DIMENSIONS, (
     "-- add or remove a floor here in the same change that edits PRESSURE_DIMENSIONS"
 )
 
-
-def dimension_confidence(
-    field: FieldStateV1, field_pressures: dict[str, float], dimension_id: str
-) -> float:
-    """Precision-weighted confidence: how well this tick's real reading for
-    `dimension_id` matches its own recent EWMA baseline
-    (`field.dimension_precision_ewma`/`_var`/`_n`, updated once per digestion
-    tick by `services/orion-field-digester/app/digestion/precision.py::
-    update_dimension_precision_baseline()`), inverted from a surprise/anomaly
-    z-score into a [0, 1] confidence -- a z-score near 0 (this tick matches
-    this dimension's own recent normal) means confidence near 1.0; a z-score
-    at or beyond `DIMENSION_PRECISION_ZSCORE_SATURATION` (a real, genuine
-    surprise relative to this dimension's own recent trajectory) means
-    confidence 0.0. Same clamp/saturation shape as `execution_prediction_
-    error`'s surprise score, inverted (confidence, not surprise) -- reuses
-    the already-proven mechanism (`orion.bus.ewma.compute_ewma_update`)
-    rather than inventing a new one.
-
-    Returns 0.0 (never a fabricated mid-range guess -- this repo's "no
-    empty-shell cognition" rule) when:
-      - `dimension_id` has no reading at all this tick (absent from
-        `field_pressures` -- preserves the old binary flag's "can't be
-        confident about data you don't have this tick" semantics), or
-      - fewer than `DIMENSION_PRECISION_EWMA_MIN_SAMPLES` real observations
-        have been absorbed into this dimension's baseline yet (cold start --
-        an early, unreliable z-score must not be reported as a real
-        confidence reading; see that constant's own comment for the
-        hand-verified evidence).
-
-    NOTE (see `PRESSURE_DIMENSIONS`' own comment for the full account): if
-    `dimension_id` is a real, present `field_pressures` key that is NOT in
-    `PRESSURE_DIMENSIONS` (e.g. `continuity_pressure`), this returns 0.0
-    PERMANENTLY, every tick -- `n` never advances for a dimension the
-    producer doesn't track. Unlike the absent-this-tick and cold-start cases
-    above, this is not a transient "no data yet" state; it is a real
-    behavior difference from the old binary presence flag, which would have
-    returned 1.0 whenever such a dimension was present. Not a bug for
-    today's live templates (none score on those 3 dimensions), but a real
-    trap for a future one that does.
-    """
-    if dimension_id not in field_pressures:
-        return 0.0
-    n = field.dimension_precision_ewma_n.get(dimension_id, 0)
-    if n < DIMENSION_PRECISION_EWMA_MIN_SAMPLES:
-        return 0.0
-    zscore = field.dimension_precision_zscore.get(dimension_id)
-    if zscore is None:
-        return 0.0
-    surprise = min(1.0, abs(zscore) / DIMENSION_PRECISION_ZSCORE_SATURATION)
-    return clamp01(1.0 - surprise)
-
-
-def template_match_score(
-    *,
-    field_pressures: dict[str, float],
-    template: ProposalTemplateV1,
-    policy: ProposalPolicyV1 | None = None,
-) -> tuple[float, dict[str, float]]:
-    contributions: dict[str, float] = {}
-    for dim_id, weight in template.dimensions.items():
-        policy_weight = 1.0
-        if policy is not None:
-            policy_weight = float(policy.dimension_weights.get(dim_id, 1.0))
-        contributions[dim_id] = clamp01(
-            dimension_score(field_pressures, dim_id) * float(weight) * abs(policy_weight)
-        )
-    match = max(contributions.values()) if contributions else 0.0
-    return clamp01(match), contributions
-
-
-def _pressure_dimension_ids(template: ProposalTemplateV1) -> list[str]:
-    """The dimension set proposal_urgency() and proposal_confidence() both
-    read: template.dimensions filtered to real pressure dimensions, falling
-    back to `_LEGACY_EMPTY_DIMENSIONS_FALLBACK` if the template scores on
-    none (e.g. an honestly-empty `dimensions: {}` post-2026-07-30
-    dead-dimension fix).
-
-    Shared by both functions so they can never again drift out of sync the
-    way they did before that fix: proposal_urgency()'s own filter used to
-    let a dead dimension ending in "_pressure" (contract_pressure) pass
-    through and suppress this exact fallback, while proposal_confidence()
-    had no fallback at all and returned a bare 0.0 for the same template.
-    One shared dimension-set means one fallback behavior for both signals.
-
-    2026-08-16: the fallback is `_LEGACY_EMPTY_DIMENSIONS_FALLBACK`, NOT
-    `list(PRESSURE_DIMENSIONS)` -- see that constant's own comment for why a
-    template that never scores on a dimension explicitly must not be
-    silently re-scored on every future PRESSURE_DIMENSIONS addition.
-    """
-    dims = [
-        dim_id
-        for dim_id in template.dimensions
-        if dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")
-    ]
-    return dims if dims else list(_LEGACY_EMPTY_DIMENSIONS_FALLBACK)
-
-
-def proposal_urgency(
-    *,
-    field_pressures: dict[str, float],
-    template: ProposalTemplateV1,
-) -> float:
-    scores = [
-        dimension_score(field_pressures, dim_id)
-        for dim_id in _pressure_dimension_ids(template)
-    ]
-    # No SelfStateV1.overall_intensity fallback survives the burn -- honest
-    # 0.0 ("no pressure data this tick") rather than a fabricated rollup.
-    return clamp01(max(scores) if scores else 0.0)
-
-
-def proposal_confidence(
-    *,
-    field: FieldStateV1,
-    field_pressures: dict[str, float],
-    template: ProposalTemplateV1,
-) -> float:
-    confs = [
-        dimension_confidence(field, field_pressures, dim_id)
-        for dim_id in _pressure_dimension_ids(template)
-    ]
-    if not confs:
-        return 0.0
-    return clamp01(sum(confs) / len(confs))
-
-
-# 2026-07-30 (docs/superpowers/specs/2026-07-30-proposal-priority-theory-
-# anchor-design.md): replaces the original hand-picked
-# `base_priority + 0.4*match_score + 0.2*urgency + 0.1*confidence` blend --
-# three constants with no theory anchor or citation, unlike every other
-# scoring function in this module. Precision-weighting (Feldman & Friston
-# 2010 -- same anchor already shipped for dimension_confidence() above and
-# for Candidate A's attention salience, orion/attention/field_attention/
-# candidate_precision_weighted.py) says a signal should be gated by how much
-# it can be trusted, not added to it as an independent term: confidence acts
-# as a multiplicative precision weight on whichever real pressure signal is
-# stronger (match_score, the template-weighted relevance read, or urgency,
-# the raw unweighted severity read -- max() because either alone is a
-# sufficient reason to raise priority, same max()-not-sum() shape
-# template_match_score() and proposal_urgency() already use internally).
-#
-# This is NOT yet verified to fix the 98%-single-template dispatch capture
-# documented in that design doc (open question 2 there: real pressure
-# elevation vs. a scoring-floor artifact) -- it removes the arbitrary
-# constants, it does not by itself guarantee dispatch diversity. That is a
-# separate, deliberately deferred follow-up (direction (b), diversity-aware
-# dispatch), pending real post-deploy dispatch data under this formula.
-def proposal_priority(
-    *,
-    base_priority: float,
-    match_score: float,
-    urgency: float,
-    confidence: float,
-) -> float:
-    return clamp01(base_priority + confidence * max(match_score, urgency))
-
-
-def proposal_risk(
-    *,
-    base_risk: float,
-    field_pressures: dict[str, float],
-    template: ProposalTemplateV1,
-) -> float:
-    risk = float(base_risk)
-    if template.kind in ("prepare_action", "request_policy_review"):
-        risk += 0.10
-    if template.required_policy_gate not in ("none", "read_only"):
-        risk += 0.05
-    if dimension_score(field_pressures, "reliability_pressure") >= 0.5:
-        risk += 0.10
-    # The old "uncertainty" dimension risk bump is gone, not silently reading
-    # 0.0 forever (2026-07-22 burn -- see PRESSURE_DIMENSIONS note above).
-    if template.kind in ("observe", "inspect", "summarize") and template.required_policy_gate == "read_only":
-        risk = min(risk, 0.15)
-    return clamp01(risk)

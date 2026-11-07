@@ -68,8 +68,9 @@ def test_replay_of_2026_09_20_incident_is_red():
     assert report.red
     red = {r.rung for r in report.red_rungs}
     # The dead rungs, and only those: field_state and everything under it kept writing.
-    # (feedback and consolidation were red too on 09-20; both rungs retired 2026-11-04.)
-    assert red == {"attention", "proposal", "policy", "dispatch"}
+    # (feedback and consolidation were red too on 09-20, and proposal, policy and dispatch; those
+    # rungs retired 2026-11-04 and 2026-11-07. Attention, the first dead rung, still catches it.)
+    assert red == {"attention"}
     status = {r.rung: r.status for r in report.rungs}
     assert status["field_state"] == "fresh"
     attention = next(r for r in report.rungs if r.rung == "attention")
@@ -128,13 +129,18 @@ def test_healthy_ladder_is_green():
 
 
 def test_retired_rungs_are_listed_and_never_checked():
-    """Feedback and consolidation retired 2026-11-04: the check names them as retired (with what
-    does their job now) and never reads their tables, which are dropped 2 days later."""
+    """Feedback and consolidation retired 2026-11-04; proposal, policy and dispatch (L7-L9) 2026-11-07.
+    The check names them as retired (with what does their job now) and never reads their tables,
+    which are dropped after a backup."""
     retired = {name for name, _, _ in ll.RETIRED_RUNGS}
-    assert retired == {"feedback", "consolidation"}
+    assert retired == {"feedback", "consolidation", "proposal", "policy", "dispatch"}
     assert not retired & {r.name for r in ll.RUNGS}
-    assert not {r.table for r in ll.RUNGS} & {"substrate_feedback_frames", "substrate_consolidation_frames"}
-    assert ll.LadderReport().to_dict()["retired_rungs"][0]["replaced_by"]
+    assert not {r.table for r in ll.RUNGS} & {
+        "substrate_feedback_frames", "substrate_consolidation_frames", "substrate_proposal_frames",
+        "substrate_policy_decision_frames", "substrate_execution_dispatch_frames"}
+    assert all(row["replaced_by"] for row in ll.LadderReport().to_dict()["retired_rungs"])
+    # The top live rung is attention (M5); the sensing half stays checked.
+    assert [r.name for r in ll.RUNGS][-2:] == ["field_state", "attention"]
 
 
 # ----------------------------------------------------------------- freshness
@@ -400,18 +406,17 @@ def test_pinned_schemas_are_still_discovered(discovery):
         assert hits, f"{pin.path} written by {pin.producer_service} fell out of discovery"
         assert set(pin.models) <= set(hits[0].models)
         readers = {r for r, _ in hits[0].reader_models}
-        # The two services that broke on 09-20 (feedback, still broken on 09-25, retired 2026-11-04).
-        assert {"orion-attention-runtime", "orion-proposal-runtime"} <= readers
-        assert "orion-feedback-runtime" not in readers
+        # The services that broke on 09-20: attention (live), proposal (retired 2026-11-07) and
+        # feedback (still broken on 09-25, retired 2026-11-04).
+        assert "orion-attention-runtime" in readers
+        assert not readers & {"orion-feedback-runtime", "orion-proposal-runtime"}
 
 
-def test_second_real_pair_is_discovered(discovery):
+def test_the_retired_proposal_pair_is_no_longer_discovered(discovery):
+    """proposal_frame.py and its writer/readers retired 2026-11-07 (ladder retirement PR 6). The
+    replay of its real 2026-08-21 skew (above) stays: it pins the nested-forbid-model mechanism."""
     schemas, _ = discovery
-    hit = next(s for s in schemas if s.path == PF_PATH and s.producer_service == "orion-proposal-runtime")
-    assert hit.strict
-    readers = dict(hit.reader_models)
-    assert "orion-execution-dispatch-runtime" in readers
-    assert "ProposalCandidateV1" in readers["orion-execution-dispatch-runtime"]
+    assert not [s for s in schemas if s.path == PF_PATH]
 
 
 # ------------------------------------------------------------ CLI / notify

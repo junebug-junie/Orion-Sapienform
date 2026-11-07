@@ -17,7 +17,9 @@ noticed for ~48h.
 Two deterministic checks, both pure over already-fetched readings so they can
 be replayed from a fixture:
 
-1. Ladder freshness -- ``evaluate_rung`` (feedback and consolidation retired 2026-11-04: ``RETIRED_RUNGS``).
+1. Ladder freshness -- ``evaluate_rung`` (feedback and consolidation retired 2026-11-04; proposal,
+   policy and dispatch 2026-11-07: ``RETIRED_RUNGS``). The live ladder is the sensing half
+   (grammar lanes, receipts, camera input, field_state, attention).
 2. Schema/image skew -- every (schema file, writer, readers) triple found by
    ``orion.schema_skew_discovery.discover`` (an AST scan of call sites, not a
    hand list) + ``evaluate_skew`` over each container's own copy of the file.
@@ -65,7 +67,7 @@ class Rung:
 
 
 _TICK = timedelta(minutes=15)
-_CHAIN = timedelta(minutes=45)
+# _CHAIN (45 min) was the proposal/policy/dispatch limit; those rungs retired 2026-11-07.
 
 # Camera input: how long a 24/7 camera may go without one scored embedding
 # before the watch cards it. Live 2026-10-14..21: cam0 delivers every ~5 s and
@@ -116,15 +118,18 @@ RUNGS: tuple[Rung, ...] = (
     # The ladder proper, bottom to top.
     Rung("field_state", "substrate_field_state", "generated_at", _TICK),
     Rung("attention", "substrate_attention_frames", "generated_at", _TICK),
-    Rung("proposal", "substrate_proposal_frames", "generated_at", _CHAIN),
-    Rung("policy", "substrate_policy_decision_frames", "generated_at", _CHAIN),
-    Rung("dispatch", "substrate_execution_dispatch_frames", "generated_at", _CHAIN),
+    # proposal, policy and dispatch retired 2026-11-07 (RETIRED_RUNGS below).
 )
 
 #: Rungs that no longer run, listed so the check says "retired" instead of silently
-#: skipping them (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md).
-#: (name, retired on, what does its job now).
+#: skipping them (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md,
+#: docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md).
+#: (name, retired on, what does its job now). Their tables are never read.
 RETIRED_RUNGS: tuple[tuple[str, str, str], ...] = (
+    ("proposal", "2026-11-07", "each real act starts itself through the want market (cooling, painting, "
+                               "retro, AI Town, image prune)"),
+    ("policy", "2026-11-07", "its consent checks become the want market's consent gate (attention patch 3)"),
+    ("dispatch", "2026-11-07", "retired with proposals and policy; the act ledger grades every real act"),
     ("feedback", "2026-11-04", "act ledger grades every real act; world-action scoring runs in orion-sql-writer"),
     ("consolidation", "2026-11-04", "killed outright (Juniper, 2026-11-04)"),
 )

@@ -316,13 +316,12 @@ async def test_legacy_run_once_claim_applies_the_same_release_rules(env, monkeyp
 
 def test_attempt_max_age_default_outlasts_the_durable_retry_window():
     from app.settings import ThoughtSettings
-    from orion.execution_dispatch.visual_settlement import DEFAULT_RETRY_WINDOW_SEC
     from orion.schemas.reverie_visual_run import REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC
 
     default = ThoughtSettings.model_fields["visual_chain_attempt_max_age_sec"].default
-    assert default == 7200.0 and default > DEFAULT_RETRY_WINDOW_SEC
-    # cortex-exec clamps every run's retry window to this cap.
-    assert default > REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC >= DEFAULT_RETRY_WINDOW_SEC
+    # cortex-exec clamps every run's retry window to this cap. (The dispatch rung's own 5400 s
+    # settlement window retired with it, 2026-11-07; the cap is the bound that remains.)
+    assert default == 7200.0 and default > REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC
 
 
 @pytest.mark.asyncio

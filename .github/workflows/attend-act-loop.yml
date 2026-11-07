@@ -19,22 +19,15 @@ on:
       - 'orion/autonomy/world_settlement_store.py'
       - 'services/orion-sql-writer/app/world_settlement_loop.py'
       - 'services/orion-sql-writer/tests/test_world_settlement_pass.py'
-      - 'orion/execution_dispatch/**'
-      - 'orion/proposals/**'
-      - 'orion/policy/**'
-      - 'orion/schemas/*frame.py'
       - 'orion/schemas/action_prediction.py'
       - 'orion/schemas/attention_salience.py'
-      - 'config/proposals/**'
-      - 'config/policy/**'
-      - 'config/execution_dispatch/**'
-      - 'services/orion-proposal-runtime/**'
-      - 'services/orion-execution-dispatch-runtime/**'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'services/orion-substrate-runtime/tests/test_cabinet_heat_tick.py'
       - 'scripts/analysis/replay_attention_eligibility.py'
       - 'tests/test_cooling_act_rules.py'
       - 'tests/test_world_settlement_scoring.py'
+      - 'tests/test_field_pressure_dimensions.py'
+      - 'orion/field/pressure_dimensions.py'
       - '.github/workflows/attend-act-loop.yml'
   workflow_dispatch:
 permissions:
@@ -55,7 +48,7 @@ jobs:
       - name: Signal, eligibility, the event want, binding rule, admission, draw, settle-time scoring
         run: >-
           python -m pytest -q tests/test_cooling_act_rules.py tests/test_world_settlement_scoring.py
-          tests/test_proposal_policy_loader.py tests/test_proposal_scoring.py
+          tests/test_field_pressure_dimensions.py
       # One process per service: each service's tests import a top-level `app` package.
       - name: sql-writer (settle-time world scoring pass; moved from the retired feedback runtime 2026-11-04)
         run: |

@@ -863,22 +863,6 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT: int = Field(
         default=3, ge=1, le=8, alias="HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"
     )
-    # Reading pull (thinking rung 3 follow-up, orion/world_pulse_read/pull.py): the motor
-    # allocator may admit ONE extra Stage 1 read on the seed the lane would claim next. Kill
-    # switch, shipped on. Off = every pull is refused `disabled`; the lane is unchanged either way.
-    HUB_WORLD_PULSE_READ_PULL_ENABLED: bool = Field(
-        default=True, alias="HUB_WORLD_PULSE_READ_PULL_ENABLED"
-    )
-    # Started pulls per UTC day. Default derived from data, not picked: the lane's median reading
-    # day over 30 days (orion/world_pulse_read/pull.py DERIVED_DAILY_CAP = 8).
-    HUB_WORLD_PULSE_READ_PULL_DAILY_CAP: int = Field(
-        default=8, ge=0, le=100, alias="HUB_WORLD_PULSE_READ_PULL_DAILY_CAP"
-    )
-    # Orion's arousal (Redis orion:regulation:latest): `strained` refuses a pull, the same rule the
-    # waking baseline painting follows. Unknown / stale / false changes nothing.
-    HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED: bool = Field(
-        default=True, alias="HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED"
-    )
     # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
     # deterministic summary per finished Retro session -> one memory_cards row (provenance
     # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;

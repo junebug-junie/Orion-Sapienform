@@ -68,7 +68,7 @@ EXPIRY_GRACE_SEC = 120.0
 # Thinking architecture rung 3 ("bind the winner to action"). An act whose actor answers a
 # world-first workspace source is stamped, at open, with the winning loop it was opened under
 # (``workspace_ref`` = the broadcast's selected open_loop_id), using the ONE binding rule the
-# proposal layer already uses (orion.autonomy.self_shed.bind_workspace_winner: an action was
+# retired proposal layer also used (orion.autonomy.self_shed.bind_workspace_winner: an action was
 # selected, the winner is <= 90 s old and held >= 2 ticks, and the attended ref is one this actor
 # answers). When the act closes, Orion writes its own non-final ``acted`` verdict on that loop in
 # ``attention_loop_outcome`` (actor='orion') with the act's outcome in features_at_close. Never

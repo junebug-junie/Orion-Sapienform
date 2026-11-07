@@ -37,7 +37,7 @@ from orion.attention.tension.field_observations import iter_observations
 
 # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
 # dispatch-design.md): turns one tick's admitted deviations into the single
-# [0, 1] scalar `orion.proposals.scoring.PRESSURE_DIMENSIONS` needs -- Borda
+# [0, 1] scalar `orion.field.pressure_dimensions.PRESSURE_DIMENSIONS` needs -- Borda
 # rank discards magnitude by design (see this module's own docstring), so a
 # scalar "how much" has to come from the admission gate, not the ranking.
 #

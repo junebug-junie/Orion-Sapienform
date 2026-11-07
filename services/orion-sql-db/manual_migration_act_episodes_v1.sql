@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-execution-dispatch-runtime
+-- ORION-MIGRATION-REQUIRED-BY: none its only writer and reader, orion-execution-dispatch-runtime, retired 2026-11-07 (ladder retirement PR 6)
 -- Thinking rung 3, stage 3 option B (2026-10-21): one row per allocator decision to run or hold back
 -- a proven-effect act (orion/autonomy/act_episodes.py). The dispatch runtime also creates it lazily
 -- (CREATE TABLE IF NOT EXISTS, short lock_timeout); applying it here first is the operator path.

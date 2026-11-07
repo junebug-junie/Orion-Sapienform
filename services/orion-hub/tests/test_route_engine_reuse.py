@@ -19,11 +19,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 ROUTE_MODULES = (
     "substrate_attention_routes",
     "substrate_biometrics_routes",
-    "substrate_execution_dispatch_routes",
     "substrate_field_routes",
     "substrate_observability_routes",
-    "substrate_policy_routes",
-    "substrate_proposal_routes",
 )
 
 # Known per-call pools that predate this gate, left alone on purpose (each
@@ -69,8 +66,8 @@ def test_route_engine_is_built_once_and_reused(name, fake_create_engine) -> None
 
 def test_each_module_keeps_its_own_pool(fake_create_engine) -> None:
     field = importlib.import_module("scripts.substrate_field_routes")
-    policy = importlib.import_module("scripts.substrate_policy_routes")
-    assert field._engine() is not policy._engine()
+    attention = importlib.import_module("scripts.substrate_attention_routes")
+    assert field._engine() is not attention._engine()
     assert len(fake_create_engine) == 2
 
 

@@ -315,7 +315,7 @@ class ThoughtSettings(BaseSettings):
     # real outcome (app/physiology_shadow.py). Never obeyed; off = no bid, no log line.
     thought_physiology_shadow_bid_enabled: bool = Field(True, alias="THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED")
     # Ladder retirement PR 2 (2026-11-05): Orion starts its own waking paintings
-    # (app/painting_self_start.py): the visual-baseline schedule (config/proposals/visual_baseline.v1.yaml,
+    # (app/painting_self_start.py): the visual-baseline schedule (config/reverie/visual_baseline.v1.yaml,
     # 5400 s after each painting, 600 s retry), arousal deferral, the self-monitor act gate, a SHADOW
     # hunger bid on thought.painting, then one reverie.visual durable run (POST <url>/runs). The
     # proposal template render_scene and proposal-runtime's baseline read are gone: this is the only
@@ -601,6 +601,10 @@ class ThoughtSettings(BaseSettings):
         3, alias="ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS"
     )
 
+    # Source repointed 2026-11-07 (ladder retirement PR 6): curiosity's self-inquiry
+    # answers (self_concept_history, ~6 a day; a 6 h window holds one 78.7% of the
+    # time, read live), because the analysis rows below had one trigger, the retired
+    # dispatch rung. The history that follows is about the old source.
     # Patch 5 (design doc §16): a second, richer context-seed alongside
     # reverie_context_* above -- self_study_analysis.py's four deterministic
     # window-contrast analyses (concept induction, vision events, affective

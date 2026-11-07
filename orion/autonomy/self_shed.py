@@ -19,8 +19,11 @@ Two questions, answered separately so the frame can say which one failed:
    disables it; at least one background lease is granted or queued; and no earlier episode of this
    action is still in flight.
 
-The returned snapshot is persisted on the proposal, the dispatch candidate and the episode row, so
-treated and control rows can be shown to come from the same population.
+The returned snapshot is persisted on the episode row (since 2026-11-05 written by orion-durable-runs'
+cooling act; the proposal and dispatch rungs that also carried it retired 2026-11-07), so treated and
+control rows can be shown to come from the same population. ``bind_workspace_winner`` is also the one
+binding rule the act ledger uses to stamp a chat reply with the winner it answers
+(orion/grammar/act_ledger.py).
 """
 
 from __future__ import annotations
@@ -29,8 +32,31 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from orion.autonomy.cabinet_heat import CabinetHeatReading
-from orion.schemas.proposal_frame import AttentionWinnerRefV1
+
+
+class AttentionWinnerRefV1(BaseModel):
+    """The workspace broadcast winner an act binds to (design D1).
+
+    Bindable only when the projection is <= 90 s old, the coalition held >= 2 ticks and an action
+    was selected. ``open_loop_id`` is the attention loop the action answers to; it is also the
+    ``attention_loop_outcome.loop_id`` Orion's non-final ``acted`` verdict is written under.
+
+    Moved here from orion/schemas/proposal_frame.py on 2026-11-07, when the proposal rung retired:
+    the act ledger and this module still read it; nothing puts it on the bus."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    broadcast_log_id: str
+    open_loop_id: str
+    node_id: str
+    generated_at: datetime
+    dwell_ticks: int = Field(ge=0)
+    selected_action_type: str
+    age_sec: float = Field(ge=0.0)
+
 
 WINNER_MAX_AGE_SEC = 90.0
 # Workspace refs a winner can bind through: substrate nodes and world-first world sources.

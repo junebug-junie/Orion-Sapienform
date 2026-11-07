@@ -230,35 +230,8 @@ function _renderProofChain(chain) {
   // L6 (SelfStateV1 "transport_integrity") removed 2026-07-22, SelfStateV1 burn --
   // its card and chain.transport.l6 no longer exist, see substrate_lattice_routes.py.
 
-  // L7
-  const l7 = chain.transport?.l7 || {};
-  const props = l7.values || {};
-  _setText("l7Status", `${_statusBadge(l7.status)} ${_ts(l7.timestamp)}`);
-  _setText(
-    "l7Body",
-    `total candidates: <b>${_fmt(props.count)}</b> &nbsp;|&nbsp; transport candidates: <b>${_fmt(props.transport_count)}</b>`
-  );
-
-  // L8
-  const l8 = chain.transport?.l8 || {};
-  const pol = l8.values || {};
-  _setText("l8Status", `${_statusBadge(l8.status)} ${_ts(l8.timestamp)}`);
-  _setText(
-    "l8Body",
-    `approved: <b>${_fmt(pol.approved_count)}</b> rejected: <b>${_fmt(pol.rejected_count)}</b> mode: <b>${_esc(pol.policy_mode)}</b>`
-  );
-
-  // L9
-  const l9 = chain.transport?.l9 || {};
-  const disp = l9.values || {};
-  _setText("l9Status", `${_statusBadge(l9.status)} ${_ts(l9.timestamp)}`);
-  _setText(
-    "l9Body",
-    `dispatch_mode: <b>${_esc(disp.dispatch_mode)}</b> dispatched: <b>${_fmt(disp.dispatch_count)}</b> blocked: <b>${_fmt(disp.blocked_count)}</b>`
-  );
-
-  // L10 and L11 retired 2026-11-04: one line each saying when and what replaced them.
-  for (const key of ["l10", "l11"]) {
+  // L7-L9 retired 2026-11-07, L10 and L11 2026-11-04: one line each saying when and what replaced them.
+  for (const key of ["l7", "l8", "l9", "l10", "l11"]) {
     const layer = chain.transport?.[key] || {};
     const v = layer.values || {};
     _setText(`${key}Status`, _statusBadge(layer.status));

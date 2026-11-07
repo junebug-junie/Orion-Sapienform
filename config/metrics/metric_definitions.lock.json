@@ -1,12 +1,16 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 787,
+  "metric_count": 784,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 2,
+    "change_count": 6,
+    "high_severity_count": 6,
     "changes": [
-      "high   routing_changed metric://bus_channel/*/orion:exec:result:* (declared_consumers: \u2026, 'orion-harness-governo\u2026 -> \u2026, 'orion-hardware-watch', 'orion-harness-governo\u2026)",
-      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:exec:request:background (all_producers: \u2026, 'orion-harness-governo\u2026 -> \u2026, 'orion-hardware-watch', 'orion-harness-governo\u2026)"
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request",
+      "high   removed metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*",
+      "high   removed metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime/l7_l11_ladder",
+      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:exec:request:background (all_producers: \u2026ch', 'orion-execution-dispatch-runtime', 'orion-hardware-wat\u2026 -> \u2026ch', 'orion-hardware-wat\u2026)",
+      "high   routing_changed metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome (all_producers: \u2026ns', 'orion-execution-dispatch-runtime', 'orion-spark-concep\u2026 -> \u2026ns', 'orion-spark-concep\u2026)",
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-proposal-runtime.app.worker:ProposalRuntimeWork\u2026 -> \u2026vices.orion-substrate-runtime.app.worker:BiometricsSubstrat\u2026)"
     ]
   },
   "definitions": {
@@ -309,7 +313,6 @@
       "all_producers": [
         "orion-actions",
         "orion-cortex-orch",
-        "orion-execution-dispatch-runtime",
         "orion-hardware-watch",
         "orion-harness-governor"
       ],
@@ -1247,7 +1250,6 @@
       "schema_id": "ActionOutcomeEmitV1",
       "all_producers": [
         "orion-durable-runs",
-        "orion-execution-dispatch-runtime",
         "orion-spark-concept-induction"
       ],
       "declared_consumers": [
@@ -1632,17 +1634,6 @@
         "orion-state-service"
       ],
       "notes": "kind=telemetry stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request": {
-      "schema_id": "WorldPulseReadPullRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-field-digester/orion:causal_geometry:snapshot": {
@@ -2505,17 +2496,6 @@
         "orion-whisper-tts"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*": {
-      "schema_id": "WorldPulseReadPullResultV1",
-      "all_producers": [
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {
@@ -5043,9 +5023,9 @@
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._strain_report_once -> scripts.strain_report (strain loop part 3: a strained episode >= 60 min may pass the strained refusal with ONE grounded report, once per episode and once per local day; reads since, reasons, cabinet_temp_c, gpu_queue_depth)",
-        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
         "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
-        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
+        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)",
+        "services.orion-thought.app.painting_self_start:arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec; moved from orion-proposal-runtime 2026-11-05, ladder retirement PR 2)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
@@ -5757,10 +5737,6 @@
         "metric://inner_state/orion-hub/repair_pressure_appraisal.v1"
       ],
       "notes": "scalar field on RepairPressureAppraisalV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime/l7_l11_ladder": {
-      "notes": "cadence=multi_service composition=no_cognition_consumer",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1": {

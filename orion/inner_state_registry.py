@@ -662,35 +662,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "not this registry's job."
         ),
     ),
-    InnerStateSignal(
-        signal_id="l7_l11_ladder",
-        schema=None,
-        producer_service=(
-            "orion-proposal-runtime, orion-policy-runtime, "
-            "orion-execution-dispatch-runtime"
-        ),
-        cadence=Cadence.MULTI_SERVICE,
-        composition_status=CompositionStatus.REHEARSAL,
-        cognition_consumers=(),
-        notes=(
-            "Three schemas (ProposalFrameV1 -> ExecutionDispatchFrameV1), tracked as "
-            "one row (the feedback and consolidation rungs retired 2026-11-04). 2026-08-12: the historical rehearsal justification below is "
-            "NO LONGER TRUE and this classification is under review. "
-            "EXECUTION_DISPATCH_MODE is dispatch_read_only live (verified "
-            "inside the running container), and the ladder carried real "
-            "mutating routes (the docker prunes, 2026-08-12 .. 2026-11-06, "
-            "removed in ladder retirement PR 4) whose terminal effect was deleting host data. A ladder that can "
-            "change the world is not rehearsing. Left as REHEARSAL pending a "
-            "measured re-classification rather than flipped on assertion -- "
-            "the honest state is 'stale label, known stale', not a new label "
-            "picked without evidence. Prior (now-false) justification: "
-            "docs/notes/2026-07-12-phase5-research-findings.md -- "
-            "EXECUTION_DISPATCH_MODE=dry_run live, every reader outside the "
-            "ladder a self-labeled Hub debug route, the one non-Hub reader "
-            "(orion-thought reverie grounding) only appending an inert ID tag "
-            "to an already-generated thought."
-        ),
-    ),
+    # "l7_l11_ladder" (orion-proposal-runtime -> orion-policy-runtime -> orion-execution-dispatch-runtime,
+    # REHEARSAL, no cognition consumer) retired 2026-11-07 with its three services (ladder retirement PR 6,
+    # docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md): no live producer remains.
     InnerStateSignal(
         signal_id="mood_arc_corpus.v1",
         schema=MoodArcCorpusRowV1,
@@ -1496,9 +1470,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "(strain loop part 3: a strained episode >= 60 min may pass the strained refusal "
             "with ONE grounded report, once per episode and once per local day; reads "
             "since, reasons, cabinet_temp_c, gpu_queue_depth)",
-            "services.orion-proposal-runtime.app.worker:"
-            "ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule "
-            "(strained defers a due visual baseline image by retry_sec)",
+            "services.orion-thought.app.painting_self_start:arousal_level -> "
+            "orion.reverie.baseline:schedule "
+            "(strained defers a due visual baseline image by retry_sec; moved from "
+            "orion-proposal-runtime 2026-11-05, ladder retirement PR 2)",
             "services.orion-thought.app.chain:_next_chain_sleep_sec "
             "(strained doubles the pause between reverie chains)",
             "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> "

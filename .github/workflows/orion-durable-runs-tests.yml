@@ -12,6 +12,10 @@ on:
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/body_economy_shadow_vs_real.py"
       - "scripts/analysis/tests/test_body_economy_binding_replay.py"
+      - "scripts/analysis/outreach_binding_replay.py"
+      - "scripts/analysis/tests/test_outreach_binding_replay.py"
+      - "services/orion-hub/evals/run_outreach_binding_replay.py"
+      - "services/orion-hub/scripts/outreach_bind.py"
       - "orion/personality/**"
       - "orion/schemas/personality.py"
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
@@ -269,6 +273,12 @@ jobs:
         run: |
           python services/orion-durable-runs/evals/curiosity_binding_replay.py
           python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_binding_replay.py
+      - name: Outreach binding-bid eval (body economy Patch D for hub.outreach -- holds bounded, no answer never holds)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-hub/evals/run_outreach_binding_replay.py
+          python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_outreach_binding_replay.py
       - name: Cooling world act eval (ladder retirement PR 5 -- the market decides, only funded sheds, the scorer scores every episode)
         env:
           PYTHONPATH: ${{ github.workspace }}

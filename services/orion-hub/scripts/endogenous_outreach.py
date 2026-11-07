@@ -262,6 +262,7 @@ Safety posture — this must never disturb a real turn:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import re
 import time
@@ -277,6 +278,11 @@ from orion.schemas.notify import HubNotificationEvent
 from orion.situational.perception_reader import fetch_presence, presence_fragment
 from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
 from scripts.arousal_reader import ArousalReader
+# Patch D decision-row reasons (scripts/outreach_bind.py): the body economy held this want; or a
+# second check raced on a want another check is already composing.
+from scripts.outreach_bind import DUPLICATE_REASON as DUPLICATE_ECONOMY_REASON
+from scripts.outreach_bind import HELD_REASON as ECONOMY_HELD_REASON
+from scripts.outreach_bind import TICK_KEY
 from scripts.rest_drive_reader import RestDriveReader
 from scripts.strain_report import (
     STRAIN_REPORT_INTENT_REASON,
@@ -470,6 +476,11 @@ class OutreachGateInputs:
 
 
 REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
+# Body economy Patch D (scripts/outreach_bind.py): the binding verdict of the tick's want, copied into
+# every decision row the tick records after its compose point (``result_json.economy``). A ContextVar,
+# not instance state: it belongs to the one maybe_outreach call (its task), never to a concurrent door.
+_TICK_ECONOMY: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = contextvars.ContextVar(
+    "endogenous_outreach_tick_economy", default=None)
 # Body economy shadow bids: a strain-held tick re-bids at most once per this many seconds (or per
 # the outreach cooldown, if longer). See EndogenousOutreach._strain_shadow_bid_due.
 STRAIN_SHADOW_BID_MIN_WINDOW_SEC = 600.0
@@ -1781,6 +1792,13 @@ class EndogenousOutreach:
         # `_strain_shadow_bid_due`: one strain-held bid per window, not one per tick.
         self._strain_shadow_bid_at: Optional[float] = None
         self._monotonic: Callable[[], float] = time.monotonic  # tests replace this one clock only
+        # Body economy Patch D (scripts/outreach_bind.py): ``on`` -> every Hub door that composes a
+        # message obeys its binding bid; ``shadow`` -> the C3b shadow bid at the tick's compose point.
+        # Read once (an unknown value logs one warning); a change needs a restart, as every flag here.
+        from scripts.outreach_bind import OutreachBinder, bind_mode
+
+        self.economy_mode = bind_mode()
+        self._binder = OutreachBinder()
 
         self._bus: Any = None
         self._harness_rpc_bus: Any = None
@@ -2054,6 +2072,7 @@ class EndogenousOutreach:
                 "history_recovered": self._strain_history is not None,
                 "last": self._strain_last,
             },
+            "economy": {"mode": self.economy_mode, **self._binder.status()},
             "last_result": dict(self._last_result),
         }
 
@@ -2182,13 +2201,54 @@ class EndogenousOutreach:
 
             shadow = ShadowBid(family="hub.outreach", verb="say", tier=2, object_ref="juniper",
                                component="endogenous_outreach")
+            token = _TICK_ECONOMY.set(None)
+            sent = False
             try:
                 result = await self._outreach_once(force=force, shadow=shadow)
+                sent = bool(result.get("outreach"))
             except BaseException:
                 shadow.settle("blocked:error")
                 raise
+            finally:
+                _TICK_ECONOMY.reset(token)
+                # Patch D: the tick's admitted want is spent by this attempt (sent or not); a held one
+                # stays open for its next check. No-op in shadow mode or when nothing was admitted.
+                await self._binder.close(TICK_KEY, sent=sent)
             shadow.settle(real_from_result(result), act_correlation_id=result.get("correlation_id"))
             return result
+
+    @property
+    def economy_binding(self) -> bool:
+        """True when Hub outreach obeys its body-economy bid (``ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on``)."""
+        return self.economy_mode == "on"
+
+    async def economy_admit(self, *, door: str, key: str, cap_counted: bool = False,
+                            forced: bool = False) -> Tuple[bool, Dict[str, Any]]:
+        """Patch D for a door that composes its own message (reading / self / office findings).
+
+        Call after the door's own gates pass and BEFORE composing. Returns ``(admit, economy)``:
+        ``admit`` False means the body economy holds this want -- record ``economy_held`` and keep it
+        pending (the door retries on its next tick; the hold ends by the 1 h window at the latest).
+        ``economy`` goes into the door's decision rows (``result_json.economy``); ``{}`` in shadow mode.
+        After an admitted attempt ends, call ``economy_done``. Never raises."""
+        if not self.economy_binding:
+            return True, {}
+        full = f"{door}:{key}"
+        try:
+            v = await self._binder.bind(full, door=door, cap_counted=cap_counted, forced=forced)
+            return v.admit, self._binder.record(full, v)
+        except Exception:  # noqa: BLE001 -- never hold a message because this code failed
+            logger.warning("outreach_economy_admit_failed door=%s key=%s", door, key, exc_info=True)
+            return True, {"mode": "on", "verdict": "no_answer:admit_failed", "admit": True}
+
+    async def economy_done(self, *, door: str, key: str, sent: bool) -> None:
+        """The door's attempt on an admitted want ended (sent or not). Never raises."""
+        if not self.economy_binding:
+            return
+        try:
+            await self._binder.close(f"{door}:{key}", sent=sent)
+        except Exception:  # noqa: BLE001
+            logger.info("outreach_economy_done_failed door=%s key=%s", door, key)
 
     def _strain_shadow_bid_due(self) -> bool:
         """True at most once per ``max(min_cooldown_sec, STRAIN_SHADOW_BID_MIN_WINDOW_SEC)``.
@@ -2252,6 +2312,16 @@ class EndogenousOutreach:
             # mistake a stale episode for one active right now.
             self._last_tension_reason = None
             return self._record({"outreach": False, "reason": blocked}, forced=force, tension_reason=None)
+        if self.economy_binding and not force:
+            # Patch D: the tick's want is held by the body economy until a named relief time. Stop
+            # here without a bid or any content read: the same prices would answer the same.
+            waiting = self._binder.waiting(TICK_KEY, datetime.now(timezone.utc))
+            if waiting is not None:
+                self._last_tension_reason = None
+                return self._record(
+                    {"outreach": False, "reason": ECONOMY_HELD_REASON,
+                     "economy": self._binder.record(TICK_KEY, waiting)},
+                    forced=force, tension_reason=None)
 
         # Captured into a LOCAL variable, not read back from
         # `self._last_tension_reason` at each `_record()` call below --
@@ -2369,9 +2439,21 @@ class EndogenousOutreach:
         # `OutreachContext` -- would inherit whatever the last cycle left.
         grounding = grounding_summary(ctx)
 
-        # The compose point. The shadow want's id IS this compose's correlation id, so the
-        # shadow decision joins the outreach act (grammar_acts.correlation_id).
-        if shadow is not None:
+        # The compose point. The want's id IS this compose's correlation id, so the decision joins
+        # the outreach act (grammar_acts.correlation_id).
+        if self.economy_binding:
+            # Patch D: obey the binding bid (scripts/outreach_bind.py). Held -> no compose this tick;
+            # the want re-bids at the market's relief time and composes by its window's end at the latest.
+            verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force)
+            economy = self._binder.record(TICK_KEY, verdict)
+            _TICK_ECONOMY.set(economy)
+            if not verdict.admit:
+                return self._record(
+                    {"outreach": False,
+                     "reason": DUPLICATE_ECONOMY_REASON if verdict.why == "duplicate" else ECONOMY_HELD_REASON},
+                    forced=force, tension_reason=tension_reason, grounding=grounding)
+            correlation_id = str(economy.get("want_id") or uuid4())
+        elif shadow is not None:
             correlation_id = shadow.want_id
             shadow.place()
         else:
@@ -2980,6 +3062,9 @@ class EndogenousOutreach:
         result["at"] = datetime.now(timezone.utc).isoformat()
         if grounding is not None:
             result["grounding"] = dict(grounding)
+        economy = _TICK_ECONOMY.get()
+        if economy and "economy" not in result:
+            result["economy"] = dict(economy)
         self._last_result = result
         # Durable trail for every decision cycle, not just the ones that
         # ship -- see endogenous_outreach_decisions.py's own module

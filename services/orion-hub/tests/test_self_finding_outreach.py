@@ -454,3 +454,39 @@ def test_a_change_without_status_since_is_evaluated_again_later():
     t1 = T0 + timedelta(hours=1)
     _, new = evaluate(cursor, SelfMonitorStateV1(computed_at=t1, window_days=7.0, faculties=[rec(WALKWAY, "broken", t1)]), now=t1)
     assert [f.kind for f in new] == ["became_broken"]
+
+
+def test_economy_price_hold_keeps_the_finding_and_it_is_told_after(monkeypatch):
+    """Body economy Patch D: the self-finding door obeys its binding bid; a hold keeps the finding pending."""
+    from orion.schemas.physiology_want import WantDecisionV1
+
+    import scripts.outreach_bind as ob
+    from scripts.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_PHYSIOLOGY_BID_HUB_OUTREACH", "on", raising=False)
+    answers = [("deferred", "price", -0.2), ("funded", "net_positive", 0.3)]
+    wants = []
+
+    async def abid(want, timeout_sec):
+        wants.append(want)
+        outcome, reason, net = answers.pop(0)
+        now = datetime.now(timezone.utc)
+        return WantDecisionV1(decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id,
+                              family=want.family, producer=want.producer, verb=want.verb, tier=want.tier,
+                              decided_at=now, outcome=outcome, reason=reason, net=net, retry_after_sec=600.0,
+                              want=want, why=f"hub.outreach: {reason}")
+
+    async def arelease(want_id):
+        return 1
+
+    monkeypatch.setattr(ob, "_abid", abid)
+    monkeypatch.setattr(ob, "_arelease", arelease)
+    loop, outreach, redis, rows, composed, delivered, _, _ = _setup(monkeypatch)
+    _publish(redis, T0, rec(WALKWAY, "broken", T0, **BROKEN_NUMBERS))
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["economy_held"]
+    assert composed == [] and delivered == []
+    assert [r["reason"] for r in rows] == ["economy_held"] and rows[0]["economy"]["verdict"] == "deferred:price"
+    for w in outreach._binder.wants.values():
+        w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
+    assert len({w.want_id for w in wants}) == 1

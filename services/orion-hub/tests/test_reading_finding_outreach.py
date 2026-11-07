@@ -409,3 +409,57 @@ def test_the_last_sent_query_counts_only_reading_sends():
 
     sql = " ".join(rfo.LAST_SENT_SQL.split())
     assert "reason = 'sent'" in sql and "result_json->>'source' = 'reading_finding_outreach'" in sql
+
+
+def _economy(monkeypatch, answers):
+    """Body economy Patch D: stub the binding bid. ``answers``: outcome/reason/net per bid (last repeats)."""
+    from orion.schemas.physiology_want import WantDecisionV1
+
+    import scripts.outreach_bind as ob
+    from scripts.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_PHYSIOLOGY_BID_HUB_OUTREACH", "on", raising=False)
+    wants = []
+
+    async def abid(want, timeout_sec):
+        wants.append(want)
+        outcome, reason, net = answers[0] if len(answers) == 1 else answers.pop(0)
+        now = datetime.now(timezone.utc)
+        return WantDecisionV1(decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id,
+                              family=want.family, producer=want.producer, verb=want.verb, tier=want.tier,
+                              decided_at=now, outcome=outcome, reason=reason, net=net, retry_after_sec=600.0,
+                              want=want, why=f"hub.outreach: {reason}")
+
+    async def arelease(want_id):
+        return 1
+
+    monkeypatch.setattr(ob, "_abid", abid)
+    monkeypatch.setattr(ob, "_arelease", arelease)
+    return wants
+
+
+def test_economy_price_hold_keeps_the_finding_pending_then_it_is_told(monkeypatch):
+    wants = _economy(monkeypatch, [("deferred", "price", -0.1), ("funded", "net_positive", 0.3)])
+    loop, outreach, _, rows, composed, delivered = _setup(monkeypatch)
+    for _ in range(3):
+        assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["economy_held"]
+    assert composed == [] and delivered == []
+    assert len(wants) == 1                       # held: no re-bid before the market's relief time
+    assert wants[0].cost.juniper_msgs == 0       # cap-exempt door
+    held = [r for r in rows if r["reason"] == "economy_held"]
+    assert len(held) == 1 and held[0]["economy"]["verdict"] == "deferred:price"
+    assert held[0]["economy"]["why"] == "hub.outreach: price" and held[0]["source"] == "reading_finding_outreach"
+    # The relief time passes: it bids again, is funded, and the finding is told.
+    for w in outreach._binder.wants.values():
+        w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    sent = [r for r in rows if r["reason"] == "sent"][0]
+    assert sent["economy"]["verdict"] == "funded" and sent["economy"]["holds"] == 1
+    assert len({w.want_id for w in wants}) == 1 and outreach._binder.wants == {}
+
+
+def test_economy_capacity_deferral_tells_now(monkeypatch):
+    _economy(monkeypatch, [("deferred", "capacity_reserved", 0.3)])
+    loop, _, _, rows, _, delivered = _setup(monkeypatch)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
+    assert [r for r in rows if r["reason"] == "sent"][0]["economy"]["verdict"] == "queued_at_pool"

@@ -57,6 +57,9 @@ def economy(monkeypatch):
     from scripts.settings import settings
 
     monkeypatch.setattr(settings, "HUB_PHYSIOLOGY_SHADOW_BID_ENABLED", True, raising=False)
+    # These tests pin the C3b SHADOW seam. Patch D (ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on, shipped)
+    # replaces the tick's compose-point shadow bid with a binding one: tests/test_outreach_bind.py.
+    monkeypatch.setattr(settings, "ORION_PHYSIOLOGY_BID_HUB_OUTREACH", "shadow", raising=False)
     return eco
 
 

@@ -1369,6 +1369,11 @@ class Settings(BaseSettings):
     # (orion.physiology.client -> durable-runs POST /physiology/bid) and log the decision beside
     # their real gate (scripts/physiology_shadow.py). Never obeyed; off = no bid, no log line.
     HUB_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True, alias="HUB_PHYSIOLOGY_SHADOW_BID_ENABLED")
+    # Body economy Patch D for hub.outreach (scripts/outreach_bind.py): ``on`` -> every Hub door that
+    # composes a message (the background tick, reading / self / office findings) obeys its binding bid
+    # (funded or lane-queued: compose; price / sated: hold and re-bid, at most the 1 h window; no
+    # answer: today's gates). ``shadow`` -> the C3b shadow bid only. Unknown -> shadow (logged).
+    ORION_PHYSIOLOGY_BID_HUB_OUTREACH: str = Field(default="on", alias="ORION_PHYSIOLOGY_BID_HUB_OUTREACH")
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"

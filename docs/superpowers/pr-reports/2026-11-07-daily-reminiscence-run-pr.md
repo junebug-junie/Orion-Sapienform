@@ -250,6 +250,6 @@ next night picks week 2.
 
 ## PR link
 
-(filled in after opening)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3167
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

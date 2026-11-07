@@ -10,7 +10,7 @@
       "high   removed metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime/l7_l11_ladder",
       "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:exec:request:background (all_producers: \u2026ch', 'orion-execution-dispatch-runtime', 'orion-hardware-wat\u2026 -> \u2026ch', 'orion-hardware-wat\u2026)",
       "high   routing_changed metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome (all_producers: \u2026ns', 'orion-execution-dispatch-runtime', 'orion-spark-concep\u2026 -> \u2026ns', 'orion-spark-concep\u2026)",
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026ation.tick (strained holds; engaged doubles the cooldown)',\u2026 -> \u2026ation.tick (engaged doubles the cooldown; strain no longer \u2026)"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-proposal-runtime.app.worker:ProposalRuntimeWork\u2026 -> \u2026vices.orion-substrate-runtime.app.worker:BiometricsSubstrat\u2026)"
     ]
   },
   "definitions": {

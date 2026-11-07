@@ -1029,6 +1029,32 @@ def extract_response_repair_text(result: dict[str, Any]) -> str:
     raise ValueError("orion_response_repair exec result missing final_text")
 
 
+# The repair step's answer when the draft needs no change (orion_response_repair.j2).
+REPAIR_NO_CHANGE = "NO_CHANGE"
+# Words from the repair prompt's own scaffolding. A reply that uses one the draft and
+# Juniper's message never used is the model talking about its task, not to Juniper:
+# live 2026-10-04 ("The rejected draft was actually aligned according to the reflection
+# verdict ... This is safe, aligned, and corrects the fabrication.", ~9.7k chars sent)
+# and 2026-10-09 ("The draft was already aligned and required no correction." opening
+# a reply). This is the prompt's own vocabulary, a fixed set, not a list of past misses.
+_REPAIR_SCAFFOLD_TERMS = (
+    "the draft", "rejected draft", "draft reply", "alignment_verdict", "alignment verdict",
+    "strain_unresolved", "integrative reflection", "reflection verdict", "repaired reply",
+    "user-facing reply",
+)
+
+
+def repair_scaffold_echo(text: str, *, draft_text: str, user_message: str = "") -> str | None:
+    """The first scaffold term ``text`` uses that neither ``draft_text`` nor
+    ``user_message`` used, else None. Pure."""
+    low = (text or "").casefold()
+    context = f"{draft_text or ''}\n{user_message or ''}".casefold()
+    for term in _REPAIR_SCAFFOLD_TERMS:
+        if term in low and term not in context:
+            return term
+    return None
+
+
 def _response_repair_changed(
     draft_text: str,
     final_text: str,
@@ -1076,12 +1102,29 @@ async def run_orion_response_repair(
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_response_repair_text(exec_result)
-    finalize_changed = _response_repair_changed(draft_text, final_text, reflection)
+    kept_draft: str | None = None
+    if final_text.strip() == REPAIR_NO_CHANGE:
+        kept_draft = "no_change"
+    else:
+        echo = repair_scaffold_echo(final_text, draft_text=draft_text, user_message=user_message)
+        if echo:
+            # Commentary about the task, not a reply: Juniper gets the draft she would have
+            # got without repair, never the model's notes.
+            kept_draft = "scaffold_echo"
+            logger.warning(
+                "orion_response_repair_scaffold_echo corr=%s term=%r excerpt=%r -- keeping the draft",
+                correlation_id, echo, _excerpt(final_text, max_len=160),
+            )
+    if kept_draft:
+        final_text = draft_text
+    finalize_changed = False if kept_draft else _response_repair_changed(draft_text, final_text, reflection)
     meta = {
         "finalize_changed": finalize_changed,
         "alignment_verdict": reflection.alignment_verdict,
         "cortex_trace_id": exec_result.get("trace_id") or exec_result.get("cortex_trace_id"),
     }
+    if kept_draft:
+        meta["repair_kept_draft"] = kept_draft
     return final_text, meta
 
 

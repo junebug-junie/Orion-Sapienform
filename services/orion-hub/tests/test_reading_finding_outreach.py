@@ -123,7 +123,7 @@ def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read 
     composed: list[str] = []
     delivered: list[dict] = []
 
-    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None):
+    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
         composed.append(prompt)
         return text, {"fcc_model_label": "test"}
 

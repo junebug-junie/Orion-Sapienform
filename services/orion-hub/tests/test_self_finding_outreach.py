@@ -96,7 +96,7 @@ def _setup(monkeypatch, *, text="My walkway grade journal has mostly stopped run
     delivered: list[dict] = []
     texts = {"value": text}
 
-    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None):
+    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
         composed.append(prompt)
         return texts["value"], {"fcc_model_label": "test"}
 

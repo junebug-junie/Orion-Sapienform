@@ -2779,6 +2779,28 @@ reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADO
 (default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
 host port `http://127.0.0.1:8124/physiology/bid`.
 
+**Outreach obeys its bid** (Patch D for `hub.outreach`, 2026-11-07, `scripts/outreach_bind.py`). With
+`ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on` (shipped) the outreach row above is no longer shadow: every Hub door
+that composes a message asks the market just before it composes, and obeys the answer with the shared rule
+(`orion.physiology.binding.bind_verdict`, the same one curiosity investigate and the dream cycle obey).
+
+| door | bids? | why |
+|---|---|---|
+| background tick | yes, cap-counted (1 message on `attention:juniper`) | the want the strained veto was standing in for |
+| reading findings, self findings, office visits | yes, cap-exempt (`juniper_msgs=0`) | they compose a message; the daily cap never counted them |
+| curiosity Door-A | no | composed inside the curiosity run, which already obeys its own bid (#3010); a blocked Door-A has no retry, so a hold would drop it |
+| strain report | no | it exists to speak when strain holds everything else; its strain-held shadow bid is unchanged |
+| forced (`POST /api/debug/endogenous-outreach/trigger`) | no | the operator's call: never held |
+
+Funded, or a full lane that is still worth its price: compose. Price, no hunger yet (`sated`), or net <= 0:
+hold, keep the item pending, bid again at the market's retry time (clamped 2 min .. 1 h), and compose
+anyway at the end of the 1 h window. No answer (market down, stale body state, 5 s timeout): compose, as
+before. Every verdict logs `physiology_bind family=hub.outreach door=... verdict=... obeyed=true`, and the
+decision row carries it in `result_json.economy` (reason `economy_held`: once per held item at a door; on every tick that reaches its compose point inside a hold). A hold nobody re-checks for 15 min after its retry time lapses, and the next check bids afresh.
+The `arousal_strained` veto stays until this has run `on` for 7 days with its checks green; while it stays,
+the binding bid never decides during strain. Rollback: set `shadow` and restart Hub. Replay:
+`scripts/analysis/outreach_binding_replay.py`; eval: `evals/run_outreach_binding_replay.py [--live]`.
+
 **Reading event wants** (2026-11-04, attention as the want competition patch 2, docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Each finished
 read (`world_pulse_read_seed`, `stage2_status = 'done'`) posts one SHADOW event want: family
 `hub.world_pulse_read`, verb `look`, `event_ref` `world_pulse_read_seed:<seed_id>`, salience = the links

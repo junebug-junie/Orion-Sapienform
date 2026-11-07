@@ -622,8 +622,6 @@ class OfficeReachOut:
         return {"session_id": sid, "reason": reason}
 
     async def _tell(self, pool: Any, outreach: Any, session: Mapping[str, Any]) -> dict[str, Any]:
-        from scripts.endogenous_outreach import build_outreach_provenance, is_pass_response
-
         sid = session["session_id"]
         correlation_id = str(uuid4())
         decision_id = str(uuid4())
@@ -633,6 +631,28 @@ class OfficeReachOut:
         if blocked:
             self._record_block_once(outreach, session, meta, str(blocked), correlation_id)
             return {"session_id": sid, "reason": str(blocked)}
+        # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
+        # visit stays pending and is retried next tick (the hold ends by the 1 h window at the latest).
+        # Cap-exempt: this door never counts against Juniper's daily cap.
+        admit, economy = await outreach.economy_admit(door=TAG, key=str(sid), cap_counted=False)
+        if economy:
+            meta = {**meta, "economy": economy}
+        if not admit:
+            self._record_block_once(outreach, session, meta, "economy_held", correlation_id)
+            return {"session_id": sid, "reason": "economy_held"}
+        sent = False
+        try:
+            result = await self._compose_and_offer(pool, outreach, session, meta, correlation_id, decision_id)
+            sent = result.get("reason") == "sent"
+            return result
+        finally:
+            await outreach.economy_done(door=TAG, key=str(sid), sent=sent)
+
+    async def _compose_and_offer(self, pool: Any, outreach: Any, session: Mapping[str, Any], meta: dict[str, Any],
+                                 correlation_id: str, decision_id: str) -> dict[str, Any]:
+        from scripts.endogenous_outreach import build_outreach_provenance, is_pass_response
+
+        sid = session["session_id"]
         prompt = build_prompt(session, self.tz, now=self._clock())
         # Chat lane only (Juniper, 2026-11-07): she is in the room now; the agent lane's
         # 210 s timeout made the first office message 5 minutes late.

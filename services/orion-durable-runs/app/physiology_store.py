@@ -54,9 +54,11 @@ logger = logging.getLogger("orion-durable-runs.physiology_store")
 
 # Rates from before the month start seed the carry-forward for the month's first hours.
 PRICE_SEED_LOOKBACK = timedelta(days=14)
-# Outreach sources the Hub's daily cap does not count (scripts/endogenous_outreach_decisions.py
-# count_sent_on). They still reach Juniper, so ``sent_today`` counts them.
-CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach", "self_finding_outreach")
+# Outreach sources the Hub's daily cap does not count (services/orion-hub/scripts/endogenous_outreach_decisions.py
+# count_sent_on). They still reach Juniper, so ``sent_today`` counts them. Must equal Hub's list
+# (tests/test_physiology_store_cap_exempt_parity.py): office_reach_out was missing 2026-11-05..11-07, so office
+# visit messages read as cap-counted on attention:juniper while the Hub's cap did not count them.
+CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach", "self_finding_outreach", "office_reach_out")
 
 ENERGY_HOURS_SQL = (
     "SELECT hour_start, SUM(kwh) AS kwh FROM orion_energy_hourly "

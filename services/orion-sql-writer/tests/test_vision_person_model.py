@@ -1007,5 +1007,34 @@ def test_office_prior_asks_rank_last_and_one_is_open_per_name(pg) -> None:
                 {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
         opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
     assert [a["source_ref"] for a in opened] == ["walk-1|Sibling", "off-1|Juniper"]
+    assert "rule:camera_prior" in opened[1]["evidence_refs"] and "rule:camera_prior" not in opened[0]["evidence_refs"]
     with pg.begin() as conn:   # the next cycle: her office ask is still open, so no second one
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []
+
+
+@needs_pg
+def test_office_prior_asks_have_their_own_slots_when_the_walkway_used_the_shared_cap(pg) -> None:
+    """2026-11-07: walkway guesses used all 6 shared "Is this X?" slots every day, so office
+    (camera prior) guesses were never asked and her office album never grew."""
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0, person_confirm_ask_daily_cap=1,
+                               person_confirm_prior_ask_daily_cap=1)
+    with pg.begin() as conn:
+        for iid in ("off-a", "walk-a", "walk-b"):
+            _add_cluster(conn, iid, None, [_vec(1, 0.1)], 0)
+            _thumb(conn, iid)
+            conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = :i"), {"i": iid})
+        for iid, person, score, basis in (("walk-a", "Sibling", 0.9, "evidence"), ("walk-b", "Sibling2", 0.8, "evidence"),
+                                          ("off-a", "Juniper", 0.4, "prior")):
+            conn.execute(text(
+                "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+                "model_version, decided_at, basis) VALUES (:i, :p, 'body', :s, 'unsure', :v, :t, :b)"),
+                {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    # The shared slot goes to the best walkway guess; the office guess gets its own slot anyway.
+    assert sorted(a["source_ref"] for a in opened) == ["off-a|Juniper", "walk-a|Sibling"]
+    with pg.begin() as conn:   # both lanes are used up for today
         assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []

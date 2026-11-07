@@ -1173,6 +1173,8 @@ class IndividualsConfig:
     confirm_ask_daily_cap: int = 6
     # Daily cap for "Is this <name>?" asks, separate from the slow rule's cap.
     person_confirm_ask_daily_cap: int = 6
+    # "Is this <name>?" for camera-prior guesses (the office), its own daily slots.
+    person_confirm_prior_ask_daily_cap: int = 2
     # Splits on "someone else" picture answers (app/vision_split.py) and the
     # matcher's cannot-link rule. False: verdicts are recorded only.
     split_on_verdict_enabled: bool = True
@@ -2136,7 +2138,16 @@ ASKED_TODAY_SQL = (
 # 2026-10-22 they shared ask_daily_cap with the slow rule, which opens first and
 # used both slots every day: 0 were ever asked.
 PERSON_CONFIRM_ASKED_TODAY_SQL = (
-    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d"
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d "
+    "AND NOT (evidence_refs @> '[\"rule:camera_prior\"]'::jsonb)"
+)
+# "Is this Juniper?" from a camera prior (the office) has its own slots (2026-11-07):
+# the shared cap was used on walkway guesses every day (6/6 on 11-04..06), so the
+# office guesses -- ranked last -- were never asked and her office album never grew.
+PRIOR_RULE_REF = "rule:camera_prior"
+PRIOR_CONFIRM_ASKED_TODAY_SQL = (
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d "
+    "AND evidence_refs @> '[\"rule:camera_prior\"]'::jsonb"
 )
 CONFIRM_ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "
@@ -2383,9 +2394,12 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
 
     if conn.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar() is None:
         return []
-    asked_today = conn.execute(text(PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": local_day_start(now, tz)}).scalar() or 0
+    day = local_day_start(now, tz)
+    asked_today = conn.execute(text(PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": day}).scalar() or 0
     budget = remaining_ask_budget(daily_cap=cfg.person_confirm_ask_daily_cap, asked_today=int(asked_today))
-    if budget <= 0:
+    prior_asked = conn.execute(text(PRIOR_CONFIRM_ASKED_TODAY_SQL), {"d": day}).scalar() or 0
+    prior_budget = remaining_ask_budget(daily_cap=cfg.person_confirm_prior_ask_daily_cap, asked_today=int(prior_asked))
+    if budget <= 0 and prior_budget <= 0:
         return []
     from app.vision_person_model import attribution_has_basis
 
@@ -2415,26 +2429,30 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
         ORDER BY ({basis_col} IS NOT DISTINCT FROM 'prior'), g.score DESC, g.individual_id
     """), {"cool": now - timedelta(days=cfg.ask_cooldown_days), "min_s": PERSON_CONFIRM_MIN_SIGHTINGS}).fetchall()
     out: List[dict] = []
+    opened = {"evidence": 0, "prior": 0}
     for iid, person, sc, dd, basis in cands:
-        if len(out) >= budget:
-            break
-        if basis == "prior":
-            if str(person).casefold() in open_prior_names:
-                continue
-            open_prior_names.add(str(person).casefold())
+        lane = "prior" if basis == "prior" else "evidence"
+        if opened[lane] >= (prior_budget if lane == "prior" else budget):
+            continue  # this lane's slots are used; the other lane may still have some
+        if lane == "prior" and str(person).casefold() in open_prior_names:
+            continue
         srows = _sighting_rows(conn, iid)
         images = _images(srows, now, cfg)
         if not images:
             continue  # no picture, no ask; it stays a candidate
+        if lane == "prior":
+            open_prior_names.add(str(person).casefold())
+        refs = [f"sighting:{row[0]}" for row in srows[:5]]
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=person_confirm_question(person=person, sighting_count=int(sc or 0), distinct_days=int(dd or 0)),
-            evidence_refs=[f"sighting:{row[0]}" for row in srows[:5]],
+            evidence_refs=refs + [PRIOR_RULE_REF] if lane == "prior" else refs,
             image_ref=images[0], image_refs=images, created_at=now,
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_PERSON_CONFIRM, source_ref=f"{iid}{PAIR_SEP}{person}",
         )
         if _insert_ask(conn, ask):
+            opened[lane] += 1
             out.append(ask.model_dump(mode="json"))
     return out
 

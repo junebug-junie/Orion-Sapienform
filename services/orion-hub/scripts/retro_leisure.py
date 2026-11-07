@@ -376,6 +376,8 @@ class _Run:
     history: list = field(default_factory=list)
     last_decision: Optional[dict] = None        # Retro's newest offered decision (action-bet settle)
     plan_inputs: Optional[tuple] = None         # (decision, atlas, menu) of the plan in flight
+    # Rooms walked inside a dungeon Retro's atlas cannot record (retro_planner.RoomMemory).
+    rooms: retro_planner.RoomMemory = field(default_factory=retro_planner.RoomMemory)
 
 
 _running_here = False
@@ -711,6 +713,7 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                     return ended, NORMAL
             decision = cognition.get('attempt')
             decision_id = decision.get('decision_id') if isinstance(decision, dict) else None
+            run.rooms.observe(run.session_id, decision)   # every offer counts, planned or not
             if (plan_task is None and decision_id and decision_id != run.planned_decision
                     and deps.clock() >= run.next_plan_at):
                 plan_task = asyncio.ensure_future(_plan(deps, run, decision, await _atlas(deps, run)))
@@ -727,6 +730,8 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
 async def _plan(deps: LeisureDeps, run: _Run, decision: dict, atlas: Optional[dict]) -> dict:
     """Action bets first (settle the previous bet, quote, menu), then the planner. The menu is
     None when bets are off or the prediction service is unreachable: the plain prompt, no bet."""
+    # Inside a dungeon Retro's atlas is empty: without this every side looks new (live 2026-11-06).
+    atlas = run.rooms.atlas_for(run.session_id, decision, atlas)
     menu = await deps.experience.prepare(run.session_id, decision, atlas) if deps.experience else None
     run.plan_inputs = (decision, atlas, menu)
     history = run.history[-retro_planner.HISTORY_LIMIT:]

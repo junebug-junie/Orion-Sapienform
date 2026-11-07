@@ -34,9 +34,13 @@ service, and the cabinet `cabinet_*` names describe the cabinet, not the office.
    them back for the first 30 s after each sensor start.
 6. TSL2591 light (`office_lux`): when it overflows at its lowest gain, `office_lux` is absent
    and `state.light_saturated=true` (direct sun: too bright to measure, not dark).
-7. Closet SCD40 (`closet_co2_ppm`, `closet_temp_c`, `closet_humidity_pct`): real CO2, not an
+7. Sound level (`office_sound_dba`): the Nano's `sound.level_mv` (mean A0 voltage over the
+   frame) is converted as dBA = volts x 50 (DFRobot SEN0232). Readings outside the meter's
+   0.6..2.6 V output (30..130 dBA) are dropped, not clamped. It is independent of the I2C
+   sensors, so a meter reading alone keeps the sample fresh.
+8. Closet SCD40 (`closet_co2_ppm`, `closet_temp_c`, `closet_humidity_pct`): real CO2, not an
    estimate. The closet sample uses only the frame's `co2` object.
-8. It always publishes a `SystemHealthV1` heartbeat on `orion:system:health`
+9. It always publishes a `SystemHealthV1` heartbeat on `orion:system:health`
    (details: `room`, `sensor`, `serial_open`, `frames_ok`, `lines_rejected`).
 
 ```text
@@ -134,6 +138,12 @@ let `orion-sql-writer` rebuild on athena, and check that its boot DDL added
 and that `create_all` made `closet_env_sample`. Then on pan-1: pull main, set
 `CLOSET_SERIAL_DEVICE_HOST` in `services/orion-office-env/.env`, and bring up each container
 by name (commands above).
+
+**Deploy order for the sound meter (2026-11-07):** `office_sound_dba` is a new key on a
+`extra="forbid"` model, so a consumer built before it rejects the sample. Rebuild
+`orion-sql-writer` (athena) first. Hub reads it from `payload_json` and needs no column. Then on
+pan-1: pull main, rebuild `orion-pan-1-orion-office-env`. Flash the Nano last (a frame with
+`sound` is ignored by an old host).
 
 ## Closet CO2 calibration
 

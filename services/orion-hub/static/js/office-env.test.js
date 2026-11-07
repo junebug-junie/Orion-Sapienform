@@ -98,8 +98,9 @@ test("office strip renders PM and light tiles, saturated light in words", () => 
   const out = renderTiles(OFFICE, {
     ok: true,
     age_sec: 4.2,
-    sample: { office_temp_c: 21.4, office_humidity_pct: 33, office_pm1_ug_m3: 2, office_pm25_ug_m3: 5, office_pm10_ug_m3: 7, light_saturated: true },
+    sample: { office_temp_c: 21.4, office_humidity_pct: 33, office_pm1_ug_m3: 2, office_pm25_ug_m3: 5, office_pm10_ug_m3: 7, light_saturated: true, office_sound_dba: 41.46 },
   });
+  assert.equal(out.officeEnvSound, "41.5");
   assert.equal(out.officeEnvPm1, "2");
   assert.equal(out.officeEnvPm25, "5");
   assert.equal(out.officeEnvPm10, "7");
@@ -111,7 +112,7 @@ test("office strip renders PM and light tiles, saturated light in words", () => 
 
 test("office strip: rows from before the new sensors show dashes, not zeros", () => {
   const out = renderTiles(OFFICE, { ok: true, age_sec: 1, sample: { office_temp_c: 21.4 } });
-  for (const id of ["officeEnvPm1", "officeEnvPm25", "officeEnvPm10", "officeEnvLux"]) assert.equal(out[id], "—", id);
+  for (const id of ["officeEnvPm1", "officeEnvPm25", "officeEnvPm10", "officeEnvLux", "officeEnvSound"]) assert.equal(out[id], "—", id);
 });
 
 test("closet strip renders CO2/temp/humidity and handles no samples", () => {

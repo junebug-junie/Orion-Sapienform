@@ -298,7 +298,7 @@ def test_latest_reads_pm_and_lux_from_payload_json(client, monkeypatch):
     async def latest(*, node: str):
         return _row(payload_json=_payload(
             {"office_temp_c": 21.4, "office_pm1_ug_m3": 2, "office_pm25_ug_m3": 5,
-             "office_pm10_ug_m3": 7, "office_lux": 312.5},
+             "office_pm10_ug_m3": 7, "office_lux": 312.5, "office_sound_dba": 41.5},
             {"light_saturated": False},
         ))
 
@@ -308,6 +308,7 @@ def test_latest_reads_pm_and_lux_from_payload_json(client, monkeypatch):
     assert sample["office_pm25_ug_m3"] == 5.0
     assert sample["office_pm10_ug_m3"] == 7.0
     assert sample["office_lux"] == 312.5
+    assert sample["office_sound_dba"] == 41.5
     assert sample["light_saturated"] is False
 
 
@@ -366,7 +367,7 @@ def test_history_includes_pm_and_lux_points_and_stats(client, monkeypatch):
         assert key in stats
 
 
-_NEW_COLUMNS = ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "light_saturated")
+_NEW_COLUMNS = ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "office_sound_dba", "light_saturated")
 
 
 def _bare_column_refs(sql: str) -> list[str]:

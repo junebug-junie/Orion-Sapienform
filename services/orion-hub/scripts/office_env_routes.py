@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/office/env", tags=["office-env"])
 # Readings that have their own long-standing columns.
 _COLUMN_FIELDS = ("office_temp_c", "office_humidity_pct", "office_eco2_ppm", "office_tvoc_ppb")
 # Readings read from payload_json->'measurements' (see the module docstring).
-_PAYLOAD_FIELDS = ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux")
+_PAYLOAD_FIELDS = ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "office_sound_dba")
 _FIELDS = _COLUMN_FIELDS + _PAYLOAD_FIELDS
 # Boolean state flags carried into the latest sample. NULL / missing = no claim, omitted.
 _COLUMN_FLAGS = ("air_warming",)
@@ -51,6 +51,7 @@ _STAT_KEYS = (
     ("office_pm25_ug_m3", "pm25"),
     ("office_pm10_ug_m3", "pm10"),
     ("office_lux", "lux"),
+    ("office_sound_dba", "sound"),
 )
 
 

@@ -90,7 +90,7 @@ async def test_office_payload_stays_valid_for_a_pre_pm_light_consumer() -> None:
     bus.publish = AsyncMock()
     await office_main.publish_sample(bus, settings, office_main.make_sample(store, settings, now_fn=lambda: NOW))
     payload = bus.publish.await_args.args[1].payload
-    new_keys = {"office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux"}
+    new_keys = {"office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "office_sound_dba"}
     assert not new_keys & payload["measurements"].keys()
     assert "light_saturated" not in payload["state"]
     assert payload["measurements"] == {"office_temp_c": 22.0, "office_humidity_pct": 28.0}

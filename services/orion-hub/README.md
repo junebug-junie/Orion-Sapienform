@@ -3077,6 +3077,8 @@ light (lux, TSL2591). Light reads "too bright to measure" when the sensor satura
 `light_saturated` are read from `payload_json` (`->'measurements'` / `->'state'`), not from their own
 columns, so Hub works before sql-writer has added those columns; rows from before the sensors
 existed show "—".
+The office strip also shows sound level (dBA, DFRobot SEN0232 on the office Nano's A0 pin),
+read from `payload_json->'measurements'->>'office_sound_dba'` like PM and lux: no column.
 
 **Server-closet strip** (same subview, below the office strip): CO2 (measured, SCD40), temperature
 and humidity from the closet Nano above the server cabinet, read from Postgres

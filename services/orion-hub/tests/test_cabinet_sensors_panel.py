@@ -337,11 +337,13 @@ def test_cabinet_sensors_js_renders_status_grid_and_pressure_strip() -> None:
         "environment",
         "uv",
         "magnetic",
-        "particulate",
         "lidar",
         "imu",
     ):
-        assert tile_key in CABINET_SENSORS_JS, tile_key
+        assert f'key: "{tile_key}"' in CABINET_SENSORS_JS, tile_key
+    # The Athena Nanos have no particulate sensor (it is on pan-1's office Nano):
+    # a tile for it only ever read "absent".
+    assert 'key: "particulate"' not in CABINET_SENSORS_JS
     for pressure_key in (
         "cabinet_climate_activity",
         "cabinet_particulate_activity",
@@ -429,3 +431,24 @@ def test_sonification_controls_and_asset_are_inside_cabinet() -> None:
     assert assets.index(history) < assets.index(sound) < assets.index(sensors)
     assert (HUB_ROOT / history.split('?')[0].lstrip('/')).is_file()
     assert (HUB_ROOT / sound.split('?')[0].lstrip('/')).is_file()
+
+
+def test_ambient_card_carries_office_sound_block_above_cabinet_charts() -> None:
+    """2026-11-07: the office dBA meter sits in the Ambient audio card, above the
+    cabinet mic charts, and says plainly it is not in the cabinet or the closet."""
+    strip = INDEX_HTML.index('id="officeSoundStrip"')
+    for element_id in (
+        "officeSoundNow",
+        "officeSoundTypical",
+        "officeSoundFloor",
+        "officeSoundLoudest",
+        "officeSoundLoudShare",
+        "officeSoundAge",
+        "officeSoundLiveStatus",
+        "officeSoundStatus",
+        "officeSoundChart",
+    ):
+        assert f'id="{element_id}"' in INDEX_HTML, element_id
+    assert strip < INDEX_HTML.index('id="cabinetAmbientRmsChart"')
+    assert strip > INDEX_HTML.index('data-cabinet-ambient-window="24h"')
+    assert "It is not in the cabinet or the closet." in INDEX_HTML

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { splitRuns, num, airText, readingText, lightText, createStrip, OFFICE, CLOSET } = require("./office-env.js");
+const { splitRuns, num, airText, readingText, lightText, createStrip, OFFICE, CLOSET, OFFICE_SOUND, soundSummary, summaryText } = require("./office-env.js");
 
 const pt = (min, v) => ({ t: new Date(Date.UTC(2026, 9, 27, 12, min)).toISOString(), office_temp_c: v });
 
@@ -126,4 +126,34 @@ test("closet strip renders CO2/temp/humidity and handles no samples", () => {
   const stale = renderTiles(CLOSET, { ok: false, age_sec: 200, publisher_stale: true, sample: { sensor_online: false } });
   assert.equal(stale.closetEnvCo2, "stale");
   assert.equal(stale.closetEnvLiveStatus, "no recent publish");
+});
+
+const snd = (v) => ({ t: "2026-11-07T02:00:00Z", office_sound_dba: v });
+
+test("soundSummary: typical, quiet floor, loudest from raw max, and share at 60 dBA+", () => {
+  const values = [40, 41, 42, 43, 44, 45, 46, 60, 70, 80];
+  const s = soundSummary({ points: values.map(snd), stats: { sound_max: 91.5 } });
+  assert.equal(s.typical, 44.5);
+  assert.ok(Math.abs(s.floor - 40.9) < 1e-9);
+  assert.equal(s.loudest, 91.5); // raw max beats a bucket-averaged point
+  assert.equal(s.loudShare, 0.3);
+  assert.equal(summaryText({ points: values.map(snd), stats: {} }, "loudest"), "80.0");
+  assert.equal(summaryText({ points: values.map(snd) }, "loudShare"), "30%");
+});
+
+test("soundSummary skips points without a reading and is all-absent on an empty window", () => {
+  const s = soundSummary({ points: [{ t: "x" }, snd(50), { t: "y", office_sound_dba: null }] });
+  assert.equal(s.typical, 50);
+  const empty = soundSummary({ points: [{ t: "x" }] });
+  assert.deepEqual(empty, { typical: null, floor: null, loudest: null, loudShare: null });
+  assert.equal(summaryText({ points: [] }, "typical"), "—");
+  assert.equal(summaryText(null, "loudShare"), "—");
+});
+
+test("OFFICE_SOUND strip charts dBA and shares the Ambient card's window buttons", () => {
+  assert.equal(OFFICE_SOUND.windowAttr, "data-cabinet-ambient-window");
+  assert.equal(OFFICE_SOUND.ownWindowButtons, false);
+  assert.deepEqual(OFFICE_SOUND.charts.map((c) => c.field), ["office_sound_dba"]);
+  assert.equal(OFFICE_SOUND.tiles[0].text({ ok: true, sample: { office_sound_dba: 46.24 } }), "46.2");
+  assert.equal(OFFICE_SOUND.tiles[0].text({ ok: false, sample: { office_sound_dba: 46.24 } }), "stale");
 });

@@ -3364,7 +3364,7 @@
                 <div>
                   <h3 class="text-sm font-semibold text-gray-100">Ambient audio</h3>
                   <p class="text-[11px] text-gray-500">
-                    Live cabinet level plus Postgres biometrics-summary history at ~30s grain.
+                    Office sound level (dBA meter) plus the cabinet mic's live level and history at ~30s grain.
                   </p>
                 </div>
                 <div class="flex flex-wrap items-center gap-1" aria-label="Ambient history window">
@@ -3373,6 +3373,52 @@
                   <button type="button" data-cabinet-ambient-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
                 </div>
               </div>
+              <!-- Office sound level: driven by static/js/office-env.js (OFFICE_SOUND strip) from
+                   /api/office/env/*; the 24h/3d/7d buttons above set its window too. -->
+              <div id="officeSoundStrip" class="flex flex-col gap-2">
+                <div>
+                  <div class="text-xs font-semibold text-gray-300">Office sound level (dBA)</div>
+                  <p class="text-[11px] text-amber-300/80">
+                    Office-level reader: this sound meter is in Juniper's office (pan-1 office Nano). It is not in the cabinet or the closet.
+                  </p>
+                </div>
+                <div id="officeSoundStatus" class="text-[11px] text-gray-500 min-h-[1rem]"></div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">office now dBA</div>
+                    <div id="officeSoundNow" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2" title="Median of the readings in this window">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">typical dBA</div>
+                    <div id="officeSoundTypical" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2" title="10th percentile of the readings in this window: how quiet the office gets">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">quiet floor dBA</div>
+                    <div id="officeSoundFloor" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2" title="Loudest single reading in this window">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">loudest dBA</div>
+                    <div id="officeSoundLoudest" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2" title="Share of readings in this window at 60 dBA or more (conversation level and up)">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">time ≥ 60 dBA</div>
+                    <div id="officeSoundLoudShare" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">age</div>
+                    <div id="officeSoundAge" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                  <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-500">status</div>
+                    <div id="officeSoundLiveStatus" class="mt-1 font-mono text-sm text-gray-200">—</div>
+                  </div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                  <div class="text-xs font-semibold text-gray-300 mb-2">office sound dBA</div>
+                  <div id="officeSoundChart" class="min-h-[8rem]"></div>
+                </div>
+              </div>
+              <div class="text-xs font-semibold text-gray-300">Cabinet mic (uncalibrated, not dB)</div>
               <div id="cabinetAmbientStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this subview to load ambient audio.</div>
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">

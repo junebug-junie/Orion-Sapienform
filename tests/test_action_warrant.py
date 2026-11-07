@@ -18,7 +18,7 @@ from orion.field.action_warrant import (
     _chi2_sf,
     action_warrant,
 )
-from orion.proposals.scoring import (
+from orion.field.pressure_dimensions import (
     DIMENSION_PRECISION_EWMA_MIN_SAMPLES,
     DIMENSION_PRECISION_MIN_VARIANCE,
     PRESSURE_DIMENSIONS,
@@ -273,8 +273,9 @@ def test_module_imports_standalone_without_a_circular_import():
     `orion.proposals.builder`, which imports this module back -- partially
     initialized, ImportError.
 
-    It never broke production: `orion-proposal-runtime` imports `orion.proposals`
-    first, so it is already in `sys.modules` before the cycle closes. It broke
+    It never broke production: `orion-proposal-runtime` (retired 2026-11-07, when the
+    constants moved to `orion.field.pressure_dimensions` and the cycle went with it)
+    imported `orion.proposals` first, so it was already in `sys.modules`. It broke
     exactly the callers most likely to be checking this signal -- its own eval
     and its own tests -- which is the worse failure mode, because it is silent
     everywhere anyone would notice and loud only where someone is verifying.

@@ -547,10 +547,9 @@ def test_the_read_ceiling_is_actually_passed_to_the_query() -> None:
 
 def test_journaled_source_ref_stays_inside_orion_thoughts_allowlist() -> None:
     """2026-10-30 fold of self-study into curiosity: the analysis verb moved to tier 0
-    `autonomic`, but its journal source_ref prefixes must not move. orion-thought's reverie
-    painter only admits `source_kind='self_study'` rows whose source_ref starts with one of
-    `f"{source}:" for source in ANALYSIS_SOURCES` (services/orion-thought/app/store.py); a
-    prefix drift silently empties the painter's third context slot."""
+    `autonomic`, but its journal source_ref prefixes must not move (the journal contract).
+    Until 2026-11-07 orion-thought's reverie painter admitted only rows with these prefixes; it
+    reads curiosity's self-inquiry answers now (ladder retirement PR 6)."""
     from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
 
     assert ANALYSIS_SOURCES == ("concept_induction", "vision_events", "affective_state", "cocreation_signals")

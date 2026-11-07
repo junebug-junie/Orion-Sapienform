@@ -23,12 +23,10 @@ from orion.autonomy.self_shed import HardwareWatchView, bind_workspace_winner, e
 from orion.autonomy.shed_settlement import SHED_PENDING, settle_shed_result
 from orion.autonomy.world_settlement import score_world_episode
 from orion.hardware_watch.rules import TempPoint
-from orion.proposals.policy import ProposalTemplateV1, load_proposal_policy
 from orion.schemas.attention_salience import AttentionLoopOutcomeV1
 from orion.substrate.attention.verdicts import TERMINAL_VERDICTS
 
 REPO = Path(__file__).resolve().parents[1]
-POLICY = load_proposal_policy(REPO / "config/proposals/proposal_policy.v1.yaml")
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
 
@@ -132,18 +130,13 @@ def test_eligibility_refusals(override, refusal):
     assert not snap["eligible"] and refusal in snap["refusals"]
 
 
-def test_template_validation_refuses_a_winner_template_with_no_nodes():
-    with pytest.raises(ValueError):
-        ProposalTemplateV1(kind="self_regulate", target_kind="system", target_id="x", proposed_effect="reduce_pressure",
-                           required_policy_gate="self_reversible", target_binding="workspace.winner")
-
-
 # --- one trigger, never two -------------------------------------------------------------------------
 
-def test_the_shed_template_is_gone_from_the_proposal_policy():
-    """PR 5: the act's only trigger is the want market. A template left here would be a second one."""
-    assert "shed_background_gpu" not in POLICY.proposal_templates
-    assert not [k for k, t in POLICY.proposal_templates.items() if t.target_binding == "workspace.winner"]
+def test_the_proposal_ladder_that_was_the_second_trigger_is_gone():
+    """PR 5: the act's only trigger is the want market. PR 6 (2026-11-07) deleted the proposal ladder
+    that used to carry the shed template, so a second trigger cannot come back through it."""
+    assert not (REPO / "config/proposals").exists()
+    assert not (REPO / "orion/proposals").exists()
 
 
 def test_check6_acted_is_a_valid_verdict_and_never_terminal():

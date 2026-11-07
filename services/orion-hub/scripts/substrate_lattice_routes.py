@@ -167,17 +167,19 @@ def _layer_meta(payload: dict | None, source_table: str, timestamp_str: str | No
     }
 
 
-RUNG_RETIRED_ON = "2026-11-04"
+RUNG_RETIRED_ON = "2026-11-04"  # L10 feedback, L11 consolidation
+LADDER_RETIRED_ON = "2026-11-07"  # L7 proposals, L8 policy, L9 dispatch
 
 
-def _retired_layer(source_table: str, *, note: str) -> dict:
-    """A rung that no longer runs: status ``retired`` (not stale, not missing), with what replaced it."""
+def _retired_layer(source_table: str, *, note: str, retired_on: str = RUNG_RETIRED_ON) -> dict:
+    """A rung that no longer runs: status ``retired`` (not stale, not missing), with what replaced it.
+    Its table is never queried (the drop migrations remove them)."""
     return {
         "status": "retired",
         "source_table": source_table,
         "timestamp": None,
         "age_sec": None,
-        "values": {"retired_on": RUNG_RETIRED_ON, "note": note},
+        "values": {"retired_on": retired_on, "note": note},
     }
 
 
@@ -313,49 +315,20 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
         }
     m5 = _layer_meta(m5_values, "substrate_attention_frames", attn_ts, freshness_threshold_sec)
 
-    # L7 proposals
-    prop_raw, prop_ts = _first_json_with_ts(engine, "substrate_proposal_frames", "proposal_frame_json", "generated_at")
-    l7_values = None
-    if prop_raw:
-        candidates = prop_raw.get("candidates", [])
-        transport_candidates = [
-            c for c in candidates if "transport" in c.get("target_id", "")
-        ]
-        l7_values = {
-            "frame_id": prop_raw.get("frame_id"),
-            "count": len(candidates),
-            "transport_count": len(transport_candidates),
-            "candidates": transport_candidates,
-        }
-    l7 = _layer_meta(l7_values, "substrate_proposal_frames", prop_ts, freshness_threshold_sec)
-
-    # L8 policy decisions
-    pol_raw, pol_ts = _first_json_with_ts(engine, "substrate_policy_decision_frames", "policy_decision_frame_json", "generated_at")
-    l8_values = None
-    if pol_raw:
-        l8_values = {
-            "frame_id": pol_raw.get("frame_id"),
-            "approved_count": pol_raw.get("approved_count", 0),
-            "rejected_count": pol_raw.get("rejected_count", 0),
-            "policy_mode": pol_raw.get("policy_mode"),
-        }
-    l8 = _layer_meta(l8_values, "substrate_policy_decision_frames", pol_ts, freshness_threshold_sec)
-
-    # L9 execution dispatch
-    disp_raw, disp_ts = _first_json_with_ts(engine, "substrate_execution_dispatch_frames", "dispatch_frame_json", "generated_at")
-    l9_values = None
-    if disp_raw:
-        l9_values = {
-            "frame_id": disp_raw.get("frame_id"),
-            "dispatch_mode": disp_raw.get("dispatch_mode"),
-            "dispatch_count": disp_raw.get("dispatch_count", 0),
-            "blocked_count": disp_raw.get("blocked_count", 0),
-        }
-    l9 = _layer_meta(l9_values, "substrate_execution_dispatch_frames", disp_ts, freshness_threshold_sec)
+    # L7 proposals, L8 policy and L9 dispatch: retired 2026-11-07, ladder retirement PR 6
+    # (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md). Every real act they
+    # carried starts itself now; their tables are never queried here.
+    l7 = _retired_layer("substrate_proposal_frames", retired_on=LADDER_RETIRED_ON,
+                        note="each real act starts itself through the want market (cooling, painting, "
+                             "retro, AI Town, image prune)")
+    l8 = _retired_layer("substrate_policy_decision_frames", retired_on=LADDER_RETIRED_ON,
+                        note="its consent checks become the want market's consent gate (attention patch 3)")
+    l9 = _retired_layer("substrate_execution_dispatch_frames", retired_on=LADDER_RETIRED_ON,
+                        note="retired with proposals and policy; the act ledger grades every real act")
 
     # L10 feedback and L11 consolidation: retired 2026-11-04
     # (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md). Shown as
-    # "retired", never as stale or missing, so the page tells the truth until the whole ladder is gone.
+    # "retired", never as stale or missing.
     l10 = _retired_layer("substrate_feedback_frames", note="act ledger grades every real act; "
                          "world-action scoring moved to orion-sql-writer")
     l11 = _retired_layer("substrate_consolidation_frames", note="killed outright (Juniper, 2026-11-04)")
@@ -366,7 +339,7 @@ def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, 
     # flagged it "stale" forever rather than fabricating data, but a permanently-dead
     # layer sitting in an otherwise-live lane's proof chain is exactly the kind of panel
     # CLAUDE.md's burn spec called out to remove, not leave stale-forever. M5 (attention)
-    # now feeds directly into L7 (proposals) in the chain below.
+    # is the top live rung; L7-L11 are retired.
     transport = {
         "m3": m3,
         "m3_receipts": m3_receipts,
@@ -793,18 +766,25 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
             attention_reason = "capability:transport not found in any attention bucket"
 
     # --- action_ceiling gate ---
+    # The ceiling was L9 dispatch's mode. L9 retired 2026-11-07 (ladder retirement PR 6): nothing in
+    # this lane dispatches any more, so the gate says "retired" rather than defaulting to dry_run.
     l9_status = l9.get("status", "missing")
-    if l9_status == "missing":
+    if l9_status == "retired":
+        dispatch_mode = "retired"
+    elif l9_status == "missing":
         dispatch_mode = "unknown"
     else:
         dispatch_mode = (l9.get("values") or {}).get("dispatch_mode") or "dry_run"
     _KNOWN_CEILING_STATES = {
         "dry_run", "read_only", "propose_read_only", "request_operator",
-        "summarize", "watch", "ignore",
+        "summarize", "watch", "ignore", "retired",
         "prepare_only", "dispatch_read_only",  # legacy runtime modes
     }
     action_ceiling_state = dispatch_mode if dispatch_mode in _KNOWN_CEILING_STATES else "unknown"
-    action_ceiling_reason = f"dispatch_mode={dispatch_mode}"
+    action_ceiling_reason = (
+        f"dispatch retired {(l9.get('values') or {}).get('retired_on')}: no action dispatcher"
+        if dispatch_mode == "retired" else f"dispatch_mode={dispatch_mode}"
+    )
 
     return [
         {"gate_id": "freshness", "state": freshness_state, "reason": freshness_reason},

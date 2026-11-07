@@ -492,7 +492,7 @@ verified the full loop: real file on disk, real
 service.** `app/painting_self_start.py` ticks every `ORION_PAINTING_SELF_START_TICK_SEC` (60 s):
 
 1. It runs the visual-baseline schedule (`orion/reverie/baseline.py`, policy
-   `config/proposals/visual_baseline.v1.yaml`) on the `visual_baseline_checkpoint` row under
+   `config/reverie/visual_baseline.v1.yaml`) on the `visual_baseline_checkpoint` row under
    `FOR UPDATE`. A painting is due 5,400 s after the last acknowledged painting. A failed attempt
    is asked again after 600 s. An open attempt (a dream hop too) waits.
 2. Arousal `strained` at the moment of issue defers it by 600 s
@@ -613,6 +613,11 @@ bodies before writing any code. The actual privacy boundary is
 producers' `source_ref` prefixes -- `source_kind='self_study'` also covers
 a sibling free-form "Curiosity" reflection confirmed live to quote
 sensitive personal content, which the allowlist deliberately excludes.
+**Repointed 2026-11-07 (ladder retirement PR 6):** those four analyses had one
+trigger, the retired dispatch rung, and stopped on 11-05. The seed now reads
+curiosity's self-inquiry answers (`self_concept_history`,
+`produced_by='curiosity_self_inquiry'`), and the prefix allowlist went with the
+old source (Juniper, 2026-10-07: no privacy boundary between her and Orion).
 `self_study_text` recorded in `chain_json` on both paths, surfaced in the
 Hub tab alongside `context_text`. `build_visual_prompt`'s old if/elif
 branches were refactored into a list-join composition (a third optional
@@ -885,7 +890,7 @@ compatible). It returns explicit `outcome`, `artifact_persisted`, and an
 `execution_receipt`. `ran=True` alone is not production. Thermal policy is unchanged:
 hot refuses, missing/stale readings allow degraded operation, and disabled is recorded.
 
-Baseline policy lives in `config/proposals/visual_baseline.v1.yaml`, **disabled by
+Baseline policy lives in `config/reverie/visual_baseline.v1.yaml`, **disabled by
 default**. With it enabled, all endpoint attempts use the durable
 `reverie_visual_attempt` claim and a shared retry gap. Replays retain their result.
 An unresolved active/unknown attempt has no automatic expiry: cancellation cannot

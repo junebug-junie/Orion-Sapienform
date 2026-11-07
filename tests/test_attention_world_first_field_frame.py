@@ -132,47 +132,7 @@ def test_world_only_frame_yields_no_goal() -> None:
     assert frame.dominant_targets and qualified_node_targets(frame) == []
 
 
-# --- self-modification proposals must never bind to the world -------------
-
-def _proposal_resolve(attention):
-    from orion.proposals.builder import ATTENTION_FIRST_TARGET_BINDING, _resolve_binding_target
-    from types import SimpleNamespace
-
-    template = SimpleNamespace(
-        target_binding=ATTENTION_FIRST_TARGET_BINDING, target_id="literal:target", target_kind="system"
-    )
-    return _resolve_binding_target(template=template, attention=attention)
-
-
-def test_proposal_skips_an_external_winner_and_binds_the_first_internal() -> None:
-    frame = _frame([_node(PERCEPTION_NODE_ID, 0.999, 0.9), _node("node:substrate.execution", 0.95)])
-    target_id, kind, bound = _proposal_resolve(frame)
-    assert target_id == "node:substrate.execution" and kind == "node" and bound
-
-
-def test_proposal_with_only_world_winners_falls_back_to_the_template_literal() -> None:
-    turns = [NOW.replace(day=d, hour=11, minute=55) for d in range(3, 10)]
-    frame = _frame([_node(PERCEPTION_NODE_ID, 0.97), chat_candidate(turns, now=NOW)])
-    assert frame.dominant_targets
-    assert _proposal_resolve(frame) == ("literal:target", "system", None)
-
-
-def test_proposal_no_winner_frame_falls_back_to_the_template_literal() -> None:
-    assert _proposal_resolve(_frame([_node("node:substrate.execution", 0.1)])) == (
-        "literal:target", "system", None,
-    )
-
-
-def test_proposal_unmarked_pre_world_first_frame_binds_as_before() -> None:
-    t = FieldAttentionTargetV1(
-        target_id="node:substrate.route", target_kind="node", salience_score=1.0,
-        pressure_score=0.2, novelty_score=0.0, urgency_score=0.2, confidence_score=1.0,
-    )
-    frame = FieldAttentionFrameV1(
-        frame_id="f", generated_at=NOW, source_field_tick_id="t", source_field_generated_at=NOW,
-        overall_salience=1.0, dominant_targets=[t],
-    )
-    assert _proposal_resolve(frame)[0] == "node:substrate.route"
+# The proposal-binding tests (orion.proposals.builder) retired with the proposal rung, 2026-11-07.
 
 
 def test_goal_set_is_not_widened_beyond_the_native_five() -> None:

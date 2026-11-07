@@ -22,9 +22,10 @@ one shed RPC.
 ``--live``: the last ``--days`` (default 14) of REAL cabinet readings, plus the 30 days before them as the
 salience reference (``docker exec <container> psql``, read-only). Prints the eligible minutes, the wants
 posted, funded / deferred / no-answer counts, the episodes (treated/control) the loop would have drawn, and
-the scorer's verdicts; and, for comparison, the OLD path's numbers in the same window (the real episodes in
-``substrate_world_action_episodes``, and the minutes with an eligible shed proposal in
-``substrate_proposal_frames``, which keeps about 10 days).
+the scorer's verdicts; and, for comparison, the OLD path's real episodes in the same window
+(``substrate_world_action_episodes``). The old path's eligible-proposal minutes came from
+``substrate_proposal_frames``; that comparison was dropped on 2026-11-07, when the proposal rung retired
+(ladder retirement PR 6) and its table became due for removal.
 
     python -P services/orion-durable-runs/evals/cooling_act_replay.py [--live --days 14]
 """
@@ -352,15 +353,6 @@ def live(days: float) -> dict:
     warm = sum(1 for p in warm_band if p.value >= 29.5)
     old_eps = _psql("SELECT arm, count(*) FROM substrate_world_action_episodes WHERE template = 'shed_background_gpu' "
                     f"AND decided_at >= '{start:%Y-%m-%d %H:%M:%S}' GROUP BY arm")
-    old_prop = _psql("SELECT count(DISTINCT date_trunc('minute', f.created_at)), min(f.created_at)::date, count(*) "
-                     "FROM substrate_proposal_frames f, jsonb_array_elements(f.proposal_frame_json->'candidates') c "
-                     f"WHERE f.created_at >= '{start:%Y-%m-%d %H:%M:%S}' "
-                     "AND c->'execution_intent'->>'template' = 'shed_background_gpu'")
-    frames_since = _psql("SELECT min(created_at)::date FROM substrate_proposal_frames")
-    # The same replay counted only from the day proposal frames are still kept, so the two compare like for like.
-    retained = _t(frames_since[0][0] + " 00:00:00+00:00") if frames_since and frames_since[0][0] else start
-    new_since_retained = sum(n for h, n in res.eligible_by_hour.items()
-                             if datetime.strptime(f"{start.year}-{h}", "%Y-%m-%d %H").replace(tzinfo=timezone.utc) >= retained)
     return {
         "window": [start.isoformat(), end.isoformat()], "cabinet_readings": len(warm_band),
         "share_readings_ge_29_5C": round(warm / max(1, len(warm_band)), 3),
@@ -368,10 +360,6 @@ def live(days: float) -> dict:
         "new_loop": new,
         "old_path": {
             "episodes_by_arm": {a: int(n) for a, n in old_eps},
-            "eligible_proposal_minutes": int(old_prop[0][0]) if old_prop else 0,
-            "eligible_proposal_candidates": int(old_prop[0][2]) if old_prop else 0,
-            "proposal_frames_kept_since": frames_since[0][0] if frames_since else None,
-            "new_loop_eligible_minutes_same_span": new_since_retained,
         },
     }
 

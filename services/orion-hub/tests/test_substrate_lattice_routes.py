@@ -168,11 +168,7 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
         None,  # M3 receipts
         None,  # M4 field
         None,  # M5 attention
-        None,  # L7 proposals
-        None,  # L8 policy
-        None,  # L9 dispatch
-        None,  # L10 feedback
-        None,  # L11 consolidation
+        None,  # (L7-L11 retired: never queried)
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()
@@ -535,11 +531,7 @@ def test_load_transport_proof_chain_with_projection_returns_full_structure(monke
         None,  # M3 receipts (all())
         None,  # M4 field
         None,  # M5 attention
-        None,  # L7 proposals
-        None,  # L8 policy
-        None,  # L9 dispatch
-        None,  # L10 feedback
-        None,  # L11 consolidation
+        None,  # (L7-L11 retired: never queried)
     )
     with patch.object(substrate_lattice_routes, "_engine", return_value=fake):
         result = substrate_lattice_routes._load_transport_proof_chain()
@@ -959,8 +951,9 @@ def test_load_chain_stale_status_when_age_above_threshold(monkeypatch) -> None:
 
 
 def test_retired_rungs_read_retired_and_never_query_their_tables(monkeypatch) -> None:
-    """L10 feedback and L11 consolidation retired 2026-11-04: shown 'retired' (not stale or
-    missing), and the chain loader never reads their frame tables (dropped 2 days later)."""
+    """L10 feedback and L11 consolidation retired 2026-11-04; L7 proposals, L8 policy and L9 dispatch
+    retired 2026-11-07. Each is shown 'retired' (not stale or missing), and the chain loader never
+    reads their frame tables (dropped by the follow-up migrations)."""
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import json as _json
     from datetime import datetime, timedelta, timezone
@@ -970,7 +963,7 @@ def test_retired_rungs_read_retired_and_never_query_their_tables(monkeypatch) ->
     fake = _make_engine_sequence(
         {"projection_json": _json.dumps(proj), "updated_at": fresh_ts},
         None, None, None, None, None, None, None,
-        None,  # L11 returns None
+        None,
     )
     tables: list[str] = []
     real = substrate_lattice_routes._first_json_with_ts
@@ -983,12 +976,30 @@ def test_retired_rungs_read_retired_and_never_query_their_tables(monkeypatch) ->
             patch.object(substrate_lattice_routes, "_first_json_with_ts", side_effect=spy):
         result = substrate_lattice_routes._load_transport_proof_chain(freshness_threshold_sec=60)
     assert result is not None
-    assert "substrate_execution_dispatch_frames" in tables, "spy saw no queries: this check would be vacuous"
-    assert "substrate_feedback_frames" not in tables and "substrate_consolidation_frames" not in tables
-    for key, table in (("l10", "substrate_feedback_frames"), ("l11", "substrate_consolidation_frames")):
+    assert "substrate_attention_frames" in tables, "spy saw no queries: this check would be vacuous"
+    retired = (
+        ("l7", "substrate_proposal_frames", "2026-11-07"),
+        ("l8", "substrate_policy_decision_frames", "2026-11-07"),
+        ("l9", "substrate_execution_dispatch_frames", "2026-11-07"),
+        ("l10", "substrate_feedback_frames", "2026-11-04"),
+        ("l11", "substrate_consolidation_frames", "2026-11-04"),
+    )
+    for key, table, on in retired:
+        assert table not in tables
         layer = result["transport"][key]
         assert layer["status"] == "retired" and layer["source_table"] == table
-        assert layer["values"]["retired_on"] == "2026-11-04" and layer["values"]["note"]
+        assert layer["values"]["retired_on"] == on and layer["values"]["note"]
+
+
+def test_action_ceiling_reads_retired_not_dry_run_once_dispatch_retired(client) -> None:
+    chain = _sample_proof_chain_for_gates()
+    chain["transport"]["l9"] = substrate_lattice_routes._retired_layer(
+        "substrate_execution_dispatch_frames", note="x", retired_on="2026-11-07")
+    with patch.object(substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gate = {g["gate_id"]: g for g in resp.json()["gates"]}["action_ceiling"]
+    assert gate["state"] == "retired"
+    assert "2026-11-07" in gate["reason"]
 
 
 # ── New V1.1 tests: M5 capability:transport detection ────────────

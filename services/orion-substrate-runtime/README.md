@@ -1407,15 +1407,11 @@ L1-5  substrate_field_state          orion-field-digester        (this service's
 L6    substrate_self_state           orion-self-state-runtime    "how is Orion doing"
   |     13 named 0-1 dimensions, memoryless recompute every 2s (see below)
   v
-L7    substrate_proposal_frames      orion-proposal-runtime      self_state -> POSSIBLE actions
+L7    (retired 2026-11-07)          proposals: each real act starts itself (want market)
   v
-L8    substrate_policy_decision_frames orion-policy-runtime      proposals -> governed decision
+L8    (retired 2026-11-07)          policy: becomes the want market's consent gate
   v
-L9    ExecutionDispatchFrameV1       orion-execution-dispatch-   policy+proposal+self_state ->
-                                      runtime                     dispatch envelope
-                                                                   (EXECUTION_DISPATCH_MODE=
-                                                                    dry_run by default -- L9 has
-                                                                    never mutated the real world)
+L9    (retired 2026-11-07)          dispatch: the act ledger grades every real act
   v
 L10   (retired 2026-11-04)          the act ledger grades every real act; world-action
                                                                    scoring runs in orion-sql-writer

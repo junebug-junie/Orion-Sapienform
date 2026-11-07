@@ -61,6 +61,13 @@ quotes, confirmed by reading real bodies before writing any code.
 those four producers -- `source_kind='self_study'` also covers a sibling
 free-form "Curiosity" reflection confirmed live to quote sensitive personal
 content, which this allowlist deliberately excludes.
+2026-11-07 (ladder retirement PR 6): those four producers had one trigger,
+the retired dispatch rung, and stopped on 11-05. The seed now reads
+curiosity's self-inquiry answers (`self_concept_history`,
+`produced_by='curiosity_self_inquiry'`; see store.py's comment above
+`load_latest_self_study_reflection`). The allowlist is gone with its source:
+Juniper's standing rule (2026-10-07) is no privacy boundary between her and
+Orion.
 
 Patch 6 (design doc §17): a third context-seed, `memory_text` --
 `store.load_latest_memory_crystallization`, real shared-life content from

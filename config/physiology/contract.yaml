@@ -37,7 +37,7 @@ protected_paths:
   - {glob: "orion/gpu_pool/shed.py", organ: "budget / spinal (shed reasons)"}
   - {glob: "orion/gpu_pool/scheduler.py", organ: budget}
   - {glob: "orion/gpu_pool/shed_backoff.py", organ: budget}
-  - {glob: "orion/autonomy/allocator.py", organ: choice}
+  # orion/autonomy/allocator.py (choice) retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
   - {glob: "orion/grammar/act_ledger.py", organ: learning}
   - {glob: "config/physiology/**", organ: "contract"}
   # "the bid sites in each producer" (design doc) are added here as Patch D lands each bid().
@@ -77,14 +77,8 @@ readers:
     role: bidder
     reason: "the waking painting's only trigger -- runs the visual-baseline schedule, whose arousal reader (R3 reader 4) defers a due painting while arousal reads strained; places a SHADOW hunger bid on thought.painting before the run exists, never obeyed."
     note: 2026-11-05, ladder retirement PR 2 (moved from orion-proposal-runtime's worker); pending Patch D (painting is fourth in the binding order)
-  - module: orion/world_pulse_read/pull.py
-    role: bidder
-    reason: world_pulse_read pull gate refuses on arousal_strained and on thermal_hot.
-    note: pending Patch D
-  - module: services/orion-hub/scripts/world_pulse_read_pipeline.py
-    role: bidder
-    reason: feeds arousal + thermal_state into the pull gate.
-    note: pending Patch D
+  # The reading pull's gate (orion/world_pulse_read/pull.py, fed by Hub's world_pulse_read_pipeline.py)
+  # retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
   - module: services/orion-hub/scripts/retro_leisure.py
     role: bidder
     reason: retro leisure refuses on cabinet_hot and arousal_strained.
@@ -276,9 +270,6 @@ readers:
   - module: services/orion-durable-runs/app/dream_carry_graph.py
     role: display
     reason: treats a child's deferred_thermal outcome as retryable; reacts to the outcome, no heat read.
-  - module: orion/execution_dispatch/visual_settlement.py
-    role: display
-    reason: settles a deferred_thermal visual run as a real answer, not a failure.
   - module: orion/temporal_self/body.py
     role: display
     reason: counts thermal refusals for Orion's body summary.

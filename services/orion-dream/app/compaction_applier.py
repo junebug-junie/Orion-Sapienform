@@ -4,8 +4,12 @@ THIS IS THE ONE RUNG THAT WRITES MEMORY. Everything here is built to be inert
 until three independent conditions all hold:
 
   1. `ORION_DREAM_COMPACTION_APPLY_ENABLED` is true (the hot gate — default off);
-  2. the delta's proposal was **policy-approved for execution** — and reverie
-     proposals carry `operator_review`, so a human must have approved it;
+  2. an injected **consent** callable says yes for THIS delta. Until 2026-11-07 this was a
+     policy-rung decision frame (`PolicyDecisionFrameV1`, approved for execution by the
+     human-review gate). The policy rung retired with proposals and dispatch (ladder
+     retirement PR 6), and nothing ever called this applier with a frame. Juniper's decision
+     (2026-11-05, decision 6): apply stays off until the body-economy want market's consent
+     gate exists (attention patch 3); that gate plugs in here. No consent -> `not_approved`;
   3. an injected `CompactionMemoryStore` is provided (there is no default
      canonical-memory binding in this module — the real adapter is wired only in
      a dedicated, signed-off change, so importing this module touches nothing).
@@ -30,12 +34,11 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
 from orion.schemas.compaction import MemoryCompactionDeltaV1
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
 from app.settings import settings
 
@@ -43,7 +46,7 @@ logger = logging.getLogger("orion-dream.compaction_applier")
 
 ApplyStatus = Literal[
     "disabled",  # hot gate off
-    "not_approved",  # no execution-approved policy decision for this delta
+    "not_approved",  # no consent for this delta (no consent gate exists yet: fails closed)
     "empty",  # nothing to apply
     "applied",  # applied cleanly (snapshot taken first)
     "rolled_back",  # a failure mid-apply → restored from snapshot
@@ -94,38 +97,20 @@ class CompactionApplyReceiptV1(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-def policy_approves_execution(
-    delta: MemoryCompactionDeltaV1,
-    policy_frame: PolicyDecisionFrameV1 | None,
-) -> bool:
-    """True only if this delta's proposal was approved *for execution*.
+#: Asked once per apply, with the exact delta. True only if a consent authority approved THIS delta
+#: (not a sibling that shares a source request). Never raises into the applier: an exception is no.
+CompactionConsent = Callable[[MemoryCompactionDeltaV1], bool]
 
-    Reverie proposals carry `operator_review`, so absent an explicit human
-    approval this returns False and the applier stays inert. A missing frame,
-    a frame that doesn't reference this delta, or any non-execution decision all
-    fail closed. Any malformed frame also fails closed (never raises).
-    """
-    try:
-        if policy_frame is None or not policy_frame.execution_allowed:
-            return False
-        for decision in policy_frame.approved_decisions:
-            if decision.decision != "approved_for_execution":
-                continue
-            # Memory mutation requires the human-review execution gate. The
-            # autonomy engine's self-authorized `autonomy_policy` gate is NOT
-            # accepted here — a human must approve this rung (§0A).
-            if decision.policy_gate != "execution_policy":
-                continue
-            # The approval must reference THIS exact delta. A shared
-            # `source_request_id` is deliberately NOT enough: two deltas from one
-            # night can answer the same request with different ops, so a human who
-            # reviewed delta A must not thereby authorize un-reviewed delta B.
-            refs = {decision.proposal_id, *decision.evidence_refs}
-            if delta.delta_id in refs:
-                return True
+
+def consent_approves(delta: MemoryCompactionDeltaV1, consent: CompactionConsent | None) -> bool:
+    """True only if ``consent`` exists and says yes for this exact delta. Fails closed: no consent
+    callable (today, always: the market's consent gate is not built), a non-True answer, or any
+    exception is a no."""
+    if consent is None:
         return False
+    try:
+        return consent(delta) is True
     except Exception:
-        # A malformed/duck-typed frame must never crash the gate — fail closed.
         return False
 
 
@@ -146,13 +131,13 @@ def _write_snapshot_file(delta_id: str, snapshot: dict[str, Any]) -> str | None:
 
 def apply_compaction_delta(
     delta: MemoryCompactionDeltaV1,
-    policy_frame: PolicyDecisionFrameV1 | None,
+    consent: CompactionConsent | None = None,
     *,
     store: CompactionMemoryStore,
     enabled: bool | None = None,
     downscale_only: bool | None = None,
 ) -> CompactionApplyReceiptV1:
-    """Apply a policy-approved compaction delta to memory. Snapshot-first, with
+    """Apply a consented compaction delta to memory. Snapshot-first, with
     rollback on any error. Returns a typed receipt; never raises.
 
     Order is fixed: snapshot → downscale-renormalize → (prune unless downscale_only)
@@ -167,8 +152,8 @@ def apply_compaction_delta(
         logger.info("compaction apply disabled; delta %s not applied", delta.delta_id)
         return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="disabled")
 
-    if not policy_approves_execution(delta, policy_frame):
-        logger.info("compaction apply blocked: no execution approval for %s", delta.delta_id)
+    if not consent_approves(delta, consent):
+        logger.info("compaction apply blocked: no consent for %s", delta.delta_id)
         return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="not_approved")
 
     if delta.is_empty():

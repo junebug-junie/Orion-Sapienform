@@ -349,6 +349,19 @@ The code review ran in a subagent (read-only, against `git diff origin/main...HE
   - Evidence: the replay run locally on a throwaway Postgres 16 shows `closed_day_equals_pure_one_pass`
     true, `score_equals_patch2` true and `passed` true. `orion/temporal_self/tests` 279 passed; arc
     precision and play-cue evals PASS; the durable-runs temporal/chronicle tests 124 passed.
+- Finding (CI, spotted by Juniper): "Static repo gates" -> "Metric definition drift" failed
+  (`definition drift gate: FAIL`, run 41998049098). After a merge of origin/main, the committed lock's
+  `_last_change` no longer matched the merge-base diff. Cause: the lock was re-generated while the merge
+  conflict was being resolved, before the merge commit existed. One `regulation.state.v1` consumer row
+  differed, because main had changed the curiosity strain hold the same day.
+  - Fix: merge origin/main (no rebase, no force-push), commit the merge, then run
+    `python scripts/check_definition_drift.py --update` and commit the lock (461163b83). main moved
+    again (#3163); it was merged the same way.
+  - Evidence: `check_definition_drift.py --gate` PASS after the last merge commit, and the whole
+    static-gates step list re-run locally (see Tests run).
+  - The drop migration (#3162) was re-simulated against the merged main. #3116 is applied and merged,
+    and the feedback/consolidation tables are gone live. PR 6 alone: green. The drop merged but
+    unapplied: red (by design). The drop applied: green.
 - Found and fixed during the build, before review:
   - `visual_baseline.v1.yaml` had to move with its readers' Dockerfiles. A missing file silently
     disables waking paintings, so it is pinned by a test and checked in both images.

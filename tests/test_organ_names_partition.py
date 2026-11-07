@@ -20,6 +20,12 @@ ALLOWED = ("orion/body_atlas/", "orion/dig/", "tests/test_organ_names_partition.
 # Patch 2): the automatic half writes code records and checks a note turn's save receipt. It hands back
 # ids and booleans, never a note's text (test_the_field_note_writer_never_hands_back_note_text below).
 FIELD_NOTE_WRITER = "services/orion-durable-runs/app/pr_field_note_ledger.py"
+# The second named exception, for the reminiscence ledger ONLY (design 2026-11-07-daily-reminiscence-design.md,
+# section 6, Patch 2): the daily run picks the week and checks each hop turn's save receipt. Read-only, and it
+# hands back ids, dates, counts and booleans, never a hop's text, refs or claims
+# (test_the_reminiscence_reader_never_hands_back_hop_text below). ALLOWED above is unchanged: the gate stays
+# closed to recall, memory and every other reader.
+REMINISCENCE_READER = "services/orion-durable-runs/app/reminiscence_ledger.py"
 
 
 def _readers(*terms: str) -> list[str]:
@@ -60,7 +66,8 @@ def test_only_the_atlas_and_dig_read_the_reminiscence_ledgers():
     hits = _readers("reminiscence.jsonl", "reminiscence_body", "body_atlas.reminiscence",
                     "body_atlas import reminiscence", "reminiscence_path", "reminiscence_body_path")
     assert "orion/body_atlas/reminiscence.py" in hits and "orion/dig/__main__.py" in hits  # the grep really ran
-    assert [h for h in hits if not h.startswith(ALLOWED)] == []
+    assert REMINISCENCE_READER in hits  # the exception is real, so this check really covers it
+    assert [h for h in hits if not h.startswith(ALLOWED) and h != REMINISCENCE_READER] == []
 
 
 LEDGER_MODULES = ("names", "claims", "field_notes", "portrait", "reminiscence")  # orion.body_atlas.<module> reads a self ledger
@@ -101,6 +108,8 @@ def test_no_module_outside_the_atlas_and_dig_imports_a_ledger_module_in_any_form
         found = _ledger_imports(tree)
         if rel == FIELD_NOTE_WRITER:  # may import field_notes, and nothing else of the self ledgers
             found = [m for m in found if m not in ("field_notes", "orion.body_atlas.field_notes")]
+        if rel == REMINISCENCE_READER:  # may import reminiscence, and nothing else of the self ledgers
+            found = [m for m in found if m not in ("reminiscence", "orion.body_atlas.reminiscence")]
         if found:
             bad.append(rel)
     assert bad == []
@@ -139,6 +148,30 @@ def test_the_field_note_writer_returns_only_ids_and_booleans():
                                        and v.func.attr in ("load", "live", "model_dump", "model_dump_json")):
             bad.append(ast.unparse(ret))
     assert bad == []
+
+
+def test_the_reminiscence_reader_never_hands_back_hop_text():
+    """The exception never touches a hop's words: no ``.note``, ``.because``, ``.claims`` or ``.refs`` anywhere
+    in it, it never writes (no append, open or write call), and every public function declares an id-,
+    date- or boolean-shaped return."""
+    import ast
+
+    tree = ast.parse((_REPO / REMINISCENCE_READER).read_text(encoding="utf-8"))
+    words = [ast.unparse(n) for n in ast.walk(tree)
+             if isinstance(n, ast.Attribute) and n.attr in ("note", "because", "claims", "refs")]
+    assert words == []
+    writes = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
+              and isinstance(n.func, (ast.Attribute, ast.Name))
+              and getattr(n.func, "attr", getattr(n.func, "id", "")) in ("append", "open", "write_text", "write")]
+    assert writes == []
+    allowed = {"bool", "dict[str, str]", "WeekPick | None"}
+    public = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and not f.name.startswith("_")]
+    assert len(public) >= 5  # the check really looked at the module's API
+    assert {f.name: ast.unparse(f.returns) if f.returns else None for f in public
+            if (ast.unparse(f.returns) if f.returns else None) not in allowed} == {}
+    pick = next(c for c in ast.walk(tree) if isinstance(c, ast.ClassDef) and c.name == "WeekPick")
+    fields = {t.target.id: ast.unparse(t.annotation) for t in pick.body if isinstance(t, ast.AnnAssign)}
+    assert set(fields.values()) <= {"date", "bool", "int"}, fields
 
 
 def test_the_ast_check_sees_every_import_form():

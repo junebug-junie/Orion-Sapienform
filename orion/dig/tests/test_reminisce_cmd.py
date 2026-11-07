@@ -154,3 +154,25 @@ def test_a_github_outage_reads_unread_not_as_no_such_pr(monkeypatch):
     monkeypatch.setattr(dig.subprocess, "run", fake("error connecting: could not resolve host api.github.com"))
     with pytest.raises(rm.ReminiscenceError, match="failed"):
         dig._pr_merged_at(9)
+
+
+def test_the_daily_runs_receipt_check_reads_what_the_write_prints(past, capsys):
+    """Patch 2's contract (orion/schemas/reminiscence_run.py) pinned to Patch 1's dig: the receipt the write
+    and the rewrite print, and the refusal that names an already-written hop id, all parse with RECEIPT_RE
+    for the right hop and episode; the run's hop list and lived-record day are the module's own."""
+    from orion.schemas import reminiscence_run as contract
+
+    assert contract.REMINISCENCE_HOPS == rm.HOPS and contract.REMINISCENCE_LIVED_RECORDS_FROM == rm.LIVED_RECORDS_FROM
+    assert contract.REMINISCENCE_FIRST_DAY == rm.FIRST_DAY
+    code, out, err = run(capsys, "reminisce", "write", "what_it_was", WHAT, "because", "README.md")
+    assert code == 0, err
+    rec = rm.load(dig.reminiscence_path())[0][0]
+    [m] = list(contract.RECEIPT_RE.finditer(out))
+    assert (m.group(1), m.group(2), m.group(3), m.group(4)) == ("what_it_was", rec.hop_id, rec.episode, "what_it_was")
+    code, _, err = run(capsys, "reminisce", "write", "what_it_was", WHAT, "because", "README.md")
+    assert code == 1 and rec.hop_id in err   # the run's prompt tells the turn to reply with this id
+    code, out, err = run(capsys, "reminisce", "rewrite", "what_it_was", WHAT + " [reflection] It was small.",
+                         "because", "README.md")
+    assert code == 0, err
+    [m] = list(contract.RECEIPT_RE.finditer(out))   # the superseded id in the same line is not a second receipt
+    assert m.group(2) == rm.load(dig.reminiscence_path())[0][1].hop_id

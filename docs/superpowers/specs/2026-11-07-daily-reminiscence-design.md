@@ -335,3 +335,30 @@ Patch 2: `services/orion-durable-runs/app/reminiscence_graph.py`, `reminiscence_
 2. **Patch 2:** the `reminiscence.episode` daily run (section 6), its tick, act family and receipt
    check. Measure 7 episodes and replace the cost estimate.
 3. **Patch 3:** `dig days` (lived records in a window) before week 57 comes up.
+
+## Patch 2 as built (2026-11-07)
+
+Built as section 6 says, on the `pr.field_note` seams (no parallel runner). Where it differs, and why:
+
+- **One `step` node, not one node per hop.** `step` runs the next of six steps under the run's one hold
+  and loops to itself; the checkpointed `steps` map says which is next. Same shape as section 6, fewer
+  edges, one restart-cancel rule (`pending_step`).
+- **Cleanup is in the cross-read turn, not its own node.** durable-runs has no dig kit, so a cleanup node
+  would be a seventh turn. The cross-read runs `dig close <week end>`. A run that ends early leaves the
+  export to the dig kit's own bound (at most `MAX_OPEN` exports; 24 h old ones go).
+- **A window, not only an hour.** `REMINISCENCE_HOUR_LOCAL=3` opens it and `REMINISCENCE_END_HOUR_LOCAL=9`
+  closes it; the close is the run's admission deadline. A run never starts by day after a restart. A
+  failed day gets one more run (`-a2`) 30 min later, only while two step attempts still fit.
+- **`run_id` in the ledger stays empty.** The dig write runs inside Orion's turn and has no clean way to
+  learn the run id (the governor passes no env, and a new CLI argument would grow every write line). The
+  link is kept on the run side instead: each step record and the run's finish detail carry the hop ids
+  (`GET /runs/<id>`, `durable_admission_runs` / the state row).
+- **Week pick in the brief.** The tick reads the ledger (ids and dates only) and puts the week in the brief
+  so the prompt names it. The dig still decides at write time, and the receipt check does not depend on
+  the brief's week.
+- **Cost measurement:** `scripts/pr_field_note_cost.py --workflow reminiscence.episode` (the field-note
+  script, generalized). Section 7's table stays an ESTIMATE until it reports 7 completed episodes.
+
+The privacy gate is unchanged: the partition test's reader allowlist is the same. The receipt checker
+(`services/orion-durable-runs/app/reminiscence_ledger.py`) is the second named exception, read-only, and
+returns ids, dates, counts and booleans only.

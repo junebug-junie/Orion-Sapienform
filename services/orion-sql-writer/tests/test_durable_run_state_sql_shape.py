@@ -94,3 +94,18 @@ def test_pr_field_note_state_is_accepted_by_real_writer_route():
     })
     values = event.model_dump(exclude={"schema_version"})
     assert model(**values).workflow == "pr.field_note"
+
+
+def test_reminiscence_state_is_accepted_by_real_writer_route():
+    # Consumer side of daily reminiscence Patch 2 (orion/schemas/reminiscence_run.py): sql-writer must accept
+    # the new workflow value before orion-durable-runs submits the first reminiscence.episode run.
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "reminiscence-2026-11-08", "workflow": "reminiscence.episode",
+        "thread_id": "reminiscence-2026-11-08", "node": "finish",
+        "status": "completed", "correlation_id": "trace-rm",
+        "detail": {"line": "reminiscence", "episode": "2026-11-08", "outcome": "complete",
+                   "hop_ids": {"what_it_was": "rm:2026-11-08:what_it_was:0123456789"}, "turns": 6},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "reminiscence.episode"

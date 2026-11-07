@@ -45,6 +45,8 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 field_notes: Any = None     # app.pr_field_note_poll.FieldNotePoller while PR_FIELD_NOTES_ENABLED (Patch 2)
 _field_notes_task: asyncio.Task | None = None
+reminiscence: Any = None    # app.reminiscence_poll.ReminiscenceTicker while REMINISCENCE_ENABLED (Patch 2)
+_reminiscence_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
 claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
@@ -551,7 +553,7 @@ def _build_personality():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global field_notes, _field_notes_task
+    global field_notes, _field_notes_task, reminiscence, _reminiscence_task
     global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
     from app.runner import DurableRunner
 
@@ -623,6 +625,14 @@ async def lifespan(app: FastAPI):
                 field_notes = FieldNotePoller(settings=_settings, pool=admission.pool, submit=admission.submit,
                                               ledger=FieldNoteLedger(_settings.field_note_ledger_dir))
                 _field_notes_task = asyncio.create_task(field_notes.run_forever(_stop))
+            if _settings.reminiscence_enabled:
+                # Daily reminiscence Patch 2: one reminiscence.episode run a Denver day, overnight.
+                from app.reminiscence_ledger import ReminiscenceLedger
+                from app.reminiscence_poll import ReminiscenceTicker
+
+                reminiscence = ReminiscenceTicker(settings=_settings, pool=admission.pool, submit=admission.submit,
+                                                  ledger=ReminiscenceLedger(_settings.reminiscence_ledger_dir))
+                _reminiscence_task = asyncio.create_task(reminiscence.run_forever(_stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
             if admission is not None:
@@ -652,6 +662,8 @@ async def lifespan(app: FastAPI):
             _reconcile_task.cancel()
         if _field_notes_task is not None:
             _field_notes_task.cancel()
+        if _reminiscence_task is not None:
+            _reminiscence_task.cancel()
         if _cooling_act_task is not None:
             _cooling_act_task.cancel()
         if situation is not None:
@@ -707,7 +719,25 @@ async def health() -> dict[str, Any]:
         "cooling_act": cooling_act.health() if cooling_act is not None else None,
         # PR field notes Patch 2: the last poll (merged PRs seen, runs submitted, code records written).
         "field_note_poll": field_notes.health() if field_notes is not None else None,
+        # Daily reminiscence Patch 2: the last tick's decision (episode, week, run submitted or why not).
+        "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
     }
+
+
+@app.get("/reminiscence/plan")
+async def reminiscence_plan(any_hour: bool = False) -> dict[str, Any]:
+    """Read-only: what the tick would do now (``any_hour``: as if inside the window), with the first
+    step's prompt. Submits nothing. The live check that the tick picks the right week and prompt."""
+    from app.reminiscence_graph import build_prompt
+    from orion.schemas.reminiscence_run import REMINISCENCE_STEPS
+
+    if reminiscence is None:
+        raise HTTPException(503, "reminiscence is off (REMINISCENCE_ENABLED / admission)")
+    result = await reminiscence.tick_once(dry_run=True, ignore_window=any_hour)
+    req = reminiscence.last_request if result.decision == "would_submit" else None
+    first = next((k for k in REMINISCENCE_STEPS if k.removeprefix("hop:") not in result.hops_written), None)
+    return {**result.as_dict(), "first_step": first,
+            "first_prompt": build_prompt(req.brief, first) if req is not None and first else None}
 
 
 @app.post("/pr-field-notes/poll")

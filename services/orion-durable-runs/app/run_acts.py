@@ -47,6 +47,7 @@ from orion.grammar.publish import GRAMMAR_EVENT_CHANNEL
 from orion.schemas.grammar import ActCostV1, ActV1, ActVerb, GrammarEventV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW
+from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,16 @@ FAMILIES: dict[str, RunActFamily] = {
         "ledger) by 7200s after its first GPU pool grant, or by the run's own admission deadline + 600s when "
         "that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-04): 3 attempts x 900s turn + "
         "backoff fits in 3600s"),
+    # Daily reminiscence Patch 2 (2026-11-07). Tier 2 (design default, config/physiology/families.yaml). No
+    # run has completed, so the horizon is a bound from the run's own limits: its admission deadline is the
+    # end of the overnight window (03:00-09:00 Denver), so _horizon_sec gives deadline + 600 s; 21600 s is
+    # the floor for a run submitted with less of the window left.
+    "reminiscence": RunActFamily(
+        "reminiscence", "durable.reminiscence", "make", 21600.0,
+        "artifact_produced (the durable run ends completed: five hops and one cross-read, each receipt found in "
+        "the ledger, all five hops live) by 21600s after its first GPU pool grant, or by the run's own admission "
+        "deadline + 600s when that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-07): the "
+        "window is 6 h"),
 }
 
 
@@ -115,7 +126,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
     """The want family of a run, or None for a run that is not one of Orion's own wants.
 
     Included: curiosity.investigate (line investigate -> infer, self_inquiry -> ask),
-    self_sense_eval (sense), journal.compose (make), pr.field_note (make; tier-1 upkeep, Juniper
+    self_sense_eval (sense), journal.compose (make), reminiscence.episode (make; tier 2,
+    design default 2026-11-07), pr.field_note (make; tier-1 upkeep, Juniper
     2026-11-04 -- named here so each note is an act with a measured cost). Excluded on purpose:
 
     * urgent curiosity runs (``brief.urgent`` set): an incident report a sensor alarm forced
@@ -142,6 +154,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
         return FAMILIES["journal_compose"]
     if workflow == PR_FIELD_NOTE_WORKFLOW:
         return FAMILIES["pr_field_note"]
+    if workflow == REMINISCENCE_WORKFLOW:
+        return FAMILIES["reminiscence"]
     return None
 
 

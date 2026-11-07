@@ -42,6 +42,9 @@ from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_
 from app.pr_field_note_graph import build_pr_field_note_graph, finish_detail as pr_field_note_finish_detail
 from app.pr_field_note_ledger import FieldNoteLedger
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_STEP_KEY, PR_FIELD_NOTE_WORKFLOW
+from app.reminiscence_graph import build_reminiscence_graph, finish_detail as reminiscence_finish_detail, pending_step
+from app.reminiscence_ledger import ReminiscenceLedger
+from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
 from app.dream_carry_graph import (
     DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
     DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
@@ -117,10 +120,15 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               # One harness turn under the hold (app/harness_step.py); finish needs no GPU.
               HARNESS_ECHO_SMOKE_WORKFLOW: {"harness_step"},
               # One harness turn (plus verify_receipt) under the hold; precheck and finish need none.
-              PR_FIELD_NOTE_WORKFLOW: {"field_note"}}
+              PR_FIELD_NOTE_WORKFLOW: {"field_note"},
+              # One harness turn per step (five hops, then the cross-read), each under the run's one hold;
+              # precheck and finish need none.
+              REMINISCENCE_WORKFLOW: {"step"}}
 # Workflows whose one step is a harness turn on app/harness_step.py: workflow -> its step key.
 HARNESS_STEP_WORKFLOWS = {HARNESS_ECHO_SMOKE_WORKFLOW: HARNESS_ECHO_SMOKE_STEP_KEY,
                           PR_FIELD_NOTE_WORKFLOW: PR_FIELD_NOTE_STEP_KEY}
+# Workflows of several harness steps on that seam: workflow -> (state -> the step key not yet done).
+HARNESS_MULTI_STEP_WORKFLOWS = {REMINISCENCE_WORKFLOW: pending_step}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
 # whose loop iterations are not lifecycle facts (no run.<status> / run.resumed event per wake).
 TIMED_WAIT_NODES = frozenset({"retry_wait", "image_wait"})
@@ -248,6 +256,10 @@ class AdmissionRuntime:
             PR_FIELD_NOTE_WORKFLOW: build_pr_field_note_graph(
                 lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
                 ledger=FieldNoteLedger(getattr(settings, "field_note_ledger_dir", "/mnt/orion-fcc/self"))),
+            # Daily reminiscence Patch 2: six steps on the same seam, each checked against Orion's ledger.
+            REMINISCENCE_WORKFLOW: build_reminiscence_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
+                ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self"))),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
                 call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
@@ -343,6 +355,8 @@ class AdmissionRuntime:
             return harness_smoke_finish_detail(state)
         if workflow == PR_FIELD_NOTE_WORKFLOW:
             return pr_field_note_finish_detail(state)
+        if workflow == REMINISCENCE_WORKFLOW:
+            return reminiscence_finish_detail(state)
         return finish_detail(state)
 
     async def _load_episode(self, brief) -> dict:
@@ -693,7 +707,7 @@ class AdmissionRuntime:
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
         elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
-                                       HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW) \
+                                       HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, REMINISCENCE_WORKFLOW) \
                 and state.get("step_correlation_id"):
             # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
             # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
@@ -1094,6 +1108,8 @@ class AdmissionRuntime:
             if pending is not None:
                 ids.append(question_turn_id(state, pending[0]))
         step_key = HARNESS_STEP_WORKFLOWS.get(state.get("workflow"))
+        if state.get("workflow") in HARNESS_MULTI_STEP_WORKFLOWS:
+            step_key = HARNESS_MULTI_STEP_WORKFLOWS[state["workflow"]](state)
         if step_key and step_key not in (state.get("steps") or {}):
             # The step turn a dead worker left running: its id derives from the checkpoint.
             ids.append(harness_step_correlation_id(state, step_key))
@@ -1590,10 +1606,14 @@ class AdmissionRuntime:
                 **({"harness_steps": dict(values.get("steps") or {}), "error": values.get("last_error"),
                     "attempt": int(values.get("attempt") or 0), "retry_at": values.get("retry_at"),
                     "harness_turn_meta": values.get("harness_turn_meta")}
-                   if workflow in HARNESS_STEP_WORKFLOWS else {}),
+                   if workflow in HARNESS_STEP_WORKFLOWS or workflow in HARNESS_MULTI_STEP_WORKFLOWS else {}),
                 **({"pr_field_note": {"pr_number": (values.get("brief") or {}).get("pr_number"),
                                       "outcome": values.get("outcome"), "note_id": values.get("note_id")}}
                    if workflow == PR_FIELD_NOTE_WORKFLOW else {}),
+                **({"reminiscence": {k: (values.get("brief") or {}).get(k) for k in ("episode", "period_start", "period_end")}
+                    | {"outcome": values.get("outcome"), "hop_ids": values.get("hop_ids"),
+                       "next_step": pending_step(values)}}
+                   if workflow == REMINISCENCE_WORKFLOW else {}),
                 **({"orion_day": {
                     "letter_date": (values.get("brief") or {}).get("letter_date"),
                     "note_ready": bool(values.get("note_md")),

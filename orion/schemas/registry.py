@@ -818,6 +818,7 @@ from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.harness_step_run import HarnessEchoSmokeBriefV1
 from orion.schemas.pr_field_note_run import PrFieldNoteBriefV1
+from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.orion_day import (
     OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
@@ -1065,6 +1066,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "HarnessEchoSmokeBriefV1": HarnessEchoSmokeBriefV1,
     "PrFieldNoteBriefV1": PrFieldNoteBriefV1,
+    "ReminiscenceRunBriefV1": ReminiscenceRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
     "CompactorDigestResultV1": CompactorDigestResultV1,

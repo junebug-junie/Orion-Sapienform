@@ -58,3 +58,16 @@ def test_the_shipped_field_note_turn_leaves_the_motor_a_real_budget():
 def test_the_old_default_is_exactly_the_live_failure():
     # the "fcc turn timed out after 59.99s" of pr-field-note-3104: 390 - 330 = 60 before any overhead
     assert motor_budget(420.0, 330.0, overhead_sec=0.0) == 60.0
+
+
+def test_the_shipped_reminiscence_step_leaves_the_motor_a_real_budget():
+    # Daily reminiscence Patch 2: each hop turn reads (`dig reminisce` builds the live body) and writes (builds
+    # it again), the same shape as a field note, so it needs the same motor floor.
+    reserves = {_example("orion-hub", "HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC"),
+                _compose_default("orion-hub", "HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC")}
+    timeouts = {_example("orion-durable-runs", "REMINISCENCE_TURN_TIMEOUT_SEC"),
+                _compose_default("orion-durable-runs", "REMINISCENCE_TURN_TIMEOUT_SEC"),
+                Settings.model_fields["reminiscence_turn_timeout_sec"].default}
+    for reserve in reserves:
+        for timeout in timeouts:
+            assert motor_budget(timeout, reserve) >= MIN_MOTOR_SEC, (timeout, reserve)

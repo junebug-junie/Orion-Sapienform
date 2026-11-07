@@ -8,6 +8,7 @@ on:
       - "orion/self_inventory.py"
       - "orion/body_atlas/**"
       - "orion/privacy/**"
+      - "orion/schemas/reminiscence_run.py"   # test_reminisce_cmd.py pins the daily run's receipt contract
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
       - "orion/physiology/report_text.py"
@@ -25,6 +26,7 @@ on:
       - "orion/self_inventory.py"
       - "orion/body_atlas/**"
       - "orion/privacy/**"
+      - "orion/schemas/reminiscence_run.py"   # test_reminisce_cmd.py pins the daily run's receipt contract
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
       - "orion/physiology/report_text.py"

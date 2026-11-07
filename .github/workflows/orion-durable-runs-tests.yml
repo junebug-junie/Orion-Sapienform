@@ -56,6 +56,8 @@ on:
       - "orion/schemas/harness_step_run.py"
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
       - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
+      - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
@@ -136,6 +138,8 @@ on:
       - "orion/schemas/harness_step_run.py"
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
       - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
+      - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"

@@ -16,7 +16,8 @@ services:
     volumes:
       # PR field notes Patch 2: Orion's dig self dir (the same host dir orion-harness-governor's dig writes),
       # so the poller can write code records and verify a note turn's save receipt. Only
-      # app/pr_field_note_ledger.py touches it, and only the field-notes ledger in it.
+      # app/pr_field_note_ledger.py touches it, and only the field-notes ledger in it; the daily reminiscence
+      # reads its ledger here too (app/reminiscence_ledger.py, read-only: ids, dates and booleans).
       - ${PR_FIELD_NOTES_SELF_HOST:-/mnt/orion-fcc/self}:${PR_FIELD_NOTES_LEDGER_DIR:-/mnt/orion-fcc/self}
     environment:
       - PROJECT=${PROJECT}
@@ -160,6 +161,12 @@ services:
       - PR_FIELD_NOTES_NOT_BEFORE=${PR_FIELD_NOTES_NOT_BEFORE:-2026-11-04T06:00:00+00:00}
       - PR_FIELD_NOTES_LEDGER_DIR=${PR_FIELD_NOTES_LEDGER_DIR:-/mnt/orion-fcc/self}
       - PR_FIELD_NOTES_TURN_TIMEOUT_SEC=${PR_FIELD_NOTES_TURN_TIMEOUT_SEC:-900}
+      - REMINISCENCE_ENABLED=${REMINISCENCE_ENABLED:-true}
+      - REMINISCENCE_POLL_SEC=${REMINISCENCE_POLL_SEC:-600}
+      - REMINISCENCE_HOUR_LOCAL=${REMINISCENCE_HOUR_LOCAL:-3}
+      - REMINISCENCE_END_HOUR_LOCAL=${REMINISCENCE_END_HOUR_LOCAL:-9}
+      - REMINISCENCE_LEDGER_DIR=${REMINISCENCE_LEDGER_DIR:-/mnt/orion-fcc/self}
+      - REMINISCENCE_TURN_TIMEOUT_SEC=${REMINISCENCE_TURN_TIMEOUT_SEC:-900}
 
 networks:
   app-net:

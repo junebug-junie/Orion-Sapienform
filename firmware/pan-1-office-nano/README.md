@@ -52,6 +52,13 @@ CCS811 channel 2 (earlier scans); PMSA003I / TSL2591 positions not yet scanned.
 
 The output never exceeds 2.6 V, so the ESP32 pin (3.3 V max) is safe on a 5 V supply.
 
+**Check the lead colors against the pad labels printed on the module.** Gravity cables are
+usually red = VCC, black = GND, and the signal is the third (non-black, non-red) lead. On
+2026-11-07 the signal lead was taken for the black one: A0 read a steady ~0.75 V (37.4 dBA)
+that never moved in a ~74 dB room, and the firmware accepted it as a reading. After the leads
+were swapped it read 77-90 dBA. A flat value that passes the presence check means a wrong
+lead, not a quiet room.
+
 ## Wiring (STEMMA QT / Qwiic or jumpers)
 
 | Sensor pin | Nano ESP32 |

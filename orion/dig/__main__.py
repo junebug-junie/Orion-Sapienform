@@ -1377,7 +1377,8 @@ def _pr_merged_at(n: int) -> str | None:
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise ReminiscenceError(f"gh pr view {n}: {exc}") from exc
     if proc.returncode != 0:
-        if "could not resolve" in proc.stderr.lower() or "no pull requests found" in proc.stderr.lower():
+        err = proc.stderr.lower()
+        if "could not resolve to a pullrequest" in err or "no pull requests found" in err:  # not a PR; else UNREAD
             return None
         raise ReminiscenceError(f"gh pr view {n} failed: {proc.stderr.strip()[:150]}")
     try:

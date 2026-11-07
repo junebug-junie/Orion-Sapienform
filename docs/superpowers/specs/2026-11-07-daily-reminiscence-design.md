@@ -96,7 +96,8 @@ read. Juniper reads it there until she opens the gate.
   written that day fixes the period. Every later hop that day joins it.
 - **Period:** a 7-day week counted from 2025-06-24 (week 1 = 06-24..06-30). The pick is the oldest
   week that has no **complete** episode (all five hops live) and that ended before today. An
-  unfinished episode leaves its week open, so the next day returns to it.
+  unfinished episode leaves its week open, so the next day returns to it. Hops do not carry over
+  between days: the return visit writes all five again (the earlier lines stay in the file).
 - **Period commit:** the last `main` commit at the Denver end of the period's last day (the same
   `commit_at` rule `dig open` uses).
 - **Hops** (arc spec names), each with the labels it must carry at least once:
@@ -145,7 +146,8 @@ Append-only under a file lock (check and append are one step, like field notes).
 ### 4. The write check (write = read)
 
 `python -P -m orion.dig reminisce write <hop> "<note>" because "<refs>"`. The note is 1-6
-sentences, 40-1,000 chars (labels not counted). Every sentence starts with a label tag; refs may
+sentences, 40-1,000 chars (labels not counted). Every sentence starts with its own label tag (a tag
+followed by two sentences is refused); refs may
 sit inside it (`[code_then services/orion-hub/app/main.py] ...`). Nothing is saved unless:
 
 - every sentence has a label, and the hop has the label it needs (table above);
@@ -159,10 +161,11 @@ What a ref may be, and what "resolves" means:
 
 | Ref | Labels | Resolves when |
 |---|---|---|
-| a path (`a/b.py`, `docs/x/`) | `code_then` | it exists at the period commit (`git cat-file`, a folder via `ls-tree`) |
+| a path (`a/b.py`, `docs/x/`) | `code_then` | it exists at the period commit (`git cat-file -e <commit>:<path>`, files and folders alike) |
 | | `now` | it exists in deployed main (`ORION_DIG_NOW_ROOT`) |
 | | `pr_text`, `reflection` | it exists then or now |
-| a commit sha (7-40 hex) | `code_then`, `pr_text` | in the clone; in the then-hops (`what_it_was`, `what_it_was_like`) it is an ancestor of the period commit |
+| a commit sha (7-40 hex) | `code_then` | in the clone and an ancestor of the period commit, in every hop |
+| | `pr_text` | in the clone; in the then-hops (`what_it_was`, `what_it_was_like`) an ancestor of the period commit |
 | | `reflection` | in the clone |
 | `#<n>` | `pr_text`, `now`, `reflection` | a merged PR (`gh pr view`); in the then-hops, merged by the period's end |
 | `fn:<n>:<hex>` | `now`, `lived_record`, `reflection` | a field note in the ledger |
@@ -170,8 +173,10 @@ What a ref may be, and what "resolves" means:
 | `arc:<id>`, `act:<id>` | `lived_record`, `now`, `reflection` | `orion/refs.py` resolves it |
 | a dig result file (`$ORION_DIG_HOME/dig/...`) | `now`, `reflection` | the file exists |
 
-**Re-check on read:** every `now`-side ref (paths in main, atlas ids, field-note ids, arcs and
-acts, dig files) is checked again on every `reminisce` read, and a hop that fails reads STALE with
+A ref with a `..`, `.git*` or `.env*` segment names nothing checkable and is refused.
+
+**Re-check on read:** every ref that can change (any path not cited as `code_then`, atlas ids,
+field-note ids, arcs and acts, dig files, and because refs that back only a reflection) is checked again on every `reminisce` read, and a hop that fails reads STALE with
 the ref. Git history and merged PRs cannot change, so they are checked at write only (stated in
 the printout).
 
@@ -286,7 +291,11 @@ Patch 2: `services/orion-durable-runs/app/reminiscence_graph.py`, `reminiscence_
   the five existing self ledgers. Writes two new append-only files:
   `self/reminiscence.jsonl` and `self/reminiscence_body.jsonl`, and dig result files.
 - **Privacy boundary:** both new files join the partition test: only `orion/body_atlas/` and
-  `orion/dig/` may read them (Patch 2 adds one named receipt-checker exception). The note passes
+  `orion/dig/` may read them (Patch 2 adds one named receipt-checker exception). Stated limit: a
+  `reminisce` read also copies hop text into its dig result file (`$ORION_DIG_HOME/dig/...`) and
+  prints it into the turn that ran it, as `portrait` and `field-notes` do with Orion's words. Those
+  are the dig kit's own files and that turn's transcript; no recall, memory card or journal path
+  reads them. The note passes
   the personal-terms denylist. Juniper and Orion have no boundary between them; she reads the file.
 - **Trace that proves it works:** a live `dig reminisce` printout naming week 1 and its commit; a
   hop write that saves and prints `reminisce <hop> saved rm:...`; a following read that shows it

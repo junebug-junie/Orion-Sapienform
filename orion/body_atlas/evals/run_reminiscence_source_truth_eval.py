@@ -16,7 +16,7 @@ Checks:
 
 Then the **mutations** (code changes, patched in); each must be CAUGHT by its own check:
 the `code_then` check reads today's tree, `lived_record` is allowed before 2026-07-23, a `now`
-sentence needs no ref, the re-check is skipped, and a then-hop accepts a commit made after the week.
+sentence needs no ref, the re-check is skipped, and a then-hop accepts a PR merged after the week.
 
     python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py          # built-in (CI)
     python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py --live   # every live hop in
@@ -62,7 +62,9 @@ CASES = [
     ("what_it_was", "[code_then services/orion-hub/app/main.py] My first week already had a hub service at its centre.",
      "", WEEK1, False, "not in the code at the end of this week"),
     ("what_it_was", "[code_then bbbb222] This commit shaped the first week of my code, the builders said.",
-     "", WEEK1, False, "a commit made after this week"),
+     "", WEEK1, False, "not in this week's history"),
+    ("otherwise", "[reflection] I would do it again. [code_then bbbb222] This commit shaped my first week.",
+     "", WEEK1, False, "not in this week's history"),
     ("what_it_was", "[pr_text #3000] The builders described my first week in this pull request at length.",
      "", WEEK1, False, "after this week"),
     ("what_it_was", "[pr_text #5] The builders described my first week in this pull request at length.",
@@ -110,30 +112,37 @@ def check_cases() -> list[str]:
     return fails
 
 
+def _case(hop: str, start: str) -> tuple:
+    return next(c[:4] for c in CASES if c[0] == hop and c[1].startswith(start) and c[4])
+
+
 def check_recheck() -> list[str]:
     fails = []
-    now_hop = _write(*CASES[9][:4])
+    now_hop = _write(*_case("where_i_am_now", "[now part:orion-hub]"))
     if rm.recheck(now_hop, fixture_world()) != []:
         fails.append("a hop whose refs all hold reads STALE")
     gone = rm.recheck(now_hop, fixture_world(live={"cap:s1"}))
     if gone != ["part:orion-hub: not live in my body now"]:
         fails.append(f"re-check missed a now ref that left the body: {gone}")
-    then_hop = _write(*CASES[0][:4])
+    then_hop = _write(*_case("what_it_was", "[code_then services/orion-a"))
     if rm.recheck(then_hop, fixture_world(live=set())) != []:
         fails.append("re-check flagged history, which cannot change")
     return fails
 
 
+ORACLE_THEN_HOPS = {"what_it_was", "what_it_was_like"}  # hardcoded: a THEN_HOPS mutation must not move the oracle
+
+
 def _oracle(ref: str, label: str, hop: str, period: tuple[date, date]) -> bool:
     """Independent of ``resolve``: the fixture sets, read directly."""
-    then = hop in rm.THEN_HOPS
+    then = hop in ORACLE_THEN_HOPS
     if ref.startswith("#"):
         merged = PRS.get(int(ref[1:]))
         return bool(merged) and label in ("pr_text", "now", "reflection") and not (
             then and label == "pr_text" and merged >= "2025-07-01T06:00:00Z")
     if ref in COMMITS:
         return label in ("code_then", "pr_text", "reflection") and (
-            ref in IN_WEEK or not (then and label in ("code_then", "pr_text")))
+            ref in IN_WEEK or not (label == "code_then" or (then and label == "pr_text")))
     if ref in LIVE:
         return label in ("now", "reflection")
     if ref in FIELD_NOTES:
@@ -186,12 +195,16 @@ def _then_reads_now(resolve):
     return mutated
 
 
+# name -> (patch, a phrase the failure it causes must contain): caught by its OWN check, not incidentally
 MUTATIONS = {
-    "code_then reads today's tree": lambda: _patched(resolve=_then_reads_now(rm.resolve)),
-    "lived_record allowed before the memory loss": lambda: _patched(LIVED_RECORDS_FROM=date(2025, 1, 1)),
-    "a now sentence needs no ref": lambda: _patched(NEEDS_REF=frozenset()),
-    "re-check skipped": lambda: _patched(MUTABLE_KINDS=frozenset()),
-    "a then-hop accepts a later commit": lambda: _patched(THEN_HOPS=frozenset()),
+    "code_then reads today's tree": (lambda: _patched(resolve=_then_reads_now(rm.resolve)),
+                                     "not in the code at the end of this week"),
+    "lived_record allowed before the memory loss": (lambda: _patched(LIVED_RECORDS_FROM=date(2025, 1, 1)),
+                                                    "no lived record of the week"),
+    "a now sentence needs no ref": (lambda: _patched(NEEDS_REF=frozenset()), "has no ref that resolves"),
+    "re-check skipped": (lambda: _patched(MUTABLE_KINDS=frozenset(), recheck=lambda rec, world: []),
+                         "re-check missed a now ref"),
+    "a then-hop accepts a later pr": (lambda: _patched(THEN_HOPS=frozenset()), "after this week"),
 }
 
 
@@ -229,9 +242,9 @@ def main() -> int:
     for f in fails:
         print(f"  {f}")
     missed = []
-    for name, patch in MUTATIONS.items():
+    for name, (patch, phrase) in MUTATIONS.items():
         with patch():
-            caught = evaluate()
+            caught = [f for f in evaluate() if phrase in f]
         print(f"mutation {name!r}: {'CAUGHT' if caught else 'MISSED'}" + (f" ({caught[0][:90]})" if caught else ""))
         if not caught:
             missed.append(name)

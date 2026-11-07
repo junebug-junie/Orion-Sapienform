@@ -82,7 +82,7 @@ def test_where_i_am_now_needs_a_now_sentence_with_a_live_ref():
 def test_a_live_ref_cannot_back_code_then_and_a_later_commit_cannot_back_the_week():
     with pytest.raises(rm.ReminiscenceError, match=r"a atlas ref cannot back a \[code_then\]"):
         write("what_it_was", "[code_then part:orion-hub] The hub was there in the first week of my code.")
-    with pytest.raises(rm.ReminiscenceError, match="def5678: a commit made after this week"):
+    with pytest.raises(rm.ReminiscenceError, match="def5678: not in this week's history"):
         write("what_it_was", "[code_then def5678] This commit shaped the first week of my code base.")
     with pytest.raises(rm.ReminiscenceError, match="#3000: merged 2026-11-01, after this week"):
         write("what_it_was", "[pr_text #3000] The builders described the first week in this pull request.")
@@ -205,3 +205,48 @@ def test_the_ready_line_for_the_reflection_hop_asks_for_no_ref():
                                  hops=rm.hop_views(rm.episode_hops(recs, "2026-11-07"), world()))
     _, tail = rm.render(read)
     assert 'write otherwise "[reflection] ..." because' in tail[-1]
+
+
+# --- review 2026-11-07 ------------------------------------------------------------------------------
+
+def test_an_all_digit_field_note_id_is_not_cut_as_a_line_number():
+    assert rm.clean_ref("fn:3090:0123456789") == "fn:3090:0123456789" and rm.clean_ref("act:12345") == "act:12345"
+    assert rm.clean_ref("services/x/app.py:12") == "services/x/app.py"
+    w = world(field_note_ids=lambda: {"fn:3090:0123456789"})
+    rec = write("where_i_am_now", "[now fn:3090:0123456789] Since then I write a field note after every merge.", w=w)
+    assert rec.claims[0].refs == ["fn:3090:0123456789"]
+
+
+def test_one_sentence_per_label():
+    with pytest.raises(rm.ReminiscenceError, match="one sentence per label"):
+        write("where_i_am_now", "[now part:orion-hub] A hub runs at my centre. It keeps every organ in step with me.")
+    assert write("where_i_am_now", "[now part:orion-hub] A hub runs at my centre (v2. as built) and keeps time.")
+
+
+def test_code_then_commit_is_checked_against_the_week_in_every_hop():
+    with pytest.raises(rm.ReminiscenceError, match="def5678: not in this week's history"):
+        write("otherwise", "[reflection] I would do it again. [code_then def5678] This commit shaped my first week.")
+
+
+def test_secret_and_git_paths_name_nothing_checkable():
+    for ref in (".env", ".git/config", "services/x/.env", "../etc/passwd"):
+        assert rm.ref_kind(ref) == "unknown", ref
+
+
+def test_a_then_or_now_path_that_held_only_by_today_is_rechecked():
+    rec = write("where_im_going", "[pr_text services/orion-hub/app/main.py] The builders put a hub at my centre later on.")
+    assert rm.recheck(rec, world()) == []
+    gone = world(path_now=lambda p: False)
+    assert rm.recheck(rec, gone) == ["services/orion-hub/app/main.py: in neither this week's code nor main"]
+    refl = write("otherwise", "[reflection] I would have kept a hub from the very first week of my code.",
+                 "services/orion-hub/app/main.py")
+    assert rm.recheck(refl, gone) == ["services/orion-hub/app/main.py: in neither this week's code nor main"]
+
+
+def test_a_two_part_organ_that_falls_apart_says_its_parts_are_single_not_gone():
+    old = rm.snapshot(portrait_body(), "2026-11-06")
+    old.organs.append(rm.OrganSnapV1(organ_id="organ:dddddddddd", name="pair", members=["part:host:athena", "part:host:circe"]))
+    d = rm.body_diff(old, portrait_body())
+    pair = next(g for g in d.organs_gone if g.organ.startswith("pair"))
+    assert pair.related == [] and pair.gained == ["part:host:athena", "part:host:circe"]
+    assert any("pair (organ:dddddddddd), its parts are now single parts" in ln for ln in rm.body_lines(d))

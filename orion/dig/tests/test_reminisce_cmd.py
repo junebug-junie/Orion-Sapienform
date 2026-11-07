@@ -141,3 +141,16 @@ def test_an_unreadable_body_still_reads_and_says_unread(past, capsys, monkeypatc
     assert code == 0 and "STALE now: UNREAD (FalkorDB down)" in out
     code, out, err = run(capsys, "reminisce", "write", "what_it_was", WHAT, "because", "README.md")
     assert code == 0 and "body snapshot skipped (live body UNREAD: FalkorDB down)" in out, err
+
+
+def test_a_github_outage_reads_unread_not_as_no_such_pr(monkeypatch):
+    """Review 2026-11-07: any gh error with "could not resolve" (e.g. a DNS failure) read as "not merged"."""
+    import types
+
+    def fake(stderr):
+        return lambda *a, **k: types.SimpleNamespace(returncode=1, stdout="", stderr=stderr)
+    monkeypatch.setattr(dig.subprocess, "run", fake("GraphQL: Could not resolve to a PullRequest with the number of 9."))
+    assert dig._pr_merged_at(9) is None
+    monkeypatch.setattr(dig.subprocess, "run", fake("error connecting: could not resolve host api.github.com"))
+    with pytest.raises(rm.ReminiscenceError, match="failed"):
+        dig._pr_merged_at(9)

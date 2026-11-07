@@ -22,6 +22,7 @@ import fcntl
 import hashlib
 import json
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -68,11 +69,12 @@ KIND_LABELS: dict[str, frozenset[str]] = {
 }
 # ref kinds whose answer can change after the write: checked again on every read. Git history and
 # merged PRs cannot change, so they are checked at write only.
-MUTABLE_KINDS = frozenset({"fn", "atlas", "lived", "digfile"})
+MUTABLE_KINDS = frozenset({"fn", "atlas", "lived", "digfile"})  # and paths not cited as code_then (recheck)
 
 LEDGER_FILE = "reminiscence.jsonl"
 BODY_FILE = "reminiscence_body.jsonl"
 LOCK_FILE = ".reminiscence.lock"
+LOCK_WAIT_S = 180  # a write builds the live atlas and may ask GitHub; a stuck one must not block forever
 
 
 class ReminiscenceError(ValueError):
@@ -279,6 +281,8 @@ _PATH = re.compile(r"[\w.-]+(?:/[\w.-]*)*")
 
 def clean_ref(ref: str) -> str:
     ref = ref.strip().strip("`'\"()").rstrip(".,;:")
+    if _FN.fullmatch(ref) or _LIVED.fullmatch(ref) or _ATLAS.fullmatch(ref):
+        return ref  # an id: an all-digit tail is part of it, not a line number (review 2026-11-07)
     return re.sub(r"(?::\d+(?:-\d+)?|#L\d+(?:-L?\d+)?)$", "", ref)  # a line number is fine
 
 
@@ -295,7 +299,10 @@ def ref_kind(ref: str) -> str:
         return "digfile"
     if _SHA.fullmatch(ref):
         return "sha"
-    if _PATH.fullmatch(ref) and ("/" in ref or re.search(r"\.\w{1,6}$", ref)) and ".." not in ref.split("/"):
+    segs = ref.split("/")
+    if any(x == ".." or x.startswith(".git") or x.startswith(".env") for x in segs):
+        return "unknown"  # never a parent folder, git internals or a secrets file
+    if _PATH.fullmatch(ref) and ("/" in ref or re.search(r"\.\w{1,6}$", ref)):
         return "path"
     return "unknown"
 
@@ -321,9 +328,9 @@ def resolve(ref: str, label: str, hop: str, world: World) -> str | None:
     if kind == "sha":
         full = world.commit(ref)
         if not full:
-            return f"{ref}: no such commit in the clone"
-        if then_hop and label in ("code_then", "pr_text") and not world.is_ancestor(full):
-            return f"{ref}: a commit made after this week (not in its history)"
+            return f"{ref}: no such commit in the clone (or too short to name one)"
+        if (label == "code_then" or (then_hop and label == "pr_text")) and not world.is_ancestor(full):
+            return f"{ref}: not in this week's history (made later, or off main)"
         return None
     if kind == "pr":
         n = int(ref[1:])
@@ -356,12 +363,13 @@ def utc(ts: str) -> datetime:
 
 # --- the write check -----------------------------------------------------------------------------
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")  # a new sentence: end mark, space, capital
 _TAG = re.compile(r"\[\s*(" + "|".join(LABELS) + r")\b([^\]]*)\]")
 
 
 def note_rule() -> str:
     """Built from the limits ``check_write`` enforces, so the rule cannot drift from the check."""
-    return (f"Start every sentence with a label: [code_then] [pr_text] [lived_record] [now] [reflection]; "
+    return (f"Start every sentence with its own label: [code_then] [pr_text] [lived_record] [now] [reflection]; "
             f"refs may sit inside it ([code_then services/x/app.py]). 1-{NOTE_MAX_SENTENCES} sentences, "
             f"{NOTE_MIN_CHARS}-{NOTE_MAX_CHARS} chars. Each hop needs its label: "
             + "; ".join(f"{h} {'/'.join(v)}" for h, v in HOP_NEEDS.items())
@@ -383,6 +391,9 @@ def parse_note(text: str) -> list[tuple[str, list[str], str]]:
         sentence = text[m.end(): end].strip()
         if not sentence:
             raise ReminiscenceError(f"label [{m.group(1)}] has no sentence after it")
+        if len(_SENTENCE_END.split(sentence)) > 1:
+            raise ReminiscenceError(f"one sentence per label: [{m.group(1)}] is followed by more than one sentence "
+                                    f"({sentence[:80]!r}); start each sentence with its own label")
         refs = [clean_ref(r) for r in re.split(r"[\s,;]+", m.group(2).lstrip(" :")) if clean_ref(r)]
         out.append((m.group(1), refs, sentence))
     return out
@@ -468,15 +479,30 @@ def check_write(*, hop: str, note: str, because: str, episode: str, period: tupl
 
 
 def recheck(rec: ReminiscenceHopV1, world: World) -> list[str]:
-    """Refs that can change since the write (MUTABLE_KINDS, and paths cited as [now]), checked again."""
+    """Refs whose answer can change since the write, checked again: MUTABLE_KINDS and every path not
+    cited as code_then (a then-or-now path that held only by today's tree can leave it). A because ref
+    that backs no stored claim (e.g. only a reflection) must still resolve under one of the hop's labels."""
     out = []
+
+    def mutable(r: str, label: str) -> bool:
+        kind = ref_kind(r)
+        return kind in MUTABLE_KINDS or (kind == "path" and label != "code_then")
+
+    stored = set()
     for c in rec.claims:
         for r in c.refs:
-            kind = ref_kind(r)
-            if kind in MUTABLE_KINDS or (kind == "path" and c.label == "now"):
+            stored.add(r)
+            if mutable(r, c.label):
                 why = resolve(r, c.label, rec.hop, world)
                 if why:
                     out.append(why)
+    labels = list(dict.fromkeys(c.label for c in rec.claims))
+    for r in rec.because:
+        if r in stored or not any(mutable(r, lab) for lab in labels):
+            continue
+        reasons = [resolve(r, lab, rec.hop, world) for lab in labels]
+        if all(reasons):
+            out.append(reasons[0])
     return list(dict.fromkeys(out))
 
 
@@ -520,7 +546,16 @@ def ledger_lock(self_dir: Path):
     lock = Path(self_dir) / LOCK_FILE
     lock.parent.mkdir(parents=True, exist_ok=True)
     with lock.open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise ReminiscenceError(f"another reminiscence write has held the ledger for {LOCK_WAIT_S} s; "
+                                            "nothing saved, try again") from None
+                time.sleep(0.5)
         try:
             yield
         finally:
@@ -570,7 +605,9 @@ def body_diff(old: BodySnapshotV1, atlas: BodyAtlasV1) -> BodyDiffV1:
             if gained or lost:
                 out.organs_changed.append(OrganChangeV1(organ=_label(b), gained=gained, lost=lost))
         else:
+            # gained: members still in the body but in no multi-part organ (singletons now)
             out.organs_gone.append(OrganChangeV1(organ=_label(a), lost=a.members,
+                                                 gained=sorted(m for m in a.members if m in new.parts and m not in where_now),
                                                  related=sorted({where_now[m] for m in a.members if m in where_now})))
     for j, b in enumerate(new.organs):
         if j not in used:
@@ -589,7 +626,8 @@ def body_lines(d: BodyDiffV1) -> list[str]:
         lines.append("    status: " + "; ".join(d.status_changed[:4])[:300])
     for g in d.organs_gone[:3]:
         how = f"split across {len(g.related)} organs" if len(g.related) > 1 else (
-            f"merged into {g.related[0]}" if g.related else "its parts left the body")
+            f"merged into {g.related[0]}" if g.related else (
+                "its parts are now single parts" if g.gained else "its parts left the body"))
         lines.append(f"    gone: {g.organ[:80]}, {how}")
     for n in d.organs_new[:3]:
         lines.append(f"    new: {n.organ[:80]}, {len(n.gained)} parts" + (f", from {len(n.related)} earlier organs" if n.related else ""))

@@ -111,8 +111,8 @@ readers:
     note: 2026-10-30, already the Patch D shape (registered when the rule moved to orion/physiology/binding.py)
   - module: services/orion-hub/scripts/curiosity_investigation.py
     role: bidder
-    reason: curiosity scheduling refuses on arousal_strained; engaged stretches cooldown.
-    note: pending Patch D
+    reason: curiosity pacing reads arousal -- engaged stretches the investigation cooldown; self-inquiry runs only at idle (engaged or strained holds it).
+    note: 2026-11-07, the investigation line's strained veto is deleted (its durable-runs bid binds since #3010). The self-inquiry idle-only hold is pending Patch D (durable.self_inquiry bids do not bind yet)
   - module: services/orion-hub/scripts/endogenous_outreach.py
     role: bidder
     reason: outreach refuses on arousal_strained.

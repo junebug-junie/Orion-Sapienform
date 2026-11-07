@@ -922,7 +922,7 @@ once per tick; each loop decides what a level means for its own dial:
 
 | Dial | strained | engaged | idle | unknown / off |
 |---|---|---|---|---|
-| Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
+| Curiosity investigation line | as today (strain veto retired 2026-11-07; the run's body-economy bid in durable-runs decides) | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
 | Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
 | Background outreach | refused, `arousal_strained` (one strain report per long episode may pass, see below) | as today | as today | as today |
 | Scheduled self-modification proposals (R3 reader 6) | no new proposal; pressure kept, traced `mutation_proposal_held` | as today | as today | as today |

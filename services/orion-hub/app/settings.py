@@ -1462,8 +1462,9 @@ class Settings(BaseSettings):
     ORION_REGULATION_READER_MAX_AGE_SEC: float = Field(
         default=360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
     )
-    # Reader 2, curiosity pacing (investigation line): strained -> hold (reason
-    # arousal_strained); engaged -> cooldown x multiplier (arousal_engaged_cooldown).
+    # Reader 2, curiosity pacing (investigation line): engaged -> cooldown x multiplier
+    # (arousal_engaged_cooldown). Strain does not hold this line (retired 2026-11-07): its
+    # body-economy bid in durable-runs decides (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE).
     HUB_CURIOSITY_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_AROUSAL_ENABLED"
     )

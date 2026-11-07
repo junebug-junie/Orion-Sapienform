@@ -10,7 +10,7 @@
       "high   removed metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime/l7_l11_ladder",
       "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:exec:request:background (all_producers: \u2026ch', 'orion-execution-dispatch-runtime', 'orion-hardware-wat\u2026 -> \u2026ch', 'orion-hardware-wat\u2026)",
       "high   routing_changed metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome (all_producers: \u2026ns', 'orion-execution-dispatch-runtime', 'orion-spark-concep\u2026 -> \u2026ns', 'orion-spark-concep\u2026)",
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026vices.orion-proposal-runtime.app.worker:ProposalRuntimeWork\u2026 -> \u2026vices.orion-substrate-runtime.app.worker:BiometricsSubstrat\u2026)"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026ation.tick (strained holds; engaged doubles the cooldown)',\u2026 -> \u2026ation.tick (engaged doubles the cooldown; strain no longer \u2026)"
     ]
   },
   "definitions": {
@@ -5019,7 +5019,7 @@
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
         "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
         "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
-        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (engaged doubles the cooldown; strain no longer holds it since 2026-11-07, its durable-runs bid decides)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._strain_report_once -> scripts.strain_report (strain loop part 3: a strained episode >= 60 min may pass the strained refusal with ONE grounded report, once per episode and once per local day; reads since, reasons, cabinet_temp_c, gpu_queue_depth)",

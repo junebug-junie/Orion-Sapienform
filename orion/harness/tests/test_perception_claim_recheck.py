@@ -144,3 +144,15 @@ async def test_second_repair_keeps_the_first_checks_other_notes() -> None:
 async def test_misaligned_repair_still_counts_as_changed_when_text_echoes() -> None:
     chain, _calls = await _run([_bad(), make_reflection()], ["Rowan came right on her usual 11:39; I started calling that slot Rowan."])
     assert chain.finalize_changed is True
+
+
+@pytest.mark.asyncio
+async def test_no_change_twice_on_a_flagged_claim_is_reported_kept_not_repaired() -> None:
+    """2026-11-07 review: a repair answering NO_CHANGE to an unsupported claim must not be
+    traced as "repaired twice" while the flagged claim is still in what Juniper reads."""
+    from orion.harness.finalize import UNSUPPORTED_CLAIM_KEPT_REASON
+
+    chain, calls = await _run([_bad(), _bad()], ["NO_CHANGE", "NO_CHANGE."])
+    assert chain.response_repair_reason == UNSUPPORTED_CLAIM_KEPT_REASON
+    assert "NO_CHANGE" not in chain.final_text
+    assert len(calls) == 4  # still bounded

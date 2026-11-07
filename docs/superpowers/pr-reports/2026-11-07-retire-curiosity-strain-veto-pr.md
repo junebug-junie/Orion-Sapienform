@@ -101,6 +101,6 @@ Hub only. Nothing else changes at runtime.
 
 ## PR link
 
-See the PR this report belongs to.
+https://github.com/junebug-junie/Orion-Sapienform/pull/3159
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

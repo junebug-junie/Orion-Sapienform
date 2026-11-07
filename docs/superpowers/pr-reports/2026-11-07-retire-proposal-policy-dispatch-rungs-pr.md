@@ -13,7 +13,7 @@
   self-study seed now reads curiosity's answers.
 - **The Hub lattice page and the ladder check show L7–L9 as "retired".** The sensing half stays
   checked, and the ladder check is GREEN on live data.
-- **The tables stay until PR 7.** Their drop is a separate draft PR (#DROP_PR), to merge when it is
+- **The tables stay until PR 7.** Their drop is a separate draft PR (https://github.com/junebug-junie/Orion-Sapienform/pull/3162), to merge when it is
   applied, at least 2 days after this deploys.
 
 Spec: `docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md` ("PR 6", the
@@ -372,7 +372,7 @@ sed -i '/^HUB_WORLD_PULSE_READ_PULL_\(ENABLED\|DAILY_CAP\|AROUSAL_ENABLED\)=/d' 
 ```bash
 rm services/orion-proposal-runtime/.env services/orion-policy-runtime/.env services/orion-execution-dispatch-runtime/.env && rmdir services/orion-proposal-runtime services/orion-policy-runtime services/orion-execution-dispatch-runtime
 ```
-5. In 2 or more days: the drop PR (#DROP_PR). First apply #3116 (feedback and consolidation) if it
+5. In 2 or more days: the drop PR (https://github.com/junebug-junie/Orion-Sapienform/pull/3162). First apply #3116 (feedback and consolidation) if it
    has not run. Then follow the drop PR's header: check that nothing has written, take the backup,
    apply, and merge in the same sitting.
 
@@ -410,6 +410,6 @@ rm services/orion-proposal-runtime/.env services/orion-policy-runtime/.env servi
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3161 (drop step, draft: https://github.com/junebug-junie/Orion-Sapienform/pull/3162)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

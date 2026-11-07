@@ -277,6 +277,10 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/cooling_act_replay.py
+      - name: Daily reminiscence tick replay (21 days across DST -- window, one run at a time, oldest week first, unfinished week returns, mutations must fail)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -P services/orion-durable-runs/evals/reminiscence_daily_replay.py
       - name: Felt-state binding arcs eval (onset/release anti-flap, no_reading never releases, one arc per constraint)
         env:
           PYTHONPATH: ${{ github.workspace }}

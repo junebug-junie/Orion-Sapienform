@@ -246,8 +246,21 @@ def expectation_verdict(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEven
     )
 
 
+# Act rows only (2026-11-07, ladder retirement PR 6): the act ledger's ``act:<verb>`` rows and the
+# cooling world act's ``self_regulate`` rows. The retired dispatch ladder's own kinds (summarize,
+# maintain, inspect) are dropped here too, not only in the live SQL
+# (services/orion-durable-runs/app/temporal_self_sources.py), so the pure replay over stored
+# fixtures and the live chronicle read the same events.
+def is_act_outcome_kind(dispatch_kind: object) -> bool:
+    kind = str(dispatch_kind or "")
+    return kind.startswith("act:") or kind == "self_regulate"
+
+
 def action_outcome(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
-    """substrate_action_outcomes. Time: observed_at, else created_at. Verdict: claim_upheld."""
+    """substrate_action_outcomes. Time: observed_at, else created_at. Verdict: claim_upheld.
+    Act rows only (``is_act_outcome_kind``)."""
+    if not is_act_outcome_kind(row.get("dispatch_kind")):
+        return None
     upheld = row.get("claim_upheld")
     word = "null" if upheld is None else ("true" if upheld else "false")
     return _event(

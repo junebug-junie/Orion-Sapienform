@@ -68,7 +68,7 @@ STRAIN_HOLDS: Tuple[Tuple[str, str], ...] = (
      "background outreach waits (this report is the one exception per episode)"),
     ("services.orion-dream.app.cycle:run_cycle_once",
      "a due sleep/dream cycle waits"),
-    ("services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level",
+    ("services.orion-thought.app.painting_self_start:arousal_level",
      "a due visual baseline image is deferred"),
     ("services.orion-thought.app.chain:_next_chain_sleep_sec",
      "the pause between reverie chains is doubled"),

@@ -77,7 +77,9 @@ confirmed by reading real bodies before writing the reader
 ("actual memory") was declined at the time -- see Patch 6 note below, which
 reverses that call. The `chat_history_compactor` digest ("recent chat")
 remains declined: a daily-schedule producer with no evidence it has ever
-fired in production.
+fired in production. 2026-11-07: the self-study seed now reads curiosity's
+self-inquiry answers (`self_concept_history`), because the four analysis
+producers had one trigger, the retired dispatch rung.
 
 **Privacy note, Patch 6** (design doc §17): a third context-seed,
 `memory_text`, from `memory_crystallizations` (`orion-thought`'s

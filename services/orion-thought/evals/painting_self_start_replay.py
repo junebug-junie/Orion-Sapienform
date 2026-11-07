@@ -2,7 +2,7 @@
 """Eval: Orion's own painting trigger, replayed over real history. READ-ONLY.
 
 Runs the SHIPPED trigger (``app.painting_self_start.PaintingSelfStart``) every 60 s with the REAL
-baseline schedule (``orion.reverie.baseline.schedule``, the shipped config/proposals/visual_baseline.v1.yaml)
+baseline schedule (``orion.reverie.baseline.schedule``, the shipped config/reverie/visual_baseline.v1.yaml)
 on an in-memory checkpoint, and a model of everything downstream of the submit, built from real rows:
 
 * arousal: ``temporal_self_event`` ``arousal_transition`` rows, piecewise constant (the schedule's own

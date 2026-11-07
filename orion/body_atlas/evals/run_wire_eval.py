@@ -64,12 +64,10 @@ TRUE_CALLS = [
     ("orion-thought", "http://mind:6611"),
 ]
 FALSE_CALLS = [
-    # orion/policy/evaluator.py imports validate_eligibility, which names VisualBaselinePolicy; its
-    # thought_url default is config. orion-policy-runtime never reads .thought_url
-    ("orion-policy-runtime", "http://orion-athena-thought:7155"),
-    ("orion-execution-dispatch-runtime", "http://orion-athena-thought:7155"),
-    # 2026-11-05: orion-proposal-runtime no longer reads thought (the baseline schedule moved to thought)
-    ("orion-proposal-runtime", "http://orion-athena-thought:7155"),
+    # orion-policy-runtime / orion-execution-dispatch-runtime / orion-proposal-runtime -> thought were
+    # false facts here until those services were deleted (2026-11-07, ladder retirement PR 6); a fact
+    # about a service that no longer exists can only pass vacuously. The shared-validator shape they
+    # pinned is covered by orion/body_atlas/tests/test_wire_code.py (synthetic tree).
     # services/orion-world-pulse/app/settings.py:157 actions_url: no code reads the field
     ("orion-world-pulse", "http://actions:8110"),
     # ConceptSettings.embedding_base_url is read only by the concept inducer, not by cortex-exec

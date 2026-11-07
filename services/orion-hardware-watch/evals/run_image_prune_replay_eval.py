@@ -16,6 +16,10 @@ image_prune_verdict``) every 30 s on a simulated clock. Only the I/O is swapped:
   >= 100 (the skill's ``IMAGE_PRUNE_MIN_DANGLING``) and the disk is >= 70 %, else it declines
   ``declined_nothing_to_reclaim`` -- the skill's own two-part gate.
 
+``--export`` needs ``substrate_dispatch_results``, which the retired dispatch rung wrote (retired
+2026-11-07, ladder retirement PR 6; the table is dropped by the follow-up migration). The committed
+fixture keeps the replay and its CI gates working after that.
+
 What it does not model: restarts (each one delays the next ask by the 10 min start delay and resets
 the cooldown, so live asks can be a little more often), RPC failures, Juniper's hand prunes.
 

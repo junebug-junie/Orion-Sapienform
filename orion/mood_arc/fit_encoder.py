@@ -1436,8 +1436,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "enrich-corpus",
         help=(
             "Join the phi-v2 audit's (docs/superpowers/specs/2026-08-21-phi-v2-design.md) "
-            "signals that are dense enough for this window (action_warrant, "
-            "heartbeat_mean_ratio, per-domain prediction-error) and are NOT already reached "
+            "signals that are dense enough for this window (heartbeat_mean_ratio, per-domain "
+            "prediction-error; action_warrant is written into each row by the field digester "
+            "itself since 2026-11-07) and are NOT already reached "
             "via field-digester's node_vectors/capability_vectors merge, onto an existing "
             "field_channel_corpus.v1 JSONL corpus, by last-observation-carried-forward join "
             "on each source's real occurrence-time column. Sparser audit signals "

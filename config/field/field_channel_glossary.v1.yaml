@@ -756,7 +756,7 @@ channels:
   # ::test_self_state_dimension_matches_channel_dimension_map_exactly is a
   # fail-closed exact-equality gate on that claim. tension_deviation_pressure
   # does NOT go through that merge (it is written directly onto
-  # `orion.proposals.scoring`'s "deviation_pressure" PRESSURE_DIMENSIONS
+  # `orion.field.pressure_dimensions`'s "deviation_pressure" PRESSURE_DIMENSIONS
   # entry by orion/field/pressure.py::field_pressures_with_provenance(), a
   # different code path -- see that function's own comment), so claiming a
   # CHANNEL_DIMENSION_MAP route here would be false and would break that

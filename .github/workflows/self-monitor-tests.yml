@@ -19,8 +19,6 @@ on:
       - "services/orion-thought/evals/*self_track_record*"
       - "orion/cognition/prompts/stance_react.j2"
       - "orion/cognition/prompts/reverie_narrate.j2"
-      - "tests/test_self_monitor_act_gate.py"
-      - "tests/_dispatch_minted_act_route.py"
       - "services/orion-actions/app/main.py"
       - "services/orion-actions/app/act_emit.py"
       - "services/orion-actions/tests/test_self_monitor_journal_gate.py"
@@ -42,8 +40,6 @@ on:
       - "services/orion-thought/evals/*self_track_record*"
       - "orion/cognition/prompts/stance_react.j2"
       - "orion/cognition/prompts/reverie_narrate.j2"
-      - "tests/test_self_monitor_act_gate.py"
-      - "tests/_dispatch_minted_act_route.py"
       - "services/orion-actions/app/main.py"
       - "services/orion-actions/app/act_emit.py"
       - "services/orion-actions/tests/test_self_monitor_journal_gate.py"
@@ -90,7 +86,7 @@ jobs:
         run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider evals/test_self_track_record_truth_eval.py
 
   effects:
-    # E1 at orion-actions' journal seam, E2 in Hub (the dispatch-runtime half runs in thinking-rung3).
+    # E1 at orion-actions' journal seam, E2 in Hub (the dispatch-runtime half retired with dispatch, 2026-11-07).
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

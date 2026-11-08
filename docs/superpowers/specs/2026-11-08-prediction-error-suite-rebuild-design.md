@@ -129,10 +129,25 @@ prediction service, not side ledgers).
 
 **A. Neural forecaster: "what will my body and room read next?" (continuous)**
 
-- Inputs: raw readings in real units only (°C, W, %, RPM, ppm, lux, dBA). Never the derived
-  pressure hints. That was the mood-arc encoder's main failure.
+- Inputs: raw readings in real units only (°C, W, %, RPM, ppm, lux, dBA). Never any
+  `*_pressure`, `prediction_error*`, `action_warrant` or other hint channel. That was the
+  mood-arc encoder's main failure (see History).
 - Task: forecast every reading at 5 and 15 min. Forecasting, not reconstruction, so a
   steady weird state stays visible and the outcome always arrives.
+- Input hygiene, enforced by a gate that **refuses to train or score** rather than degrade:
+  - Each named input must be present, vary, and be able to return to rest. Drop any series
+    that is more than 85% one value or has under 50 distinct values. Event-like series
+    (sparse, mostly zero) are covariates, never targets. A variance-epsilon check alone is
+    not enough (it let 12 of 31 degenerate mood-arc channels in).
+  - Missing is a mask channel, never 0.0. Silent 0.0-fill hid renames twice.
+  - Per-series standardisation with train-only statistics, stored in the manifest.
+- Training: at least 2-3 weeks spanning day/night and AC cycles; blocked, purged temporal
+  split (`block_purged_temporal_split`); at least 2 seeds; beat persistence and per-series
+  AR baselines with a significance test, not a lower average. Corpus on persistent storage,
+  never `/tmp`; corpus writer path in `.env_example` with a staleness health check.
+- Upkeep: scheduled retrain; drift alarm on input means measured in training standard
+  deviations; live flag rate checked against design rate (the live mood-arc model flags
+  4-66% of windows per day, median 22%, because nothing caught its inputs drifting).
 - Ladder, each rung kept only if it beats the one below in backtest: per-series baselines
   -> multivariate ridge (VAR-style) -> small dense network -> graph network with learned
   adjacency.
@@ -170,19 +185,36 @@ prediction service, not side ledgers).
 
 ### Rung above: integration over the partition lattice (IIT-style)
 
-This is where the past IIT attempt belongs. It failed on inputs, not on idea.
+**Correction:** an earlier draft said the past IIT attempt "failed on inputs, not on idea".
+Wrong. No past attempt computed integrated information at all (see History): six different
+things were named φ, none had a transition model, none compared whole against parts, none
+searched partitions. The inputs failed, and the idea was never tested.
 
 - Integrated-information measures (Φ and its tractable cousins: Φ*, geometric integrated
   information, stochastic interaction) all need a **transition model**: how the whole
-  system's state now constrains its next state, versus how the parts do separately. Fed
-  degenerate signals, any Φ is noise. Families A and B produce exactly that transition
-  model, scored and calibrated.
+  system's state now constrains its next state, versus how the parts do separately.
+- **Fit that transition model directly to organ state, separately from families A/B.**
+  Φ computed from Orion's own forecasting model would measure the model, not Orion. A/B
+  supply the vetted inputs and the hygiene gate, not the transition model.
+- Inputs must pass the same hygiene gate as family A and the PE definition above. Never
+  SelfStateV1, the retired PE nodes, the mood-arc score, or heartbeat entropy. The gate
+  refuses to compute if any named input is missing (the φ encoder lost half its inputs
+  while its health check read "ok" on 20,000 of 20,000 rows).
 - The search over "which way of cutting the system loses the least" is a search over the
   **partition lattice** of the organs. That is the lattice Juniper keeps reaching for, and
   it is the real mathematical home of the minimum-information partition.
-- Measure: Φ* (or geometric) computed from the family A/B transition model over a small set
-  of organ-level variables (start at 5-8, exact lattice search is feasible there), each
-  hour, against a shuffled-time null.
+- Measure: Φ* (or geometric) over a small set of organ-level variables (start at 5-8, exact
+  lattice search is feasible there), each hour. Publish the formula and the
+  minimum-information partition found, per hour.
+- Null: a shuffled-time / circular-shift null, reusing causal geometry's surrogate + FDR
+  code (`orion/substrate/causal_geometry_engine.py:239-378`). "No integration above null"
+  is a valid, publishable result. **Precondition:** first find out why causal geometry has
+  reported 0 significant edges of 171 on every snapshot since 11-02 (verified). If the
+  organ series carry no detectable dependence at 5-minute resolution, Φ will read zero for
+  the same reason, and that must be known before building.
+- No prompt, reward or attention consumer until Φ* differs from its null on a known
+  physical contrast (Juniper arrives, AC cycles). The φ era sent a constant (0.655 ±
+  0.008, verified in `phi_rewards`) into metacognition prompts; that must not recur.
 - What it can claim: how much Orion's state behaves as one system rather than independent
   parts, and how that changes (chat vs idle, before vs after acts, day vs night). It is a
   structural measurement. It is **not** evidence of consciousness, and nothing should say
@@ -216,8 +248,15 @@ Each step leaves no consumer reading a dead or stale value.
 4. **Remove route.** Already stale; every consumer already reads it as absent.
 5. **Remove bus_synaptic fully** (kill means kill): glossary prompt sites, mind digest line,
    `ACTIVE_INFERENCE_DOMAINS`, aggregate confidence, the tick, `bus_synaptic_pressure` lattice
-   row and resolver rungs. Refit the mood-arc encoder in the same deploy (input width
-   changes).
+   row and resolver rungs. **Retire the mood-arc anomaly encoder in the same deploy**
+   (`FIELD_CHANNEL_ANOMALY_ENABLED`, its metacog trigger, its episode gate input). It
+   cannot be refit: its input width changes, its training corpus is gone (`/tmp/mood-arc-v4/`
+   deleted) and the corpus writer has been off since 09-08 (`FIELD_CHANNEL_CORPUS_PATH=`
+   empty in the live digester, verified). It is also stale on its own: it flags 4-66% of
+   windows per day (median 22%, verified) because `memory_pressure` drifted ~11.5 training
+   standard deviations. Its job (field-wide "something is off") moves to family A's joint
+   surprise. Keep `field_channel_anomaly_score` as the baseline flag rate the successor must
+   beat.
 6. **Remove execution, chat, biometrics** as their successors (A/B targets, turn self-bets)
    pass the gate. Not before: they hold attention and goal share today.
 7. **Purge or fence history** for each removed node: 7-day self-reading cache, episode gate
@@ -257,6 +296,82 @@ Each step leaves no consumer reading a dead or stale value.
    - **Measure on the economy's own ledgers** too: a cap change shifts prices and bids, so
      each experiment records the price path alongside the target.
 
+## History: integration and mood-arc attempts, and what each taught
+
+Researched 2026-11-08 from specs, PR reports, git history, model manifests and live tables.
+VERIFIED = data seen this session; DOC = asserted in prose only.
+
+### Six things named φ, none of them integrated information
+
+| Attempt | What it really computed | What happened |
+|---|---|---|
+| Hand formula (May-07-07, `orion-spark-introspector`) | 4th root of four SelfStateV1 scores, 0.01 floor; comment "mirrors IIT" (VERIFIED) | pinned at floor; 12/12 SelfStateV1 dims later found pinned or flat (DOC) |
+| φ autoencoder (07-07-07-28, seed-v2..v4) | MLP scalar head; trained on 3,833 rows from ~11 h of one day; latents collapse to one busy/idle axis (VERIFIED) | lost half its inputs, health still "ok" on 20,000/20,000 rows; output 0.655 ± 0.008 for weeks, sent into metacog prompts (VERIFIED). Promotion bar was lowered 7/8 -> 6/8 to admit dead inputs (DOC). Retired 07-28 citing the heuristic's faults, not the encoder's (the real lesson was never recorded) |
+| OrionTissue `.phi()` | summary stats of a 16x16x8 tensor; own docstring disclaims meaning (VERIFIED) | still live in orion-vector-host; not integration |
+| Causal Geometry v1 | lagged Pearson on 5-min buckets, circular-shift surrogates, BH-FDR | the "φ metric" built on it was never written (VERIFIED: no code). Still live: 0 of 171 pairs significant on every snapshot since 11-02, undiagnosed (VERIFIED) |
+| Mood-arc encoder ("IIT-flavored" in charter §9b) | windowed reconstruction-error anomaly detector | see below |
+| Heartbeat MPS entropy | property of a simulated tensor network's own update rule | not a measurement of Orion's state; kept, awaiting the fair test above |
+
+### Mood-arc encoder, v0 to v4
+
+- **v0** (4 hand scalars): learned the digester's own 0.92 decay; corpus discarded (DOC).
+- **field_channel_anomaly v1-v3** (15-17 pressure channels, 10 h-5 d of data): seven
+  data-quality cutoffs in one week (stuck values, decayed-to-zero PE, renames that silently
+  filled 3 of v3's 15 channels with 0.0) (DOC, consistent with manifests).
+- **v4, live** (37 channels, 3.4 days, n=1 seed): floor 0.406 vs AR(1) ceiling 0.733, i.e.
+  it barely beats a per-channel AR(1). Its inputs include `prediction_error_bus_synaptic`,
+  which the August phi-v2 audit called "independent, theory-anchored" and this audit finds
+  broken: **garbage in, again.** In its training span, 12 of 31 channels were >=86% zero or
+  pinned; the selection test (`fit_encoder.py:180`, std > 1e-6) let them all in. Now stale:
+  daily flag rate 4-66% (VERIFIED); 74% of flags led by sparse turn/failure channels.
+- Juniper's "bad inputs, low variety": bad inputs VERIFIED. Variety: channels are not very
+  collinear (~14-16 effective dimensions of 26-27); what was missing was **kind** (no raw
+  units) and **time** (hours to days, one regime). Two more causes: a reconstruction
+  objective with a weak null (beats a within-window shuffle; any smooth series passes), and
+  never retrained after 09-02.
+
+### Recurring failure modes, now hard rules in this spec
+
+1. A φ / PE name on a quantity that isn't one. -> The four-part PE definition; integration
+   must be a published Φ* with its partition.
+2. Inputs not re-audited when something upstream died; health gates that stay green. ->
+   Refuse-to-run hygiene gate on every named input, every run.
+3. Gates loosened to admit known-dead inputs. -> Gate thresholds are fixed in config;
+   changing one requires its own PR.
+4. Tiny single-regime training data. -> >= 2-3 weeks, >= 2 seeds, scheduled retrain.
+5. A near-constant output wired into cognition. -> No consumer until variance at known
+   physical events is shown.
+6. Retirement notes that name the wrong fault. -> Each retirement in this plan records the
+   measured fault, with the query, in the PR report.
+7. Proposals cited as built (charter §9a item 4's "orphaned φ metric" never existed). ->
+   Register each new instrument in `instruments.yaml` with re-runnable claims.
+
+### Reusable parts
+
+`block_purged_temporal_split`, block-bootstrap CI, AR(1) surrogate baseline
+(`orion/mood_arc/fit_encoder.py`); `MoodArcEncoderManifestV1` + promote/`active.json`;
+`InnerStateCorpusSink` rotation; as-of join (`corpus_enrichment.py`); episode gate
+(`orion/metacog/anomaly_episode.py`); causal-geometry surrogate + FDR; corpus-health gate
+pattern (`orion/telemetry/corpus_gate.py`, extended to check each named input is present).
+
+## Ties to the Sentience Striving Program charter
+
+- **Closes an open item.** `instruments.yaml:383` records bus_synaptic's 36.31% top-1
+  attention concentration as "NOT ROOT-CAUSED" since 09-02 and as blocking O4. This audit
+  root-causes it: lull-ending wake-ups scored by heavy-tailed gap z-scores, correlated edges
+  each voting, z frozen up to 1 h. Update that claim in the retire-bus PR.
+- **O2 rests on these signals.** `prediction_error_domains` (instruments.yaml:267) is the
+  O2 evidence ("attributable self-initiation"), built on execution, biometrics, chat, route:
+  all broken or stale. Each retirement PR updates that instrument's `unlock` and claims.
+- **O1's only instrument is the goal gate.** `capability_policy_salience` is the one O1
+  instrument. The step-2 fix changes it; that PR re-records its claims and adds the missing
+  measurement O1 asks for (a demonstrated ceiling on the action budget).
+- **Register every new signal** (families A/B/C, integration rung) in `instruments.yaml`
+  with re-runnable claims, checked by `scripts/check_sentience_instruments.py`.
+- **Retention.** `substrate_node_prediction_error_history` keeps 7 days. The charter
+  (§16a) notes every real bug was found by recovering pre-aggregation values. New surprise
+  tables keep raw rows for at least 90 days.
+
 ## Evidence provenance (what was checked, and how)
 
 Juniper flagged that this spec leans on earlier research without re-checking it. Fair. Each
@@ -281,11 +396,9 @@ number.
 - Heartbeat's preregistered results (seed sensitivity ~1/3, no rest state, "surprise:
   mixed") and its README claims. Juniper distrusts these; the spec does not rely on them
   for any decision. Heartbeat's fate waits for the integration-rung comparison.
-- Why the mood-arc autoencoder failed ("bad inputs, low variety"): from Juniper's account,
-  consistent with but not proven by the audit's finding that its features are the
-  degenerate pressure hints.
-- The earlier IIT attempt's failure: from Juniper's account and
-  `docs/superpowers/specs/2026-08-20-objective-7-integration-reevaluation-design.md`.
+- Mood-arc and IIT history: now researched in the History section above (verified items
+  marked there). Two earlier statements here were wrong and are corrected: the encoder's
+  weakness was not mainly low variety, and IIT was never actually computed.
 - The 2026-07 bus baselines quoted in code docstrings.
 
 Rule for build patches: any number from the second or third group gets re-measured in the

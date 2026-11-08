@@ -208,7 +208,7 @@ Each step leaves no consumer reading a dead or stale value.
 2. **Fix goal-gated autonomy before removing any node** (first build patch). Today half of
    Orion's permission to act comes from a broken signal. Options: let world-source winners
    produce goals too, or gate read-only capabilities on goal *content* rather than mere
-   presence. Needs Juniper's call; see Missing questions.
+   presence. Decided: both (see Decisions, item 1).
 3. **Curiosity skips non-measurement value kinds** (`placeholder`, `bucket`), the same way
    `self_readings.py:249` already does. Then stop writing `harness_closure`. Its real
    successor is a turn-level self-bet: draft-time confidence scored against the reflection

@@ -236,6 +236,63 @@ searched partitions. The inputs failed, and the idea was never tested.
   together, and both should move at the ground-truth physical events (Juniper arrives, AC
   cycles) from the room and closet sensors. No change to heartbeat until that test runs.
 
+### Heartbeat: what it measures today, and the job it could have
+
+Homework done 2026-11-08: code read directly, live `/health`, and an independent replay of
+2.5 h of real atoms through the shipped ensemble (method, scripts and numbers:
+`services/orion-heartbeat/evals/memory_horizon/`). This supersedes reliance on the earlier
+preregistered results.
+
+**What it does.** Each grammar atom is reduced to: which of 5 organs (seat 0-4), which of
+4 operator kinds (from atom type), and confidence/salience/uncertainty. It then applies
+fixed random unitaries (random Hermitian generators, seed 20260724, no meaning of their
+own) at that seat and a decaying chain of 2-site gates to the end of a 10-seat MPS
+(bond 4). A 2 s timer applies amplitude-damping-like relaxation toward each trajectory's
+start state; bus-graph mean |z| scales random "reheat" kicks. The headline `mean_ratio` is
+the entanglement entropy at the seat-5 cut over its maximum, averaged over 8 trajectories.
+
+**What feeds it.** Of routed atoms over the replay window: biometrics 67%, bus 30%,
+cortex-exec 2%, hub 24 atoms, cortex-orch 0 (stopped emitting 11-07, like route). 13
+other grammar producers are dropped (285,526 atoms in 4 days, live `/health`). In
+practice it hears two fixed-cadence telemetry streams.
+
+**What it carries (replay, verified):**
+- `mean_ratio` is reproducible: r = +0.91 across seeds. The earlier "a third is dice"
+  finding is true of the **verdict class**, not of `mean_ratio`.
+- The verdict class is noise: seeds agree 69-70%, and real vs shuffled inputs agree
+  67-68%. It is no better than shuffled data.
+- It depends on which organ fired and in what order: shuffling organ labels or event order
+  drops agreement with the real run to r = +0.13 / +0.03.
+- **Memory is about 3 events.** The organ + atom-type mix of the last 3 atoms predicts the
+  seed-averaged `mean_ratio` with held-out R² 0.88 (ceiling 0.85-0.9). The last 30 atoms
+  predict nothing (R² -0.03). Leaky per-organ counts explain only 0.37-0.40.
+- So heartbeat today is a reproducible, very-short-memory **sequence meter** for the last
+  1-2 seconds of mostly biometrics/bus traffic. It is not a count meter, not an
+  integrator, and its entanglement comes from random gates scrambling, not from structure
+  in Orion. Caveat: reheat was held constant in the replay.
+
+**Consumers.** The attention self-model records its fields; `heartbeat_mean_ratio` is a
+mood-arc encoder input (retired by this plan). Nothing decides on it. Retiring the encoder
+leaves heartbeat with no consumer, which is fine while it is rebuilt.
+
+**Recommendation: keep heartbeat, give it a real job: the integration rung's model.**
+- Today's gates are random, so the tensor network encodes nothing learned. An MPS can
+  instead be **trained** as a probabilistic model of Orion's state (a tensor-network Born
+  machine: an MPS fit by maximum likelihood to observed state vectors). Then entanglement
+  across a cut of the trained MPS is the real mutual information between the two halves
+  of Orion's state, and the lattice of cuts is exactly the integration rung's partition
+  search (contiguous cuts natively; other partitions by reordering seats).
+- Inputs: one seat per organ-level variable from the vetted families A/B (forecast
+  surprise or discretised raw state), not raw atom types, so a seat carries content.
+- Time: fit on windows of state over minutes to hours, so memory matches the phenomena
+  (Juniper arriving, AC cycles), not 3 atoms.
+- Test: the trained-MPS mutual information across each cut, against a shuffled-time null,
+  at the known physical events. Same gate as Φ*. If it passes, heartbeat is the
+  integration rung. If not, that is a publishable negative.
+- Until then: stop publishing the verdict class as if it were meaningful (it is noise),
+  keep `mean_ratio` as a labelled "last-3-events sequence meter", and leave the service
+  running.
+
 ### Alarms move out of the PE group
 
 `cabinet`, `strain` and street rings are alarms and news. They keep working, but they are
@@ -322,7 +379,7 @@ VERIFIED = data seen this session; DOC = asserted in prose only.
 | OrionTissue `.phi()` | summary stats of a 16x16x8 tensor; own docstring disclaims meaning (VERIFIED) | still live in orion-vector-host; not integration |
 | Causal Geometry v1 | lagged Pearson on 5-min buckets, circular-shift surrogates, BH-FDR | the "φ metric" built on it was never written (VERIFIED: no code). Still live: 0 edges since 10-30: a p-value-floor cliff, root-caused under the integration rung (VERIFIED) |
 | Mood-arc encoder ("IIT-flavored" in charter §9b) | windowed reconstruction-error anomaly detector | see below |
-| Heartbeat MPS entropy | property of a simulated tensor network's own update rule | not a measurement of Orion's state; kept, awaiting the fair test above |
+| Heartbeat MPS entropy | entanglement at one cut of a random-gate MPS | replay 11-08 (verified): reproducible across seeds (r 0.91) but remembers ~3 atoms; verdict class is noise. See the heartbeat section |
 
 ### Mood-arc encoder, v0 to v4
 
@@ -446,7 +503,7 @@ patch's own PR before it justifies a change.
 
 - No hand-drawn causal map of the mesh.
 - No claim that Φ or any integration number shows sentience.
-- No change to heartbeat's math or role until the comparison test runs.
+- No change to heartbeat's live math or role until the trained-MPS test runs (see the heartbeat section).
 - No new prediction-error ledger outside `orion-prediction`.
 - No tuning of the retired signals' thresholds. They are retired, not repaired.
 

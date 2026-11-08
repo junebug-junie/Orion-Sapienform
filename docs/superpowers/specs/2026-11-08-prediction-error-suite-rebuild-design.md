@@ -225,17 +225,71 @@ Each step leaves no consumer reading a dead or stale value.
    outcome-rollup associations.
 8. Fix the perception field leak: missing ticks must not write 0.0 into the field.
 
-## Missing questions
+## Decisions (Juniper, 2026-11-08)
 
-1. **Autonomy permission (step 2):** should read-only autonomy be gated on goal *content*
-   (a goal must name something Orion could fetch or recall about), or should world winners
-   also emit goals? Either way, Orion's rate of autonomous action will change. Juniper's
-   call.
-2. **Presence states:** may family B model Juniper's presence from office cam + sound +
-   light? No privacy boundary between Juniper and Orion is the standing rule; confirm it
-   covers a presence forecast.
-3. **Actuators for family C:** which are safe to randomise on/off? GPU load shaping on which
-   lane, and at what heat ceiling?
+1. **Autonomy permission (step 2): both.** A goal must name something Orion could fetch or
+   recall about (content gate), **and** world-source winners may emit goals too. Record goal
+   rate and autonomous fetch/recall/journal rate for 7 days before and after.
+2. **Presence: not the office.** Juniper is rarely at the office desk (it reads ~79 dBA), so
+   office presence is a poor target. Family B targets instead, in order:
+   - **Juniper reachable**: will Juniper send a message in the next hour? Forecast from chat
+     history by time of day and day of week. Consumer: outreach timing (reach out when a
+     reply is likely, not into silence). Outcome arrives on its own: a message, or none.
+   - **Household arrivals/departures**: door and walkway cameras already record arrivals
+     (street continuity). State = home / away / arriving. Surprise = an arrival at an
+     unlikely hour.
+   - **Turn lane**: which lane the unified turn takes next (route's honest successor).
+   - Office presence stays a candidate only if the reachable forecast fails the gate.
+3. **Actuators: the attention economy and the run caps.** Orion owns dozens of software
+   knobs, which are safer and more reversible than hardware: body-economy prices and bids,
+   and caps such as `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP`, `ORION_ENDOGENOUS_CURIOSITY_BUDGET`,
+   `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP`, `EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_MAX_OPENS_PER_HOUR`,
+   `ORION_SHED_MAX_SEC_PER_DAY`, the 4 h goal hold. These become family C variables. Rules:
+   - **Runtime override, not env.** Env caps need a restart. An experiment sets a bounded
+     override with a TTL (same pattern as the vision-focus key in
+     `experiment_runner.py`); the service reads override-else-env. A dead runner falls back
+     to env when the TTL expires.
+   - **Bounds per knob**, declared in config: the experiment may only move a cap between a
+     floor and the current env value (never above today's ceiling at first).
+   - **Match block length to effect speed.** Curiosity concurrency -> GPU watts and heat
+     land in minutes (short blocks, start here). Outreach caps -> Juniper replies land in
+     hours or days (day-long blocks, many weeks to read; later).
+   - **Measure on the economy's own ledgers** too: a cap change shifts prices and bids, so
+     each experiment records the price path alongside the target.
+
+## Evidence provenance (what was checked, and how)
+
+Juniper flagged that this spec leans on earlier research without re-checking it. Fair. Each
+load-bearing claim, by how it was established:
+
+**Verified live by the author on 2026-11-08** (SQL / FalkorDB / logs this session):
+- bus_synaptic formula, live values (0.047-0.088), 7-day daily distribution, the 03:00
+  spike, and the six cortex edges at z ~16.6 with the ~50 min gap backed out of the stored
+  EWMA state (alpha 0.2 confirmed in `services/orion-bus-mirror/.env`).
+- 7-day stats for all 12 nodes; harness_closure constant 0.650.
+- orion-prediction live coverage numbers; turn self-bet stated-vs-happened rates.
+- pan-1 office/closet freshness and ranges; their only bus consumer is sql-writer.
+- Heartbeat reads FalkorDB `gap_zscore` directly, not the bus PE node.
+
+**Live SQL by audit subagents, not re-checked by the author:** per-node histograms, spike
+contexts, consumer evidence (goal shares, curiosity seeds, episode counts, prompt-line
+counts from the thought log's ~20 h window), route upstream stop at 15:57, perception vs
+walkway correlation. Treat as strong but single-source; re-run before acting on any one
+number.
+
+**Taken from prior docs, NOT re-verified:**
+- Heartbeat's preregistered results (seed sensitivity ~1/3, no rest state, "surprise:
+  mixed") and its README claims. Juniper distrusts these; the spec does not rely on them
+  for any decision. Heartbeat's fate waits for the integration-rung comparison.
+- Why the mood-arc autoencoder failed ("bad inputs, low variety"): from Juniper's account,
+  consistent with but not proven by the audit's finding that its features are the
+  degenerate pressure hints.
+- The earlier IIT attempt's failure: from Juniper's account and
+  `docs/superpowers/specs/2026-08-20-objective-7-integration-reevaluation-design.md`.
+- The 2026-07 bus baselines quoted in code docstrings.
+
+Rule for build patches: any number from the second or third group gets re-measured in the
+patch's own PR before it justifies a change.
 
 ## Proposed schema / API changes
 
@@ -285,8 +339,8 @@ Each step leaves no consumer reading a dead or stale value.
 
 ## Recommended next patch
 
-**Retire step 2: goal-gated autonomy.** The bus number decides when Orion may act on its
-own, and that is wrong whatever the new suite becomes. Needs Juniper's answer to Missing
-question 1. In parallel, the cheapest build patch: expose orion-prediction's existing
+**Retire step 2: goal-gated autonomy**, built per Decision 1 (content gate + world-source
+goals). The bus number decides when Orion may act on its own, and that is wrong whatever the
+new suite becomes. In parallel, the cheapest build patch: expose orion-prediction's existing
 cabinet/office scored forecasts as `prediction.surprise.v1` (no new forecasting), which
 proves the definition end to end on a target that already passes the gate.

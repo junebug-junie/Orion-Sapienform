@@ -208,10 +208,22 @@ searched partitions. The inputs failed, and the idea was never tested.
   minimum-information partition found, per hour.
 - Null: a shuffled-time / circular-shift null, reusing causal geometry's surrogate + FDR
   code (`orion/substrate/causal_geometry_engine.py:239-378`). "No integration above null"
-  is a valid, publishable result. **Precondition:** first find out why causal geometry has
-  reported 0 significant edges of 171 on every snapshot since 11-02 (verified). If the
-  organ series carry no detectable dependence at 5-minute resolution, Φ will read zero for
-  the same reason, and that must be known before building.
+  is a valid, publishable result. **Precondition (root-caused 2026-11-08):** causal
+  geometry's 0 edges since 10-30 is a test-resolution cliff, not absent dependence. The
+  add-one surrogate p-value cannot go below 1/2001; times the x10 lag/direction correction
+  that floor is 0.005, while Benjamini-Hochberg's first-rank threshold at m=171 pairs is
+  0.05/171 = 0.00029. So BH passes nothing unless at least 18 pairs tie at the floor, and
+  then passes all of them together. Live probe (read-only, current 7-day window): 13 pairs
+  at the floor -> 0 edges, including power->thermal r=+0.61 (n=2017). Every non-empty
+  snapshot ever recorded at m=171 had >= 18 edges; the edge count flips between 0 and
+  ~20 by how many pairs happen to saturate. The 2026-07-29 note in
+  `scripts/causal_geometry_report.py` warned this would recur as pairs grew. An
+  autocorrelation-corrected analytic test (Bartlett effective n) on the same data passes
+  30 of 171 pairs under the same BH, with p down to 1e-289. Fix before reuse: replace the
+  floor-limited p with a continuous one (effective-n test, or a normal fit to the surrogate
+  r distribution), plus a gate test that reproduces the cliff. Also: the inputs are the
+  derived pressure hints (`cabinet_uv_activity` is constant), and the method is lagged
+  correlation, not causation, whatever it is named.
 - No prompt, reward or attention consumer until Φ* differs from its null on a known
   physical contrast (Juniper arrives, AC cycles). The φ era sent a constant (0.655 ±
   0.008, verified in `phi_rewards`) into metacognition prompts; that must not recur.

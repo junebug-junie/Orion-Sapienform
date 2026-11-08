@@ -320,7 +320,7 @@ VERIFIED = data seen this session; DOC = asserted in prose only.
 | Hand formula (May-07-07, `orion-spark-introspector`) | 4th root of four SelfStateV1 scores, 0.01 floor; comment "mirrors IIT" (VERIFIED) | pinned at floor; 12/12 SelfStateV1 dims later found pinned or flat (DOC) |
 | φ autoencoder (07-07-07-28, seed-v2..v4) | MLP scalar head; trained on 3,833 rows from ~11 h of one day; latents collapse to one busy/idle axis (VERIFIED) | lost half its inputs, health still "ok" on 20,000/20,000 rows; output 0.655 ± 0.008 for weeks, sent into metacog prompts (VERIFIED). Promotion bar was lowered 7/8 -> 6/8 to admit dead inputs (DOC). Retired 07-28 citing the heuristic's faults, not the encoder's (the real lesson was never recorded) |
 | OrionTissue `.phi()` | summary stats of a 16x16x8 tensor; own docstring disclaims meaning (VERIFIED) | still live in orion-vector-host; not integration |
-| Causal Geometry v1 | lagged Pearson on 5-min buckets, circular-shift surrogates, BH-FDR | the "φ metric" built on it was never written (VERIFIED: no code). Still live: 0 of 171 pairs significant on every snapshot since 11-02, undiagnosed (VERIFIED) |
+| Causal Geometry v1 | lagged Pearson on 5-min buckets, circular-shift surrogates, BH-FDR | the "φ metric" built on it was never written (VERIFIED: no code). Still live: 0 edges since 10-30: a p-value-floor cliff, root-caused under the integration rung (VERIFIED) |
 | Mood-arc encoder ("IIT-flavored" in charter §9b) | windowed reconstruction-error anomaly detector | see below |
 | Heartbeat MPS entropy | property of a simulated tensor network's own update rule | not a measurement of Orion's state; kept, awaiting the fair test above |
 

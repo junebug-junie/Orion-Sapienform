@@ -108,6 +108,6 @@ Post-pull rebuild of `orion-prediction` from the clean primary main checkout aft
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3170
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

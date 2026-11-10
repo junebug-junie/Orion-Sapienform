@@ -12,6 +12,7 @@ from orion.autonomy.models import (
     CapabilityPolicyRuleV1,
     CapabilityPolicyV1,
 )
+from orion.schemas.attention_candidate import is_world_source_id
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -201,6 +202,13 @@ def evaluate_capability(capability_id: str, ctx: CapabilityEvaluationContext) ->
             return _decision(
                 capability_id, outcome="denied", reason_code="goal_status_insufficient", notes=notes
             )
+
+    if rule.requires_world_goal and (
+        ctx.goal is None or not is_world_source_id(ctx.goal.field_target_id)
+    ):
+        return _decision(
+            capability_id, outcome="denied", reason_code="goal_not_about_world", notes=notes
+        )
 
     if rule.side_effect_class == "external":
         goal_level = _goal_status_level(ctx.goal.proposal_status) if ctx.goal is not None else 0

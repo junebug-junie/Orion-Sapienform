@@ -5,15 +5,16 @@ from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.world_pulse import SectionCoverageV1
 
 
-def _goal() -> FieldGoalProvenanceV1:
+def _goal(field_target_id: str = "world:chat", target_kind: str = "channel") -> FieldGoalProvenanceV1:
+    # Default is a world goal: web.fetch.readonly requires one (requires_world_goal).
     return FieldGoalProvenanceV1(
         artifact_id="goal-1",
         subject="attention",
         model_layer="field_attention",
-        entity_id="node:substrate.biometrics",
+        entity_id=field_target_id,
         kind="memory.field_goals.proposed.v1",
-        field_target_id="node:substrate.biometrics",
-        target_kind="node",
+        field_target_id=field_target_id,
+        target_kind=target_kind,
         salience_score=0.8,
         source_field_tick_id="tick-1",
         source_attention_frame_id="frame-1",
@@ -211,6 +212,25 @@ def test_no_real_active_goal_denies_via_missing_goal(monkeypatch):
     active (get_active_goal() returns None), the gate must deny via missing_goal,
     not silently fabricate one the way the old _synthetic_goal() stub did."""
     monkeypatch.setattr(curiosity, "get_active_goal", lambda: None)
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    result = curiosity.build_curiosity_followups(
+        run_id="r1",
+        section_coverage=_coverage(hardware_compute_gpu="missing"),
+        enabled=True,
+        dry_run=False,
+        max_articles_per_section=5,
+        max_sections=9,
+        fetch_backend=_fake_backend,
+    )
+    assert result == []
+
+
+def test_body_goal_does_not_open_the_gap_fill_fetch(monkeypatch):
+    """Regression (prediction-error suite rebuild, Decision 1): a bus
+    prediction-error goal no longer unlocks the daily gap-fill web fetch."""
+    monkeypatch.setattr(
+        curiosity, "get_active_goal", lambda: _goal("node:substrate.bus_synaptic", "node")
+    )
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     result = curiosity.build_curiosity_followups(
         run_id="r1",

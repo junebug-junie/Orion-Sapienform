@@ -104,10 +104,11 @@ def _gate_open(run_id: str, *, surprise_source: SurpriseSource | None = None) ->
     )
     decision = evaluate_capability(_READONLY_CAPABILITY, ctx)
     logger.info(
-        "world_pulse_curiosity_gate outcome=%s reason=%s auto_execute=%s run_id=%s",
+        "world_pulse_curiosity_gate outcome=%s reason=%s auto_execute=%s goal_target=%s run_id=%s",
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
+        ctx.goal.field_target_id if ctx.goal is not None else None,
         run_id,
     )
     return decision.outcome == "allowed" and bool(decision.auto_execute)

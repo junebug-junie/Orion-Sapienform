@@ -110,12 +110,13 @@ async def maybe_execute_readonly_fetch_after_goal(
     )
     decision = evaluate_capability(_READONLY_CAPABILITY, ctx)
     logger.info(
-        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s spawned=%s",
+        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s goal_target=%s spawned=%s",
         decision.capability_id,
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
         goal.artifact_id if goal is not None else None,
+        goal.field_target_id if goal is not None else None,
         spawned_correlation_id,
     )
     if decision.outcome != "allowed" or not decision.auto_execute:
@@ -319,12 +320,13 @@ async def maybe_execute_readonly_recall_after_goal(
     )
     decision = evaluate_capability(_RECALL_CAPABILITY, ctx)
     logger.info(
-        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s spawned=%s",
+        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s goal_target=%s spawned=%s",
         decision.capability_id,
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
         goal.artifact_id if goal is not None else None,
+        goal.field_target_id if goal is not None else None,
         spawned_correlation_id,
     )
     if decision.outcome != "allowed" or not decision.auto_execute:
@@ -470,12 +472,13 @@ async def maybe_compose_autonomy_episode_after_fetch(
     )
     decision = evaluate_capability(_EPISODE_JOURNAL_CAPABILITY, ctx)
     logger.info(
-        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s spawned=%s",
+        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s goal_target=%s spawned=%s",
         decision.capability_id,
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
         goal.artifact_id if goal is not None else None,
+        goal.field_target_id if goal is not None else None,
         spawned_correlation_id,
     )
     if decision.outcome != "allowed" or not decision.auto_execute:

@@ -298,7 +298,50 @@ def test_a_read_that_never_reports_its_end_is_filled_after_the_wait(session):
     assert refill_late_costs(session, now=close_at + timedelta(hours=2)).examined == 0
     late = close_at + timedelta(seconds=LATE_COST_FINAL_AFTER_SEC + 60)
     assert refill_late_costs(session, now=late).filled == 1
-    assert "no end recorded" in _cost(session, act.act_id)["basis"]["gpu"]
+    cost = _cost(session, act.act_id)
+    assert cost["basis"]["gpu"].startswith("late fill provisional") and "no end recorded" in cost["basis"]["gpu"]
+    assert cost["gpu_slot_s_by_lane"] == pytest.approx(S1_LANES, abs=0.01)
+    # Not re-filled while the read is still silent.
+    assert refill_late_costs(session, now=late + timedelta(minutes=5)).examined == 0
+
+
+def test_a_provisional_fill_is_completed_when_stage2_ends_14h_after_the_close(session):
+    """Review finding: the 12 h fallback must not lock a stage-1-only cost (live: 68 of 1,117 reads)."""
+    act = _read_act()
+    _stage1(session)
+    _stage1_done(session)
+    close_at = T0 + timedelta(minutes=25, seconds=27)
+    _open_close(session, act, close_at=close_at)
+    refill_late_costs(session, now=close_at + timedelta(hours=13))
+    assert _cost(session, act.act_id)["basis"]["gpu"].startswith("late fill provisional")
+    _stage2(session)
+    _stage2_done(session)  # stage 2 events are timestamped near the original; their end is what matters
+    s = refill_late_costs(session, now=close_at + timedelta(hours=14))
+    assert (s.examined, s.filled) == (1, 1)
+    cost = _cost(session, act.act_id)
+    assert cost["basis"]["gpu"].startswith("late fill at") and "stage 2 done" in cost["basis"]["gpu"]
+    assert cost["gpu_slot_s_by_lane"] == pytest.approx(dict(S1_LANES, agent=260.59), abs=0.01)
+    assert refill_late_costs(session, now=close_at + timedelta(hours=15)).examined == 0
+
+
+def test_an_act_whose_fill_keeps_failing_is_skipped_after_three_ticks(session, monkeypatch):
+    import orion.grammar.act_ledger as ledger
+
+    act = _read_act()
+    _stage1(session)
+    session.execute(text("UPDATE world_pulse_read_seed SET status = 'failed', completed_at = :at WHERE seed_id = :s"),
+                    {"at": T0 + timedelta(minutes=25), "s": SEED})
+    _open_close(session, act, close_at=T0 + timedelta(minutes=25))
+    monkeypatch.setattr(ledger, "_LATE_COST_FAILURES", {})
+
+    def boom(*a, **k):
+        raise RuntimeError("bad read")
+
+    monkeypatch.setattr(ledger, "late_read_cost", boom)
+    now = T0 + timedelta(minutes=30)
+    for _ in range(ledger.LATE_COST_MAX_FAILURES):
+        assert refill_late_costs(session, now=now).failed == 1
+    assert refill_late_costs(session, now=now).examined == 0
 
 
 def test_a_read_with_no_lease_is_marked_once_and_not_reselected(session):
@@ -345,24 +388,32 @@ def test_backfill_dry_run_writes_nothing_then_apply_then_restore(session, tmp_pa
     _open_close(session, act, close_at=T0 + timedelta(minutes=25, seconds=27))
     session.commit()
     before = _cost(session, act.act_id)
-    now = T0 + timedelta(days=3)  # outside the live 48 h window: only the backfill reaches it
+    now = T0 + timedelta(days=5)  # outside the live 96 h window: only the backfill reaches it
     assert refill_late_costs(session, now=now).examined == 0
 
+    # The dry run through main(): READ ONLY transaction, rolled back.
+    schema = session.execute(text("SELECT current_schema()")).scalar()
+    uri = f"{session.get_bind().url.render_as_string(hide_password=False)}?options=-csearch_path%3D{schema}"
+    assert bf.main(["--uri", uri, "--job-dir", str(tmp_path), "--days", "3650"]) == 0
+    assert _cost(session, act.act_id) == before
     dry = bf.run(session, days=30, apply=False, job_dir=tmp_path, now=now, out=io.StringIO())
     assert (dry["targets"], dry["gain_cost"], dry["written"], dry["errors"]) == (1, 1, 0, 0)
     assert dry["slot_hours"] == pytest.approx((sum(S1_LANES.values()) + 260.59) / 3600, abs=0.05)
     assert _cost(session, act.act_id) == before
-    for name in ("snapshot.jsonl", "progress.log", "report.md", "before_after.csv"):
+    for name in ("progress.log", "report.md", "before_after.csv"):
         assert (tmp_path / name).exists(), name
+    assert len(list(tmp_path.glob("snapshot-dry_run-*.jsonl"))) == 2
     assert "100.0%" in (tmp_path / "progress.log").read_text()
 
-    applied = bf.run(session, days=30, apply=True, job_dir=tmp_path / "apply", now=now, commit=session.commit,
+    applied = bf.run(session, days=30, apply=True, job_dir=tmp_path, now=now, commit=session.commit,
                      out=io.StringIO())
     assert applied["written"] == 1
     assert _cost(session, act.act_id)["gpu_slot_s_by_lane"]["agent"] == pytest.approx(260.59, abs=0.01)
-    again = bf.run(session, days=30, apply=True, job_dir=tmp_path / "again", now=now, commit=session.commit,
-                   out=io.StringIO())
-    assert again["targets"] == 0
+    # A later apply and dry run in the SAME job dir must not lose the snapshot restore needs.
+    later = now + timedelta(minutes=1)
+    assert bf.run(session, days=30, apply=True, job_dir=tmp_path, now=later, commit=session.commit,
+                  out=io.StringIO())["targets"] == 0
+    bf.run(session, days=30, apply=False, job_dir=tmp_path, now=later + timedelta(minutes=1), out=io.StringIO())
 
-    assert bf.restore(session, tmp_path / "apply", commit=session.commit) == 1
+    assert bf.restore(session, tmp_path, commit=session.commit) == 1
     assert _cost(session, act.act_id) == before

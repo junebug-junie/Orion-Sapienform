@@ -883,14 +883,27 @@ def resolve_due_acts(
 # * stage 2 ended (stage2_completed_at: done, failed for good, or skipped);
 # * stage 1 failed for good or was skipped (no stage 2 will run: completed_at with status
 #   failed/skipped);
-# * or the act closed LATE_COST_FINAL_AFTER_SEC ago and the seed never said (filled with what ran).
+# * or the act closed LATE_COST_FINAL_AFTER_SEC ago and the seed never said: filled with what ran so
+#   far, PROVISIONALLY ("late fill provisional"), and filled again, finally, if the read's end shows up
+#   inside LATE_COST_WINDOW_SEC (live: 68 of 1,117 reads ended stage 2 more than 12 h after the close).
 # The cost is the slot-seconds over every turn the read ran (orion/grammar/act_cost_ids.py), and
-# basis["gpu"] says so; that "late fill" line also marks the act done, so it is filled once.
+# basis["gpu"] says so; a final "late fill at" line marks the act done, so it is filled once.
+# An act whose fill raises is skipped for the rest of the process after LATE_COST_MAX_FAILURES ticks.
 # Energy is NOT filled for reading here: the hourly attribution (attribute_host_hour) counts a lease as
 # metered only when an act's correlation_id is its turn id, so reading's Wh would be counted twice.
-LATE_COST_WINDOW_SEC = 48 * 3600.0
+LATE_COST_WINDOW_SEC = 96 * 3600.0
 LATE_COST_FINAL_AFTER_SEC = 12 * 3600.0
 LATE_COST_BASIS_PREFIX = "late fill"
+LATE_COST_PROVISIONAL_PREFIX = "late fill provisional"
+LATE_COST_MAX_FAILURES = 3
+_LATE_COST_FAILURES: dict[str, int] = {}
+# Not filled yet, or filled provisionally and the read has ended since.
+_LATE_COST_OPEN = """
+       ((COALESCE({c}->'basis'->>'gpu', '') NOT LIKE :prefix
+         AND ({c} IS NULL OR jsonb_typeof({c}->'gpu_slot_s_by_lane') IS DISTINCT FROM 'object'))
+        OR ({c}->'basis'->>'gpu' LIKE :provisional AND {ended}))"""
+_READ_ENDED = ("(s.stage2_completed_at IS NOT NULL "
+               "OR (s.status IN ('failed', 'skipped') AND s.completed_at IS NOT NULL))")
 _LATE_COST_TARGETS_SQL = text(
     """
     SELECT a.act_id, a.actor, a.correlation_id, a.opened_at, a.closed_at, a.cost_json,
@@ -900,11 +913,9 @@ _LATE_COST_TARGETS_SQL = text(
      WHERE a.actor = ANY(:actors) AND a.verb = 'look'
        AND a.opened_at >= :opened_since
        AND a.closed_at IS NOT NULL AND a.closed_at >= :since
-       AND (a.cost_json IS NULL OR jsonb_typeof(a.cost_json->'gpu_slot_s_by_lane') IS DISTINCT FROM 'object')
-       AND COALESCE(a.cost_json->'basis'->>'gpu', '') NOT LIKE :prefix
-       AND (s.stage2_completed_at IS NOT NULL
-            OR (s.status IN ('failed', 'skipped') AND s.completed_at IS NOT NULL)
-            OR a.closed_at < :final_before)
+       AND a.act_id <> ALL(:skip)
+       AND """ + _LATE_COST_OPEN.format(c="a.cost_json", ended=_READ_ENDED) + """
+       AND (""" + _READ_ENDED + """ OR a.closed_at < :final_before)
      ORDER BY a.closed_at
      LIMIT :limit
     """
@@ -913,8 +924,8 @@ _LATE_COST_UPDATE_SQL = text(
     """
     UPDATE grammar_acts SET cost_json = CAST(:cost_json AS jsonb), updated_at = :now
      WHERE act_id = :act_id AND closed_at IS NOT NULL
-       AND (cost_json IS NULL OR jsonb_typeof(cost_json->'gpu_slot_s_by_lane') IS DISTINCT FROM 'object')
-       AND COALESCE(cost_json->'basis'->>'gpu', '') NOT LIKE :prefix
+       AND (COALESCE(cost_json->'basis'->>'gpu', '') NOT LIKE :prefix
+            OR cost_json->'basis'->>'gpu' LIKE :provisional)
     """
 )
 
@@ -941,8 +952,9 @@ def late_cost_targets(conn: Any, *, now: datetime, since: datetime, limit: int =
     """Closed late-cost acts (reading) whose read has ended and whose GPU cost is not filled yet."""
     rows = conn.execute(_LATE_COST_TARGETS_SQL, {
         "actors": sorted(LATE_COST_ACTORS), "since": since, "opened_since": since - timedelta(days=1),
-        "prefix": LATE_COST_BASIS_PREFIX + "%", "final_before": now - timedelta(seconds=LATE_COST_FINAL_AFTER_SEC),
-        "limit": int(limit)}).mappings().all()
+        "prefix": LATE_COST_BASIS_PREFIX + "%", "provisional": LATE_COST_PROVISIONAL_PREFIX + "%",
+        "final_before": now - timedelta(seconds=LATE_COST_FINAL_AFTER_SEC), "limit": int(limit),
+        "skip": sorted(a for a, n in _LATE_COST_FAILURES.items() if n >= LATE_COST_MAX_FAILURES)}).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -954,6 +966,7 @@ def late_read_cost(conn: Any, target: dict[str, Any], *, now: datetime) -> LateC
         end, why = _aware(target["completed_at"]), f"stage 1 {target['status']}, no stage 2"
     else:
         end, why = now, f"no end recorded {LATE_COST_FINAL_AFTER_SEC / 3600:.0f} h after the close"
+    final = target.get("stage2_completed_at") is not None or end is not now
     until = end + timedelta(seconds=GPU_COST_CLOSE_GRACE_SEC)
     starts = [_aware(t) for t in (target.get("opened_at"), target.get("seed_created_at")) if t is not None]
     since = (min(starts) if starts else _aware(target["closed_at"])) - timedelta(seconds=GPU_COST_LOOKBACK_SEC)
@@ -962,13 +975,13 @@ def late_read_cost(conn: Any, target: dict[str, Any], *, now: datetime) -> LateC
     lanes = _gpu_slot_seconds(conn, ids, since, until)
     merged = _stored_cost(target.get("cost_json"))
     basis = dict(merged.get("basis") or {})
-    basis["gpu"] = (f"{LATE_COST_BASIS_PREFIX} at {now.astimezone(timezone.utc).isoformat(timespec='seconds')}: "
+    head = LATE_COST_BASIS_PREFIX if final else LATE_COST_PROVISIONAL_PREFIX
+    basis["gpu"] = (f"{head} at {now.astimezone(timezone.utc).isoformat(timespec='seconds')}: "
                     f"pool lease slot-seconds over {len(ids)} turn id(s) of the read (the seed's trace ids and "
                     f"every durable turn, orion/grammar/act_cost_ids.py); read ended: {why}"
                     + ("" if lanes else "; no lease found"))
     merged["basis"] = basis
-    if lanes:
-        merged["gpu_slot_s_by_lane"] = lanes
+    merged["gpu_slot_s_by_lane"] = lanes  # a final fill replaces a provisional one, even with less
     cost = ActCostV2(**merged).model_dump(mode="json")
     return LateCost(str(target["act_id"]), cost, lanes, len(ids), why)
 
@@ -976,7 +989,8 @@ def late_read_cost(conn: Any, target: dict[str, Any], *, now: datetime) -> LateC
 def apply_late_cost(conn: Any, late: LateCost, *, now: datetime) -> bool:
     """Store one late cost. False when the act was filled meanwhile (the guard is in the UPDATE)."""
     res = conn.execute(_LATE_COST_UPDATE_SQL, {"cost_json": json.dumps(late.cost), "now": now,
-                                               "act_id": late.act_id, "prefix": LATE_COST_BASIS_PREFIX + "%"})
+                                               "act_id": late.act_id, "prefix": LATE_COST_BASIS_PREFIX + "%",
+                                               "provisional": LATE_COST_PROVISIONAL_PREFIX + "%"})
     return bool(getattr(res, "rowcount", 0))
 
 
@@ -992,6 +1006,10 @@ def refill_late_costs(conn: Any, *, now: datetime | None = None, limit: int = 20
                          log_prefix="act_cost")
         if late is None:
             failed += 1
+            act_id = str(target["act_id"])
+            _LATE_COST_FAILURES[act_id] = _LATE_COST_FAILURES.get(act_id, 0) + 1
+            if len(_LATE_COST_FAILURES) > 10_000:
+                _LATE_COST_FAILURES.clear()
             continue
         if commit is not None:
             commit()

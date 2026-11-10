@@ -171,7 +171,8 @@ families:
     # attention patch 3a the act ledger joined leases on the act's correlation_id (the seed's
     # request_id), which no lease carries, so every read looked free. The fill now sums the read's
     # turns (orion/grammar/act_cost_ids.py). Chat (9%) is not declared: the spec bids on the agent
-    # lanes, where reading's durable holds wait.
+    # lanes, where reading's durable holds wait. Known: one_of charges the act's WHOLE lane time
+    # (chat, metacog and fast included, ~11%) against the agent lanes.
     # Spec: docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md section 2.
     lanes: [agent, agent-gpu2]
     placement: one_of

@@ -52,6 +52,11 @@ class Hold:
     net: Optional[float]          # None: upkeep (no bid)
     queued_at: datetime
     granted_at: Optional[datetime] = None
+    role: Optional[str] = None     # the lane the hold waits on; holds on different lanes never compete
+
+
+def _base(family: str) -> str:
+    return family.split("(")[0]    # reading stage 1 and stage 2 are one family
 
 
 def score(h: Hold, now: datetime, aging: float) -> float:
@@ -59,14 +64,20 @@ def score(h: Hold, now: datetime, aging: float) -> float:
 
 
 def pick(waiting: Sequence[Hold], now: datetime, *, aging: float = DEFAULT_AGING, margin: float = MARGIN) -> Hold:
-    """The hold the value-ordered queue serves at ``now`` (spec section 1 rule)."""
+    """The hold the value-ordered queue serves at ``now`` (spec section 1 rule).
+
+    Only each family's EARLIEST waiting hold competes (same family: arrival order), and nothing that
+    arrived after an upkeep hold (no bid) may jump it."""
     order = sorted(waiting, key=lambda h: h.queued_at)
-    best = order[0]
-    for o in order[1:]:
+    heads, seen = [], set()
+    for o in order:
+        if _base(o.family) not in seen:
+            seen.add(_base(o.family))
+            heads.append(o)
+    best = heads[0]
+    for o in heads[1:]:
         if best.net is None or o.net is None:
             break                      # upkeep keeps its place: nothing after it may jump it
-        if o.family == best.family:
-            continue                   # same family: arrival order
         if score(o, now, aging) >= score(best, now, aging) + margin:
             best = o
     return best
@@ -97,6 +108,10 @@ def fixture() -> list[str]:
     # Same family keeps arrival order, however large the gap.
     if pick([h("a", "reading", 0.1, 0), h("b", "reading", 0.9, 1)], T0 + timedelta(minutes=2)).lease_id != "a":
         fails.append("the same family must keep arrival order")
+    # ...also when another family sits between them (review finding: C jumped its own earlier A).
+    mixed = [h("a", "reading", 0.1, 0), h("b", "curiosity", 0.5, 1), h("c", "reading(stage2)", 0.9, 2)]
+    if pick(mixed, T0 + timedelta(minutes=3)).lease_id != "b":
+        fails.append("a later hold must never jump an earlier hold of its own family")
     # Upkeep keeps its place: a later bid never jumps it, and it never jumps an earlier bid.
     if pick([h("u", "upkeep", None, 0), h("b", "curiosity", 0.9, 1)], T0 + timedelta(minutes=2)).lease_id != "u":
         fails.append("upkeep must keep its place ahead of a later bid")
@@ -106,14 +121,14 @@ def fixture() -> list[str]:
     # Aging 0, margin 0: pure value; with aging only time can reorder.
     if pick([low, high], T0 + timedelta(minutes=2), aging=0.0, margin=0.0).lease_id != "b":
         fails.append("aging 0, margin 0: the higher net wins")
-    print(f"fixture: {8 - len(fails)}/8 queues as expected (margin {MARGIN}, aging {DEFAULT_AGING}/h)")
+    print(f"fixture: {9 - len(fails)}/9 queues as expected (margin {MARGIN}, aging {DEFAULT_AGING}/h)")
     return fails
 
 
 # --- live ---------------------------------------------------------------------------------------
 
 _HOLDS_SQL = """
-    SELECT lease_id, max(holder) AS holder,
+    SELECT lease_id, max(holder) AS holder, max(role) AS role,
            min(generated_at) FILTER (WHERE event = 'admitted') AS q,
            min(generated_at) FILTER (WHERE event = 'granted') AS g
       FROM gpu_pool_events
@@ -162,19 +177,19 @@ def load_holds(conn, start: datetime, end: datetime, read_nets: dict[str, float]
         else:
             before = [d for d in ledger.get(wid, []) if d[0] <= g]
             net, fam = (before[-1][2], before[-1][1]) if before else (None, "no_bid:" + wid.split("-")[0].split(":")[0])
-        holds.append(Hold(str(r["lease_id"]), fam, net, q, g))
+        holds.append(Hold(str(r["lease_id"]), fam, net, q, g, r["role"]))
     holds.sort(key=lambda x: x.granted_at)
     return holds
 
 
 def replay(holds: list[Hold], *, aging: float, margin: float = MARGIN) -> dict:
-    base = lambda f: f.split("(")[0]  # noqa: E731 -- reading stage 1 and 2 are one family
+    base = _base
     contested = changed = 0
     pair: Counter = Counter()
     gain: Counter = Counter()
     loss: Counter = Counter()
     for h in holds:
-        waiting = [o for o in holds if o is not h and o.queued_at <= h.granted_at < o.granted_at
+        waiting = [o for o in holds if o is not h and o.role == h.role and o.queued_at <= h.granted_at < o.granted_at
                    and (o.granted_at - h.granted_at).total_seconds() > 5]
         if not waiting:
             continue

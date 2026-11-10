@@ -10,7 +10,8 @@ exists on day one.
 
 Backfill protocol (CLAUDE.md section 14):
 1. Targets: closed read acts with no GPU cost and no "late fill" basis line, whose read has ended.
-2. Snapshot every target's act_id and current cost_json to ``<job-dir>/snapshot.jsonl`` FIRST.
+2. Snapshot every target's act_id and current cost_json to ``<job-dir>/snapshot-<mode>-<time>.jsonl``
+   FIRST (a new file per run: a later run never overwrites the snapshot an apply needs to be undone).
    Refuses above 100,000 rows (ask Juniper).
 3. Progress: one line per batch to ``<job-dir>/progress.log`` (title, percent, ETA, rows, rate,
    errors, anomalies).
@@ -18,8 +19,8 @@ Backfill protocol (CLAUDE.md section 14):
 
 Dry run is the DEFAULT: it computes every cost inside a READ ONLY transaction and writes nothing to
 the database. ``--apply`` writes, one commit per act; the UPDATE's guard skips an act the live writer
-filled meanwhile. ``--restore`` puts the snapshot's cost_json back for acts whose cost carries the
-"late fill" line.
+filled meanwhile. ``--restore`` puts back, for every act an ``--apply`` run touched, the cost_json in
+the EARLIEST apply snapshot that holds it (only on acts whose cost carries the "late fill" line).
 
     python3 scripts/backfill_reading_act_cost.py                 # dry run, 30 days
     python3 scripts/backfill_reading_act_cost.py --apply         # after patch 3a is deployed
@@ -87,7 +88,8 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime, li
     targets = late_cost_targets(conn, now=now, since=now - timedelta(days=days), limit=limit)
     if len(targets) > MAX_ROWS:
         raise SystemExit(f"{len(targets)} target rows > {MAX_ROWS}: stop and ask Juniper (CLAUDE.md section 14)")
-    with (job_dir / "snapshot.jsonl").open("w") as fh:
+    stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    with (job_dir / f"snapshot-{'apply' if apply else 'dry_run'}-{stamp}.jsonl").open("x") as fh:
         for t in targets:
             fh.write(json.dumps({"act_id": t["act_id"], "closed_at": _iso(t["closed_at"]),
                                  "cost_json": t["cost_json"]}, default=str) + "\n")
@@ -99,6 +101,13 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime, li
     for i, t in enumerate(targets, 1):
         try:
             late = late_read_cost(conn, t, now=now)
+            if apply:
+                if apply_late_cost(conn, late, now=now):
+                    written += 1
+                else:
+                    skipped += 1
+                if commit is not None:
+                    commit()
         except Exception as exc:  # noqa: BLE001 -- one bad act is counted, never stops the job
             errors += 1
             rows.append({"act_id": t["act_id"], "error": f"{type(exc).__name__}: {exc}"[:300]})
@@ -112,13 +121,6 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime, li
         total_s = sum((late.lanes or {}).values())
         anomaly = "no_lease" if not late.lanes else ("over_6h" if total_s > ANOMALY_SLOT_S else "")
         anomalies += bool(anomaly)
-        if apply:
-            if apply_late_cost(conn, late, now=now):
-                written += 1
-            else:
-                skipped += 1
-            if commit is not None:
-                commit()
         before = t["cost_json"]
         rows.append({"act_id": late.act_id, "closed_at": _iso(t["closed_at"]), "read_end": late.read_end,
                      "turn_ids": late.turn_ids,
@@ -186,15 +188,20 @@ def _report(path: Path, s: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     ]
     lines += [f"| {r['act_id']} | {r['before_gpu_slot_s_by_lane']} | {r['after_gpu_slot_s_by_lane']} | {r['read_end']} |"
               for r in examples]
-    lines += ["", "Files: snapshot.jsonl, progress.log, before_after.csv, report.md (this file).", ""]
+    lines += ["", "Files: snapshot-<mode>-<time>.jsonl, progress.log, before_after.csv, report.md (this file).", ""]
     path.write_text("\n".join(lines))
 
 
 def restore(conn: Any, job_dir: Path, *, commit: Any = None) -> int:
-    """Put the snapshot's cost_json back, only on acts this fill touched (the "late fill" line)."""
+    """Put each act's pre-fill cost_json back (earliest apply snapshot wins), only on acts this fill
+    touched (the "late fill" line)."""
+    first: dict[str, Any] = {}
+    for snap in sorted(job_dir.glob("snapshot-apply-*.jsonl")):
+        for line in snap.read_text().splitlines():
+            row = json.loads(line)
+            first.setdefault(row["act_id"], row)
     n = 0
-    for line in (job_dir / "snapshot.jsonl").read_text().splitlines():
-        row = json.loads(line)
+    for row in first.values():
         res = conn.execute(text(
             "UPDATE grammar_acts SET cost_json = CAST(:c AS jsonb), updated_at = now() "
             "WHERE act_id = :a AND cost_json->'basis'->>'gpu' LIKE :p"),
@@ -218,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(timezone.utc)
     with engine.connect() as conn:
         if args.restore:
-            print(f"restored {restore(conn, args.job_dir, commit=conn.commit)} act(s) from {args.job_dir}/snapshot.jsonl")
+            print(f"restored {restore(conn, args.job_dir, commit=conn.commit)} act(s) from {args.job_dir}/snapshot-apply-*.jsonl")
             return 0
         if not args.apply:
             conn.execute(text("SET TRANSACTION READ ONLY"))

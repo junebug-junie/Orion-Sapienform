@@ -18,8 +18,10 @@ Two lanes:
   until admitted or its hold end: min(family window, 2,900 s) (decided default 6). Pessimistic: the
   lane levels include reading's own real use.
 
-Gate (acceptance check 5): reads held > 1 h <= 5%, and reading's share of Tier 2 ACTS STARTED over the
-last 7 days >= 5%. Also printed: verdicts, delays, reading's replayed net, and its share of Tier 2
+Gate (acceptance check 5): reads held > 1 h <= 5%, reads held to the 2,900 s hold end (admitted only
+by ``window_end``) <= 5% (a hold cannot pass 1 h here, so this is the gate that can fail), and
+reading's share of Tier 2 ACTS STARTED over the last 7 days >= 5%, with reading's starts taken at the
+replayed admission time and the other families' at their real starts. Also printed: verdicts, delays, reading's replayed net, and its share of Tier 2
 funded wants (the old floor's count). Writes nothing (psql in a read-only transaction; SQLAlchemy
 connection with SET TRANSACTION READ ONLY).
 
@@ -51,6 +53,10 @@ FAMILY = "hub.world_pulse_read"
 PRODUCER = "orion-durable-runs.admission.reading.binding"
 HOLD_END_SEC = 2900.0          # decided default 6: Hub's 3,500 s reclaim minus 600 s
 MAX_HELD_OVER_1H = 0.05
+# A hold ends at HOLD_END_SEC (0.81 h), so "held > 1 h" cannot happen in this replay: the gate is the
+# share of reads held to the hold's end (admitted only by ``window_end``), the binding equivalent of
+# "held too long".
+MAX_HELD_TO_END = 0.05
 MIN_ACTS_SHARE = 0.05
 DEFAULT_URI = "postgresql://postgres:postgres@localhost:55432/conjourney"
 
@@ -130,7 +136,9 @@ def fixture() -> list[str]:
         return d, bind_verdict(d, T0, T0 + timedelta(seconds=HOLD_END_SEC))
 
     d, v = bid(_state(3600.0))
-    if d.reason == "capacity_reserved" and (d.net or 0) > 0 and not (v.admit and v.why == "queued_at_pool"):
+    if (d.net or 0) <= 0:
+        fails.append(f"a hungry read with a measured cost should have a positive net: {d.net} ({d.why})")
+    if d.reason == "capacity_reserved" and not (v.admit and v.why == "queued_at_pool"):
         fails.append(f"a full agent lane must queue at the pool, never hold: {d.reason} {v.why}")
     if d.reason != "capacity_reserved":
         fails.append(f"a full agent lane should defer on capacity: {d.reason} net={d.net} ({d.why})")
@@ -213,6 +221,7 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
 
     book = ReservationBook()
     verdicts, reasons, delays, nets = Counter(), Counter(), [], []
+    admitted_at: list[datetime] = []
     net_by_act: dict[str, float] = {}
     ctx_key, ctx = None, None
     for t_open, act_id, corr in reads:
@@ -235,6 +244,7 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
             if v.admit:
                 verdicts[v.why.split(":")[0]] += 1
                 delays.append((t - t_open).total_seconds() / 3600.0)
+                admitted_at.append(t)
                 if d.outcome == "funded":
                     book.note_funded(d.decision_id, FAMILY, 2, t)
                 book.release(w.want_id)
@@ -242,12 +252,16 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
             t = v.retry_at
     tier2 = {f for f, c in fams.families.items() if c.tier == 2}
     week = end - timedelta(days=7)
-    started = Counter(a.family for a in acts if a.family in tier2 and a.opened_at is not None and week <= a.opened_at < end)
+    # Other Tier 2 families start when they really did; reading starts when the replay admitted it.
+    started = Counter(a.family for a in acts if a.family in tier2 and a.family != FAMILY and a.opened_at is not None
+                      and week <= a.opened_at < end)
+    started[FAMILY] = sum(1 for t in admitted_at if week <= t < end)
     n = len(delays)
     return {
         "reads": n, "costed": sum(1 for _, a, _ in reads if a in costs), "verdicts": dict(verdicts),
         "bid_reasons": dict(reasons), "held": sum(1 for d in delays if d > 0),
         "held_over_1h": sum(1 for d in delays if d > 1.0),
+        "held_to_end": verdicts.get("window_end", 0),
         "delay_h_p50": _q(delays, 0.5), "delay_h_p90": _q(delays, 0.9),
         "net_p10": _q(nets, 0.1), "net_p50": statistics.median(nets) if nets else None, "net_p90": _q(nets, 0.9),
         "funded_share_7d": book.funded_share(FAMILY, 2, end),
@@ -269,7 +283,9 @@ def live(days: float) -> list[str]:
     fmt = lambda v: "n/a" if v is None else f"{v:.3f}"  # noqa: E731
     print(f"live {start.isoformat()} .. {end.isoformat()}: {r['reads']} read starts ({r['costed']} with a measured lane cost)")
     print(f"  verdicts={r['verdicts']} bid reasons={r['bid_reasons']}")
-    print(f"  held at all={r['held']} held > 1 h={r['held_over_1h']} ({held_share:.1%}); delay p50={fmt(r['delay_h_p50'])} h "
+    end_share = r["held_to_end"] / r["reads"] if r["reads"] else 0.0
+    print(f"  held at all={r['held']} held to the {HOLD_END_SEC:.0f} s hold end={r['held_to_end']} ({end_share:.1%}) "
+          f"held > 1 h={r['held_over_1h']} ({held_share:.1%}); delay p50={fmt(r['delay_h_p50'])} h "
           f"p90={fmt(r['delay_h_p90'])} h")
     print(f"  reading net p10={fmt(r['net_p10'])} p50={fmt(r['net_p50'])} p90={fmt(r['net_p90'])}")
     print(f"  reading share of Tier 2 funded wants (7 d)={fmt(r['funded_share_7d'])}; "
@@ -280,6 +296,8 @@ def live(days: float) -> list[str]:
         fails.append("no read starts in the window (UNVERIFIED)")
     if held_share > MAX_HELD_OVER_1H:
         fails.append(f"reads held > 1 h {held_share:.1%} > {MAX_HELD_OVER_1H:.0%}")
+    if end_share > MAX_HELD_TO_END:
+        fails.append(f"reads held to the hold end {end_share:.1%} > {MAX_HELD_TO_END:.0%}")
     if r["acts_started_share_7d"] is None or r["acts_started_share_7d"] < MIN_ACTS_SHARE:
         fails.append(f"reading's Tier 2 acts-started share {r['acts_started_share_7d']} < {MIN_ACTS_SHARE:.0%}")
     return fails

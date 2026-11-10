@@ -121,6 +121,6 @@ scripts/rebuild_services_from_git_diff.sh   # after merge, from the clean primar
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3179
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

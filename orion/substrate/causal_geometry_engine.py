@@ -11,8 +11,8 @@ three-phase design, and `scripts/causal_geometry_report.py`'s own (still
 present) module docstring for the detailed rationale behind the fixed
 constants, the source tables, resampling, lagged cross-correlation, the
 Bonferroni-corrected-per-pair + Benjamini-Hochberg-corrected-across-pairs
-surrogate significance test (see that docstring's "n_surrogates floor" note
-for a 2026-07-29 fix to how those two stages interact), and the
+surrogate significance test (see that docstring's "p-value resolution" note
+for two live incidents where a floored p starved BH), and the
 designed-vs-observed
 divergence matching rule (including the `#<capability_channel>` target_id
 disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
@@ -20,6 +20,7 @@ disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
 """
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,9 +45,10 @@ LAG_GRID_SECONDS: Tuple[int, ...] = (0, 300, 600, 900, 1800)
 
 DEFAULT_WINDOW_HOURS = 168.0
 DEFAULT_MIN_SAMPLES = 30
-# 200 surrogates was a live bug (see compute_pairwise_results' comment on the
-# Bonferroni floor): raised to 2000 on 2026-07-29 so the per-pair Bonferroni
-# correction and the family-wise BH-FDR correction can actually coexist.
+# Number of circular shifts used to estimate the null spread of r (see
+# circular_shift_pvalue). Since 2026-11-10 this sets how precisely sigma is
+# estimated (relative error ~ 1/sqrt(2 * n_surrogates) ~ 1.6%), not the
+# smallest reportable p -- the p-value no longer has a 1/(n_surrogates+1) floor.
 DEFAULT_N_SURROGATES = 2000
 DEFAULT_ALPHA = 0.05
 DEFAULT_BIOMETRICS_NODE = "athena"
@@ -236,6 +238,51 @@ def _best_direction(
     return best
 
 
+# Smallest p-value circular_shift_pvalue reports. `math.erfc` underflows to an
+# exact 0.0 near |z| ~ 38; a literal 0.0 would read as "certain", which no
+# finite sample supports. Far below any BH threshold, so it never decides an
+# edge -- it only keeps the stored `significance` honest.
+MIN_REPORTED_PVALUE = 1e-300
+
+# Fisher z of |r| -> 1 is infinite; clip just inside so a perfectly
+# collinear pair gets a huge-but-finite z instead of inf/nan.
+_R_CLIP = 1.0 - 1e-12
+
+
+def circular_shift_surrogate_rs(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    *,
+    n_surrogates: int = DEFAULT_N_SURROGATES,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    """Pearson r of `xs` against `n_surrogates` circular shifts of `ys`.
+
+    Each surrogate is exactly `_pearson(xs, np.roll(ys, s))` for a uniformly
+    drawn non-zero shift `s` -- computed for every shift at once through the
+    circular cross-correlation theorem (one FFT pair, O(n log n)) and then
+    indexed by the drawn shifts, instead of 2000 separate `np.corrcoef` calls.
+    A circular shift does not change the mean or variance of `ys`, so the
+    standardized dot product is the Pearson r of that shift exactly.
+    Returns an empty array when `n < 2` or either series is constant.
+    """
+    n = len(ys)
+    if n < 2 or len(xs) != n:
+        return np.array([], dtype=float)
+    sx = float(np.std(xs))
+    sy = float(np.std(ys))
+    if sx == 0.0 or sy == 0.0:
+        return np.zeros(n_surrogates, dtype=float)
+    if rng is None:
+        rng = np.random.default_rng()
+    xz = (xs - np.mean(xs)) / sx
+    yz = (ys - np.mean(ys)) / sy
+    # cc[s] = sum_u xz[u + s] * yz[u] = sum_t xz[t] * roll(yz, s)[t]
+    cc = np.fft.irfft(np.fft.rfft(xz) * np.conj(np.fft.rfft(yz)), n) / n
+    shifts = rng.integers(1, n, size=n_surrogates)
+    return np.clip(cc[shifts], -1.0, 1.0)
+
+
 def circular_shift_pvalue(
     xs: np.ndarray,
     ys: np.ndarray,
@@ -244,28 +291,48 @@ def circular_shift_pvalue(
     n_surrogates: int = DEFAULT_N_SURROGATES,
     rng: Optional[np.random.Generator] = None,
 ) -> float:
-    """Circular time-shift surrogate p-value for a Pearson correlation.
+    """Two-sided p-value for a Pearson r against a circular-shift null,
+    read from a normal fit to the Fisher-z surrogate distribution.
 
-    Shifts `ys` by a uniformly-sampled non-zero circular offset (numpy.roll)
-    `n_surrogates` times, recomputes Pearson r against the fixed `xs` each
-    time, and returns the add-one-smoothed fraction of surrogate |r| >=
-    observed |r|. Add-one smoothing (standard permutation-test convention)
-    means this never reports p=0.0 off a finite surrogate sample.
+    Null: `xs` and `ys` are independent, each keeping its own serial
+    structure. Circular shifts of `ys` sample exactly that null (each
+    surrogate keeps the full autocorrelation of both series, including daily
+    cycles). Bartlett (1946) gives the large-sample null distribution of a
+    cross-correlation between two independent stationary series: mean 0,
+    variance (1/n) * sum_k rho_x(k) rho_y(k). The surrogate spread *is* that
+    variance, estimated from the data with no truncated autocorrelation sum
+    to choose. Fisher's z = atanh(r) makes the null closer to normal for
+    short or persistent series. So:
+
+        z_obs = atanh(r_obs),  sigma = sqrt(mean(atanh(r_s)^2)),
+        p = erfc(|z_obs| / (sigma * sqrt(2)))
+
+    sigma is the second moment about 0, the null's mean (the average of r over
+    all n circular shifts, including the unshifted one, is exactly 0).
+
+    2026-11-10: this replaced the add-one rank p `(count(|r_s| >= |r|) + 1) /
+    (n_surrogates + 1)`. That p could never go below 1/2001; after the
+    10-way within-pair Bonferroni its floor was 0.005, above BH's first-rank
+    threshold 0.05/171 = 0.00029. BH then passed nothing unless 18+ pairs tied
+    at the floor, and passed all of them when they did (0 edges since
+    2026-10-30, including power->thermal r=+0.61, n=2017). This p is
+    continuous, so BH ranks real differences in strength again. Calibration
+    on independent AR(1) pairs (phi up to 0.98) is pinned by
+    `orion/substrate/tests/test_causal_geometry_pvalue_calibration.py`.
+
+    Returns 1.0 when the null cannot be estimated (n < 2, constant series).
+    Never returns 0.0 -- floored at MIN_REPORTED_PVALUE.
     """
-    n = len(ys)
-    if n < 2:
+    rs = circular_shift_surrogate_rs(xs, ys, n_surrogates=n_surrogates, rng=rng)
+    if rs.size == 0:
         return 1.0
-    if rng is None:
-        rng = np.random.default_rng()
-    observed_abs = abs(observed_r)
-    count_ge = 0
-    for _ in range(n_surrogates):
-        shift = int(rng.integers(1, n)) if n > 1 else 0
-        shifted = np.roll(ys, shift)
-        r = _pearson(xs, shifted)
-        if r is not None and abs(r) >= observed_abs:
-            count_ge += 1
-    return (count_ge + 1) / (n_surrogates + 1)
+    zs = np.arctanh(np.clip(rs, -_R_CLIP, _R_CLIP))
+    sigma = float(np.sqrt(np.mean(zs * zs)))
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        return 1.0
+    z_obs = math.atanh(max(-_R_CLIP, min(_R_CLIP, float(observed_r))))
+    p = math.erfc(abs(z_obs) / (sigma * math.sqrt(2.0)))
+    return float(min(1.0, max(MIN_REPORTED_PVALUE, p)))
 
 
 class PairResult:
@@ -330,13 +397,13 @@ def compute_pairwise_results(
             # search; it is NOT a correction across the whole channel x channel
             # matrix -- see _apply_fdr_correction below for that.
             #
-            # This step's own floor (`n_comparisons/(n_surrogates+1)`, from
-            # circular_shift_pvalue's add-one smoothing) must stay well below
-            # `alpha`, or _apply_fdr_correction's rank-dependent BH threshold
-            # becomes nearly impossible to clear -- see
-            # scripts/causal_geometry_report.py's module docstring's
-            # "n_surrogates floor" note for the live incident (2026-07-28/29)
-            # that this constrains DEFAULT_N_SURROGATES against.
+            # p_raw is continuous (normal fit to the surrogate null, see
+            # circular_shift_pvalue), so this product has no resolution floor
+            # that could starve _apply_fdr_correction's rank-dependent BH
+            # threshold. Two earlier floors did exactly that: 10/201 (fixed
+            # 2026-07-29 by raising n_surrogates) and 10/2001 = 0.005 vs
+            # 0.05/171 (fixed 2026-11-10 by dropping the rank p) -- see
+            # scripts/causal_geometry_report.py's "p-value resolution" note.
             n_comparisons = 2 * len(lag_grid_seconds)
             p_value = min(1.0, p_raw * n_comparisons)
             result.winner = winner
@@ -610,7 +677,8 @@ def build_snapshot(
         else:
             notes.append(
                 f"{n_pairs_with_data} pair(s) had enough data to test but none cleared "
-                f"--alpha={alpha} after {n_surrogates} circular-shift surrogates each -- "
+                f"--alpha={alpha} (BH-FDR; null spread from {n_surrogates} circular-shift "
+                "surrogates each) -- "
                 "this is reported honestly as insufficient_data rather than a fabricated graph."
             )
 

@@ -83,10 +83,15 @@ Significance: circular time-shift surrogates
 ---------------------------------------------
 For the single (direction, lag) combination with the largest |r| for a pair,
 this script draws --n-surrogates circular shifts of the target array (numpy
-.roll by a uniformly-sampled non-zero offset), recomputes Pearson r each
-time, and computes p_raw = (count(|r_surrogate| >= |r_observed|) + 1) /
-(--n-surrogates + 1) (add-one smoothing, standard permutation-test
-convention, avoids ever reporting p=0.0 off a finite sample).
+.roll by a uniformly-sampled non-zero offset) and recomputes Pearson r each
+time. Each shift keeps both series' full autocorrelation, so the surrogates
+sample the null "independent, each with its own serial structure". p_raw is
+read from a normal fit to the Fisher-z surrogate distribution:
+sigma = sqrt(mean(atanh(r_s)^2)), p_raw = erfc(|atanh(r_obs)| / (sigma*sqrt(2))).
+Bartlett (1946) gives the same null (mean 0, variance (1/n) sum_k
+rho_x(k) rho_y(k)); the surrogates estimate that variance directly instead of
+through a truncated autocorrelation sum. See `circular_shift_pvalue` in
+`orion/substrate/causal_geometry_engine.py`.
 
 Multiple-comparisons correction is two separate stages, not one:
 
@@ -115,26 +120,20 @@ Multiple-comparisons correction is two separate stages, not one:
    declare everything at or before that rank significant. An edge is only
    emitted into `edges` if it passes both stages.
 
-n_surrogates floor: these two stages must stay compatible. `circular_shift_
-pvalue`'s add-one smoothing means p_raw can never go below
-`1/(--n-surrogates + 1)`, so stage 1's own floor is
-`n_comparisons/(--n-surrogates + 1)`. If that floor sits too close to
-`alpha`, stage 2's rank-dependent threshold `(i/m)*alpha` becomes nearly
-impossible to clear for a realistic family size m, silently producing 0
-edges regardless of how strong the real correlations are. Confirmed live
-2026-07-29: at the old default of 200 surrogates this floor was `10/201 ~=
-0.0497512` -- just under the old flat `alpha=0.05` (which is why a flat
-per-pair cutoff worked fine before the BH-FDR cutover on 2026-07-28), but
-every tick since then reported `insufficient_data=True`, including for
-physically-obvious correlations like `biometrics:fan`/`biometrics:thermal`
-(r=+0.69). `DEFAULT_N_SURROGATES=2000` drops the floor to `10/2001 ~=
-0.005`, giving BH real headroom (verified live: the same 75-pair family that
-found 0 edges at 200 surrogates found 19 at 2000, at ~35s wall-clock -- an
-acceptable cost since the producer runs this off the event loop on an
-hours-scale cadence, see `orion/substrate/causal_geometry_producer.py`). If
-the channel/pair count grows a lot from here, this floor may need lowering
-again -- re-run this same live check rather than assuming 2000 stays
-sufficient forever.
+p-value resolution: stage 2 needs a continuous p. Until 2026-11-10 p_raw was
+the add-one rank `(count(|r_s| >= |r_obs|) + 1) / (--n-surrogates + 1)`,
+which can never go below `1/(--n-surrogates + 1)`; after stage 1 the floor is
+`n_comparisons/(--n-surrogates + 1)`. When that floor sits above BH's
+first-rank threshold `alpha/m`, BH passes nothing unless enough pairs tie at
+the floor, and then passes all of them together. That happened twice:
+2026-07-29 (200 surrogates, floor 10/201 ~= 0.0498, 0 edges incl.
+fan/thermal r=+0.69; fixed by raising to 2000) and 2026-10-30 onward (2000
+surrogates, floor 10/2001 ~= 0.005 vs 0.05/171 ~= 0.00029 at m=171 pairs;
+0 edges incl. power/thermal r=+0.61, n=2017; edge counts flipped between 0
+and ~20 by how many pairs saturated). The normal-fit p above has no floor
+(only MIN_REPORTED_PVALUE = 1e-300 so a stored p is never a literal 0.0).
+`--n-surrogates` now sets how precisely sigma is estimated, not the
+smallest reportable p.
 
 Designed-vs-observed divergence
 --------------------------------

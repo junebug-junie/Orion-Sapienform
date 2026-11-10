@@ -10,8 +10,9 @@ For every ``sent`` row in ``endogenous_outreach_decisions``:
 - ``curiosity_outreach``: the run's ``line`` and its taken focus (``curiosity_focus_request``) through
   ``outreach_door_policy.curiosity_reaches_juniper``.
 - background tick (no ``source``): its recorded daydream (``grounding.daydream_age_sec`` -> the
-  ``reverie_visual_chain`` row it read -> ``daydream_content_id``). No daydream and no tension: it
-  would not roll. A daydream a kept tick already used in the last 7 days: not used again.
+  ``reverie_visual_chain`` row it read -> ``daydream_content_id``). No daydream: nothing to speak
+  from (tension alone is a trigger, not a topic). A daydream a kept tick already used in the last
+  7 days: not used again.
 - readings, office visits, strain report: kept (the readings rewrite changes words, not the count).
 
 What this cannot replay: the ``Why Juniper`` gate (it depends on text Orion writes at send time), and
@@ -97,14 +98,16 @@ def decide(
         elif src == TICK:
             did = str(row.get("daydream_id") or "")
             at = row["decided_at"]
-            if not did and not row.get("tension"):
-                verdict, why = "no_material", "no daydream and no tension: nothing left to speak from"
-            elif did and did in used and at - used[did] < timedelta(days=DAYDREAM_LEDGER_DAYS):
+            if not did:
+                # Tension alone is a trigger, not a topic: has_talkable_content refuses it in the live
+                # code (tension_without_content), and without tension the tick does not roll at all.
+                verdict = "tension_without_content" if row.get("tension") else "no_material"
+                why = "no daydream: nothing left to speak from"
+            elif did in used and at - used[did] < timedelta(days=DAYDREAM_LEDGER_DAYS):
                 verdict, why = "content_already_used", f"daydream {did} already used"
             else:
-                why = f"daydream {did}" if did else "tension"
-                if did:
-                    used[did] = at
+                why = f"daydream {did}"
+                used[did] = at
         row["verdict"], row["why"] = verdict, why
         out.append(row)
     return out

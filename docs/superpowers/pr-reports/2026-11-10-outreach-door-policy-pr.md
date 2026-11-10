@@ -18,11 +18,11 @@ Replay of the last 7 days (2026-11-03 .. 11-10) through these rules, messages pe
 | door | before | after |
 |---|---|---|
 | reading findings | 7.43 | 7.43 (same count; new wording) |
-| curiosity | 5.14 | 1.86 |
+| curiosity | 5.29 | 1.86 |
 | background tick | 4.00 | 2.29 at the moments it actually sent (upper bound 4: the cap still applies, and a tick refused for a reused daydream tries again when a new one arrives) |
 | office visits | 0.57 | 0.57 |
 | self findings | 0.29 | 0 |
-| total | 17.43 | 12.14 (up to ~14 with the tick at its cap) |
+| total | 17.57 | 12.14 (up to ~14 with the tick at its cap) |
 
 The `Why Juniper` gate cannot be replayed (it depends on text Orion writes at send time), so these are upper bounds. PR B (one attention budget) brings the total toward 3 to 6.
 
@@ -55,9 +55,9 @@ What fed the tick code findings, from its own grounding records (55 tick sends i
 
 Rule: the same as curiosity. The investigate line's material does not reach Juniper unasked, so the tick no longer reads it. Orion's own unsolicited messages (`chat_history_log.client_meta.unsolicited`) are not tick material; she already got them.
 
-What the tick can still speak from: the daydream (now enough on its own to roll, with a 7-day "already used" ledger keyed on a hash of the caption), the tension trigger, the personality cue and the real conversation.
+What the tick can still speak from: the daydream (now enough on its own to roll, with a 7-day "already used" ledger keyed on a hash of the caption; a daydream Orion declined to send counts as used too), the personality cue and the real conversation. The tension trigger stays a reason to roll, not a topic: its node / channel lines stay in the prompt (they stop the model from inventing a channel name, the 2026-09-07 incident) with an explicit "this is why you are speaking, not what to talk about; do not report it". Tension alone (no daydream) is still refused as `tension_without_content`. In 14 days, 0 of 55 tick sends had tension.
 
-The 11-09 triple, replayed: 15:05 kept (new daydream). 16:03 refused (`content_already_used`): same daydream as 15:05. 16:53 kept (new daydream), but without the relayed finding, because the recent turns no longer include Orion's own messages.
+The 11-09 triple, replayed (all three ticks had tension off, daydream on): 15:05 kept (new daydream). 16:03 refused (`content_already_used`): same daydream as 15:05. 16:53 kept (new daydream), but without the relayed finding, because the recent turns no longer include Orion's own messages.
 
 Self-line priors were deliberately NOT moved into the tick: #2224 decided outreach must not treat self-inquiry priors as talkable world content, and self-inquiry results already reach Juniper through the curiosity door.
 
@@ -145,13 +145,37 @@ How it started (record): 1. Your daily world-pulse news run put https://www.pbs.
 ## Tests run
 
 ```text
-TESTS_BELOW
+cd services/orion-hub && PYTHONPATH=<worktree>:. pytest -q tests/test_outreach_door_policy.py tests/test_endogenous_outreach.py \
+  tests/test_endogenous_outreach_decisions.py tests/test_outreach_bind.py tests/test_reading_finding_outreach.py \
+  tests/test_office_reach_out.py tests/test_outreach_provenance.py tests/test_curiosity_investigation.py \
+  tests/test_curiosity_gpu_lease.py tests/test_regulation_arousal_readers.py tests/test_outreach_personality_cue.py \
+  tests/test_physiology_shadow_bid.py tests/test_outreach_vocabulary.py                  -> all passed
+PYTHONPATH=. pytest -q orion/world_pulse_read/tests orion/hub orion/self_monitor orion/curiosity \
+  tests/test_metric_prompt_semantics.py tests/test_metric_rest_range.py tests/test_no_personal_terms.py \
+  tests/test_no_private_eval_artifacts.py                                                -> all passed
+Full Hub tests/ + evals/: 4712 passed, 150 skipped, 4 failed -- the same 4 fail on clean main
+  (test_attention_loops_ui_smoke x2, test_check_async_routes_not_blocking::test_the_real_repo_is_clean,
+  test_fcc_model_labels_api: local paths / ~/.fcc permissions). evals/test_reading_finding_eval.py updated for the new wording.
+scripts/check_metric_lineage.py --gate / --prompt-semantics                               -> PASS
+scripts/check_definition_drift.py --gate (lock regenerated with --update)                -> PASS
+scripts/check_inner_state_registry.py                                                    -> OK (27 entries)
+scripts/check_env_key_single_source.py                                                   -> OK
+scripts/check_settings_defaults.py orion-hub --example-drift                             -> OK
+scripts/check_async_routes_not_blocking.py, check_scripts_dir_no_stdlib_shadow.py        -> clean
 ```
 
 ## Evals run
 
 ```text
-EVALS_BELOW
+evals/run_outreach_door_policy_replay.py --days 7 --inventory-days 14   (read-only, live DB)
+  before 17.57/day -> after 12.14/day; curiosity 50 sent in 14 d -> 20 kept; the 11-09 triple -> 2 sent, 1 refused
+evals/test_outreach_door_policy_replay_eval.py (offline, planted week incl. the 11-09 triple)      -> passed
+evals/run_reading_message_rewrite_eval.py --limit 20 --llm-url http://127.0.0.1:8210/v1 (chat lane)
+  {"rows": 20, "rebuilt": 20, "check_failures": 0, "old_with_record_vocab": 20,
+   "new_written": 20, "new_with_record_vocab": 3, "new_with_why_juniper": 20}
+  The 3 "new" hits are all "followed a link" (a web link, not the graph): 0 of 20 describe graph mechanics.
+  Provenance chain identical to the old prompt in 20 of 20.
+evals/test_reading_message_rewrite_eval.py (offline)                                               -> passed
 ```
 
 ## Docker/build/smoke checks
@@ -162,7 +186,31 @@ Not run: no Dockerfile, requirements or compose change. Hub picks the code up on
 
 ## Review findings fixed
 
-REVIEW_BELOW
+Code review ran in a subagent over the whole diff. No blockers. Fixed:
+
+- Finding: a reply ending "... PASS" followed by a `Why Juniper:` line hid the PASS, so the word PASS would have been delivered.
+  - Fix: re-check PASS on the body after the line is taken off (tick and `offer_message`), recorded `orion_passed`.
+  - Evidence: `test_a_trailing_pass_hidden_by_the_why_line_is_still_a_pass`.
+- Finding: a daydream Orion declined (PASS / no `Why Juniper`) was composed again on the next 10 s tick.
+  - Fix: tick rows with `orion_passed` / `no_why_juniper` mark their daydream used (prior / curiosity ids stay sent-only).
+  - Evidence: `test_a_declined_daydream_is_used_too`.
+- Finding: the tick prompt still named tension telemetry (node / channel) as current facts.
+  - Fix: kept as a trigger (the names stop fabrication), framed "why you are speaking now, not what to talk about; do not report it". Tension alone is still refused.
+  - Evidence: `test_the_tension_trigger_is_framed_as_not_a_topic`.
+- Finding: the replay counted a tension-only tick as kept; live code refuses it.
+  - Fix: `decide()` returns `tension_without_content`; eval test updated; numbers re-run (unchanged: every tick send had a daydream).
+- Finding: the `Why Juniper` parser took a bare hyphen as the separator ("why juniper-loving ...").
+  - Fix: colon, or a dash with spaces on both sides. Evidence: two new parser tests.
+- Finding: `_curiosity_door` could raise if the pool provider raised.
+  - Fix: provider call inside the try; `focus_unreadable`. Evidence: `test_focus_provider_that_raises_is_unasked_not_an_escape`.
+- Finding: later curiosity skip rows lacked `door_policy` / `finding_key`.
+  - Fix: every skip row carries both. Evidence: updated `test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line`.
+- Finding: `already_told` could race the daemon-thread row write.
+  - Fix: an in-process set of delivered keys, checked first. Evidence: `test_a_told_key_is_remembered_in_process_before_the_row_lands`.
+- Finding: reading prompt called an unknown / equal belief change "less firmly".
+  - Fix: "your hold on it changed". Evidence: `test_a_belief_whose_change_is_unknown_is_not_called_weaker`.
+- Finding: stale comments / docstring / prompt wording ("open claims, curiosity signals"). Fixed.
+- Not changed: the recent-turns test checks the SQL text (reviewer: acceptable); the unsolicited filter was checked against live rows (51 of 56 recent rows carry `unsolicited=true`).
 
 ## Restart required
 

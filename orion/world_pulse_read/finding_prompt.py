@@ -98,8 +98,10 @@ def _plain_change(f: ReadingFindingV1) -> list[str]:
             how = "you formed this belief after the read"
         elif after is not None and after > before:
             how = "you hold it more firmly than before"
-        else:
+        elif after is not None and after < before:
             how = "you hold it less firmly than before"
+        else:
+            how = "your hold on it changed"
         out = [f"A belief of yours that changed when you came back to it later ({how}): {claim}"]
         if f.evidence_text:
             out.append(f'   What you wrote on it then: "{f.evidence_text}"')

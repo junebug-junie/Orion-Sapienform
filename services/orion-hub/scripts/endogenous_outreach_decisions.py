@@ -279,6 +279,10 @@ def collect_used_content_ids(
         did = str(row.get("daydream_id") or "").strip()
         if did:
             daydreams.add(did)
+        # A row Orion composed but declined (``_reason`` set by the fetch: orion_passed /
+        # no_why_juniper) marks only its daydream used: the prior / curiosity lanes stay sent-only.
+        if row.get("_reason") not in (None, "sent"):
+            continue
         for raw in row.get("prior_ids") or []:
             pid = str(raw or "").strip()
             if pid:
@@ -295,13 +299,16 @@ def fetch_recently_used_outreach_content_ids(
 ) -> Tuple[Set[str], Set[str], Set[str]]:
     """Prior / curiosity / daydream content IDs used in successful outreach recently.
 
-    Fail-open to ``(set(), set())`` when the decision log is disabled, the
+    Fail-open to ``(set(), set(), set())`` when the decision log is disabled, the
     engine is unavailable, or the query errors -- a broken ledger must not
     invent silence (same direction as other Hub outreach reads).
 
-    Only ``reason='sent'`` rows count: blocked ticks and force-debug noise
-    are not "already said." Curiosity ``offer_message`` rows that never
-    wrote grounding IDs contribute nothing here (organic-only novelty).
+    Background-tick rows only. ``reason='sent'`` rows mark every lane's ids used:
+    blocked ticks are not "already said." A tick Orion composed and declined
+    (``orion_passed``, ``no_why_juniper``; door policy review, 2026-11-10) marks
+    its DAYDREAM used too: otherwise the same picture is composed again on the
+    next 10 s tick until a new daydream arrives (the readings door treats a
+    decline as decided for the same reason).
     """
     empty: Tuple[Set[str], Set[str], Set[str]] = (set(), set(), set())
     if not decision_log_enabled():
@@ -319,12 +326,12 @@ def fetch_recently_used_outreach_content_ids(
                 conn.execute(
                     text(
                         """
-                        SELECT result_json->'grounding' AS grounding
+                        SELECT reason, result_json->'grounding' AS grounding
                         FROM endogenous_outreach_decisions
-                        WHERE outreach
-                          AND reason = 'sent'
+                        WHERE reason IN ('sent', 'orion_passed', 'no_why_juniper')
                           AND decided_at >= now() - make_interval(days => :days)
                           AND result_json ? 'grounding'
+                          AND coalesce(result_json->>'source', '') = ''
                         """
                     ),
                     {"days": days},
@@ -335,17 +342,15 @@ def fetch_recently_used_outreach_content_ids(
         groundings: List[Dict[str, Any]] = []
         for row in rows:
             g = row.get("grounding")
-            if isinstance(g, dict):
-                groundings.append(g)
-            elif isinstance(g, str):
+            if isinstance(g, str):
                 import json
 
                 try:
-                    parsed = json.loads(g)
+                    g = json.loads(g)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(parsed, dict):
-                    groundings.append(parsed)
+            if isinstance(g, dict):
+                groundings.append({**g, "_reason": row.get("reason")})
         return collect_used_content_ids(groundings)
     except Exception as exc:  # noqa: BLE001
         logger.warning(

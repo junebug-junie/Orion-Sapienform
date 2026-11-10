@@ -23,8 +23,10 @@ WHY_JUNIPER_INSTRUCTION = (
     "say why it is for her, reply PASS instead. A message without that line is not sent."
 )
 
+# The separator is a colon, or a dash with space on both sides ("Why Juniper - ..."): a bare hyphen
+# ("why juniper-loving people matter") is prose, not the trailer (review finding).
 _WHY_LINE = re.compile(
-    r"^[\s>*_`#-]*why[\s_-]*juniper[\s*_`]*[:\-–—][\s*_`]*(?P<why>.*?)[\s*_`]*$",
+    r"^[\s>*_`#]*why[ _]juniper[*_`]*(?:\s*:|\s+[-–—]\s)[\s*_`]*(?P<why>.*?)[\s*_`]*$",
     re.IGNORECASE,
 )
 _TRAILING_RULE = re.compile(r"\n\s*(?:-{3,}|\*{3,}|_{3,})\s*$")

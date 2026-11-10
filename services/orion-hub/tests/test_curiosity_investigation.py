@@ -1008,6 +1008,8 @@ def test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line() -> None:
     assert outreach.offered == [], "a pre-check block must not spend a composition turn"
     assert outreach.recorded == [
         {
+            "door_policy": "line:self_inquiry",
+            "finding_key": "curiosity_run:run-blk",
             "run_id": "run-blk",
             "line": "self_inquiry",
             "outreach": False,

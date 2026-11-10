@@ -4986,11 +4986,11 @@ class CuriosityInvestigation:
         ok, why = curiosity_reaches_juniper(line)
         if ok:
             return ok, why
-        provider = getattr(self, "_pool_provider", None)
-        pool = provider() if callable(provider) else None
-        if pool is None:
-            return False, f"{why}:focus_unreadable"
         try:
+            provider = getattr(self, "_pool_provider", None)
+            pool = provider() if callable(provider) else None
+            if pool is None:
+                return False, f"{why}:focus_unreadable"
             focus = (await read_focus_for_runs(pool, [run_id])).get(run_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_outreach_focus_read_failed run=%s err=%s", run_id, exc)
@@ -5116,7 +5116,8 @@ class CuriosityInvestigation:
                 outcome.reach_out_why[:120],
             )
             self._record_outreach_skip(
-                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line
+                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
             )
             return str(blocked)
 
@@ -5147,7 +5148,8 @@ class CuriosityInvestigation:
             except LeaseUnavailable as exc:
                 logger.warning("curiosity_outreach_gpu_lease_rejected run=%s reason=%s", run_id, exc.reason)
                 self._record_outreach_skip(
-                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line
+                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
                 )
                 return "gpu_lease_invalid"
 
@@ -5170,7 +5172,8 @@ class CuriosityInvestigation:
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
             self._record_outreach_skip(
-                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line
+                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
             )
             return "empty_generation"
 

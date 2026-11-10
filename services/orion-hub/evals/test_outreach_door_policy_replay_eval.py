@@ -38,12 +38,12 @@ def test_the_11_09_triple_and_every_door():
              "i1": {"origin": "self", "chat_correlation_id": "prime:x"}}
     out = mod.decide(sends, focus)
     assert [r["verdict"] for r in out] == [
-        "kept", "content_already_used", "kept", "no_material", "kept",
+        "kept", "content_already_used", "kept", "no_material", "tension_without_content",
         "kept", "not_for_juniper", "kept", "retired", "kept", "kept",
     ]
     assert out[7]["why"] == "asked_by_juniper"
     assert mod.per_day(out, kept_only=False, days=1)["tick"] == 5
-    assert mod.per_day(out, kept_only=True, days=1)["tick"] == 3
+    assert mod.per_day(out, kept_only=True, days=1)["tick"] == 2
 
 
 def test_a_daydream_is_fresh_again_after_the_ledger_window():

@@ -848,9 +848,8 @@ def _clean_daydream(raw: Any) -> str:
         for match in _DAYDREAM_SENTENCE_END_RE.finditer(head):
             if match.start() + 1 >= _MIN_DAYDREAM_CHARS:
                 cut = match.start()
-        # Hard cap on the fallback, matching `_fetch_curiosity_summaries`'s
-        # own `[: _MAX - 1] + "\u2026"` form -- `_MAX_DAYDREAM_CHARS` means
-        # the same thing in both places rather than being a soft cap here.
+        # Hard cap on the fallback, in the `[: _MAX - 1] + "\u2026"` form the
+        # other prompt lanes use -- `_MAX_DAYDREAM_CHARS` is a hard cap here.
         if cut >= 0:
             text = head[: cut + 1]
         else:
@@ -1345,6 +1344,10 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
                     f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
                     f"or may not be the same thing as the change above."
                 )
+        lines.append(
+            "That is why you are speaking now, not what to talk about: it is your own system's "
+            "telemetry, and Juniper does not want reports about your plumbing. Do not report it."
+        )
         lines.append("")
 
     if ctx.open_prior_previews:
@@ -1470,10 +1473,10 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
             [
                 "Write the message to Juniper. It must do both of these:",
                 "",
-                "1. Synthesize what you have been thinking from the open claims, "
-                "curiosity signals, and (if present) daydream above into one "
-                "clear thread — the aggregate of that material, not a vibe "
-                "nearby and not a bullet-by-bullet recap.",
+                "1. Synthesize what you have been thinking from the material "
+                "above (your daydream, and any open claims or signals listed) "
+                "into one clear thread — the aggregate of that material, not a "
+                "vibe nearby and not a bullet-by-bullet recap.",
                 "2. Say why you are bringing that thread to her now — why share "
                 "it with Juniper, not only that you noticed it.",
                 "",
@@ -1701,6 +1704,8 @@ class EndogenousOutreach:
         self._connections: Dict[str, Dict[str, Any]] = {}
 
         self._last_outreach_at: Optional[float] = None
+        # finding_keys this process delivered (door policy, 2026-11-10); the decision log is the authority.
+        self._told_keys: set = set()
         self._sent_today = 0
         self._counter_day: Optional[date] = None
         # A fresh process has no idea how many outreaches today already
@@ -2290,11 +2295,11 @@ class EndogenousOutreach:
         prompt = build_outreach_prompt(ctx, self._tz)
         if not prompt:
             # No `grounding` on this row on purpose: the key means "lanes that
-            # reached the prompt", and there is no prompt. `is_empty()`
-            # deliberately ignores `daydream`/`embodied_presence`, so a
-            # populated daydream CAN land here -- recording it would assert a
-            # lane reached a prompt that was never built. `reason` already
-            # separates this row from a gated one.
+            # reached the prompt", and there is no prompt. `is_empty()` ignores
+            # `embodied_presence` (and, since 2026-11-10, counts the daydream),
+            # so a populated camera lane CAN land here -- recording it would
+            # assert a lane reached a prompt that was never built. `reason`
+            # already separates this row from a gated one.
             return self._record(
                 {"outreach": False, "reason": "no_grounding_context"},
                 forced=force,
@@ -2371,6 +2376,15 @@ class EndogenousOutreach:
         # Door policy (2026-11-10): the composer says why this is for Juniper on its last line.
         # Missing or empty -> not sent. Checked here, before the vocabulary guard reads the body.
         text, why_juniper = split_why_juniper(text)
+        if text and is_pass_response(text):
+            # "... PASS" then a Why Juniper line: the line hid the trailing PASS (review finding).
+            return self._record(
+                {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
+                 "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding,
+            )
         if not why_juniper or not text:
             return self._record(
                 {"outreach": False, "reason": NO_WHY_JUNIPER_REASON, "generation": gen_debug},
@@ -2793,6 +2807,8 @@ class EndogenousOutreach:
         error) reads as False: a broken ledger must not invent silence. Never raises."""
         from scripts.endogenous_outreach_decisions import finding_already_told
 
+        if str(finding_key) in self._told_keys:
+            return True
         try:
             told = await asyncio.to_thread(
                 finding_already_told, str(finding_key), lookback_days=ALREADY_TOLD_LOOKBACK_DAYS
@@ -2887,6 +2903,13 @@ class EndogenousOutreach:
             )
         if require_why_juniper:
             body, why_juniper = split_why_juniper(body)
+            if body and is_pass_response(body):
+                # "... PASS" then a Why Juniper line: the line hid the trailing PASS (review finding).
+                return self._record(
+                    {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                     "pass_shape": pass_shape(body)},
+                    forced=False,
+                )
             if not why_juniper or not body:
                 return self._record(
                     {**extra, "outreach": False, "reason": NO_WHY_JUNIPER_REASON, "source": tag},
@@ -2956,6 +2979,9 @@ class EndogenousOutreach:
                 provenance=provenance,
             )
             self._last_outreach_at = time.time()
+            if finding_key:
+                # Process-local mirror: the sent row is written on a daemon thread and may lag.
+                self._told_keys.add(str(finding_key))
             if not (skip_schedule_gates or skip_rate_gates):
                 self._sent_today += 1
             logger.info(

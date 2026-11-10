@@ -258,3 +258,80 @@ def test_office_style_offer_without_the_flag_is_unchanged(monkeypatch):
     out = asyncio.run(o.offer_message(text="What are you up to?", correlation_id="c", tag="office_reach_out",
                                       skip_rate_gates=True))
     assert out["reason"] == "sent" and delivered == ["What are you up to?"]
+
+
+# --- review findings (2026-11-10) --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["why juniper-loving people matter", "-Why Juniper-: x"])
+def test_a_bare_hyphen_is_prose_not_the_trailer(text):
+    body, why = split_why_juniper(f"Body.\n{text}")
+    assert why == "" and body.endswith(text)
+
+
+def test_spaced_dash_separator_still_counts():
+    assert split_why_juniper("Body.\nWhy Juniper - it is for her.") == ("Body.", "it is for her.")
+
+
+def test_a_trailing_pass_hidden_by_the_why_line_is_still_a_pass(monkeypatch):
+    o, rows, delivered = _endogenous(monkeypatch)
+    out = asyncio.run(o.offer_message(text="Not worth interrupting her for. PASS\nWhy Juniper: none really",
+                                      correlation_id="c", tag="t", skip_schedule_gates=True,
+                                      require_why_juniper=True))
+    assert out["reason"] == "orion_passed" and delivered == []
+
+
+def test_a_told_key_is_remembered_in_process_before_the_row_lands(monkeypatch):
+    o, _rows, delivered = _endogenous(monkeypatch, told=False)
+    first = asyncio.run(o.offer_message(text="A.\nWhy Juniper: x.", correlation_id="c1", tag="t",
+                                        skip_schedule_gates=True, require_why_juniper=True,
+                                        finding_key="curiosity_run:r9"))
+    again = asyncio.run(o.offer_message(text="A.\nWhy Juniper: x.", correlation_id="c2", tag="t",
+                                        skip_schedule_gates=True, require_why_juniper=True,
+                                        finding_key="curiosity_run:r9"))
+    assert first["reason"] == "sent" and again["reason"] == ALREADY_TOLD_REASON and delivered == ["A."]
+
+
+def test_a_declined_daydream_is_used_too():
+    from scripts.endogenous_outreach_decisions import collect_used_content_ids
+
+    rows = [
+        {"daydream_id": "daydream:a", "prior_ids": ["p1"], "_reason": "orion_passed"},
+        {"daydream_id": "daydream:b", "_reason": "no_why_juniper"},
+        {"daydream_id": "daydream:c", "prior_ids": ["p2"], "_reason": "sent"},
+    ]
+    priors, _curiosity, daydreams = collect_used_content_ids(rows)
+    assert daydreams == {"daydream:a", "daydream:b", "daydream:c"}
+    assert priors == {"p2"}           # a declined row marks only its daydream
+
+
+def test_focus_provider_that_raises_is_unasked_not_an_escape(monkeypatch):
+    outreach = _Outreach()
+    loop = _loop(monkeypatch, outreach)
+    loop._pool_provider = lambda: (_ for _ in ()).throw(RuntimeError("pool gone"))
+    assert _reach(loop, "investigate") == NOT_FOR_JUNIPER_REASON
+    assert outreach.recorded[0][1]["door_policy"] == "line:investigate:focus_unreadable"
+
+
+def test_a_belief_whose_change_is_unknown_is_not_called_weaker():
+    from datetime import datetime, timezone
+
+    from orion.schemas.reading_finding import ReadingFindingBundleV1, ReadingFindingV1
+    from orion.world_pulse_read.finding_prompt import build_reading_finding_prompt
+
+    f = ReadingFindingV1(finding_id="belief:p@r", kind="belief_moved", seed_id="s",
+                         observed_at=datetime(2026, 11, 10, tzinfo=timezone.utc),
+                         headline="Belief moved (0.40 -> ?): a claim", confidence_before=0.4, confidence_after=None)
+    prompt = build_reading_finding_prompt(ReadingFindingBundleV1(seed_id="s", url="u", learned="x", findings=[f]))
+    assert "your hold on it changed): a claim" in prompt and "less firmly" not in prompt
+
+
+def test_the_tension_trigger_is_framed_as_not_a_topic():
+    from scripts.endogenous_outreach import OutreachContext, build_outreach_prompt
+
+    reason = SimpleNamespace(target_id="node:athena", run_length=7, sustained_load_pressure=0.0,
+                             sustained_load_pressure_channel=None, sustained_load_pressure_node_id=None)
+    ctx = OutreachContext(curiosity_summaries=[], recent_turns=[], presence=None, tension_reason=reason,
+                          daydream=(60.0, "A lighthouse at dusk over a calm harbour, gulls on the rail."))
+    prompt = build_outreach_prompt(ctx)
+    assert "not what to talk about" in prompt and "Do not report it." in prompt

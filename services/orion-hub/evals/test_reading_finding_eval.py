@@ -96,7 +96,7 @@ def test_replay_counts_one_message_per_read_per_tick_and_holds_unprojected_links
     assert by_seed == [("reading:a", 2), ("reading:b", 1), ("reading:b", 1)]
     a = out["messages"][0]
     assert a["appendix"].endswith("Piece A says X. It also says Y. And Z.")
-    assert "Piece A says X." in a["prompt"] and "Belief moved (0.50 -> 0.70): A claim" in a["prompt"]
+    assert "Piece A says X." in a["prompt"] and "you hold it more firmly than before): A claim" in a["prompt"]
     assert a["origin"][1] == ("2. After that read, you chose to read https://example.org/a/page next "
                               "(a link you came across while working on it). This is the read below.")
     assert "1. Your daily world-pulse news run put https://example.org/p in your reading queue." in a["prompt"]

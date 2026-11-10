@@ -368,6 +368,8 @@ def main() -> int:
     ap.add_argument("--dispatch-db", default=LIVE_DB,
                     help="database holding substrate_dispatch_results (restored from the pre-drop backup)")
     args = ap.parse_args()
+    if args.dispatch_db != LIVE_DB and not args.live:
+        ap.error("--dispatch-db needs --live")
     if not args.live:
         world, t0, t1 = _fixture_world()
         out = asyncio.run(replay(world, t0, t1))

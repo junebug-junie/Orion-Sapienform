@@ -40,6 +40,7 @@ import asyncio
 import bisect
 import gzip
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -131,6 +132,9 @@ def export(start: str = START, end: str = END, dispatch_db: str = LIVE_DB) -> di
         "from substrate_dispatch_results where dispatch_kind='maintain' "
         f"and dispatch_id like '%prune_dangling_images%' and created_at >= '{seed}' and created_at < '{end}' "
         "order by created_at", dispatch_db)
+    if not runs:   # an empty restore (schema only, interrupted COPY) must not become an empty fixture
+        raise DispatchHistoryMissing(f"{DISPATCH_TABLE} in database {dispatch_db!r} has no prune runs in "
+                                     f"{seed} .. {end}; the committed fixture was left as it is")
     obs = []
     for created, decision, before, after, used, removed in runs:
         if not before:
@@ -331,6 +335,8 @@ def main() -> int:
     ap.add_argument("--dispatch-db", default=LIVE_DB,
                     help="--export: database holding substrate_dispatch_results (restored from the pre-drop backup)")
     args = ap.parse_args()
+    if args.dispatch_db != LIVE_DB and not args.export:
+        ap.error("--dispatch-db needs --export")
     if args.export:
         try:
             data = export(dispatch_db=args.dispatch_db)
@@ -338,8 +344,10 @@ def main() -> int:
             print(f"cannot export: {exc}", file=sys.stderr)
             return 2
         FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(FIXTURE, "wt") as f:
+        tmp = FIXTURE.with_name(FIXTURE.name + ".tmp")   # a failed write never leaves a broken fixture
+        with gzip.open(tmp, "wt") as f:
             json.dump(data, f, separators=(",", ":"))
+        os.replace(tmp, FIXTURE)
         print(f"wrote {FIXTURE}: {len(data['disk'])} disk buckets, {len(data['runs'])} real prune-skill runs")
         return 0
     data = load()

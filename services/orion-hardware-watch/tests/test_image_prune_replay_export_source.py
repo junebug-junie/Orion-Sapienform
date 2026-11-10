@@ -80,3 +80,32 @@ def test_export_reads_runs_from_the_restored_db_and_disk_from_live(ev, monkeypat
             assert db == "dispatch_restore", sql
         else:
             assert db == "conjourney", sql
+
+
+def test_export_from_an_empty_restore_exits_2_and_keeps_the_fixture(ev, monkeypatch, tmp_path, capsys):
+    fixture = tmp_path / "image_prune_replay.json.gz"
+    fixture.write_bytes(b"kept")
+
+    def fake_psql(sql, db=ev.LIVE_DB):
+        if "to_regclass" in sql:
+            return [["t"]]
+        if "from orion_biometrics_summary" in sql:
+            return [["2026-10-22 00:00:10+00", "0.71"]]
+        if "from substrate_dispatch_results" in sql:
+            return []
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(ev, "_psql", fake_psql)
+    monkeypatch.setattr(ev, "FIXTURE", fixture)
+    monkeypatch.setattr(sys, "argv", ["eval", "--export", "--dispatch-db", "dispatch_restore"])
+    assert ev.main() == 2
+    assert "has no prune runs" in capsys.readouterr().err
+    assert fixture.read_bytes() == b"kept"
+    assert not fixture.with_name(fixture.name + ".tmp").exists()
+
+
+def test_dispatch_db_without_export_is_refused(ev, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["eval", "--dispatch-db", "dispatch_restore"])
+    with pytest.raises(SystemExit) as exc:
+        ev.main()
+    assert exc.value.code == 2

@@ -26,6 +26,7 @@ on:
       - "services/orion-hub/scripts/retro_leisure.py"
       - "services/orion-hub/scripts/act_emit.py"
       - "services/orion-hub/evals/retro_leisure_self_start_replay.py"
+      - "services/orion-hub/tests/test_retro_leisure_replay_live_source.py"
       - "orion/self_monitor/gate.py"
   workflow_dispatch:
 

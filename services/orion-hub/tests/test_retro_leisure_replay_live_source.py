@@ -44,7 +44,7 @@ def test_live_mode_without_the_table_exits_2_and_names_the_restore(ev, monkeypat
     err = capsys.readouterr().err
     assert "substrate_dispatch_results is not in database 'conjourney'" in err
     assert ev.DISPATCH_BACKUP in err and "--dispatch-db" in err and "pg_restore" in err
-    assert calls == [("conjourney", calls[0][1])]
+    assert [db for db, _ in calls] == ["conjourney"]
 
 
 def test_restored_db_feeds_verdicts_and_live_db_feeds_sessions(ev, monkeypatch):
@@ -82,3 +82,10 @@ def test_restored_db_without_leisure_verdicts_is_named_not_crashed(ev, monkeypat
     monkeypatch.setattr(ev, "_psql", fake_psql)
     with pytest.raises(ev.DispatchHistoryMissing, match="no retro_leisure verdicts"):
         ev.live_world(1.0, "dispatch_restore")
+
+
+def test_dispatch_db_without_live_is_refused(ev, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["replay", "--dispatch-db", "dispatch_restore"])
+    with pytest.raises(SystemExit) as exc:
+        ev.main()
+    assert exc.value.code == 2

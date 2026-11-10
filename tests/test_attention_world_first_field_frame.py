@@ -130,6 +130,32 @@ def test_busy_chat_names_the_goal() -> None:
     assert top_node_substrate_target(frame).target_id == WORLD_CHAT_SOURCE_ID
 
 
+def _chat_and_body_frame():
+    turns = [NOW.replace(day=d) for d in range(3, 9)] + [NOW.replace(minute=0) for _ in range(1)]
+    turns = [t.replace(hour=11, minute=50) for t in turns]
+    return _frame([chat_candidate(turns, now=NOW), _node("node:substrate.execution", 0.995, 0.9)])
+
+
+def test_competition_precedence_keeps_a_world_goal_it_holds() -> None:
+    """Review finding: the competition read must carry world:* refs, or a body
+    node in the competition beats an attended chat on every tick."""
+    frame = _chat_and_body_frame()
+    assert {t.target_id for t in qualified_node_targets(frame)} == {
+        WORLD_CHAT_SOURCE_ID, "node:substrate.execution"
+    }
+    both = {WORLD_CHAT_SOURCE_ID, "node:substrate.execution"}
+    assert top_node_substrate_target(frame, competing=both).target_id in both
+    assert top_node_substrate_target(
+        frame, competing={WORLD_CHAT_SOURCE_ID}
+    ).target_id == WORLD_CHAT_SOURCE_ID
+
+
+def test_world_streak_is_held_when_competition_read_is_unknown() -> None:
+    frame = _chat_and_body_frame()
+    held = top_node_substrate_target(frame, competing=None, current=WORLD_CHAT_SOURCE_ID)
+    assert held.target_id == WORLD_CHAT_SOURCE_ID
+
+
 def test_goal_provenance_handles_a_no_winner_frame() -> None:
     frame = _frame([_node("node:substrate.execution", 0.2)])
     assert qualified_node_targets(frame) == []

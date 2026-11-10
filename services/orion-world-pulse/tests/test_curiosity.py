@@ -225,23 +225,28 @@ def test_no_real_active_goal_denies_via_missing_goal(monkeypatch):
     assert result == []
 
 
-def test_body_goal_does_not_open_the_gap_fill_fetch(monkeypatch):
+def test_body_goal_does_not_open_the_gap_fill_fetch(monkeypatch, caplog):
     """Regression (prediction-error suite rebuild, Decision 1): a bus
     prediction-error goal no longer unlocks the daily gap-fill web fetch."""
     monkeypatch.setattr(
         curiosity, "get_active_goal", lambda: _goal("node:substrate.bus_synaptic", "node")
     )
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    result = curiosity.build_curiosity_followups(
-        run_id="r1",
-        section_coverage=_coverage(hardware_compute_gpu="missing"),
-        enabled=True,
-        dry_run=False,
-        max_articles_per_section=5,
-        max_sections=9,
-        fetch_backend=_fake_backend,
-    )
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        result = curiosity.build_curiosity_followups(
+            run_id="r1",
+            section_coverage=_coverage(hardware_compute_gpu="missing"),
+            enabled=True,
+            dry_run=False,
+            max_articles_per_section=5,
+            max_sections=9,
+            fetch_backend=_fake_backend,
+        )
     assert result == []
+    assert "reason=goal_not_about_world" in caplog.text
+    assert "goal_target=node:substrate.bus_synaptic" in caplog.text
 
 
 def test_gate_evaluation_error_degrades_to_empty(monkeypatch):

@@ -230,8 +230,7 @@ Delivery (all three already existed before this module; none are new rails):
      bubble back -- rail 3 is what a returning browser actually sees. Giving
      the UI a real restore path is a separate piece of work.
   3. ``HubNotificationEvent`` on ``NOTIFY_IN_APP_CHANNEL`` so the outreach is
-     visible even with no browser open — same pattern as
-     ``bus_synaptic_trigger_notifier``.
+     visible even with no browser open.
 
 Single-process assumption: rail 1 is in-process. Hub runs one uvicorn worker
 (``Dockerfile`` CMD has no ``--workers``); if that ever changes, rail 1 must
@@ -430,8 +429,8 @@ _DAYDREAM_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you're)\b", re.IGN
 def _source_ref() -> ServiceRef:
     """Producer identity from hub settings, with an import-safe fallback.
 
-    Mirrors ``bus_synaptic_trigger_notifier._source_ref()`` — hub settings need
-    the full operator env, so bare test processes fall back to defaults.
+    Hub settings need the full operator env, so bare test processes fall back
+    to defaults.
     """
     try:
         from scripts.settings import settings

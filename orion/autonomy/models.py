@@ -174,22 +174,16 @@ class FetchedArticleRefV1(BaseModel):
 
 
 class ActionOutcomeRefV1(BaseModel):
-    """`surprise` is a mix of one real signal and several fake ones -- check the emitter
-    before trusting a row. Confirmed 2026-07-24 by tracing every call site that existed at
-    the time (`orion/autonomy/episode_fetch.py`, `orion/autonomy/policy_act.py`,
-    `orion/autonomy/curiosity_reuse.py`): all three are a binary success/fail proxy
-    (`0.0 if success else 1.0`, or a hardcoded `1.0` for "found vs not found"), never a
-    continuous measure of anything -- do not reuse this field as an Active-
-    Inference/epistemic-value term for those emitters' rows (see
-    `docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md` for the design this
-    was ruled out of there).
+    """`surprise` is RETIRED (2026-11-10, prediction-error suite rebuild, retire step 1).
 
-    As of 2026-07-28, `services/orion-execution-dispatch-runtime` is a genuine exception:
-    its rows carry a real, continuous value from `bus_synaptic_prediction_error()`
-    (`orion/substrate/prediction_error.py`, live-fixed for a calm-floor bias in PR #1391),
-    not a success/fail proxy. That emitter is identifiable by `kind` values
-    `inspect`/`summarize`/`observe`/`noop` (`ExecutionDispatchCandidateV1.dispatch_kind`) --
-    everything else emitting onto this same route is still the fake proxy described above.
+    No emitter stamps it any more: every producer leaves the 0.0 default. It used to
+    carry either a success/fail proxy or the ambient bus_synaptic prediction error,
+    and nothing ever read it (the only reader, cortex-exec's recent-dispatch-actions
+    projection, drops it). The field stays only because `action_outcomes.surprise`
+    is NOT NULL and sql-writer projects this payload straight into that table; this
+    model and `ActionOutcomeEmitV1` are extra="forbid", so removing it is a
+    consumer-first two-step migration, not a dead-wiring delete. Do not read it.
+    Rows before 2026-11-10 hold the old stamped values.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -390,12 +384,6 @@ class CapabilityPolicyRuleV1(BaseModel):
     requires_goal_status: str = "none"
     required_signal_kinds: list[str] = Field(default_factory=list)
     budget_per_cycle: int = 0
-    # Real, additive gate on CapabilityEvaluationContext.domain_surprise_score -- see
-    # docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md. Unset (None) on
-    # every rule initially: ship soft/advisory first (score surfaces in
-    # CapabilityDecisionV1.notes regardless of this field), don't hard-gate until the
-    # signal's own outcome-correlation is validated against real traffic.
-    required_domain_surprise_below: float | None = None
     # Content gate (Decision 1, docs/superpowers/specs/2026-11-08-prediction-error-
     # suite-rebuild-design.md): the active goal must name a world source (chat,
     # reading, camera surprise -- orion.schemas.attention_candidate.is_world_source_id),

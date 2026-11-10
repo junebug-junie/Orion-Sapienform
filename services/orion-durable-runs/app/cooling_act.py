@@ -166,11 +166,6 @@ class CoolingActStore:
 
         return WorldSettlementStore(self._engine).load_effect_posteriors()
 
-    def latest_surprise(self) -> Optional[float]:
-        from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
-
-        return latest_bus_synaptic_prediction_error(self._engine)
-
 
 def _decode(rows: list[dict], keys: tuple[str, ...] = ("settlement",)) -> list[dict]:
     for row in rows:
@@ -504,13 +499,9 @@ class CoolingAct:
         if bus is None:
             return False
         try:
-            surprise = await asyncio.to_thread(self._store.latest_surprise)
-        except Exception:  # noqa: BLE001
-            surprise = None
-        try:
             emit = ActionOutcomeEmitV1(subject=ACTION_OUTCOME_SUBJECT, action_id=episode_id, kind=kind,
                                        summary=summary[:500], success=success, visual_outcome=None,
-                                       surprise=surprise if surprise is not None else 0.0, observed_at=now)
+                                       observed_at=now)
             await bus.publish(self._s.action_outcome_channel, BaseEnvelope(
                 kind="action.outcome.emit.v1", source=ServiceRef(name=self._s.service_name),
                 correlation_id=str(uuid4()), payload=emit.model_dump(mode="json")))

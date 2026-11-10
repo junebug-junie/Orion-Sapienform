@@ -1679,6 +1679,19 @@ section degrades to `null` independently (missing table, unset
 - Hub records chat-turn timestamps and mirrors a liveness snapshot to
   `substrate_hub_presence` (`HUB_PRESENCE_WRITER_ENABLED`, default on;
   apply `services/orion-sql-db/manual_migration_hub_presence_v1.sql`).
+- **Hub attention minutes** (`HUB_ATTENTION_TRACKER_ENABLED`, default on):
+  records that Juniper is actually looking at the Hub. The top-level page loads
+  `static/js/hub-attention-tracker.js`, which sends one heartbeat per minute to
+  `POST /api/hub-attention/heartbeat` only while the page is visible, the
+  window has focus, and there was real input (pointer, key, wheel, scroll,
+  touch) in the last 120 s. Input inside same-origin tab iframes counts;
+  cross-origin iframes and sub-pages opened outside the Hub shell do not. The
+  route upserts one row per (server minute, `desktop`|`mobile`) into
+  `hub_attention_minute` (apply
+  `services/orion-sql-db/manual_migration_hub_attention_minute_v1.sql`; without
+  it each beat is dropped with a rate-limited warning, never a 500). No reader
+  and no bus event yet: the prediction service's reachable forecast will read
+  this table after ~2 weeks of live rows pass the metric gate.
 
 ### 5.4 Drives Analytics panel — REMOVED 2026-08-13
 

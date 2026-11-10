@@ -316,6 +316,13 @@ class Settings(BaseSettings):
         default=True,
         alias="HUB_PRESENCE_WRITER_ENABLED",
     )
+    # Per-minute "Juniper is looking at the Hub" heartbeats -> hub_attention_minute
+    # (scripts/hub_attention_routes.py). Off = the route drops beats and tells the
+    # browser to stop sending them.
+    HUB_ATTENTION_TRACKER_ENABLED: bool = Field(
+        default=True,
+        alias="HUB_ATTENTION_TRACKER_ENABLED",
+    )
 
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
         default=True,

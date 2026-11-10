@@ -160,6 +160,9 @@ SYNC_PREFIXES = (
     "ORION_ENERGY_STAKES_",
     # Hub Energy strip (daily-bar timezone); no generic HUB_ prefix is synced.
     "HUB_ENERGY_",
+    # Hub attention minutes (2026-11-10). Not "HUB_ATTENTION_": that would also sweep the
+    # older HUB_ATTENTION_ORGAN_* keys into this decision.
+    "HUB_ATTENTION_TRACKER_",
     # Act ledger (rung 2, "doing on one track"): hub say/ask/look producers and the
     # sql-writer act materialiser + horizon resolver. No generic HUB_/SQL_WRITER_ prefix
     # is synced, so without these the flags never reach a live .env.

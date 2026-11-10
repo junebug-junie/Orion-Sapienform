@@ -2787,7 +2787,7 @@ that composes a message asks the market just before it composes, and obeys the a
 | door | bids? | why |
 |---|---|---|
 | background tick | yes, cap-counted (1 message on `attention:juniper`) | the want the strained veto was standing in for |
-| reading findings, self findings, office visits | yes, cap-exempt (`juniper_msgs=0`) | they compose a message; the daily cap never counted them |
+| reading findings, office visits | yes, cap-exempt (`juniper_msgs=0`) | they compose a message; the daily cap never counted them |
 | curiosity Door-A | no | composed inside the curiosity run, which already obeys its own bid (#3010); a blocked Door-A has no retry, so a hold would drop it |
 | strain report | no | it exists to speak when strain holds everything else; its strain-held shadow bid is unchanged |
 | forced (`POST /api/debug/endogenous-outreach/trigger`) | no | the operator's call: never held |
@@ -3729,43 +3729,38 @@ step C (`docs/superpowers/specs/2026-11-05-office-camera-attention-and-reach-out
 - **Logs.** `office_reach_out_result session=<id> reason=<sent|...>`, `office_reach_out_blocked`,
   `office_event_want`, `office_event_want_skipped reason=no_history`.
 
-### Self findings reach Juniper (`scripts/self_finding_outreach.py`)
+### Door policy: what reaches Juniper (`scripts/outreach_door_policy.py`, 2026-11-10)
 
-**What it does.** When one of Orion's faculties breaks, comes back, or stops being reliable,
-Orion writes Juniper a message in their own words. A faculty is one thing Orion does and is
-graded on, e.g. the walkway-grade journal act or the office temperature forecast. The
-self-monitor organ in orion-durable-runs grades them and publishes its picture hourly to
-Redis `orion:self_monitor:latest`. This loop only reads it.
+**What it does.** Juniper got about 17 messages a day and most read as plumbing. One deterministic
+rule now decides, for every door, whether a composed message may reach her. Nothing reads the
+message text with a word list.
 
-- **What is told (Juniper, 2026-11-03).** A faculty becomes `broken` (most tries never ran);
-  a faculty recovers (`broken`/`unreliable` -> `reliable`); a faculty goes `reliable` ->
-  `unreliable`. Never a calibration change (`miscalibrated`) and never an `unknown` flip. Those
-  two never overwrite the last status that counts, so `broken -> unknown -> reliable` is still
-  told as a recovery.
-- **Told once.** Finding id `self_finding:<faculty>:<status>@<status_since>`: one per held-status
-  episode. The decision log (`result_json.source = 'self_finding_outreach'`, `finding_ids`) is the
-  authority; a `sent` or `orion_passed` row means told.
-- **First evaluation.** The first fresh state after deploy tells each faculty already `broken`
-  once (Juniper has never been told). A faculty seen for the first time later is treated the same.
-- **Unknown changes nothing.** Absent, stale (over 3 h), unparseable or future-stamped state
-  (`orion.self_monitor.view`) detects nothing new. Findings already detected still wait to be told.
-- **Grounded.** The prompt carries only the faculty record's own numbers. A message that names a
-  faculty the finding is not about is refused (`outreach_vocabulary.find_ungrounded_faculty_mentions`,
-  recorded as `named_ungrounded_signal`), then `offer_message` runs the usual signal-name guard.
-- **Gates.** Same door as reading findings: no daily cap or cooldown (`skip_rate_gates`), and sends
-  do not consume the background cap; disabled, turn-in-flight, recent-chat, quiet hours and arousal
-  `strained` still apply, and a held finding waits. No body-economy bid (the reading door places none).
-- **State.** Redis `orion:hub:self_finding_outreach:state` (no TTL): last counted status per faculty,
-  the last evaluated `computed_at`, and findings still waiting. A newer finding for the same faculty
-  replaces an older untold one (decision row `superseded`); a waiting finding's numbers refresh each
-  hour. A finding leaves the queue untold only after `_MAX_ATTEMPTS` composition failures (row
-  `gave_up`). With the decision log off or unreadable, nothing is told.
-- **Env.** `HUB_SELF_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300), `_MAX_ATTEMPTS` (3).
-- **Checks.** `tests/test_self_finding_outreach.py`; would-tell replay (read-only, live DB):
-  `PYTHONPATH=services/orion-hub:. POSTGRES_URI=... .venv/bin/python -P services/orion-hub/evals/run_self_finding_replay.py`.
-- **Logs.** `self_finding_detected id=<id> kind=<kind> from=<status>`,
-  `self_finding_outreach_result reason=<sent|orion_passed|...>`, `self_finding_outreach_blocked reason=<gate>`,
-  `self_finding_view reason=<fresh|stale|absent|...>`.
+- **Self findings: retired.** The self-monitor's "a faculty broke / recovered" messages
+  (`self_finding_outreach.py`) are gone, code and env keys included. The self-monitor record, its
+  Hub page and the cue Orion reads are unchanged. The old Redis cursor
+  `orion:hub:self_finding_outreach:state` is no longer read or written.
+- **Curiosity.** A run's `line` decides. `self_inquiry` results reach her. Any other line
+  (`investigate`, ...) reaches her only when she asked for that run: the run took a curiosity focus
+  with `origin='juniper'` and her chat turn on it (`chat_correlation_id`). Otherwise the decision
+  row says `not_for_juniper` (`result_json.door_policy`), before any compose turn. The run's
+  journal, graph writes and run story are unchanged.
+- **Background tick.** No longer reads non-self worldview priors or substrate curiosity candidates
+  (both are the investigate line's material). Its recent turns leave out Orion's own unsolicited
+  messages. It speaks from the daydream, the tension trigger, the personality cue and the real
+  conversation. A daydream a sent tick already used is not used again (`grounding.daydream_id`,
+  7-day ledger).
+- **No repeats.** A curiosity run's message carries `finding_key=curiosity_run:<run_id>`; a second
+  send for the same key is recorded `already_told`. Readings keep their per-finding dedupe.
+- **Why Juniper.** The tick, curiosity and reading prompts end by asking for one last line
+  `Why Juniper: <reason>`. It is taken off the delivered text and stored as
+  `result_json.why_juniper`. Missing or empty: not sent, `reason=no_why_juniper`. Office visits,
+  Juniper-triggered sends and the strain report do not ask for it.
+- **Readings.** The prompt (`orion/world_pulse_read/finding_prompt.py`) asks what Orion read and
+  why it caught their interest, and states each change as the idea and the line behind it, not
+  as links, graphs or quote checks. The provenance chain is unchanged.
+- **Checks.** `tests/test_outreach_door_policy.py`; replay (read-only, live DB):
+  `evals/run_outreach_door_policy_replay.py`; readings old vs new:
+  `evals/run_reading_message_rewrite_eval.py`.
 
 ### Introspect responder: `curiosity`
 

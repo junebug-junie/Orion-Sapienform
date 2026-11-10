@@ -112,10 +112,10 @@ PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio",
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high",
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal",
-        # Self-monitor track record (2026-11-03): the numbers the stance/reverie cue, the E2
-        # self-question and the E3 self-finding prompt print about one faculty.
+        # Self-monitor track record (2026-11-03): the numbers the stance/reverie cue and the E2
+        # self-question print about one faculty (the E3 self-finding prompt was retired 2026-11-10,
+        # and with it reliability_lo's only prompt site).
         "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability",
-        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo",
         "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi",
         "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo",
         "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean",

@@ -112,7 +112,7 @@ class _Pool:
 
 
 def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read about NASA's flyover.",
-           min_spacing_sec=0.0, last_sent=None, **outreach_kw):
+           min_spacing_sec=0.0, last_sent=None, why=True, **outreach_kw):
     from scripts import endogenous_outreach as eo
     from scripts import endogenous_outreach_decisions as decisions_mod
     from scripts import reading_finding_outreach as rfo
@@ -125,6 +125,10 @@ def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read 
 
     async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
         composed.append(prompt)
+        # Door policy (2026-11-10): a deliverable composition ends with the Why Juniper line
+        # (stripped before delivery). ``why=False`` leaves it off.
+        if why and text.strip() and text.strip() != "PASS":
+            return text + "\nWhy Juniper: it is what I read today.", {"fcc_model_label": "test"}
         return text, {"fcc_model_label": "test"}
 
     async def fake_deliver(self, **kw):
@@ -159,7 +163,9 @@ def test_a_live_accepted_claim_and_a_moved_belief_become_one_message(monkeypatch
     assert len(composed) == 1 and len(delivered) == 1  # bundled: two changes, one message
     prompt = composed[0]
     assert "Per advisory M26-080" in prompt and LIVE_CLAIM["quote"] in prompt
-    assert "Belief moved (0.55 -> 0.70): NASA public outreach leans on spectacle" in prompt
+    # 2026-11-10 rewrite: the change in plain words, not the record line ("Belief moved (0.55 -> 0.70)").
+    assert "you hold it more firmly than before): NASA public outreach leans on spectacle" in prompt
+    assert "Belief moved (" not in prompt and "Link made:" not in prompt
     sent = [r for r in rows if r["reason"] == "sent"][0]
     assert sent["source"] == "reading_finding_outreach" and sent["seed_id"] == SEED
     assert sent["finding_ids"] == ["belief:world:nasa_outreach_is_spectacle@e5eb9cfcf7ea",
@@ -173,6 +179,25 @@ def test_a_live_accepted_claim_and_a_moved_belief_become_one_message(monkeypatch
     # Told once: the next tick (decision row now visible) sends nothing.
     loop2_summary = asyncio.run(loop.tick())
     assert loop2_summary["pending"] == 0 and len(delivered) == 1
+
+
+def test_a_message_without_why_juniper_is_not_sent_and_not_retried(monkeypatch):
+    """Door policy (2026-11-10): no ``Why Juniper:`` line -> not sent, recorded
+    ``no_why_juniper``, and the finding counts as decided (like PASS), so the next tick does not
+    compose it again."""
+    loop, _, _, rows, composed, delivered = _setup(monkeypatch, moves=[MOVE_ROW], why=False)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["no_why_juniper"]
+    assert delivered == [] and len(composed) == 1
+    assert [r["reason"] for r in rows] == ["no_why_juniper"]
+    assert asyncio.run(loop.tick())["pending"] == 0 and len(composed) == 1
+
+
+def test_sent_row_records_why_juniper(monkeypatch):
+    loop, _, _, rows, _, delivered = _setup(monkeypatch)
+    asyncio.run(loop.tick())
+    sent = [r for r in rows if r["reason"] == "sent"][0]
+    assert sent["why_juniper"] == "it is what I read today."
+    assert "Why Juniper" not in delivered[0]["text"]
 
 
 def test_no_message_when_nothing_changed(monkeypatch):

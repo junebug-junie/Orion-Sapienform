@@ -150,12 +150,12 @@ def _outreach(**overrides):
 def _stub_tick(monkeypatch, published: list) -> None:
     from scripts.endogenous_outreach import EndogenousOutreach, OutreachContext
 
-    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
+    async def fake_gather(self, session_id, daydream=None):
         return OutreachContext(curiosity_summaries=["sustained prediction error on node:x"], recent_turns=[],
                                presence=None)
 
     async def fake_generate(self, prompt, session_id, correlation_id, **_kw):
-        return "something worth saying", {"stub": True}
+        return "something worth saying\nWhy Juniper: stub reason.", {"stub": True}
 
     async def fake_act(bus, **kw):
         published.append(kw["correlation_id"])

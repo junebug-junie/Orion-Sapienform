@@ -294,13 +294,13 @@ def _stub_tick(monkeypatch, generated: list, rows: list) -> None:
     from scripts import endogenous_outreach_decisions as dec
     from scripts.endogenous_outreach import EndogenousOutreach, OutreachContext
 
-    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
+    async def fake_gather(self, session_id, daydream=None):
         return OutreachContext(curiosity_summaries=["sustained prediction error on node:x"], recent_turns=[],
                                presence=None)
 
     async def fake_generate(self, prompt, session_id, correlation_id, **_kw):
         generated.append(correlation_id)
-        return "something worth saying", {"stub": True}
+        return "something worth saying\nWhy Juniper: stub reason.", {"stub": True}
 
     async def fake_act(bus, **kw):
         return True
@@ -316,7 +316,7 @@ def _stub_tick(monkeypatch, generated: list, rows: list) -> None:
     monkeypatch.setattr(act_emit, "publish_outreach_act", fake_act)
     monkeypatch.setattr(EndogenousOutreach, "_named_ungrounded_terms", lambda self, *a, **k: [])
     monkeypatch.setattr(dec, "record_decision", lambda result, **kw: rows.append(dict(result)))
-    monkeypatch.setattr(dec, "fetch_recently_used_outreach_content_ids", lambda **kw: (set(), set()))
+    monkeypatch.setattr(dec, "fetch_recently_used_outreach_content_ids", lambda **kw: (set(), set(), set()))
 
 
 async def _true():
@@ -445,7 +445,7 @@ async def test_tick_inside_a_hold_with_nothing_to_say_records_no_trigger_not_eco
         return False
 
     monkeypatch.setattr(EndogenousOutreach, "_should_roll", no_roll)
-    monkeypatch.setattr("scripts.endogenous_outreach._fetch_open_priors", lambda: ([], []))
+    monkeypatch.setattr("scripts.endogenous_outreach._fetch_current_daydream", lambda: None)
     r = await _tick(o)
     assert r["reason"] == "no_tension_trigger" and len(market.wants) == 1
 

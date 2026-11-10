@@ -99,7 +99,7 @@ How it was tuned: pacing to the full cap of 6 gave 5.71/day but hit the cap on 1
 
 ```text
 PYTHONPATH=. pytest -q orion/physiology                                     -> 265 passed
-cd services/orion-durable-runs && pytest -q tests/                           -> 826 passed, 130 skipped
+cd services/orion-durable-runs && pytest -q tests/                           -> 829 passed, 130 skipped
 cd services/orion-hub && pytest -q tests/test_outreach_door_policy.py tests/test_endogenous_outreach.py \
   tests/test_curiosity_investigation.py tests/test_reading_finding_outreach.py tests/test_office_reach_out.py \
   tests/test_outreach_bind.py tests/test_strain_report_outreach.py tests/test_endogenous_outreach_decisions.py \

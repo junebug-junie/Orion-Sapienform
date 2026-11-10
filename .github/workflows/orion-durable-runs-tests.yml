@@ -5,6 +5,7 @@ on:
     paths:
       - "services/orion-gpu-pool/app/**"
       - "orion/gpu_pool/**"
+      - "orion/durable_runs/**"   # turn_identity.py: the turn id rule app/graph.py stamps
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
@@ -115,6 +116,7 @@ on:
     paths:
       - "services/orion-gpu-pool/app/**"
       - "orion/gpu_pool/**"
+      - "orion/durable_runs/**"   # turn_identity.py: the turn id rule app/graph.py stamps
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"

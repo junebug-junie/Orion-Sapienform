@@ -118,6 +118,8 @@ DB_REACHABLE = _database_is_reachable()
 # justified by showing it actually fails against an unreachable database.
 _DB_DEPENDENT_MODULES = {
     "test_grammar_ledger_integration", "test_act_ledger_integration", "test_act_workspace_binding_integration",
+    # 2026-11-10: 8 ERRORS (KeyError on the URI) with no database; runs in sql-writer-integration.
+    "test_act_reading_cost_integration",
 }
 
 _TESTS_DIR = Path(__file__).resolve().parent

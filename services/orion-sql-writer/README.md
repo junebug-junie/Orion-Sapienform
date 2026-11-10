@@ -1210,6 +1210,18 @@ once; the read runs in its own savepoint). Producer values win. `substrate_actio
 still comes only from a producer-reported `seconds`. Rollout is consumer-first: producers keep
 sending V1 until every reader of `orion:grammar:event` / `grammar_events` runs V2-aware code.
 
+**Reading's cost is filled late (attention patch 3a, 2026-11-10).** A read act's correlation_id is
+the seed's `request_id`, and no lease carries it: before this every read closed with
+`gpu_slot_s_by_lane` NULL (0 of 1,117 in 30 days). A read's leases carry its durable turns' ids
+(`orion/durable_runs/turn_identity.py`), and its stage 2 runs after the act closes. So the close
+leaves reading's GPU cost unset, and the resolver tick fills it once the read has ended
+(`refill_late_costs`, one `[ACT_COST_LATE]` log line per tick that examined acts): slot-seconds over
+the seed's `trace_id`/`stage2_trace_id` plus every turn re-derived from the read's runs and their
+pool holds (`orion/grammar/act_cost_ids.py`). `basis["gpu"]` starts `late fill` and marks the act
+done. Energy (`wh_by_host`) is not filled for reading: the hourly attribution counts its leases as
+unmetered, and charging the act too would count them twice. Back-fill:
+`scripts/backfill_reading_act_cost.py` (dry run by default; `--apply`; `--restore`).
+
 **Energy, money and heat filled on close (2026-10-29).** Same leases, same window, own savepoint
 (`orion/grammar/act_energy_fill.py`, arithmetic in `orion/energy/act_energy.py`). Fields the
 physiology report reads from `grammar_acts.cost_json`:

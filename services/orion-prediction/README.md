@@ -292,6 +292,30 @@ the service checks it at boot like every other prediction table):
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_prediction_action_bet_v1.sql
 ```
 
+## Surprise
+
+Each scored outcome becomes surprise (`app/surprise.py`; spec
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`):
+
+- **p** = two-sided p of the actual value under the forecast's stored quantiles (CDF linear
+  between levels). Outside the 95 % range p is censored at 0.05, never extrapolated.
+- **surprisal** = -ln p. **Calm point** = 1 - 0.05 = 0.95: the expected surprisal of a calibrated
+  forecaster. **excess** = surprisal - 0.95. Calm reads 0, a bad miss reads up to +2.05.
+- A bucket with no readings stays `missing` (scoring above), never calm.
+- **Gate**, per horizon: the served model is not a baseline, live 80 % coverage in 0.72-0.88 over
+  >= 200 scores, not live-worse than the baseline.
+- **No bus event yet.** A channel with no consumer fails the metric lineage gate, and nothing may
+  consume surprise until the calm check passes. The event (`prediction.surprise.v1`) ships with its
+  first consumer, the substrate node.
+- `GET /series/{id}/surprise?hours=24`: mean excess per horizon vs its 95 % null band (independent
+  origins only), share of p <= 0.05 / 0.2, and each horizon's gate reason.
+
+**The calm check fails today (2026-11-10):** a quiet 24 h reads cabinet 15 min -0.28, office 15 min
+-0.36 (7 days: -0.12 each, band +-0.06). The ranges are calibrated on average but one width fits
+calm and busy hours alike, so calm days read too calm. No consumer reads the signal until
+`evals/run_surprise_calm_live_eval.py` shows calm within the band; the fix is volatility-adaptive
+ranges in the forecaster.
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
@@ -318,6 +342,7 @@ curl -fsS http://localhost:8132/series/athena.cabinet_temp_c/models
 cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
 PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null

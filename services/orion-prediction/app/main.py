@@ -275,6 +275,20 @@ async def live(series_id: str) -> dict[str, Any]:
     return {"series_id": series_id, "live": out, "exceedance": grades, "alerts": e.state[series_id].alerts}
 
 
+@app.get("/series/{series_id}/surprise")
+async def surprise(series_id: str, hours: float = 24.0) -> dict[str, Any]:
+    """Surprise calm check: mean excess surprise per horizon vs its null band, and each horizon's
+    publish gate. Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md."""
+    e = _ready()
+    spec = e.registry.get(series_id)
+    if spec is None or spec.role != "target":
+        raise HTTPException(404, "unknown target series")
+    if not 1 <= hours <= 24 * 35:
+        raise HTTPException(422, "hours must be between 1 and 840")
+    out = await asyncio.to_thread(e.surprise_summary, spec, e.clock(), timedelta(hours=hours))
+    return {"series_id": series_id, **out}
+
+
 class ScenarioBody(BaseModel):
     series_id: str
     covariate: str

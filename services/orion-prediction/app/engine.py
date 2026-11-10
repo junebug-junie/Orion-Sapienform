@@ -49,6 +49,12 @@ from app.live import RETENTION as SHADOW_RETENTION, verdicts as live_verdicts, w
 from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import BASELINES, build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
+from app.surprise import (
+    CALM_SURPRISAL,
+    P_FLOOR,
+    horizon_gate,
+    summarize as surprise_summarize,
+)
 from orion.schemas.prediction import (
     PREDICTION_FORECAST_CHANNEL,
     PREDICTION_FORECAST_KIND,
@@ -129,6 +135,9 @@ class SeriesState:
     events: dict = field(default_factory=dict)   # with_events summary, for /health
     shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
     not_ready: dict | None = None   # NotReady.detail while the series is too young to select
+    # Surprise gate per horizon for the current selection, from the last monitor pass:
+    # hm -> (passes, reason). Shown by /series/{id}/surprise; no bus event until a consumer exists.
+    surprise_gate: dict = field(default_factory=dict)
 
 
 class Engine:
@@ -616,6 +625,17 @@ class Engine:
         self.store.write_scores(scores)
         return len(scores)
 
+    def surprise_summary(self, spec: SeriesSpec, now: datetime, window: timedelta) -> dict:
+        """Calm check (spec acceptance): mean excess per horizon vs its 95 % null band."""
+        rows = self.store.scored_with_quantiles(spec.series_id, now - window)
+        st = self.state[spec.series_id]
+        horizons = surprise_summarize([r for r in rows if r["role"] == "champion"], spec.grain_min)
+        for hm, h in horizons.items():
+            ok, reason = st.surprise_gate.get(int(hm), (False, "no_gate_verdict_yet"))
+            h["gate"] = reason
+        return {"window_hours": window.total_seconds() / 3600, "calm_surprisal": CALM_SURPRISAL,
+                "p_floor": P_FLOOR, "horizons": horizons}
+
     def score_exceedances(self, spec: SeriesSpec, now: datetime) -> int:
         """Outcome of each stored threshold probability once its window has passed (plus settle):
         hit_raw = any single reading >= threshold, hit_mean = any grain-bucket mean >= threshold."""
@@ -749,6 +769,13 @@ class Engine:
         live = await sync(self.live_metrics, spec, now)
         last_issued = await sync(self.store.last_issued, spec.series_id)
         st.alerts = self.alerts_for(spec, now, live, last_issued)
+        assignment = st.served.selection.assignment if st.served is not None else {}
+        st.surprise_gate = {
+            hm: horizon_gate(hm, live["horizons"].get(str(hm)), assignment.get(hm),
+                             (live.get("shadow") or {}).get(f"{assignment.get(hm)}@{hm}"))
+            for hm in spec.horizons_min
+        }
+
         codes = frozenset(st.alerts)
         if codes != st.published_alert_codes:
             logger.warning("prediction_alerts_changed series=%s active=%s", spec.series_id, st.alerts)

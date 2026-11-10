@@ -249,6 +249,13 @@ class PostgresStore:
             "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
             (series_id, since))
 
+    def scored_with_quantiles(self, series_id: str, since: datetime) -> list[dict]:
+        """Scored rows with what surprise needs (the surprise calm check)."""
+        return self._all(
+            "SELECT role, origin_ts, horizon_min, actual, quantiles FROM prediction_forecast "
+            "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
+            (series_id, since))
+
     # --- shadow forecasts ---------------------------------------------------------------------
     def insert_shadow(self, rows: list[dict]) -> None:
         """Shadow rows in their OWN transaction, after the served issue committed: a shadow failure

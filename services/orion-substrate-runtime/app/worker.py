@@ -2360,7 +2360,8 @@ class BiometricsSubstrateWorker:
         #
         # 2026-10-21: the 0.0 written for stale / warming / no-frame is a
         # placeholder for the graph node (below), NOT a reading; since
-        # 2026-11-10 the field receipt sends no value at all for it. It carries missing_reason, which keeps it out of
+        # 2026-11-10 the field receipt sends no value at all for it. It
+        # carries missing_reason, which keeps it out of
         # substrate_node_prediction_error_history (the percentile window every
         # attention contest ranks against) and out of the self-model. Before
         # this, 49 h of stale zeros (2026-10-18..20) made 31% of the room

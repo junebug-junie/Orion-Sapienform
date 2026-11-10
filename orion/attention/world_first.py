@@ -639,8 +639,9 @@ def perception_absent_reason(
 ) -> str | None:
     """ONE definition of "the camera cannot see right now", shared by both
     contests (review 2026-10-10: they used different signals and could
-    disagree). Perception writes a 0.0 placeholder while stale or warming
-    (marked ``prediction_error_missing_reason``, never recorded in history),
+    disagree). Perception writes a 0.0 placeholder on its graph node while
+    stale or warming (marked ``prediction_error_missing_reason``, never
+    recorded in history; the field key is dropped instead since 2026-11-10),
     so absence must come from staleness, never from the value. Each contest
     passes what it can see: the broadcast has the perception node's own
     ``embedding_staleness`` (and the vision organ node when present); the

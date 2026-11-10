@@ -1850,6 +1850,10 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   surprise nodes (`node:substrate.perception`, `node:substrate.perception_walkway`)
   send it today. Before this they sent a 0.0 placeholder that the field held as
   a calm reading (live 2026-11-08 09:00:33-09:01:34, a 95 s embedding gap).
+  The same two nodes' `prediction_error` also expires after 180 s with no
+  write at all (`decay.py` `EXPIRING_NODE_CHANNELS_BY_NODE`, node-scoped so
+  slower writers such as `node:substrate.route` still hold), so a stopped
+  producer reads unmeasured instead of holding its last spike.
   Test: `tests/test_prediction_signal_missing_is_absent.py`.
 - **SelfState dimension fed**: `channel_dimension_map`: `prediction_error` →
   `uncertainty` (direct).

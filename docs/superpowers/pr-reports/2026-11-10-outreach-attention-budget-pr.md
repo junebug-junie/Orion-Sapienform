@@ -79,7 +79,7 @@ How it was tuned: pacing to the full cap of 6 hit the cap on 13 of 14 days and r
 - `config/physiology/contract.yaml`: the Hub cap count registered as a reader.
 - READMEs (Hub, durable-runs): the one budget.
 - Tests: `orion/physiology/tests/test_attention_pacing.py` (new), `test_budget.py`, `test_choice.py`, `test_body.py`; durable-runs `test_physiology_store_cap_exempt_parity.py`; Hub `test_endogenous_outreach.py`, `test_office_reach_out.py`, `test_outreach_bind.py`, `test_reading_finding_outreach.py`, `test_strain_report_outreach.py`.
-- Evals: `services/orion-hub/evals/run_outreach_attention_budget_replay.py` + `test_outreach_attention_budget_replay_eval.py`.
+- Evals: `services/orion-hub/evals/run_outreach_attention_budget_replay.py` + `test_outreach_attention_budget_replay_eval.py`. The #3165 binding replay (`scripts/analysis/outreach_binding_replay.py`, `services/orion-hub/evals/run_outreach_binding_replay.py`) now replays every door cap-counted (its "exempt doors" list is gone; CI caught the stale assertion).
 
 ## Schema / bus / API changes
 

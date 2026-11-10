@@ -41,7 +41,7 @@ def _dec(outcome, reason, net, retry):
 
 def _attempt(door="endogenous_tick"):
     return {"decision_id": "x", "door": door, "at": T0, "reason": "sent", "correlation_id": None,
-            "cap_counted": door == "endogenous_tick"}
+            "cap_counted": True}
 
 
 def fixture() -> list[str]:
@@ -94,7 +94,7 @@ def fixture() -> list[str]:
     got = rep.attempts_from_rows(rows, {"c1": T0 - timedelta(seconds=90)})
     if [a["decision_id"] for a in got] != ["a", "f", "g", "h"]:
         fails.append(f"door filter: {[a['decision_id'] for a in got]}")
-    elif got[0]["at"] != T0 - timedelta(seconds=90) or not got[0]["cap_counted"] or got[1]["cap_counted"]:
+    elif got[0]["at"] != T0 - timedelta(seconds=90) or not got[0]["cap_counted"] or not got[1]["cap_counted"]:
         fails.append(f"attempt time / cap-counted wrong: {got[0]} {got[1]}")
     print(f"fixture: {'PASS' if not fails else 'FAIL'} ({len(fails)} failure(s))")
     return fails

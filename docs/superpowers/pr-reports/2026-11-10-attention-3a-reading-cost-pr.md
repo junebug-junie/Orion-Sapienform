@@ -98,6 +98,10 @@ pytest orion/grammar/tests services/orion-sql-writer/tests tests/test_act_ledger
        orion/physiology/tests                                                     1534 passed, 203 skipped
 pytest services/orion-durable-runs/tests/test_turn_identity_shared.py \
        test_attempt_correlation.py test_reading_graph.py                          10 passed
+services/orion-durable-runs tests (CI command)                                   827 passed, 120 skipped
+scripts/analysis/tests + orion/physiology/tests                                  787 passed
+  (first CI run failed 2 jobs: two tests assumed reading had no lanes. test_event_wants_menu now gives
+   reads a measured cost and idle agent lanes; the R2 replay test uses vision.ask as its non-GPU family.)
 Mutation check: with reading routed back to the old single-id join, 5 of the reading tests fail.
 scripts/check_metric_lineage.py --gate, check_definition_drift.py --gate,
 check_inner_state_registry.py, check_env_key_single_source.py,

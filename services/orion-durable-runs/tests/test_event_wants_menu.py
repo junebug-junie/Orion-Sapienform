@@ -130,7 +130,12 @@ def test_an_office_visit_want_is_labelled_from_its_session_row():
 def _state():
     return PhysiologyStateV1(tick_id="t", generated_at=NOW, constraints=[
         R(constraint="heat", unit="c", level=24.0, budget=30.0, budget_kind="soft_line",
-          price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""})])
+          price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""}),
+        # Reading's lanes (attention patch 3a), idle.
+        *[R(constraint=f"lane:{lane}", unit="slot_s", level=0.0, budget=budget, budget_kind="capacity",
+            detail={"slots": int(budget // 3600), "held_spans": 0, "window_sec": 3600.0},
+            price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""})
+          for lane, budget in (("agent", 3600.0), ("agent-gpu2", 7200.0))]])
 
 
 class _Redis:
@@ -141,7 +146,10 @@ class _Redis:
 def _acts():
     return [{"act_id": f"a{k}", "actor": "hub.world_pulse_read", "opened_at": NOW - timedelta(minutes=30 * k + 20),
              "closed_at": NOW - timedelta(minutes=30 * k), "outcome_value": None, "outcome_source": None,
-             "signal_id": None, "cost_json": None} for k in range(1, 40)]
+             "signal_id": None,
+             # A read's measured lane cost (attention patch 3a: reading declares [agent, agent-gpu2]; live
+             # median 692 slot-s). With no measured cost a read is priced at one whole window.
+             "cost_json": {"gpu_slot_s_by_lane": {"agent-gpu2": 692.0}}} for k in range(1, 40)]
 
 
 def test_the_market_ranks_an_event_want_against_its_event_history():

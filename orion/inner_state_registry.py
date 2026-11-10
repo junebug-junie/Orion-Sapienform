@@ -1575,7 +1575,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         cognition_consumers=(
             "orion.self_monitor.cue:project_track_record_cue",
             "orion.self_monitor.questions:question_text",
-            "services.orion-hub.scripts.self_finding_outreach:record_facts",
         ),
         semantics=(
             (
@@ -1586,17 +1585,16 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                         "no designed rest: the decay-weighted share of graded bets that came true (0-1). "
                         "For a success faculty 1.0 is the good end; for event and interval faculties the "
                         "judged number is calibrated_share, not this. Printed by the cue and E2 only for "
-                        "an unreliable faculty, and by E3 for a told finding with graded bets."
+                        "an unreliable faculty."
                     ),
                     sparsity="per_tick",
                     absent_means=(
-                        "None = no graded bet in the window: nothing is printed (the cue and E3 skip the "
+                        "None = no graded bet in the window: nothing is printed (the cue skips the "
                         "sentence, E2 prints '?'). Never read as 0 or 1."
                     ),
                     prompt_sites=(
                         "orion.self_monitor.cue:project_track_record_cue",
                         "orion.self_monitor.questions:question_text",
-                        "services.orion-hub.scripts.self_finding_outreach:record_facts",
                     ),
                 ),
             ),
@@ -1604,10 +1602,13 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                 "reliability_lo",
                 MetricSemantics(
                     value_kind="level",
-                    rest="no designed rest: Wilson lower bound of reliability. Printed only by E3, as the band.",
+                    rest=(
+                        "no designed rest: Wilson lower bound of reliability. Not printed: its only "
+                        "reader, the E3 self-finding outreach, was retired 2026-11-10."
+                    ),
                     sparsity="per_tick",
-                    absent_means="None = no graded bet: E3 prints no band.",
-                    prompt_sites=("services.orion-hub.scripts.self_finding_outreach:record_facts",),
+                    absent_means="None = no graded bet.",
+                    prompt_sites=(),
                 ),
             ),
             (
@@ -1616,15 +1617,14 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     value_kind="level",
                     rest=(
                         "no designed rest: Wilson upper bound of reliability. The cue does not print it; "
-                        "it decides whether an unreliable line prints (only when < 0.5). E3 prints it as "
-                        "the band. Saturates at 1.0 on a small or all-success window (11 of 39 live, "
+                        "it decides whether an unreliable line prints (only when < 0.5). Saturates at 1.0 "
+                        "on a small or all-success window (11 of 39 live, "
                         "2026-11-03)."
                     ),
                     sparsity="per_tick",
-                    absent_means="None = no graded bet: no unreliable line, no E3 band.",
+                    absent_means="None = no graded bet: no unreliable line.",
                     prompt_sites=(
                         "orion.self_monitor.cue:project_track_record_cue",
-                        "services.orion-hub.scripts.self_finding_outreach:record_facts",
                     ),
                 ),
             ),
@@ -1651,14 +1651,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     rest=(
                         "no designed rest: the mean confidence Orion stated before the outcome, over the "
                         "graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by "
-                        "the cue next to calibrated_share for a miscalibrated faculty, and by E3 for "
-                        "interval and event claims."
+                        "the cue next to calibrated_share for a miscalibrated faculty."
                     ),
                     sparsity="per_tick",
                     absent_means="None = no graded bet stated a confidence: no miscalibrated line.",
                     prompt_sites=(
                         "orion.self_monitor.cue:project_track_record_cue",
-                        "services.orion-hub.scripts.self_finding_outreach:record_facts",
                     ),
                 ),
             ),
@@ -1711,7 +1709,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "same records, addressed per field. reliability, calibrated_share and stated_mean are three "
             "reductions of one bet set (calibrated_share == reliability whenever every graded bet stated a "
             "confidence: true for all 38 faculties with both values in the live state of 2026-11-03 "
-            "20:27Z). The int counts the cue, E2 and E3 also print "
+            "20:27Z). The int counts the cue and E2 also print "
             "(n_graded, n_failed_to_execute, n_bets, streak_len) are not semantics entries because the "
             "lineage resolver addresses float fields only (precedent: transport_baseline_hourly.v1 "
             "degraded_count): they are plain counts of the window's bets, 0 when a faculty has none, and "

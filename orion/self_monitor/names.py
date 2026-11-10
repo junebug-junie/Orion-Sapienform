@@ -1,11 +1,11 @@
 """One naming function for every place the self-monitor organ speaks. Pure, no imports beyond re.
 
 Juniper (2026-11-03): "use plain names ALONG with internal ids". Every Orion-facing text about a
-faculty (the stance/reverie cue, the E2 self-question, the E3 self-finding prompt, the Temporal Self
-faculty arcs read back in the Day letter and recent arcs) names it as ``named(faculty)``: the plain
+faculty (the stance/reverie cue, the E2 self-question, the Temporal Self faculty arcs read back in
+the Day letter and recent arcs; the E3 self-finding prompt until its retirement on 2026-11-10) names it as ``named(faculty)``: the plain
 words first, then the internal id in brackets, e.g. "walkway-grade journal runs
 (act.actions.journal.make.walkway_grade)". The plain words say what it is; the id lets Orion (and
-Juniper) find the exact record, and is the token the E3 grounding guard checks.
+Juniper) find the exact record.
 
 ``plain_name`` maps a faculty key to a plural noun phrase that reads after "My " (a small table plus
 rules per key family; anything unrecognised becomes its humanised words plus "bets").

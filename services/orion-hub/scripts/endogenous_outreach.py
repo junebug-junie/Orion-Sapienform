@@ -1,5 +1,15 @@
 """Endogenous outreach — Orion opens a conversation Juniper did not start.
 
+DOOR POLICY (2026-11-10, ``scripts/outreach_door_policy.py``). Juniper: no plumbing. The tick no
+longer reads open non-self worldview priors (the investigate line's claims) or substrate curiosity
+candidates (prediction-error / open-loop / repair-pressure telemetry, the investigate line's
+seeds), and its recent turns leave out Orion's own unsolicited messages (she already got them).
+What is left to speak from: the daydream, the tension trigger, the personality cue and the real
+conversation. A daydream already used in a sent tick is not a fresh topic (``daydream_id``, same
+7-day ledger as below). Every composed tick message must end with a ``Why Juniper:`` line; without
+it nothing is sent (``no_why_juniper``). Sections below that describe the prior / curiosity lanes
+are history: those producers were removed, and the context fields stay only as the shared shape.
+
 REAL TRIGGER (2026-08-16, replacing the coin-flip stub this module ran on
 since 2026-08-14). ``_should_roll()`` now asks
 ``scripts.tension_outreach_trigger.current_run()``: has the SAME target
@@ -282,6 +292,14 @@ from scripts.arousal_reader import ArousalReader
 from scripts.outreach_bind import DUPLICATE_REASON as DUPLICATE_ECONOMY_REASON
 from scripts.outreach_bind import HELD_REASON as ECONOMY_HELD_REASON
 from scripts.outreach_bind import TICK_KEY
+from scripts.outreach_door_policy import (
+    ALREADY_TOLD_LOOKBACK_DAYS,
+    ALREADY_TOLD_REASON,
+    NO_WHY_JUNIPER_REASON,
+    WHY_JUNIPER_INSTRUCTION,
+    daydream_content_id,
+    split_why_juniper,
+)
 from scripts.rest_drive_reader import RestDriveReader
 from scripts.strain_report import (
     STRAIN_REPORT_INTENT_REASON,
@@ -308,17 +326,10 @@ OUTREACH_EVENT_KIND = "hub.endogenous_outreach.v1"
 
 # Bounds on what gets stuffed into the generation prompt. These are prompt-size
 # guards, not cognition policy.
-_MAX_CURIOSITY_SUMMARIES = 3
-_MAX_CURIOSITY_SUMMARY_CHARS = 160
 _MAX_RECENT_TURNS = 3
 _MAX_TURN_CHARS = 400
-# Curiosity candidates are regenerated on a substrate cadence, not per-turn;
-# 120s (curiosity_hint's agent-lane window) is far too tight for an outreach
-# that fires every few minutes at most, so widen it here.
-_CURIOSITY_MAX_AGE_SEC = 3600.0
-# Open worldview priors that can make it into one outreach prompt. Small on
-# purpose: this is "something to talk about", not a dump of the whole atlas.
-_MAX_OPEN_PRIOR_PREVIEWS = 3
+# `_gather_context(daydream=...)` default: the fire gate did not peek, so read it here.
+_NOT_PEEKED = object()
 
 # --- Reverie daydream (the visual chain's generated-image caption) ---
 # `reverie_visual_chain` gets one row roughly every 600s from orion-thought's
@@ -588,10 +599,13 @@ class OutreachContext:
     # own a reason to interrupt Juniper, so this is deliberately NOT part of
     # `is_empty()`.
     daydream: Optional[Tuple[float, str]] = None
+    # Stable id of the daydream caption (``outreach_door_policy.daydream_content_id``), for the
+    # "already said" ledger (door policy, 2026-11-10). "" when there is no daydream.
+    daydream_id: str = ""
     # Live open :Prior claim previews from Orion's worldview graph (same
     # graph curiosity_investigation reads). Talkable content: a prior alone
     # is enough to build a prompt and enough to fire outreach. See
-    # `_fetch_open_priors` and `has_talkable_content`.
+    # `has_talkable_content`. The tick no longer fills it (door policy, 2026-11-10).
     open_prior_previews: List[str] = field(default_factory=list)
     # Parallel to open_prior_previews / curiosity_summaries — durable IDs for
     # the decision-log ledger (novelty / cluster measurement). Same length
@@ -615,11 +629,14 @@ class OutreachContext:
     personality_cue_skip: Optional[str] = None
 
     def is_empty(self) -> bool:
+        # The daydream counts (door policy, 2026-11-10): with the prior and curiosity lanes gone
+        # it is the tick's own material, and `has_talkable_content` already treated it as a topic.
         return (
             not self.curiosity_summaries
             and not self.recent_turns
             and self.tension_reason is None
             and not self.open_prior_previews
+            and self.daydream is None
         )
 
 
@@ -692,8 +709,12 @@ def apply_content_novelty(
     *,
     used_prior_ids: set,
     used_curiosity_ids: set,
+    used_daydream_ids: Optional[set] = None,
 ) -> OutreachContext:
-    """Return a copy of ``ctx`` with already-said prior/curiosity rows removed."""
+    """Return a copy of ``ctx`` with already-said prior/curiosity rows removed.
+
+    A daydream whose id is in ``used_daydream_ids`` is removed too (door policy, 2026-11-10): a
+    sent tick already spoke from that picture."""
     prior_ids, prior_previews = filter_novel_pairs(
         list(ctx.open_prior_ids),
         list(ctx.open_prior_previews),
@@ -707,8 +728,11 @@ def apply_content_novelty(
     # dataclasses.replace, not a field-by-field rebuild: the rebuild silently dropped every field
     # it did not list. Live 2026-10-09: it dropped `situation`, so every non-forced outreach went
     # out without the "Where Juniper is right now" block (5/5 that day).
+    daydream_used = bool(ctx.daydream_id) and ctx.daydream_id in (used_daydream_ids or set())
     return replace(
         ctx,
+        daydream=None if daydream_used else ctx.daydream,
+        daydream_id="" if daydream_used else ctx.daydream_id,
         curiosity_summaries=curiosity_summaries,
         curiosity_content_ids=curiosity_ids,
         recent_turns=list(ctx.recent_turns),
@@ -716,153 +740,6 @@ def apply_content_novelty(
         open_prior_ids=prior_ids,
     )
 
-
-def _curiosity_content_id(candidate: Dict[str, Any]) -> str:
-    """Stable identity for a curiosity candidate across reminted signal_ids.
-
-    ``FrontierInvocationSignalV1.signal_id`` defaults to a fresh UUID every
-    construct; the endogenous curiosity tick rewrites ``candidates_json``
-    ~every 60s. Using that UUID as a ledger key would make repeat/novelty
-    measurement structurally impossible. Prefer source note + focal refs;
-    fall back to a short hash of the evidence summary.
-    """
-    import hashlib
-
-    notes = candidate.get("notes") or []
-    source = ""
-    if isinstance(notes, list):
-        for note in notes:
-            text = str(note or "").strip()
-            if text.startswith("source:"):
-                source = text
-                break
-    refs = [
-        str(r).strip()
-        for r in (candidate.get("focal_node_refs") or [])
-        if str(r).strip()
-    ]
-    refs = sorted(refs)[:8]
-    if source or refs:
-        return f"curiosity:{source}|{','.join(refs)}"
-    summary = str(candidate.get("evidence_summary") or "").strip()
-    if not summary:
-        return ""
-    digest = hashlib.sha256(summary.encode("utf-8")).hexdigest()[:16]
-    return f"curiosity:summary:{digest}"
-
-
-def _fetch_curiosity_content() -> Tuple[List[str], List[str]]:
-    """Strongest fresh curiosity content as (content_ids, summaries), or ([], []).
-
-    Parallel lists, same order/length. Content ids are stable across reminted
-    ``signal_id`` values (see ``_curiosity_content_id``); may be ``""`` only
-    when a candidate has neither refs/source nor a summary.
-    """
-    from scripts.curiosity_hint import _fetch_fresh_candidates
-
-    candidates = _fetch_fresh_candidates(max_age_sec=_CURIOSITY_MAX_AGE_SEC)
-    ranked = sorted(
-        candidates,
-        key=lambda c: float(c.get("signal_strength") or 0.0),
-        reverse=True,
-    )
-    content_ids: List[str] = []
-    summaries: List[str] = []
-    for candidate in ranked:
-        summary = str(candidate.get("evidence_summary") or "").strip()
-        if not summary or summary in summaries:
-            continue
-        if len(summary) > _MAX_CURIOSITY_SUMMARY_CHARS:
-            summary = summary[: _MAX_CURIOSITY_SUMMARY_CHARS - 1] + "…"
-        content_ids.append(_curiosity_content_id(candidate))
-        summaries.append(summary)
-        if len(summaries) >= _MAX_CURIOSITY_SUMMARIES:
-            break
-    return content_ids, summaries
-
-
-def _fetch_curiosity_summaries() -> List[str]:
-    """Strongest fresh endogenous-curiosity evidence summaries, or []."""
-    return _fetch_curiosity_content()[1]
-
-
-def _fetch_open_priors() -> Tuple[List[str], List[str]]:
-    """Live open worldview priors as (prior_ids, previews), or ([], []).
-
-    Same graph + credential gate curiosity_investigation uses
-    (`HUB_CURIOSITY_GRAPH_*`). Fail-open: missing creds, unavailable graph,
-    or any read error degrades to empty so a broken worldview half cannot
-    invent a fire reason and cannot crash the outreach tick.
-
-    Thin read on purpose: one `LIVE_NON_SELF_PRIORS_CYPHER` query, not the full
-    `read_snapshot` (which also pulls concepts/settled/recent runs). Quiet
-    ticks peek this path every ~10s; keep it one RO query. All still-open
-    non-self priors count (including well-tested ones) -- outreach wants
-    "something to talk about", not the investigation queue's retire-soon
-    sample, and not self-inquiry claims (line=self).
-
-    Parallel lists, same order/length. ``prior_id`` may be ``""`` when a
-    built prior somehow lacks one — preview still reaches the prompt.
-    """
-    empty: Tuple[List[str], List[str]] = ([], [])
-    try:
-        from app.settings import get_settings
-        from orion.curiosity.worldview import (
-            LIVE_NON_SELF_PRIORS_CYPHER,
-            WorldviewReader,
-            build_prior,
-            collapse_duplicate_priors,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("endogenous_outreach_prior_import_failed err=%s", exc)
-        return empty
-
-    try:
-        cfg = get_settings()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("endogenous_outreach_prior_settings_failed err=%s", exc)
-        return empty
-
-    host = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_HOST", "") or "").strip()
-    user = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_USER", "") or "").strip()
-    password = str(getattr(cfg, "HUB_CURIOSITY_GRAPH_ORION_PASSWORD", "") or "").strip()
-    if not (host and user and password):
-        return empty
-
-    try:
-        reader = WorldviewReader(
-            host=host,
-            port=int(getattr(cfg, "HUB_CURIOSITY_GRAPH_PORT", 6380) or 6380),
-            graph_name=str(
-                getattr(cfg, "HUB_CURIOSITY_GRAPH_OWN", "orion_worldview") or "orion_worldview"
-            ),
-        )
-        rows = reader.query(LIVE_NON_SELF_PRIORS_CYPHER)
-        built = [p for p in (build_prior(r) for r in rows) if p is not None]
-        live_priors, _dupes = collapse_duplicate_priors(built)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("endogenous_outreach_prior_read_failed err=%s", exc)
-        return empty
-
-    prior_ids: List[str] = []
-    previews: List[str] = []
-    for prior in live_priors:
-        try:
-            preview = str(prior.preview() or "").strip()
-        except Exception:  # noqa: BLE001
-            continue
-        if not preview or preview in previews:
-            continue
-        prior_ids.append(str(getattr(prior, "prior_id", "") or "").strip())
-        previews.append(preview)
-        if len(previews) >= _MAX_OPEN_PRIOR_PREVIEWS:
-            break
-    return prior_ids, previews
-
-
-def _fetch_open_prior_previews() -> List[str]:
-    """Live open worldview :Prior claim previews, or []."""
-    return _fetch_open_priors()[1]
 
 def _fetch_embodied_presence() -> Optional[Dict[str, Any]]:
     """Current `substrate_embodied_presence` snapshot for the configured
@@ -971,9 +848,8 @@ def _clean_daydream(raw: Any) -> str:
         for match in _DAYDREAM_SENTENCE_END_RE.finditer(head):
             if match.start() + 1 >= _MIN_DAYDREAM_CHARS:
                 cut = match.start()
-        # Hard cap on the fallback, matching `_fetch_curiosity_summaries`'s
-        # own `[: _MAX - 1] + "\u2026"` form -- `_MAX_DAYDREAM_CHARS` means
-        # the same thing in both places rather than being a soft cap here.
+        # Hard cap on the fallback, in the `[: _MAX - 1] + "\u2026"` form the
+        # other prompt lanes use -- `_MAX_DAYDREAM_CHARS` is a hard cap here.
         if cut >= 0:
             text = head[: cut + 1]
         else:
@@ -1221,6 +1097,11 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
     Rows store a prompt/response pair per row, and Hub writes prompt-only and
     response-only rows separately, so both sides are unpacked and empty halves
     dropped. Scoped to ``session_id`` when one is known, else global recency.
+
+    Only real conversation (door policy, 2026-11-10): Orion's own unsolicited messages
+    (``client_meta.unsolicited``, every outreach door) are left out. Juniper already got them, and
+    the tick re-reading them is how one finding reached her three times on 2026-11-09 (15:05,
+    16:03, 16:53 UTC). See ``scripts/outreach_door_policy.py``.
     """
     from scripts.pg_engine import get_engine
 
@@ -1243,6 +1124,7 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
                            EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - created_at)) AS age_sec
                     FROM chat_history_log
                     WHERE session_id = :sid
+                      AND coalesce(client_meta->>'unsolicited', '') <> 'true'
                     ORDER BY created_at DESC LIMIT :lim
                     """
                 ),
@@ -1255,6 +1137,7 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
                     SELECT prompt, response,
                            EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - created_at)) AS age_sec
                     FROM chat_history_log
+                    WHERE coalesce(client_meta->>'unsolicited', '') <> 'true'
                     ORDER BY created_at DESC LIMIT :lim
                     """
                 ),
@@ -1302,6 +1185,7 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
     return {
         "daydream": ctx.daydream is not None,
         "daydream_age_sec": daydream_age,
+        "daydream_id": ctx.daydream_id or None,
         "curiosity_summaries": len(ctx.curiosity_summaries),
         "curiosity_content_ids": list(ctx.curiosity_content_ids),
         "recent_turns": len(ctx.recent_turns),
@@ -1460,6 +1344,10 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
                     f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
                     f"or may not be the same thing as the change above."
                 )
+        lines.append(
+            "That is why you are speaking now, not what to talk about: it is your own system's "
+            "telemetry, and Juniper does not want reports about your plumbing. Do not report it."
+        )
         lines.append("")
 
     if ctx.open_prior_previews:
@@ -1585,10 +1473,10 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
             [
                 "Write the message to Juniper. It must do both of these:",
                 "",
-                "1. Synthesize what you have been thinking from the open claims, "
-                "curiosity signals, and (if present) daydream above into one "
-                "clear thread — the aggregate of that material, not a vibe "
-                "nearby and not a bullet-by-bullet recap.",
+                "1. Synthesize what you have been thinking from the material "
+                "above (your daydream, and any open claims or signals listed) "
+                "into one clear thread — the aggregate of that material, not a "
+                "vibe nearby and not a bullet-by-bullet recap.",
                 "2. Say why you are bringing that thread to her now — why share "
                 "it with Juniper, not only that you noticed it.",
                 "",
@@ -1606,6 +1494,8 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
                 "and do not ask what they need.",
                 "If nothing above genuinely warrants interrupting them, reply "
                 "with exactly: PASS",
+                "",
+                WHY_JUNIPER_INSTRUCTION,
             ]
         )
     else:
@@ -1618,6 +1508,8 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
                 "actually on your mind.",
                 "If nothing above genuinely warrants interrupting them, reply "
                 "with exactly: PASS",
+                "",
+                WHY_JUNIPER_INSTRUCTION,
             ]
         )
     return "\n".join(lines)
@@ -1812,6 +1704,8 @@ class EndogenousOutreach:
         self._connections: Dict[str, Dict[str, Any]] = {}
 
         self._last_outreach_at: Optional[float] = None
+        # finding_keys this process delivered (door policy, 2026-11-10); the decision log is the authority.
+        self._told_keys: set = set()
         self._sent_today = 0
         self._counter_day: Optional[date] = None
         # A fresh process has no idea how many outreaches today already
@@ -2324,10 +2218,10 @@ class EndogenousOutreach:
         # immune to that -- it belongs to this call's own stack frame, not
         # the shared instance.
         tension_reason: Optional[Any] = None
-        peeked_prior_ids: Optional[List[str]] = None
-        peeked_priors: Optional[List[str]] = None
+        peeked_daydream: Any = _NOT_PEEKED
         used_prior_ids: set = set()
         used_curiosity_ids: set = set()
+        used_daydream_ids: set = set()
         if force:
             # A forced (debug-endpoint) call skips the trigger check
             # entirely -- it must not carry over whatever reason the LAST
@@ -2340,7 +2234,7 @@ class EndogenousOutreach:
             )
 
             try:
-                used_prior_ids, used_curiosity_ids = await asyncio.to_thread(
+                used_prior_ids, used_curiosity_ids, used_daydream_ids = await asyncio.to_thread(
                     fetch_recently_used_outreach_content_ids,
                     lookback_days=CONTENT_NOVELTY_LOOKBACK_DAYS,
                 )
@@ -2348,53 +2242,41 @@ class EndogenousOutreach:
                 logger.warning(
                     "endogenous_outreach_used_ids_failed err=%s", exc
                 )
-                used_prior_ids, used_curiosity_ids = set(), set()
+                used_prior_ids, used_curiosity_ids, used_daydream_ids = set(), set(), set()
 
             fired = await self._should_roll()
             tension_reason = self._last_tension_reason
             if not fired:
-                # No body-spark. Still fire if Orion has *novel* talkable
-                # content: an open worldview prior not already used recently.
+                # No body-spark. Still fire if Orion has a *novel* daydream: the tick's own
+                # material once the investigate-line lanes left it (door policy, 2026-11-10).
+                # One cheap read; gather reuses it.
                 try:
-                    peeked_prior_ids, peeked_priors = await asyncio.to_thread(
-                        _fetch_open_priors
-                    )
+                    peeked_daydream = await asyncio.to_thread(_fetch_current_daydream)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "endogenous_outreach_prior_peek_failed err=%s", exc
-                    )
-                    peeked_prior_ids, peeked_priors = [], []
-                raw_prior_count = len(peeked_priors or [])
-                peeked_prior_ids, peeked_priors = filter_novel_pairs(
-                    list(peeked_prior_ids or []),
-                    list(peeked_priors or []),
-                    used=used_prior_ids,
-                )
-                if raw_prior_count == 0:
-                    # Nothing open at all -- stay on the cheap exit.
+                    logger.warning("endogenous_outreach_daydream_peek_failed err=%s", exc)
+                    peeked_daydream = None
+                if peeked_daydream is None:
                     return self._record(
                         {"outreach": False, "reason": "no_tension_trigger"},
                         forced=force,
                         tension_reason=tension_reason,
                     )
-                # Used sticky priors alone must not strand novel curiosity:
-                # fall through with empty prior lists (not None -- None would
-                # re-fetch the used priors in gather) and let gather +
-                # apply_content_novelty decide.
-                if not peeked_priors:
-                    peeked_prior_ids, peeked_priors = [], []
+                if daydream_content_id(peeked_daydream[1]) in used_daydream_ids:
+                    return self._record(
+                        {"outreach": False, "reason": "content_already_used",
+                         "daydream_id": daydream_content_id(peeked_daydream[1])},
+                        forced=force,
+                        tension_reason=tension_reason,
+                    )
 
         session_id = self._active_session_id()
-        ctx = await self._gather_context(
-            session_id,
-            open_prior_previews=peeked_priors,
-            open_prior_ids=peeked_prior_ids,
-        )
+        ctx = await self._gather_context(session_id, daydream=peeked_daydream)
         if not force:
             ctx = apply_content_novelty(
                 ctx,
                 used_prior_ids=used_prior_ids,
                 used_curiosity_ids=used_curiosity_ids,
+                used_daydream_ids=used_daydream_ids,
             )
         if not force and not has_talkable_content(ctx):
             # No novel topic. Distinguish spark-without-topic from
@@ -2413,11 +2295,11 @@ class EndogenousOutreach:
         prompt = build_outreach_prompt(ctx, self._tz)
         if not prompt:
             # No `grounding` on this row on purpose: the key means "lanes that
-            # reached the prompt", and there is no prompt. `is_empty()`
-            # deliberately ignores `daydream`/`embodied_presence`, so a
-            # populated daydream CAN land here -- recording it would assert a
-            # lane reached a prompt that was never built. `reason` already
-            # separates this row from a gated one.
+            # reached the prompt", and there is no prompt. `is_empty()` ignores
+            # `embodied_presence` (and, since 2026-11-10, counts the daydream),
+            # so a populated camera lane CAN land here -- recording it would
+            # assert a lane reached a prompt that was never built. `reason`
+            # already separates this row from a gated one.
             return self._record(
                 {"outreach": False, "reason": "no_grounding_context"},
                 forced=force,
@@ -2487,6 +2369,25 @@ class EndogenousOutreach:
             return self._record(
                 {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
                  "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding,
+            )
+        # Door policy (2026-11-10): the composer says why this is for Juniper on its last line.
+        # Missing or empty -> not sent. Checked here, before the vocabulary guard reads the body.
+        text, why_juniper = split_why_juniper(text)
+        if text and is_pass_response(text):
+            # "... PASS" then a Why Juniper line: the line hid the trailing PASS (review finding).
+            return self._record(
+                {"outreach": False, "reason": "orion_passed", "pass_shape": pass_shape(text),
+                 "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
+                grounding=grounding,
+            )
+        if not why_juniper or not text:
+            return self._record(
+                {"outreach": False, "reason": NO_WHY_JUNIPER_REASON, "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,
@@ -2595,6 +2496,7 @@ class EndogenousOutreach:
                 "generation": gen_debug,
                 "decision_id": decision_id,
                 "provenance": provenance,
+                "why_juniper": why_juniper,
             },
             forced=force,
             tension_reason=tension_reason,
@@ -2899,6 +2801,23 @@ class EndogenousOutreach:
         finally:
             self._last_result = previous
 
+    async def already_told(self, finding_key: str) -> bool:
+        """True when a ``sent`` decision row already names ``finding_key`` (door policy,
+        2026-11-10: a finding Juniper already got is not sent again). Unknown (log off, DB
+        error) reads as False: a broken ledger must not invent silence. Never raises."""
+        from scripts.endogenous_outreach_decisions import finding_already_told
+
+        if str(finding_key) in self._told_keys:
+            return True
+        try:
+            told = await asyncio.to_thread(
+                finding_already_told, str(finding_key), lookback_days=ALREADY_TOLD_LOOKBACK_DAYS
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("endogenous_outreach_already_told_failed key=%s err=%s", finding_key, exc)
+            return False
+        return bool(told)
+
     async def offer_message(
         self,
         *,
@@ -2911,8 +2830,18 @@ class EndogenousOutreach:
         skip_rate_gates: bool = False,
         provenance: Optional[Dict[str, Any]] = None,
         record_appendix: Optional[str] = None,
+        require_why_juniper: bool = False,
+        finding_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
+
+        Door policy (2026-11-10, ``scripts/outreach_door_policy.py``):
+        ``require_why_juniper`` (curiosity, readings): the text must end with a
+        ``Why Juniper:`` line; it is stripped, recorded as ``why_juniper``, and a
+        missing/empty one is recorded as ``no_why_juniper`` and not sent. Office
+        visits, Juniper-triggered sends and the strain report leave it False.
+        ``finding_key``: the source finding's stable id (e.g. ``curiosity_run:<id>``);
+        a ``sent`` row already naming it is recorded as ``already_told`` and not sent.
 
         ``skip_rate_gates`` (reading findings): see ``outreach_block_reason``. Like
         Door-A, such a send does not consume ``_sent_today``. ``provenance`` (an
@@ -2956,6 +2885,8 @@ class EndogenousOutreach:
         reason; before this, only the `sent` row did.
         """
         extra: Dict[str, Any] = {**dict(meta or {}), "correlation_id": correlation_id}
+        if finding_key:
+            extra["finding_key"] = str(finding_key)
         body = str(text or "").strip()
         if not body:
             return self._record(
@@ -2968,6 +2899,26 @@ class EndogenousOutreach:
             return self._record(
                 {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
                  "pass_shape": pass_shape(body)},
+                forced=False,
+            )
+        if require_why_juniper:
+            body, why_juniper = split_why_juniper(body)
+            if body and is_pass_response(body):
+                # "... PASS" then a Why Juniper line: the line hid the trailing PASS (review finding).
+                return self._record(
+                    {**extra, "outreach": False, "reason": "orion_passed", "source": tag,
+                     "pass_shape": pass_shape(body)},
+                    forced=False,
+                )
+            if not why_juniper or not body:
+                return self._record(
+                    {**extra, "outreach": False, "reason": NO_WHY_JUNIPER_REASON, "source": tag},
+                    forced=False,
+                )
+            extra["why_juniper"] = why_juniper
+        if finding_key and await self.already_told(finding_key):
+            return self._record(
+                {**extra, "outreach": False, "reason": ALREADY_TOLD_REASON, "source": tag},
                 forced=False,
             )
         if self._send_lock.locked():
@@ -3028,6 +2979,9 @@ class EndogenousOutreach:
                 provenance=provenance,
             )
             self._last_outreach_at = time.time()
+            if finding_key:
+                # Process-local mirror: the sent row is written on a daemon thread and may lag.
+                self._told_keys.add(str(finding_key))
             if not (skip_schedule_gates or skip_rate_gates):
                 self._sent_today += 1
             logger.info(
@@ -3092,15 +3046,15 @@ class EndogenousOutreach:
     async def _gather_context(
         self,
         session_id: Optional[str],
-        open_prior_previews: Optional[List[str]] = None,
-        open_prior_ids: Optional[List[str]] = None,
+        daydream: Any = _NOT_PEEKED,
     ) -> OutreachContext:
         """Read grounding signals off the main loop; failures degrade to empty.
 
-        ``open_prior_previews`` / ``open_prior_ids``: when the fire gate already
-        peeked priors (no-tension path), pass both lists so this tick does not
-        hit the worldview graph twice. ``None`` for previews means "fetch here"
-        (tension path / force path). Ids without a matching peek are cleared.
+        ``daydream``: when the fire gate already peeked it (no-tension path), pass it so this tick
+        does not read ``reverie_visual_chain`` twice. Left out means "fetch here".
+
+        Door policy (2026-11-10): no worldview-prior or substrate-curiosity read here any more --
+        both are the investigate line's material, which does not reach Juniper unasked.
         """
 
         async def _safe(fn, *args):
@@ -3111,41 +3065,18 @@ class EndogenousOutreach:
                 return None
 
         # Concurrent, not sequential (review finding, 2026-08-25): independent
-        # DB/graph reads, each already dispatched via asyncio.to_thread inside
-        # `_safe` -- awaiting them one after another made this tick's wall
-        # time the SUM of all round trips instead of the slowest one.
-        if open_prior_previews is None:
-            curiosity, turns, embodied_presence, daydream, priors = await asyncio.gather(
-                _safe(_fetch_curiosity_content),
-                _safe(_fetch_recent_turns, session_id),
-                _safe(_fetch_embodied_presence),
-                _safe(_fetch_current_daydream),
-                _safe(_fetch_open_priors),
-            )
-            if isinstance(priors, tuple) and len(priors) == 2:
-                prior_ids, prior_list = list(priors[0] or []), list(priors[1] or [])
-            else:
-                prior_ids, prior_list = [], []
-        else:
-            curiosity, turns, embodied_presence, daydream = await asyncio.gather(
-                _safe(_fetch_curiosity_content),
+        # DB reads, each already dispatched via asyncio.to_thread inside `_safe`.
+        if daydream is _NOT_PEEKED:
+            turns, embodied_presence, daydream = await asyncio.gather(
                 _safe(_fetch_recent_turns, session_id),
                 _safe(_fetch_embodied_presence),
                 _safe(_fetch_current_daydream),
             )
-            prior_list = list(open_prior_previews)
-            prior_ids = list(open_prior_ids or [])
-            # Peeked previews without ids must not invent a length mismatch —
-            # pad/truncate ids to the preview list length with empty strings.
-            if len(prior_ids) < len(prior_list):
-                prior_ids = prior_ids + [""] * (len(prior_list) - len(prior_ids))
-            elif len(prior_ids) > len(prior_list):
-                prior_ids = prior_ids[: len(prior_list)]
-
-        if isinstance(curiosity, tuple) and len(curiosity) == 2:
-            curiosity_ids, summaries = list(curiosity[0] or []), list(curiosity[1] or [])
         else:
-            curiosity_ids, summaries = [], list(curiosity or []) if curiosity else []
+            turns, embodied_presence = await asyncio.gather(
+                _safe(_fetch_recent_turns, session_id),
+                _safe(_fetch_embodied_presence),
+            )
 
         # Concurrent: both are bounded and never raise.
         (situation, situation_status), personality = await asyncio.gather(
@@ -3165,8 +3096,8 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_presence_failed err=%s", exc)
 
         return OutreachContext(
-            curiosity_summaries=summaries,
-            curiosity_content_ids=curiosity_ids,
+            curiosity_summaries=[],
+            curiosity_content_ids=[],
             recent_turns=list(turns or []),
             presence=presence,
             situation=situation,
@@ -3179,8 +3110,7 @@ class EndogenousOutreach:
             tension_reason=self._last_tension_reason,
             embodied_presence=embodied_presence,
             daydream=daydream,
-            open_prior_previews=prior_list,
-            open_prior_ids=prior_ids,
+            daydream_id=daydream_content_id(daydream[1]) if daydream else "",
         )
 
     async def _generate(

@@ -49,7 +49,9 @@ from orion.world_pulse_read.origin import read_origins
 logger = logging.getLogger("orion-hub.reading_finding_outreach")
 
 READING_FINDING_TAG = "reading_finding_outreach"
-TOLD_REASONS = frozenset({"sent", "orion_passed"})
+# ``no_why_juniper`` (door policy, 2026-11-10): Orion wrote a message but did not say why it is for
+# Juniper. A decision like PASS, not a failure to retry: re-composing would fish for a yes.
+TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 
@@ -331,7 +333,7 @@ class ReadingFindingOutreach:
         result = await outreach.offer_message(
             text=text, correlation_id=correlation_id, tag=READING_FINDING_TAG,
             model=debug.get("fcc_model_label"), meta=meta, skip_rate_gates=True, provenance=capsule,
-            record_appendix=article_appendix(bundle),
+            record_appendix=article_appendix(bundle), require_why_juniper=True,
         )
         reason = str(result.get("reason") or ("sent" if result.get("outreach") else "not_sent"))
         if reason == "sent":

@@ -99,6 +99,12 @@ from orion.regulation.arousal_view import (
 from .arousal_reader import ArousalReader
 from .rest_drive_reader import RestDriveReader
 from .personality_cue_reader import cue_status, read_personality_cue
+from .outreach_door_policy import (
+    ALREADY_TOLD_REASON,
+    NOT_FOR_JUNIPER_REASON,
+    curiosity_finding_key,
+    curiosity_reaches_juniper,
+)
 from .energy_stakes_gate import (
     HOLD_REASON as ENERGY_HOLD_REASON,
     EnergyHold,
@@ -4925,6 +4931,7 @@ class CuriosityInvestigation:
         correlation_id: str,
         run_id: str,
         line: str,
+        **extra_keys: Any,
     ) -> None:
         """Write a decision row for a reach-out that never reached `offer_message`.
 
@@ -4938,7 +4945,7 @@ class CuriosityInvestigation:
         `no_outreach_loop` by definition). Best-effort: never raises into the
         investigation, matching `_record`'s own contract.
         """
-        extra = {"run_id": run_id, "line": line}
+        extra = {**{k: v for k, v in extra_keys.items() if v is not None}, "run_id": run_id, "line": line}
         try:
             recorder = getattr(outreach, "record_blocked", None) if outreach is not None else None
             if callable(recorder):
@@ -4969,6 +4976,30 @@ class CuriosityInvestigation:
                 reason,
                 exc,
             )
+
+    async def _curiosity_door(self, run_id: str, line: str) -> tuple[bool, str]:
+        """(may_send, why) for this run's reach-out (``outreach_door_policy.curiosity_reaches_juniper``).
+
+        A self-inquiry run needs no lookup. Otherwise the run's taken focus decides; when it cannot
+        be read the run is treated as unasked (``focus_unreadable``): a system finding is the
+        default for a non-self-inquiry line, and the run's records keep the result. Never raises."""
+        ok, why = curiosity_reaches_juniper(line)
+        if ok:
+            return ok, why
+        try:
+            provider = getattr(self, "_pool_provider", None)
+            pool = provider() if callable(provider) else None
+            if pool is None:
+                return False, f"{why}:focus_unreadable"
+            focus = (await read_focus_for_runs(pool, [run_id])).get(run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_outreach_focus_read_failed run=%s err=%s", run_id, exc)
+            return False, f"{why}:focus_unreadable"
+        if focus is None:
+            return False, why
+        return curiosity_reaches_juniper(
+            line, focus_origin=focus.origin, focus_chat_correlation_id=focus.chat_correlation_id,
+        )
 
     async def _maybe_reach_out(
         self,
@@ -5054,6 +5085,28 @@ class CuriosityInvestigation:
             )
             return "no_outreach_loop"
 
+        # Door policy (2026-11-10, scripts/outreach_door_policy.py): only self-inquiry results reach
+        # Juniper unasked; an investigation of Orion's own code and systems reaches her only when
+        # she asked for that run (a juniper-origin focus carrying her chat turn). The run's own
+        # records (journal, graph, run story) are unchanged either way. Before composing: a
+        # refused run spends no compose turn.
+        verdict, door_why = await self._curiosity_door(run_id, line)
+        if not verdict:
+            logger.info("curiosity_outreach_not_for_juniper run=%s line=%s why=%s", run_id, line, door_why)
+            self._record_outreach_skip(
+                outreach, NOT_FOR_JUNIPER_REASON, correlation_id=correlation_id, run_id=run_id,
+                line=line, door_policy=door_why,
+            )
+            return NOT_FOR_JUNIPER_REASON
+        finding_key = curiosity_finding_key(run_id)
+        already = getattr(outreach, "already_told", None)
+        if callable(already) and await already(finding_key):
+            self._record_outreach_skip(
+                outreach, ALREADY_TOLD_REASON, correlation_id=correlation_id, run_id=run_id,
+                line=line, door_policy=door_why, finding_key=finding_key,
+            )
+            return ALREADY_TOLD_REASON
+
         blocked = outreach.blocked_reason(skip_schedule_gates=True)
         if blocked:
             logger.info(
@@ -5063,7 +5116,8 @@ class CuriosityInvestigation:
                 outcome.reach_out_why[:120],
             )
             self._record_outreach_skip(
-                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line
+                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
             )
             return str(blocked)
 
@@ -5094,7 +5148,8 @@ class CuriosityInvestigation:
             except LeaseUnavailable as exc:
                 logger.warning("curiosity_outreach_gpu_lease_rejected run=%s reason=%s", run_id, exc.reason)
                 self._record_outreach_skip(
-                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line
+                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
                 )
                 return "gpu_lease_invalid"
 
@@ -5117,7 +5172,8 @@ class CuriosityInvestigation:
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
             self._record_outreach_skip(
-                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line
+                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
             )
             return "empty_generation"
 
@@ -5126,8 +5182,10 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             tag=OUTREACH_TAG,
             model=debug.get("fcc_model_label"),
-            meta={"run_id": run_id, "line": line},
+            meta={"run_id": run_id, "line": line, "door_policy": door_why},
             skip_schedule_gates=True,
+            require_why_juniper=True,
+            finding_key=finding_key,
         )
         logger.info(
             "curiosity_outreach_result run=%s sent=%s reason=%s",

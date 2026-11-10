@@ -35,6 +35,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from orion.hub.why_juniper import WHY_JUNIPER_INSTRUCTION
+
 _MAX_FINDING_CHARS = 6000
 _MAX_HOP_NOTES = 12
 _MAX_HOP_NOTE_CHARS = 400
@@ -126,5 +128,7 @@ def build_outreach_composition_prompt(
         "interruption that was not worth it. It has to be that word on its own, "
         "though: anything else you write is treated as the message and "
         "delivered.",
+        "",
+        WHY_JUNIPER_INSTRUCTION,
     ]
     return "\n".join(lines)

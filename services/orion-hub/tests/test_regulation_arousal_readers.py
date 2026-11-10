@@ -377,7 +377,9 @@ def test_outreach_re_reads_arousal_before_delivery(monkeypatch):
 
     async def generate_while_strain_begins(self, prompt, session_id, correlation_id, **_kw):
         o._bus.redis.values[REGULATION_STATE_REDIS_KEY] = _state("strained")
-        return "something I was thinking about", {"stub": True}
+        # Ends with the Why Juniper line the door policy requires (2026-11-10), so the
+        # pre-delivery arousal gate is what holds it.
+        return "something I was thinking about\nWhy Juniper: stub reason.", {"stub": True}
 
     monkeypatch.setattr(EndogenousOutreach, "_generate", generate_while_strain_begins)
     result = asyncio.run(o._outreach_once(force=False))

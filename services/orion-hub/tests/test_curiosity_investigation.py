@@ -830,7 +830,7 @@ class _FakeOutreach:
         return row
 
     async def offer_message(self, *, text, correlation_id, tag, model=None, meta=None,
-                            skip_schedule_gates=False):
+                            skip_schedule_gates=False, require_why_juniper=False, finding_key=None):
         self.offered.append(
             {
                 "text": text,
@@ -838,9 +838,22 @@ class _FakeOutreach:
                 "correlation_id": correlation_id,
                 "meta": dict(meta or {}),
                 "skip_schedule_gates": skip_schedule_gates,
+                "require_why_juniper": require_why_juniper,
+                "finding_key": finding_key,
             }
         )
         return self.result
+
+
+def _juniper_asked(loop) -> None:
+    """Door policy (2026-11-10): an investigate run reaches Juniper only when she asked for it.
+    These tests exercise the composition path, so the run is one she asked for (the rule itself
+    is covered in tests/test_outreach_door_policy.py)."""
+
+    async def _door(run_id, line):
+        return True, "asked_by_juniper"
+
+    loop._curiosity_door = _door
 
 
 def _reach_out_reader(run_id_holder):
@@ -868,6 +881,7 @@ def test_a_finding_orion_wants_to_share_goes_through_a_second_turn() -> None:
         outreach_enabled=True,
         outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     prompts: list[str] = []
 
     async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
@@ -994,6 +1008,8 @@ def test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line() -> None:
     assert outreach.offered == [], "a pre-check block must not spend a composition turn"
     assert outreach.recorded == [
         {
+            "door_policy": "line:self_inquiry",
+            "finding_key": "curiosity_run:run-blk",
             "run_id": "run-blk",
             "line": "self_inquiry",
             "outreach": False,
@@ -1010,6 +1026,7 @@ def test_the_sent_path_threads_run_id_and_line_into_offer_message() -> None:
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
 
     async def _gen(prompt, correlation_id, **kw):
         return "worth saying", {"fcc_model_label": "M"}
@@ -1024,7 +1041,10 @@ def test_the_sent_path_threads_run_id_and_line_into_offer_message() -> None:
     assert got is None
     assert outreach.recorded == []
     assert outreach.offered[0]["correlation_id"] == _expected_corr("run-sent")
-    assert outreach.offered[0]["meta"] == {"run_id": "run-sent", "line": "investigate"}
+    assert outreach.offered[0]["meta"] == {"run_id": "run-sent", "line": "investigate",
+                                           "door_policy": "asked_by_juniper"}
+    assert outreach.offered[0]["require_why_juniper"] is True
+    assert outreach.offered[0]["finding_key"] == "curiosity_run:run-sent"
     assert outreach.offered[0]["skip_schedule_gates"] is True
 
 
@@ -1034,6 +1054,7 @@ def test_an_empty_composition_writes_a_row_instead_of_only_logging() -> None:
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
 
     async def _gen(prompt, correlation_id, **kw):
         return "", {"raw_len": 0}
@@ -1103,6 +1124,7 @@ def test_a_failing_decision_write_never_reaches_the_investigation(monkeypatch) -
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     assert asyncio.run(
         loop._maybe_reach_out(
             outcome=_reach_out_outcome("r3"), finding_text="f", run_id="r3", hop_notes=[]
@@ -1172,6 +1194,7 @@ def test_the_composition_turn_is_not_held_to_the_lookup_gate() -> None:
         outreach_enabled=True,
         outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     seen: list[bool] = []
 
     async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
@@ -1249,6 +1272,7 @@ def test_maybe_reach_out_passes_hop_notes_into_composition_prompt(monkeypatch) -
         outreach_enabled=True,
         outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
 
     async def fake_generate(prompt, correlation_id, **kwargs):
         return "PASS", {}
@@ -2847,6 +2871,7 @@ def test_outreach_composition_recalls_about_the_finding_not_the_prompt() -> None
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     seen: list = []
 
     async def _gen(prompt, correlation_id, **kw):
@@ -2872,6 +2897,7 @@ def test_outreach_composition_with_no_finding_sends_no_query() -> None:
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     seen: list = []
 
     async def _gen(prompt, correlation_id, **kw):

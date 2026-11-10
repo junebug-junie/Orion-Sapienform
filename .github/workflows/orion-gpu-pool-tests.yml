@@ -232,6 +232,8 @@ jobs:
         run: python services/orion-gpu-pool/evals/run_pool_day_eval.py
       - name: Stale-controller incident replay (2026-10-09, config_unloadable -> alert within ~10 min)
         run: python services/orion-gpu-pool/evals/run_controller_stale_eval.py
+      - name: Value-ordered background hold queue eval (attention patch 3 replay D, fixture)
+        run: python services/orion-gpu-pool/evals/value_queue_replay.py
 
   consumers:
     name: gpu-pool stage 4.4 — callers carry the lease ref (gateway attach is in durable-runs' gateway job)

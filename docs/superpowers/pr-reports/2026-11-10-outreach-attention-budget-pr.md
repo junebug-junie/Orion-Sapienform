@@ -27,6 +27,7 @@ Replay of 14 whole days (10-27 .. 11-09, `evals/run_outreach_attention_budget_re
 - Days: 5 on 12 days, 6 on 2 days (both had office visits), 2 on 10-29 (the strain-locked day). The cap was the limit on only 2 days; the price did the rest.
 - Every office visit message still went (4 of 4), 2 of them at the end of their 5-minute hold.
 - Spread (local hour of sends): 8:00 12, 9:00 6, 11:00 6, 12:00 9, 15:00 7, 19:00 12, plus a few curiosity sends at night (Door-A ignores quiet hours, as before). The 08:00 pile of readings (live 10-28: 14 messages in an hour) became one message at 08:00, then the rest spaced through the day.
+- Honest caveat on "not a schedule": in the replay the sends bunch near the hours the allowance lets the next message through (08, 12, 15, 19), because the replay's want strength is drive alone. Live, doors offer at different moments, Prime's regulate charge moves the value, and Orion's PASS / `Why Juniper` decisions drop some messages, so the hours should vary more; this is UNVERIFIED until a week of live rows. Door-specific event strength (a reading's salience) is not wired into the outreach bid yet.
 - Held then sent: 35 messages, median hold 3.2 h. Never sent: 73 reading findings and 11 ticks waited all day without becoming worth the price; 13 more hit the cap.
 
 A strong message still goes late, a weak one waits (from the replay):

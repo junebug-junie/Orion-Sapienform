@@ -115,7 +115,7 @@ def _default_build():
     """Cached zero-override `_build()` result, shared by every test below that
     doesn't need a custom fixture -- `build_snapshot()` at `cgr.DEFAULT_N_SURROGATES`
     takes a few real seconds (each of the 15 tested pairs draws that many
-    circular-shift surrogates), so re-running it per read-only test would make
+    time-shift surrogates), so re-running it per read-only test would make
     this file slow for no benefit. Safe to share: nothing below mutates the
     returned snapshot/pair_results, only reads them."""
     return _build()
@@ -188,7 +188,10 @@ def _perfectly_correlated_two_cluster_channel_buckets():
     """4 channels as two independent perfectly-correlated pairs (chan:a1/a2,
     chan:b1/b2) -> C(4,2) = 6 tested pairs, 2 of them real."""
     rng = np.random.default_rng(7)
-    n = 50
+    # 400, not 50: since 2026-11-10 a pair's p cannot go below 1/(n_eff+1),
+    # so 50 points (n_eff ~50) could never clear Bonferroni x10 + BH however
+    # perfect the correlation. That is the honest resolution of 50 points.
+    n = 400
     a1 = rng.normal(size=n)
     a2 = a1.copy()  # perfectly correlated with a1
     b1 = rng.normal(size=n)
@@ -209,8 +212,9 @@ def test_surrogate_count_no_longer_sets_a_pvalue_floor_that_starves_bh():
     Bonferroni its floor (10/201 ~= 0.0498, then 10/2001 ~= 0.005) sat above
     BH's first-rank threshold `alpha/m`, and BH passed nothing.
 
-    Since 2026-11-10 p_raw is a normal fit to the Fisher-z surrogate null, so
-    it has no resolution floor. Two independent perfectly-correlated clusters
+    Since 2026-11-10 p_raw extends past the surrogate rank floor with a GPD
+    tail fit (for pairs with n_eff >= 100), so the surrogate count no longer
+    sets the floor. Two independent perfectly-correlated clusters
     (4 channels, m=6 pairs, 2 real) must now clear BH even at the old
     n_surrogates=200 that used to reproduce the bug, with p far below the old
     floor. The m=171 version of this cliff (the live family size) is pinned by
@@ -356,11 +360,11 @@ def test_capability_channel_index_disambiguates_same_edge_different_channels():
     assert index["reasoning_pressure"][0]["target_id"] == index["execution_pressure"][0]["target_id"]
 
 
-def test_circular_shift_pvalue_never_zero_and_below_old_rank_floor():
-    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+def test_time_shift_pvalue_never_zero_and_below_old_rank_floor():
     rng = np.random.default_rng(0)
-    p = cgr.circular_shift_pvalue(x, y, observed_r=1.0, n_surrogates=50, rng=rng)
+    x = rng.standard_normal(400)
+    y = x + 0.1 * rng.standard_normal(400)
+    p = cgr.time_shift_pvalue(x, y, observed_r=cgr._pearson(x, y))
     assert p > 0.0
-    # The old add-one rank p could not go below 1/51 here; the normal fit can.
-    assert p < 1.0 / 51.0
+    # The old add-one rank p could not go below 1/2001.
+    assert p < 1.0 / 2001.0

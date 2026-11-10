@@ -1,8 +1,8 @@
 name: causal-geometry-tests
 
-# Causal geometry engine: lagged correlation + circular-shift surrogate p +
-# BH-FDR. Pins the 2026-11-10 p-value floor-cliff fix (continuous p, AR(1)
-# calibration across seeds, m=171 cliff reproduction). No CI ran these before.
+# Causal geometry engine: lagged correlation + time-shift surrogate p +
+# BH-FDR. Pins the 2026-11-10 p-value floor-cliff fix (m=171 cliff
+# reproduction, calibration across six null shapes and seeds). No CI ran these before.
 on:
   pull_request:
     paths:
@@ -12,12 +12,20 @@ on:
       - "orion/schemas/causal_geometry.py"
       - "scripts/causal_geometry_report.py"
       - "tests/test_causal_geometry_report.py"
+      - "services/orion-field-digester/requirements.txt"
+      - "requirements-dev.txt"
       - ".github/workflows/causal-geometry-tests.yml"
   push:
     branches: [main]
     paths:
       - "orion/substrate/causal_geometry_*.py"
+      - "orion/substrate/field_topology_plasticity.py"
+      - "orion/substrate/tests/test_causal_geometry_*.py"
+      - "orion/schemas/causal_geometry.py"
       - "scripts/causal_geometry_report.py"
+      - "tests/test_causal_geometry_report.py"
+      - "services/orion-field-digester/requirements.txt"
+      - "requirements-dev.txt"
       - ".github/workflows/causal-geometry-tests.yml"
 
 jobs:

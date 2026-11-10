@@ -220,3 +220,68 @@ def test_freshness_classifier_omits_missing_input() -> None:
     assert classify_reading(_node(ROOM, 0.0, now, missing="stale"), now=now)[0] == STATUS_MISSING_INPUT
     assert classify_reading(_node(ROOM, 0.0, now), now=now)[0] == STATUS_FRESH
     assert missing_input_reason(_node(ROOM, 0.0, now, missing="  ")) is None
+
+
+# --- Field receipt: missing is absent, never 0.0 (2026-11-10) ----------------
+# PE suite rebuild spec retire step 8. The graph node above already marked the
+# placeholder, but the field-bound receipt still carried prediction_error=0.0,
+# so the digester wrote 0.0 into the field (live 2026-11-08 09:00:33-09:01:34,
+# a 95 s embedding gap). The receipt must now carry the reason and no value.
+
+
+def _receipt_after(worker, node_id: str) -> dict:
+    for call in reversed(worker._store.save_receipt.call_args_list):
+        delta = call.args[0].state_deltas[0]
+        if delta.target_id == node_id:
+            assert delta.target_kind == "prediction_signal"
+            return delta.after
+    raise AssertionError(f"no receipt saved for {node_id}")
+
+
+def test_stale_tick_receipt_carries_no_field_value(monkeypatch) -> None:
+    worker = _worker(monkeypatch, [])
+    worker._last_perception_prediction_error = 0.7
+    worker._last_perception_embedding_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    worker._last_perception_surprise_n = 50
+    worker._perception_prediction_error_tick()
+    after = _receipt_after(worker, ROOM)
+    assert "prediction_error" not in after["pressure_hints"]
+    assert after[PREDICTION_ERROR_MISSING_REASON_KEY] == PERCEPTION_MISSING_STALE
+
+
+def test_warming_and_empty_window_receipts_carry_no_field_value(monkeypatch) -> None:
+    worker = _worker(monkeypatch, [])
+    walkway = worker._perception_walkway_state()
+    walkway.embedding_at = datetime.now(timezone.utc)
+    walkway.surprise_n = 1
+    walkway.score = 0.9
+    worker._last_perception_embedding_at = datetime.now(timezone.utc)
+    worker._last_perception_surprise_n = 50  # warm, but no frame this window
+    worker._perception_prediction_error_tick()
+    walk = _receipt_after(worker, WALKWAY)
+    assert "prediction_error" not in walk["pressure_hints"]
+    assert walk[PREDICTION_ERROR_MISSING_REASON_KEY] == PERCEPTION_MISSING_WARMING
+    room = _receipt_after(worker, ROOM)
+    assert "prediction_error" not in room["pressure_hints"]
+    assert room[PREDICTION_ERROR_MISSING_REASON_KEY] == PERCEPTION_MISSING_NO_FRAME
+
+
+def test_real_readings_including_calm_zero_reach_the_field(monkeypatch) -> None:
+    worker = _worker(monkeypatch, [0.0, 0.0])
+    for _ in range(2):
+        worker._handle_perception_prediction_error_message(_message("cam0"))
+    worker._perception_prediction_error_tick()
+    after = _receipt_after(worker, ROOM)
+    assert after["pressure_hints"] == {"prediction_error": 0.0}
+    assert PREDICTION_ERROR_MISSING_REASON_KEY not in after
+
+
+def test_receipt_builder_refuses_a_value_and_a_reason_together() -> None:
+    import pytest
+
+    now = datetime.now(timezone.utc)
+    kwargs = dict(reducer_key="perception", node_id=ROOM, now=now)
+    with pytest.raises(ValueError):
+        worker_mod._prediction_error_receipt(prediction_error=0.0, missing_reason="stale", **kwargs)
+    with pytest.raises(ValueError):
+        worker_mod._prediction_error_receipt(prediction_error=None, **kwargs)

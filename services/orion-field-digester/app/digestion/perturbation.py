@@ -96,7 +96,19 @@ def apply_perturbations(
             and p.mode != "replace"
             and p.node_id in suppression_clear_nodes
         )
-        if not overridden_by_clear:
+        if p.mode == "clear":
+            # The producer has no reading (state_deltas.py prediction_signal
+            # missing_reason): drop the channel and its stamp so every consumer
+            # sees "unmeasured", the same convention as decay.py's
+            # EXPIRING_NODE_CHANNELS. Never creates a node; an emptied vector
+            # stays as {} (the producer still writes this node every tick).
+            node_vec = state.node_vectors.get(p.node_id)
+            if node_vec is not None:
+                node_vec.pop(p.channel, None)
+            stamps = state.node_vector_updated_at.get(p.node_id)
+            if stamps is not None:
+                stamps.pop(p.channel, None)
+        elif not overridden_by_clear:
             node_vec = state.node_vectors.setdefault(p.node_id, {})
             if p.mode == "replace":
                 node_vec[p.channel] = max(0.0, min(1.0, p.intensity))

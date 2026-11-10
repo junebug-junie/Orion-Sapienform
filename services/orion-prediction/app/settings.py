@@ -37,6 +37,8 @@ class Settings(BaseSettings):
 
     # Forecast every contender model in the shadow and grade it live; the gate uses the live verdicts.
     shadow_enabled: bool = Field(True, alias="PREDICTION_SHADOW_ENABLED")
+    # Champion ranges from recent live scores, scaled by the last hour's miss size (app/adaptive.py).
+    adaptive_intervals_enabled: bool = Field(True, alias="PREDICTION_ADAPTIVE_INTERVALS_ENABLED")
 
     # World-model shadow for action bets: the exported TransitionModel weights (written by
     # services/orion-world-model/scripts/train_transition.py --publish). Scored, stored, graded; never served.

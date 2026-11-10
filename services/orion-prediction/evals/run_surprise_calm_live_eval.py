@@ -13,8 +13,8 @@ Baseline 2026-11-10 06:30 UTC (champion rows). The calm check FAILS today:
 - quiet 24 h: cabinet 15 min -0.281 +-0.101, 60 min -0.372 +-0.145; office 15 min -0.355 +-0.085.
 The ranges are calibrated on average (80 % coverage ~0.84) but not conditionally: one width for calm
 and busy hours, so a calm day reads far below 0 and the misses cluster in busy periods. Fix belongs
-in the forecaster (volatility-adaptive conformal ranges), not in this transform. No consumer may
-read prediction.surprise.v1 until this check passes.
+in the forecaster, not in this transform: app/adaptive.py (adaptive ranges, 2026-11-10). No consumer
+may read prediction.surprise.v1 until this check passes on forecasts issued with those ranges.
 """
 from __future__ import annotations
 

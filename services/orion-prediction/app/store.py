@@ -245,7 +245,7 @@ class PostgresStore:
 
     def live_scores(self, series_id: str, since: datetime) -> list[dict]:
         return self._all(
-            "SELECT role, origin_ts, horizon_min, point, abs_error, in_80, in_95 FROM prediction_forecast "
+            "SELECT role, origin_ts, horizon_min, point, actual, abs_error, in_80, in_95 FROM prediction_forecast "
             "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
             (series_id, since))
 

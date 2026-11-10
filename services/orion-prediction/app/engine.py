@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 import numpy as np
 import pandas as pd
 
+from app.adaptive import adaptive_offsets, pool_since
 from app.backtest import (
     COVERAGE_BAND,
     GATE_VERSION,
@@ -138,6 +139,8 @@ class SeriesState:
     # Surprise gate per horizon for the current selection, from the last monitor pass:
     # hm -> (passes, reason). Shown by /series/{id}/surprise; no bus event until a consumer exists.
     surprise_gate: dict = field(default_factory=dict)
+    # Champion range source per horizon at the last issue: "adaptive" or "backtest:<reason>".
+    interval_source: dict = field(default_factory=dict)
 
 
 class Engine:
@@ -145,10 +148,11 @@ class Engine:
                  select_interval_sec: float, settle_sec: float, publish_enabled: bool,
                  publish: Callable[[str, Any], Awaitable[None]] | None = None, source: Any = None,
                  clock: Callable[[], datetime] = utcnow, weather: dict | None = None,
-                 shadow_enabled: bool = True):
+                 shadow_enabled: bool = True, adaptive_intervals: bool = True):
         self.registry = registry
         self.weather = weather            # {"lat", "lon", "refresh_sec"} or None (weather off)
         self.shadow_enabled = shadow_enabled
+        self.adaptive_intervals = adaptive_intervals   # app/adaptive.py; False = backtest pool only
         self.weather_state: dict = {}
         self.store = store
         self.backtest_windows = backtest_windows
@@ -471,6 +475,32 @@ class Engine:
         return rows, failed
 
     # --- issue ----------------------------------------------------------------------------
+    def adapt_intervals(self, spec: SeriesSpec, origin: pd.Timestamp, point: np.ndarray, swapped: np.ndarray,
+                        qs: dict[str, np.ndarray], out: dict) -> dict[str, np.ndarray]:
+        """Champion ranges at the served horizons from recent live scores, scaled by the last hour's
+        difficulty (app/adaptive.py). A horizon keeps its backtest range when the live pool or the
+        current difficulty is too thin, or when its step fell back to the baseline model (the live
+        pool measures the champion, not the baseline)."""
+        source = {hm: "backtest:disabled" for hm in spec.horizons_min}
+        if self.adaptive_intervals:
+            since = pool_since(origin.to_pydatetime())
+            rows = [r for r in self.store.live_scores(spec.series_id, since) if r["role"] == "champion"]
+            offsets, reasons = adaptive_offsets(rows, origin, spec.horizons_min, spec.grain_min)
+            qs = {k: v.copy() for k, v in qs.items()}
+            for hm in spec.horizons_min:
+                j = spec.steps(hm) - 1
+                if swapped[j]:
+                    source[hm] = "backtest:model_fallback"
+                    continue
+                if hm not in offsets:
+                    source[hm] = f"backtest:{reasons.get(hm, 'unknown')}"
+                    continue
+                for k, q in enumerate(QUANTILES):
+                    qs[q_key(q)][j] = point[j] + offsets[hm][k]
+                source[hm] = "adaptive"
+        out["interval_source"] = source
+        return qs
+
     def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime) -> dict:
         """Champion + baseline rows and the publishable payload. Refuses stale input outright: a
         forecast from a sensor that stopped is the last value extended, not a forecast."""
@@ -507,6 +537,7 @@ class Engine:
         if any(o in failed for o in base_owners):
             raise RuntimeError(f"baseline model failed: {failed}")
         fallback_steps = 0
+        swap = np.zeros(h, dtype=bool)
         out = {"rows": [], "payload": None}
         for role, assignment in (("champion", sel.assignment), ("baseline", sel.baseline_assignment)):
             owners = step_owner(assignment, spec.grain_min, h)
@@ -521,6 +552,8 @@ class Engine:
                 residuals[:, swap] = served.residuals["baseline"][:, swap]
             point = stitch(paths, owners)
             qs = quantile_paths(point, residuals)
+            if role == "champion":
+                qs = self.adapt_intervals(spec, origin, point, swap, qs, out)
             _check_not_degenerate(point, qs, spec)
             steps = []
             for hm in spec.horizons_min:
@@ -577,6 +610,10 @@ class Engine:
                     for e in p.exceedance]
         await sync(self.store.insert_issue, built["rows"], exc_rows)
         st.last_issue_error = None
+        src = built.get("interval_source", {})
+        if src != st.interval_source:
+            logger.info("prediction_interval_source series=%s %s", spec.series_id, src)
+        st.interval_source = src
         if built["failed_models"]:
             st.last_issue_error = ("model_fallback", f"{built['fallback_steps']} step(s) served by the baseline; "
                                                      f"failed: {built['failed_models']}"[:300])
@@ -807,10 +844,11 @@ class Engine:
                 st.last_select_error = f"{type(exc).__name__}: {exc}"[:300]
                 st.next_select_at = now + self.select_interval   # back off a full interval
                 logger.exception("prediction_select_failed series=%s", spec.series_id)
+        # Score before issuing: the adaptive range (app/adaptive.py) reads the newest outcomes.
+        await sync(self.score, spec, now)
         if st.served is not None:
             series = await sync(self.load_series, spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
             await self.issue(spec, now, series, sync)
-        await sync(self.score, spec, now)
         await sync(self.score_exceedances, spec, now)
         if self.shadow_enabled:
             await sync(self.score_shadow, spec, now)

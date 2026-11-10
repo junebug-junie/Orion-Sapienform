@@ -105,6 +105,10 @@ cd services/orion-hub && pytest -q tests/test_outreach_door_policy.py tests/test
   tests/test_outreach_bind.py tests/test_strain_report_outreach.py tests/test_endogenous_outreach_decisions.py \
   tests/test_physiology_shadow_bid.py tests/test_outreach_attention_budget.py evals/ -> 639 passed, 3 skipped
 Full Hub tests/: only the 4 failures that also fail on clean main (ui smoke x2, async-routes repo scan, fcc labels).
+Real Postgres (throwaway postgres:16-alpine, the migrations applied):
+  ORION_TEST_PG_URI=... pytest tests/test_office_reach_out_pg.py              -> 4 passed (cap 6, office counts)
+  ORION_ADMISSION_TEST_DSN=... pytest tests/test_physiology_node.py (durable)  -> 19 passed (forced, strain report
+  and asked_by_juniper rows not counted; first CI run caught both fixtures still on the old rules)
 Repo root: tests/test_check_body_economy_contract.py tests/test_check_verb_physiology.py tests/test_env_key_single_source.py
   tests/test_check_settings_defaults.py tests/test_report_dead_env_keys.py tests/test_no_personal_terms.py
   tests/test_metric_prompt_semantics.py                                       -> all passed

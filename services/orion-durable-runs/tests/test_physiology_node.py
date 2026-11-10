@@ -324,7 +324,8 @@ def test_store_reads_on_postgres():
             await conn.execute("""CREATE TABLE gpu_pool_leases (lease_id text PRIMARY KEY, status text NOT NULL,
                                   role text, granted_at timestamptz, hold_lease_id text)""")
             await conn.execute("""CREATE TABLE endogenous_outreach_decisions (decision_id text PRIMARY KEY,
-                                  decided_at timestamptz, outreach boolean, reason text, result_json jsonb)""")
+                                  decided_at timestamptz, outreach boolean, reason text, result_json jsonb,
+                                  forced boolean NOT NULL DEFAULT false)""")
             hour = now.replace(minute=0, second=0, microsecond=0)
             for src, kwh in (("athena", 0.3), ("cooling", 0.5)):
                 await conn.execute("INSERT INTO orion_energy_hourly VALUES (%s, %s, %s, 3600, 10)", (hour, src, kwh))
@@ -347,10 +348,16 @@ def test_store_reads_on_postgres():
                 ('L1', 'released', 'fast', %(b)s, NULL), ('L2', 'granted', 'agent', %(b)s, NULL),
                 ('L3', 'released', 'fast', %(b)s, NULL), ('LOST', 'released', 'metacog', %(b)s, NULL),
                 ('C1', 'released', 'agent', %(b)s, 'L2')""", {"b": now - timedelta(minutes=10)})
-            await conn.execute("""INSERT INTO endogenous_outreach_decisions VALUES
-                ('d1', %(t)s, true, 'sent', '{"source": "tension"}'),
-                ('d2', %(t)s, true, 'sent', '{"source": "curiosity_outreach"}'),
-                ('d3', %(t)s, false, 'cooldown', '{}')""", {"t": now - timedelta(minutes=1)})
+            # One attention budget (2026-11-10): every door counts except the strain report, a send
+            # Juniper asked for (door_policy) and a forced send.
+            await conn.execute("""INSERT INTO endogenous_outreach_decisions
+                (decision_id, decided_at, outreach, reason, result_json, forced) VALUES
+                ('d1', %(t)s, true, 'sent', '{"source": "tension"}', false),
+                ('d2', %(t)s, true, 'sent', '{"source": "curiosity_outreach"}', false),
+                ('d3', %(t)s, false, 'cooldown', '{}', false),
+                ('d4', %(t)s, true, 'sent', '{"source": "strain_report"}', false),
+                ('d5', %(t)s, true, 'sent', '{"source": "curiosity_outreach", "door_policy": "asked_by_juniper"}', false),
+                ('d6', %(t)s, true, 'sent', '{}', true)""", {"t": now - timedelta(minutes=1)})
 
         energy = await physiology_store.read_energy(pool, now, tz)
         assert energy.read_ok and len(energy.hours) == 1 and abs(energy.hours[0].kwh - 0.8) < 1e-9
@@ -365,7 +372,7 @@ def test_store_reads_on_postgres():
         jun = await physiology_store.read_juniper(pool, now, tz)
         # Local-date bucketing: the 1-minute-old rows are "today" unless local midnight just passed.
         if (now - timedelta(minutes=1)).astimezone(tz).date() == now.astimezone(tz).date():
-            assert jun.read_ok and jun.sent_today == 2 and jun.cap_counted_today == 1
+            assert jun.read_ok and jun.sent_today == 5 and jun.cap_counted_today == 2
         assert jun.newest_decision_at is not None
 
     asyncio.run(_with_schema(scenario))

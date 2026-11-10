@@ -62,7 +62,8 @@ def _outreach(monkeypatch, delivered, *, busy=False):
     monkeypatch.setattr(eo.EndogenousOutreach, "_generate", fake_generate)
     monkeypatch.setattr(eo.EndogenousOutreach, "_deliver", fake_deliver)
     return eo.EndogenousOutreach(
-        enabled=True, tick_interval_sec=300.0, min_cooldown_sec=0.0, daily_cap=0, quiet_start_hour=-1,
+        # One attention budget (2026-11-10): office visits count on the one daily cap (6).
+        enabled=True, tick_interval_sec=300.0, min_cooldown_sec=0.0, daily_cap=6, quiet_start_hour=-1,
         quiet_end_hour=-1, timeout_sec=5.0, agent_lane_timeout_sec=5.0, notify_channel="orion:notify:in_app",
         fallback_session_id="orion_outreach", trigger_evaluator=lambda: None, timezone_name="UTC")
 

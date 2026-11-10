@@ -1,0 +1,54 @@
+name: causal-geometry-tests
+
+# Causal geometry engine: lagged correlation + time-shift surrogate p +
+# BH-FDR. Pins the 2026-11-10 p-value floor-cliff fix (m=171 cliff
+# reproduction, calibration across six null shapes and seeds). No CI ran these before.
+on:
+  pull_request:
+    paths:
+      - "orion/substrate/causal_geometry_*.py"
+      - "orion/substrate/field_topology_plasticity.py"
+      - "orion/substrate/tests/test_causal_geometry_*.py"
+      - "orion/schemas/causal_geometry.py"
+      - "scripts/causal_geometry_report.py"
+      - "tests/test_causal_geometry_report.py"
+      - "services/orion-field-digester/requirements.txt"
+      - "requirements-dev.txt"
+      - ".github/workflows/causal-geometry-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/substrate/causal_geometry_*.py"
+      - "orion/substrate/field_topology_plasticity.py"
+      - "orion/substrate/tests/test_causal_geometry_*.py"
+      - "orion/schemas/causal_geometry.py"
+      - "scripts/causal_geometry_report.py"
+      - "tests/test_causal_geometry_report.py"
+      - "services/orion-field-digester/requirements.txt"
+      - "requirements-dev.txt"
+      - ".github/workflows/causal-geometry-tests.yml"
+
+jobs:
+  unit:
+    name: causal-geometry unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-field-digester/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Engine, calibration, report, producer, plasticity
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            orion/substrate/tests/test_causal_geometry_pvalue_calibration.py \
+            orion/substrate/tests/test_causal_geometry_fdr_correction.py \
+            orion/substrate/tests/test_causal_geometry_producer.py \
+            orion/substrate/tests/test_causal_geometry_bus_publish.py \
+            orion/substrate/tests/test_field_topology_plasticity.py \
+            orion/schemas/tests/test_causal_geometry.py \
+            tests/test_causal_geometry_report.py

@@ -29,9 +29,13 @@ shows an open gate (the summary prints that ceiling as ``open_verdicts``). It is
 timer loses no start and adds none in timing ("no regression"), not a check that Orion plays more or
 better. After the retirement no new verdict rows are written, so live mode can only replay the
 time before it; the post-deploy evidence is Hub ``/health`` -> ``retro_leisure_self_start``.
-The dispatch rung itself retired on 2026-11-07 (ladder retirement PR 6), and its tables are dropped
-by the follow-up migration; after that, run live mode only against a restored pg_dump of
-``substrate_dispatch_results``. Fixture mode (CI) needs no database.
+The dispatch rung itself retired on 2026-11-07 (ladder retirement PR 6), and its tables were dropped
+on 2026-11-10 (manual_migration_retire_proposal_policy_dispatch_rungs_drop.sql). The verdict history
+lives nowhere else: the leisure timer's own gate verdicts go only to the Hub log (its shadow bid's
+``want_ledger`` row is the economy's decision, not the doer's gate). Live mode therefore reads the
+verdicts from a database restored from the pre-drop backup, named with ``--dispatch-db``; against a
+database without the table it stops with exit code 2 and says how to restore it. Session lengths
+still come from the live database. Fixture mode (CI) needs no database.
 
 Limits, said plainly: a verdict shows only the FIRST gate that refused, so a gate hidden behind it
 is not seen; the self-monitor act gate is not modelled (the faculty read ``unknown``, which admits);
@@ -296,22 +300,50 @@ def fixture_checks(out: dict, world: World, t0: float) -> list[tuple[str, bool, 
 
 # --- live ---------------------------------------------------------------------------------------
 
-def _psql(sql: str) -> list[list[str]]:
-    out = subprocess.run(["docker", "exec", "orion-athena-sql-db", "psql", "-U", "postgres", "-d", "conjourney",
+LIVE_DB = "conjourney"
+DISPATCH_TABLE = "substrate_dispatch_results"
+DISPATCH_BACKUP = "/mnt/storage-warm/orion-backups/retired-proposal-policy-dispatch-rungs.dump"
+
+
+class DispatchHistoryMissing(RuntimeError):
+    """The verdict table is not in the database live mode was pointed at."""
+
+
+def missing_history_message(db: str) -> str:
+    return (f"{DISPATCH_TABLE} is not in database {db!r}: it was dropped on 2026-11-10 (the dispatch rung "
+            "retired 2026-11-07), and the leisure gate's verdicts are recorded nowhere else. To replay live, "
+            f"restore it from {DISPATCH_BACKUP} into a scratch database and pass --dispatch-db, e.g.:\n"
+            "  docker exec orion-athena-sql-db createdb -U postgres dispatch_restore\n"
+            "  docker exec -i orion-athena-sql-db pg_restore -U postgres -d dispatch_restore "
+            f"-t {DISPATCH_TABLE} < {DISPATCH_BACKUP}\n"
+            "Fixture mode (no flags) needs no database.")
+
+
+def _psql(sql: str, db: str = LIVE_DB) -> list[list[str]]:
+    out = subprocess.run(["docker", "exec", "orion-athena-sql-db", "psql", "-U", "postgres", "-d", db,
                           "-AtF", "\t", "-c", sql], check=True, capture_output=True, text=True).stdout
     return [line.split("\t") for line in out.splitlines() if line]
 
 
-def live_world(days: float) -> tuple[World, float, float, dict]:
+def _require_dispatch_history(db: str) -> None:
+    present = _psql(f"select to_regclass('{DISPATCH_TABLE}') is not null", db)
+    if not present or present[0][0] != "t":
+        raise DispatchHistoryMissing(missing_history_message(db))
+
+
+def live_world(days: float, dispatch_db: str = LIVE_DB) -> tuple[World, float, float, dict]:
+    _require_dispatch_history(dispatch_db)
     end_rows = _psql("select extract(epoch from max(created_at)) from substrate_dispatch_results "
-                     "where result_json->'settlement'->>'kind'='retro_leisure'")
+                     "where result_json->'settlement'->>'kind'='retro_leisure'", dispatch_db)
+    if not end_rows or not end_rows[0][0]:
+        raise DispatchHistoryMissing(f"{DISPATCH_TABLE} in database {dispatch_db!r} has no retro_leisure verdicts")
     end = float(end_rows[0][0])
     start = end - days * 86400
     rows = _psql(
         "select extract(epoch from created_at), coalesce(result_json->'settlement'->>'refusal', "
         "result_json->'settlement'->>'state') from substrate_dispatch_results "
         f"where result_json->'settlement'->>'kind'='retro_leisure' and created_at >= to_timestamp({start}) "
-        f"and created_at <= to_timestamp({end}) order by created_at")
+        f"and created_at <= to_timestamp({end}) order by created_at", dispatch_db)
     sessions = _psql("select extract(epoch from started_at), duration_sec from retro_play_sessions "
                      f"where kind='leisure' and started_at >= to_timestamp({start}) and started_at <= to_timestamp({end})")
     times = [float(r[0]) for r in rows]
@@ -333,6 +365,8 @@ def main() -> int:
     ap.add_argument("--days", type=float, default=14.0)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--carry", action="store_true", help="sensitivity: an unobserved stretch keeps the last verdict")
+    ap.add_argument("--dispatch-db", default=LIVE_DB,
+                    help="database holding substrate_dispatch_results (restored from the pre-drop backup)")
     args = ap.parse_args()
     if not args.live:
         world, t0, t1 = _fixture_world()
@@ -344,7 +378,11 @@ def main() -> int:
         print(f"fixture replay: {passed}/{len(checks)} checks; {len(out['starts'])} starts, {out['ticks']} ticks")
         return 0 if passed == len(checks) else 1
 
-    world, start, end, real = live_world(args.days)
+    try:
+        world, start, end, real = live_world(args.days, args.dispatch_db)
+    except DispatchHistoryMissing as exc:
+        print(f"cannot replay live: {exc}", file=sys.stderr)
+        return 2
     world.carry = bool(args.carry)
     out = asyncio.run(replay(world, start, end))
     new_days = Counter(_day(s) for s in out["starts"])

@@ -24,7 +24,7 @@
 -- BACKUP FIRST (about 21 GB before compression, mostly TOAST), then apply:
 --   mkdir -p /mnt/storage-warm/orion-backups
 --   docker exec orion-athena-sql-db pg_dump -U postgres -d conjourney -Fc -t substrate_proposal_frames -t substrate_policy_decision_frames -t substrate_execution_dispatch_frames -t substrate_execution_dispatch_inflight -t substrate_dispatch_results -t substrate_act_episodes > /mnt/storage-warm/orion-backups/retired-proposal-policy-dispatch-rungs.dump
---   docker exec -i orion-athena-sql-db pg_restore --list /dev/stdin < /mnt/storage-warm/orion-backups/retired-proposal-policy-dispatch-rungs.dump | grep -c 'TABLE DATA'   (must print 6)
+--   docker exec -i orion-athena-sql-db pg_restore --list < /mnt/storage-warm/orion-backups/retired-proposal-policy-dispatch-rungs.dump | grep -c 'TABLE DATA'   (must print 6; no file argument: pg_restore reads stdin itself, and "/dev/stdin" fails with "did not find magic string")
 --   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < services/orion-sql-db/manual_migration_retire_proposal_policy_dispatch_rungs_drop.sql
 --
 -- What goes (sizes live 2026-11-07): substrate_execution_dispatch_frames 11 GB, substrate_policy_decision_frames

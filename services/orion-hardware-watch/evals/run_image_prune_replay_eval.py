@@ -17,15 +17,20 @@ image_prune_verdict``) every 30 s on a simulated clock. Only the I/O is swapped:
   ``declined_nothing_to_reclaim`` -- the skill's own two-part gate.
 
 ``--export`` needs ``substrate_dispatch_results``, which the retired dispatch rung wrote (retired
-2026-11-07, ladder retirement PR 6; the table is dropped by the follow-up migration). The committed
-fixture keeps the replay and its CI gates working after that.
+2026-11-07, ladder retirement PR 6). That table was dropped on 2026-11-10, and the prune runs since
+then are recorded nowhere else (the disk rule's answers go only to the hardware-watch log and its
+/health; no act-ledger or want_ledger row). So ``--export`` reads the runs from a database restored
+from the pre-drop backup, named with ``--dispatch-db``; the disk history still comes from the live
+database. Against a database without the table it stops with exit code 2, says how to restore it, and
+leaves the committed fixture untouched. The committed fixture keeps the replay and its CI gates working.
 
 What it does not model: restarts (each one delays the next ask by the 10 min start delay and resets
 the cooldown, so live asks can be a little more often), RPC failures, Juniper's hand prunes.
 
 Usage (from services/orion-hardware-watch):
   PYTHONPATH=../..:. python evals/run_image_prune_replay_eval.py             # committed fixture + gates
-  PYTHONPATH=../..:. python evals/run_image_prune_replay_eval.py --export    # refresh it (athena, docker)
+  PYTHONPATH=../..:. python evals/run_image_prune_replay_eval.py --export --dispatch-db dispatch_restore
+                                                                  # refresh it (athena, docker, restored runs)
   PYTHONPATH=../..:. python evals/run_image_prune_replay_eval.py --sweep     # cooldown calibration
 """
 from __future__ import annotations
@@ -35,6 +40,7 @@ import asyncio
 import bisect
 import gzip
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -67,13 +73,39 @@ def _ts(s: str) -> datetime:
     return datetime.fromisoformat(s.replace(" ", "T").replace("+00", "+00:00").replace("+00:00:00", "+00:00"))
 
 
-def _psql(sql: str) -> list[list[str]]:
-    out = subprocess.run(["docker", "exec", "orion-athena-sql-db", "psql", "-U", "postgres", "-d", "conjourney",
+LIVE_DB = "conjourney"
+DISPATCH_TABLE = "substrate_dispatch_results"
+DISPATCH_BACKUP = "/mnt/storage-warm/orion-backups/retired-proposal-policy-dispatch-rungs.dump"
+
+
+class DispatchHistoryMissing(RuntimeError):
+    """The prune-run table is not in the database ``--export`` was pointed at."""
+
+
+def missing_history_message(db: str) -> str:
+    return (f"{DISPATCH_TABLE} is not in database {db!r}: it was dropped on 2026-11-10 (the dispatch rung "
+            "retired 2026-11-07), and the prune runs are recorded nowhere else. To export, restore it from "
+            f"{DISPATCH_BACKUP} into a scratch database and pass --dispatch-db, e.g.:\n"
+            "  docker exec orion-athena-sql-db createdb -U postgres dispatch_restore\n"
+            "  docker exec -i orion-athena-sql-db pg_restore -U postgres -d dispatch_restore "
+            f"-t {DISPATCH_TABLE} < {DISPATCH_BACKUP}\n"
+            "The committed fixture was left as it is.")
+
+
+def _psql(sql: str, db: str = LIVE_DB) -> list[list[str]]:
+    out = subprocess.run(["docker", "exec", "orion-athena-sql-db", "psql", "-U", "postgres", "-d", db,
                           "-AtF", "\t", "-c", sql], check=True, capture_output=True, text=True).stdout
     return [line.split("\t") for line in out.splitlines() if line.strip()]
 
 
-def export(start: str = START, end: str = END) -> dict:
+def _require_dispatch_history(db: str) -> None:
+    present = _psql(f"select to_regclass('{DISPATCH_TABLE}') is not null", db)
+    if not present or present[0][0] != "t":
+        raise DispatchHistoryMissing(missing_history_message(db))
+
+
+def export(start: str = START, end: str = END, dispatch_db: str = LIVE_DB) -> dict:
+    _require_dispatch_history(dispatch_db)   # before any work: a missing table must not write a fixture
     seed = (_ts(start) - timedelta(days=SEED_DAYS)).isoformat()
     disk_rows = _psql(
         "select timestamp, pressures->>'disk_capacity' from orion_biometrics_summary "
@@ -99,7 +131,10 @@ def export(start: str = START, end: str = END) -> dict:
         "result_json->'structured_result'->>'images_removed' "
         "from substrate_dispatch_results where dispatch_kind='maintain' "
         f"and dispatch_id like '%prune_dangling_images%' and created_at >= '{seed}' and created_at < '{end}' "
-        "order by created_at")
+        "order by created_at", dispatch_db)
+    if not runs:   # an empty restore (schema only, interrupted COPY) must not become an empty fixture
+        raise DispatchHistoryMissing(f"{DISPATCH_TABLE} in database {dispatch_db!r} has no prune runs in "
+                                     f"{seed} .. {end}; the committed fixture was left as it is")
     obs = []
     for created, decision, before, after, used, removed in runs:
         if not before:
@@ -297,12 +332,22 @@ def main() -> int:
     ap.add_argument("--export", action="store_true", help="refresh the fixture from live Postgres")
     ap.add_argument("--sweep", action="store_true", help="replay at several cooldowns")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--dispatch-db", default=LIVE_DB,
+                    help="--export: database holding substrate_dispatch_results (restored from the pre-drop backup)")
     args = ap.parse_args()
+    if args.dispatch_db != LIVE_DB and not args.export:
+        ap.error("--dispatch-db needs --export")
     if args.export:
-        data = export()
+        try:
+            data = export(dispatch_db=args.dispatch_db)
+        except DispatchHistoryMissing as exc:
+            print(f"cannot export: {exc}", file=sys.stderr)
+            return 2
         FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(FIXTURE, "wt") as f:
+        tmp = FIXTURE.with_name(FIXTURE.name + ".tmp")   # a failed write never leaves a broken fixture
+        with gzip.open(tmp, "wt") as f:
             json.dump(data, f, separators=(",", ":"))
+        os.replace(tmp, FIXTURE)
         print(f"wrote {FIXTURE}: {len(data['disk'])} disk buckets, {len(data['runs'])} real prune-skill runs")
         return 0
     data = load()

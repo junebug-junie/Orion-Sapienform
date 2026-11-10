@@ -14,7 +14,7 @@
 -- BACKUP FIRST (about 10 GB before compression), then apply:
 --   mkdir -p /mnt/storage-warm/orion-backups
 --   docker exec orion-athena-sql-db pg_dump -U postgres -d conjourney -Fc -t substrate_feedback_frames -t substrate_feedback_control_reductions -t substrate_consolidation_frames -t substrate_expectations -t substrate_schema_candidates -t substrate_tensor_slices > /mnt/storage-warm/orion-backups/retired-feedback-consolidation-rungs.dump
---   docker exec orion-athena-sql-db pg_restore --list /dev/stdin < /mnt/storage-warm/orion-backups/retired-feedback-consolidation-rungs.dump | grep -c 'TABLE DATA'   (must print 6)
+--   docker exec -i orion-athena-sql-db pg_restore --list < /mnt/storage-warm/orion-backups/retired-feedback-consolidation-rungs.dump | grep -c 'TABLE DATA'   (must print 6)
 --   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < services/orion-sql-db/manual_migration_retire_feedback_consolidation_rungs_drop.sql
 --
 -- Kept on purpose: substrate_signal_control_cells, substrate_action_outcomes and

@@ -11,6 +11,7 @@ on:
       - "services/orion-hub/scripts/act_emit.py"
       - "services/orion-hub/tests/test_retro_memory_export*.py"
       - "services/orion-hub/tests/test_retro_leisure_self_start.py"
+      - "services/orion-hub/tests/test_retro_leisure_replay_live_source.py"
       - "services/orion-hub/tests/test_act_ledger_producers.py"
       - "services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql"
       - "orion/schemas/retro_play.py"
@@ -25,6 +26,7 @@ on:
       - "services/orion-hub/scripts/retro_leisure.py"
       - "services/orion-hub/scripts/act_emit.py"
       - "services/orion-hub/evals/retro_leisure_self_start_replay.py"
+      - "services/orion-hub/tests/test_retro_leisure_replay_live_source.py"
       - "orion/self_monitor/gate.py"
   workflow_dispatch:
 
@@ -60,6 +62,7 @@ jobs:
             tests/test_retro_memory_export.py \
             tests/test_retro_memory_export_pg.py \
             tests/test_retro_leisure_self_start.py \
+            tests/test_retro_leisure_replay_live_source.py \
             tests/test_act_ledger_producers.py
       - name: Leisure timer replay (fixture; ladder retirement PR 1)
         env:

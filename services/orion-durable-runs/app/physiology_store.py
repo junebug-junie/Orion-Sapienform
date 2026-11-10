@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
 from orion.physiology.body import (
     LEASE_CLOSE_EVENTS,
     BacklogInput,
@@ -54,11 +55,11 @@ logger = logging.getLogger("orion-durable-runs.physiology_store")
 
 # Rates from before the month start seed the carry-forward for the month's first hours.
 PRICE_SEED_LOOKBACK = timedelta(days=14)
-# Outreach sources the Hub's daily cap does not count (services/orion-hub/scripts/endogenous_outreach_decisions.py
-# count_sent_on). They still reach Juniper, so ``sent_today`` counts them. Must equal Hub's list
-# (tests/test_physiology_store_cap_exempt_parity.py): office_reach_out was missing 2026-11-05..11-07, so office
-# visit messages read as cap-counted on attention:juniper while the Hub's cap did not count them.
-CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach", "self_finding_outreach", "office_reach_out")
+# Outreach sources the Hub's daily cap does not count. One owner (orion/physiology/attention_pacing.py), read
+# by Hub's count_sent_on too: office_reach_out was missing here 2026-11-05..11-07 while Hub's own copy had it.
+# Since 2026-11-10 (one attention budget) every door counts except the strain report; forced sends are
+# excluded by their ``forced`` column. They still reach Juniper, so ``sent_today`` counts them all.
+# (CAP_EXEMPT_SOURCES is imported above from orion.physiology.attention_pacing.)
 
 ENERGY_HOURS_SQL = (
     "SELECT hour_start, SUM(kwh) AS kwh FROM orion_energy_hourly "
@@ -126,7 +127,7 @@ WHERE observed_at >= %(since)s
 """
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
-       count(*) FILTER (WHERE reason = 'sent'
+       count(*) FILTER (WHERE reason = 'sent' AND NOT forced
                         AND coalesce(result_json->>'source', '') <> ALL(%(exempt)s)) AS cap_counted
 FROM endogenous_outreach_decisions
 WHERE (decided_at AT TIME ZONE %(tz)s)::date = %(day)s::date AND decided_at >= %(since)s

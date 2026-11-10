@@ -457,3 +457,26 @@ def test_probe_bids_never_count_toward_the_floor():
     d = decide(WantV1(want_id="p", family="durable.self_inquiry", producer="deploy-verification", verb="ask", tier=2),
                st, ctx_for(SELF, st), book, NOW)
     assert d.outcome == "funded" and book.funded_share("durable.self_inquiry", 2, NOW) is None
+
+
+def test_pacing_price_deferral_retries_when_the_days_allowance_relieves_it():
+    """One attention budget (2026-11-10): an outreach want held on the attention:juniper pacing price is
+    told to re-bid when the day's allowance makes its value beat the price, not on a decay rate."""
+    from orion.physiology.attention_pacing import message_price, relief_sec
+
+    acts = history("hub.outreach", slot={"chat": 30.0})
+    sent, allow, rate = 3.0, 3.0, 5.0 / 15.0
+    psi = message_price(sent / allow)
+    jr = R(constraint="attention:juniper", unit="messages", level=sent, budget=6.0, budget_kind="daily_cap",
+           detail={"pacing_mode": "on", "pacing_allowance": allow, "pacing_rate_per_hour": rate},
+           price={"value": psi * 6.0, "ceiling": 0.65 * 6.0, "ceiling_source": "sized", "bind_state": "binding",
+                  "horizon_sec": 54000.0, "why": ""})
+    heat = R(constraint="heat", unit="c", level=28.0, budget=31.0, budget_kind="soft_line", price=price(0.0, horizon=21600.0))
+    st = PhysiologyStateV1(tick_id=f"physiology:{NOW.isoformat()}", generated_at=NOW, constraints=[heat, jr, lane("chat")])
+    w = {"hub.outreach": FamilyWeight("hub.outreach", 2, 0.4, 0.4, "evidence", Evidence(0.0, 40, None, 0))}
+    d = decide(want("hub.outreach", verb="say"), st, ctx_for(acts, st, weights=w), ReservationBook(), NOW)
+    assert d.outcome == "deferred" and d.reason == "price" and d.binding_constraint == "attention:juniper", d.why
+    assert d.charge == pytest.approx(psi, rel=1e-3) and d.net < 0
+    rest = d.charge - psi
+    expected = relief_sec(sent, (d.net + d.charge) - rest, allowance_now=allow, rate_per_hour=rate)
+    assert d.retry_after_sec == pytest.approx(round(expected, 1), abs=0.2) and d.retry_after_sec > 0

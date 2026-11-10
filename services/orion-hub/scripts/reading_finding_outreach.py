@@ -6,8 +6,9 @@ belief a curiosity run moved while citing the read). Delivery: the EXISTING outr
 decision log, the closed-vocabulary grounding guard, sockets + chat history + notification) -- not
 a parallel one.
 
-Gates (Juniper, 2026-10-13: "reach out as much as they want while learning"): no daily cap and no
-cooldown for this kind (``skip_rate_gates``). Disabled, turn-in-flight, recent-chat, quiet hours and
+Gates (Juniper, 2026-10-13: "reach out as much as they want while learning"): no cooldown for this
+kind (``skip_rate_gates``). Since 2026-11-10 (one attention budget) the daily cap counts it like every
+door, and its bid waits for the day's pace. Disabled, turn-in-flight, recent-chat, quiet hours and
 arousal ``strained`` still apply. A finding blocked by them is retried on a later tick (it stays
 pending until told), so quiet hours delay a message instead of losing it.
 
@@ -294,10 +295,10 @@ class ReadingFindingOutreach:
             self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
         # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
-        # bundle stays pending and is retried next tick (the hold ends by the 1 h window at the latest).
-        # Cap-exempt: this door never counts against Juniper's daily cap.
+        # bundle stays pending and is retried next tick (the hold waits for the day's pace, at most until
+        # Juniper's waking day ends). Cap-counted since 2026-11-10 (one attention budget).
         key = str(meta["bundle_key"])
-        admit, economy = await outreach.economy_admit(door=READING_FINDING_TAG, key=key, cap_counted=False)
+        admit, economy = await outreach.economy_admit(door=READING_FINDING_TAG, key=key, cap_counted=True)
         if economy:
             meta = {**meta, "economy": economy}
         if not admit:

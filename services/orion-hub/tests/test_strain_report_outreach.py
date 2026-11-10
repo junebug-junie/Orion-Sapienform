@@ -334,11 +334,16 @@ def test_failed_composes_are_capped_per_episode():
     assert _block(since=since, history=h) == "attempts_exhausted"
 
 
-def test_strain_report_spends_a_daily_cap_slot(monkeypatch):
+def test_strain_report_does_not_spend_a_daily_cap_slot(monkeypatch):
+    """One attention budget (2026-11-10): the strain report is the exempt source
+    (attention_pacing.CAP_EXEMPT_SOURCES); it exists to speak when strain holds everything else."""
+    from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
+
     h = _Harness(monkeypatch)
     before = h.o._sent_today
     assert h.tick()["reason"] == "sent"
-    assert h.o._sent_today == before + 1
+    assert h.o._sent_today == before
+    assert "strain_report" in CAP_EXEMPT_SOURCES
 
 
 # ---- the prompt states how the GPU queue relates to the strain (live 10-23 invented "heat queued jobs")

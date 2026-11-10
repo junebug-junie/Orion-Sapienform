@@ -1485,10 +1485,8 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC: float = Field(
         default=900.0, alias="HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC"
     )
-    # Max outreaches per local calendar day; -1 disables the cap.
-    HUB_ENDOGENOUS_OUTREACH_DAILY_CAP: int = Field(
-        default=4, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP"
-    )
+    # The daily cap is orion.physiology.attention_pacing.JUNIPER_DAILY_CAP (2026-11-10, one owner for
+    # this gate and the body's attention:juniper line; no env key).
     # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or
     # -1 disable it.
     HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR: int = Field(

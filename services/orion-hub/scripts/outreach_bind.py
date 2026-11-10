@@ -1,8 +1,8 @@
 """Hub outreach's BINDING bid (body economy Patch D for ``hub.outreach``). Outreach obeys its bid.
 
 Before this, the background tick placed a SHADOW bid at its compose point (scripts/physiology_shadow.py,
-Patch C3b; once per window under strain, #2988) and never obeyed it; the reading, self-finding and office
-doors did not bid at all. With ``ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on``, every door that composes a
+Patch C3b; once per window under strain, #2988) and never obeyed it; the reading and office doors did
+not bid at all. With ``ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on``, every door that composes a
 message in Hub asks the market just before it composes, and obeys the answer with the same rule
 curiosity investigate (#3010) and the dream cycle obey (``orion.physiology.binding.bind_verdict``):
 
@@ -18,15 +18,18 @@ curiosity investigate (#3010) and the dream cycle obey (``orion.physiology.bindi
 
 Bounds: a held want is never dropped. Its window is ``DEFERRABLE_WINDOW_S`` (1 h, config/physiology/
 families.yaml ``hub.outreach``, asserted by a test) from its FIRST bid; at the end it composes anyway
-(``window_end``). The doors keep their own pending queues (a held reading finding, self finding or office
-visit stays pending and is retried on the door's next tick), so a hold only delays.
+(``window_end``). Since 2026-11-10 a want's window is the later of that hour and the end of Juniper's
+waking day (a hold on the attention:juniper pace relieves on the day's clock), except a door window
+(office visits: ``OFFICE_WINDOW_S``). The doors keep their own pending queues (a held reading finding or
+office visit stays pending and is retried on the door's next tick), so a hold only delays.
 
 Doors (``services/orion-hub/scripts/endogenous_outreach.py``):
 
 * background tick (``endogenous_tick``): binds; cap-counted (charges ``attention:juniper``, 1 message).
-* reading findings, self findings, office visits: bind; cap-EXEMPT (Juniper's decisions, 2026-10-13,
-  11-03, 11-05: no daily cap), so their want says ``juniper_msgs=0``: they draw nothing on the cap line
-  the body measures (orion-durable-runs ``physiology_store.CAP_EXEMPT_SOURCES``).
+* reading findings, office visits: bind; cap-COUNTED since 2026-11-10 (one attention budget: every door
+  counts on attention:juniper, ``orion.physiology.attention_pacing``). Office visits hold at most
+  ``OFFICE_WINDOW_S`` (a visit is short); the others wait for the day's pace, at most until Juniper's
+  waking day ends.
 * curiosity Door-A: does NOT bid. Its message is composed inside the curiosity run, under that run's
   own GPU hold, and that run already obeyed its own binding bid (#3010); its send is cap-exempt; and a
   blocked Door-A is final (no retry path), so a hold would drop the want.
@@ -76,6 +79,10 @@ BINDING_PRODUCER = "orion-hub.outreach.binding"
 # config/physiology/families.yaml hub.outreach deferrable_window_s. The image does not read families.yaml
 # here; tests/test_outreach_bind.py fails if the two drift.
 DEFERRABLE_WINDOW_S = 3600.0
+# An office visit's message holds at most this long (one attention budget, 2026-11-10). Office visits with a
+# story lasted a median 5.7 min (p25 1.8, p75 8.6; 12 visits, 14 days to 11-10): a message held longer lands
+# after about half of them have ended, which is the staleness Juniper ruled out.
+OFFICE_WINDOW_S = 300.0
 # The compose waits on this bid (a cold market history read is a 30-day scan). A timeout composes as before.
 BIND_TIMEOUT_SEC = 5.0
 MODES = ("on", "shadow")
@@ -133,6 +140,11 @@ class HeldWant:
     funded: bool = False
     admitted: bool = False
     admitted_at: Optional[datetime] = None
+    # The door's own hold window (office visits: OFFICE_WINDOW_S), else the binder's default.
+    window_s: Optional[float] = None
+    # The end of Juniper's waking day when the want opened (one attention budget, 2026-11-10): a want
+    # held on the day's pace waits for the pace, at most until the day ends. None: no day bound.
+    day_end: Optional[datetime] = None
 
 
 async def _abid(want: Any, timeout_sec: float) -> Any:
@@ -169,10 +181,21 @@ class OutreachBinder:
                        "duplicate": 0}
 
     def end(self, want: HeldWant) -> Optional[datetime]:
-        return None if want.first_bid_at is None else want.first_bid_at + timedelta(seconds=self._window)
+        """When a held want composes anyway. A door window (office visits) is exact; otherwise the
+        family window (1 h) or, when later, the end of Juniper's waking day: a hold on the day's pace
+        relieves on the day's clock (attention_pacing.relief_sec), not within one hour."""
+        if want.first_bid_at is None:
+            return None
+        if want.window_s is not None:
+            return want.first_bid_at + timedelta(seconds=float(want.window_s))
+        end = want.first_bid_at + timedelta(seconds=self._window)
+        if want.day_end is not None and want.day_end > end:
+            end = want.day_end
+        return end
 
     async def bind(self, key: str, *, door: str, now: Optional[datetime] = None, cap_counted: bool = True,
-                   forced: bool = False) -> BindVerdict:
+                   forced: bool = False, window_s: Optional[float] = None,
+                   day_end: Optional[datetime] = None) -> BindVerdict:
         """The verdict for this check. Never raises; any failure is an ``admit`` (today's behaviour).
 
         Serialized per process: the first check admitted on a want takes it until ``close``; another
@@ -203,7 +226,8 @@ class OutreachBinder:
                     self._log(key, door, want, v)
                     return v
             if want is None:
-                want = HeldWant(key=key, door=door, want_id=str(uuid4()), opened_at=now)
+                want = HeldWant(key=key, door=door, want_id=str(uuid4()), opened_at=now, window_s=window_s,
+                                day_end=_utc(day_end) if day_end is not None else None)
                 self.wants[key] = want
             try:
                 v = await self._bind(want, now, cap_counted=cap_counted)
@@ -330,5 +354,5 @@ class OutreachBinder:
         )
 
 
-__all__ = ["ADMITTED_STALE_SEC", "BINDING_PRODUCER", "DEFERRABLE_WINDOW_S", "DUPLICATE_REASON", "FAMILY",
+__all__ = ["ADMITTED_STALE_SEC", "BINDING_PRODUCER", "DEFERRABLE_WINDOW_S", "DUPLICATE_REASON", "FAMILY", "OFFICE_WINDOW_S",
            "HELD_REASON", "HeldWant", "OutreachBinder", "TICK_KEY", "bind_mode"]

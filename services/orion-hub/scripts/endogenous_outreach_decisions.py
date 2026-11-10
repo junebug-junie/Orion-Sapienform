@@ -38,6 +38,8 @@ import threading
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
+from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
+
 logger = logging.getLogger("orion-hub.endogenous_outreach_decisions")
 
 
@@ -221,13 +223,10 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
     direction as the bug being fixed, so it narrows the gap without closing
     it completely.
 
-    Counts `reason='sent'` rows from the *background* endogenous tick (and any
-    other non-Door-A sender). Curiosity Door-A (`source='curiosity_outreach'`)
-    is excluded: those sends do not consume the shared daily cap (2026-09-22).
-    Reading findings (`source='reading_finding_outreach'`, 2026-10-13) are excluded
-    for the same reason: they skip the cap and must not starve the background tick.
-    Self findings (`source='self_finding_outreach'`, 2026-11-03) and office visits
-    (`source='office_reach_out'`, 2026-11-05) likewise.
+    Counts `reason='sent'` rows from EVERY door (one attention budget, 2026-11-10):
+    the tick, curiosity Door-A, readings and office visits all count. Not counted:
+    `orion.physiology.attention_pacing.CAP_EXEMPT_SOURCES` (the strain report) and
+    forced (operator) sends. The body's attention:juniper line reads the same list.
     """
     if not decision_log_enabled():
         # UNKNOWN, not zero. With the log switched off the table stops
@@ -247,12 +246,11 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
             row = conn.execute(
                 text(
                     "SELECT count(*) FROM endogenous_outreach_decisions "
-                    "WHERE reason = 'sent' "
-                    "AND coalesce(result_json->>'source', '') "
-                    "NOT IN ('curiosity_outreach', 'reading_finding_outreach', 'self_finding_outreach', 'office_reach_out') "
+                    "WHERE reason = 'sent' AND NOT forced "
+                    "AND NOT (coalesce(result_json->>'source', '') = ANY(:exempt)) "
                     "AND (decided_at AT TIME ZONE :tz)::date = CAST(:d AS date)"
                 ),
-                {"tz": tz_name, "d": local_date},
+                {"tz": tz_name, "d": local_date, "exempt": list(CAP_EXEMPT_SOURCES)},
             ).scalar()
         return None if row is None else int(row)
     except Exception as exc:  # noqa: BLE001

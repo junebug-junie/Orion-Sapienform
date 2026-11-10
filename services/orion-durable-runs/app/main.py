@@ -421,7 +421,6 @@ def _build_physiology():
     claude_limits = physiology_store.ClaudeLimitCache()
     cfg = BodyConfig(heat_soft_line_c=s.physiology_heat_soft_line_c,
                      energy_monthly_envelope_usd=s.physiology_energy_monthly_envelope_usd,
-                     juniper_daily_cap=s.hub_endogenous_outreach_daily_cap,
                      lane_window_sec=s.physiology_lane_window_sec)
 
     async def read_body(now, heat):
@@ -466,7 +465,11 @@ def _build_physiology():
         if heat_err:
             logger.warning("physiology_heat_sensitivity_unavailable reason=%s", heat_err)
         budget_cfg = BudgetConfig(tz=s.orion_situation_timezone, heat_soft_line_c=s.physiology_heat_soft_line_c,
-                                  heat_config=heat_cfg, heat_config_error=heat_err)
+                                  heat_config=heat_cfg, heat_config_error=heat_err,
+                                  juniper_pacing=("on" if str(s.physiology_attention_pacing).strip().lower() == "on"
+                                                  else "shadow"),
+                                  juniper_waking_start_hour=s.hub_endogenous_outreach_quiet_end_hour,
+                                  juniper_waking_end_hour=s.hub_endogenous_outreach_quiet_start_hour)
 
         def price_body(model, body, carry, now):
             return price_state(model, body, carry, now, budget_cfg)

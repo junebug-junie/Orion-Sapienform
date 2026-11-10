@@ -255,9 +255,15 @@ class Settings(BaseSettings):
     # Missing, malformed, or a host entry older than 30 days -> the heat price is no_reading.
     physiology_heat_sensitivity_path: str = Field(
         "/app/config/physiology/heat_sensitivity.yaml", alias="ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH")
-    # The attention:juniper line is the Hub's own outreach daily cap (owner services/orion-hub/
-    # .env_example; scripts/check_env_key_single_source.py fails if this copy drifts).
-    hub_endogenous_outreach_daily_cap: int = Field(4, ge=0, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP")
+    # One attention budget (2026-11-10). The attention:juniper line is JUNIPER_DAILY_CAP in
+    # orion/physiology/attention_pacing.py (module-owned: no env copy). "on": its price is the pacing
+    # threshold; "shadow" (or anything else): the old dual-ascent price (the pacing one rides in the
+    # reading's detail).
+    physiology_attention_pacing: str = Field("on", alias="ORION_PHYSIOLOGY_ATTENTION_PACING")
+    # Juniper's waking day for that pacing: the Hub's quiet hours' complement (owner services/orion-hub/
+    # .env_example; scripts/check_env_key_single_source.py fails if these copies drift).
+    hub_endogenous_outreach_quiet_start_hour: int = Field(23, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR")
+    hub_endogenous_outreach_quiet_end_hour: int = Field(8, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR")
     # The claude constraint listens here (producer orion-cocreation-signals).
     claude_limit_channel: str = Field("orion:substrate:claude_limit", alias="CHANNEL_CLAUDE_LIMIT")
     # Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: POST /physiology/bid takes a

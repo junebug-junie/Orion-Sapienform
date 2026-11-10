@@ -16,7 +16,9 @@ What is charged in C1, and what is not (said in every decision's warnings, never
   capacity (slots x window). A swap seat unloaded right now (0 slots: diffusion while gpu2 serves
   agent-gpu2) is priced against one nominal slot and warned ``swap_seat_unloaded``: the pool would
   load it, and the eviction cost is placement's (Patch E), not priced here.
-* ``attention:juniper``: messages (``juniper_msgs``) over the daily cap.
+* ``attention:juniper``: messages (``juniper_msgs``) over the daily cap. Under pacing (2026-11-10)
+  the posted price is the per-message threshold x the cap, so the charge is that threshold per
+  message, and a price deferral's ``retry_after_sec`` is when the day's allowance relieves it.
 * ``heat``, ``energy``, ``claude``: per-act heat, watt-hours and Claude limit events are NOT
   measured yet (``wh_by_host``/``claude_limit_events`` are null on every act), so they are listed
   as ``unpriced:<constraint>`` instead of charged at 0. The spinal heat reflex still applies.
@@ -684,7 +686,16 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
         # Only a slack price falls. Its guaranteed decay is the slack floor (ceiling / horizon), so
         # this is an upper bound on the wait. binding / exogenous_bind / stuck prices do not fall.
         rate = p.ceiling / p.horizon_sec if p.horizon_sec else None
-        if rate and p.bind_state == "slack":
+        if k == ATTENTION_JUNIPER and r.detail.get("pacing_mode") == "on":
+            # The pacing price (orion/physiology/attention_pacing.py) does not decay: it falls as the
+            # day's allowance grows. Relief = when the allowance makes this want's value beat it.
+            from orion.physiology.attention_pacing import relief_sec
+
+            msgs = items[k][1] or 1.0
+            retry = relief_sec(float(r.level or 0.0), (value - rest) / msgs,
+                               allowance_now=float(r.detail.get("pacing_allowance") or 0.0),
+                               rate_per_hour=float(r.detail.get("pacing_rate_per_hour") or 0.0))
+        elif rate and p.bind_state == "slack":
             retry = max(0.0, (p.value - needed) / rate)
     book.note_deferred(now, want.want_id, chosen, net)
     return _decision(want, now, tier=tier, outcome="deferred", reason="price", binding_constraint=k,

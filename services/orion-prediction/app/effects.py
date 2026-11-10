@@ -166,7 +166,7 @@ class Effects:
         series = self.engine.load_series(spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
         origin = self.engine.latest_complete_bucket(spec, now)
         try:
-            built = self.engine.build_forecast(spec, series, origin, now)
+            built = self.engine.build_forecast(spec, series, origin, now, adapt=False)   # reads exceedance only
         except InputStale as exc:
             return {"safe": False, "reason": f"input stale ({exc})", "checked_at": now.isoformat()}
         except Exception as exc:  # noqa: BLE001 -- no forecast means no permission

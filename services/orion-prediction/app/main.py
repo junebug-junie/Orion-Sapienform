@@ -113,7 +113,8 @@ async def lifespan(app: FastAPI):
                               "refresh_sec": _settings.weather_refresh_sec}
                              if _settings.weather_enabled and _settings.weather_lat is not None
                              and _settings.weather_lon is not None else None),
-                    shadow_enabled=_settings.shadow_enabled)
+                    shadow_enabled=_settings.shadow_enabled,
+                    adaptive_intervals=_settings.adaptive_intervals_enabled)
     effects = Effects(engine)
     action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
                                              if _settings.world_model_shadow_enabled else None))
@@ -210,7 +211,7 @@ async def health() -> dict[str, Any]:
                 "alerts": st.alerts,
                 "not_ready": st.not_ready,
                 "change_events": st.events,
-                "shadow": list(sv.shadow) if sv else [], "shadow_failed": st.shadow_failed,
+                "shadow": list(sv.shadow) if sv else [], "shadow_failed": st.shadow_failed, "interval_source": {str(k): v for k, v in st.interval_source.items()},
             }
     return {"ok": e is not None and _last_tick["ok"] is not False, "service": _settings.service_name,
             "enabled": _settings.enabled, "publish_enabled": _settings.publish_enabled,

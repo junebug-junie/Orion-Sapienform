@@ -12,9 +12,10 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
    distance (5 min, 15 min, 1 h, 6 h, 24 h), pick the model that beats the better of two
    baselines and whose error ranges are calibrated. If none does, serve the baseline there.
 2. **Issue** (every completed 5-minute bucket). Fit the chosen models, stitch their forecasts,
-   attach error ranges built from their own past errors (split-conformal), and compute the chance
+   attach error ranges built from their own past errors (split-conformal; adaptive from the
+   last 3 days of live scores scaled to how hard the last hour was, up to 15 min ahead -- see Surprise), and compute the chance
    of crossing each declared threshold (34 °C shed, 32 °C experiment guard; the cabinet lines are read from `orion/autonomy/thermal_gate.py` via `value_from`, never restated in the registry). Store it, publish it.
-3. **Score**. When the real bucket arrives, write the actual value, the error, and whether it fell
+3. **Score** (each tick, before issuing). When the real bucket arrives, write the actual value, the error, and whether it fell
    inside the 80 % and 95 % ranges. A bucket with no readings is scored `missing`, never guessed.
 4. **Monitor**. Alerts in `/health` and `/series/{id}/live` (and one log line when they change):
    live coverage out of band, worse than baseline over 24 h, stale input, stale forecast,
@@ -310,11 +311,26 @@ Each scored outcome becomes surprise (`app/surprise.py`; spec
 - `GET /series/{id}/surprise?hours=24`: mean excess per horizon vs its 95 % null band (independent
   origins only), share of p <= 0.05 / 0.2, and each horizon's gate reason.
 
-**The calm check fails today (2026-11-10):** a quiet 24 h reads cabinet 15 min -0.28, office 15 min
--0.36 (7 days: -0.12 each, band +-0.06). The ranges are calibrated on average but one width fits
-calm and busy hours alike, so calm days read too calm. No consumer reads the signal until
-`evals/run_surprise_calm_live_eval.py` shows calm within the band; the fix is volatility-adaptive
-ranges in the forecaster.
+**Calm check, 2026-11-10.** With one backtest width per horizon, a quiet 24 h read cabinet 15 min
+-0.28 and office 15 min -0.36 (7 days: -0.12 each, band +-0.06). The ranges were calibrated on
+average, but calm and busy hours got the same width, so calm days read too calm.
+
+**Adaptive ranges** (`app/adaptive.py`, kill switch `PREDICTION_ADAPTIVE_INTERVALS_ENABLED`, on by
+default). The champion's range at horizons up to 15 min is calibrated on the last 3 days of the
+live scores of the model serving that horizon now. Each miss is divided by how big the 5-min misses were in the hour before (normalized
+conformal), and the range is then multiplied by the current hour's value. Calm hours get narrow
+ranges and busy hours wide ones. Scaling by how fast the reading moved was tried first and
+overcorrects: smooth ramps the model tracks read as busy. Horizons past 15 min (60 min went too
+narrow in replay), thin pools (under one day of that model's scores), a stale last hour, steps served
+by the baseline after a model failure, and any error here keep the backtest range. Each stored
+forecast row records its source (`prediction_forecast.interval_source`, migration
+`manual_migration_prediction_forecast_interval_source_v1.sql`); `/health` shows the last one per
+horizon. Exceedance probabilities still use the backtest paths.
+
+Replay with this code (`evals/run_adaptive_interval_replay_eval.py --days 14`, same days and same
+forecasts), days calm at 5/15 min: cabinet 13/13, 12/13 (backtest ranges 2/13, 7/13); office 6/6,
+6/6 (backtest 1/6, 2/6). 80 % coverage 0.76-0.81. Nothing consumes surprise until
+`evals/run_surprise_calm_live_eval.py` shows calm on live forecasts issued with these ranges.
 
 ## Contracts
 
@@ -343,6 +359,7 @@ cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
 PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null

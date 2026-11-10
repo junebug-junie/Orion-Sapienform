@@ -13,8 +13,9 @@ Baseline 2026-11-10 06:30 UTC (champion rows). The calm check FAILS today:
 - quiet 24 h: cabinet 15 min -0.281 +-0.101, 60 min -0.372 +-0.145; office 15 min -0.355 +-0.085.
 The ranges are calibrated on average (80 % coverage ~0.84) but not conditionally: one width for calm
 and busy hours, so a calm day reads far below 0 and the misses cluster in busy periods. Fix belongs
-in the forecaster (volatility-adaptive conformal ranges), not in this transform. No consumer may
-read prediction.surprise.v1 until this check passes.
+in the forecaster, not in this transform: app/adaptive.py (adaptive ranges, 2026-11-10). No consumer
+may read prediction.surprise.v1 until this check passes on forecasts issued with those ranges:
+--source adaptive (5 and 15 min only; longer horizons keep backtest ranges).
 """
 from __future__ import annotations
 
@@ -35,12 +36,15 @@ from app.surprise import CALM_SURPRISAL, summarize  # noqa: E402
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=24.0)
+    ap.add_argument("--source", default=None,
+                    help="only rows whose range came from this source, e.g. adaptive (app/adaptive.py)")
     args = ap.parse_args()
     store = PostgresStore(os.environ["POSTGRES_URI"])
     since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     print(f"calm surprisal = {CALM_SURPRISAL:.3f}; window {args.hours:g} h")
     for spec in load_registry(SERVICE.parents[1] / "config" / "prediction" / "series.v1.yaml").targets():
-        rows = [r for r in store.scored_with_quantiles(spec.series_id, since) if r["role"] == "champion"]
+        rows = [r for r in store.scored_with_quantiles(spec.series_id, since) if r["role"] == "champion"
+                and (args.source is None or r.get("interval_source") == args.source)]
         cov = {}
         for r in store.live_scores(spec.series_id, since):
             if r["role"] == "champion":

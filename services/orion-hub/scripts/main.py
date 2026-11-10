@@ -94,6 +94,7 @@ from scripts.reading_event_wants import ReadingEventWants
 from scripts.self_monitor_questions import SelfMonitorQuestionMinter
 from scripts.orion_day_letter import DurableRunsClient, OrionDayLetterLoop
 from scripts.endogenous_outreach import EndogenousOutreach
+from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.harness_step_relay import HarnessStepRelay
@@ -615,7 +616,7 @@ async def startup_event():
                 strain_report_enabled=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED,
                 strain_report_min_episode_sec=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC,
                 strain_report_timezone=settings.ORION_SITUATION_TIMEZONE,
-                daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
+                daily_cap=JUNIPER_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
                 timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,

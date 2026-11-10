@@ -32,8 +32,9 @@ Constraints and their sources (design doc, Organ 1 table; A3 scope, no forecast,
   how long that queue has been non-empty. That is hunger, the seed of Appetite; it is not strain and not a
   price input.
 * ``attention:juniper``: Orion's outreach messages today (local date) that the Hub's daily cap
-  counts (curiosity and reading-finding outreach are exempt from the cap; their sends are in
-  ``detail``). Line: that cap (``HUB_ENDOGENOUS_OUTREACH_DAILY_CAP``, 4).
+  counts: every door except ``attention_pacing.CAP_EXEMPT_SOURCES`` (the strain report) and forced
+  sends (2026-11-10, one attention budget; every send is in ``detail``). Line: that cap
+  (``orion.physiology.attention_pacing.JUNIPER_DAILY_CAP``).
 * ``claude``: ``ClaudeLimitObservationV1`` (``orion:substrate:claude_limit``) state and limit
   events. Not dollars: the dollar denominator was measured and refuted (orion/schemas/claude_limit.py).
 
@@ -47,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Optional, Sequence
 
+from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 from orion.schemas.physiology import (
     ATTENTION_JUNIPER,
     CLAUDE,
@@ -71,7 +73,7 @@ class BodyConfig:
     energy_monthly_envelope_usd: Optional[float] = None
     # The newest orion_energy_hourly hour older than this: the rollup stopped -> stale.
     energy_max_lag_sec: float = 3 * 3600.0
-    juniper_daily_cap: int = 4
+    juniper_daily_cap: int = JUNIPER_DAILY_CAP
     # No outreach decision at all (any outcome; live ~6/min) for this long: the decision log or
     # the outreach loop is off, so a count of 0 would be a lie -> stale.
     juniper_decision_max_age_sec: float = 3600.0

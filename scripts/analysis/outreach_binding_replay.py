@@ -43,9 +43,11 @@ sys.path.insert(0, str(_ROOT))
 
 WINDOW_SEC = 3600.0                     # config/physiology/families.yaml hub.outreach deferrable_window_s
 TICK = "endogenous_tick"
-# Doors that bind (services/orion-hub/scripts/outreach_bind.py). The tick's rows carry no source.
-EXEMPT_DOORS = ("reading_finding_outreach", "self_finding_outreach", "office_reach_out")
-BINDING_DOORS = (TICK,) + EXEMPT_DOORS
+# Doors that bind besides the tick (services/orion-hub/scripts/outreach_bind.py). The tick's rows carry no
+# source. self_finding_outreach bound until it was retired (2026-11-10); its past rows still replay. Since
+# 2026-11-10 (one attention budget) every door is cap-counted, so every attempt replays cap-counted.
+DOOR_SOURCES = ("reading_finding_outreach", "self_finding_outreach", "office_reach_out")
+BINDING_DOORS = (TICK,) + DOOR_SOURCES
 # Decision reasons that mean the attempt reached its compose point (the bid happens just before it).
 COMPOSED_REASONS = ("sent", "orion_passed", "empty_generation", "named_ungrounded_signal", "no_question",
                     "claimed_recognition")
@@ -70,7 +72,7 @@ def door_of(source: Optional[str]) -> Optional[str]:
     s = (source or "").strip()
     if not s:
         return TICK
-    return s if s in EXEMPT_DOORS else None
+    return s if s in DOOR_SOURCES else None
 
 
 def is_composed(reason: str) -> bool:
@@ -95,7 +97,7 @@ def attempts_from_rows(rows: list[dict], ledger_times: dict[str, datetime]) -> l
         if t is None:
             continue
         out.append({"decision_id": r.get("decision_id"), "door": door, "at": t, "reason": reason,
-                    "correlation_id": corr, "cap_counted": door == TICK})
+                    "correlation_id": corr, "cap_counted": True})
     return sorted(out, key=lambda a: a["at"])
 
 

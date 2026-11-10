@@ -26,8 +26,9 @@ two independent things:
 
 2. REACH-OUT. Independent of whether the market funds the want (Juniper's decision): ONE message per
    visit into Hub chat through the existing door (``EndogenousOutreach.compose`` = the real unified turn,
-   then ``offer_message``), copied from ``reading_finding_outreach.py``. No daily cap and no cooldown
-   (``skip_rate_gates``: Juniper, "as often as I'm in there"); turn-in-flight, recent-chat, quiet hours
+   then ``offer_message``), copied from ``reading_finding_outreach.py``. No cooldown (``skip_rate_gates``:
+   Juniper, "as often as I'm in there"); since 2026-11-10 the one daily cap counts it like every door, and
+   its bid holds it at most ``OFFICE_WINDOW_S``; turn-in-flight, recent-chat, quiet hours
    and arousal ``strained`` still hold it (it is retried next tick, so quiet hours delay it). Under
    Orion's own words the camera's notes are delivered as recorded text (``record_appendix``): the times,
    what was seen, and who it probably was -- so the message always shows what was seen and when, and
@@ -55,6 +56,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional, Sequen
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from scripts.outreach_bind import OFFICE_WINDOW_S
 from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
 
 logger = logging.getLogger("orion-hub.office_reach_out")
@@ -632,9 +634,10 @@ class OfficeReachOut:
             self._record_block_once(outreach, session, meta, str(blocked), correlation_id)
             return {"session_id": sid, "reason": str(blocked)}
         # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
-        # visit stays pending and is retried next tick (the hold ends by the 1 h window at the latest).
-        # Cap-exempt: this door never counts against Juniper's daily cap.
-        admit, economy = await outreach.economy_admit(door=TAG, key=str(sid), cap_counted=False)
+        # visit stays pending and is retried next tick. One attention budget (2026-11-10): cap-counted,
+        # and held at most OFFICE_WINDOW_S, then it composes anyway (a visit is short).
+        admit, economy = await outreach.economy_admit(door=TAG, key=str(sid), cap_counted=True,
+                                                      window_s=OFFICE_WINDOW_S)
         if economy:
             meta = {**meta, "economy": economy}
         if not admit:

@@ -235,13 +235,24 @@ def test_recent_chat_and_turn_in_flight_still_block(monkeypatch):
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["turn_in_flight"]
 
 
-def test_no_daily_cap_and_no_cooldown_for_this_kind(monkeypatch):
-    loop, outreach, _, _, _, delivered = _setup(monkeypatch, daily_cap=0, min_cooldown_sec=86400.0)
+def test_no_cooldown_for_this_kind_but_it_counts_on_the_one_daily_cap(monkeypatch):
+    """One attention budget (2026-11-10): no cooldown for readings, but every send counts on the daily
+    cap, and a full cap holds the finding (it stays pending)."""
+    loop, outreach, _, _, _, delivered = _setup(monkeypatch, daily_cap=6, min_cooldown_sec=86400.0)
     import time
 
     outreach._last_outreach_at = time.time()
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
-    assert len(delivered) == 1 and outreach._sent_today == 0  # does not consume the background cap
+    assert len(delivered) == 1 and outreach._sent_today == 1  # counts on the one daily cap
+
+
+def test_a_full_daily_cap_holds_the_reading(monkeypatch):
+    loop, outreach, _, _, _, delivered = _setup(monkeypatch, daily_cap=6)
+    outreach._gate_inputs()                      # settle today's counter day first
+    outreach._sent_today = 6
+    outreach._sent_today_recovered = True
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["daily_cap"]
+    assert delivered == []
 
 
 def test_a_later_finding_of_a_told_read_is_a_new_bundle_with_only_the_new_change(monkeypatch):
@@ -264,11 +275,15 @@ def test_pass_is_final_and_empty_generation_gives_up_after_max_attempts(monkeypa
     assert asyncio.run(loop.tick())["pending"] == 0 and len(composed) == 3
 
 
-def test_count_sent_on_excludes_reading_findings():
+def test_count_sent_on_counts_reading_findings_with_every_door():
+    """One attention budget: the only exempt sources are the shared constant (the strain report)."""
     from scripts import endogenous_outreach_decisions as d
+    from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
     import inspect
 
-    assert "'reading_finding_outreach'" in inspect.getsource(d.count_sent_on)
+    src = inspect.getsource(d.count_sent_on)
+    assert "CAP_EXEMPT_SOURCES" in src and "'reading_finding_outreach'" not in src and "NOT forced" in src
+    assert "reading_finding_outreach" not in CAP_EXEMPT_SOURCES
 
 
 def test_the_recorded_article_summary_is_delivered_under_orions_words(monkeypatch):
@@ -291,6 +306,10 @@ def test_rate_gate_skip_keeps_every_gate_that_protects_juniper():
     base = dict(enabled=True, turn_in_flight=False, local_hour=12, quiet_start_hour=-1, quiet_end_hour=-1,
                 seconds_since_last_outreach=10.0, min_cooldown_sec=3600.0, sent_today=9, daily_cap=4)
     assert outreach_block_reason(OutreachGateInputs(**base)) == "daily_cap"
+    # One attention budget (2026-11-10): neither skip flag skips the daily cap.
+    assert outreach_block_reason(OutreachGateInputs(**base), skip_rate_gates=True) == "daily_cap"
+    assert outreach_block_reason(OutreachGateInputs(**base), skip_schedule_gates=True) == "daily_cap"
+    base = {**base, "sent_today": 0}
     assert outreach_block_reason(OutreachGateInputs(**base), skip_rate_gates=True) is None
     assert outreach_block_reason(OutreachGateInputs(**{**base, "rest_drive_cooldown_sec": 9e9}),
                                  skip_rate_gates=True) is None
@@ -470,7 +489,7 @@ def test_economy_price_hold_keeps_the_finding_pending_then_it_is_told(monkeypatc
         assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["economy_held"]
     assert composed == [] and delivered == []
     assert len(wants) == 1                       # held: no re-bid before the market's relief time
-    assert wants[0].cost.juniper_msgs == 0       # cap-exempt door
+    assert wants[0].cost is None                 # cap-counted: the family's fixed cost, 1 message
     held = [r for r in rows if r["reason"] == "economy_held"]
     assert len(held) == 1 and held[0]["economy"]["verdict"] == "deferred:price"
     assert held[0]["economy"]["why"] == "hub.outreach: price" and held[0]["source"] == "reading_finding_outreach"

@@ -39,7 +39,7 @@ open priors that were already said are not a fresh topic: prior-solo fire
 records ``content_already_used``; tension with only used IDs still records
 ``tension_without_content``. Daydream has no durable ID yet and still counts.
 Curiosity ``offer_message`` is a separate door — Door-A skips quiet hours /
-daily cap / cooldown (2026-09-22) and does not consume the endogenous cap;
+cooldown (2026-09-22); since 2026-11-10 every door counts on the one daily cap;
 background tick still owns those schedule gates.
 here. Deterministic Hub gate; not an LLM novelty scorer.
 
@@ -520,14 +520,17 @@ def outreach_block_reason(
     Order is deliberate: cheapest/most-absolute first, so the status endpoint
     reports the most informative single reason rather than an arbitrary one.
 
-    ``skip_schedule_gates`` (Door-A): ignore quiet hours, daily cap, and
-    cooldown. Still blocks on disabled / turn_in_flight.
+    ``skip_schedule_gates`` (Door-A): ignore quiet hours, recent chat, cooldown,
+    rest drive and arousal. Still blocks on disabled / turn_in_flight / daily cap.
 
-    ``skip_rate_gates`` (reading findings, Juniper 2026-10-13: "reach out as much as
-    they want while learning"): ignore only the gates that ration how OFTEN Orion
-    speaks -- daily cap, cooldown, rest-drive cooldown. The gates that protect
+    ``skip_rate_gates`` (reading findings, office visits): ignore the per-door
+    pacing gates -- cooldown, rest-drive cooldown. The gates that protect
     Juniper's moment stay: disabled, turn_in_flight, recent_chat, quiet hours,
     and arousal ``strained``.
+
+    The daily cap holds for every door (one attention budget, 2026-11-10): it is
+    ``orion.physiology.attention_pacing.JUNIPER_DAILY_CAP``, the same line the
+    body prices on attention:juniper.
     """
     if not inp.enabled:
         return "disabled"
@@ -543,9 +546,9 @@ def outreach_block_reason(
     if in_quiet_hours(inp.local_hour, inp.quiet_start_hour, inp.quiet_end_hour):
         if not skip_schedule_gates:
             return "quiet_hours"
+    # One attention budget (2026-11-10): the daily cap holds for EVERY door. Neither skip flag skips it.
     if inp.daily_cap >= 0 and inp.sent_today >= inp.daily_cap:
-        if not (skip_schedule_gates or skip_rate_gates):
-            return "daily_cap"
+        return "daily_cap"
     if (
         inp.seconds_since_last_outreach is not None
         and inp.seconds_since_last_outreach < inp.min_cooldown_sec
@@ -1923,6 +1926,10 @@ class EndogenousOutreach:
             ),
         )
 
+    def _strain_gate_inputs(self) -> OutreachGateInputs:
+        """The gate as the strain report sees it: no daily cap (it does not spend the cap)."""
+        return replace(self._gate_inputs(), daily_cap=-1)
+
     def status(self) -> Dict[str, Any]:
         """Operator-visible runtime state (backs the debug endpoint)."""
         inputs = self._gate_inputs()
@@ -2117,8 +2124,19 @@ class EndogenousOutreach:
         """True when Hub outreach obeys its body-economy bid (``ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on``)."""
         return self.economy_mode == "on"
 
-    async def economy_admit(self, *, door: str, key: str, cap_counted: bool = False,
-                            forced: bool = False) -> Tuple[bool, Dict[str, Any]]:
+    def _day_end(self) -> Optional[datetime]:
+        """End of Juniper's waking day (the quiet hours' start), the bound of a pace hold. Never raises."""
+        try:
+            from orion.physiology.attention_pacing import waking_end
+
+            tz = str(getattr(self._tz, "key", "") or "UTC")
+            return waking_end(datetime.now(timezone.utc), tz=tz, start_hour=self.quiet_end_hour,
+                              end_hour=self.quiet_start_hour)
+        except Exception:  # noqa: BLE001 -- no day bound: the family window applies
+            return None
+
+    async def economy_admit(self, *, door: str, key: str, cap_counted: bool = True,
+                            forced: bool = False, window_s: Optional[float] = None) -> Tuple[bool, Dict[str, Any]]:
         """Patch D for a door that composes its own message (reading / self / office findings).
 
         Call after the door's own gates pass and BEFORE composing. Returns ``(admit, economy)``:
@@ -2130,7 +2148,8 @@ class EndogenousOutreach:
             return True, {}
         full = f"{door}:{key}"
         try:
-            v = await self._binder.bind(full, door=door, cap_counted=cap_counted, forced=forced)
+            v = await self._binder.bind(full, door=door, cap_counted=cap_counted, forced=forced, window_s=window_s,
+                                        day_end=None if window_s is not None else self._day_end())
             return v.admit, self._binder.record(full, v)
         except Exception:  # noqa: BLE001 -- never hold a message because this code failed
             logger.warning("outreach_economy_admit_failed door=%s key=%s", door, key, exc_info=True)
@@ -2193,6 +2212,12 @@ class EndogenousOutreach:
             # a strain hold repeats on every 10 s tick, but it is one held want, not 360 an hour.
             shadow.place()
             shadow.real = f"blocked:{AROUSAL_STRAINED_REASON}"
+        if blocked == "daily_cap" and self.strain_report_enabled:
+            # The strain report does not spend the daily cap (attention_pacing.CAP_EXEMPT_SOURCES), so a
+            # full cap must not silence it either (review finding, 2026-11-10): judge its gate cap-free.
+            if outreach_block_reason(self._strain_gate_inputs()) == AROUSAL_STRAINED_REASON:
+                self._last_tension_reason = None
+                return await self._strain_report_once(force=force, compose_started_at=compose_started_at)
         if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:
             # Strain is the only gate holding (it is checked last), so every other gate passed.
             # The strain report door may pass this one refusal, once per long episode.
@@ -2321,7 +2346,8 @@ class EndogenousOutreach:
             # (no_tension_trigger, content_already_used), never ``economy_held``. Inside a hold this
             # re-uses the last answer without a bid (outreach_bind ``waiting:``).
             try:
-                verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force)
+                verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force,
+                                                  day_end=self._day_end())
             except Exception:  # noqa: BLE001 -- never hold a message because this code failed
                 logger.warning("outreach_economy_bind_failed", exc_info=True)
                 from orion.physiology.binding import BindVerdict
@@ -2478,7 +2504,8 @@ class EndogenousOutreach:
         )
 
         self._last_outreach_at = time.time()
-        self._sent_today += 1
+        if not force:   # a forced (operator) send is not Orion spending Juniper's attention budget
+            self._sent_today += 1
         logger.info(
             "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d",
             correlation_id,
@@ -2585,7 +2612,7 @@ class EndogenousOutreach:
         # Qualifies. Now the DB read for recent_chat, then the whole gate again: strain must
         # still be the ONLY thing holding.
         self._last_spoke_ago = await self._spoke_ago()
-        blocked = outreach_block_reason(self._gate_inputs())
+        blocked = outreach_block_reason(self._strain_gate_inputs())
         if blocked != AROUSAL_STRAINED_REASON:
             if blocked is None:
                 # The reading aged out between the two gate reads: nothing is held any more.
@@ -2636,7 +2663,7 @@ class EndogenousOutreach:
         # Re-gate before delivery, same as the background tick: compose can take minutes.
         if reader is not None:
             await reader.refresh(self._bus)
-        blocked_now = outreach_block_reason(self._gate_inputs())
+        blocked_now = outreach_block_reason(self._strain_gate_inputs())
         if blocked_now == AROUSAL_STRAINED_REASON:
             now_view = None if reader is None else reader.view()
             if now_view is None or now_view.since is None or episode_key(now_view.since) != episode:
@@ -2690,7 +2717,8 @@ class EndogenousOutreach:
             provenance=provenance,
         )
         self._last_outreach_at = time.time()
-        self._sent_today += 1
+        # Not counted on the daily cap (attention_pacing.CAP_EXEMPT_SOURCES): the strain report exists to
+        # speak when strain holds everything else.
         logger.info(
             "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s episode=%s arc=%s",
             correlation_id, session_id, len(delivered), self._sent_today,
@@ -2713,7 +2741,8 @@ class EndogenousOutreach:
     # -- delivery on behalf of another loop --------------------------------
 
     def blocked_reason(
-        self, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False
+        self, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False,
+        cap_exempt: bool = False,
     ) -> Optional[str]:
         """The gate that would stop an outreach right now, or None.
 
@@ -2727,8 +2756,9 @@ class EndogenousOutreach:
         a pre-check does not refuse composition for quiet hours / daily cap /
         cooldown that delivery will also skip.
         """
+        inputs = self._gate_inputs()
         return outreach_block_reason(
-            self._gate_inputs(),
+            replace(inputs, daily_cap=-1) if cap_exempt else inputs,
             skip_schedule_gates=skip_schedule_gates,
             skip_rate_gates=skip_rate_gates,
         )
@@ -2832,6 +2862,7 @@ class EndogenousOutreach:
         record_appendix: Optional[str] = None,
         require_why_juniper: bool = False,
         finding_key: Optional[str] = None,
+        cap_exempt: bool = False,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
 
@@ -2842,9 +2873,11 @@ class EndogenousOutreach:
         visits, Juniper-triggered sends and the strain report leave it False.
         ``finding_key``: the source finding's stable id (e.g. ``curiosity_run:<id>``);
         a ``sent`` row already naming it is recorded as ``already_told`` and not sent.
+        ``cap_exempt`` (a send Juniper asked for: ``meta.door_policy='asked_by_juniper'``): the
+        daily cap does not hold it and it does not count (attention_pacing.CAP_EXEMPT_DOOR_POLICIES).
 
-        ``skip_rate_gates`` (reading findings): see ``outreach_block_reason``. Like
-        Door-A, such a send does not consume ``_sent_today``. ``provenance`` (an
+        ``skip_rate_gates`` (reading findings, office visits): see ``outreach_block_reason``.
+        Every send here counts on ``_sent_today`` (one attention budget, 2026-11-10). ``provenance`` (an
         ``outreach_provenance.v1`` capsule) rides on the delivered message so a
         follow-up turn can say where it came from. ``record_appendix`` is stored
         record text (not generated) delivered after Orion's message, e.g. the
@@ -2856,13 +2889,11 @@ class EndogenousOutreach:
         Orion, inside an investigation turn, decides a finding is worth saying
         unprompted.
 
-        Schedule gates (quiet hours, daily cap, cooldown) protect the
-        *background* endogenous tick. Door-A passes ``skip_schedule_gates=True``
-        (2026-09-22): a finished curiosity run that asked to share is not
-        held for the clock or the background budget. ``turn_in_flight`` and
-        ``disabled`` still apply. Door-A sends also do **not** increment
-        ``_sent_today``, so they cannot starve the endogenous tick's cap
-        (and ``count_sent_on`` excludes ``source=curiosity_outreach``).
+        Schedule gates (quiet hours, cooldown) protect the *background* endogenous
+        tick. Door-A passes ``skip_schedule_gates=True`` (2026-09-22): a finished
+        curiosity run that asked to share is not held for the clock.
+        ``turn_in_flight``, ``disabled`` and (since 2026-11-10, one attention
+        budget) the daily cap still apply, and its send counts on ``_sent_today``.
 
         The closed-vocabulary grounding guard (2026-09-08 -- see module
         docstring's "CLOSED-VOCABULARY GROUNDING GUARD" section) is ALSO not
@@ -2926,15 +2957,15 @@ class EndogenousOutreach:
                 {**extra, "outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
-        # Recover the endogenous tick's shared count even on Door-A so a
-        # concurrent organic tick sees a true reading. Door-A itself does not
-        # consume the counter when skip_schedule_gates is set.
+        # Recover the shared count on every door: the daily cap holds for every
+        # door, and every send here counts on it (one attention budget, 2026-11-10).
         await self._recover_sent_today()
         if skip_rate_gates and not skip_schedule_gates:
             await self.refresh_human_gates()
         async with self._send_lock:
+            inputs = self._gate_inputs()
             blocked = outreach_block_reason(
-                self._gate_inputs(),
+                replace(inputs, daily_cap=-1) if cap_exempt else inputs,
                 skip_schedule_gates=skip_schedule_gates,
                 skip_rate_gates=skip_rate_gates,
             )
@@ -2982,7 +3013,9 @@ class EndogenousOutreach:
             if finding_key:
                 # Process-local mirror: the sent row is written on a daemon thread and may lag.
                 self._told_keys.add(str(finding_key))
-            if not (skip_schedule_gates or skip_rate_gates):
+            # One attention budget (2026-11-10): every door's send counts on the daily cap, except a
+            # send Juniper asked for.
+            if not cap_exempt:
                 self._sent_today += 1
             logger.info(
                 "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s door_a=%s",

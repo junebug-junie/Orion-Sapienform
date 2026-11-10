@@ -946,6 +946,19 @@ def test_successful_outreach_pushes_to_every_live_socket(monkeypatch) -> None:
     assert outreach.status()["sent_today"] == 1
 
 
+def test_a_forced_send_does_not_spend_the_daily_cap(monkeypatch) -> None:
+    """One attention budget (2026-11-10): an operator-forced send is not Orion spending Juniper's
+    attention, so it does not count (count_sent_on and the body skip ``forced`` rows too)."""
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "The execution node has been noisy all afternoon.")
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+    result = asyncio.run(outreach.maybe_outreach(force=True))
+    assert result["outreach"] is True
+    assert outreach.status()["sent_today"] == 0
+
+
 def test_successful_outreach_threads_provenance_to_socket_and_history(monkeypatch) -> None:
     outreach = _outreach()
     q: asyncio.Queue = asyncio.Queue()
@@ -2670,13 +2683,14 @@ def test_the_daily_cap_is_shared_because_the_interruption_is_the_same(
     assert _offer(outreach, tag="endogenous_outreach")["reason"] == "daily_cap"
 
 
-def test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap(
+def test_door_a_skips_quiet_hours_but_counts_on_the_one_daily_cap(
     monkeypatch,
 ) -> None:
     """Juniper 2026-09-22: a finished curiosity run that asked to share is not
-    held for the clock or the background budget."""
+    held for the clock. One attention budget (2026-11-10): its send counts on
+    the daily cap, and a full cap refuses it like every other door."""
     outreach = _outreach(
-        daily_cap=0,
+        daily_cap=6,
         quiet_start_hour=0,
         quiet_end_hour=24,
         min_cooldown_sec=10_000.0,
@@ -2690,7 +2704,7 @@ def test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap(
         EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
     )
     assert outreach.blocked_reason(skip_schedule_gates=True) is None
-    assert outreach.blocked_reason() in {"quiet_hours", "daily_cap", "cooldown"}
+    assert outreach.blocked_reason() in {"quiet_hours", "cooldown"}
     before = outreach._sent_today
     result = asyncio.run(
         outreach.offer_message(
@@ -2701,7 +2715,16 @@ def test_door_a_skips_quiet_hours_and_daily_cap_and_does_not_burn_the_cap(
         )
     )
     assert result["outreach"] is True and result["reason"] == "sent"
-    assert outreach._sent_today == before, "Door-A must not consume the endogenous cap"
+    assert outreach._sent_today == before + 1, "Door-A counts on the one daily cap"
+    outreach._sent_today = 6
+    assert outreach.blocked_reason(skip_schedule_gates=True) == "daily_cap"
+    full = asyncio.run(
+        outreach.offer_message(
+            text="another one", correlation_id="corr-door-a-2", tag="curiosity_outreach",
+            skip_schedule_gates=True,
+        )
+    )
+    assert full["outreach"] is False and full["reason"] == "daily_cap"
 
 
 def test_empty_text_is_never_shipped() -> None:

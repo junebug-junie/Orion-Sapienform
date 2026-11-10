@@ -2787,7 +2787,7 @@ that composes a message asks the market just before it composes, and obeys the a
 | door | bids? | why |
 |---|---|---|
 | background tick | yes, cap-counted (1 message on `attention:juniper`) | the want the strained veto was standing in for |
-| reading findings, office visits | yes, cap-exempt (`juniper_msgs=0`) | they compose a message; the daily cap never counted them |
+| reading findings, office visits | yes, cap-counted since 2026-11-10 (one attention budget) | they compose a message; office visits hold at most 5 min (`OFFICE_WINDOW_S`) |
 | curiosity Door-A | no | composed inside the curiosity run, which already obeys its own bid (#3010); a blocked Door-A has no retry, so a hold would drop it |
 | strain report | no | it exists to speak when strain holds everything else; its strain-held shadow bid is unchanged |
 | forced (`POST /api/debug/endogenous-outreach/trigger`) | no | the operator's call: never held |
@@ -3728,6 +3728,24 @@ step C (`docs/superpowers/specs/2026-11-05-office-camera-attention-and-reach-out
   dry run (read-only, live): `evals/run_office_reach_out_dry_run.py --dsn <dsn>`.
 - **Logs.** `office_reach_out_result session=<id> reason=<sent|...>`, `office_reach_out_blocked`,
   `office_event_want`, `office_event_want_skipped reason=no_history`.
+
+### One attention budget (`orion/physiology/attention_pacing.py`, 2026-11-10)
+
+**What it does.** Every door that messages Juniper spends from one daily budget. The tick, curiosity
+Door-A, readings and office visits all count on the one daily cap (6, `JUNIPER_DAILY_CAP`, read by this
+Hub gate and by the body's `attention:juniper` line). Not counted: the strain report and forced sends.
+
+- **The price grows with the day's pace.** `attention:juniper`'s price is the online-knapsack threshold
+  (Zhou, Chakrabarty and Lukose 2008): psi(z) = (L/e)(Ue/L)^z with z = messages sent today over what
+  Juniper's waking day (the quiet hours' complement) has budgeted by now, paced to the cap less one.
+  The first message of the day costs 0.11; a day running ahead costs up to 0.65 (the most a message
+  can be worth). A typical message (~0.38) waits when the day is ahead.
+- **Holds.** A held message re-bids when the day's allowance lets it through (the market computes the
+  time), at most until the waking day ends. Office visits hold at most 5 min, then go anyway.
+- **Flag.** `ORION_PHYSIOLOGY_ATTENTION_PACING` on orion-durable-runs: `on` (shipped) or `shadow` (the
+  old dual-ascent price; the pacing price rides in the reading's `detail`).
+- **Checks.** `orion/physiology/tests/test_attention_pacing.py`; replay (read-only, live DB):
+  `evals/run_outreach_attention_budget_replay.py`.
 
 ### Door policy: what reaches Juniper (`scripts/outreach_door_policy.py`, 2026-11-10)
 

@@ -240,7 +240,7 @@ def _setup(monkeypatch, *, sessions=None, text="Looked like you were unpacking s
 
     monkeypatch.setattr(eo.EndogenousOutreach, "_generate", fake_generate)
     monkeypatch.setattr(eo.EndogenousOutreach, "_deliver", fake_deliver)
-    base = dict(enabled=True, tick_interval_sec=300.0, min_cooldown_sec=0.0, daily_cap=0,
+    base = dict(enabled=True, tick_interval_sec=300.0, min_cooldown_sec=0.0, daily_cap=6,
                 quiet_start_hour=-1, quiet_end_hour=-1, timeout_sec=5.0, agent_lane_timeout_sec=5.0,
                 notify_channel="orion:notify:in_app", fallback_session_id="orion_outreach",
                 trigger_evaluator=lambda: None, timezone_name="UTC")
@@ -284,11 +284,19 @@ def test_one_visit_one_message_with_the_camera_notes_and_provenance(monkeypatch)
     assert asyncio.run(fresh.tick())["pending"] == 0 and len(delivered) == 1
 
 
-def test_every_visit_may_reach_out_no_daily_cap(monkeypatch):
+def test_every_visit_may_reach_out_and_each_counts_on_the_daily_cap(monkeypatch):
     second = _session("cam0-second", start=T0 + timedelta(minutes=9), end=T0 + timedelta(minutes=16))
-    loop, _, _, _, _, delivered, _ = _setup(monkeypatch, sessions=[_session(), second], daily_cap=0)
+    loop, outreach, _, _, _, delivered, _ = _setup(monkeypatch, sessions=[_session(), second])
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent", "sent"]
-    assert len(delivered) == 2
+    assert len(delivered) == 2 and outreach._sent_today == 2   # one attention budget (2026-11-10)
+
+
+def test_a_full_daily_cap_holds_the_visit_message(monkeypatch):
+    loop, outreach, _, _, _, delivered, _ = _setup(monkeypatch)
+    outreach._gate_inputs()
+    outreach._sent_today = 6
+    outreach._sent_today_recovered = True
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["daily_cap"] and delivered == []
 
 
 def test_a_visit_without_a_story_is_never_messaged(monkeypatch):
@@ -481,12 +489,15 @@ def test_a_broken_want_producer_never_holds_the_message(monkeypatch):
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
 
 
-def test_office_sends_do_not_count_toward_the_background_daily_cap():
+def test_office_sends_count_on_the_one_daily_cap():
     import inspect
 
+    from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
     from scripts import endogenous_outreach_decisions as d
 
-    assert "'office_reach_out'" in inspect.getsource(d.count_sent_on)
+    src = inspect.getsource(d.count_sent_on)
+    assert "CAP_EXEMPT_SOURCES" in src and "'office_reach_out'" not in src
+    assert "office_reach_out" not in CAP_EXEMPT_SOURCES
 
 
 
@@ -549,8 +560,41 @@ def test_economy_sated_hold_delays_the_visit_message_then_it_is_sent(monkeypatch
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["economy_held"]
     assert composed == [] and delivered == [] and state["sessions"][0]["reached_out_at"] is None
     assert [r["reason"] for r in rows] == ["economy_held"] and rows[0]["economy"]["reason"] == "sated"
-    assert wants[0].cost.juniper_msgs == 0
+    assert wants[0].cost is None                    # cap-counted: the family's fixed cost, 1 message
+    held = list(outreach._binder.wants.values())[0]
+    assert held.window_s == ob.OFFICE_WINDOW_S and held.day_end is None
     for w in outreach._binder.wants.values():
         w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
     assert len(wants) == 2 and len({w.want_id for w in wants}) == 1
+
+
+def test_an_office_hold_composes_anyway_after_its_short_window(monkeypatch):
+    """One attention budget (2026-11-10): a visit is short, so a held office message is never held past
+    OFFICE_WINDOW_S (300 s); then it composes anyway (``window_end``)."""
+    from orion.schemas.physiology_want import WantDecisionV1
+
+    import scripts.outreach_bind as ob
+    from scripts.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_PHYSIOLOGY_BID_HUB_OUTREACH", "on", raising=False)
+
+    async def abid(want, timeout_sec):
+        now = datetime.now(timezone.utc)
+        return WantDecisionV1(decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id,
+                              family=want.family, producer=want.producer, verb=want.verb, tier=want.tier,
+                              decided_at=now, outcome="deferred", reason="price", net=-0.1, retry_after_sec=3600.0,
+                              binding_constraint="attention:juniper", want=want, why="hub.outreach: price")
+
+    async def arelease(want_id):
+        return 1
+
+    monkeypatch.setattr(ob, "_abid", abid)
+    monkeypatch.setattr(ob, "_arelease", arelease)
+    loop, outreach, _, _, _, delivered, _ = _setup(monkeypatch)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["economy_held"]
+    w = list(outreach._binder.wants.values())[0]
+    assert outreach._binder.end(w) - w.first_bid_at == timedelta(seconds=ob.OFFICE_WINDOW_S)
+    w.first_bid_at -= timedelta(seconds=ob.OFFICE_WINDOW_S + 1)
+    w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1

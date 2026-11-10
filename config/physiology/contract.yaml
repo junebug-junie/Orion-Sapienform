@@ -121,8 +121,12 @@ readers:
     note: 2026-11-07, its doors obey their binding bid (scripts/outreach_bind.py). The arousal_strained veto stays until that has run on for 7 days with the acceptance checks green; deleting it is the next PR
   - module: services/orion-hub/scripts/outreach_bind.py
     role: bidder
-    reason: Hub outreach's BINDING bid (Patch D) -- the background tick and the reading / self / office finding doors obey the market's decision (orion.physiology.binding) before composing; held at most the 1 h window.
+    reason: Hub outreach's BINDING bid (Patch D) -- the background tick and the reading / office doors obey the market's decision (orion.physiology.binding) before composing; held at most to the end of Juniper's waking day (office visits 5 min).
     note: 2026-11-07, already the Patch D shape
+  - module: services/orion-hub/scripts/endogenous_outreach_decisions.py
+    role: bidder
+    reason: the Hub daily cap (a veto on optional outreach) counts with the shared exempt lists (orion.physiology.attention_pacing CAP_EXEMPT_SOURCES / CAP_EXEMPT_DOOR_POLICIES) -- constants, not price state; one list for the cap and the attention:juniper line.
+    note: 2026-11-10, one attention budget
   - module: services/orion-hub/scripts/main.py
     role: bidder
     reason: constructs the Hub ArousalReader for the curiosity, outreach and pull vetoes.

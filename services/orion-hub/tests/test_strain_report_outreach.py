@@ -334,11 +334,31 @@ def test_failed_composes_are_capped_per_episode():
     assert _block(since=since, history=h) == "attempts_exhausted"
 
 
-def test_strain_report_spends_a_daily_cap_slot(monkeypatch):
+def test_strain_report_does_not_spend_a_daily_cap_slot(monkeypatch):
+    """One attention budget (2026-11-10): the strain report is the exempt source
+    (attention_pacing.CAP_EXEMPT_SOURCES); it exists to speak when strain holds everything else."""
+    from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
+
     h = _Harness(monkeypatch)
     before = h.o._sent_today
     assert h.tick()["reason"] == "sent"
-    assert h.o._sent_today == before + 1
+    assert h.o._sent_today == before
+    assert "strain_report" in CAP_EXEMPT_SOURCES
+
+
+def test_a_full_daily_cap_does_not_silence_the_strain_report(monkeypatch):
+    """Review finding (2026-11-10): the cap is checked before arousal, so a full day read as
+    daily_cap and the strain report never fired. It does not spend the cap, so the cap must not
+    hold it either."""
+    import scripts.endogenous_outreach as eo
+
+    h = _Harness(monkeypatch)
+    h.o._gate_inputs()                       # rolls the counter onto today first
+    h.o._sent_today = h.o.daily_cap
+    h.o._sent_today_recovered = True
+    assert eo.outreach_block_reason(h.o._gate_inputs()) == "daily_cap"   # the cap really is full
+    assert h.tick()["reason"] == "sent"
+    assert h.o._sent_today == h.o.daily_cap
 
 
 # ---- the prompt states how the GPU queue relates to the strain (live 10-23 invented "heat queued jobs")

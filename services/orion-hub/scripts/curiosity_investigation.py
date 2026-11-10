@@ -5107,7 +5107,10 @@ class CuriosityInvestigation:
             )
             return ALREADY_TOLD_REASON
 
-        blocked = outreach.blocked_reason(skip_schedule_gates=True)
+        # A run Juniper asked for is her own request: the daily cap neither holds nor counts it.
+        asked = door_why == "asked_by_juniper"
+        blocked = (outreach.blocked_reason(skip_schedule_gates=True, cap_exempt=True) if asked
+                   else outreach.blocked_reason(skip_schedule_gates=True))
         if blocked:
             logger.info(
                 "curiosity_outreach_blocked run=%s reason=%s why=%s",
@@ -5186,6 +5189,7 @@ class CuriosityInvestigation:
             skip_schedule_gates=True,
             require_why_juniper=True,
             finding_key=finding_key,
+            **({"cap_exempt": True} if asked else {}),
         )
         logger.info(
             "curiosity_outreach_result run=%s sent=%s reason=%s",

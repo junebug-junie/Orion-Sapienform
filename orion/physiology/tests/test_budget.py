@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -41,6 +43,8 @@ HEAT_DOC = {
 }
 HEAT_CFG = parse_heat_sensitivity(HEAT_DOC)
 CFG = BudgetConfig(heat_config=HEAT_CFG, heat_config_error=None)
+# The dual-ascent attention:juniper price (pacing "shadow"): what these older juniper tests pin.
+SHADOW_CFG = BudgetConfig(heat_config=HEAT_CFG, heat_config_error=None, juniper_pacing="shadow")
 
 
 def heat(level):
@@ -284,7 +288,7 @@ def test_juniper_cap_filled_by_orions_own_outreach_is_self_spent_not_strain():
 def test_juniper_day_end_pace_over_the_cap_binds():
     r = R(constraint="attention:juniper", unit="messages", level=3.0, budget=4.0, budget_kind="daily_cap")
     noon = datetime(2026, 10, 26, 18, 0, tzinfo=timezone.utc)            # 12:00 MDT
-    by, _, _ = run([r], now=noon)
+    by, _, _ = run([r], now=noon, cfg=SHADOW_CFG)
     assert by["attention:juniper"].price.use == pytest.approx(6.0) and by["attention:juniper"].price.bind_state == "binding"
 
 
@@ -368,11 +372,12 @@ def test_a_constraint_absent_for_a_tick_keeps_its_price():
 def test_juniper_one_early_message_is_not_a_days_pace_and_dst_elapsed_is_real():
     r = R(constraint="attention:juniper", unit="messages", level=1.0, budget=4.0, budget_kind="daily_cap")
     early = datetime(2026, 10, 26, 7, 6, tzinfo=timezone.utc)                 # 01:06 MDT
-    by, _, _ = run([r], now=early)
+    by, _, _ = run([r], now=early, cfg=SHADOW_CFG)
     assert by["attention:juniper"].price.use == 1.0 and by["attention:juniper"].price.bind_state == "slack"
     # 2026-11-01 (DST ends): 12:00 MST is 13 real hours after local midnight (06:00Z).
     dst = datetime(2026, 11, 1, 19, 0, tzinfo=timezone.utc)
-    by, _, _ = run([R(constraint="attention:juniper", unit="messages", level=13.0, budget=40.0, budget_kind="daily_cap")], now=dst)
+    by, _, _ = run([R(constraint="attention:juniper", unit="messages", level=13.0, budget=40.0, budget_kind="daily_cap")],
+                   now=dst, cfg=SHADOW_CFG)
     assert by["attention:juniper"].price.use == pytest.approx(13.0 * 24 / 13.0)
 
 
@@ -398,3 +403,53 @@ def test_energy_zero_envelope_is_no_reading_and_the_filling_hour_is_left_out():
 def test_claude_unknown_shows_no_budget_not_zero():
     unk = R(constraint="claude", unit="limit_events", level=0.0, state="unknown", budget=0.0, budget_kind="not_limited")
     assert run([unk])[0]["claude"].price.budget is None
+
+
+# --- one attention budget: the pacing price (2026-11-10) ------------------------------------------
+
+def _jr(level, cap=6.0):
+    return R(constraint="attention:juniper", unit="messages", level=float(level), budget=cap, budget_kind="daily_cap")
+
+
+def test_pacing_first_message_of_the_day_is_cheap_and_a_second_early_one_is_not():
+    from orion.physiology import attention_pacing as ap
+
+    morning = datetime(2026, 11, 10, 15, 30, tzinfo=timezone.utc)        # 08:30 MST
+    p0 = run([_jr(0)], now=morning)[0]["attention:juniper"]
+    assert p0.price.value / 6.0 == pytest.approx(ap.VALUE_LOW / math.e)  # psi(0) per message
+    assert p0.price.bind_state == "slack" and p0.detail["pacing_mode"] == "on"
+    p1 = run([_jr(1)], now=morning)[0]["attention:juniper"]
+    assert p1.price.value / 6.0 > 0.38 > p0.price.value / 6.0           # a typical message waits
+    assert p1.price.bind_state == "slack" and p1.detail["pacing_allowance"] > 1.0
+
+
+def test_pacing_price_can_beat_a_typical_message_and_tops_out_at_the_highest_value():
+    from orion.physiology import attention_pacing as ap
+
+    evening = datetime(2026, 11, 11, 3, 0, tzinfo=timezone.utc)          # 20:00 MST
+    per_msg = [run([_jr(n)], now=evening)[0]["attention:juniper"].price.value / 6.0 for n in range(7)]
+    assert per_msg == sorted(per_msg)                                    # later messages cost more
+    assert per_msg[2] < 0.38 < per_msg[3] < 0.60   # at 20:00 (4.2 paced): the 4th waits unless the want is strong
+    ahead = run([_jr(6)], now=evening)[0]["attention:juniper"]
+    assert ahead.price.value / 6.0 == pytest.approx(ap.VALUE_HIGH) and ahead.price.bind_state == "binding"
+    assert ahead.price.value <= ahead.price.ceiling
+
+
+def test_pacing_outside_the_waking_day_does_not_accrue():
+    night = datetime(2026, 11, 10, 11, 0, tzinfo=timezone.utc)           # 04:00 MST, quiet hours
+    r = run([_jr(0)], now=night)[0]["attention:juniper"]
+    assert r.detail["pacing_rate_per_hour"] == 0.0 and r.detail["pacing_allowance"] == 1.0
+
+
+def test_shadow_keeps_the_dual_ascent_price_and_carries_pacing_for_comparison():
+    noon = datetime(2026, 11, 10, 19, 0, tzinfo=timezone.utc)
+    r = run([_jr(2)], now=noon, cfg=SHADOW_CFG)[0]["attention:juniper"]
+    assert r.detail["pacing_mode"] == "shadow" and "pacing_price_per_msg" in r.detail
+    assert r.price.ceiling_source == "provisional"                        # the old price, untouched
+
+
+def test_pacing_with_no_reading_keeps_the_old_no_reading_price():
+    r = R(constraint="attention:juniper", unit="messages", no_reading="stale:endogenous_outreach_decisions",
+          budget=6.0, budget_kind="daily_cap")
+    out = run([r])[0]["attention:juniper"]
+    assert out.price.bind_state == "no_reading" and "pacing_mode" not in out.detail

@@ -19,12 +19,19 @@ def test_fixture_eval_passes():
     assert ev.fixture() == []
 
 
-def test_doors_that_bind_match_the_hub_cap_exempt_list():
+def test_every_binding_door_is_cap_counted_now():
+    """One attention budget (2026-11-10): no door is cap-exempt any more; the Hub's count reads the one
+    shared exempt list (the strain report only), so every replayed attempt is cap-counted."""
     text = (_ROOT / "services/orion-hub/scripts/endogenous_outreach_decisions.py").read_text()
-    for door in rep.EXEMPT_DOORS:
-        assert f"'{door}'" in text
+    assert "CAP_EXEMPT_SOURCES" in text
+    from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
+
+    assert not set(rep.DOOR_SOURCES) & set(CAP_EXEMPT_SOURCES)
     assert rep.door_of(None) == rep.TICK and rep.door_of("curiosity_outreach") is None
     assert rep.door_of("strain_report") is None
+    got = rep.attempts_from_rows([{"decision_id": "r", "decided_at": "2026-11-10T12:00:00+00:00", "reason": "sent",
+                                   "forced": False, "source": "reading_finding_outreach"}], {})
+    assert got and got[0]["cap_counted"] is True
 
 
 def test_summary_counts_holds_per_door():

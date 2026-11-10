@@ -186,6 +186,52 @@ async def test_window_end_proceeds_without_dropping_the_want(market) -> None:
     assert len(market.wants) == 1  # the window's end goes without asking again
 
 
+@pytest.mark.asyncio
+async def test_a_day_bounded_hold_does_not_end_at_one_hour(market) -> None:
+    """One attention budget (2026-11-10): a reading/tick want held on the day's pace waits until the
+    end of Juniper's waking day when that is later than the family's 1 h window."""
+    market.answers = [("deferred", "price", -0.2, 3600.0)]
+    b = market.ob.OutreachBinder()
+    day_end = T0 + timedelta(hours=5)
+    assert not (await b.bind("reading:k", door="reading", now=T0, day_end=day_end)).admit
+    (want,) = market.wants
+    assert want.window.latest == day_end
+    v = await b.bind("reading:k", door="reading", now=T0 + timedelta(seconds=3600))
+    assert not v.admit                              # 1 h is not the end any more
+    for h in (2, 3, 4):                             # the door keeps checking at each relief time
+        assert not (await b.bind("reading:k", door="reading", now=T0 + timedelta(hours=h))).admit
+    assert len({w.want_id for w in market.wants}) == 1
+    v = await b.bind("reading:k", door="reading", now=day_end)
+    assert v.admit and v.why == "window_end"
+
+
+@pytest.mark.asyncio
+async def test_a_door_window_is_exact_and_ignores_the_day(market) -> None:
+    market.answers = [("deferred", "price", -0.2, 3600.0)]
+    b = market.ob.OutreachBinder()
+    assert not (await b.bind("office:s", door="office", now=T0, window_s=market.ob.OFFICE_WINDOW_S,
+                             day_end=T0 + timedelta(hours=5))).admit
+    v = await b.bind("office:s", door="office", now=T0 + timedelta(seconds=market.ob.OFFICE_WINDOW_S))
+    assert v.admit and v.why == "window_end"
+
+
+@pytest.mark.asyncio
+async def test_economy_admit_bounds_a_door_hold_by_the_day_unless_it_has_its_own_window(market) -> None:
+    o = _outreach()
+    seen = []
+    real = o._binder.bind
+
+    async def spy(key, **kw):
+        seen.append(kw)
+        return await real(key, **kw)
+
+    o._binder.bind = spy
+    await o.economy_admit(door="reading", key="b1")
+    await o.economy_admit(door="office", key="s1", window_s=300.0)
+    assert seen[0]["cap_counted"] is True and seen[0]["window_s"] is None and seen[0]["day_end"] is not None
+    assert seen[1]["window_s"] == 300.0 and seen[1]["day_end"] is None
+
+
 @pytest.mark.parametrize("answer,why", [(None, "no_answer:no_decision"), ("raise", "no_answer:no_decision"),
                                         ("slow", "no_answer:no_decision")])
 @pytest.mark.asyncio
@@ -237,15 +283,16 @@ async def test_two_checks_racing_on_one_want_compose_once(market) -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_releases_a_funded_reservation_sent_or_not(market) -> None:
+async def test_close_releases_an_unsent_reservation_and_keeps_a_sent_one(market) -> None:
+    """One attention budget (2026-11-10): a SENT message's reservation lapses on its own, so the market
+    still counts it on attention:juniper until the body reads the send from the decision log."""
     b = market.ob.OutreachBinder()
     await b.bind("a", door="d", now=T0)
-    want_a = market.wants[-1].want_id
     await b.close("a", sent=True)
     await b.bind("b", door="d", now=T0)
     want_b = market.wants[-1].want_id
     await b.close("b", sent=False)
-    assert market.released == [want_a, want_b]
+    assert market.released == [want_b]
     # A close naming another want closes nothing.
     await b.bind("c", door="d", now=T0)
     await b.close("c", sent=True, want_id="someone-else")
@@ -381,10 +428,19 @@ async def test_tick_price_hold_composes_nothing_and_rebids_once_per_window(marke
     assert held["economy"]["verdict"] == "deferred:price" and held["economy"]["why"].startswith("hub.outreach")
     assert held["economy"]["reason"] == "price" and held["economy"]["retry_at"]
     assert len(rows) == 90 and all(r["reason"] == "economy_held" for r in rows)
-    # Keep checking until the window ends: the held want composes anyway.
+    # One attention budget (2026-11-10): the tick's window is the later of 1 h and the end of Juniper's
+    # waking day, so a price hold is still held at 1 h (it waits for the day's pace).
+    from scripts.outreach_bind import TICK_KEY
+
+    w = o._binder.wants[TICK_KEY]
+    assert w.day_end is not None and o._binder.end(w) == max(T0 + timedelta(seconds=3600), w.day_end)
     while clock["t"] < T0 + timedelta(seconds=3600):
         r = await _tick(o)
         clock["t"] += timedelta(seconds=10)
+    r = await _tick(o)
+    assert r["reason"] == "economy_held" and generated == []
+    # When the day ends, the held want composes anyway (held, never dropped).
+    w.day_end = clock["t"] - timedelta(seconds=1)
     r = await _tick(o)
     assert r["reason"] == "sent" and r["economy"]["verdict"] == "window_end"
 

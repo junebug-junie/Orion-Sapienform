@@ -1838,8 +1838,23 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Meaning**: how much a recent prediction (from the prediction/surprise
   subsystem) missed reality.
 - **Producer**: `prediction_signal` delta, `hints["prediction_error"]`,
-  `max(0.0, min(1.0, ...))`, mode=`replace`. In `NODE_DECAY_CHANNELS`. Not a
-  diffusion source/target.
+  `max(0.0, min(1.0, ...))`, mode=`replace`. Removed from `NODE_DECAY_CHANNELS`
+  2026-07-26 (see `decay.py`). Not a diffusion source/target.
+- **Missing input is absent, never 0.0** (2026-11-10, PE suite rebuild spec
+  retire step 8). When the delta's `after` carries
+  `prediction_error_missing_reason` (the producer has no reading this tick:
+  camera embeddings stale, baseline warming, no new frame), the digester emits
+  a mode=`clear` perturbation: the node's `prediction_error` key and its
+  `node_vector_updated_at` stamp are dropped, so every consumer reads
+  "unmeasured". A reason wins over any value sent alongside it. Only the camera
+  surprise nodes (`node:substrate.perception`, `node:substrate.perception_walkway`)
+  send it today. Before this they sent a 0.0 placeholder that the field held as
+  a calm reading (live 2026-11-08 09:00:33-09:01:34, a 95 s embedding gap).
+  The same two nodes' `prediction_error` also expires after 180 s with no
+  write at all (`decay.py` `EXPIRING_NODE_CHANNELS_BY_NODE`, node-scoped so
+  slower writers such as `node:substrate.route` still hold), so a stopped
+  producer reads unmeasured instead of holding its last spike.
+  Test: `tests/test_prediction_signal_missing_is_absent.py`.
 - **SelfState dimension fed**: `channel_dimension_map`: `prediction_error` →
   `uncertainty` (direct).
 - **Live-data verdict**: quiet-so-far-but-correctly-wired, not dead. Flat

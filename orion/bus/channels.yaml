@@ -4061,3 +4061,13 @@ channels:
     stability: "experimental"
     since: "2026-10-15"
     description: "Latest served forecast per target series (backtest-gated champion, or the seasonal-naive baseline with served_baseline=true): point + split-conformal quantiles per horizon, and threshold exceedance probabilities from residual paths. One per completed grain bucket. hardware-watch shows the shed exceedance beside each reflex decision (observe-only). docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md"
+
+  - name: "orion:prediction:surprise"
+    kind: "event"
+    schema_id: "PredictionSurpriseV1"
+    message_kind: "prediction.surprise.v1"
+    producer_services: ["orion-prediction"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-11-10"
+    description: "One scored forecast outcome as surprise: conformal p of the actual under the stored quantiles, surprisal -ln p, and excess over the calibrated calm point (1 - 0.05 = 0.95). Published only for horizons that pass the gate (non-baseline forecaster, live 80% coverage in band, not live-worse). outcome=missing when the bucket had no readings (silence is news, never calm). No consumer yet: the substrate node write is the next patch. docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md"

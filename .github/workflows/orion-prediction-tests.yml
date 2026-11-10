@@ -5,6 +5,8 @@ on:
     paths:
       - "services/orion-prediction/**"
       - "orion/schemas/prediction.py"
+      - "orion/schemas/registry.py"
+      - "orion/bus/channels.yaml"
       - "orion/weather/**"
       - "orion/prediction/**"
       - "config/prediction/**"
@@ -16,6 +18,8 @@ on:
     paths:
       - "services/orion-prediction/**"
       - "orion/schemas/prediction.py"
+      - "orion/schemas/registry.py"
+      - "orion/bus/channels.yaml"
       - "orion/weather/**"
       - "orion/prediction/**"
       - "config/prediction/**"

@@ -49,12 +49,24 @@ from app.live import RETENTION as SHADOW_RETENTION, verdicts as live_verdicts, w
 from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import BASELINES, build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
+from app.surprise import (
+    CALM_SURPRISAL,
+    P_FLOOR,
+    conformal_p_value,
+    excess,
+    horizon_gate,
+    summarize as surprise_summarize,
+    surprisal,
+)
 from orion.schemas.prediction import (
     PREDICTION_FORECAST_CHANNEL,
     PREDICTION_FORECAST_KIND,
+    PREDICTION_SURPRISE_CHANNEL,
+    PREDICTION_SURPRISE_KIND,
     PredictionExceedanceV1,
     PredictionForecastV1,
     PredictionStepV1,
+    PredictionSurpriseV1,
 )
 
 logger = logging.getLogger("orion-prediction.engine")
@@ -129,6 +141,10 @@ class SeriesState:
     events: dict = field(default_factory=dict)   # with_events summary, for /health
     shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
     not_ready: dict | None = None   # NotReady.detail while the series is too young to select
+    # Surprise gate per horizon from the last monitor pass: hm -> (passes, reason), and live coverage.
+    surprise_gate: dict = field(default_factory=dict)
+    live_coverage80: dict = field(default_factory=dict)
+    pending_surprise: list = field(default_factory=list)   # PredictionSurpriseV1 awaiting publish
 
 
 class Engine:
@@ -614,7 +630,57 @@ class Engine:
                            "in_80": q[q_key(0.1)] <= v <= q[q_key(0.9)],
                            "in_95": q[q_key(0.025)] <= v <= q[q_key(0.975)]})
         self.store.write_scores(scores)
+        self.state[spec.series_id].pending_surprise.extend(self.surprise_events(spec, due, scores))
         return len(scores)
+
+    def surprise_events(self, spec: SeriesSpec, due: list[dict], scores: list[dict]) -> list[PredictionSurpriseV1]:
+        """Champion outcomes on gated horizons only. A horizon with no gate verdict yet (first tick
+        after a start, before the first monitor pass) publishes nothing."""
+        st = self.state[spec.series_id]
+        out = []
+        for r, sc in zip(due, scores):
+            hm = int(r["horizon_min"])
+            if r.get("role") != "champion" or not st.surprise_gate.get(hm, (False, ""))[0]:
+                continue
+            base = dict(series_id=spec.series_id, horizon_min=hm, issued_at=r["issued_at"],
+                        target_ts=r["target_ts"], scored_at=sc["scored_at"], point=float(r["point"]),
+                        calm_surprisal=CALM_SURPRISAL, live_coverage80=st.live_coverage80.get(hm))
+            if sc["score_status"] != "scored":
+                out.append(PredictionSurpriseV1(outcome="missing", **base))
+                continue
+            p, censored = conformal_p_value(sc["actual"], r["quantiles"])
+            out.append(PredictionSurpriseV1(outcome="scored", actual=sc["actual"], p_value=p, p_censored=censored,
+                                            surprisal=surprisal(p), excess=excess(p), **base))
+        return out
+
+    async def publish_surprise(self, spec: SeriesSpec) -> int:
+        st = self.state[spec.series_id]
+        pending, st.pending_surprise = st.pending_surprise, []
+        if not pending or not self.publish_enabled or self.publish is None:
+            return 0
+        from orion.core.bus.bus_schemas import BaseEnvelope
+
+        sent = 0
+        for ev in pending:
+            try:
+                await self.publish(PREDICTION_SURPRISE_CHANNEL, BaseEnvelope(
+                    kind=PREDICTION_SURPRISE_KIND, source=self.source, payload=ev.model_dump(mode="json")))
+                sent += 1
+            except Exception as exc:  # noqa: BLE001 -- the scored row is the record; dropped, not retried
+                logger.error("prediction_surprise_publish_failed series=%s err=%s", spec.series_id, exc)
+                break
+        return sent
+
+    def surprise_summary(self, spec: SeriesSpec, now: datetime, window: timedelta) -> dict:
+        """Calm check (spec acceptance): mean excess per horizon vs its 95 % null band."""
+        rows = self.store.scored_with_quantiles(spec.series_id, now - window)
+        st = self.state[spec.series_id]
+        horizons = surprise_summarize([r for r in rows if r["role"] == "champion"], spec.grain_min)
+        for hm, h in horizons.items():
+            ok, reason = st.surprise_gate.get(int(hm), (False, "no_gate_verdict_yet"))
+            h["gate"] = reason
+        return {"window_hours": window.total_seconds() / 3600, "calm_surprisal": CALM_SURPRISAL,
+                "p_floor": P_FLOOR, "horizons": horizons}
 
     def score_exceedances(self, spec: SeriesSpec, now: datetime) -> int:
         """Outcome of each stored threshold probability once its window has passed (plus settle):
@@ -749,6 +815,13 @@ class Engine:
         live = await sync(self.live_metrics, spec, now)
         last_issued = await sync(self.store.last_issued, spec.series_id)
         st.alerts = self.alerts_for(spec, now, live, last_issued)
+        assignment = st.served.selection.assignment if st.served is not None else {}
+        st.surprise_gate = {
+            hm: horizon_gate(hm, live["horizons"].get(str(hm)), assignment.get(hm),
+                             (live.get("shadow") or {}).get(f"{assignment.get(hm)}@{hm}"))
+            for hm in spec.horizons_min
+        }
+        st.live_coverage80 = {hm: (live["horizons"].get(str(hm)) or {}).get("coverage80") for hm in spec.horizons_min}
         codes = frozenset(st.alerts)
         if codes != st.published_alert_codes:
             logger.warning("prediction_alerts_changed series=%s active=%s", spec.series_id, st.alerts)
@@ -784,6 +857,7 @@ class Engine:
             series = await sync(self.load_series, spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
             await self.issue(spec, now, series, sync)
         await sync(self.score, spec, now)
+        await self.publish_surprise(spec)
         await sync(self.score_exceedances, spec, now)
         if self.shadow_enabled:
             await sync(self.score_shadow, spec, now)

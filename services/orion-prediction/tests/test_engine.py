@@ -82,6 +82,9 @@ class FakeStore:
     def live_scores(self, sid, since):
         return [f for f in self.forecasts if f.get("score_status") == "scored" and f["target_ts"] >= since]
 
+    def scored_with_quantiles(self, sid, since):
+        return self.live_scores(sid, since)
+
     exceedances: list = []
 
     fail_next_issue = False
@@ -740,3 +743,70 @@ def test_not_ready_backs_off_even_when_a_stale_selection_would_force_a_reselect(
         asyncio.run(eng.tick(_sync))
     st = eng.state["test.temp"]
     assert len(calls) == 1 and st.not_ready is not None and st.served is served   # keeps serving the old one
+
+
+# --- surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) ---------
+
+def _surprise_events(published):
+    from orion.schemas.prediction import PredictionSurpriseV1
+
+    return [PredictionSurpriseV1.model_validate(e.payload) for c, e in published if c == "orion:prediction:surprise"]
+
+
+def test_monitor_sets_a_gate_verdict_per_horizon_and_nothing_publishes_without_a_pass():
+    reg, spec, s, store, end = _setup()
+    published = []
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), published)
+    asyncio.run(eng.tick(_sync))
+    gate = eng.state["test.temp"].surprise_gate
+    assert set(gate) == {5, 60, 360}
+    # A fresh series has too few live scores (or serves a baseline): nothing passes yet.
+    assert not any(ok for ok, _ in gate.values())
+    assert _surprise_events(published) == []
+
+
+@pytest.mark.parametrize("silent", [True, False])
+def test_gated_horizon_publishes_its_outcome_champion_only(silent):
+    reg, spec, s, store, end = _setup()
+    published = []
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, published)
+    asyncio.run(eng.tick(_sync))
+    eng.state["test.temp"].surprise_gate = {5: (True, "passed"), 60: (False, "coverage_out_of_band"),
+                                            360: (False, "served_baseline")}
+    future = daily_series(1, amp=1.0, noise=0.05, seed=4, start=end)
+    if silent:
+        future.iloc[0] = np.nan                    # the 5-min target bucket goes silent
+    store.raw += points_of(future)
+    clock.t = end + timedelta(hours=1, minutes=10)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.publish_surprise(spec))
+    evs = _surprise_events(published)
+    # One tick issued one champion 5-min forecast; ungated horizons and baseline rows stay off the bus.
+    assert len(evs) == 1 and evs[0].horizon_min == 5
+    ev = evs[0]
+    if silent:
+        assert ev.outcome == "missing" and ev.p_value is None and ev.excess is None
+    else:
+        assert ev.outcome == "scored" and 0.05 <= ev.p_value <= 1
+        assert ev.excess == pytest.approx(ev.surprisal - 0.95)
+    # Pending is drained: a second publish sends nothing new.
+    n = len(published)
+    asyncio.run(eng.publish_surprise(spec))
+    assert len(published) == n
+
+
+def test_surprise_summary_reports_each_horizon_with_its_gate_reason():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=7)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.monitor(spec, clock.t, _sync))
+    out = eng.surprise_summary(spec, clock.t, timedelta(hours=24))
+    assert out["calm_surprisal"] == pytest.approx(0.95)
+    assert set(out["horizons"]) == {"5", "60", "360"}
+    assert all(h["gate"] == "too_few_live_scores" or h["gate"] == "served_baseline"
+               for h in out["horizons"].values())

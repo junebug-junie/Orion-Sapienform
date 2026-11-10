@@ -231,7 +231,7 @@ class PostgresStore:
 
     def due_for_scoring(self, series_id: str, before: datetime, limit: int = 2000) -> list[dict]:
         return self._all(
-            "SELECT forecast_id, target_ts, quantiles, point FROM prediction_forecast "
+            "SELECT forecast_id, role, horizon_min, issued_at, target_ts, quantiles, point FROM prediction_forecast "
             "WHERE series_id = %s AND scored_at IS NULL AND target_ts < %s ORDER BY target_ts LIMIT %s",
             (series_id, before, limit))
 
@@ -246,6 +246,13 @@ class PostgresStore:
     def live_scores(self, series_id: str, since: datetime) -> list[dict]:
         return self._all(
             "SELECT role, origin_ts, horizon_min, point, abs_error, in_80, in_95 FROM prediction_forecast "
+            "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
+            (series_id, since))
+
+    def scored_with_quantiles(self, series_id: str, since: datetime) -> list[dict]:
+        """Scored rows with what surprise needs (the surprise calm check)."""
+        return self._all(
+            "SELECT role, origin_ts, horizon_min, actual, quantiles FROM prediction_forecast "
             "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
             (series_id, since))
 

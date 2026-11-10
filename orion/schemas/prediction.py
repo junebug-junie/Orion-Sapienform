@@ -64,6 +64,40 @@ class PredictionForecastV1(BaseModel):
     exceedance: list[PredictionExceedanceV1] = Field(default_factory=list)
 
 
+# --- Surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) --------
+
+PREDICTION_SURPRISE_CHANNEL = "orion:prediction:surprise"
+PREDICTION_SURPRISE_KIND = "prediction.surprise.v1"
+
+
+class PredictionSurpriseV1(BaseModel):
+    """One scored forecast outcome, as surprise. Published only for a horizon that passed the gate
+    (non-baseline forecaster, live 80 % coverage in band, not live-worse than the baseline).
+
+    ``outcome="missing"``: the target bucket had no readings. That is news (a sensor or service
+    went silent where a value was forecast), never calm: p, surprisal and excess are None.
+    ``excess`` = surprisal - calm_surprisal; calm rests at 0 by theory when the forecaster is
+    calibrated. ``p_censored``: the value fell outside the 95 % range, so p <= the floor (0.05).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    horizon_min: int = Field(..., ge=1)
+    issued_at: AwareDatetime
+    target_ts: AwareDatetime
+    scored_at: AwareDatetime
+    outcome: Literal["scored", "missing"]
+    point: float
+    actual: float | None = None
+    p_value: float | None = Field(None, ge=0.0, le=1.0)
+    p_censored: bool = False
+    surprisal: float | None = Field(None, ge=0.0)
+    calm_surprisal: float = Field(..., ge=0.0)
+    excess: float | None = None
+    live_coverage80: float | None = Field(None, ge=0.0, le=1.0)
+
+
 
 # --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
 #

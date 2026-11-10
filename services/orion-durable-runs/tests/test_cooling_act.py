@@ -84,9 +84,6 @@ class _Store:
     def load_effect_posteriors(self):
         return {}
 
-    def latest_surprise(self):
-        return 0.2
-
 
 class _Market:
     def __init__(self, decision=None, *, fail=False):

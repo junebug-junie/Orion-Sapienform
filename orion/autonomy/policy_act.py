@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from orion.autonomy.action_outcomes import append_action_outcome
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
-from orion.autonomy.episode_fetch import EpisodeFetchRequest, SurpriseSource, execute_readonly_fetch, resolve_surprise
+from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.goal_state import get_active_goal
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
@@ -20,21 +20,6 @@ from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 logger = logging.getLogger(__name__)
 
-
-def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | None:
-    """Fetch the real ambient bus_synaptic value for CapabilityEvaluationContext.
-    domain_surprise_score -- reuses the same `surprise_source` callable already threaded
-    through these functions for ActionOutcomeRefV1.surprise (one real read, two consumers).
-    Unlike `resolve_surprise()`, there is no success/fail proxy to fall back to here --
-    `None` means "not available," full stop, matching `_domain_surprise_gate()`'s own
-    honest-absence handling in capability_policy.py.
-    """
-    if surprise_source is None:
-        return None
-    try:
-        return surprise_source()
-    except Exception:
-        return None
 
 _READONLY_CAPABILITY = "web.fetch.readonly"
 _EPISODE_JOURNAL_CAPABILITY = "journal.compose.episode"
@@ -67,7 +52,6 @@ async def maybe_execute_readonly_fetch_after_goal(
     spawned_correlation_id: str | None,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
     budget_used: dict[str, int] | None = None,
-    surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, ActionOutcomeRefV1 | None]:
     """Layer C gate + Tier B readonly fetch for substrate-fed motivation bus tick.
 
@@ -99,14 +83,11 @@ async def maybe_execute_readonly_fetch_after_goal(
         )
         return decision, None
 
-    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
         signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
         goal=goal,
         budget_used=budget_used or {},
-        domain_surprise_score=_domain_surprise,
-        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_READONLY_CAPABILITY, ctx)
     logger.info(
@@ -140,13 +121,7 @@ async def maybe_execute_readonly_fetch_after_goal(
     )
     if fetch_backend is None:
         fetch_backend = resolve_fetch_backend()
-    # Reuse the value already resolved above for the gate decision -- one real read, two
-    # consumers, not two reads that could observe the signal at slightly different
-    # moments (found in review: passing the raw `surprise_source` through here would
-    # call it again).
-    outcome = await execute_readonly_fetch(
-        req, fetch_backend=fetch_backend, surprise_source=lambda: _domain_surprise
-    )
+    outcome = await execute_readonly_fetch(req, fetch_backend=fetch_backend)
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
     return decision, outcome
@@ -161,7 +136,6 @@ async def _execute_readonly_recall(
     recall_channel: str,
     timeout_sec: float,
     spawned_correlation_id: str,
-    surprise_source: SurpriseSource | None = None,
 ) -> ActionOutcomeRefV1:
     """Inline recall RPC (mirrors ``recall_prefetch.py:169-183``'s exact pattern).
 
@@ -193,7 +167,6 @@ async def _execute_readonly_recall(
                 kind=_RECALL_CAPABILITY,
                 summary="recall query build failed",
                 success=False,
-                surprise=resolve_surprise(surprise_source, success=False),
                 observed_at=observed_at,
                 query=query,
             )
@@ -218,7 +191,6 @@ async def _execute_readonly_recall(
                     kind=_RECALL_CAPABILITY,
                     summary=f"recall decode failed: {decoded.error}",
                     success=False,
-                    surprise=resolve_surprise(surprise_source, success=False),
                     observed_at=observed_at,
                     query=query,
                 )
@@ -230,7 +202,6 @@ async def _execute_readonly_recall(
                         kind=_RECALL_CAPABILITY,
                         summary=f"recall service error: {payload.get('error')}",
                         success=False,
-                        surprise=resolve_surprise(surprise_source, success=False),
                         observed_at=observed_at,
                         query=query,
                     )
@@ -243,7 +214,6 @@ async def _execute_readonly_recall(
                         kind=_RECALL_CAPABILITY,
                         summary=f"recall found {len(items)} item(s)" if found else "recall found nothing",
                         success=found,
-                        surprise=resolve_surprise(surprise_source, success=found),
                         observed_at=observed_at,
                         query=query,
                     )
@@ -260,7 +230,6 @@ async def _execute_readonly_recall(
             kind=_RECALL_CAPABILITY,
             summary=f"recall rpc failed: {exc}",
             success=False,
-            surprise=resolve_surprise(surprise_source, success=False),
             observed_at=observed_at,
             query=query,
         )
@@ -280,7 +249,6 @@ async def maybe_execute_readonly_recall_after_goal(
     recall_channel: str = _RECALL_REQUEST_CHANNEL,
     timeout_sec: float = 3.0,
     budget_used: dict[str, int] | None = None,
-    surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, ActionOutcomeRefV1 | None]:
     """Layer C gate + recall-first check, tried before the readonly web fetch.
 
@@ -309,14 +277,11 @@ async def maybe_execute_readonly_recall_after_goal(
         )
         return decision, None
 
-    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         curiosity_strength=curiosity_strength_from_signals(curiosity_signals),
         signal_kinds=signal_kinds_from_curiosity(curiosity_signals),
         goal=goal,
         budget_used=budget_used or {},
-        domain_surprise_score=_domain_surprise,
-        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_RECALL_CAPABILITY, ctx)
     logger.info(
@@ -358,9 +323,6 @@ async def maybe_execute_readonly_recall_after_goal(
             recall_channel=recall_channel,
             timeout_sec=timeout_sec,
             spawned_correlation_id=spawned_correlation_id,
-            # Reuse the value already resolved above for the gate decision -- see the
-            # matching comment in maybe_execute_readonly_fetch_after_goal.
-            surprise_source=lambda: _domain_surprise,
         )
     except Exception:
         logger.warning(
@@ -440,7 +402,6 @@ async def maybe_compose_autonomy_episode_after_fetch(
     fetch_outcome: ActionOutcomeRefV1 | None,
     journal_dispatch: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     budget_used: dict[str, int] | None = None,
-    surprise_source: SurpriseSource | None = None,
 ) -> tuple[CapabilityDecisionV1, dict[str, Any] | None]:
     """Layer C gate + episode journal compose after successful readonly fetch."""
     if fetch_outcome is None:
@@ -461,14 +422,11 @@ async def maybe_compose_autonomy_episode_after_fetch(
         )
         return decision, None
 
-    _domain_surprise = _resolve_domain_surprise(surprise_source)
     ctx = CapabilityEvaluationContext(
         curiosity_strength=0.0,
         signal_kinds=[],
         goal=goal,
         budget_used=budget_used or {},
-        domain_surprise_score=_domain_surprise,
-        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_EPISODE_JOURNAL_CAPABILITY, ctx)
     logger.info(
@@ -549,7 +507,6 @@ async def maybe_execute_substrate_act_after_metabolism(
     recall_source: ServiceRef | None = None,
     recall_channel: str = _RECALL_REQUEST_CHANNEL,
     recall_timeout_sec: float = 3.0,
-    surprise_source: SurpriseSource | None = None,
 ) -> SubstrateActResultV1:
     run_id = spawned_correlation_id or episode_intent.spawned_correlation_id
     # SSP §6 Objective 6 (2026-07-30): real, field-native active goal, not a
@@ -587,7 +544,6 @@ async def maybe_execute_substrate_act_after_metabolism(
                 recall_channel=recall_channel,
                 timeout_sec=recall_timeout_sec,
                 budget_used=budget_used,
-                surprise_source=surprise_source,
             )
         except Exception:
             logger.warning(
@@ -624,7 +580,6 @@ async def maybe_execute_substrate_act_after_metabolism(
                 spawned_correlation_id=run_id,
                 fetch_backend=fetch_backend,
                 budget_used=budget_used,
-                surprise_source=surprise_source,
             )
             if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
                 result = result.model_copy(
@@ -649,7 +604,6 @@ async def maybe_execute_substrate_act_after_metabolism(
             fetch_outcome=fetch_outcome,
             journal_dispatch=journal_dispatch,
             budget_used=budget_used,
-            surprise_source=surprise_source,
         )
     except Exception:
         logger.warning(

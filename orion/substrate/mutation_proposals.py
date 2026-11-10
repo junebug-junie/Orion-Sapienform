@@ -51,9 +51,8 @@ SURFACE_TO_LANE = {
 
 # The live routing threshold, as `inspect_chat_reflective_lane_threshold()`
 # returns it: {"value": float, "degraded": bool, ...}. Injected rather than
-# imported so this module keeps its "no I/O" shape, matching the
-# `surprise_source`/`domain_surprise_source` injection convention already used
-# in orion/autonomy/episode_fetch.py and capability_policy.py.
+# imported so this module keeps its "no I/O" shape (the same injection
+# convention as `fetch_backend` in orion/autonomy/episode_fetch.py).
 RoutingSurfaceReader = Callable[[], dict[str, Any]]
 
 # Exact-equality on a float that round-trips through JSON and Postgres is not

@@ -128,32 +128,16 @@ def test_fetches_under_covered_section(monkeypatch):
     assert round(f.articles[0].salience, 2) == 0.67
 
 
-def test_surprise_source_reaches_gate_and_fetch_outcome(monkeypatch):
-    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    captured_notes = {}
+def test_curiosity_no_longer_reads_bus_synaptic_surprise():
+    """Retired 2026-11-10 (prediction-error suite rebuild, retire step 1): the gate and
+    the fetch outcome no longer read the ambient bus_synaptic value, so this module
+    holds no Postgres engine and takes no surprise_source."""
+    import inspect
 
-    real_gate_open = curiosity._gate_open
-
-    def _spy_gate_open(run_id, *, surprise_source=None):
-        result = real_gate_open(run_id, surprise_source=surprise_source)
-        ctx_score = curiosity._resolve_domain_surprise(surprise_source)
-        captured_notes["score"] = ctx_score
-        return result
-
-    monkeypatch.setattr(curiosity, "_gate_open", _spy_gate_open)
-
-    result = curiosity.build_curiosity_followups(
-        run_id="r1",
-        section_coverage=_coverage(hardware_compute_gpu="missing", ai_technology="covered"),
-        enabled=True,
-        dry_run=False,
-        max_articles_per_section=5,
-        max_sections=9,
-        fetch_backend=_fake_backend,
-        surprise_source=lambda: 0.037,
-    )
-    assert len(result) == 1
-    assert captured_notes["score"] == 0.037
+    assert "surprise_source" not in inspect.signature(curiosity.build_curiosity_followups).parameters
+    assert list(inspect.signature(curiosity._gate_open).parameters) == ["run_id"]
+    for gone in ("_default_bus_synaptic_surprise_source", "_resolve_domain_surprise", "_get_surprise_engine"):
+        assert not hasattr(curiosity, gone), gone
 
 
 def test_backend_error_degrades_to_no_followup(monkeypatch):

@@ -121,9 +121,6 @@ class ReplayStore:
     def load_effect_posteriors(self):
         return {}
 
-    def latest_surprise(self):
-        return 0.1
-
 
 class ReplayMarket:
     """The real ``decide`` on a fresh, price-free body state; the family's event history grows as it bids."""

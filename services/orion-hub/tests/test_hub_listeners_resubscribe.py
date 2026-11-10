@@ -18,7 +18,6 @@ import pytest
 from orion.core.bus import resilience
 from scripts import (
     biometrics_cache,
-    bus_synaptic_trigger_notifier,
     cognition_trace_cache,
     curiosity_investigation,
     embodiment_outcome_cache,
@@ -77,7 +76,7 @@ def _fast_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """The real run_subscription, with a 10 ms retry wait instead of 1 s."""
     fast = functools.partial(resilience.run_subscription, max_backoff_sec=0.01)
     for module in (
-        biometrics_cache, bus_synaptic_trigger_notifier, cognition_trace_cache, curiosity_investigation,
+        biometrics_cache, cognition_trace_cache, curiosity_investigation,
         embodiment_outcome_cache, notification_cache, signals_inspect_cache, vision_frame_cache,
     ):
         monkeypatch.setattr(module, "run_subscription", fast, raising=False)
@@ -98,7 +97,6 @@ CASES = [
     ("hub.signals_inspect_cache", _cache_case(signals_inspect_cache, "SignalsInspectCache", "_handle_message", "_run", subscribe_pattern="orion:signals:*"), ("orion:signals:*",), True, "pmessage"),
     ("hub.embodiment_outcome_cache", _cache_case(embodiment_outcome_cache, "EmbodimentOutcomeCache", "_handle_message", "_run", channel="orion:embodiment:outcome"), ("orion:embodiment:outcome",), False, "message"),
     ("hub.biometrics_cache", _cache_case(biometrics_cache, "BiometricsCache", "_handle_message", "_run"), ("orion:biometrics:summary", "orion:biometrics:induction", "orion:biometrics:cluster"), False, "message"),
-    ("hub.bus_synaptic_trigger_notifier", _cache_case(bus_synaptic_trigger_notifier, "BusSynapticTriggerNotifier", "_handle_metacog_trigger", "_run", metacog_trigger_channel="orion:equilibrium:metacog:trigger"), ("orion:equilibrium:metacog:trigger",), False, "message"),
     ("hub.vision_frame_cache", _cache_case(vision_frame_cache, "VisionFrameCache", "_handle_message", "_run", channel="orion:vision:frames", stream_ids={"carbon"}), ("orion:vision:frames",), False, "message"),
     ("hub.notification_cache", _cache_case(notification_cache, "NotificationCache", "_handle_message", "_run", channel="orion:notify:in_app"), ("orion:notify:in_app",), False, "message"),
     ("hub.curiosity_run_state", _cache_case(curiosity_investigation, "CuriosityInvestigation", "_handle_run_state", "_run_state_loop", _stop=None), (curiosity_investigation.DURABLE_RUN_STATE_CHANNEL,), False, "message"),

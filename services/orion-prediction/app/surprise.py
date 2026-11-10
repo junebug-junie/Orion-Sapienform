@@ -39,6 +39,10 @@ from app.models import BASELINES
 P_FLOOR = 0.05
 CALM_SURPRISAL = 1.0 - P_FLOOR
 MIN_GATE_SCORES = 200   # same count engine.MIN_LIVE_COVERAGE_N requires before judging coverage
+# Measured method bias: a perfectly calibrated normal forecaster reads this mean excess through the
+# 9-level linear CDF (tests/test_surprise.py). The calm verdict allows for it, so a long window
+# (small null band) does not call a calibrated forecaster un-calm.
+METHOD_BIAS = 0.033
 
 
 def conformal_p_value(actual: float, quantiles: Mapping[str, float]) -> tuple[float, bool]:
@@ -47,6 +51,8 @@ def conformal_p_value(actual: float, quantiles: Mapping[str, float]) -> tuple[fl
     pts = sorted((float(k), float(v)) for k, v in quantiles.items())
     if not pts:
         raise ValueError("no quantiles")
+    if any(b[1] < a[1] for a, b in zip(pts, pts[1:])):
+        raise ValueError("quantiles not monotone in level")
     if actual < pts[0][1] or actual > pts[-1][1]:
         return P_FLOOR, True
     # Collapsed levels (equal values, e.g. a 0.025 and 0.05 both clipped to the pool's min) form one
@@ -93,9 +99,12 @@ def horizon_gate(hm: int, horizon_live: Mapping | None, served_model: str | None
 
 
 def summarize(rows: list[Mapping], grain_min: int) -> dict:
-    """Per horizon over ``rows`` (scored champion rows with actual + quantiles): mean surprisal,
-    mean excess with a 95 % null band from independent origins only (forecasts issued every grain
-    overlap for h/grain steps), and the share of p at or below 0.05 and 0.2 (calibrated: 0.05, 0.2)."""
+    """Per horizon over ``rows`` (scored champion rows with actual + quantiles): mean surprisal and
+    mean excess over INDEPENDENT origins only -- forecasts issued every grain overlap for h/grain
+    steps, so one origin per horizon-long block anchored to the clock (``origin_ts`` on a multiple
+    of the horizon), robust to gaps -- with its 95 % null band; plus the share of p at or below
+    0.05 and 0.2 over all rows (calibrated: 0.05, 0.2). ``calm``: |mean excess| within the band
+    plus ``METHOD_BIAS``."""
     by_h: dict[int, list[Mapping]] = {}
     for r in rows:
         by_h.setdefault(int(r["horizon_min"]), []).append(r)
@@ -104,16 +113,19 @@ def summarize(rows: list[Mapping], grain_min: int) -> dict:
         rs = sorted(rs, key=lambda r: r["origin_ts"])
         ps = np.array([conformal_p_value(float(r["actual"]), r["quantiles"])[0] for r in rs])
         sur = -np.log(ps)
-        thin = sur[:: max(1, hm // grain_min)]
+        block = max(hm, grain_min) * 60
+        keep = np.array([int(r["origin_ts"].timestamp()) % block == 0 for r in rs])
+        thin = sur[keep]
+        mean_ex = float(thin.mean() - CALM_SURPRISAL) if len(thin) else None
         band = (float(1.96 * thin.std(ddof=1) / math.sqrt(len(thin)))
                 if len(thin) >= 2 else None)
         out[str(hm)] = {
             "n": int(len(rs)),
             "n_independent": int(len(thin)),
-            "mean_surprisal": float(sur.mean()),
-            "mean_excess": float(sur.mean() - CALM_SURPRISAL),
+            "mean_surprisal": float(thin.mean()) if len(thin) else None,
+            "mean_excess": mean_ex,
             "null_band_95": band,
-            "calm": (None if band is None else bool(abs(float(thin.mean() - CALM_SURPRISAL)) <= band)),
+            "calm": (None if band is None else bool(abs(mean_ex) <= band + METHOD_BIAS)),
             "share_p_le_0_05": float(np.mean(ps <= P_FLOOR)),
             "share_p_le_0_2": float(np.mean(ps <= 0.2)),
         }

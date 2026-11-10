@@ -231,8 +231,12 @@ class PostgresStore:
 
     def due_for_scoring(self, series_id: str, before: datetime, limit: int = 2000) -> list[dict]:
         return self._all(
-            "SELECT forecast_id, role, horizon_min, issued_at, target_ts, quantiles, point FROM prediction_forecast "
-            "WHERE series_id = %s AND scored_at IS NULL AND target_ts < %s ORDER BY target_ts LIMIT %s",
+            # served_model: the model that served this horizon in the run that ISSUED the forecast
+            # (the surprise gate judges that model, not whichever serves at scoring time).
+            "SELECT f.forecast_id, f.role, f.horizon_min, f.issued_at, f.target_ts, f.quantiles, f.point, "
+            "r.assignment ->> f.horizon_min::text AS served_model "
+            "FROM prediction_forecast f LEFT JOIN prediction_model_run r ON r.run_id = f.run_id "
+            "WHERE f.series_id = %s AND f.scored_at IS NULL AND f.target_ts < %s ORDER BY f.target_ts LIMIT %s",
             (series_id, before, limit))
 
     def write_scores(self, scores: list[dict]) -> None:

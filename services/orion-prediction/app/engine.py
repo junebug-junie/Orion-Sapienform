@@ -141,9 +141,11 @@ class SeriesState:
     events: dict = field(default_factory=dict)   # with_events summary, for /health
     shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
     not_ready: dict | None = None   # NotReady.detail while the series is too young to select
-    # Surprise gate per horizon from the last monitor pass: hm -> (passes, reason), and live coverage.
+    # Surprise gate per horizon for the CURRENT selection, from the last monitor pass (display only):
+    # hm -> (passes, reason). Events are judged on the model that served at issue (surprise_events).
     surprise_gate: dict = field(default_factory=dict)
     live_coverage80: dict = field(default_factory=dict)
+    live_metrics: dict | None = None     # last monitor pass's live_metrics(); None until the first one
     pending_surprise: list = field(default_factory=list)   # PredictionSurpriseV1 awaiting publish
 
 
@@ -630,21 +632,34 @@ class Engine:
                            "in_80": q[q_key(0.1)] <= v <= q[q_key(0.9)],
                            "in_95": q[q_key(0.025)] <= v <= q[q_key(0.975)]})
         self.store.write_scores(scores)
-        self.state[spec.series_id].pending_surprise.extend(self.surprise_events(spec, due, scores))
+        st = self.state[spec.series_id]
+        try:
+            if st.live_metrics is None:
+                # First score after a start: judge now rather than lose these outcomes for good.
+                st.live_metrics = self.live_metrics(spec, now)
+            st.pending_surprise.extend(self.surprise_events(spec, due, scores))
+        except Exception as exc:  # noqa: BLE001 -- surprise never costs scoring or the rest of the tick
+            logger.warning("prediction_surprise_failed series=%s err=%s", spec.series_id, exc)
         return len(scores)
 
     def surprise_events(self, spec: SeriesSpec, due: list[dict], scores: list[dict]) -> list[PredictionSurpriseV1]:
-        """Champion outcomes on gated horizons only. A horizon with no gate verdict yet (first tick
-        after a start, before the first monitor pass) publishes nothing."""
-        st = self.state[spec.series_id]
+        """Champion outcomes on gated horizons only. The gate judges the model that served this
+        horizon when the forecast was ISSUED (``served_model`` from its run), against that model's
+        live record and the horizon's live coverage."""
+        live = self.state[spec.series_id].live_metrics or {}
+        horizons, shadow = live.get("horizons") or {}, live.get("shadow") or {}
         out = []
         for r, sc in zip(due, scores):
             hm = int(r["horizon_min"])
-            if r.get("role") != "champion" or not st.surprise_gate.get(hm, (False, ""))[0]:
+            if r.get("role") != "champion":
+                continue
+            model = r.get("served_model")
+            if not horizon_gate(hm, horizons.get(str(hm)), model, shadow.get(f"{model}@{hm}"))[0]:
                 continue
             base = dict(series_id=spec.series_id, horizon_min=hm, issued_at=r["issued_at"],
                         target_ts=r["target_ts"], scored_at=sc["scored_at"], point=float(r["point"]),
-                        calm_surprisal=CALM_SURPRISAL, live_coverage80=st.live_coverage80.get(hm))
+                        calm_surprisal=CALM_SURPRISAL,
+                        live_coverage80=(horizons.get(str(hm)) or {}).get("coverage80"))
             if sc["score_status"] != "scored":
                 out.append(PredictionSurpriseV1(outcome="missing", **base))
                 continue
@@ -667,8 +682,8 @@ class Engine:
                     kind=PREDICTION_SURPRISE_KIND, source=self.source, payload=ev.model_dump(mode="json")))
                 sent += 1
             except Exception as exc:  # noqa: BLE001 -- the scored row is the record; dropped, not retried
-                logger.error("prediction_surprise_publish_failed series=%s err=%s", spec.series_id, exc)
-                break
+                logger.error("prediction_surprise_publish_failed series=%s target=%s h=%s err=%s",
+                             spec.series_id, ev.target_ts, ev.horizon_min, exc)
         return sent
 
     def surprise_summary(self, spec: SeriesSpec, now: datetime, window: timedelta) -> dict:
@@ -815,6 +830,7 @@ class Engine:
         live = await sync(self.live_metrics, spec, now)
         last_issued = await sync(self.store.last_issued, spec.series_id)
         st.alerts = self.alerts_for(spec, now, live, last_issued)
+        st.live_metrics = live
         assignment = st.served.selection.assignment if st.served is not None else {}
         st.surprise_gate = {
             hm: horizon_gate(hm, live["horizons"].get(str(hm)), assignment.get(hm),

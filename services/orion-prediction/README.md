@@ -302,14 +302,14 @@ Each scored outcome becomes surprise (`app/surprise.py`; spec
 - **surprisal** = -ln p. **Calm point** = 1 - 0.05 = 0.95: the expected surprisal of a calibrated
   forecaster. **excess** = surprisal - 0.95. Calm reads 0, a bad miss reads up to +2.05.
 - A bucket with no readings is `outcome=missing`: silence where a value was forecast is news.
-- **Gate**, per horizon, from the monitor: served model is not a baseline, live 80 % coverage in
+- **Gate**, per horizon: the model that served it when the forecast was ISSUED is not a baseline, live 80 % coverage in
   0.72-0.88 over >= 200 scores, not live-worse than the baseline. Only gated horizons publish
   `PredictionSurpriseV1` on `orion:prediction:surprise`.
 - `GET /series/{id}/surprise?hours=24`: mean excess per horizon vs its 95 % null band (independent
   origins only), share of p <= 0.05 / 0.2, and each horizon's gate reason.
 
-**The calm check fails today (2026-11-10):** a quiet 24 h reads cabinet 15 min -0.29, office 15 min
--0.36 (7 days: -0.13 each, band +-0.06). The ranges are calibrated on average but one width fits
+**The calm check fails today (2026-11-10):** a quiet 24 h reads cabinet 15 min -0.28, office 15 min
+-0.36 (7 days: -0.12 each, band +-0.06). The ranges are calibrated on average but one width fits
 calm and busy hours alike, so calm days read too calm. No consumer reads the signal until
 `evals/run_surprise_calm_live_eval.py` shows calm within the band; the fix is volatility-adaptive
 ranges in the forecaster.

@@ -59,7 +59,8 @@ def test_collapsed_quantiles_do_not_divide_by_zero():
     q = _normal_q()
     q["0.025"] = q["0.05"]          # the pool clipped both to its minimum (live case, 2026-11-03)
     p, censored = conformal_p_value(q["0.05"], q)
-    assert 0 < p <= 0.1 and not censored
+    # The collapsed pair is one CDF point at their mean level 0.0375 -> p = 2 * 0.0375.
+    assert p == pytest.approx(0.075) and not censored
     assert surprisal(1.0) == 0.0 and surprisal(0.0) == pytest.approx(-math.log(P_FLOOR))
 
 
@@ -83,3 +84,23 @@ def test_summary_thins_overlapping_origins_and_flags_calm():
     h = summarize(rows, grain_min=5)["15"]
     assert h["n"] == 900 and h["n_independent"] == 300
     assert h["calm"] is True and abs(h["mean_excess"]) < 0.15
+    # Thinning is anchored to the clock, not row index: drop a row and the kept origins stay put.
+    gappy = summarize(rows[:1] + rows[2:], grain_min=5)["15"]
+    assert gappy["n_independent"] == 300
+
+
+def test_non_monotone_quantiles_are_refused():
+    q = _normal_q()
+    q["0.9"], q["0.1"] = q["0.1"], q["0.9"]
+    with pytest.raises(ValueError):
+        conformal_p_value(0.0, q)
+
+
+def test_long_windows_do_not_call_a_calibrated_forecaster_uncalm():
+    """Review finding: with thousands of origins the null band shrinks below the method bias."""
+    rng = np.random.default_rng(3)
+    q = _normal_q()
+    rows = [{"horizon_min": 5, "origin_ts": T0 + timedelta(minutes=5 * i), "actual": float(x), "quantiles": q}
+            for i, x in enumerate(rng.normal(0, 1, 20000))]
+    h = summarize(rows, grain_min=5)["5"]
+    assert h["null_band_95"] < 0.033 and h["calm"] is True

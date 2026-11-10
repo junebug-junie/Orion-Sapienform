@@ -9,8 +9,8 @@ coverage. Negative excess = ranges too wide; positive = too narrow or the world 
     cd services/orion-prediction && POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 168
 
 Baseline 2026-11-10 06:30 UTC (champion rows). The calm check FAILS today:
-- 7 days: cabinet 15 min excess -0.126 +-0.055, office 15 min -0.128 +-0.062 (coverage in band).
-- quiet 24 h: cabinet 15 min -0.293 +-0.104, 60 min -0.405 +-0.174; office 15 min -0.363 +-0.084.
+- 7 days: cabinet 15 min excess -0.115 +-0.056, office 15 min -0.116 +-0.061 (coverage in band).
+- quiet 24 h: cabinet 15 min -0.281 +-0.101, 60 min -0.372 +-0.145; office 15 min -0.355 +-0.085.
 The ranges are calibrated on average (80 % coverage ~0.84) but not conditionally: one width for calm
 and busy hours, so a calm day reads far below 0 and the misses cluster in busy periods. Fix belongs
 in the forecaster (volatility-adaptive conformal ranges), not in this transform. No consumer may

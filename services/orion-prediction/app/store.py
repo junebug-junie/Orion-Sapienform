@@ -37,7 +37,8 @@ TABLES = {
     "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result", "shadow"),
     "prediction_turn_self_bet": ("bet_id", "correlation_id", "faculty", "status", "stated_p", "stated_lo", "observed",
                                  "reference"),
-    "prediction_reachable_forecast": ("forecast_id", "origin", "p", "p_state", "p_baseline", "served", "happened"),
+    "prediction_reachable_forecast": ("forecast_id", "origin", "p", "p_state", "p_baseline", "served", "features",
+                                      "happened"),
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
@@ -53,7 +54,8 @@ TURN_SELF_BET_COLS = ("bet_id", "correlation_id", "faculty", "claim_kind", "call
 # Checked 2026-11-10: chat_history_log's non-empty prompts agree with this to within 1 of 121 rows.
 JUNIPER_MESSAGE_SQL = "role = 'user' AND coalesce(session_id, '') NOT LIKE 'orion\\_%%'"
 REACHABLE_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "p", "p_state", "p_baseline", "served",
-                  "hours_since", "state_bucket", "local_hour", "n_messages", "settled_at", "happened", "n_in_window")
+                  "hours_since", "state_bucket", "local_hour", "n_messages", "features", "settled_at", "happened",
+                  "n_in_window")
 
 
 def _since(ts: datetime) -> str:
@@ -541,14 +543,23 @@ class PostgresStore:
                          "AND timestamp >= %s AND timestamp < %s ORDER BY timestamp", (start, end))
         return [r["t"] for r in rows]
 
+    def juniper_claude_typed(self, start: datetime, end: datetime) -> list[tuple[datetime, int]]:
+        """(window_until, message_count) of Juniper's own typed Claude Code messages, windows ending in
+        ``[start, end)``. Written by orion-cocreation-signals; read-only here."""
+        rows = self._all("SELECT window_until AS t, message_count AS n FROM juniper_affective_state_log "
+                         "WHERE message_count > 0 AND window_until >= %s AND window_until < %s ORDER BY window_until",
+                         (start, end))
+        return [(r["t"], int(r["n"])) for r in rows]
+
     def reachable_exists(self, origin: datetime) -> bool:
         return bool(self._all("SELECT 1 FROM prediction_reachable_forecast WHERE origin = %s", (origin,)))
 
     def insert_reachable(self, row: dict) -> str | None:
         cols = REACHABLE_COLS
         rows = self._all(f"INSERT INTO prediction_reachable_forecast ({', '.join(cols)}) VALUES "
-                         f"({', '.join(['%s'] * len(cols))}) ON CONFLICT (forecast_id) DO NOTHING RETURNING forecast_id",
-                         [row[c] for c in cols])
+                         f"({', '.join('%s::jsonb' if c == 'features' else '%s' for c in cols)}) "
+                         "ON CONFLICT (forecast_id) DO NOTHING RETURNING forecast_id",
+                         [_j(row[c]) if c == "features" else row[c] for c in cols])
         return rows[0]["forecast_id"] if rows else None
 
     def pending_reachable(self, window_ended_before: datetime) -> list[dict]:

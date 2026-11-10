@@ -297,15 +297,16 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/ori
 
 Every hour: "will Juniper send Orion a message in the next hour?" (`app/reachable.py`; spec
 `docs/superpowers/specs/2026-11-10-juniper-reachable-forecast-design.md`). Issued in the first 10 min
-of the hour from messages before it, settled 10 min after the hour ends from `chat_message`
-(`role = 'user'`, outside `orion_*` sessions). Served model: hours-since-last-message state x local
-hour (Denver), backed off to a recency-weighted base rate. Graded per local day with the paired test
-on mean log loss, for all hours and for cold hours (no message in the prior 3 h). Table
-`prediction_reachable_forecast`. Flag `PREDICTION_REACHABLE_ENABLED`. No consumer and no bus event yet.
+of the hour from data before it, settled 10 min after the hour ends from `chat_message`
+(`role = 'user'`, outside `orion_*` sessions). Served model: ridge logistic on hours since her last
+message, her clock rules (asleep 03-08, weekend mornings, evenings, Mondays) and whether she typed to
+Claude Code recently (`juniper_affective_state_log`). Graded per local day against a recency-weighted
+base rate, for all hours and cold hours (no message in the prior 3 h), as a loss gap, its standard
+error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
+`PREDICTION_REACHABLE_ENABLED`. No consumer and no bus event yet.
 
-Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): overall 19 % lower log loss than the base
-rate but not significant (Holm p 0.08); cold hours 6 % worse. It does not pass its gate yet; nothing
-may consume it until the cold verdict reads `better`.
+Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): overall 26 % lower loss (prob_better
+0.95); cold hours 2 % (0.70); under-confident at every level.
 
 ## Surprise
 

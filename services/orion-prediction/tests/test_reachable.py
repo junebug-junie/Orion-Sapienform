@@ -30,12 +30,48 @@ def test_no_history_returns_prior_for_all_three():
     assert f["state_bucket"] == len(R.STATE_EDGES_H) and f["hours_since"] is None
 
 
-def test_forecast_ignores_messages_at_or_after_origin():
+def test_forecast_ignores_messages_and_typing_at_or_after_origin():
     msgs = _bursty(30)
     origin = R.hour_floor(msgs[-1])
-    a = R.forecast(msgs, origin)
-    b = R.forecast([m for m in msgs if m < origin] + [origin + timedelta(minutes=m) for m in (0, 5, 70)], origin)
+    typed = [(m - timedelta(minutes=20), 3) for m in msgs]
+    a = R.forecast(msgs, origin, typed)
+    later = [origin + timedelta(minutes=m) for m in (0, 5, 70)]
+    b = R.forecast([m for m in msgs if m < origin] + later, origin,
+                   [t for t in typed if t[0] < origin] + [(t, 9) for t in later])
     assert a == b
+
+
+def _typing_leads(days: int, seed: int = 0):
+    """Messages to Orion come in hours right after Juniper typed to Claude, never otherwise; she types to
+    Claude on most days, and the messages follow only some of those sessions (so cold hours exist)."""
+    rng = np.random.default_rng(seed)
+    msgs, typed = [], []
+    for d in range(days):
+        for _ in range(int(rng.integers(1, 3))):
+            t = T0 + timedelta(days=d, hours=int(rng.integers(14, 23)), minutes=int(rng.integers(0, 50)))
+            typed.append((t, int(rng.integers(1, 6))))
+            if rng.random() < 0.4:
+                msgs.append(R.hour_floor(t) + timedelta(hours=1, minutes=int(rng.integers(0, 50))))
+    return sorted(msgs), sorted(typed)
+
+
+def test_typing_to_claude_raises_p_in_cold_hours():
+    msgs, typed = _typing_leads(60)
+    origin = T0 + timedelta(days=61, hours=10)
+    quiet = R.forecast(msgs, origin, typed)
+    busy = R.forecast(msgs, origin, typed + [(origin - timedelta(minutes=15), 4)])
+    assert quiet["state_bucket"] >= R.COLD_BUCKET and busy["state_bucket"] == quiet["state_bucket"]
+    assert busy["features"]["claude_1h"] and not quiet["features"]["claude_1h"]
+    assert busy["p"] > 3 * quiet["p"]
+
+
+def test_asleep_hours_read_lower_than_evening():
+    msgs = _bursty(60)
+    day = (T0 + timedelta(days=61)).astimezone(R.LOCAL_TZ)
+    night = R.forecast(msgs, day.replace(hour=5).astimezone(timezone.utc))
+    eve = R.forecast(msgs, day.replace(hour=20).astimezone(timezone.utc))
+    assert night["features"]["asleep"] and eve["features"]["evening"]
+    assert night["p"] < eve["p"]
 
 
 def test_state_is_hours_since_last_message_and_local_hour_is_denver():
@@ -70,17 +106,33 @@ def _replay(msgs, days):
     return rows
 
 
-def test_verdict_pending_below_min_days():
+def test_grade_has_no_comparison_below_min_days():
     msgs = _bursty(20)
     v = R.verdict(_replay(msgs, 20))
-    assert v["all"]["verdict"] == "pending" and v["all"]["n_days"] < R.MIN_DAYS
+    assert v["all"]["vs_baseline"] is None and v["all"]["n_days"] < R.MIN_DAYS
     assert v["served"] == R.MODEL
+
+
+def _replay_typed(msgs, typed, days):
+    rows = []
+    for h in range(24 * 7, 24 * days):
+        o = T0 + timedelta(hours=h)
+        rows.append({**R.forecast(msgs, o, typed), "happened": R.outcome(msgs, o)[0]})
+    return rows
+
+
+def test_typing_lead_gives_cold_hour_skill_on_replay():
+    msgs, typed = _typing_leads(50, seed=4)
+    v = R.verdict(_replay_typed(msgs, typed, 50))
+    # a planted, strong signal: near-certain, and the gap is several standard errors below zero
+    c = v["cold"]["vs_baseline"]
+    assert c["prob_better"] > 0.99 and c["gap_per_day"] < -3 * c["gap_se"], v["cold"]
 
 
 def test_bursty_history_beats_base_rate_overall_on_replay():
     msgs = _bursty(70, seed=1)
     v = R.verdict(_replay(msgs, 70))
-    assert v["all"]["verdict"] == "better", v["all"]
+    assert v["all"]["vs_baseline"]["prob_better"] > 0.99, v["all"]
     assert v["all"]["skill_vs_baseline"] > 0
     # cold hours exist and are graded separately
     assert v["cold"]["n_hours"] > 0 and v["cold"]["n_hours"] < v["all"]["n_hours"]
@@ -90,15 +142,17 @@ def test_random_messages_are_not_better_than_base_rate():
     rng = np.random.default_rng(3)
     msgs = sorted(T0 + timedelta(minutes=int(x)) for x in rng.integers(0, 70 * 1440, 40))
     v = R.verdict(_replay(msgs, 70))
-    assert v["all"]["verdict"] in ("unclear", "worse"), v["all"]
+    # nothing to learn: the grade must not claim near-certainty
+    assert v["all"]["vs_baseline"]["prob_better"] < 0.9, v["all"]
 
 
-def test_served_falls_back_to_baseline_only_when_worse(monkeypatch):
+def test_served_is_the_lower_loss_forecast():
     msgs = _bursty(40, seed=2)
     rows = _replay(msgs, 40)
     bad = [{**r, "p": 0.9 if not r["happened"] else 0.01} for r in rows]   # confidently wrong
     v = R.verdict(bad)
-    assert v["all"]["verdict"] == "worse" and v["served"] == R.BASELINE
+    assert v["all"]["vs_baseline"]["gap_per_day"] > 0 and v["all"]["vs_baseline"]["prob_better"] < 0.01
+    assert v["served"] == R.BASELINE
     assert R.served_p(bad[0], v["served"]) == bad[0]["p_baseline"]
 
 
@@ -113,6 +167,9 @@ class _Store:
 
     def juniper_messages(self, start, end):
         return [m for m in self.msgs if start <= m < end]
+
+    def juniper_claude_typed(self, start, end):
+        return []
 
     def reachable_exists(self, origin):
         return any(r["origin"] == origin for r in self.rows.values())
@@ -152,4 +209,4 @@ def test_tick_issues_once_per_hour_only_early_and_settles_after_grace():
     # the 03:00 forecast saw only the 02:30 message
     assert row["n_messages"] == 1 and row["state_bucket"] == 0
     live = rc.live(o + timedelta(hours=1, minutes=12))
-    assert live["current"]["served_p"] > 0 and live["verdict"]["all"]["verdict"] == "pending"
+    assert live["current"]["served_p"] > 0 and live["grade"]["all"]["vs_baseline"] is None

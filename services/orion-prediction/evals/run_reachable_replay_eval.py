@@ -30,6 +30,7 @@ def main() -> None:
     now = R.hour_floor(datetime.now(timezone.utc))
     store = PostgresStore(os.environ["POSTGRES_URI"])
     msgs = store.juniper_messages(now - timedelta(days=a.days) - R.LOOKBACK, now)
+    typed = store.juniper_claude_typed(now - timedelta(days=a.days) - R.LOOKBACK, now)
     store.close()
     if not msgs:
         print(json.dumps({"error": "no messages"}))
@@ -38,11 +39,11 @@ def main() -> None:
     start = max(first, now - timedelta(days=a.days))
     rows, o = [], start
     while o + R.WINDOW <= now:
-        f = R.forecast(msgs, o)
+        f = R.forecast(msgs, o, typed)
         rows.append({**f, "happened": R.outcome(msgs, o)[0]})
         o += R.WINDOW
     v = R.verdict(rows)
-    v["replay"] = {"from": start.isoformat(), "to": now.isoformat(), "messages": len(msgs)}
+    v["replay"] = {"from": start.isoformat(), "to": now.isoformat(), "messages": len(msgs), "claude_typed_windows": len(typed)}
     print(json.dumps(v, indent=1, default=str))
 
 

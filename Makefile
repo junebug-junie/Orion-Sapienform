@@ -492,8 +492,8 @@ postgres-headroom-watch:
 
 # Substrate ladder liveness (2026-09-20 incident: a FieldStateV1 forbid-field was
 # added, only the producer redeployed, attention/proposal wrote nothing for ~48h
-# while every container read "Up"). Two checks: every rung table still has a
-# recent row (bounded index scans), and every container that validates a
+# while every container read "Up"). Two checks: every live rung table still has a
+# recent row (bounded index scans; L7-L11 are listed as retired, never read), and every container that validates a
 # schema another service writes can read what that writer's container writes
 # (orion/schema_skew_discovery.py finds every forbid-model (file, writer,
 # readers) triple from call sites; `--list-candidates` shows them; one docker

@@ -291,6 +291,26 @@ class ReadingFindingOutreach:
         if blocked:
             self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
+        # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
+        # bundle stays pending and is retried next tick (the hold ends by the 1 h window at the latest).
+        # Cap-exempt: this door never counts against Juniper's daily cap.
+        key = str(meta["bundle_key"])
+        admit, economy = await outreach.economy_admit(door=READING_FINDING_TAG, key=key, cap_counted=False)
+        if economy:
+            meta = {**meta, "economy": economy}
+        if not admit:
+            self._record_block_once(outreach, bundle, meta, "economy_held", correlation_id)
+            return {"seed_id": bundle.seed_id, "reason": "economy_held"}
+        sent = False
+        try:
+            result = await self._compose_and_offer(outreach, bundle, meta, correlation_id, decision_id)
+            sent = result.get("reason") == "sent"
+            return result
+        finally:
+            await outreach.economy_done(door=READING_FINDING_TAG, key=key, sent=sent)
+
+    async def _compose_and_offer(self, outreach: Any, bundle: ReadingFindingBundleV1, meta: dict[str, Any],
+                                 correlation_id: str, decision_id: str) -> dict[str, Any]:
         prompt = build_reading_finding_prompt(bundle)
         text, debug = await outreach.compose(
             prompt, correlation_id, retrieval_query=first_sentences(bundle.learned, 2) or None)

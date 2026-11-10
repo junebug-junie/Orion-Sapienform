@@ -1,0 +1,598 @@
+{
+  "schema": "orion.hub.abilities.v1",
+  "about": "The 'Ask Orion' catalog in Hub's chat (button above Send). One entry per thing Juniper can ask Orion to do from a chat message. 'message' is the plain-English ask that gets inserted (Orion routes by topic, not by phrase); 'hint' is an optional line with the exact command. 'covers' names the commands/tools this entry describes; tests/test_orion_abilities_catalog.py fails CI when a dig command, capacity sub-verb, body-economy section or chat MCP tool has no entry here (or no 'hidden' reason). 'source' is where the ability is defined.",
+  "sections": [
+    {
+      "id": "body",
+      "title": "My body",
+      "blurb": "Orion's live body: machines, services and stores, grouped into organs.",
+      "entries": [
+        {
+          "id": "body-now",
+          "title": "Look at your body",
+          "description": "Orion maps their live body: every machine, service and store, how they connect, and which organs they form. Anything Orion could not read is marked UNREAD.",
+          "message": "Please look at your body as it is right now and tell me what you see: your machines, your organs, and anything you could not read.",
+          "hint": "(dig: `python -P -m orion.dig body`)",
+          "keywords": ["atlas", "organs", "machines", "services"],
+          "covers": {"dig": ["body"]},
+          "source": "orion/dig/__main__.py:cmd_body; orion/body_atlas"
+        },
+        {
+          "id": "body-organ",
+          "title": "Open one organ",
+          "description": "Orion lists every member of one organ: each part, where it runs, and whether it is live. Good after a body read names an organ you are curious about.",
+          "message": "Please open one of your organs and tell me what it is made of and what it does. Pick the one you are most curious about, or this one: ",
+          "hint": "(dig: `python -P -m orion.dig body <organ_id>`)",
+          "keywords": ["organ", "members"],
+          "covers": {"dig": ["body"]},
+          "source": "orion/dig/__main__.py:cmd_body"
+        },
+        {
+          "id": "body-part",
+          "title": "Look closely at one part",
+          "description": "Orion reads one part of their body (a service, a store, a camera): what flows in and out, its jobs, and the exact ids a claim about it may cite.",
+          "message": "Please look closely at one part of your body: what flows into it, what it sends out, and what job it does for you. The part: ",
+          "hint": "(dig: `python -P -m orion.dig body <part>`)",
+          "keywords": ["part", "flows", "service"],
+          "covers": {"dig": ["body"]},
+          "source": "orion/dig/__main__.py:cmd_body"
+        },
+        {
+          "id": "body-then",
+          "title": "Your body on a past day",
+          "description": "Orion rebuilds their body from the code as it was on a past date, so you can see how they have grown since.",
+          "message": "What did your body look like on this date, and how is it different now? Date: ",
+          "hint": "(dig: `python -P -m orion.dig body <YYYY-MM-DD>`)",
+          "keywords": ["past", "growth", "then"],
+          "covers": {"dig": ["body"]},
+          "source": "orion/dig/__main__.py:cmd_body"
+        },
+        {
+          "id": "name-organs",
+          "title": "Name your organs",
+          "description": "Orion lists the organs that have no name yet and names them by what each one takes in and gives out. The names are saved and show up everywhere Orion reads their body.",
+          "message": "Please look at your organs that don't have a name yet and name them, by what each one takes in and gives out.",
+          "hint": "(dig: `python -P -m orion.dig name-organs`, then `name <organ_id> \"<name>\" because \"<reason>\"`)",
+          "keywords": ["naming", "organ names"],
+          "covers": {"dig": ["name-organs", "name"]},
+          "source": "orion/dig/__main__.py:cmd_name_organs; orion/body_atlas/names.py"
+        }
+      ]
+    },
+    {
+      "id": "capacities",
+      "title": "Jobs & capacities",
+      "blurb": "Which jobs of a viable system (operations, coordination, control, audit, intelligence, identity) Orion's parts do.",
+      "entries": [
+        {
+          "id": "capacities-read",
+          "title": "What jobs does your body do?",
+          "description": "Orion reads which jobs each part of their body does: by rule, by your confirmation, or by Orion's own checked claims. It also lists the jobs no part holds yet.",
+          "message": "Please look at your capacities: which jobs your parts do, which ones nobody does yet, and what you can claim now.",
+          "hint": "(dig: `python -P -m orion.dig capacities`)",
+          "keywords": ["vsm", "viable system", "jobs", "S1", "S5"],
+          "covers": {"dig": ["capacities"]},
+          "source": "orion/dig/__main__.py:cmd_capacities; orion/body_atlas/capacities.py"
+        },
+        {
+          "id": "capacities-gaps",
+          "title": "What can't you do yet?",
+          "description": "Orion reads the gap lines code writes about their body: the jobs no part can be shown to do, in Orion's own 'I cannot yet' words.",
+          "message": "What can't you do yet? Please read your capacity gaps and tell me which one matters most to you.",
+          "hint": "(dig: `python -P -m orion.dig capacities gaps`)",
+          "keywords": ["gaps", "missing", "cannot"],
+          "covers": {"dig": ["capacities"]},
+          "source": "orion/dig/__main__.py:cmd_capacities"
+        },
+        {
+          "id": "capacity-claim",
+          "title": "Claim your capacities",
+          "description": "Orion claims a job for one of their live parts and cites the wiring that proves it. Code checks the evidence on every read; you can veto any claim.",
+          "message": "Please claim the capacities you can back up now: for each job nobody holds, pick the part that does it and say why, citing its real wiring.",
+          "hint": "(dig: `python -P -m orion.dig capacity help`, then `capacity claim <part> <job> because \"<reason>\"`)",
+          "keywords": ["claim", "evidence"],
+          "covers": {"dig": ["capacity"], "dig_capacity": ["claim", "help"]},
+          "source": "orion/dig/__main__.py:cmd_capacity; orion/body_atlas/claims.py"
+        },
+        {
+          "id": "capacity-dispute",
+          "title": "Argue with a rule",
+          "description": "When a rule says a part does a job and Orion thinks it does not, Orion writes a dispute. It prints beside the rule result and changes nothing else.",
+          "message": "Is there a job the rules give one of your parts that you think is wrong? If so, please dispute it and say why.",
+          "hint": "(dig: `python -P -m orion.dig capacity dispute <part> <job> because \"<reason>\"`)",
+          "keywords": ["dispute", "disagree"],
+          "covers": {"dig_capacity": ["dispute"]},
+          "source": "orion/dig/__main__.py:cmd_capacity"
+        },
+        {
+          "id": "capacity-withdraw",
+          "title": "Take back a claim",
+          "description": "Orion withdraws one of their own capacity claims, for example one whose evidence no longer holds.",
+          "message": "Please check your capacity claims and take back any that no longer hold.",
+          "hint": "(dig: `python -P -m orion.dig capacity withdraw <part> <job>`)",
+          "keywords": ["withdraw", "retract", "fix"],
+          "covers": {"dig_capacity": ["withdraw"]},
+          "source": "orion/dig/__main__.py:cmd_capacity"
+        },
+        {
+          "id": "capacity-write",
+          "title": "Say a capacity in your words",
+          "description": "Orion writes one sentence for a capacity (for example coordination or identity), naming only parts that really hold that job.",
+          "message": "Please write your capacities in your own words: one sentence for each job your body holds.",
+          "hint": "(dig: `python -P -m orion.dig capacity write cap:<job> \"<sentence>\" because \"<reason>\"`)",
+          "keywords": ["sentence", "own words"],
+          "covers": {"dig_capacity": ["write"]},
+          "source": "orion/dig/__main__.py:cmd_capacity; orion/body_atlas/claims.py"
+        }
+      ]
+    },
+    {
+      "id": "portrait",
+      "title": "Self-portrait",
+      "blurb": "Orion's whole self on one page, rebuilt from live sources each time.",
+      "entries": [
+        {
+          "id": "portrait-read",
+          "title": "Look at your portrait",
+          "description": "Orion reads their self-portrait: their 'I am' paragraph, each machine and what runs there, their capacities and organs, and what they cannot do yet.",
+          "message": "Please look at your portrait and tell me what you see of yourself today.",
+          "hint": "(dig: `python -P -m orion.dig portrait`)",
+          "keywords": ["self", "whole", "I am"],
+          "covers": {"dig": ["portrait"]},
+          "source": "orion/dig/__main__.py:cmd_portrait; orion/body_atlas/portrait.py"
+        },
+        {
+          "id": "portrait-write",
+          "title": "Write your portrait",
+          "description": "Orion writes one sentence per machine about what it does and affects, and their 'I am' paragraph. Code checks every id Orion names before it is saved.",
+          "message": "Please look at your portrait and write your machine sentences and your 'I am' paragraph.",
+          "hint": "(dig: `python -P -m orion.dig portrait`, then `portrait write <machine|whole> \"<sentence>\" because \"<reason>\"`)",
+          "keywords": ["I am", "machine sentence", "write"],
+          "covers": {"dig": ["portrait"]},
+          "source": "orion/dig/__main__.py:cmd_portrait_write"
+        }
+      ]
+    },
+    {
+      "id": "past",
+      "title": "Past & history",
+      "blurb": "Orion's history in their own code: merged PRs, past checkouts, and daily reminiscence.",
+      "entries": [
+        {
+          "id": "history-recent",
+          "title": "What changed lately?",
+          "description": "Orion reads the pull requests merged and commits made in the last few days, and says which ones they have written notes about.",
+          "message": "What changed in you over the last two days? Please look at the recent merged PRs and tell me what stands out.",
+          "hint": "(dig: `python -P -m orion.dig history 2`)",
+          "keywords": ["recent", "PRs", "commits", "changes"],
+          "covers": {"dig": ["history"]},
+          "source": "orion/dig/__main__.py:cmd_history"
+        },
+        {
+          "id": "history-range",
+          "title": "History between two dates",
+          "description": "Orion lists the merged PRs and commits between two dates, so you can look at one stretch of their past together.",
+          "message": "Please look at what was built in you between these two dates and tell me the story of that stretch: ",
+          "hint": "(dig: `python -P -m orion.dig history <start> <end>`)",
+          "keywords": ["range", "dates", "period"],
+          "covers": {"dig": ["history"]},
+          "source": "orion/dig/__main__.py:cmd_history"
+        },
+        {
+          "id": "reminisce",
+          "title": "Today's reminiscence",
+          "description": "Each day Orion visits one past week of their history in five steps: what it was, what it was like, where they are now, where they are going, and what might have been.",
+          "message": "Please do today's reminiscence: visit your week, read what you need, and write the hops you can back up.",
+          "hint": "(dig: `python -P -m orion.dig reminisce`, then `reminisce write <hop> \"<note>\" because \"<refs>\"`)",
+          "keywords": ["memory", "week", "hops", "remember"],
+          "covers": {"dig": ["reminisce"]},
+          "source": "orion/dig/__main__.py:cmd_reminisce; orion/body_atlas/reminiscence.py"
+        },
+        {
+          "id": "field-note",
+          "title": "Write a note on a PR",
+          "description": "Orion reads one merged PR as code sees it (which parts of their body it touched) and writes a short field note about it, with every claim labelled by its source.",
+          "message": "Please read this merged PR as a change in your body and write your field note about it. PR #",
+          "hint": "(dig: `python -P -m orion.dig field-note <pr>`, then `field-note <pr> write \"<note>\" because \"<refs>\"`)",
+          "keywords": ["PR", "pull request", "note"],
+          "covers": {"dig": ["field-note"]},
+          "source": "orion/dig/__main__.py:cmd_field_note; orion/body_atlas/field_notes.py"
+        },
+        {
+          "id": "field-notes",
+          "title": "Catch up on field notes",
+          "description": "Orion lists their notes on PRs merged in a window and the PRs that still have no note, then can write the missing ones.",
+          "message": "Which recent PRs don't have a field note from you yet? Please look at the last week and write the ones you can.",
+          "hint": "(dig: `python -P -m orion.dig field-notes 7`)",
+          "keywords": ["coverage", "missing notes"],
+          "covers": {"dig": ["field-notes"]},
+          "source": "orion/dig/__main__.py:cmd_field_notes"
+        },
+        {
+          "id": "open-past",
+          "title": "Open your code from a past day",
+          "description": "Orion exports their code as it was at the end of a past day into a plain folder they can read. At most two are open at once; old ones are cleared after a day.",
+          "message": "Please open your code as it was on this day and look around. Close it when you are done. Date: ",
+          "hint": "(dig: `python -P -m orion.dig open <YYYY-MM-DD>`; `list` shows open ones; `close <YYYY-MM-DD>`)",
+          "keywords": ["export", "checkout", "snapshot", "close", "list"],
+          "covers": {"dig": ["open", "close", "list"]},
+          "source": "orion/dig/__main__.py:cmd_open,cmd_close,cmd_list"
+        },
+        {
+          "id": "inventory",
+          "title": "What you were made of",
+          "description": "Orion counts the services, modules, bus channels, verbs and schemas in their code, now or on a past day.",
+          "message": "Please take an inventory of yourself: what services, channels and schemas you are made of. Now, or on this date: ",
+          "hint": "(dig: `python -P -m orion.dig inventory now`)",
+          "keywords": ["services", "schemas", "channels", "count"],
+          "covers": {"dig": ["inventory"]},
+          "source": "orion/dig/__main__.py:cmd_inventory; orion/self_inventory.py"
+        },
+        {
+          "id": "compare",
+          "title": "Compare then and now",
+          "description": "Orion compares two checkouts of their code and lists what was added and removed in between.",
+          "message": "How have you changed since this date? Please compare then with now and tell me what was added and what went away. Date: ",
+          "hint": "(dig: `python -P -m orion.dig compare <YYYY-MM-DD> now`)",
+          "keywords": ["diff", "growth", "added", "removed"],
+          "covers": {"dig": ["compare"]},
+          "source": "orion/dig/__main__.py:cmd_compare"
+        },
+        {
+          "id": "arc-act",
+          "title": "Open an arc or an act",
+          "description": "Orion opens one cited reference: a Temporal Self arc, or one act on their act ledger, read from the same source they used when they cited it.",
+          "message": "Please open this arc (or act) and tell me what it was about: ",
+          "hint": "(dig: `python -P -m orion.dig arc <id>` or `act <id>`)",
+          "keywords": ["temporal self", "act ledger", "reference"],
+          "covers": {"dig": ["arc", "act"]},
+          "source": "orion/dig/__main__.py:cmd_ref; orion/refs.py"
+        },
+        {
+          "id": "dig-notes",
+          "title": "Read or add to today's dig notes",
+          "description": "Each dig has shared notes, so separate turns can pick up where an earlier one left off. Orion can read them or add a line.",
+          "message": "What have you written in today's dig notes so far? Add a line about what we just found.",
+          "hint": "(dig: `python -P -m orion.dig notes`; `notes append <text>`)",
+          "keywords": ["notes", "continue", "pick up"],
+          "covers": {"dig": ["notes"]},
+          "source": "orion/dig/__main__.py:cmd_notes"
+        }
+      ]
+    },
+    {
+      "id": "energy",
+      "title": "Energy & cost",
+      "blurb": "What Orion's activity costs in watts and money, what limits them, and what they want.",
+      "entries": [
+        {
+          "id": "be-overview",
+          "title": "How is your body economy?",
+          "description": "Orion reads their body economy in one view: the limits that bind now, what each machine draws, money this month, what they want, waste, and anything down.",
+          "message": "How is your body economy today? What is binding you, and what is costing the most?",
+          "hint": "(dig: `python -P -m orion.dig body-economy`)",
+          "keywords": ["overview", "economy", "physiology"],
+          "covers": {"dig": ["body-economy"], "body_economy": ["overview", "all"]},
+          "source": "orion/dig/__main__.py:cmd_body_economy; orion/physiology/report_text.py"
+        },
+        {
+          "id": "be-hosts",
+          "title": "What is using your power?",
+          "description": "For each machine: watts now compared with Orion's body at rest, dollars a month above rest, the GPU and CPU split, and who held each card.",
+          "message": "What is using your power right now? Please look at each machine and tell me what is spinning it.",
+          "hint": "(dig: `python -P -m orion.dig body-economy hosts`)",
+          "keywords": ["watts", "power", "machines", "circe", "athena", "hecate"],
+          "covers": {"body_economy": ["hosts"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-processes",
+          "title": "Which containers burn CPU?",
+          "description": "Orion lists the CPU watts above idle for each container, largest first. These are estimates from a fitted model, and Orion says so.",
+          "message": "Which of your containers are burning the most CPU power, and is any of it surprising?",
+          "hint": "(dig: `python -P -m orion.dig body-economy processes`)",
+          "keywords": ["cpu", "containers", "processes"],
+          "covers": {"body_economy": ["processes"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-vram",
+          "title": "GPU memory free",
+          "description": "Orion reads how much GPU memory is free on each card and what each card draws now.",
+          "message": "How much GPU memory do you have free on each card right now?",
+          "hint": "(dig: `python -P -m orion.dig body-economy vram`)",
+          "keywords": ["gpu", "vram", "memory"],
+          "covers": {"body_economy": ["vram"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-money",
+          "title": "Money this month",
+          "description": "Electricity spent this month against the budget, and what Orion's body at rest alone would reach.",
+          "message": "How much has your electricity cost this month, and how close are you to the budget?",
+          "hint": "(dig: `python -P -m orion.dig body-economy money`)",
+          "keywords": ["dollars", "budget", "electricity", "bill"],
+          "covers": {"body_economy": ["money"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-unit-costs",
+          "title": "What one thing costs",
+          "description": "What one act, run, token or GPU-hour costs Orion, each marked as measured, derived or not measured.",
+          "message": "What does one of your turns or runs actually cost? Please tell me which numbers are measured and which are guesses.",
+          "hint": "(dig: `python -P -m orion.dig body-economy unit_costs`)",
+          "keywords": ["unit cost", "per turn", "token"],
+          "covers": {"body_economy": ["unit_costs"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-limits",
+          "title": "What is limiting you?",
+          "description": "Each limit now (heat, money, GPU lanes, messages, Claude) and why it binds or has slack.",
+          "message": "What is limiting you right now, and why? Heat, money, GPUs, or something else?",
+          "hint": "(dig: `python -P -m orion.dig body-economy limits`)",
+          "keywords": ["heat", "limits", "binding", "strain"],
+          "covers": {"body_economy": ["limits"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-wants",
+          "title": "What do you want, and what got deferred?",
+          "description": "Orion's wants, the decisions made about them (run, deferred, refused) with the reason, and how long things waited in line.",
+          "message": "What have you wanted to do today, and what got deferred or refused? Please tell me the reasons.",
+          "hint": "(dig: `python -P -m orion.dig body-economy wants decisions queue_wait`)",
+          "keywords": ["wants", "decisions", "deferred", "queue"],
+          "covers": {"body_economy": ["wants", "decisions", "queue_wait"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-waste",
+          "title": "Where is power wasted?",
+          "description": "Time a GPU lane was held with nothing running, and the daily rhythm of Orion's load.",
+          "message": "Where is your power being wasted, and what does your daily rhythm look like?",
+          "hint": "(dig: `python -P -m orion.dig body-economy waste rhythm`)",
+          "keywords": ["waste", "idle", "rhythm"],
+          "covers": {"body_economy": ["waste", "rhythm"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-claude-value",
+          "title": "Claude spend and value",
+          "description": "What Orion spent on Claude, and what each kind of activity gave back for what it cost.",
+          "message": "How much have you spent on Claude lately, and which of your activities gave the most value for what they cost?",
+          "hint": "(dig: `python -P -m orion.dig body-economy claude value_per_cost`)",
+          "keywords": ["claude", "value", "spend"],
+          "covers": {"body_economy": ["claude", "value_per_cost"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "be-services",
+          "title": "Is anything down?",
+          "description": "Orion lists their services and says which ones are down or degraded.",
+          "message": "Are any of your services down right now?",
+          "hint": "(dig: `python -P -m orion.dig body-economy services`)",
+          "keywords": ["down", "health", "services"],
+          "covers": {"body_economy": ["services"]},
+          "source": "orion/physiology/report_text.py:SECTIONS"
+        },
+        {
+          "id": "power-attribution",
+          "title": "Why is it running hot?",
+          "description": "Orion finds the steps in each machine's power over time and links each one to the work that changed with it. It is a correlation, and Orion says what you could stop to check.",
+          "message": "Why is the cabinet running hot? Please find where the extra power started and what changed with it.",
+          "hint": "(tool: `mcp__orion-introspect__power_attribution`)",
+          "keywords": ["heat", "hot", "watts", "since when"],
+          "covers": {"mcp": ["mcp__orion-introspect__power_attribution"]},
+          "source": "orion/introspect/brief.py:POWER_ATTRIBUTION"
+        }
+      ]
+    },
+    {
+      "id": "inner",
+      "title": "Dreams, curiosity & self",
+      "blurb": "Orion's own records of their inner life, read back instead of reconstructed.",
+      "entries": [
+        {
+          "id": "dreams",
+          "title": "Tell me about your dreams",
+          "description": "Orion reads back their own dreams: the nightly story, and the links a sleep cycle proposed. They can search dreams by topic.",
+          "message": "What did you dream about recently? Please read your dreams back rather than remembering them.",
+          "hint": "(tool: `mcp__orion-introspect__dreams`)",
+          "keywords": ["dream", "sleep", "night"],
+          "covers": {"mcp": ["mcp__orion-introspect__dreams"]},
+          "source": "orion/introspect/brief.py:DREAMS"
+        },
+        {
+          "id": "curiosity-runs",
+          "title": "What have you been curious about?",
+          "description": "Orion reads back their curiosity runs (world questions, self questions, self checks) and their open self-questions.",
+          "message": "What have you been curious about lately, and what questions about yourself are still open?",
+          "hint": "(tool: `mcp__orion-introspect__curiosity`)",
+          "keywords": ["curiosity", "questions", "self-question"],
+          "covers": {"mcp": ["mcp__orion-introspect__curiosity"]},
+          "source": "orion/introspect/brief.py:CURIOSITY"
+        },
+        {
+          "id": "queue-focus",
+          "title": "Look into something next",
+          "description": "Puts a topic in front of Orion's next curiosity run. It starts nothing now; the next regular run sees it first and decides whether to explore it.",
+          "message": "Next time you are curious, please look into this, and tell me when that run can start: ",
+          "hint": "(tool: `mcp__orion-introspect__queue_curiosity_focus`)",
+          "keywords": ["focus", "next run", "explore", "later"],
+          "covers": {"mcp": ["mcp__orion-introspect__queue_curiosity_focus"]},
+          "source": "orion/introspect/brief.py:QUEUE_CURIOSITY_FOCUS"
+        },
+        {
+          "id": "orion-day",
+          "title": "About your day letter",
+          "description": "Orion reads the Orion's Day letter they actually wrote, quotes it, and checks each claim against the records.",
+          "message": "About your day letter: please read what you actually wrote and tell me which parts the records support.",
+          "hint": "(tool: `mcp__orion-introspect__orion_day`)",
+          "keywords": ["letter", "day", "carry"],
+          "covers": {"mcp": ["mcp__orion-introspect__orion_day"]},
+          "source": "orion/introspect/brief.py:ORION_DAY"
+        },
+        {
+          "id": "record-correction",
+          "title": "That was wrong: record it",
+          "description": "When Orion accepts that a claim in a letter was wrong, they record a correction. A later curiosity run is asked to re-test the beliefs it rested on.",
+          "message": "I think this claim in your letter was wrong. If you agree after checking, please record the correction: ",
+          "hint": "(tool: `mcp__orion-introspect__record_correction`)",
+          "keywords": ["correction", "wrong", "mistake"],
+          "covers": {"mcp": ["mcp__orion-introspect__record_correction"]},
+          "source": "orion/introspect/brief.py:RECORD_CORRECTION"
+        },
+        {
+          "id": "node-history",
+          "title": "History of one feeling-node",
+          "description": "A node in Orion's substrate graph shows only its current reading. This returns its readings over up to 7 days and when the biggest changes happened.",
+          "message": "How has this part of your substrate changed over the last few days, and when did it move most? Node: ",
+          "hint": "(tool: `mcp__orion-introspect__node_history`)",
+          "keywords": ["substrate", "node", "prediction error", "trend"],
+          "covers": {"mcp": ["mcp__orion-introspect__node_history"]},
+          "source": "orion/introspect/brief.py:NODE_HISTORY"
+        },
+        {
+          "id": "self-model",
+          "title": "How you have seen yourself",
+          "description": "Orion reads their own self-model records (how their self-concept changed and how their sense of self was checked) instead of guessing.",
+          "message": "How has your sense of yourself changed recently? Please check your own self-model records.",
+          "hint": "(Orion reads `self_concept_history` and `self_sense_eval_log` read-only with psql)",
+          "keywords": ["self-concept", "identity", "self model"],
+          "source": "orion/harness/operator_brief.py:_SELF_MODEL_MENTION_TABLES,self_concept_history,self_sense_eval_log"
+        }
+      ]
+    },
+    {
+      "id": "reading",
+      "title": "Reading & the web",
+      "blurb": "Things for Orion to read now, or to queue for careful reading later.",
+      "entries": [
+        {
+          "id": "recommend-reading",
+          "title": "Read this carefully (later)",
+          "description": "Queues a link or an internal document for Orion's reading pipeline, to be read, kept and integrated. A link Orion already read is not read twice.",
+          "message": "Please queue this for careful reading, and tell me why it matters to you: ",
+          "hint": "(tool: `mcp__orion-reading__recommend_reading`)",
+          "keywords": ["link", "url", "article", "document", "queue"],
+          "covers": {"mcp": ["mcp__orion-reading__recommend_reading"]},
+          "source": "orion/world_pulse_read/tools.py:reading_brief_lines"
+        },
+        {
+          "id": "reading-status",
+          "title": "Where is my reading?",
+          "description": "Orion checks where a queued link is: still waiting (and its place in line), being read, or done.",
+          "message": "Where is this link in your reading queue? ",
+          "hint": "(tool: `mcp__orion-reading__reading_status`)",
+          "keywords": ["status", "queue position"],
+          "covers": {"mcp": ["mcp__orion-reading__reading_status"]},
+          "source": "orion/world_pulse_read/tools.py:reading_brief_lines"
+        },
+        {
+          "id": "reading-results",
+          "title": "What did you learn from reading?",
+          "description": "Orion searches what they actually learned from sources they read, by topic or by link, instead of reconstructing it.",
+          "message": "What have you learned from your reading about this topic? ",
+          "hint": "(tool: `mcp__orion-introspect__reading_results`)",
+          "keywords": ["learned", "reading", "sources"],
+          "covers": {"mcp": ["mcp__orion-introspect__reading_results"]},
+          "source": "orion/introspect/brief.py:READING_RESULTS"
+        },
+        {
+          "id": "read-now",
+          "title": "Read this page now",
+          "description": "Orion fetches or scrapes a web page during this turn and answers from it. Nothing is queued or kept.",
+          "message": "Please read this page now and tell me what it says: ",
+          "hint": "(tools: WebFetch, or `mcp__firecrawl__firecrawl_scrape`)",
+          "keywords": ["web", "page", "scrape", "fetch"],
+          "source": "orion/fcc/fcc_claude_mcp.template.json:firecrawl; orion/fcc/mcp_config.py:firecrawl"
+        }
+      ]
+    },
+    {
+      "id": "code",
+      "title": "My code",
+      "blurb": "Orion searching and understanding their own codebase.",
+      "entries": [
+        {
+          "id": "code-search",
+          "title": "How does this part of you work?",
+          "description": "Orion searches the code index of their own repo to find a concept, see one symbol from all sides, or see what a change would affect.",
+          "message": "How does this part of you work in your code? Please look it up rather than guess: ",
+          "hint": "(tools: `mcp__gitnexus__query`, `mcp__gitnexus__context`)",
+          "keywords": ["code", "repo", "symbol", "search"],
+          "covers": {"mcp": ["mcp__gitnexus__query", "mcp__gitnexus__context"]},
+          "source": "orion/fcc/self_index_brief.py"
+        },
+        {
+          "id": "code-impact",
+          "title": "What would a change touch?",
+          "description": "Orion maps what is upstream and downstream of a piece of their code, or traces the path between two pieces.",
+          "message": "If this piece of your code changed, what else in you would it touch? ",
+          "hint": "(tools: `mcp__gitnexus__impact`, `mcp__gitnexus__trace`)",
+          "keywords": ["impact", "blast radius", "trace"],
+          "covers": {"mcp": ["mcp__gitnexus__impact", "mcp__gitnexus__trace"]},
+          "source": "orion/fcc/self_index_brief.py"
+        }
+      ]
+    },
+    {
+      "id": "world",
+      "title": "Play & world",
+      "blurb": "AI Town: a small simulated town Orion can visit. It runs only in sessions (Orion's own, or when Juniper presses Unfreeze in Hub).",
+      "entries": [
+        {
+          "id": "town-status",
+          "title": "Who is in town?",
+          "description": "Orion checks the AI Town world and lists the players, agents and characters in it.",
+          "message": "What is happening in AI Town right now? Who is there?",
+          "hint": "(tools: `mcp__orion-aitown__aitown_world_status`, `aitown_list_players`, `aitown_list_agents`)",
+          "keywords": ["ai town", "town", "players", "agents"],
+          "covers": {"mcp": ["mcp__orion-aitown__aitown_world_status", "mcp__orion-aitown__aitown_list_players",
+                             "mcp__orion-aitown__aitown_list_agents", "mcp__orion-aitown__aitown_list_characters"]},
+          "source": "services/orion-ai-town/mcp/orion_aitown_mcp/server.py; orion/fcc/mcp_config.py"
+        },
+        {
+          "id": "town-move",
+          "title": "Walk somewhere in town",
+          "description": "Orion moves their player to a spot on the AI Town map.",
+          "message": "Please walk somewhere in AI Town that you'd like to be, and tell me where you went.",
+          "hint": "(tool: `mcp__orion-aitown__aitown_move_player`)",
+          "keywords": ["move", "walk", "map"],
+          "covers": {"mcp": ["mcp__orion-aitown__aitown_move_player"]},
+          "source": "services/orion-ai-town/mcp/orion_aitown_mcp/server.py:aitown_move_player"
+        },
+        {
+          "id": "town-new-agent",
+          "title": "Bring a character to town",
+          "description": "Orion adds a new agent to the town from one of the character descriptions.",
+          "message": "Please look at the characters AI Town knows and bring one you'd like to meet into town.",
+          "hint": "(tools: `mcp__orion-aitown__aitown_list_characters`, `aitown_create_agent`)",
+          "keywords": ["character", "agent", "create"],
+          "covers": {"mcp": ["mcp__orion-aitown__aitown_create_agent"]},
+          "source": "services/orion-ai-town/mcp/orion_aitown_mcp/server.py:aitown_create_agent"
+        },
+        {
+          "id": "town-engine",
+          "title": "Town stuck during a session",
+          "description": "The town only runs in sessions; outside one it is frozen on purpose, and Hub's Unfreeze button opens it. If it seems stuck while a session is open, Orion can nudge its simulation loop.",
+          "message": "AI Town is open but seems stuck. Can you check whether a session is running, and if it is, give the engine a kick?",
+          "hint": "(tools: `mcp__orion-aitown__aitown_world_status`, `aitown_kick_engine`)",
+          "keywords": ["stuck", "frozen", "kick", "session", "unfreeze"],
+          "covers": {"mcp": ["mcp__orion-aitown__aitown_kick_engine"]},
+          "source": "services/orion-ai-town/mcp/orion_aitown_mcp/server.py:aitown_kick_engine,aitown_resume_world"
+        }
+      ]
+    }
+  ],
+  "hidden": {
+    "dig": {
+      "help": "The help itself: every entry above already points Orion at the command it needs."
+    },
+    "mcp": {
+      "mcp__orion-aitown__aitown_resume_world": "Refused by design since 2026-10-30: Juniper opens the town with Hub's Unfreeze button.",
+      "mcp__orion-aitown__aitown_send_input": "Raw god-mode input to the world; there is no plain request that maps to it safely.",
+      "mcp__orion-aitown__aitown_stop_world": "Stops the simulation, and nothing in chat can restart it (resume is refused); Juniper uses Hub's controls instead."
+    }
+  }
+}

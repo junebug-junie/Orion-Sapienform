@@ -2779,6 +2779,28 @@ reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADO
 (default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
 host port `http://127.0.0.1:8124/physiology/bid`.
 
+**Outreach obeys its bid** (Patch D for `hub.outreach`, 2026-11-07, `scripts/outreach_bind.py`). With
+`ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on` (shipped) the outreach row above is no longer shadow: every Hub door
+that composes a message asks the market just before it composes, and obeys the answer with the shared rule
+(`orion.physiology.binding.bind_verdict`, the same one curiosity investigate and the dream cycle obey).
+
+| door | bids? | why |
+|---|---|---|
+| background tick | yes, cap-counted (1 message on `attention:juniper`) | the want the strained veto was standing in for |
+| reading findings, self findings, office visits | yes, cap-exempt (`juniper_msgs=0`) | they compose a message; the daily cap never counted them |
+| curiosity Door-A | no | composed inside the curiosity run, which already obeys its own bid (#3010); a blocked Door-A has no retry, so a hold would drop it |
+| strain report | no | it exists to speak when strain holds everything else; its strain-held shadow bid is unchanged |
+| forced (`POST /api/debug/endogenous-outreach/trigger`) | no | the operator's call: never held |
+
+Funded, or a full lane that is still worth its price: compose. Price, no hunger yet (`sated`), or net <= 0:
+hold, keep the item pending, bid again at the market's retry time (clamped 2 min .. 1 h), and compose
+anyway at the end of the 1 h window. No answer (market down, stale body state, 5 s timeout): compose, as
+before. Every verdict logs `physiology_bind family=hub.outreach door=... verdict=... obeyed=true`, and the
+decision row carries it in `result_json.economy` (reason `economy_held`: once per held item at a door; on every tick that reaches its compose point inside a hold). A hold nobody re-checks for 15 min after its retry time lapses, and the next check bids afresh.
+The `arousal_strained` veto stays until this has run `on` for 7 days with its checks green; while it stays,
+the binding bid never decides during strain. Rollback: set `shadow` and restart Hub. Replay:
+`scripts/analysis/outreach_binding_replay.py`; eval: `evals/run_outreach_binding_replay.py [--live]`.
+
 **Reading event wants** (2026-11-04, attention as the want competition patch 2, docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Each finished
 read (`world_pulse_read_seed`, `stage2_status = 'done'`) posts one SHADOW event want: family
 `hub.world_pulse_read`, verb `look`, `event_ref` `world_pulse_read_seed:<seed_id>`, salience = the links
@@ -3496,7 +3518,7 @@ The check uses `POSTGRES_URI` and a read-only transaction, resolves the latest U
 
 **Reads in flight (2026-10-14).** Each Stage 1 and Stage 2 tick makes up to `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT` claims (default 3; 1 = one read at a time). The claim order puts seeds with a submitted durable turn first, so in-flight reads are polled before a new one starts, and a new one only starts while fewer than that many are in flight. Before this, a tick claimed one seed, so a running read was re-claimed every tick and no second read was ever submitted: the GPU pool never saw two agent holds to spread over gpu1/gpu2. Priority order and Stage 1 before Stage 2 per seed are unchanged. Log line: `world_pulse_read_tick_claims n=<k>`.
 
-**Reading pull (2026-10-21, thinking rung 3 follow-up).** The motor allocator may ask for ONE extra Stage 1 read now (`orion:world_pulse_read:pull:request`, `scripts/world_pulse_read_pull_listener.py`, `WorldPulseReadPipeline.pull`). Hub picks the seed the lane would claim next (`CLAIM_SQL` order: priority, then age; not one already in flight or already pulled) and runs every gate first, in this order: kill switch `HUB_WORLD_PULSE_READ_PULL_ENABLED` (ON); the lane's own Wallet A gate (window, refund backoff); `HUB_WORLD_PULSE_READ_PULL_DAILY_CAP` started pulls per UTC day (default 8: the lane's median reading day over 30 days, `orion/world_pulse_read/pull.py`); arousal `strained` (`HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED`, same rule as the baseline painting); thermal `hot` on Hub's own cabinet sensor (`orion/autonomy/thermal_gate.py` defaults and hysteresis). `op=check` has no side effect. `op=act` marks the seed (`pull_dispatch_id`, `pull_arm`, `pulled_at`; migration `manual_migration_reading_pull_v1.sql`, also added lazily): a treated pull claims it and starts it under the lane lock, then the lane polls it like any other read; a control pull only marks it, and the lane may still read it. The lane itself is unchanged. Log lines: `reading_pull op=...`, `reading_pull_started`.
+**Reading pull (2026-10-21 .. 2026-11-07, retired).** The dispatch rung's motor allocator could ask Hub for ONE extra Stage 1 read (`orion:world_pulse_read:pull:request`), with a treated/control holdback. It retired with the proposal, policy and dispatch rungs (ladder retirement PR 6, `docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md`); Juniper ended the experiment. Hub's own lane does every read. The `pull_dispatch_id`, `pull_arm` and `pulled_at` columns on `world_pulse_read_seed` keep their history; nothing writes them.
 
 **Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F; trigger moved into Hub 2026-11-05, ladder retirement PR 1).** Hub's own leisure timer (`scripts/retro_leisure_self_start.py`, every `RETRO_LEISURE_SELF_START_TICK_SEC`=300 s, kill switch `RETRO_LEISURE_SELF_START_ENABLED`, ON) is the only trigger; the allocator's `retro_leisure_session` route and the `orion:retro_leisure:start:*` RPC are gone. Each tick mints an act id (`retro_self_start:<uuid>`), places the shadow `hub.retro_leisure` bid, then asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and records a refusal by name. A tick does nothing while its own session runs, while `RETRO_LEISURE_ENABLED` is false, or with no runner (never a fake session). An error retries after 60 s. `GET /health` -> `retro_leisure_self_start` shows the last tick, the last start and refusal counts. A passed gate starts `run_leisure_session(settings, act_id=<act id>)`; a refusal from its own re-check within 5 s is still a refusal. Otherwise the timer opens one `play` act (`hub.retro_leisure`, key = act id, `test_before=retro_leisure_dispatch:<act id>` (prefix kept from the dispatch era), horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the timer passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play handoffs reach the same export through `app.state.retro_session_end_sink`): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
 

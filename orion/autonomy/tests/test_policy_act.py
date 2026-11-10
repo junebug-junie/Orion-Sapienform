@@ -35,16 +35,17 @@ def _gap_signal() -> FrontierInvocationSignalV1:
     )
 
 
-def _goal() -> FieldGoalProvenanceV1:
+def _goal(field_target_id: str = "world:chat", target_kind: str = "channel") -> FieldGoalProvenanceV1:
+    # Default is a world goal: fetch/recall require one (requires_world_goal).
     return FieldGoalProvenanceV1.model_validate(
         {
             "artifact_id": "goal-gap-gpu",
             "subject": "attention",
             "model_layer": "field_attention",
-            "entity_id": "node:substrate.biometrics",
+            "entity_id": field_target_id,
             "kind": "memory.field_goals.proposed.v1",
-            "field_target_id": "node:substrate.biometrics",
-            "target_kind": "node",
+            "field_target_id": field_target_id,
+            "target_kind": target_kind,
             "salience_score": 0.8,
             "source_field_tick_id": "tick-1",
             "source_attention_frame_id": "frame-1",
@@ -816,3 +817,30 @@ async def test_substrate_act_fetch_subject_comes_from_episode_intent_not_goal(
     assert result.fetch_attempted is True
     assert captured["subject"] == "orion"
     assert captured["subject"] != _goal().subject
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_body_goal_spends_no_fetch_or_recall(monkeypatch, tmp_path) -> None:
+    """Regression (prediction-error suite rebuild, Decision 1): a bus
+    prediction-error goal no longer unlocks a web fetch or a recall RPC."""
+    import orion.autonomy.policy_act as policy_act
+
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    monkeypatch.setattr(
+        policy_act, "get_active_goal", lambda: _goal("node:substrate.bus_synaptic", "node")
+    )
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    bus = _fake_recall_bus(_fake_recall_reply(n=3))
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_backend=fetch_backend,
+        recall_bus=bus,
+    )
+
+    fetch_backend.assert_not_awaited()
+    assert result.fetch_attempted is False
+    assert result.recall_attempted is False

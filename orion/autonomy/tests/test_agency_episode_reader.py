@@ -61,13 +61,26 @@ class Graph:
         return []
 
 
-def test_sampling_fetches_matching_old_results_not_only_latest():
+def test_sampling_fetches_matching_old_outcomes_not_only_latest():
     conn = Connection()
     data = collect(conn, Graph(), limit=1)
-    assert {r["dispatch_id"] for r in data["results"]["rows"]} == {"old", "new"}
-    query, params = next((q, p) for q, p in conn.queries if "FROM substrate_dispatch_results WHERE" in q)
-    assert set(params[0]) == {"old", "new"}
+    query, params = next((q, p) for q, p in conn.queries if "FROM substrate_action_outcomes WHERE dispatch_id" in q)
+    assert set(params[0]) == {"old"}
     assert "%s" in query
+    assert data["outcomes"]["status"] == "ok"
+
+
+def test_retired_ladder_tables_are_never_read_and_read_as_retired():
+    """Ladder retirement PR 6 (2026-11-07): proposal/policy/dispatch tables are dropped after PR 7.
+    The audit must not query them, and must not report their absence as an empty (missing) link."""
+    conn = Connection()
+    data = collect(conn, Graph(), limit=1)
+    joined = " ".join(q for q, _ in conn.queries)
+    for table in ("substrate_dispatch_results", "substrate_execution_dispatch_frames",
+                  "substrate_proposal_frames", "substrate_policy_decision_frames"):
+        assert table not in joined
+    for source in ("result_sample", "results", "dispatch_frames", "proposal_frames"):
+        assert data[source]["status"] == "retired" and data[source]["rows"] == []
 
 
 def test_failed_source_is_distinct_from_empty_and_error_is_redacted():

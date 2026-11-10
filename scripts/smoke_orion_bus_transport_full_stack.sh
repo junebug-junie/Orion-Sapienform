@@ -11,7 +11,7 @@ usage() {
   echo "  m3          transport_bus_reducer receipts + substrate_transport_bus_projection"
   echo "  m4          capability:transport in substrate_field_state"
   echo "  m5          capability:transport in any attention bucket (dominant/capability/suppressed)"
-  echo "  full-observe layers 7-9: proposals, policy, dispatch (L10/L11 retired 2026-11-04)"
+  echo "  full-observe layers 7-11: all retired (L7-L9 2026-11-07, L10/L11 2026-11-04); prints that"
   exit 1
 }
 
@@ -115,47 +115,12 @@ case "$MODE" in
     ;;
 
   full-observe)
-    echo "== full-observe: layers 7-11 (requires all flags enabled) =="
+    echo "== full-observe: layers 7-11 (all retired) =="
     echo ""
     # L6 (SelfStateV1 transport_integrity) removed: its producer,
     # orion-self-state-runtime, was deleted 2026-07-22 (commit bcc72f6a0).
 
-    echo "-- L7 proposals: transport candidate count (bounded) --"
-    psql_run "
-      SELECT generated_at,
-             jsonb_array_length(proposal_frame_json::jsonb -> 'candidates') AS total_candidates,
-             (
-               SELECT count(*)
-               FROM jsonb_array_elements(proposal_frame_json::jsonb -> 'candidates') AS c
-               WHERE c ->> 'proposal_id' ILIKE '%transport%'
-             ) AS transport_candidates
-      FROM substrate_proposal_frames
-      ORDER BY generated_at DESC
-      LIMIT 1;" || true
-
-    echo ""
-    echo "-- L8 policy: transport-related approved decisions (bounded) --"
-    psql_run "
-      SELECT generated_at,
-             (
-               SELECT count(*)
-               FROM jsonb_array_elements(policy_decision_frame_json::jsonb -> 'approved_decisions') AS d
-               WHERE d ->> 'proposal_id' ILIKE '%transport%'
-             ) AS transport_approved
-      FROM substrate_policy_decision_frames
-      ORDER BY generated_at DESC
-      LIMIT 1;" || true
-
-    echo ""
-    echo "-- L9 dispatch: dispatch_mode --"
-    psql_run "
-      SELECT generated_at,
-             dispatch_frame_json::jsonb #>> '{dispatch_mode}' AS dispatch_mode
-      FROM substrate_execution_dispatch_frames
-      ORDER BY generated_at DESC
-      LIMIT 1;" || true
-
-    echo ""
+    echo "-- L7 proposals, L8 policy, L9 dispatch: retired 2026-11-07 (not checked) --"
     echo "-- L10 feedback, L11 consolidation: retired 2026-11-04 (not checked) --"
     ;;
 

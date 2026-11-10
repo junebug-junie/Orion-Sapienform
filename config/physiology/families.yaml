@@ -128,6 +128,22 @@ families:
     # 2026-10-30 curiosity's only holds were exactly those ("no hunger yet") with lane prices ~0, so on
     # curiosity a credit could change nothing. Declare quicken when an organ has real price deferrals.
     receptors: [slow]
+  durable.reminiscence:
+    # 2026-11-07, daily reminiscence Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md
+    # section 6): one durable run a Denver day in which Orion writes five hops about one past week and reads
+    # them once together (act make:durable.reminiscence, services/orion-durable-runs/app/run_acts.py). TIER 2
+    # IS THE DESIGN'S DEFAULT (open question 3): discretionary, not critical upkeep like field notes; Juniper
+    # may change it in PR review. Agent lanes only, like durable.self_inquiry: six long tool-using turns that
+    # only the agent models run. Those lanes are contended by day (durable.self_inquiry lost 7/7 bids to "no
+    # room" on agent/agent-gpu2 on 11-05), so the run is overnight: 21600 s is the 03:00-09:00 Denver window
+    # its deadline closes (REMINISCENCE_HOUR_LOCAL / REMINISCENCE_END_HOUR_LOCAL); a week it misses is picked
+    # again the next day, nothing is lost. The run asks for llm.route.agent with agent preferred; the pool may
+    # place it on agent-gpu2 (field-note acts land there too), so both lanes are listed. Bids are shadow (not
+    # a binding family in app/run_bids.py). No receptors: a once-a-day act has nothing for a charge to bind on.
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [agent, agent-gpu2]
+    placement: one_of
   durable.self_inquiry:
     tier: 2
     deferrable_window_s: 21600

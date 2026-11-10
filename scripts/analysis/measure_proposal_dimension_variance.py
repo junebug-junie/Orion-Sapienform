@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Read-only measurement: does `orion/proposals/scoring.py::dimension_confidence()`
+"""Read-only measurement (2026-07-28; the dimension constants moved to
+`orion/field/pressure_dimensions.py` when the proposal rung retired, 2026-11-07):
+does `orion/proposals/scoring.py::dimension_confidence()`
 have real, non-degenerate historical variance to precision-weight against?
 
 Session context (2026-07-28, Juniper conversation, "HIT IT" authorization for the
@@ -113,7 +115,7 @@ from pathlib import Path
 from typing import Optional
 
 from orion.field.pressure import field_pressures
-from orion.proposals.scoring import PRESSURE_DIMENSIONS
+from orion.field.pressure_dimensions import PRESSURE_DIMENSIONS
 from orion.schemas.field_state import FieldStateV1
 
 logger = logging.getLogger("orion.analysis.proposal_dimension_variance")

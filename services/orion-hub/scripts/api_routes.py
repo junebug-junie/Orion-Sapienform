@@ -182,9 +182,6 @@ from .substrate_attention_routes import router as substrate_attention_router
 from .attention_loops_routes import router as attention_loops_router
 from .sentience_program_routes import router as sentience_program_router
 from .substrate_observability_routes import router as substrate_observability_router
-from .substrate_proposal_routes import router as substrate_proposal_router
-from .substrate_policy_routes import router as substrate_policy_router
-from .substrate_execution_dispatch_routes import router as substrate_execution_dispatch_router
 from .substrate_lattice_routes import router as substrate_lattice_router
 from .self_brain_routes import router as self_brain_router
 from .field_channel_glossary_routes import router as field_channel_glossary_router
@@ -213,9 +210,6 @@ router.include_router(substrate_attention_router)
 router.include_router(attention_loops_router)
 router.include_router(sentience_program_router)
 router.include_router(substrate_observability_router)
-router.include_router(substrate_proposal_router)
-router.include_router(substrate_policy_router)
-router.include_router(substrate_execution_dispatch_router)
 router.include_router(substrate_lattice_router)
 router.include_router(self_brain_router)
 router.include_router(field_channel_glossary_router)

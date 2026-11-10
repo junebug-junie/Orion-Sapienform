@@ -695,7 +695,6 @@ from orion.schemas.durable_run import (
     DurableRunReceiptV1,
 )
 from orion.schemas.resource_admission import ResourceEventV1
-from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
@@ -771,10 +770,6 @@ from orion.schemas.causal_geometry import (
     CausalGeometryEdgeV1,
     CausalGeometrySnapshotV1,
 )
-from orion.schemas.execution_dispatch_frame import (
-    ExecutionDispatchCandidateV1,
-    ExecutionDispatchFrameV1,
-)
 from orion.schemas.brain_frame import (
     BrainEdgeSampleV1,
     BrainNodeSampleV1,
@@ -782,8 +777,6 @@ from orion.schemas.brain_frame import (
     BrainSpotlightV1,
     SubstrateBrainFrameV1,
 )
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
-from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
     EvidenceQueryV1,
@@ -818,6 +811,7 @@ from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.harness_step_run import HarnessEchoSmokeBriefV1
 from orion.schemas.pr_field_note_run import PrFieldNoteBriefV1
+from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.orion_day import (
     OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
@@ -1065,6 +1059,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "HarnessEchoSmokeBriefV1": HarnessEchoSmokeBriefV1,
     "PrFieldNoteBriefV1": PrFieldNoteBriefV1,
+    "ReminiscenceRunBriefV1": ReminiscenceRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
     "CompactorDigestResultV1": CompactorDigestResultV1,
@@ -1078,8 +1073,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
     "GpuPoolShedReasonRequestV1": GpuPoolShedReasonRequestV1,
     "GpuPoolShedResultV1": GpuPoolShedResultV1,
-    "WorldPulseReadPullRequestV1": WorldPulseReadPullRequestV1,
-    "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -1481,12 +1474,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfReadingsBlockV1": SelfReadingsBlockV1,
     "TemporalSelfDayBlockV1": TemporalSelfDayBlockV1,
     "DayCitationCheckV1": DayCitationCheckV1,
-    "PolicyDecisionV1": PolicyDecisionV1,
-    "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
-    "ProposalCandidateV1": ProposalCandidateV1,
-    "ProposalFrameV1": ProposalFrameV1,
-    "ExecutionDispatchCandidateV1": ExecutionDispatchCandidateV1,
-    "ExecutionDispatchFrameV1": ExecutionDispatchFrameV1,
     "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
     "CausalGeometryEdgeV1": CausalGeometryEdgeV1,
     "CausalGeometryDivergenceEntryV1": CausalGeometryDivergenceEntryV1,
@@ -2072,9 +2059,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
     "GpuPoolShedReasonRequestV1": SchemaRegistration(model=GpuPoolShedReasonRequestV1, kind="gpu_pool.shed.request.v1"),
     "GpuPoolShedResultV1": SchemaRegistration(model=GpuPoolShedResultV1, kind="gpu_pool.shed.result.v1"),
-    # Thinking rung 3 follow-up: the allocator's reading pull (orion/schemas/world_pulse_read_pull.py).
-    "WorldPulseReadPullRequestV1": SchemaRegistration(model=WorldPulseReadPullRequestV1, kind="world_pulse_read.pull.request.v1"),
-    "WorldPulseReadPullResultV1": SchemaRegistration(model=WorldPulseReadPullResultV1, kind="world_pulse_read.pull.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),

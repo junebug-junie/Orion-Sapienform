@@ -178,7 +178,7 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
 - **Nothing calls durable-runs `/capacity` any more** (gate:
   `orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py`). Deleted in 5.6.
 - **`visual_baseline` swap guard deleted**, with `GPU_POOL_VISUAL_ACTIVITY_URL` and the image's
-  copy of `config/proposals/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
+  copy of `config/reverie/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
   overdue image baseline reclaims gpu2 through the queue (a diffusion hold, owner reclaim).
 - Eval: `run_pool_day_eval.py` now fails on any second where a world and a diffusion lease are
   granted together (`world_diffusion_grant_overlap_sec`), or if `serialize_with` never came up.

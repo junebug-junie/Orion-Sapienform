@@ -31,7 +31,7 @@ r=-0.0313; widening to ALSO count `loaded_volatile` gives r=-0.0021 -- both
 are essentially zero. The data does not distinguish the two scopes on
 independence grounds; scoping to `loaded_steady` is a real design choice
 about what this metric should MEAN (sustained, not spiky), not something the
-correlation number itself proves. See `orion/proposals/scoring.py`'s
+correlation number itself proves. See `orion/field/pressure_dimensions.py`'s (moved from the retired `orion/proposals/scoring.py`)
 `PRESSURE_DIMENSIONS` comment for the full write-up.
 
 NOT Borda-ranked, unlike the sibling `orion.attention.tension.competition`

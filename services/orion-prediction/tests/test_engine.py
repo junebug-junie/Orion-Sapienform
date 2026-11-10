@@ -82,6 +82,9 @@ class FakeStore:
     def live_scores(self, sid, since):
         return [f for f in self.forecasts if f.get("score_status") == "scored" and f["target_ts"] >= since]
 
+    def scored_with_quantiles(self, sid, since):
+        return self.live_scores(sid, since)
+
     exceedances: list = []
 
     fail_next_issue = False
@@ -740,3 +743,34 @@ def test_not_ready_backs_off_even_when_a_stale_selection_would_force_a_reselect(
         asyncio.run(eng.tick(_sync))
     st = eng.state["test.temp"]
     assert len(calls) == 1 and st.not_ready is not None and st.served is served   # keeps serving the old one
+
+
+# --- surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) ---------
+
+def test_monitor_sets_a_gate_verdict_per_horizon():
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    asyncio.run(eng.tick(_sync))
+    gate = eng.state["test.temp"].surprise_gate
+    assert set(gate) == {5, 60, 360}
+    # A fresh series has too few live scores (or serves a baseline): nothing passes yet.
+    assert not any(ok for ok, _ in gate.values())
+
+
+def test_surprise_summary_reports_each_horizon_with_its_gate_reason():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=7)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.monitor(spec, clock.t, _sync))
+    out = eng.surprise_summary(spec, clock.t, timedelta(hours=24))
+    assert out["calm_surprisal"] == pytest.approx(0.95)
+    assert set(out["horizons"]) == {"5", "60", "360"}
+    from app.models import BASELINES
+    assignment = eng.state["test.temp"].served.selection.assignment
+    for hm, h in out["horizons"].items():
+        expected = "served_baseline" if assignment[int(hm)] in BASELINES else "too_few_live_scores"
+        assert h["gate"] == expected, hm

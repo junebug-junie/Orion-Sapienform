@@ -7,9 +7,8 @@ Why this exists: ``run_self_repo_inspect`` is the only writer of
 choose it. Live check on 2026-09-19: the table held exactly 1,248 rows, all
 from one manual trigger on 2026-09-05 -- in two weeks no autonomous chooser
 ever picked it, because none of them can (the three self-study verbs appear in
-no priority/policy table: ``config/execution_dispatch/execution_dispatch_policy.v1.yaml``,
-``config/proposals/proposal_policy.v1.yaml``, ``orion/substrate/endogenous_curiosity.py``
-all score other things). Meanwhile the Hub's Self Atlas tick kept training a
+no priority/policy table: the dispatch and proposal policies (retired 2026-11-07) and
+``orion/substrate/endogenous_curiosity.py`` all scored other things). Meanwhile the Hub's Self Atlas tick kept training a
 fresh HDBSCAN run every UTC day over the identical frozen snapshot and writing
 391 relabelled ``self_concept_history`` rows from it -- stale input read back
 into Orion's own self-description as if it were new.

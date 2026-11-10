@@ -187,14 +187,14 @@ channels:
     stability: "experimental"
     since: "2026-05-13"
 
-  # render_scene args preserve dispatch/proposal/decision/correlation IDs and
-  # optional visual_baseline eligibility; the thought endpoint rechecks history.
+  # orion-execution-dispatch-runtime (render_scene, prunes, summarize/inspect) left the
+  # producer list on 2026-11-07 (ladder retirement PR 6).
   # 2026-11-06 (ladder retirement PR 4): orion-hardware-watch's disk rule asks for
   # skills.runtime.image_prune.v1 here (services/orion-hardware-watch/app/image_prune.py).
   - name: "orion:cortex:exec:request:background"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
-    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor", "orion-execution-dispatch-runtime", "orion-hardware-watch"]
+    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor", "orion-hardware-watch"]
     consumer_services: ["orion-cortex-exec"]
     single_consumer: true
     stability: "experimental"
@@ -2625,7 +2625,7 @@ channels:
     kind: "event"
     schema_id: "ActionOutcomeEmitV1"
     message_kind: "action.outcome.emit.v1"
-    producer_services: ["orion-spark-concept-induction", "orion-execution-dispatch-runtime", "orion-durable-runs"]
+    producer_services: ["orion-spark-concept-induction", "orion-durable-runs"]
     consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-07-06"
@@ -3516,25 +3516,9 @@ channels:
     since: "2026-10-01"
     description: "Per-request reply to orion:gpu_pool:shed:request (orion.schemas.gpu_pool.GPU_POOL_SHED_REPLY_PREFIX): the shed record (state active|expired|cancelled|preempted_by_reflex|refused, refusal, TTL, drained_at, grants_withheld, delayed_grant_sec)."
 
-  - name: "orion:world_pulse_read:pull:request"
-    kind: "request"
-    schema_id: "WorldPulseReadPullRequestV1"
-    message_kind: "world_pulse_read.pull.request.v1"
-    producer_services: ["orion-execution-dispatch-runtime"]
-    consumer_services: ["orion-hub"]
-    stability: "experimental"
-    since: "2026-10-21"
-    description: "Thinking rung 3 follow-up: the motor allocator's reading pull (route read_world_pulse). op=check runs Hub's gates (HUB_WORLD_PULSE_READ_PULL_ENABLED, daily cap, arousal strained, thermal hot, the reading pipeline's own window/refund backoff) and picks the next seed in the queue's own claim order, with no side effect; op=act re-runs them, then arm=treated starts that read as one extra in-flight read and arm=control only marks the seed as the decision's control. Reply WorldPulseReadPullResultV1 on orion:world_pulse_read:pull:reply:*."
-
-  - name: "orion:world_pulse_read:pull:reply:*"
-    kind: "result"
-    schema_id: "WorldPulseReadPullResultV1"
-    message_kind: "world_pulse_read.pull.result.v1"
-    producer_services: ["orion-hub"]
-    consumer_services: ["orion-execution-dispatch-runtime"]
-    stability: "experimental"
-    since: "2026-10-21"
-    description: "Per-request reply to orion:world_pulse_read:pull:request (orion.schemas.world_pulse_read_pull.WORLD_PULSE_READ_PULL_REPLY_PREFIX): state ready|started|control_recorded|refused, the seed and its act-ledger key (read_seed:<seed_id>), refusal and retry_after_sec, pulls today and the cap."
+  # "orion:world_pulse_read:pull:request" / "orion:world_pulse_read:pull:reply:*" (WorldPulseReadPullRequestV1 /
+  # WorldPulseReadPullResultV1) removed 2026-11-07, ladder retirement PR 6: the dispatch runtime was the only
+  # sender, and Juniper ended the reading-pull experiment; Hub's own lane does every read.
 
   # "orion:retro_leisure:start:request" / "orion:retro_leisure:start:reply:*" (RetroLeisureStartRequestV1 /
   # RetroLeisureStartResultV1) removed 2026-11-05, ladder retirement PR 1: the dispatch runtime was the only

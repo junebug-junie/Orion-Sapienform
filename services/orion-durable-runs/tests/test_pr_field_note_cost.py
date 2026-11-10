@@ -27,7 +27,7 @@ def test_median_and_p90_over_completed_runs_only():
     assert "ended: 11 (10 completed)" in text
     line = next(ln for ln in text.splitlines() if "wall s" in ln)
     assert "median      550.0" in line and "p90      900.0" in line and "~13,200/day" in line
-    assert "10 of the 20 notes" in text
+    assert "10 of the 20 notes the design asks for" in text
 
 
 def test_a_missing_join_reads_unread_not_zero():
@@ -58,3 +58,18 @@ def test_a_partly_unreadable_map_reads_unread_not_a_partial_sum():
     assert cost.map_sum({"circe": None, "athena": 1.0}) is None
     assert cost.map_sum({"circe": "2.5"}) == 2.5 and cost.map_sum({"circe": "n/a"}) is None
     assert cost.map_sum({"circe": True}) is None
+
+
+def test_the_reminiscence_query_counts_its_own_runs_and_acts():
+    sql = cost.sql_for("reminiscence.episode", 30)
+    assert "'reminiscence.episode'" in sql and "'durable.reminiscence'" in sql and "make_interval(days => 30)" in sql
+    assert "'pr.field_note'" not in sql and "durable.pr_field_note" not in sql
+    assert "step_correlation_id" in sql   # every step turn of the run (six a day), every attempt
+
+
+def test_the_reminiscence_summary_projects_one_episode_a_day_and_asks_for_seven():
+    rows = [row(i, seconds=1800.0, gpu_slot_s=1800.0) for i in range(3)]
+    text = "\n".join(cost.summarize(rows, 1.0, "reminiscence.episode"))
+    assert text.startswith("reminiscence.episode runs ended: 3 (3 completed)")
+    assert "~1,800/day at 1 episodes" in next(ln for ln in text.splitlines() if "GPU slot s" in ln)
+    assert "3 of the 7 episodes the design asks for" in text

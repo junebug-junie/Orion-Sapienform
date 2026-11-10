@@ -327,6 +327,14 @@ class Settings(BaseSettings):
     physiology_report_gpu_pool_path: str = Field(
         "/app/config/gpu_pool.yaml", alias="ORION_PHYSIOLOGY_REPORT_GPU_POOL_PATH")
 
+    @field_validator("reminiscence_end_hour_local")
+    @classmethod
+    def _window_has_room(cls, v: int, info):
+        start = info.data.get("reminiscence_hour_local", 3)
+        if v <= start:
+            raise ValueError("REMINISCENCE_END_HOUR_LOCAL must be after REMINISCENCE_HOUR_LOCAL (same Denver day)")
+        return v
+
     @field_validator("field_note_not_before")
     @classmethod
     def _not_before_is_utc(cls, v: datetime) -> datetime:
@@ -373,6 +381,24 @@ class Settings(BaseSettings):
     # motor 60 s and the first live run timed out (pr-field-note-3104, 2026-11-04). 900 -> 540 s of motor.
     # A cap, not a cost: a typical note ends long before it. tests/test_pr_field_note_budget.py gates it.
     field_note_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="PR_FIELD_NOTES_TURN_TIMEOUT_SEC")
+    # Daily reminiscence, Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md, section 6):
+    # every REMINISCENCE_POLL_SEC, inside the Denver window [REMINISCENCE_HOUR_LOCAL, REMINISCENCE_END_HOUR_LOCAL),
+    # submit one reminiscence.episode run for today (five hop turns and one cross-read turn on the agent
+    # lane) unless today's five hops are already written. The window end is the run's admission deadline:
+    # a week left unfinished is picked again the next day. Needs admission (DURABLE_RUNS_ADMISSION_ENABLED).
+    # false -> no tick, no runs (rollback: set false, restart). Not the privacy gate: the ledger stays
+    # partitioned from recall by the repo-wide partition test whatever this says.
+    reminiscence_enabled: bool = Field(True, alias="REMINISCENCE_ENABLED")
+    reminiscence_poll_sec: float = Field(600.0, ge=60.0, alias="REMINISCENCE_POLL_SEC")
+    reminiscence_hour_local: int = Field(3, ge=0, le=23, alias="REMINISCENCE_HOUR_LOCAL")
+    # At most 23: a step after midnight would write into the next day's episode (the graph fails it).
+    reminiscence_end_hour_local: int = Field(9, ge=1, le=23, alias="REMINISCENCE_END_HOUR_LOCAL")
+    # The reminiscence ledger's directory inside this container: the same /mnt/orion-fcc/self bind mount the
+    # field-notes poller uses (docker-compose.yml mounts PR_FIELD_NOTES_SELF_HOST at PR_FIELD_NOTES_LEDGER_DIR).
+    reminiscence_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="REMINISCENCE_LEDGER_DIR")
+    # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
+    # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
+    reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

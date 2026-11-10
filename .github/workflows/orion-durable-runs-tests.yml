@@ -12,6 +12,11 @@ on:
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/body_economy_shadow_vs_real.py"
       - "scripts/analysis/tests/test_body_economy_binding_replay.py"
+      - "scripts/analysis/outreach_binding_replay.py"
+      - "scripts/analysis/tests/test_outreach_binding_replay.py"
+      - "services/orion-hub/evals/run_outreach_binding_replay.py"
+      - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
       - "orion/personality/**"
       - "orion/schemas/personality.py"
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
@@ -56,6 +61,8 @@ on:
       - "orion/schemas/harness_step_run.py"
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
       - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
+      - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
@@ -115,6 +122,9 @@ on:
       - "orion/physiology/**"
       - "config/physiology/**"
       - "scripts/analysis/body_economy_binding_replay.py"
+      - "scripts/analysis/outreach_binding_replay.py"
+      - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
       - "orion/schemas/physiology_report.py"
       - "orion/autonomy/cabinet_heat.py"
       - "orion/autonomy/shed_act.py"          # the cooling world act (ladder retirement PR 5): app/cooling_act.py
@@ -136,6 +146,8 @@ on:
       - "orion/schemas/harness_step_run.py"
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
       - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
+      - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
@@ -269,10 +281,20 @@ jobs:
         run: |
           python services/orion-durable-runs/evals/curiosity_binding_replay.py
           python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_binding_replay.py
+      - name: Outreach binding-bid eval (body economy Patch D for hub.outreach -- holds bounded, no answer never holds)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-hub/evals/run_outreach_binding_replay.py
+          python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_outreach_binding_replay.py
       - name: Cooling world act eval (ladder retirement PR 5 -- the market decides, only funded sheds, the scorer scores every episode)
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/cooling_act_replay.py
+      - name: Daily reminiscence tick replay (21 days across DST -- window, one run at a time, oldest week first, unfinished week returns, mutations must fail)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -P services/orion-durable-runs/evals/reminiscence_daily_replay.py
       - name: Felt-state binding arcs eval (onset/release anti-flap, no_reading never releases, one arc per constraint)
         env:
           PYTHONPATH: ${{ github.workspace }}

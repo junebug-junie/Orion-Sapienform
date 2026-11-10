@@ -31,7 +31,10 @@ MAX_FREE_TEXT_CHARS = 2000
 # feeds. Real dispatch_ids look like
 # `dispatch:proposal:prune_stopped_containers:tick_fc7585176059:none:execution_dispatch_policy.v1`
 # -- colon-heavy and far too long to retype, which is why scripts/
-# rate_artifact.py BUILDS the ref rather than accepting one.
+# rate_artifact.py BUILT the ref rather than accepting one. That CLI, its scorer and
+# orion/autonomy/rating.py retired with the dispatch rung on 2026-11-07 (every
+# artifact they rated was a dispatch result; 0 ratings were ever scored). The
+# field and its validation stay: they are part of this bus payload's contract.
 ARTIFACT_REF_PREFIX = "artifact:"
 DISPATCH_ID_PREFIX = "dispatch:"
 
@@ -131,7 +134,7 @@ class ChatResponseFeedbackV1(BaseModel):
     # An Orion-produced artifact -- a self-study journal entry, an affect or
     # co-creation report, a vision description, a pull request. Carries the
     # dispatch_id of the action that produced it, so a rating can be scored
-    # back onto that action (orion/autonomy/rating.py). Without it this
+    # back onto that action (orion/autonomy/rating.py, retired 2026-11-07). Without it this
     # channel can only ever grade conversation, which is why the only
     # non-biometric outcome Orion could have was unreachable.
     target_artifact_ref: Optional[str] = None

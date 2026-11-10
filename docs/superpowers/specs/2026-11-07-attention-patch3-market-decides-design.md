@@ -1,6 +1,6 @@
 # Attention patch 3: the want market starts deciding
 
-Date: 2026-11-07. Status: proposal (docs only, no code). This changes what Orion chooses to spend
+Date: 2026-11-07. Status: approved 2026-11-10 (all defaults; see "Decided" below). Docs only, no code. This changes what Orion chooses to spend
 effort on, so proposal mode comes first (CLAUDE.md 0A). Juniper chose this patch on 2026-11-07.
 
 Arc: `docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md` (PR #3089).
@@ -475,6 +475,25 @@ design does not build the signal.
 11. **Pricing queued demand on a lane?**
     Default: **not here**. It is the budget organ's question. Replay C shows price is not what
     selects today.
+
+## Decided (Juniper, 2026-11-10): all defaults approved
+
+Juniper approved every recommended default in "Missing questions". Patch 3a builds next.
+
+1. Reservation-book displacement: **not built** (replay A changes 0 to 2 decisions in 14 days).
+2. Queue margin and aging: margin **0.10 net**, aging **0.10 net per hour**.
+3. Reading's pool priority: **unchanged** (background holds, system steps). Value reorders only
+   inside the background hold queue.
+4. Exploration floor: counts **acts started per Tier 2 family over 7 days** (`grammar_acts`), not
+   funded bids.
+5. Upkeep with no bid: **keeps its arrival place** ahead of later bids.
+6. Reading's hold end: **2,900 s** (Hub's 3,500 s reclaim minus 600 s). No Hub change.
+7. `bind_verdict` keeps admitting capacity deferrals to the pool: **yes** (`queued_at_pool`).
+8. Consent gate: runs **in the market process** (durable-runs) as a pure function; an unknown
+   `reversible` act gets `allow`, any other unknown act gets `refuse`.
+9. Per-act consent asks: **not in v1**. Standing consents in YAML, merged by Juniper's PR.
+10. Camera asks' charge: **none in patch 3**; decided when camera asks bind.
+11. Pricing queued demand: **not in this patch**; it is the budget organ's question.
 
 ## Proposed schema / API changes
 

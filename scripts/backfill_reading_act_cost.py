@@ -4,7 +4,7 @@
 Until patch 3a every read act (``hub.world_pulse_read``) closed with ``gpu_slot_s_by_lane`` NULL:
 the fill joined leases on the act's correlation_id, which no lease carries. The writer now fills it
 late, once the read ends (orion/grammar/act_ledger.py ``refill_late_costs``), for reads closed in the
-last 48 h. This script runs the SAME per-act fill (``late_cost_targets`` / ``late_read_cost`` /
+last 96 h. This script runs the SAME per-act fill (``late_cost_targets`` / ``late_read_cost`` /
 ``apply_late_cost``) over the last ``--days`` (default 30), so appetite's p90 lane cost for reading
 exists on day one.
 

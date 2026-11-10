@@ -37,6 +37,7 @@ TABLES = {
     "prediction_action_bet": ("bet_id", "skill", "context", "place", "p", "p_baseline", "counts", "result", "shadow"),
     "prediction_turn_self_bet": ("bet_id", "correlation_id", "faculty", "status", "stated_p", "stated_lo", "observed",
                                  "reference"),
+    "prediction_reachable_forecast": ("forecast_id", "origin", "p", "p_state", "p_baseline", "served", "happened"),
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
@@ -46,6 +47,13 @@ _SETTLED = "result IN ('success', 'failure')"
 TURN_SELF_BET_COLS = ("bet_id", "correlation_id", "faculty", "claim_kind", "caller", "placed_at", "settled_at",
                       "status", "void_reason", "stated_p", "stated_lo", "stated_hi", "coverage", "observed", "reference",
                       "hit")
+
+
+# Juniper's own messages to Orion: user turns outside Orion's own sessions (orion_journal, ...).
+# Checked 2026-11-10: chat_history_log's non-empty prompts agree with this to within 1 of 121 rows.
+JUNIPER_MESSAGE_SQL = "role = 'user' AND coalesce(session_id, '') NOT LIKE 'orion\\_%%'"
+REACHABLE_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "p", "p_state", "p_baseline", "served",
+                  "hours_since", "state_bucket", "local_hour", "n_messages", "settled_at", "happened", "n_in_window")
 
 
 def _since(ts: datetime) -> str:
@@ -525,6 +533,37 @@ class PostgresStore:
     def turn_self_bets(self, since: datetime, limit: int = 20000) -> list[dict]:
         return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "
                          "WHERE placed_at >= %s ORDER BY placed_at DESC LIMIT %s", (since, limit))
+
+    # --- Juniper reachable (manual_migration_prediction_reachable_forecast_v1.sql) -----------------
+    def juniper_messages(self, start: datetime, end: datetime) -> list[datetime]:
+        """Times of Juniper's messages in ``[start, end)``, read-only (chat_message is the hub's)."""
+        rows = self._all(f"SELECT timestamp AS t FROM chat_message WHERE {JUNIPER_MESSAGE_SQL} "
+                         "AND timestamp >= %s AND timestamp < %s ORDER BY timestamp", (start, end))
+        return [r["t"] for r in rows]
+
+    def reachable_exists(self, origin: datetime) -> bool:
+        return bool(self._all("SELECT 1 FROM prediction_reachable_forecast WHERE origin = %s", (origin,)))
+
+    def insert_reachable(self, row: dict) -> str | None:
+        cols = REACHABLE_COLS
+        rows = self._all(f"INSERT INTO prediction_reachable_forecast ({', '.join(cols)}) VALUES "
+                         f"({', '.join(['%s'] * len(cols))}) ON CONFLICT (forecast_id) DO NOTHING RETURNING forecast_id",
+                         [row[c] for c in cols])
+        return rows[0]["forecast_id"] if rows else None
+
+    def pending_reachable(self, window_ended_before: datetime) -> list[dict]:
+        return self._all("SELECT forecast_id, origin, window_end FROM prediction_reachable_forecast "
+                         "WHERE settled_at IS NULL AND window_end <= %s ORDER BY origin", (window_ended_before,))
+
+    def settle_reachable(self, forecast_id: str, happened: bool, n: int, now: datetime) -> int:
+        return len(self._all("UPDATE prediction_reachable_forecast SET happened = %s, n_in_window = %s, "
+                             "settled_at = %s WHERE forecast_id = %s AND settled_at IS NULL RETURNING forecast_id",
+                             (happened, n, now, forecast_id)))
+
+    def reachable_rows(self, since: datetime, settled_only: bool) -> list[dict]:
+        where = "origin >= %s" + (" AND settled_at IS NOT NULL" if settled_only else "")
+        return self._all(f"SELECT {', '.join(REACHABLE_COLS)} FROM prediction_reachable_forecast WHERE {where} "
+                         "ORDER BY origin", (since,))
 
     def get_action_bet(self, bet_id: str) -> dict | None:
         rows = self._all("SELECT * FROM prediction_action_bet WHERE bet_id = %s", (bet_id,))

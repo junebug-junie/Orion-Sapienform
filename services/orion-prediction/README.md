@@ -293,6 +293,20 @@ the service checks it at boot like every other prediction table):
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_prediction_action_bet_v1.sql
 ```
 
+## Juniper reachable (`GET /reachable`)
+
+Every hour: "will Juniper send Orion a message in the next hour?" (`app/reachable.py`; spec
+`docs/superpowers/specs/2026-11-10-juniper-reachable-forecast-design.md`). Issued in the first 10 min
+of the hour from messages before it, settled 10 min after the hour ends from `chat_message`
+(`role = 'user'`, outside `orion_*` sessions). Served model: hours-since-last-message state x local
+hour (Denver), backed off to a recency-weighted base rate. Graded per local day with the paired test
+on mean log loss, for all hours and for cold hours (no message in the prior 3 h). Table
+`prediction_reachable_forecast`. Flag `PREDICTION_REACHABLE_ENABLED`. No consumer and no bus event yet.
+
+Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): overall 19 % lower log loss than the base
+rate but not significant (Holm p 0.08); cold hours 6 % worse. It does not pass its gate yet; nothing
+may consume it until the cold verdict reads `better`.
+
 ## Surprise
 
 Each scored outcome becomes surprise (`app/surprise.py`; spec

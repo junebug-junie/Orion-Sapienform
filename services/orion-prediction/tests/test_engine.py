@@ -85,6 +85,11 @@ class FakeStore:
     def scored_with_quantiles(self, sid, since):
         return self.live_scores(sid, since)
 
+    def champion_pool(self, sid, since, max_h):
+        assign = {r["run_id"]: r["assignment"] for r in self.runs}
+        return [{**f, "owner": (assign.get(f["run_id"]) or {}).get(str(f["horizon_min"]), f.get("owner"))}
+                for f in self.live_scores(sid, since) if f["role"] == "champion" and f["horizon_min"] <= max_h]
+
     exceedances: list = []
 
     fail_next_issue = False

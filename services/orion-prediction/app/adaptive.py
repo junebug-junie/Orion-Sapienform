@@ -14,13 +14,13 @@ scale only moves width between calm and busy hours. The calibration pool is the 
 scored champion rows, rolling, so slow drift (a quieter week) is absorbed too.
 
 Replay (evals/run_adaptive_interval_replay_eval.py, this code, live rows 10-27..11-10, the surprise
-calm check per day): days calm at 5/15/60 min -- cabinet 11/11, 10/11, 9/11 (served backtest ranges
-2/13, 7/13, 8/13), office 5/5, 4/5, 5/5 (served 1/6, 2/6, 3/6); 80 % coverage 0.79-0.82 (served
-0.85-0.93). Horizons past 60 min keep the backtest range (see adaptive_offsets).
+calm check per day, same days and same forecasts for both): days calm at 5/15 min -- cabinet 13/13,
+12/13 (served backtest ranges 2/13, 7/13), office 6/6, 6/6 (served 1/6, 2/6); 80 % coverage
+0.76-0.81 (served 0.85-0.93). Only horizons up to MAX_HORIZON are adaptive (see there).
+Caveat: the method and the 15 min cut were chosen on these same 14 days; live is the holdout.
 
 Falls back to the backtest pool (today's behavior) per horizon when the live pool or the current
-difficulty is too thin, and always beyond DIFFICULTY_WINDOW (a 1 h miss size does not predict a
-6 h miss: adaptive 360 min ranges were worse than the backtest ones in replay). Exceedance probabilities still use the backtest paths (they need whole paths
+difficulty is too thin, and always beyond MAX_HORIZON. Exceedance probabilities still use the backtest paths (they need whole paths
 across steps; the live pool has one row per horizon).
 """
 from __future__ import annotations
@@ -38,6 +38,10 @@ DIFFICULTY_WINDOW = timedelta(minutes=60)
 MIN_DIFFICULTY_N = 6          # scored smallest-horizon forecasts inside the window
 MIN_POOL = 288                # one day of 5-min origins per horizon
 FLOOR_Q = 0.05                # difficulty floor: this quantile of the pool's difficulties
+# Longest horizon served adaptively. Replay 11-10 on matched days, owner-filtered pools: 60 min went
+# TOO NARROW (office excess +0.33, cov80 0.73; cabinet +0.12) while its backtest range was already
+# near calm (office +0.09, cabinet -0.02); 360 min was worse than backtest too. 5 and 15 min gain.
+MAX_HORIZON = timedelta(minutes=15)
 
 
 def difficulty_series(rows: Iterable[Mapping], smallest_h: int) -> pd.Series:
@@ -68,12 +72,25 @@ def difficulty_at(diff: pd.Series, times: pd.DatetimeIndex, max_age: timedelta) 
     return out
 
 
+FALLBACK_SOURCE = "backtest:model_fallback"
+
+
 def adaptive_offsets(rows: list[Mapping], origin: pd.Timestamp, horizons_min: Iterable[int],
-                     grain_min: int) -> tuple[dict[int, np.ndarray], dict[int, str]]:
+                     grain_min: int, owners: Mapping[int, str] | None = None
+                     ) -> tuple[dict[int, np.ndarray], dict[int, str]]:
     """Per horizon: residual offsets at QUANTILES for a forecast issued at ``origin``, and why a
-    horizon fell back. ``rows``: scored champion rows (origin_ts, horizon_min, point, actual) with
-    targets inside POOL before ``origin``."""
+    horizon fell back. ``rows``: scored champion rows (origin_ts, horizon_min, point, actual, and
+    optionally ``owner`` = the model that served that horizon, ``interval_source``) with targets
+    inside POOL before ``origin``.
+
+    ``owners`` (horizon -> model serving it now): a horizon's pool keeps only rows that model
+    served. Different models miss by different amounts (live 11-10, office 60 min: direct_ar MAE
+    0.48 vs mstl_arima 0.26), and the 60 min model switched 8 times in 4 days, so a mixed pool sizes
+    the range for the wrong model. Difficulty is NOT owner-filtered: it measures how hard the hour
+    was, and refiltering it would void the whole pool on every 5-min model switch. Rows a failed
+    model handed to the baseline (``interval_source`` = FALLBACK_SOURCE) are excluded everywhere."""
     horizons = sorted(int(h) for h in horizons_min)
+    rows = [r for r in rows if r.get("interval_source") != FALLBACK_SOURCE]
     diff = difficulty_series(rows, horizons[0])
     max_age = timedelta(minutes=2 * grain_min)
     now_d = difficulty_at(diff, pd.DatetimeIndex([pd.Timestamp(origin)]), max_age)[0]
@@ -83,22 +100,24 @@ def adaptive_offsets(rows: list[Mapping], origin: pd.Timestamp, horizons_min: It
     if not rows:
         return {}, {hm: f"live_pool_0_of_{MIN_POOL}" for hm in horizons}
     h = np.array([int(r["horizon_min"]) for r in rows])
+    owner = np.array([str(r.get("owner")) for r in rows])
     res = np.array([float(r["actual"]) - float(r["point"]) for r in rows])
     ds = difficulty_at(diff, pd.DatetimeIndex([pd.Timestamp(r["origin_ts"]) for r in rows]), max_age)
     offsets: dict[int, np.ndarray] = {}
     reasons: dict[int, str] = {}
     for hm in horizons:
-        if timedelta(minutes=hm) > DIFFICULTY_WINDOW:
-            # An hour's miss size says little about 6 h ahead: replay 11-10, cabinet 360 min went
-            # from 10/12 calm days (backtest range) to 8/10 with the adaptive one.
-            reasons[hm] = "horizon_beyond_difficulty_window"
+        if timedelta(minutes=hm) > MAX_HORIZON:
+            reasons[hm] = "horizon_not_adaptive"
             continue
         m = (h == hm) & np.isfinite(ds)
+        if owners is not None:
+            m &= owner == str(owners.get(hm))
         n = int(m.sum())
         if n < MIN_POOL:
-            reasons[hm] = f"live_pool_{n}_of_{MIN_POOL}"
+            reasons[hm] = f"live_pool_{n}_of_{MIN_POOL}" + ("_same_model" if owners is not None else "")
             continue
-        floor = max(float(np.quantile(ds[m], FLOOR_Q)), 1e-9)
+        # Floor: a flat or quantized hour (difficulty ~0) must not blow a score up to ~1e8.
+        floor = max(float(np.quantile(ds[m], FLOOR_Q)), 0.1 * float(np.median(ds[m])), 1e-9)
         scores = res[m] / np.maximum(ds[m], floor)
         offsets[hm] = residual_quantiles(scores[:, None])[:, 0] * max(float(now_d), floor)
     return offsets, reasons

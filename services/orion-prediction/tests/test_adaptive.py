@@ -52,8 +52,8 @@ def test_calm_hour_gets_a_narrow_range_and_busy_hour_a_wide_one():
     calm_origin = pd.Timestamp(T0) + pd.Timedelta(days=3, hours=1)     # hour 1: calm block
     busy_origin = pd.Timestamp(T0) + pd.Timedelta(days=3, hours=4)     # hour 4: busy block
     known = lambda o: [r for r in rows if r["origin_ts"] + pd.Timedelta(minutes=r["horizon_min"]) <= o]
-    calm, _ = adaptive_offsets(known(calm_origin), calm_origin, (5, 15, 60), 5)
-    busy, _ = adaptive_offsets(known(busy_origin), busy_origin, (5, 15, 60), 5)
+    calm, _ = adaptive_offsets(known(calm_origin), calm_origin, (5, 15), 5)
+    busy, _ = adaptive_offsets(known(busy_origin), busy_origin, (5, 15), 5)
     for hm in (5, 15):
         w_calm = calm[hm][Q90] - calm[hm][Q10]
         w_busy = busy[hm][Q90] - busy[hm][Q10]
@@ -98,7 +98,7 @@ def test_offsets_are_monotone_in_level():
     rows = _rows(2 * 288, _regime)
     o = rows[-1]["origin_ts"]
     offs, _ = adaptive_offsets(rows, o, (5, 15, 60), 5)
-    assert set(offs) == {5, 15, 60}
+    assert set(offs) == {5, 15}
     for v in offs.values():
         assert np.all(np.diff(v) >= 0)
 
@@ -119,10 +119,13 @@ def test_engine_serves_adaptive_ranges_once_the_live_pool_is_deep(fast_zoo):
         store.forecasts.append({**r, "series_id": "test.temp", "target_ts": (r["origin_ts"] + pd.Timedelta(
             minutes=r["horizon_min"])).to_pydatetime(), "origin_ts": r["origin_ts"].to_pydatetime(),
             "score_status": "scored", "abs_error": abs(r["actual"] - r["point"]), "in_80": True, "in_95": True,
-            "forecast_id": -1, "scored_at": T0, "quantiles": {}})
+            "forecast_id": -1, "scored_at": T0, "quantiles": {}, "role": "champion",
+            "run_id": st.served.run_ids["champion"]})
     built = eng.build_forecast(spec, s, origin, end + timedelta(seconds=90))
-    assert built["interval_source"][5] == built["interval_source"][60] == "adaptive"
-    assert built["interval_source"][360] == "backtest:horizon_beyond_difficulty_window"
+    rows_src = {(r["role"], r["horizon_min"]): r["interval_source"] for r in built["rows"]}
+    assert rows_src[("champion", 5)] == "adaptive" and rows_src[("baseline", 5)] == "backtest"
+    assert built["interval_source"][5] == "adaptive"
+    assert built["interval_source"][60] == built["interval_source"][360] == "backtest:horizon_not_adaptive"
     champ = {r["horizon_min"]: r for r in built["rows"] if r["role"] == "champion"}
     w_new = champ[5]["quantiles"]["0.9"] - champ[5]["quantiles"]["0.1"]
     w_old = backtest_q[5]["0.9"] - backtest_q[5]["0.1"]
@@ -133,3 +136,95 @@ def test_engine_serves_adaptive_ranges_once_the_live_pool_is_deep(fast_zoo):
     eng.adaptive_intervals = False
     built = eng.build_forecast(spec, s, origin, end + timedelta(seconds=90))
     assert set(built["interval_source"].values()) == {"backtest:disabled"}
+
+
+def test_pool_keeps_only_the_model_serving_the_horizon_now():
+    rows = _rows(2 * 288, lambda o: 0.1, horizons=(5, 15))
+    for r in rows:
+        r["owner"] = "old_model" if r["horizon_min"] == 15 else "m5"
+    o = rows[-1]["origin_ts"]
+    offs, why = adaptive_offsets(rows, o, (5, 15), 5, owners={5: "m5", 15: "new_model"})
+    assert 5 in offs and 15 not in offs
+    assert why[15] == f"live_pool_0_of_{MIN_POOL}_same_model"
+
+
+def test_rows_a_failed_model_handed_to_the_baseline_are_excluded():
+    rows = _rows(2 * 288, lambda o: 0.1, horizons=(5, 15))
+    for r in rows:
+        r["interval_source"] = "backtest:model_fallback"
+    assert adaptive_offsets(rows, rows[-1]["origin_ts"], (5, 15), 5)[0] == {}
+
+
+def test_a_rows_difficulty_uses_only_misses_known_at_its_origin():
+    """Leakage guard: misses whose target is after a row's origin must not set its difficulty."""
+    t0 = pd.Timestamp(T0)
+    rows = []
+    for i in range(12):   # 5-min misses of 0.1 with targets t0+5 .. t0+60
+        rows.append({"origin_ts": t0 + pd.Timedelta(minutes=5 * i), "horizon_min": 5, "point": 0.0, "actual": 0.1})
+    for i in range(12, 24):   # then misses of 10.0 with targets t0+65 .. t0+120
+        rows.append({"origin_ts": t0 + pd.Timedelta(minutes=5 * i), "horizon_min": 5, "point": 0.0, "actual": 10.0})
+    diff = difficulty_series(rows, 5)
+    got = difficulty_at(diff, pd.DatetimeIndex([t0 + pd.Timedelta(minutes=60), t0 + pd.Timedelta(minutes=64)]),
+                        timedelta(minutes=10))
+    assert np.allclose(got, 0.1)            # the 10.0 misses (targets from t0+65) are not known yet
+
+
+def test_a_flat_hour_cannot_blow_the_range_up():
+    rows = _rows(2 * 288, lambda o: 0.1, horizons=(5, 15))
+    for r in rows[: len(rows) // 3]:
+        r["actual"] = r["point"]            # a third of the history tracked exactly: difficulty 0
+    offs, _ = adaptive_offsets(rows, rows[-1]["origin_ts"], (5, 15), 5)
+    assert offs and all(np.max(np.abs(v)) < 5.0 for v in offs.values())
+
+
+def test_tick_scores_before_it_issues(fast_zoo):
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    calls = []
+    real_score, real_issue = eng.score, eng.issue
+    eng.score = lambda *a: (calls.append("score"), real_score(*a))[1]
+
+    async def issue(*a):
+        calls.append("issue")
+        return await real_issue(*a)
+    eng.issue = issue
+    asyncio.run(eng.tick(_sync))
+    assert calls.index("score") < calls.index("issue")
+
+
+def test_a_scoring_fault_still_issues_and_alerts(fast_zoo):
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+
+    def boom(*a):
+        raise ConnectionError("pg hiccup")
+    eng.score = boom
+    asyncio.run(eng.tick(_sync))
+    assert any(f["role"] == "champion" for f in store.forecasts)
+    assert "score_failed" in eng.alerts_for(spec, end + timedelta(seconds=90), {}, None)
+
+
+def test_an_adaptive_fault_keeps_the_backtest_range(fast_zoo):
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    asyncio.run(eng.tick(_sync))
+
+    def boom(*a):
+        raise ConnectionError("pg hiccup")
+    store.champion_pool = boom
+    origin = pd.Timestamp(max(f["origin_ts"] for f in store.forecasts))
+    built = eng.build_forecast(spec, s, origin, end + timedelta(seconds=90))
+    assert set(built["interval_source"].values()) == {"backtest:error:ConnectionError"}
+
+
+def test_a_step_served_by_the_baseline_after_a_failure_keeps_the_backtest_range(fast_zoo):
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    h = spec.max_horizon_steps
+    qs = {k: np.full(h, float(i)) for i, k in enumerate(["0.025", "0.05", "0.1", "0.25", "0.5", "0.75", "0.9", "0.95", "0.975"])}
+    eng.store.champion_pool = lambda *a: _rows(2 * 288, lambda o: 0.1, horizons=(5, 60))
+    out: dict = {}
+    got = eng.adapt_intervals(spec, pd.Timestamp(T0) + pd.Timedelta(days=2), np.zeros(h), np.ones(h, dtype=bool),
+                              {5: "x", 60: "x", 360: "x"}, qs, out)
+    assert set(out["interval_source"].values()) <= {"backtest:model_fallback"}
+    assert all(np.array_equal(got[k], qs[k]) for k in qs)

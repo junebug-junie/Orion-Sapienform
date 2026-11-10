@@ -8,10 +8,11 @@ the ranges actually served. Prints, per series and horizon: days calm (target ~9
 
     cd services/orion-prediction && POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14
 
-Baseline 2026-11-10, --days 14 (~6 min). Days calm, adaptive vs served ranges:
-  cabinet 5 min 11/11 vs 2/13, 15 min 10/11 vs 7/13, 60 min 9/11 vs 8/13; cov80 0.80-0.82 vs 0.85-0.91
-  office  5 min 5/5 vs 1/6,    15 min 4/5 vs 2/6,    60 min 5/5 vs 3/6;   cov80 0.79-0.80 vs 0.87-0.93
-Horizons past 60 min keep the backtest range, so their "adaptive" lines are empty.
+Baseline 2026-11-10, --days 14 (~6 min), same days and same forecasts for both sets, days calm:
+  cabinet 5 min 13/13 vs served 2/13, 15 min 12/13 vs 7/13; cov80 0.80-0.81 vs 0.85-0.90
+  office  5 min 6/6   vs served 1/6,  15 min 6/6   vs 2/6;  cov80 0.76-0.79 vs 0.88-0.93
+60 min was too narrow when adaptive (office excess +0.33, cov80 0.73) and stays on backtest ranges
+(app/adaptive.py MAX_HORIZON). Method and cut were chosen on these days: the live check is the holdout.
 """
 from __future__ import annotations
 
@@ -35,6 +36,8 @@ from app.surprise import summarize  # noqa: E402
 
 
 def replay(rows: list[dict], horizons: list[int], grain_min: int) -> list[dict]:
+    """Each row carries ``owner`` (the model its run served at that horizon). The pool for an origin is
+    filtered to the owner that served that origin's own forecast, as the live engine does."""
     """Rebuilt champion rows (origin_ts, horizon_min, actual, quantiles) for every origin that has an
     adaptive range; the rest are dropped (they would have kept the backtest range)."""
     rows = sorted(rows, key=lambda r: r["origin_ts"])
@@ -50,7 +53,8 @@ def replay(rows: list[dict], horizons: list[int], grain_min: int) -> list[dict]:
         lo = np.searchsorted(known_sorted, (o - POOL).value, "left")
         hi = np.searchsorted(known_sorted, o.value, "right")
         pool = [rows[i] for i in order[lo:hi]]
-        offs, _ = adaptive_offsets(pool, o, horizons, grain_min)
+        owners = {int(r["horizon_min"]): r.get("owner") for r in by_origin[o]}
+        offs, _ = adaptive_offsets(pool, o, horizons, grain_min, owners=owners)
         for r in by_origin[o]:
             hm = int(r["horizon_min"])
             if hm in offs:
@@ -70,20 +74,29 @@ def main() -> int:
         if args.series and spec.series_id != args.series:
             continue
         rows = [r for r in store._all(
-            "SELECT origin_ts, horizon_min, point, actual, quantiles FROM prediction_forecast WHERE series_id = %s "
-            "AND role = 'champion' AND score_status = 'scored' AND target_ts >= %s", (spec.series_id, since))]
+            "SELECT f.origin_ts, f.horizon_min, f.point, f.actual, f.quantiles, "
+            "r.assignment ->> f.horizon_min::text AS owner FROM prediction_forecast f "
+            "JOIN prediction_model_run r ON r.run_id = f.run_id WHERE f.series_id = %s "
+            "AND f.role = 'champion' AND f.score_status = 'scored' AND f.target_ts >= %s", (spec.series_id, since))]
         if not rows:
             continue
         rebuilt = replay(rows, list(spec.horizons_min), spec.grain_min)
-        for name, rs in (("served", rows), ("adaptive", rebuilt)):
-            days: dict = {}
+        # Both sets are judged on the SAME days: those where the adaptive pool had a day of history
+        # for every horizon it serves (the first POOL days are calibration only).
+        def by_day(rs):
+            d: dict = {}
             for r in rs:
-                days.setdefault(pd.Timestamp(r["origin_ts"]).floor("D"), []).append(r)
-            first = min(days) + POOL if days else None   # the adaptive pool needs POOL of history
+                d.setdefault(pd.Timestamp(r["origin_ts"]).floor("D"), []).append(r)
+            return d
+        served_days, adaptive_days = by_day(rows), by_day(rebuilt)
+        start = min(served_days) + POOL if served_days else None
+        days = sorted(d for d in adaptive_days if d in served_days and d >= start)
+        built = {(r["origin_ts"], int(r["horizon_min"])) for r in rebuilt}
+        for name, src in (("served", served_days), ("adaptive", adaptive_days)):
             per_h: dict[str, list] = {}
-            for day, drs in sorted(days.items()):
-                if day < first:
-                    continue
+            for day in days:
+                # Same forecasts in both: only those the adaptive range was built for.
+                drs = [r for r in src[day] if (r["origin_ts"], int(r["horizon_min"])) in built]
                 for hm, h in summarize(drs, spec.grain_min).items():
                     q = [r for r in drs if int(r["horizon_min"]) == int(hm)]
                     cov = np.mean([r["quantiles"]["0.1"] <= r["actual"] <= r["quantiles"]["0.9"] for r in q])
@@ -93,6 +106,10 @@ def main() -> int:
                 print(f"{spec.series_id:26s} {hm:>5s} min {name:8s} days calm {sum(judged)}/{len(judged)}  "
                       f"mean excess {np.mean([e for _, e, _ in v if e is not None]):+.3f}  "
                       f"cov80 {np.mean([c for _, _, c in v]):.3f}")
+        n_adapt = {hm: sum(1 for r in rebuilt if int(r["horizon_min"]) == hm) for hm in spec.horizons_min}
+        n_all = {hm: sum(1 for r in rows if int(r["horizon_min"]) == hm) for hm in spec.horizons_min}
+        print(f"{spec.series_id:26s} adaptive share of forecasts: "
+              + ", ".join(f"{hm} min {n_adapt[hm]}/{n_all[hm]}" for hm in spec.horizons_min))
     return 0
 
 

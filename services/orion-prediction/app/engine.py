@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable
 import numpy as np
 import pandas as pd
 
-from app.adaptive import adaptive_offsets, pool_since
+from app.adaptive import FALLBACK_SOURCE, MAX_HORIZON, adaptive_offsets, pool_since
 from app.backtest import (
     COVERAGE_BAND,
     GATE_VERSION,
@@ -141,6 +141,7 @@ class SeriesState:
     surprise_gate: dict = field(default_factory=dict)
     # Champion range source per horizon at the last issue: "adaptive" or "backtest:<reason>".
     interval_source: dict = field(default_factory=dict)
+    last_score_error: str | None = None
 
 
 class Engine:
@@ -476,21 +477,27 @@ class Engine:
 
     # --- issue ----------------------------------------------------------------------------
     def adapt_intervals(self, spec: SeriesSpec, origin: pd.Timestamp, point: np.ndarray, swapped: np.ndarray,
-                        qs: dict[str, np.ndarray], out: dict) -> dict[str, np.ndarray]:
-        """Champion ranges at the served horizons from recent live scores, scaled by the last hour's
-        difficulty (app/adaptive.py). A horizon keeps its backtest range when the live pool or the
-        current difficulty is too thin, or when its step fell back to the baseline model (the live
-        pool measures the champion, not the baseline)."""
+                        assignment: dict[int, str], qs: dict[str, np.ndarray], out: dict) -> dict[str, np.ndarray]:
+        """Champion ranges at the served horizons from recent live scores of the model serving each
+        horizon now, scaled by the last hour's difficulty (app/adaptive.py). A horizon keeps its
+        backtest range when the pool or the current difficulty is too thin, past MAX_HORIZON, when its step
+        fell back to the baseline model, or when anything here fails (never costs the forecast)."""
         source = {hm: "backtest:disabled" for hm in spec.horizons_min}
         if self.adaptive_intervals:
-            since = pool_since(origin.to_pydatetime())
-            rows = [r for r in self.store.live_scores(spec.series_id, since) if r["role"] == "champion"]
-            offsets, reasons = adaptive_offsets(rows, origin, spec.horizons_min, spec.grain_min)
+            try:
+                since = pool_since(origin.to_pydatetime())
+                rows = self.store.champion_pool(spec.series_id, since, int(MAX_HORIZON.total_seconds() // 60))
+                offsets, reasons = adaptive_offsets(rows, origin, spec.horizons_min, spec.grain_min,
+                                                    owners=assignment)
+            except Exception as exc:  # noqa: BLE001 -- the backtest range is a valid forecast
+                logger.warning("prediction_adaptive_failed series=%s err=%s: %s", spec.series_id,
+                               type(exc).__name__, str(exc)[:200])
+                offsets, reasons = {}, {hm: f"error:{type(exc).__name__}" for hm in spec.horizons_min}
             qs = {k: v.copy() for k, v in qs.items()}
             for hm in spec.horizons_min:
                 j = spec.steps(hm) - 1
                 if swapped[j]:
-                    source[hm] = "backtest:model_fallback"
+                    source[hm] = FALLBACK_SOURCE
                     continue
                 if hm not in offsets:
                     source[hm] = f"backtest:{reasons.get(hm, 'unknown')}"
@@ -501,7 +508,8 @@ class Engine:
         out["interval_source"] = source
         return qs
 
-    def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime) -> dict:
+    def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime,
+                       adapt: bool = True) -> dict:
         """Champion + baseline rows and the publishable payload. Refuses stale input outright: a
         forecast from a sensor that stopped is the last value extended, not a forecast."""
         st = self.state[spec.series_id]
@@ -552,8 +560,8 @@ class Engine:
                 residuals[:, swap] = served.residuals["baseline"][:, swap]
             point = stitch(paths, owners)
             qs = quantile_paths(point, residuals)
-            if role == "champion":
-                qs = self.adapt_intervals(spec, origin, point, swap, qs, out)
+            if role == "champion" and adapt:
+                qs = self.adapt_intervals(spec, origin, point, swap, sel.assignment, qs, out)
             _check_not_degenerate(point, qs, spec)
             steps = []
             for hm in spec.horizons_min:
@@ -563,7 +571,9 @@ class Engine:
                 out["rows"].append({"run_id": served.run_ids[role], "series_id": spec.series_id,
                                     "model": f"{role}_blend", "role": role, "issued_at": now,
                                     "origin_ts": origin.to_pydatetime(), "target_ts": target.to_pydatetime(),
-                                    "horizon_min": hm, "point": float(point[j]), "quantiles": quant})
+                                    "horizon_min": hm, "point": float(point[j]), "quantiles": quant,
+                                    "interval_source": (out.get("interval_source", {}).get(hm, "backtest:not_adapted")
+                                                        if role == "champion" else "backtest")})
                 steps.append(PredictionStepV1(target_ts=target.to_pydatetime(), horizon_min=hm,
                                               point=float(point[j]), quantiles=quant))
             if role == "champion":
@@ -593,6 +603,7 @@ class Engine:
             built = await sync(self.build_forecast, spec, series, origin, now)
         except InputStale:
             st.last_issue_error = None   # alerts_for reports input_stale itself
+            st.interval_source = {}
             return False
         except DegenerateForecast as exc:
             st.last_issue_error = ("degenerate_forecast", str(exc)[:300])
@@ -778,6 +789,8 @@ class Engine:
             alerts["forecast_stale"] = f"last forecast {last_issued.isoformat() if last_issued else 'never'}"
         if st.last_issue_error:
             alerts[st.last_issue_error[0]] = st.last_issue_error[1]
+        if st.last_score_error:
+            alerts["score_failed"] = st.last_score_error
         if st.last_select_error:
             alerts["selection_failed"] = st.last_select_error
         if st.last_tick_error:
@@ -844,8 +857,14 @@ class Engine:
                 st.last_select_error = f"{type(exc).__name__}: {exc}"[:300]
                 st.next_select_at = now + self.select_interval   # back off a full interval
                 logger.exception("prediction_select_failed series=%s", spec.series_id)
-        # Score before issuing: the adaptive range (app/adaptive.py) reads the newest outcomes.
-        await sync(self.score, spec, now)
+        # Score before issuing: the adaptive range (app/adaptive.py) reads the newest outcomes. A scoring
+        # fault must not cost the forecast: record it, issue anyway (the range then falls back).
+        try:
+            await sync(self.score, spec, now)
+            st.last_score_error = None
+        except Exception as exc:  # noqa: BLE001 -- retried next tick; alerted as score_failed
+            st.last_score_error = f"{type(exc).__name__}: {exc}"[:300]
+            logger.exception("prediction_score_failed series=%s", spec.series_id)
         if st.served is not None:
             series = await sync(self.load_series, spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
             await self.issue(spec, now, series, sync)

@@ -12,8 +12,8 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
    distance (5 min, 15 min, 1 h, 6 h, 24 h), pick the model that beats the better of two
    baselines and whose error ranges are calibrated. If none does, serve the baseline there.
 2. **Issue** (every completed 5-minute bucket). Fit the chosen models, stitch their forecasts,
-   attach error ranges built from their own past errors (split-conformal; up to 1 h ahead, from the
-   last 3 days of live scores scaled to how hard the last hour was -- see Surprise), and compute the chance
+   attach error ranges built from their own past errors (split-conformal; adaptive from the
+   last 3 days of live scores scaled to how hard the last hour was, up to 15 min ahead -- see Surprise), and compute the chance
    of crossing each declared threshold (34 °C shed, 32 °C experiment guard; the cabinet lines are read from `orion/autonomy/thermal_gate.py` via `value_from`, never restated in the registry). Store it, publish it.
 3. **Score** (each tick, before issuing). When the real bucket arrives, write the actual value, the error, and whether it fell
    inside the 80 % and 95 % ranges. A bucket with no readings is scored `missing`, never guessed.
@@ -316,18 +316,20 @@ Each scored outcome becomes surprise (`app/surprise.py`; spec
 average, but calm and busy hours got the same width, so calm days read too calm.
 
 **Adaptive ranges** (`app/adaptive.py`, kill switch `PREDICTION_ADAPTIVE_INTERVALS_ENABLED`, on by
-default). The champion's range at horizons up to 60 min is calibrated on the last 3 days of its own
-live scores. Each miss is divided by how big the 5-min misses were in the hour before (normalized
+default). The champion's range at horizons up to 15 min is calibrated on the last 3 days of the
+live scores of the model serving that horizon now. Each miss is divided by how big the 5-min misses were in the hour before (normalized
 conformal), and the range is then multiplied by the current hour's value. Calm hours get narrow
 ranges and busy hours wide ones. Scaling by how fast the reading moved was tried first and
-overcorrects: smooth ramps the model tracks read as busy. Horizons past 60 min, thin pools (under one
-day of scores), a stale last hour, and steps served by the baseline after a model failure keep the
-backtest range. `/series/{id}` shows the source per horizon (`interval_source`). Exceedance
-probabilities still use the backtest paths.
+overcorrects: smooth ramps the model tracks read as busy. Horizons past 15 min (60 min went too
+narrow in replay), thin pools (under one day of that model's scores), a stale last hour, steps served
+by the baseline after a model failure, and any error here keep the backtest range. Each stored
+forecast row records its source (`prediction_forecast.interval_source`, migration
+`manual_migration_prediction_forecast_interval_source_v1.sql`); `/health` shows the last one per
+horizon. Exceedance probabilities still use the backtest paths.
 
-Replay with this code (`evals/run_adaptive_interval_replay_eval.py --days 14`), days calm at
-5/15/60 min: cabinet 11/11, 10/11, 9/11 (backtest ranges 2/13, 7/13, 8/13); office 5/5, 4/5, 5/5
-(backtest 1/6, 2/6, 3/6). 80 % coverage 0.79-0.82. Nothing consumes surprise until
+Replay with this code (`evals/run_adaptive_interval_replay_eval.py --days 14`, same days and same
+forecasts), days calm at 5/15 min: cabinet 13/13, 12/13 (backtest ranges 2/13, 7/13); office 6/6,
+6/6 (backtest 1/6, 2/6). 80 % coverage 0.76-0.81. Nothing consumes surprise until
 `evals/run_surprise_calm_live_eval.py` shows calm on live forecasts issued with these ranges.
 
 ## Contracts

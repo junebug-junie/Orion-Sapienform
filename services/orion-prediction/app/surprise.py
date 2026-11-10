@@ -19,9 +19,10 @@ surprisal of the outcome under the forecast:
   spike (one forecast missed badly); a sustained offset = drift (ranges too wide reads negative,
   too narrow reads positive -- the live 80 % coverage says which).
 
-A horizon publishes (``gate``) only when its forecaster passed selection (the served model is not
-a baseline), its live 80 % coverage sits in the selection band over enough scores, and its live
-record is not worse than the baseline. Same bar the forecast itself must clear.
+A horizon passes the gate (``horizon_gate``) only when its forecaster passed selection (the served
+model is not a baseline), its live 80 % coverage sits in the selection band over enough scores, and
+its live record is not worse than the baseline. Same bar the forecast itself must clear. Nothing
+consumes surprise yet (no bus event): the calm check fails today, see README "Surprise".
 """
 
 from __future__ import annotations

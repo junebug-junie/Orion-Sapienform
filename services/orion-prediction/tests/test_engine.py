@@ -71,17 +71,8 @@ class FakeStore:
         o = self.last_origin(sid)
         return [f for f in self.forecasts if f["role"] == "champion" and f["origin_ts"] == o]
 
-    served_model_override: dict = {}   # hm -> model, as if the issuing run had assigned it
-
     def due_for_scoring(self, sid, before, limit=2000):
-        runs = {r["run_id"]: r for r in self.runs}
-        out = []
-        for f in self.forecasts:
-            if f["scored_at"] is None and f["target_ts"] < before:
-                assignment = (runs.get(f["run_id"]) or {}).get("assignment") or {}
-                model = self.served_model_override.get(f["horizon_min"], assignment.get(str(f["horizon_min"])))
-                out.append({**f, "served_model": model})
-        return out[:limit]
+        return [f for f in self.forecasts if f["scored_at"] is None and f["target_ts"] < before][:limit]
 
     def write_scores(self, scores):
         by_id = {f["forecast_id"]: f for f in self.forecasts}
@@ -756,99 +747,14 @@ def test_not_ready_backs_off_even_when_a_stale_selection_would_force_a_reselect(
 
 # --- surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) ---------
 
-def _surprise_events(published):
-    from orion.schemas.prediction import PredictionSurpriseV1
-
-    return [PredictionSurpriseV1.model_validate(e.payload) for c, e in published if c == "orion:prediction:surprise"]
-
-
-def test_monitor_sets_a_gate_verdict_per_horizon_and_nothing_publishes_without_a_pass():
+def test_monitor_sets_a_gate_verdict_per_horizon():
     reg, spec, s, store, end = _setup()
-    published = []
-    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), published)
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
     asyncio.run(eng.tick(_sync))
     gate = eng.state["test.temp"].surprise_gate
     assert set(gate) == {5, 60, 360}
     # A fresh series has too few live scores (or serves a baseline): nothing passes yet.
     assert not any(ok for ok, _ in gate.values())
-    assert _surprise_events(published) == []
-
-
-_GOOD_LIVE = {"horizons": {"5": {"n": 500, "coverage80": 0.80}, "60": {"n": 500, "coverage80": 0.95},
-                           "360": {"n": 500, "coverage80": 0.80}}, "shadow": {}}
-
-
-def _issued_then_scored(served_at_issue, silent=False):
-    reg, spec, s, store, end = _setup()
-    store.served_model_override = served_at_issue
-    published = []
-    clock = Clock(end + timedelta(seconds=90))
-    eng = _engine(reg, store, clock, published)
-    asyncio.run(eng.tick(_sync))
-    eng.state["test.temp"].live_metrics = _GOOD_LIVE
-    future = daily_series(1, amp=1.0, noise=0.05, seed=4, start=end)
-    if silent:
-        future.iloc[0] = np.nan                    # the 5-min target bucket goes silent
-    store.raw += points_of(future)
-    clock.t = end + timedelta(hours=1, minutes=10)
-    eng.score(spec, clock.t)
-    asyncio.run(eng.publish_surprise(spec))
-    return eng, spec, published
-
-
-@pytest.mark.parametrize("silent", [True, False])
-def test_gated_horizon_publishes_its_outcome_champion_only(silent):
-    # 5 min: real model at issue + coverage in band -> publishes. 60 min: coverage out of band.
-    # 360 min: not due yet.
-    eng, spec, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar", 360: "direct_ar"}, silent)
-    evs = _surprise_events(published)
-    assert len(evs) == 1 and evs[0].horizon_min == 5     # one champion 5-min forecast, baseline row skipped
-    ev = evs[0]
-    assert ev.live_coverage80 == pytest.approx(0.80)
-    if silent:
-        assert ev.outcome == "missing" and ev.p_value is None and ev.excess is None
-    else:
-        assert ev.outcome == "scored" and 0.05 <= ev.p_value <= 1
-        assert ev.excess == pytest.approx(ev.surprisal - 0.95)
-    # Pending is drained: a second publish sends nothing new.
-    n = len(published)
-    asyncio.run(eng.publish_surprise(spec))
-    assert len(published) == n
-
-
-def test_gate_judges_the_model_that_issued_the_forecast_not_todays():
-    """Review finding: a baseline forecast must not publish because selection later moved the
-    horizon to a real model (and the reverse must not be dropped)."""
-    _, _, published = _issued_then_scored({5: "naive", 60: "naive", 360: "naive"})
-    assert _surprise_events(published) == []
-
-
-def test_first_score_after_start_is_judged_not_lost():
-    reg, spec, s, store, end = _setup()
-    store.served_model_override = {5: "direct_ar", 60: "direct_ar", 360: "direct_ar"}
-    published = []
-    clock = Clock(end + timedelta(seconds=90))
-    eng = _engine(reg, store, clock, published)
-    asyncio.run(eng.tick(_sync))
-    eng.state["test.temp"].live_metrics = None          # as after a restart: no monitor pass yet
-    eng.live_metrics = lambda spec, now: _GOOD_LIVE      # what that first inline pass would read
-    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
-    clock.t = end + timedelta(hours=1, minutes=10)
-    eng.score(spec, clock.t)
-    asyncio.run(eng.publish_surprise(spec))
-    assert [e.horizon_min for e in _surprise_events(published)] == [5]
-
-
-def test_a_surprise_failure_never_costs_the_scores(monkeypatch):
-    reg, spec, s, store, end = _setup()
-    clock = Clock(end + timedelta(seconds=90))
-    eng = _engine(reg, store, clock, [])
-    asyncio.run(eng.tick(_sync))
-    monkeypatch.setattr(eng, "surprise_events", lambda *a: 1 / 0)
-    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
-    clock.t = end + timedelta(hours=1, minutes=10)
-    assert eng.score(spec, clock.t) > 0
-    assert any(f.get("score_status") == "scored" for f in store.forecasts)
 
 
 def test_surprise_summary_reports_each_horizon_with_its_gate_reason():

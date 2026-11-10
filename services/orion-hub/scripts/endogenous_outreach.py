@@ -1926,6 +1926,10 @@ class EndogenousOutreach:
             ),
         )
 
+    def _strain_gate_inputs(self) -> OutreachGateInputs:
+        """The gate as the strain report sees it: no daily cap (it does not spend the cap)."""
+        return replace(self._gate_inputs(), daily_cap=-1)
+
     def status(self) -> Dict[str, Any]:
         """Operator-visible runtime state (backs the debug endpoint)."""
         inputs = self._gate_inputs()
@@ -2208,6 +2212,12 @@ class EndogenousOutreach:
             # a strain hold repeats on every 10 s tick, but it is one held want, not 360 an hour.
             shadow.place()
             shadow.real = f"blocked:{AROUSAL_STRAINED_REASON}"
+        if blocked == "daily_cap" and self.strain_report_enabled:
+            # The strain report does not spend the daily cap (attention_pacing.CAP_EXEMPT_SOURCES), so a
+            # full cap must not silence it either (review finding, 2026-11-10): judge its gate cap-free.
+            if outreach_block_reason(self._strain_gate_inputs()) == AROUSAL_STRAINED_REASON:
+                self._last_tension_reason = None
+                return await self._strain_report_once(force=force, compose_started_at=compose_started_at)
         if blocked == AROUSAL_STRAINED_REASON and self.strain_report_enabled:
             # Strain is the only gate holding (it is checked last), so every other gate passed.
             # The strain report door may pass this one refusal, once per long episode.
@@ -2602,7 +2612,7 @@ class EndogenousOutreach:
         # Qualifies. Now the DB read for recent_chat, then the whole gate again: strain must
         # still be the ONLY thing holding.
         self._last_spoke_ago = await self._spoke_ago()
-        blocked = outreach_block_reason(self._gate_inputs())
+        blocked = outreach_block_reason(self._strain_gate_inputs())
         if blocked != AROUSAL_STRAINED_REASON:
             if blocked is None:
                 # The reading aged out between the two gate reads: nothing is held any more.
@@ -2653,7 +2663,7 @@ class EndogenousOutreach:
         # Re-gate before delivery, same as the background tick: compose can take minutes.
         if reader is not None:
             await reader.refresh(self._bus)
-        blocked_now = outreach_block_reason(self._gate_inputs())
+        blocked_now = outreach_block_reason(self._strain_gate_inputs())
         if blocked_now == AROUSAL_STRAINED_REASON:
             now_view = None if reader is None else reader.view()
             if now_view is None or now_view.since is None or episode_key(now_view.since) != episode:
@@ -2731,7 +2741,8 @@ class EndogenousOutreach:
     # -- delivery on behalf of another loop --------------------------------
 
     def blocked_reason(
-        self, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False
+        self, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False,
+        cap_exempt: bool = False,
     ) -> Optional[str]:
         """The gate that would stop an outreach right now, or None.
 
@@ -2745,8 +2756,9 @@ class EndogenousOutreach:
         a pre-check does not refuse composition for quiet hours / daily cap /
         cooldown that delivery will also skip.
         """
+        inputs = self._gate_inputs()
         return outreach_block_reason(
-            self._gate_inputs(),
+            replace(inputs, daily_cap=-1) if cap_exempt else inputs,
             skip_schedule_gates=skip_schedule_gates,
             skip_rate_gates=skip_rate_gates,
         )
@@ -2850,6 +2862,7 @@ class EndogenousOutreach:
         record_appendix: Optional[str] = None,
         require_why_juniper: bool = False,
         finding_key: Optional[str] = None,
+        cap_exempt: bool = False,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
 
@@ -2860,6 +2873,8 @@ class EndogenousOutreach:
         visits, Juniper-triggered sends and the strain report leave it False.
         ``finding_key``: the source finding's stable id (e.g. ``curiosity_run:<id>``);
         a ``sent`` row already naming it is recorded as ``already_told`` and not sent.
+        ``cap_exempt`` (a send Juniper asked for: ``meta.door_policy='asked_by_juniper'``): the
+        daily cap does not hold it and it does not count (attention_pacing.CAP_EXEMPT_DOOR_POLICIES).
 
         ``skip_rate_gates`` (reading findings, office visits): see ``outreach_block_reason``.
         Every send here counts on ``_sent_today`` (one attention budget, 2026-11-10). ``provenance`` (an
@@ -2942,15 +2957,15 @@ class EndogenousOutreach:
                 {**extra, "outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
-        # Recover the endogenous tick's shared count even on Door-A so a
-        # concurrent organic tick sees a true reading. Door-A itself does not
-        # consume the counter when skip_schedule_gates is set.
+        # Recover the shared count on every door: the daily cap holds for every
+        # door, and every send here counts on it (one attention budget, 2026-11-10).
         await self._recover_sent_today()
         if skip_rate_gates and not skip_schedule_gates:
             await self.refresh_human_gates()
         async with self._send_lock:
+            inputs = self._gate_inputs()
             blocked = outreach_block_reason(
-                self._gate_inputs(),
+                replace(inputs, daily_cap=-1) if cap_exempt else inputs,
                 skip_schedule_gates=skip_schedule_gates,
                 skip_rate_gates=skip_rate_gates,
             )
@@ -2998,8 +3013,10 @@ class EndogenousOutreach:
             if finding_key:
                 # Process-local mirror: the sent row is written on a daemon thread and may lag.
                 self._told_keys.add(str(finding_key))
-            # One attention budget (2026-11-10): every door's send counts on the daily cap.
-            self._sent_today += 1
+            # One attention budget (2026-11-10): every door's send counts on the daily cap, except a
+            # send Juniper asked for.
+            if not cap_exempt:
+                self._sent_today += 1
             logger.info(
                 "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s door_a=%s",
                 correlation_id,

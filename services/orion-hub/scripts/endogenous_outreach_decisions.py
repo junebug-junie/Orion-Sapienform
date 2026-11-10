@@ -38,7 +38,7 @@ import threading
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
-from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
+from orion.physiology.attention_pacing import CAP_EXEMPT_DOOR_POLICIES, CAP_EXEMPT_SOURCES
 
 logger = logging.getLogger("orion-hub.endogenous_outreach_decisions")
 
@@ -225,8 +225,9 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
 
     Counts `reason='sent'` rows from EVERY door (one attention budget, 2026-11-10):
     the tick, curiosity Door-A, readings and office visits all count. Not counted:
-    `orion.physiology.attention_pacing.CAP_EXEMPT_SOURCES` (the strain report) and
-    forced (operator) sends. The body's attention:juniper line reads the same list.
+    `orion.physiology.attention_pacing.CAP_EXEMPT_SOURCES` (the strain report),
+    sends Juniper asked for (`CAP_EXEMPT_DOOR_POLICIES`) and forced (operator)
+    sends. The body's attention:juniper line reads the same lists.
     """
     if not decision_log_enabled():
         # UNKNOWN, not zero. With the log switched off the table stops
@@ -248,9 +249,11 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
                     "SELECT count(*) FROM endogenous_outreach_decisions "
                     "WHERE reason = 'sent' AND NOT forced "
                     "AND NOT (coalesce(result_json->>'source', '') = ANY(:exempt)) "
+                    "AND NOT (coalesce(result_json->>'door_policy', '') = ANY(:exempt_policies)) "
                     "AND (decided_at AT TIME ZONE :tz)::date = CAST(:d AS date)"
                 ),
-                {"tz": tz_name, "d": local_date, "exempt": list(CAP_EXEMPT_SOURCES)},
+                {"tz": tz_name, "d": local_date, "exempt": list(CAP_EXEMPT_SOURCES),
+                 "exempt_policies": list(CAP_EXEMPT_DOOR_POLICIES)},
             ).scalar()
         return None if row is None else int(row)
     except Exception as exc:  # noqa: BLE001

@@ -16,12 +16,14 @@ curiosity investigate (#3010) and the dream cycle obey (``orion.physiology.bindi
   as before. This patch removes no other gate, so "no answer" falls back to the old gates, never to
   "held".
 
-Bounds: a held want is never dropped. Its window is ``DEFERRABLE_WINDOW_S`` (1 h, config/physiology/
+Bounds: a held want is never dropped by the market. Its window is ``DEFERRABLE_WINDOW_S`` (1 h, config/physiology/
 families.yaml ``hub.outreach``, asserted by a test) from its FIRST bid; at the end it composes anyway
 (``window_end``). Since 2026-11-10 a want's window is the later of that hour and the end of Juniper's
 waking day (a hold on the attention:juniper pace relieves on the day's clock), except a door window
-(office visits: ``OFFICE_WINDOW_S``). The doors keep their own pending queues (a held reading finding or
-office visit stays pending and is retried on the door's next tick), so a hold only delays.
+(office visits: ``OFFICE_WINDOW_S``, which does compose at its end). A day-bounded hold does NOT compose
+at its end in practice: the day ends where quiet hours begin, the door's quiet-hours gate stops it
+before it bids, and the want lapses (``LAPSE_AFTER_SEC``). The door keeps its own pending item (a
+reading finding stays pending inside its 48 h lookback) and bids afresh the next day.
 
 Doors (``services/orion-hub/scripts/endogenous_outreach.py``):
 
@@ -293,14 +295,17 @@ class OutreachBinder:
 
     async def close(self, key: str, *, sent: bool, want_id: Optional[str] = None) -> None:
         """The door's attempt on an ADMITTED want ended: the next check opens a new want. A funded
-        reservation is released now, sent or not (the act is over; a sent message is counted by
-        ``sent_today`` from here), as the dream and run_bids do. A held want is left open (no-op).
+        reservation is released now when nothing was sent; a sent one lapses on its own (it covers
+        the body's lag in counting the send on attention:juniper, 2026-11-10). A held want is left open (no-op).
         ``want_id``: close only that want (a check that did not admit it never closes another's)."""
         want = self.wants.get(key)
         if want is None or not want.admitted or (want_id is not None and want.want_id != want_id):
             return
         self.wants.pop(key, None)
-        if want.funded:
+        if want.funded and not sent:
+            # A SENT message keeps its reservation until it lapses (one act-length): until the next
+            # body tick reads the decision log, the reservation is the only place the market counts
+            # it on attention:juniper (review finding, 2026-11-10). Unsent: hand it back now.
             try:
                 await asyncio.wait_for(_arelease(want.want_id), 2.0)
             except Exception:  # noqa: BLE001

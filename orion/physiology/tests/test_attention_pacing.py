@@ -44,12 +44,15 @@ def test_waking_day_fraction_and_allowance():
 
 def test_relief_is_when_the_allowance_lets_the_value_through():
     # 3 sent, value 0.38 -> needs allowance 3 / z*(0.38); with 2.0 now growing 1/3 per hour.
-    z = ap.pace_for_value(0.38)
+    z = ap.pace_for_value(0.38 - ap.RELIEF_VALUE_MARGIN)      # just past equality: net > 0 at relief
     expected = (3 / z - 2.0) / (5 / 15) * 3600.0
     assert ap.relief_sec(3, 0.38, allowance_now=2.0, rate_per_hour=5 / 15) == pytest.approx(expected)
     assert ap.relief_sec(1, 0.38, allowance_now=2.0, rate_per_hour=5 / 15) == 0.0
     assert ap.relief_sec(3, 0.38, allowance_now=2.0, rate_per_hour=0.0) is None    # not accruing (night)
     assert ap.relief_sec(3, 0.05, allowance_now=2.0, rate_per_hour=5 / 15) is None  # never worth it
+    # The allowance never passes the day's pace budget: needing 5 / z*(0.38) > 5 is "not today".
+    assert ap.relief_sec(5, 0.38, allowance_now=2.0, rate_per_hour=5 / 15, budget=5) is None
+    assert ap.relief_sec(5, 0.38, allowance_now=2.0, rate_per_hour=5 / 15) is not None
 
 
 def test_a_strong_want_goes_late_in_the_day_and_a_weak_one_waits():

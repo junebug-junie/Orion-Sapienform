@@ -820,7 +820,7 @@ class _FakeOutreach:
         self.offered: list[dict] = []
         self.recorded: list[dict] = []
 
-    def blocked_reason(self, *, skip_schedule_gates=False):
+    def blocked_reason(self, *, skip_schedule_gates=False, cap_exempt=False):
         return self.blocked
 
     def record_blocked(self, reason, *, correlation_id, source, extra=None):
@@ -830,7 +830,8 @@ class _FakeOutreach:
         return row
 
     async def offer_message(self, *, text, correlation_id, tag, model=None, meta=None,
-                            skip_schedule_gates=False, require_why_juniper=False, finding_key=None):
+                            skip_schedule_gates=False, require_why_juniper=False, finding_key=None,
+                            cap_exempt=False):
         self.offered.append(
             {
                 "text": text,
@@ -840,6 +841,7 @@ class _FakeOutreach:
                 "skip_schedule_gates": skip_schedule_gates,
                 "require_why_juniper": require_why_juniper,
                 "finding_key": finding_key,
+                "cap_exempt": cap_exempt,
             }
         )
         return self.result

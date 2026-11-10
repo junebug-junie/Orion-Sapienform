@@ -283,15 +283,16 @@ async def test_two_checks_racing_on_one_want_compose_once(market) -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_releases_a_funded_reservation_sent_or_not(market) -> None:
+async def test_close_releases_an_unsent_reservation_and_keeps_a_sent_one(market) -> None:
+    """One attention budget (2026-11-10): a SENT message's reservation lapses on its own, so the market
+    still counts it on attention:juniper until the body reads the send from the decision log."""
     b = market.ob.OutreachBinder()
     await b.bind("a", door="d", now=T0)
-    want_a = market.wants[-1].want_id
     await b.close("a", sent=True)
     await b.bind("b", door="d", now=T0)
     want_b = market.wants[-1].want_id
     await b.close("b", sent=False)
-    assert market.released == [want_a, want_b]
+    assert market.released == [want_b]
     # A close naming another want closes nothing.
     await b.bind("c", door="d", now=T0)
     await b.close("c", sent=True, want_id="someone-else")

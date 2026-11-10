@@ -12,7 +12,9 @@ with value per unit of capacity in [L, U]; accept an item when its value is at l
 
 psi(0) = L / e (the first message is cheap: anything worth sending goes), psi(1) = U (the last
 unit costs the most any message is worth). It is (ln(U/L) + 1)-competitive against an adversarial
-arrival order, and no online rule does better. The budget here is not the whole day's cap at once:
+arrival order, and no online rule does better -- for a fixed capacity and items small against it. Here
+the capacity is ~5 whole messages and the budget accrues, so this rule is ANCHORED on that threshold
+(its shape and end points), not a claim to inherit the guarantee. The budget is not the whole day's cap at once:
 it accrues over Juniper's waking day (budget pacing, as in Balseiro and Gur 2019: spend tracks a
 target rate). So ``z = sent_today / allowance(now)``, with one message allowed at the start of the
 day and the rest accruing evenly until the quiet hours begin, up to ``pace_budget`` (the cap less one:
@@ -51,6 +53,9 @@ JUNIPER_DAILY_CAP = 6
 # own ``forced`` column. Collapse-mirror replies and the Claude room relay answer Juniper's own input and
 # never write an outreach decision row. Read by Hub's daily cap and the body's attention:juniper line.
 CAP_EXEMPT_SOURCES = ("strain_report",)
+# Sends whose decision row says Juniper asked for them (``result_json.door_policy``): a curiosity run she
+# queued in chat (door policy, 2026-11-10). A send she triggered is not Orion spending her attention.
+CAP_EXEMPT_DOOR_POLICIES = ("asked_by_juniper",)
 # The price paces the day to one message under the cap. The last slot stays free for messages that do not
 # wait on the price: an office visit at the end of its 5-minute window, a curiosity Door-A send (its run
 # already bid). Replay (evals/run_outreach_attention_budget_replay.py, 14 days to 11-10): pacing to the full
@@ -128,18 +133,26 @@ def pace_for_value(value: float, *, low: float = VALUE_LOW, high: float = VALUE_
     return math.log(value * math.e / low) / math.log(high * math.e / low)
 
 
-def relief_sec(sent: float, value: float, *, allowance_now: float, rate_per_hour: float) -> Optional[float]:
+# Relief aims just past equality: at price == value the net is 0, which still defers (review finding).
+RELIEF_VALUE_MARGIN = 1e-3
+
+
+def relief_sec(sent: float, value: float, *, allowance_now: float, rate_per_hour: float,
+               budget: Optional[int] = None) -> Optional[float]:
     """Seconds until the day's allowance grows enough that a message worth ``value`` beats the price.
 
-    ``allowance_now`` and ``rate_per_hour`` as Budget posts them on the reading. None: not by this
-    accrual (the value never beats the price, or the allowance is not growing: outside the waking
-    day, or already at the cap). 0: it already does. Pure."""
-    z_star = pace_for_value(value)
+    ``allowance_now`` and ``rate_per_hour`` as Budget posts them on the reading; ``budget`` the
+    day's pace budget (the allowance never passes it). None: not by this accrual (the value never
+    beats the price, the allowance it needs is past the day's budget, or the allowance is not
+    growing: outside the waking day). 0: it already does. Pure."""
+    z_star = pace_for_value(value - RELIEF_VALUE_MARGIN)
     if z_star is None or z_star <= 0:
         return None
     need = max(0.0, float(sent)) / z_star
     if need <= allowance_now:
         return 0.0
+    if budget is not None and need > float(budget):
+        return None
     if not (rate_per_hour > 0 and math.isfinite(rate_per_hour)):
         return None
     return (need - allowance_now) / rate_per_hour * 3600.0

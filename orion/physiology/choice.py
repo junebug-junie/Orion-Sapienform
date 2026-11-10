@@ -467,6 +467,25 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     base: dict[str, tuple[float, float, Optional[float]]] = {}
     jmsgs = cost.scalars.get("juniper_msgs")
     jr = readings.get(ATTENTION_JUNIPER)
+
+    def juniper_sent_now() -> float:
+        """Messages today as the price must see them: the body's count plus funded messages not yet
+        in it (reservations; a sent message's reservation is kept until it lapses, so the count
+        covers the body tick's lag). Review finding (2026-11-10): two wants in one tick otherwise
+        both buy at the same low price."""
+        level = float(jr.level) if jr is not None and jr.level is not None else 0.0
+        return level + book.total(ATTENTION_JUNIPER, now)
+
+    def pacing_posted(posted: float) -> float:
+        """The attention:juniper price in posted units, re-read at ``juniper_sent_now`` under pacing."""
+        if jr is None or jr.detail.get("pacing_mode") != "on" or not jr.budget:
+            return posted
+        from orion.physiology.attention_pacing import message_price
+
+        allow = float(jr.detail.get("pacing_allowance") or 0.0)
+        if allow <= 0:
+            return posted
+        return max(posted, message_price(juniper_sent_now() / allow) * float(jr.budget))
     if jmsgs and jr is not None and jr.budget:
         base[ATTENTION_JUNIPER] = (jmsgs / jr.budget, jmsgs, jr.budget)
     lane_warn: list[str] = []
@@ -485,6 +504,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             p = prices_seen.get(k)
             if p is None:
                 continue
+            if k == ATTENTION_JUNIPER:
+                p = pacing_posted(p)
             if tier == 1 and k.startswith(LANE_PREFIX):
                 role = k[len(LANE_PREFIX):]
                 share = ctx.tier1_share.get(role, 0.0)
@@ -692,9 +713,10 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             from orion.physiology.attention_pacing import relief_sec
 
             msgs = items[k][1] or 1.0
-            retry = relief_sec(float(r.level or 0.0), (value - rest) / msgs,
+            retry = relief_sec(juniper_sent_now(), (value - rest) / msgs,
                                allowance_now=float(r.detail.get("pacing_allowance") or 0.0),
-                               rate_per_hour=float(r.detail.get("pacing_rate_per_hour") or 0.0))
+                               rate_per_hour=float(r.detail.get("pacing_rate_per_hour") or 0.0),
+                               budget=int(r.detail.get("pacing_pace_budget") or 0) or None)
         elif rate and p.bind_state == "slack":
             retry = max(0.0, (p.value - needed) / rate)
     book.note_deferred(now, want.want_id, chosen, net)

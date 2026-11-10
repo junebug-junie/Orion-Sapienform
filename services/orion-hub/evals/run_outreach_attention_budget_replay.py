@@ -17,13 +17,16 @@ to the new market in time order (``simulate``):
   to ``pace_budget`` (the cap less one).
 * goes when value > price and the cap has room; curiosity Door-A does not bid (its run already did),
   so it only needs cap room. The strain report is exempt.
-* held: re-offered at its relief time (``relief_sec``; 10 min when none), and composed anyway at the
-  end of its window: office visits 5 min (``OFFICE_WINDOW_S``), everything else the end of Juniper's
-  waking day. A held message still waiting when quiet hours begin is ``expired`` (the door re-offers
-  it the next day as a new want; the replay does not carry it over).
-* quiet hours (23:00-08:00 local) hold every door but curiosity Door-A, as the Hub gate does.
+* held: re-offered at its relief time (``relief_sec``; 10 min when none). An office visit composes
+  anyway at the end of its 5-minute window (``OFFICE_WINDOW_S``); everything else waits at most until
+  Juniper's waking day ends.
+* quiet hours (23:00-08:00 local) hold every door but curiosity Door-A, as the Hub gate does. A held
+  reading finding is carried to the next morning while it is inside its 48 h lookback (it stays
+  pending live); a held tick lapses.
 
-What this cannot replay: Orion's own words (PASS, the Why Juniper gate), the GPU lanes' small charge,
+What this cannot replay: the body tick's lag (the market counts a send from its reservation until the
+body reads the decision log, so live sends inside one tick are not a burst; here every send counts at
+once), the Hub's per-door gates at the new, later send times (recent chat, cooldown, reading spacing), Orion's own words (PASS, the Why Juniper gate), the GPU lanes' small charge,
 and Prime's regulate charge. SELECT only. Exit 0 on a completed replay; 2 when Postgres is unavailable.
 """
 from __future__ import annotations
@@ -59,6 +62,8 @@ TAU_SEC = 4000.0                       # hub.outreach hunger tau (want_ledger 't
 DEFAULT_RETRY_SEC = 600.0              # orion.physiology.binding.REBID_DEFAULT_SEC
 OFFICE_WINDOW_SEC = 300.0              # scripts.outreach_bind.OFFICE_WINDOW_S
 NO_BID = {"curiosity_outreach"}        # composed inside its run, which already bid (#3010)
+CARRY_SOURCES = {"reading_finding_outreach"}   # a held finding stays pending (READ lookback 48 h)
+CARRY_FOR = timedelta(hours=48)
 EXEMPT = set(ap.CAP_EXEMPT_SOURCES)
 
 
@@ -69,6 +74,7 @@ class Offer:
     text: str = ""
     tries: int = 0
     first_at: Optional[datetime] = None
+    opened: Optional[datetime] = None  # when the current want opened (a carried finding opens anew)
     trail: list = field(default_factory=list)
 
 
@@ -106,11 +112,17 @@ def simulate(offers: Iterable[Offer], *, cap: int = ap.JUNIPER_DAILY_CAP) -> lis
         pending.sort(key=lambda x: (x[0], x[1]))
         t, _, o = pending.pop(0)
         o.first_at = o.first_at or o.at
+        o.opened = o.opened or o.at
         if o.source not in NO_BID and _quiet(t):
-            if o.tries:      # a held want still waiting at quiet hours: it lapses (a new want tomorrow)
+            if o.tries and not (o.source in CARRY_SOURCES and _next_morning(t) - o.at <= CARRY_FOR):
+                # A held want still waiting at quiet hours lapses. A tick's material is gone by then.
                 out.append({"source": o.source, "first_at": o.first_at, "outcome": "expired", "tries": o.tries})
                 continue
-            pending.append((_next_morning(t), seq, o)); seq += 1   # the quiet-hours gate delays it
+            # The quiet-hours gate delays it. A held reading finding stays pending inside its 48 h
+            # lookback and bids afresh the next morning (a new want: the hold count restarts).
+            o.tries = 0
+            o.opened = _next_morning(t)
+            pending.append((_next_morning(t), seq, o)); seq += 1
             continue
         day = _local(t).date()
         counted = o.source not in EXEMPT
@@ -121,8 +133,8 @@ def simulate(offers: Iterable[Offer], *, cap: int = ap.JUNIPER_DAILY_CAP) -> lis
         budget = ap.pace_budget(cap)
         price = ap.message_price(ap.pace(sent_by_day[day], frac, budget))
         value = drive_value(None if last_sent is None else (t - last_sent).total_seconds())
-        window_end = (o.first_at + timedelta(seconds=OFFICE_WINDOW_SEC) if o.source == "office_reach_out"
-                      else ap.waking_end(o.first_at, tz=TZ, start_hour=WAKE_START, end_hour=WAKE_END))
+        window_end = (o.opened + timedelta(seconds=OFFICE_WINDOW_SEC) if o.source == "office_reach_out"
+                      else ap.waking_end(o.opened, tz=TZ, start_hour=WAKE_START, end_hour=WAKE_END))
         go = o.source in NO_BID or o.source in EXEMPT or value > price or (o.tries and t >= window_end)
         if go:
             if counted:
@@ -135,7 +147,8 @@ def simulate(offers: Iterable[Offer], *, cap: int = ap.JUNIPER_DAILY_CAP) -> lis
             continue
         o.tries += 1
         rate = (budget - 1) / ap.waking_span_hours(t, tz=TZ, start_hour=WAKE_START, end_hour=WAKE_END) if 0 < frac < 1 else 0.0
-        relief = ap.relief_sec(sent_by_day[day], value, allowance_now=ap.allowance(frac, budget), rate_per_hour=rate)
+        relief = ap.relief_sec(sent_by_day[day], value, allowance_now=ap.allowance(frac, budget), rate_per_hour=rate,
+                               budget=budget)
         wait = DEFAULT_RETRY_SEC if not relief else min(3600.0, max(120.0, relief))
         nxt = min(t + timedelta(seconds=wait), window_end) if window_end > t else t + timedelta(seconds=wait)
         o.trail.append((t, round(value, 3), round(price, 3)))

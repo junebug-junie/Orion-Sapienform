@@ -24,8 +24,11 @@ def test_a_morning_pile_is_spread_and_the_day_stays_under_the_cap():
     # Eight reading findings all wanting out at 08:00 (the post-quiet-hours pile, live 10-28).
     offers = [mod.Offer(at=MORNING + timedelta(minutes=i), source="reading_finding_outreach") for i in range(8)]
     res = mod.simulate(offers)
-    sent = sorted(r["at"] for r in res if r["outcome"] == "sent")
+    day_end = MORNING + timedelta(hours=15)
+    sent = sorted(r["at"] for r in res if r["outcome"] == "sent" and r["at"] < day_end)
     assert 1 <= len(sent) <= 6
+    # What did not go today is carried to the next morning (a reading finding stays pending 48 h).
+    assert any(r["outcome"] == "sent" and r["at"] >= day_end for r in res)
     assert sent[0] == MORNING                                       # the first message of the day is cheap
     assert all(b - a >= timedelta(minutes=30) for a, b in zip(sent, sent[1:]))   # spread, not a burst
     assert {r["outcome"] for r in res} <= {"sent", "expired", "cap"}

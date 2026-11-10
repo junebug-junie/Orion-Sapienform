@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
+from orion.physiology.attention_pacing import CAP_EXEMPT_DOOR_POLICIES, CAP_EXEMPT_SOURCES
 from orion.physiology.body import (
     LEASE_CLOSE_EVENTS,
     BacklogInput,
@@ -128,7 +128,8 @@ WHERE observed_at >= %(since)s
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
        count(*) FILTER (WHERE reason = 'sent' AND NOT forced
-                        AND coalesce(result_json->>'source', '') <> ALL(%(exempt)s)) AS cap_counted
+                        AND coalesce(result_json->>'source', '') <> ALL(%(exempt)s)
+                        AND coalesce(result_json->>'door_policy', '') <> ALL(%(exempt_policies)s)) AS cap_counted
 FROM endogenous_outreach_decisions
 WHERE (decided_at AT TIME ZONE %(tz)s)::date = %(day)s::date AND decided_at >= %(since)s
 """
@@ -292,7 +293,8 @@ async def read_juniper(pool: Any, now: datetime, tz: ZoneInfo) -> JuniperInput:
         async with pool.connection() as conn:
             row = await (await conn.execute(JUNIPER_SENT_SQL, {
                 "tz": str(tz), "day": local.date().isoformat(), "since": day_start - timedelta(hours=2),
-                "exempt": list(CAP_EXEMPT_SOURCES)})).fetchone()
+                "exempt": list(CAP_EXEMPT_SOURCES),
+                "exempt_policies": list(CAP_EXEMPT_DOOR_POLICIES)})).fetchone()
             newest = await (await conn.execute(JUNIPER_NEWEST_SQL)).fetchone()
     except Exception:  # noqa: BLE001
         logger.warning("physiology_juniper_read_failed", exc_info=True)

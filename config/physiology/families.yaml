@@ -165,9 +165,17 @@ families:
   hub.world_pulse_read:
     tier: 2
     deferrable_window_s: 10800
-    # Reading runs on the interactive chat rails; its acts record no pool lease (0 of 90 costed
-    # closes carry gpu_slot_s_by_lane). Non-GPU as far as the ledger can see.
-    lanes: []
+    # Reading runs its model calls in durable-run turns on the agent lanes. Measured 2026-11-10 over
+    # 30 days of gpu_pool_events: 1,117 reads, 335 slot-hours over every turn they ran (agent-gpu2
+    # 190, agent 110, chat 30, metacog 4, fast 1; median 692 slot-s a read, p90 2,521). Until
+    # attention patch 3a the act ledger joined leases on the act's correlation_id (the seed's
+    # request_id), which no lease carries, so every read looked free. The fill now sums the read's
+    # turns (orion/grammar/act_cost_ids.py). Chat (9%) is not declared: the spec bids on the agent
+    # lanes, where reading's durable holds wait. Known: one_of charges the act's WHOLE lane time
+    # (chat, metacog and fast included, ~11%) against the agent lanes.
+    # Spec: docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md section 2.
+    lanes: [agent, agent-gpu2]
+    placement: one_of
   thought.painting:
     tier: 2
     deferrable_window_s: 21600

@@ -23,9 +23,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, TypedDict
-from uuid import NAMESPACE_URL, uuid5
 
 from orion.curiosity.incident_report import NO_STRUCTURED_VERDICT
+from orion.durable_runs.turn_identity import durable_turn_correlation_id
 from orion.curiosity.journal import MaterialCounts, build_investigation_journal_entry
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.durable_run import (
@@ -165,13 +165,12 @@ def turn_correlation_id(state: CuriosityRunState) -> str:
     lease = state.get("lease")
     if not lease:
         return state["correlation_id"]
-    identity = f"orion:durable:turn:{state['run_id']}:{state['correlation_id']}:{lease['lease_id']}:{lease['generation']}"
     # A pool hold keeps its lease_id and generation across a durable-runs restart, so a replay
     # after the restarted driver fenced the old turn needs its own identity (turn_fence).
-    fence = int(state.get("turn_fence") or 0)
-    if fence:
-        identity += f":fence:{fence}"
-    return str(uuid5(NAMESPACE_URL, identity))
+    # The rule lives in orion/durable_runs/turn_identity.py: the act ledger re-derives it to charge
+    # a reading act for its turns' leases.
+    return durable_turn_correlation_id(state["run_id"], state["correlation_id"], lease["lease_id"],
+                                       lease["generation"], int(state.get("turn_fence") or 0))
 
 
 async def timed_turn(

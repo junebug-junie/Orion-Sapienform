@@ -277,7 +277,8 @@ def _acts_extract(t0: datetime, days: int = 8):
     for d in range(days):
         for h in (2, 9, 16):
             o = t0 + timedelta(days=d, hours=h)
-            acts.append({"act_id": f"r{d}{h}", "actor": "hub.world_pulse_read", "opened_at": o.isoformat(),
+            # A non-GPU Tier 2 family (reading declares agent lanes since attention patch 3a).
+            acts.append({"act_id": f"r{d}{h}", "actor": "vision.ask", "opened_at": o.isoformat(),
                          "closed_at": (o + timedelta(minutes=10)).isoformat(), "outcome_value": 1.0,
                          "outcome_source": "producer", "signal_id": None, "cost_json": {"seconds": 600.0}})
             acts.append({"act_id": f"s{d}{h}", "actor": "durable.self_inquiry", "opened_at": o.isoformat(),

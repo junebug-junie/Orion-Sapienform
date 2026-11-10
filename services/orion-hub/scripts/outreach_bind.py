@@ -31,8 +31,8 @@ Doors (``services/orion-hub/scripts/endogenous_outreach.py``):
   ``OFFICE_WINDOW_S`` (a visit is short); the others wait for the day's pace, at most until Juniper's
   waking day ends.
 * curiosity Door-A: does NOT bid. Its message is composed inside the curiosity run, under that run's
-  own GPU hold, and that run already obeyed its own binding bid (#3010); its send is cap-exempt; and a
-  blocked Door-A is final (no retry path), so a hold would drop the want.
+  own GPU hold, and that run already obeyed its own binding bid (#3010); since 2026-11-10 its send counts
+  on the one daily cap; and a blocked Door-A is final (no retry path), so a hold would drop the want.
 * strain report: does NOT bid. It speaks only when ``arousal_strained`` is the one gate holding, to tell
   Juniper about the strain itself. Its strain-held SHADOW bid (#2988, once per window) is unchanged.
 * forced (``POST /api/debug/endogenous-outreach/trigger``): never held, never bids (operator's call).

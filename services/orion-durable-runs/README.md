@@ -993,7 +993,7 @@ between are skipped), the node reads every constraint Orion lives under and writ
 | `heat` | cabinet C | soft line `ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C` (31) | this step's own regulate inputs (no second query) |
 | `energy` | Orion month-to-date USD (local month) | `ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD` (unset: no line) | `orion_energy_hourly` x `energy_cost_accrued` next-kWh rate (newest `computed_at`; unpriced recent hours carry the newest rate) |
 | `lane:<role>` | GPU slot-seconds occupied in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` (at most `slots` leases count at once; the rest is `detail.lent_overlap_s`) | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`, each on its own seat) + open grants |
-| `attention:juniper` | outreach messages sent today | `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP` (owner: Hub) | `endogenous_outreach_decisions` |
+| `attention:juniper` | outreach messages sent today, every door except the strain report and forced sends | `JUNIPER_DAILY_CAP` in `orion/physiology/attention_pacing.py` (6; read by Hub too); priced by the pacing threshold when `ORION_PHYSIOLOGY_ATTENTION_PACING=on` | `endogenous_outreach_decisions` |
 | `claude` | limit events, plus `state` | not limited | `orion:substrate:claude_limit` (`ClaudeLimitObservationV1`), latest per kind in memory |
 
 A failed, stale or never-observed source is `level=None` with a `no_reading` reason, never 0. Pure

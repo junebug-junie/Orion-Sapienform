@@ -101,6 +101,6 @@ Rebuild from the clean primary main checkout after merge (post-pull rebuild cove
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3169
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

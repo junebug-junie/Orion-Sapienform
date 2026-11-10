@@ -39,7 +39,7 @@ All queries ran against the live `conjourney` database on 2026-11-10 (UTC).
    - Hub log since its 06:01 restart today: notifier "started", 0 "notification published".
 2. **Action-outcome surprise stamp.**
    - Written: `action_outcomes` kinds in the last 14 days carry the bus value (mean ~0.034, range 0.002-0.18). Column is `NOT NULL`.
-   - Read: the only SQL reader is `orion/autonomy/action_outcomes.py::load_action_outcomes`; its only caller is cortex-exec `chat_stance._project_recent_dispatch_actions`, which keeps `kind`, `summary`, `success`, `observed_at` and drops `surprise`. The other reader is an offline analysis script (`scripts/analysis/measure_capability_surprise_success_correlation.py`), which still works on the stored history.
+   - Read: the only SQL reader is `orion/autonomy/action_outcomes.py::load_action_outcomes`; its only caller is cortex-exec `chat_stance._project_recent_dispatch_actions`, which keeps `kind`, `summary`, `success`, `observed_at` and drops `surprise`. The other reader is an offline analysis script (`scripts/analysis/measure_capability_surprise_success_correlation.py`). New rows will hold 0.0 (failed fetches and not-found recalls used to hold 1.0 or the bus value), so that script now reads only rows created before 2026-11-10.
 3. **Domain-surprise policy field.**
    - `rg required_domain_surprise_below config/` -> no rule sets it, so the gate always returned "no_surprise_gate".
    - `CapabilityDecisionV1.notes` from these calls are logged without notes and never persisted or read, so dropping the advisory note changes nothing.
@@ -126,7 +126,20 @@ Not run. No dependency or port change. The only image-level change is removed co
 
 ## Review findings fixed
 
-(filled in after review)
+Code review ran in a subagent (read-only). No must-fix findings.
+
+- Finding: the analysis script would mix the new constant 0.0 rows into its correlation, and the report claimed it still worked.
+  - Fix: query cut off at `SURPRISE_STAMP_RETIRED_AT` (2026-11-10); report wording corrected.
+  - Evidence: `scripts/analysis/tests/test_measure_capability_surprise_success_correlation.py` passes.
+- Finding: `.github/workflows/orion-durable-runs-tests.yml` path filters still named the deleted module.
+  - Fix: both lines removed.
+- Finding: the repo-scan regression test missed the `from orion.substrate import bus_synaptic_surprise` form.
+  - Fix: regex matches both import forms (checked by hand: both match, a comment does not).
+- Finding: a not-found recall (used to stamp 1.0) had no behavior check.
+  - Fix: `test_recall_capability_empty_reply_degrades` asserts `surprise == 0.0`.
+- Finding: substrate-runtime README still read as if the bus alert is live.
+  - Fix: notes the notifier was retired 2026-11-10. Historical code comments left as incident history.
+- Declined: drop the `requests` pin in orion-durable-runs. Its original reason is gone, but no one has proved no transitive import needs it. Keeping a pin is cheap; a missing module at boot is not. The comment says so.
 
 ## Restart required
 
@@ -139,6 +152,6 @@ After merge, the post-pull rebuild redeploys the touched services. Nothing to do
 
 ## PR link
 
-(filled in after PR creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3172
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

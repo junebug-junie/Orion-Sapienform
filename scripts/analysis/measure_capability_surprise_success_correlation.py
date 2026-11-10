@@ -148,11 +148,19 @@ def open_readonly_connection(dsn: str):
     return conn
 
 
+# The action-outcome surprise stamp was retired 2026-11-10 (PR #3172). Rows written
+# after this hold the 0.0 default, not a measurement.
+SURPRISE_STAMP_RETIRED_AT = "2026-11-10T00:00:00+00:00"
+
+
 def fetch_surprise_success_series(
     conn, kind: str, max_rows: int = MAX_ROWS
 ) -> tuple[list[float], list[float], bool]:
     """Real per-row `surprise`/`success` values for one capability `kind`, straight off
-    `action_outcomes` -- no timestamp join, the real value is already on the same row."""
+    `action_outcomes` -- no timestamp join, the real value is already on the same row.
+
+    Only rows before SURPRISE_STAMP_RETIRED_AT: the stamp was retired 2026-11-10 and
+    newer rows hold a constant 0.0 that would dilute the correlation."""
     if conn is None:
         return [], [], False
     try:
@@ -164,10 +172,11 @@ def fetch_surprise_success_series(
                 WHERE kind = %s
                   AND surprise IS NOT NULL
                   AND success IS NOT NULL
+                  AND created_at < %s
                 ORDER BY created_at ASC
                 LIMIT %s
                 """,
-                (kind, max_rows),
+                (kind, SURPRISE_STAMP_RETIRED_AT, max_rows),
             )
             rows = cur.fetchall()
     except Exception:

@@ -508,6 +508,8 @@ async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> 
     assert decision.outcome == "allowed"
     assert outcome is not None
     assert outcome.success is False
+    # Retired stamp: a not-found recall used to write surprise=1.0; now the 0.0 default.
+    assert outcome.surprise == 0.0
 
 
 @pytest.mark.asyncio

@@ -23,13 +23,17 @@ def test_outcome_surprise_defaults_to_zero() -> None:
 
 def test_stamp_reader_module_is_gone_and_nothing_imports_it() -> None:
     assert not (_REPO / "orion" / "substrate" / "bus_synaptic_surprise.py").exists()
-    needle = "orion.substrate." + "bus_synaptic_surprise"
+    import re
+
+    # Catches both `from orion.substrate.bus_synaptic_surprise import ...` and
+    # `from orion.substrate import bus_synaptic_surprise`.
+    needle = re.compile(r"^\s*(from|import)\s+orion\.substrate.*\b" + "bus_synaptic_" + r"surprise\b", re.M)
     this = Path(__file__).resolve()
     offenders = []
     for root in ("orion", "services", "scripts"):
         for path in (_REPO / root).rglob("*.py"):
             if path.resolve() == this or "node_modules" in path.parts:
                 continue
-            if needle in path.read_text(encoding="utf-8", errors="ignore"):
+            if needle.search(path.read_text(encoding="utf-8", errors="ignore")):
                 offenders.append(str(path.relative_to(_REPO)))
     assert offenders == []

@@ -874,7 +874,7 @@ written.** Confirmed live: the node was frozen at `prediction_error=1.0` for hou
 kept logging real, varying, non-saturated values (0.000-0.144) every 30s the whole time --
 `orion-equilibrium-service`'s `_bus_synaptic_poll_loop` (`transport_metacog_gate.py`) polls this
 node's raw current value with no staleness check of its own, so the frozen value produced recurring
-false "Bus Anomaly Detected" alerts, functionally the same downstream symptom as the
+false "Bus Anomaly Detected" alerts (that Hub notifier was retired 2026-11-10), functionally the same downstream symptom as the
 `SubstrateDynamicsEngine.tick()` clobber bug fixed 2026-07-29 (`falkor_codec.py`'s
 `EXTERNALLY_OWNED_METADATA_KEYS`) but via a different, still-live mechanism that fix didn't touch.
 Split the gate in `_bus_synaptic_tick()`: the receipt write (an audit trail of notable events) stays

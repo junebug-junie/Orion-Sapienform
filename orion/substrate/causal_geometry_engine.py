@@ -263,9 +263,11 @@ TAIL_FIT_SIZE = 250
 _MIN_TAIL_FIT_SIZE = 20
 
 # Extrapolating past the surrogates needs a tail built from many roughly
-# independent values. Below this Bartlett effective sample size there is no
-# tail fit and p >= 1/(n_eff + 1) (see time_shift_pvalue).
+# independent values: Bartlett effective sample size >= N_EFF_MIN, and each
+# series' participation size >= PARTICIPATION_MIN. Otherwise there is no tail
+# fit and p >= 1/(units + 1) (see time_shift_pvalue).
 N_EFF_MIN = 100.0
+PARTICIPATION_MIN = 50.0
 
 
 def time_shift_surrogate_rs(
@@ -305,7 +307,7 @@ def time_shift_surrogate_rs(
         raise ValueError(f"time_shift_surrogate_rs: len(xs)={len(xs)} != len(ys)={n}")
     guard = max(GUARD_MIN, int(n * GUARD_FRACTION))
     max_shift = int(n * MAX_SHIFT_FRACTION)
-    if n < 4 or max_shift < guard:
+    if max_shift < guard:
         return np.array([], dtype=float)
     sx = float(np.std(xs))
     sy = float(np.std(ys))
@@ -329,9 +331,15 @@ def time_shift_surrogate_rs(
         sb = cy[b_hi] - cy[b_lo]
         sbb = cyy[b_hi] - cyy[b_lo]
         cov = sum_xy - sa * sb / m
-        var = (saa - sa * sa / m) * (sbb - sb * sb / m)
+        var_a = saa - sa * sa / m
+        var_b = sbb - sb * sb / m
+        # One-pass variances lose precision when an overlap stretch is nearly
+        # constant; the series are standardized (variance 1 per point), so a
+        # stretch below 1e-10 per point is treated as constant -> r = 0, the
+        # same rule as _pearson's std == 0.
+        ok = (var_a > 1e-10 * m) & (var_b > 1e-10 * m)
         with np.errstate(invalid="ignore", divide="ignore"):
-            r = np.where(var > 0.0, cov / np.sqrt(np.maximum(var, 1e-300)), 0.0)
+            r = np.where(ok, cov / np.sqrt(np.maximum(var_a * var_b, 1e-300)), 0.0)
         return r
 
     # x[s:] against y[:n-s]
@@ -369,9 +377,28 @@ def effective_sample_size(xs: np.ndarray, ys: np.ndarray) -> float:
     n = len(xs)
     if n < 8:
         return float(n)
-    k = max(1, n // 4)
+    k = max(2, n // 4 + 1)  # lags 1 .. n // 4
     product_sum = float(np.sum(_acf(xs)[1:k] * _acf(ys)[1:k]))
     return float(n / max(1.0, 1.0 + 2.0 * product_sum))
+
+
+def participation_size(values: np.ndarray) -> float:
+    """Roughly how many points carry a series' variance: n / mean(z^4)
+    (n over the kurtosis). Gaussian noise: n/3. A channel that is flat
+    except for 3 spikes: ~3, however long it is.
+
+    Bartlett's n_eff only sees autocorrelation, so a rare-event channel
+    (isolated spikes on a flat floor) reads as n_eff ~ n. Its null tail is
+    then pure floor noise, and a GPD fitted to it extrapolates a single
+    coincidence of two spikes to p ~ 1e-30 (review round 2: false edges in
+    2-3 of 10 seeds of an m=171 null family).
+    """
+    v = np.asarray(values, dtype=float)
+    sd = float(np.std(v))
+    if sd == 0.0:
+        return 0.0
+    z = (v - float(np.mean(v))) / sd
+    return float(len(v) / max(1.0, float(np.mean(z ** 4))))
 
 
 def _gpd_tail_survival(exceedances: np.ndarray, y: float) -> Optional[float]:
@@ -391,11 +418,16 @@ def _gpd_tail_survival(exceedances: np.ndarray, y: float) -> Optional[float]:
     plot_pos = (np.arange(1, m + 1) - 0.35) / m
     a1 = float(np.mean((1.0 - plot_pos) * ys))
     denom = a0 - 2.0 * a1
+    if denom <= 0.0:
+        # denom = mean(y * (2p - 1)) is >= 0 for sorted data, so this is a
+        # degenerate input, not a shape estimate. No fit -> the caller uses
+        # the rank p; never fall back to an exponential that may be lighter
+        # than the data.
+        return None
     xi, sigma = 0.0, a0
-    if denom > 0.0:
-        k = a0 / denom - 2.0  # Hosking's k = -xi
-        if -k > 0.0:
-            xi, sigma = -k, 2.0 * a0 * a1 / denom
+    k = a0 / denom - 2.0  # Hosking's k = -xi
+    if -k > 0.0:
+        xi, sigma = -k, 2.0 * a0 * a1 / denom
     if not np.isfinite(sigma) or sigma <= 0.0:
         return None
     if xi < 1e-9:
@@ -450,9 +482,11 @@ def time_shift_pvalue(
     |atanh(r)| (Fisher z; monotone in |r|). p is read by
     `surrogate_tail_pvalue`: rank p in the body; past the last
     MIN_EXCEEDANCES surrogates a GPD tail fit, but only when the pair's
-    Bartlett effective sample size is at least N_EFF_MIN. Below that the p is
-    the rank p, never finer than 1/(n_eff + 1): a few independent values
-    cannot support a tiny p (near-trending pairs, slow on/off regimes).
+    Bartlett effective sample size is at least N_EFF_MIN and each series'
+    participation size is at least PARTICIPATION_MIN. Otherwise the p is the
+    rank p, never finer than 1/(units + 1): such a pair cannot become an edge
+    (near-trending pairs, slow on/off regimes, pure daily rhythms, rare-event
+    channels).
 
     2026-11-10: replaced the add-one circular-shift rank p, whose floor
     (1/2001; 0.005 after the within-pair Bonferroni x10) sat above BH's
@@ -467,6 +501,9 @@ def time_shift_pvalue(
     circular null (daily-cycle and regime nulls liberal).
 
     Assumes stationarity: trending pairs are caught only by the n_eff gate.
+    Shifts count array positions, not wall-clock time: `_aligned_arrays`
+    drops missing buckets, so on gappy channels (attention:salience,
+    bus_synaptic:*) a shift spans gaps.
     Returns 1.0 when no null can be built (constant series, n too short).
     Never returns 0.0 -- floored at MIN_REPORTED_PVALUE.
     """
@@ -478,14 +515,18 @@ def time_shift_pvalue(
     null_z = np.abs(np.arctanh(np.clip(rs, -_R_CLIP, _R_CLIP)))
     obs_z = abs(math.atanh(max(-_R_CLIP, min(_R_CLIP, float(observed_r)))))
     n_eff = effective_sample_size(xs, ys)
-    if n_eff >= N_EFF_MIN:
+    participation = min(participation_size(xs), participation_size(ys))
+    if n_eff >= N_EFF_MIN and participation >= PARTICIPATION_MIN:
         return surrogate_tail_pvalue(null_z, obs_z)
-    # Too few independent values: no extrapolation, and no p finer than
-    # 1/(n_eff + 1) -- the floor of a permutation test over n_eff
-    # exchangeable units. Without this a pile of trending pairs could tie at
-    # the rank floor and pass BH together (the old cliff, in miniature).
+    # Too few independent or informative values: no extrapolation, and no p
+    # finer than 1/(units + 1), the floor of a shift test over that many
+    # exchangeable units. After Bonferroni x10 that is >= 10/101 ~= 0.099 >
+    # alpha, so such a pair cannot become an edge at all -- it is excluded,
+    # not ranked. That also means a pile of trending pairs can never tie at a
+    # floor and pass BH together (the old cliff, in miniature).
+    units = min(n_eff, participation)
     rank_p = surrogate_tail_pvalue(null_z, obs_z, allow_tail_fit=False)
-    return float(max(rank_p, 1.0 / (n_eff + 1.0)))
+    return float(max(rank_p, 1.0 / (units + 1.0)))
 
 
 class PairResult:

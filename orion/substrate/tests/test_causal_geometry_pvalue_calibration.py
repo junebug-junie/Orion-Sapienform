@@ -54,6 +54,17 @@ def _regime_batch(rng: np.random.Generator, k: int, n: int) -> np.ndarray:
     return (np.cumsum(flips, axis=1) % 2).astype(float) + 0.05 * rng.standard_normal((k, n))
 
 
+def _rare_spike_batch(rng: np.random.Generator, k: int, n: int) -> np.ndarray:
+    """Rare-event channel: 1-5 isolated spikes per series on a flat floor.
+    Review round 2: n_eff ~ n here, and the GPD tail extrapolated one chance
+    spike coincidence to p ~ 1e-30 (false edges in 2-3 of 10 seeds)."""
+    out = 0.01 * rng.standard_normal((k, n))
+    for row in out:
+        for start in rng.choice(n, rng.poisson(3) + 1, replace=False):
+            row[start] += rng.exponential(10.0)
+    return out
+
+
 def _ar1_gen(phi: float):
     return lambda rng, k, n: _ar1_batch(rng, k, n, phi)
 
@@ -65,6 +76,7 @@ NULL_SHAPES = {
     "bursty": _bursty_batch,
     "daily": _daily_batch,
     "regime": _regime_batch,
+    "rare_spikes": _rare_spike_batch,
 }
 
 
@@ -178,6 +190,36 @@ def test_low_effective_sample_size_never_extrapolates():
     p = cge.time_shift_pvalue(x, y, cge._pearson(x, y))
     assert p >= 1.0 / (n_eff + 1.0)
     assert p * 2 * len(cge.LAG_GRID_SECONDS) > cge.DEFAULT_ALPHA
+
+
+def test_rare_event_channel_never_extrapolates():
+    """Two series that share one spike at the same bucket: a single
+    coincidence. n_eff is ~n, but participation size is tiny, so the p stays
+    at or above 1/(participation+1) and cannot become an edge."""
+    rng = np.random.default_rng(8)
+    x, y = _rare_spike_batch(rng, 2, 2016)
+    x[1000] += 30.0
+    y[1000] += 30.0
+    assert cge.effective_sample_size(x, y) >= cge.N_EFF_MIN
+    units = min(cge.participation_size(x), cge.participation_size(y))
+    assert units < cge.PARTICIPATION_MIN
+    p = cge.time_shift_pvalue(x, y, cge._pearson(x, y))
+    assert p >= 1.0 / (units + 1.0)
+    assert p * 2 * len(cge.LAG_GRID_SECONDS) > cge.DEFAULT_ALPHA
+    # Gaussian noise: participation ~ n/3, far above the gate.
+    assert cge.participation_size(rng.standard_normal(2016)) > 500
+
+
+def test_gpd_fit_recovers_heavy_tails():
+    """Exact GPD quantiles with xi = 0.5 / 1.5: the fitted tail must be at
+    least as heavy as an exponential with the same mean (never lighter =
+    never liberal)."""
+    m = 250
+    probs = (np.arange(1, m + 1) - 0.5) / m
+    for xi in (0.5, 1.5):
+        exceed = ((1.0 - probs) ** (-xi) - 1.0) / xi
+        fitted = cge._gpd_tail_survival(exceed, 5.0 * exceed.mean())
+        assert fitted is not None and fitted > np.exp(-5.0)
 
 
 def test_tail_fit_is_heavier_for_a_heavy_tailed_null():

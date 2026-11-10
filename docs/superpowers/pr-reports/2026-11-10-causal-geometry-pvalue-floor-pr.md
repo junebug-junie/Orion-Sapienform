@@ -5,14 +5,14 @@
 - Causal geometry found 0 edges in every snapshot since 2026-10-30. The cause was the test, not the data. Its p-value could not go below 0.005 after the within-pair correction for 10 comparisons. Benjamini-Hochberg (BH) at 171 pairs needs 0.00029 for its first pair.
 - The p-value no longer has a surrogate-count floor for pairs with enough independent data. In the body of the null it is the plain rank p. Past the last 10 surrogates it comes from a generalized Pareto (GPD) tail fit.
 - The null changed. One series is shifted against the other, and r is computed over the overlap only (no wrap-around). Shifts closer to zero than 5% of the window are excluded, so a real link no longer sits inside its own null.
-- Some pairs have few independent samples: Bartlett effective n (n_eff) below 100. Examples are trending pairs, slow on/off pairs and pure daily-cycle pairs. These pairs get no extrapolation, and their p never goes below 1/(n_eff+1). So they cannot pile up at a floor and pass BH together.
+- Some pairs have too few informative samples. Either the Bartlett effective n (n_eff) is below 100, or one series' participation size (n divided by its kurtosis) is below 50. Examples are trending pairs, slow on/off pairs, pure daily-cycle pairs and rare-event channels. These pairs get no extrapolation, and their p never goes below 1/(units+1). After Bonferroni that is above alpha, so they cannot become edges, alone or as a pile.
 - BH and the within-pair Bonferroni are unchanged.
 - A new CI job runs the causal-geometry tests. No CI job ran them before.
 - Spec: PR #3168 (`docs/prediction-error-suite`), integration-rung precondition. Juniper approved it on 2026-11-10.
 
 ## Outcome moved
 
-Live replay, read-only. 7-day window ending 2026-11-10 08:08 UTC: 19 channels, m=171 pairs. Both rows use the same data.
+Live replay, read-only. 7-day window ending 2026-11-10 08:25 UTC: 19 channels, m=171 pairs. Both rows use the same data.
 
 | method | edges | pairs at the old floor 10/2001 |
 |---|---|---|
@@ -20,13 +20,13 @@ Live replay, read-only. 7-day window ending 2026-11-10 08:08 UTC: 19 channels, m
 | after: time-shift null + GPD tail | 6 | 0 |
 
 ```text
-* thermal -> power                  lag=0s     r=+0.682 n=2017 p=1.0e-12
-* cpu -> power                      lag=0s     r=+0.444 n=2017 p=9.1e-12
-* cpu -> thermal                    lag=0s     r=+0.511 n=2017 p=2.8e-10
-* cabinet_em_activity -> cpu        lag=0s     r=+0.247 n=2017 p=3.0e-06
-* power -> cabinet_em_activity      lag=1800s  r=-0.234 n=2011 p=3.7e-06
-* cabinet_em_activity -> thermal    lag=0s     r=+0.224 n=2017 p=4.5e-05
-x power -> fan                      lag=600s   r=+0.038 n=2015 p=0.0055   (next below the line)
+* power -> thermal                  lag=0s     r=+0.683 n=2017 p=1.8e-12
+* cpu -> power                      lag=0s     r=+0.445 n=2017 p=3.2e-11
+* cpu -> thermal                    lag=0s     r=+0.510 n=2017 p=1.7e-10
+* cabinet_em_activity -> cpu        lag=0s     r=+0.249 n=2017 p=1.6e-06
+* power -> cabinet_em_activity      lag=1800s  r=-0.230 n=2011 p=4.4e-06
+* cabinet_em_activity -> thermal    lag=0s     r=+0.228 n=2017 p=3.4e-05
+x power -> fan                      lag=600s   r=+0.039 n=2015 p=0.0055   (next below the line)
 ```
 
 (All channels are `biometrics:*`.)
@@ -39,7 +39,7 @@ x power -> fan                      lag=600s   r=+0.038 n=2015 p=0.0055   (next 
 - Shorter windows give fewer edges: 3 at 72 h and 0 at 24 h. A short window has fewer independent samples, so this is expected. Production uses 168 h (`FIELD_PLASTICITY_PRODUCER_WINDOW_HOURS=168`).
 - The spec's probe with the Bartlett effective-n test passed 30 pairs. This method is stricter. That agrees with the calibration below: the Bartlett test is liberal on persistent series.
 
-The power/thermal edge changes direction between runs (power->thermal, then thermal->power). At lag 0 the "direction" only tells which side won a tie. The module name says "causal", but the measurement is lagged correlation, not causation.
+The power/thermal edge changed direction between replays 17 minutes apart (thermal->power, then power->thermal). At lag 0 the "direction" only tells which side won a tie. The module name says "causal", but the measurement is lagged correlation, not causation.
 
 ## Method choice and why
 
@@ -51,7 +51,8 @@ The spec offered two options: a Bartlett effective-n test, or a normal fit to th
 | Normal fit to circular surrogates (v1 of this PR) | Bursty channels: 1.3% of null pairs below 5e-5, and 34 false edges over 6 seeds of an m=171 null family. Daily cycles: 0% below 0.05 (no power). |
 | Circular rank p + GPD tail | Real links were lost to their own near-zero shifts. Live power/thermal: the 15 largest surrogates were all within 25 buckets of zero, up to r=0.60 against an observed 0.68. Result: p=0.0016 and no edge. |
 | Circular null with a guard around zero | The wrap-around seam lowers r at every far shift, so persistent and periodic nulls go liberal. Daily-cycle null family: 357 false edges over 5 seeds. |
-| **Time-shift overlap null + guard + GPD tail + n_eff gate (chosen)** | Passes all six shapes and both cliff fixtures (see the test results below). |
+| Time-shift overlap null + guard + GPD tail + n_eff gate (review round 2) | Rare-event channels (1-5 spikes on a flat floor): n_eff ~ n, so the tail fit ran and turned one chance spike coincidence into p ~ 1e-30. False edges in 2-3 of 10 seeds of an m=171 null family. |
+| **The same + a participation-size gate (chosen)** | Passes all seven shapes and both cliff fixtures (see the test results below). |
 
 Why the chosen method is sound:
 
@@ -64,8 +65,10 @@ Why the chosen method is sound:
   - The fit follows Knijnenburg et al. 2009 (Bioinformatics 25:i161): the top 250 surrogates, with the shape estimated by probability-weighted moments (Hosking & Wallis 1987).
   - The shape is clamped at xi >= 0. A tail that looks bounded is never used to call a value impossible.
   - A heavy-tailed null, such as a bursty channel, gets a heavy fitted tail.
-- **Gate.** A tail fit is only valid when many independent values build the tail.
-  - Below a Bartlett effective sample size of 100, the p is the rank p, and never below 1/(n_eff+1). That is the floor of a shift test over n_eff exchangeable units.
+- **Gate.** A tail fit is only valid when many independent, informative values build the tail.
+  - Bartlett effective sample size (autocorrelation) must be at least 100.
+  - Each series' participation size, n / mean(z^4), must be at least 50. It counts how many points carry the variance: n/3 for Gaussian noise, about 3 for a flat channel with 3 spikes. Bartlett's n_eff cannot see this.
+  - Otherwise the p is the rank p, and never below 1/(units+1), with units = min(n_eff, participation). That is the floor of a shift test over that many exchangeable units. After Bonferroni x10 it is at least 0.099, so such a pair is excluded, not ranked.
   - Live, the gate catches the trending pair disk_capacity/mem (r=-0.76, n_eff=8). The circular rank p had put that pair at the floor next to the real edges.
 
 ## Current architecture
@@ -88,9 +91,9 @@ Only the significance step in `orion/substrate/causal_geometry_engine.py`. There
 - `orion/substrate/causal_geometry_engine.py`:
   - Removed `circular_shift_pvalue` and `circular_shift_surrogate_rs`.
   - Added `time_shift_surrogate_rs` (vectorized and exact), `effective_sample_size`, `_gpd_tail_survival`, `surrogate_tail_pvalue` and `time_shift_pvalue`.
-  - Added the knobs `GUARD_FRACTION`, `GUARD_MIN`, `MAX_SHIFT_FRACTION`, `MIN_EXCEEDANCES`, `TAIL_FIT_SIZE`, `N_EFF_MIN` and `MIN_REPORTED_PVALUE`.
+  - Added `participation_size` and the knobs `GUARD_FRACTION`, `GUARD_MIN`, `MAX_SHIFT_FRACTION`, `MIN_EXCEEDANCES`, `TAIL_FIT_SIZE`, `N_EFF_MIN`, `PARTICIPATION_MIN` and `MIN_REPORTED_PVALUE`.
 - `scripts/causal_geometry_report.py`: the docstring describes the new null and both floor incidents. The help text for `--n-surrogates` and `--seed` is updated. The script re-exports `time_shift_pvalue`.
-- `orion/substrate/tests/test_causal_geometry_pvalue_calibration.py`: 19 new gate tests.
+- `orion/substrate/tests/test_causal_geometry_pvalue_calibration.py`: 23 new gate tests.
 - `tests/test_causal_geometry_report.py`:
   - The old floor test asserted that the bug still reproduced. It now asserts that the floor is gone at 200 and at 2000 surrogates.
   - Its fixture grew from 50 to 400 points. With 50 points a pair can no longer clear Bonferroni and BH. That is the honest resolution of 50 points.
@@ -119,7 +122,7 @@ No prompt, reward, attention or curiosity consumer reads these edges. I searched
 - Renamed: Python only. `circular_shift_pvalue` -> `time_shift_pvalue`, and `circular_shift_surrogate_rs` -> `time_shift_surrogate_rs`. No other callers exist (grepped).
 - Behavior changed:
   - `CausalGeometryEdgeV1.significance` is the Bonferroni-corrected time-shift p.
-  - For pairs with n_eff >= 100 it can be as small as 1e-300. For pairs with fewer independent samples it is >= 10/(n_eff+1).
+  - For pairs that pass both gates it can be as small as 1e-300. For the other pairs it is >= 10/(units+1) >= 0.099, so they cannot be edges.
   - `n_surrogates` is now a cap on the number of shifts. At n=2017 there are 1,818 shifts, so the cap does not apply and the seed is unused.
 - Compatibility notes: the field type is unchanged.
 
@@ -135,18 +138,20 @@ No prompt, reward, attention or curiosity consumer reads these edges. I searched
 ## Tests run
 
 ```text
-pytest -s orion/substrate/tests/test_causal_geometry_pvalue_calibration.py      19 passed (44 s)
+pytest -s orion/substrate/tests/test_causal_geometry_pvalue_calibration.py      23 passed (~50 s)
   surrogates == explicit per-shift overlap Pearson (atol 1e-12); cap draws distinct shifts
   cliff, m=171: n=600  real r=0.581 p=1.2e-06 edges=1 | n=2016 real r=0.547 p=1.8e-07 edges=1
                 legacy circular rank p on the same data -> 0 edges, real pair at exactly 10/2001
   raw p, 1000 independent pairs per shape, n=2016   (<0.05 / <0.01 / <1e-3)
-    ar1_0.5   0.016 / 0.002 / 0.000      bursty  0.047 / 0.012 / 0.003
-    ar1_0.9   0.019 / 0.004 / 0.001      daily   0.000 / 0.000 / 0.000  (n_eff ~7: p >= 1/8 by design)
-    ar1_0.98  0.038 / 0.000 / 0.000      regime  0.027 / 0.000 / 0.000
-  null family, 19 independent channels (m=171) x 6 seeds, every shape: 0 seeds with any edge
+    ar1_0.5   0.016 / 0.002 / 0.000      bursty       0.043 / 0.000 / 0.000
+    ar1_0.9   0.019 / 0.004 / 0.001      daily        0.000 / 0.000 / 0.000  (n_eff ~7: p >= 1/8 by design)
+    ar1_0.98  0.038 / 0.000 / 0.000      regime       0.027 / 0.000 / 0.000
+                                         rare_spikes  0.000 / 0.000 / 0.000  (participation ~3)
+  null family, 19 independent channels (m=171) x 6 seeds, all seven shapes: 0 seeds with any edge
 pytest tests/test_causal_geometry_report.py orion/substrate/tests/test_causal_geometry_{fdr_correction,producer,bus_publish}.py \
        orion/substrate/tests/test_field_topology_plasticity.py orion/schemas/tests/test_causal_geometry.py   43 passed
 services/orion-field-digester: pytest tests/test_worker_causal_geometry_producer.py                         3 passed
+CI on the PR: all checks green, including the new causal-geometry job (numpy 1.26.4)
 ```
 
 ## Evals run
@@ -195,7 +200,28 @@ Round 1 (code-review subagent on 52b924790):
 - Finding (nit): the Hub prints `significance` raw.
   - Not changed: nothing breaks. Formatting it is a Hub UI change, out of scope here.
 
-ROUND2_PLACEHOLDER
+Round 2 (code-review subagent on 29553ebf7; no blocker in the mechanics):
+
+- Finding (should, high): the GPD tail is liberal on rare-event channels. n_eff ~ n, the null tail is floor noise, and one chance spike coincidence got p ~ 1e-30. False edges appeared in 2-3 of 10 seeds at m=171. The current live channels do not have this shape (live check: 0 of 1200 rolled null tests below 1e-3), but any `bus_synaptic:*` key can become a channel later.
+  - Fix: a participation-size gate (`participation_size`, `PARTICIPATION_MIN = 50`). A new `rare_spikes` null shape is now in every calibration and null-family test.
+  - Evidence: on `rare_spikes`, 0% of raw p below 0.05, and the null family has 0 of 6 seeds with an edge. The live replay still has the same 6 edges.
+- Finding (should): the PWM fallback to an exponential when `denom <= 0` could be lighter than the data.
+  - Fix: return no fit, so the caller uses the rank p. The reviewer flagged this branch as rare. For sorted data denom = mean(y(2p-1)) >= 0, so the branch only triggers on degenerate input.
+  - Evidence: `test_gpd_fit_recovers_heavy_tails`.
+- Finding (nit): one-pass overlap variance cancellation on near-constant stretches.
+  - Fix: a relative threshold of 1e-10 per point, which gives r=0, the same rule as `_pearson`.
+- Finding (nit): the floor comment said "permutation test".
+  - Fix: it now says "shift test", and that such pairs are excluded, not ranked.
+- Finding (nit): the Bartlett docstring said the sum ran to n/4, but the code stopped one lag short.
+  - Fix: the code now sums lags 1..n/4.
+- Finding (nit): a dead `n < 4` check.
+  - Fix: removed.
+- Finding (nit): shifts count array positions, not time, on gappy channels.
+  - Fix: documented in the `time_shift_pvalue` docstring.
+- Finding (nit): the CI job showed as a bare "unit".
+  - Fix: renamed to `causal-geometry unit`.
+- Finding (nit): placeholders in this report.
+  - Fix: filled in.
 
 ## Restart required
 
@@ -208,8 +234,11 @@ scripts/safe_docker_build.sh orion-field-digester up -d --build
 ## Risks / concerns
 
 - Severity: medium
-  - Concern: at m=171, a pair with n_eff below 100 can no longer become an edge, however strong its r is. This covers pure daily-rhythm pairs, slow on/off channels and trending channels.
-  - Mitigation: about 10 to 100 independent samples cannot support a smaller p. The docstrings state this rule and tests pin it. Lower `N_EFF_MIN` only after a new calibration run.
+  - Concern: a pair that fails either gate (n_eff < 100 or participation < 50) can no longer become an edge, however strong its r is. This covers pure daily-rhythm pairs, slow on/off channels, trending channels and rare-event channels.
+  - Mitigation: that few informative samples cannot support a smaller p. The docstrings state this rule and tests pin it. Change `N_EFF_MIN` or `PARTICIPATION_MIN` only after a new calibration run.
+- Severity: low
+  - Concern: a pair whose n_eff or participation sits near its gate jumps between p >= 0.099 and a tiny p. Its edge can appear and disappear between snapshots.
+  - Mitigation: today the six live edges have n_eff 208-1163 and sit far from the gates. Watch for a flickering edge in the snapshot history.
 - Severity: low
   - Concern: the GPD tail is still an extrapolation, two or more orders of magnitude past the surrogates.
     - It is checked to 1e-3 on six null shapes.
@@ -222,6 +251,6 @@ scripts/safe_docker_build.sh orion-field-digester up -d --build
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3173
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

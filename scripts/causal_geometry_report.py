@@ -90,9 +90,11 @@ series, so it keeps their autocorrelation, daily cycles and bursts: the null
 is "independent, each with its own serial structure". The statistic is
 |atanh(r)|. p_raw is the add-one rank p `(M + 1) / (N + 1)` while at least
 10 surrogates reach the observed value. Past that, if the pair's Bartlett
-effective sample size n_eff is >= 100, a generalized Pareto tail is fitted to
-the top 250 surrogates (Knijnenburg et al. 2009; shape clamped to xi >= 0);
-if n_eff < 100 there is no extrapolation and p >= 1/(n_eff + 1). See
+effective sample size n_eff is >= 100 and each series' participation size
+(n / kurtosis) is >= 50, a generalized Pareto tail is fitted to the top 250
+surrogates (Knijnenburg et al. 2009; shape clamped to xi >= 0). Otherwise
+there is no extrapolation and p >= 1/(units + 1), units = min(n_eff,
+participation), so after Bonferroni the pair cannot become an edge. See
 `time_shift_pvalue` in `orion/substrate/causal_geometry_engine.py`.
 --n-surrogates caps the shift count (all ~1818 are used at n=2017) and --seed
 only matters when that cap bites. Assumes stationarity.
@@ -136,13 +138,17 @@ surrogates, floor 10/2001 ~= 0.005 vs 0.05/171 ~= 0.00029 at m=171 pairs;
 0 edges incl. power/thermal r=+0.61, n=2017; edge counts flipped between 0
 and ~20 by how many pairs saturated). The GPD tail above removes that floor
 for pairs with enough independent samples (MIN_REPORTED_PVALUE = 1e-300 so a
-stored p is never a literal 0.0). Low-n_eff pairs keep a floor of
-1/(n_eff + 1), which is >= 0.01 and so can never pass BH even as a tied pile.
+stored p is never a literal 0.0). Pairs failing either gate keep a floor of
+1/(units + 1) >= 0.01 (>= 0.099 after Bonferroni), so they can never pass BH,
+not even as a tied pile.
 Tried and dropped on 2026-11-10 (synthetic nulls in
 orion/substrate/tests/test_causal_geometry_pvalue_calibration.py): a normal
 fit to circular surrogates (liberal on bursty channels), a GPD tail on
 circular surrogates (real links lost to their own near-0 shifts), and a
 guarded circular null (liberal on daily cycles, from the wrap-around seam).
+The participation gate came from review round 2: rare-event channels (a few
+spikes on a flat floor) have n_eff ~ n, and the tail fit turned one chance
+spike coincidence into p ~ 1e-30.
 
 Designed-vs-observed divergence
 --------------------------------

@@ -30,6 +30,7 @@ on:
 
 jobs:
   unit:
+    name: causal-geometry unit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

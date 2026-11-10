@@ -448,9 +448,26 @@ instruments:
       goal instead of a per-call synthetic GoalProposalV1 fabrication. O1 asks for
       a DEMONSTRATED, VERIFIED CEILING on the action budget -- no instrument in
       this program currently measures that, which is the honest reason O1 has the
-      least evidence behind it of the four outcomes.
-    last_reviewed: 2026-09-02
+      least evidence behind it of the four outcomes. Since 2026-11-10 readonly
+      fetch and recall also check what the goal is ABOUT (requires_world_goal):
+      only a goal naming a world source unlocks them.
+    last_reviewed: 2026-11-10
     claims:
+      - id: readonly_autonomy_needs_a_world_goal
+        question: >-
+          Which goals unlock autonomous web.fetch.readonly / recall.query.readonly?
+          (Decision 1, docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md)
+        kind: manual
+        recorded: "world goals only (chat, reading, camera surprise); body prediction-error goals are denied with goal_not_about_world"
+        recorded_at: 2026-11-10
+        note: >-
+          Baseline before the change, measured 2026-11-10: 6,005 of 6,005 goals in
+          the orion-athena-attention-runtime log window came from body signals
+          (execution 2,389, bus_synaptic 2,321, chat node 1,105, biometrics 190);
+          action_outcomes shows about 1 autonomous web.fetch.readonly per day for the
+          past month. Re-measure both 7 days after deploy: goal mix from the
+          field_goal_provenance_competition_read log line, decisions from the
+          goal_target field on substrate_policy_act / world_pulse_curiosity_gate.
       - id: synthetic_goal_stub_deleted
         question: "Is the synthetic goal fabrication really gone?"
         kind: absent_from_repo

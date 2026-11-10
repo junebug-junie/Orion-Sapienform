@@ -7,7 +7,9 @@ design.md for the full design. Scoped to that doc's "node-target domain lanes on
 first slice: Candidate A's real node:substrate.* prediction-error domains
 (PREDICTION_ERROR_NATIVE_TARGETS), not the frame's full merged dominant_targets list --
 host/capability targets (Candidate B, live since 2026-07-30) are real but out of scope
-for this first producer per that doc's Recommended next patch.
+for this first producer per that doc's Recommended next patch. Since 2026-11-10 an
+attended world source (chat, reading, camera surprise) may also name a goal -- see
+``_goal_eligible_node``.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from orion.attention.field_attention.selectors import (
     PREDICTION_ERROR_NATIVE_TARGETS,
     field_target_source_kind,
 )
+from orion.schemas.attention_candidate import is_world_source_id
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 
 # 2026-07-30 fix (Sentience Striving Program officer review -- see
@@ -52,35 +55,48 @@ MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
 def _goal_eligible_node(t: FieldAttentionTargetV1) -> bool:
-    """A goal may name only one of the five native prediction-error domains
-    (``PREDICTION_ERROR_NATIVE_TARGETS``), and under world-first only when the
-    frame marks it INTERNAL (a body signal that was unusual for itself). A
-    world winner (chat, camera surprise) is attention, not a goal for the
-    body. World-first adds other body nodes to the contest (cabinet,
-    codebase, ...) but deliberately does NOT widen the goal set to them
-    (review 2026-10-10): a cabinet goal would bias the broadcast toward a node
-    a real self-reversible action binds to (shed_background_gpu). Widening it
-    is a separate, spec-level decision. A frame without markers keeps the
-    original rule exactly."""
-    if t.target_id not in PREDICTION_ERROR_NATIVE_TARGETS:
-        return False
+    """A goal may name one of two things.
+
+    1. One of the five native prediction-error domains
+       (``PREDICTION_ERROR_NATIVE_TARGETS``), and under world-first only when the
+       frame marks it INTERNAL (a body signal that was unusual for itself).
+    2. A world source the frame ATTENDED (marked EXTERNAL): chat, reading,
+       camera surprise. Decision 1 of the prediction-error suite rebuild
+       (Juniper, 2026-11-08, docs/superpowers/specs/2026-11-08-prediction-error-
+       suite-rebuild-design.md): before it, every goal came from a body signal
+       (6,005 of 6,005 in the attention-runtime log window, 2026-11-10), so a
+       broken bus number held most of Orion's permission to act. A world goal
+       is the only kind the readonly fetch/recall gate now accepts
+       (``capability_policy.py``, ``requires_world_goal``).
+
+    Other body nodes that compete under world-first (cabinet, codebase, ...)
+    stay out (review 2026-10-10): a cabinet goal would bias the broadcast
+    toward a node a real self-reversible action binds to. A frame without
+    markers (world-first off) keeps the original native-five rule exactly."""
     kind = field_target_source_kind(t)
-    return kind is None or kind == "internal"
+    if t.target_id in PREDICTION_ERROR_NATIVE_TARGETS:
+        return kind is None or kind == "internal"
+    return kind == "external" and is_world_source_id(t.target_id)
 
 
 def qualified_node_targets(frame: FieldAttentionFrameV1) -> list[FieldAttentionTargetV1]:
-    """The candidates a goal may name: Candidate A's real ``node:substrate.*``
-    domains with enough observations to be trusted (see
-    ``MIN_CONFIDENCE_FOR_GOAL_PROVENANCE``). Exposed so the producer can skip
-    the competition read when fewer than two qualify -- with 0 or 1 candidate
-    no competition set can change the answer. Under world-first only
-    internal targets qualify, and a no-winner frame yields none."""
-    return [
-        t
-        for t in frame.node_targets
-        if _goal_eligible_node(t)
-        and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
-    ]
+    """The candidates a goal may name, each with enough observations to be
+    trusted (see ``MIN_CONFIDENCE_FOR_GOAL_PROVENANCE``). Exposed so the
+    producer can skip the competition read when fewer than two qualify -- with
+    0 or 1 candidate no competition set can change the answer.
+
+    Reads ``node_targets`` plus the ATTENDED world targets in
+    ``dominant_targets``: chat is a ``channel`` target, so it never appears in
+    ``node_targets``. A no-winner frame yields none."""
+    seen: set[str] = set()
+    out: list[FieldAttentionTargetV1] = []
+    for t in (*frame.node_targets, *frame.dominant_targets):
+        if t.target_id in seen:
+            continue
+        seen.add(t.target_id)
+        if _goal_eligible_node(t) and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE:
+            out.append(t)
+    return out
 
 
 def top_node_substrate_target(
@@ -89,8 +105,8 @@ def top_node_substrate_target(
     competing: Collection[str] | None = None,
     current: str | None = None,
 ) -> FieldAttentionTargetV1 | None:
-    """The highest-salience target among ``frame.node_targets`` that is one of
-    Candidate A's real ``node:substrate.*`` domains AND has accumulated enough real
+    """The highest-salience target among ``qualified_node_targets`` (a native
+    ``node:substrate.*`` domain or an attended world source) that has accumulated enough real
     observations to be trusted with a goal-provenance win
     (``confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE``, see that constant's
     own comment for the live incident this guards against).

@@ -109,14 +109,51 @@ def test_host_and_capability_novelty_is_observed_not_attended() -> None:
     assert [t.target_id for t in second.suppressed_targets].count("node:substrate.execution") == 1
 
 
-def test_goal_provenance_never_names_an_external_winner() -> None:
+def test_goal_provenance_names_an_attended_world_winner() -> None:
+    """Decision 1 (2026-11-08): a world winner may emit a goal. It outranks a
+    body node here on its own-week percentile, so it names the goal."""
     frame = _frame(
         [_node(PERCEPTION_NODE_ID, 0.999, 0.9), _node("node:substrate.execution", 0.95)]
     )
     assert frame.dominant_targets[0].target_id == PERCEPTION_NODE_ID
     q = qualified_node_targets(frame)
-    assert [t.target_id for t in q] == ["node:substrate.execution"]
-    assert top_node_substrate_target(frame).target_id == "node:substrate.execution"
+    assert {t.target_id for t in q} == {PERCEPTION_NODE_ID, "node:substrate.execution"}
+    assert top_node_substrate_target(frame).target_id == PERCEPTION_NODE_ID
+
+
+def test_busy_chat_names_the_goal() -> None:
+    """Chat is a ``channel`` target, never in node_targets; it must still qualify."""
+    turns = [NOW.replace(day=d) for d in range(3, 9)] + [NOW.replace(minute=0) for _ in range(1)]
+    turns = [t.replace(hour=11, minute=50) for t in turns]
+    frame = _frame([chat_candidate(turns, now=NOW), _node("node:substrate.biometrics", 0.85)])
+    assert frame.node_targets == []
+    assert top_node_substrate_target(frame).target_id == WORLD_CHAT_SOURCE_ID
+
+
+def _chat_and_body_frame():
+    turns = [NOW.replace(day=d) for d in range(3, 9)] + [NOW.replace(minute=0) for _ in range(1)]
+    turns = [t.replace(hour=11, minute=50) for t in turns]
+    return _frame([chat_candidate(turns, now=NOW), _node("node:substrate.execution", 0.995, 0.9)])
+
+
+def test_competition_precedence_keeps_a_world_goal_it_holds() -> None:
+    """Review finding: the competition read must carry world:* refs, or a body
+    node in the competition beats an attended chat on every tick."""
+    frame = _chat_and_body_frame()
+    assert {t.target_id for t in qualified_node_targets(frame)} == {
+        WORLD_CHAT_SOURCE_ID, "node:substrate.execution"
+    }
+    both = {WORLD_CHAT_SOURCE_ID, "node:substrate.execution"}
+    assert top_node_substrate_target(frame, competing=both).target_id in both
+    assert top_node_substrate_target(
+        frame, competing={WORLD_CHAT_SOURCE_ID}
+    ).target_id == WORLD_CHAT_SOURCE_ID
+
+
+def test_world_streak_is_held_when_competition_read_is_unknown() -> None:
+    frame = _chat_and_body_frame()
+    held = top_node_substrate_target(frame, competing=None, current=WORLD_CHAT_SOURCE_ID)
+    assert held.target_id == WORLD_CHAT_SOURCE_ID
 
 
 def test_goal_provenance_handles_a_no_winner_frame() -> None:
@@ -127,9 +164,15 @@ def test_goal_provenance_handles_a_no_winner_frame() -> None:
     assert streak.target_id is None and streak.count == 0 and not emit
 
 
-def test_world_only_frame_yields_no_goal() -> None:
+def test_world_only_frame_yields_a_world_goal() -> None:
     frame = _frame([_node(PERCEPTION_NODE_ID, 0.97)])
-    assert frame.dominant_targets and qualified_node_targets(frame) == []
+    assert [t.target_id for t in qualified_node_targets(frame)] == [PERCEPTION_NODE_ID]
+
+
+def test_unattended_world_source_yields_no_goal() -> None:
+    """Only ATTENDED world targets qualify: a quiet camera stays observed."""
+    frame = _frame([_node(PERCEPTION_NODE_ID, 0.2)])
+    assert not frame.dominant_targets and qualified_node_targets(frame) == []
 
 
 # The proposal-binding tests (orion.proposals.builder) retired with the proposal rung, 2026-11-07.

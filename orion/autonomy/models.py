@@ -396,6 +396,12 @@ class CapabilityPolicyRuleV1(BaseModel):
     # CapabilityDecisionV1.notes regardless of this field), don't hard-gate until the
     # signal's own outcome-correlation is validated against real traffic.
     required_domain_surprise_below: float | None = None
+    # Content gate (Decision 1, docs/superpowers/specs/2026-11-08-prediction-error-
+    # suite-rebuild-design.md): the active goal must name a world source (chat,
+    # reading, camera surprise -- orion.schemas.attention_candidate.is_world_source_id),
+    # not a body prediction-error node. A body goal says "something inside me moved";
+    # it names nothing Orion could fetch or recall about.
+    requires_world_goal: bool = False
 
 
 class CapabilityPolicyV1(BaseModel):

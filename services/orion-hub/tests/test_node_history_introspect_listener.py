@@ -12,7 +12,7 @@ from orion.introspect.tests.node_history_fake import FakeConn
 from orion.introspect.transport import REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1
 
-NODE = "node:substrate.bus_synaptic"
+NODE = "node:substrate.biometrics"
 BINDING = IntrospectToolBindingV1(
     invocation_context="curiosity", parent_run_id="r", parent_trace_id="t", memory_allowed=True,
 )
@@ -106,7 +106,7 @@ def test_node_with_no_stored_reading_is_not_found_not_empty():
 def test_no_node_id_lists_nodes():
     rows = _recent_rows() + _recent_rows("node:substrate.cabinet")
     result = _ask(_listener(_Conn(rows)), {"hours": 24})
-    assert [n["node_id"] for n in result.items[0].extra["nodes"]] == ["node:substrate.bus_synaptic",
+    assert [n["node_id"] for n in result.items[0].extra["nodes"]] == ["node:substrate.biometrics",
                                                                      "node:substrate.cabinet"]
 
 

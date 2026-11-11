@@ -20,47 +20,16 @@ every chat turn), returns [] on the common case where nothing is
 anomalous -- an empty list is the correct, honest output, not a gap to fill
 with "nothing found" filler content.
 
-**2026-09-03 (spec: docs/superpowers/specs/2026-09-03-recall-signal-
-rendering-design.md, amended twice -- see that doc's own corrections):
-publish-gap fragments stop carrying English.** This adapter no longer
-decides what counts as "unusual" -- ``text`` is now ``""`` for
-``publish_gap_zscore`` fragments; ``services/orion-mind/app/
-evidence.py``'s resolver (``recall_signal_resolver.py`` in that service)
-renders the real sentence, gated on the mesh-wide
-``bus_synaptic_prediction_error()`` fraction, not this adapter's per-edge
-``|z| > 3`` (that per-edge query answers "which channel is loudest", a
-genuinely different question -- see the spec's "Which metric, and why"
-section). NOT ``services/orion-cortex-orch/app/conversation_front.py`` --
-that function is dead code, never called from anywhere in that service
-(confirmed live 2026-09-03); the spec originally named it before that was
-caught. The causal-latency fragment (``causal_latency_zscore``) is
-UNCHANGED this pass -- still writes its own English via
-``_format_causal_anomaly_text()`` -- per the spec's own non-goal ("one signal
-at a time").
-
-**The recency filter also moved.** ``_PUBLISH_ANOMALY_QUERY`` no longer
-excludes edges older than the recency floor -- ``last_seen_epoch``/age are
-still attached to every fragment's ``meta`` so a caller that wants to filter
-old edges out of display still can, but a stale edge is no longer silently
-dropped before it gets there. The causal query's recency filter is untouched
-(non-goal: the causal path keeps its pre-existing behavior entirely).
-
-Check 3's actual liveness guard (a total bus-mirror outage must render as
-"not writing", not silence) does NOT live in this adapter -- it can't:
-``orion-substrate-runtime``'s ``_bus_synaptic_tick`` already ages edges out
-of ITS OWN query after ``bus_synaptic_max_edge_age_sec`` (1h default), so a
-dead bus-mirror makes ``bus_synaptic_prediction_error()`` compute a real,
-freshly-written, degenerate ``0.0`` forever (confirmed live in that
-function's own tick comment: "Write the node on every tick, not just when
-error > 0.0"). A per-edge Falkor liveness read in THIS adapter cannot see
-that -- it would need to reach across the service boundary into
-``orion-cortex-orch`` as a new fragment kind, for a distinction
-``orion.field.channel_glossary.classify_channel_series()`` already makes for
-free: an all-zero series classifies ``dead``, never ``quiet`` -- and the
-live baseline never reads exactly 0.0 (min 0.0035 per the spec's own
-sample), so a real ``dead`` reading cannot be confused with genuine calm.
-The resolver in ``orion-cortex-orch`` uses that verdict directly rather than
-this adapter growing a second liveness query for the same fact.
+**2026-11: the publish-gap half is retired (PE suite rebuild step 5).**
+Since 2026-09-03 publish-gap fragments carried ``text=""`` and existed only
+to be turned into one sentence by orion-mind's ``recall_signal_resolver.py``,
+gated on the mesh-wide ``bus_synaptic_prediction_error()`` fraction
+(``node:substrate.bus_synaptic``). That metric, its node and the mind
+resolver were retired together, so a publish-gap fragment had no reader
+left: an empty-text fragment that only took recall slots ahead of the
+causal ones. The causal-latency fragment is kept: it writes its own English
+(``_format_causal_anomaly_text()``) from the raw bus synaptic graph, which
+stays live, and every generic recall-bundle reader renders it as is.
 """
 
 from __future__ import annotations
@@ -79,18 +48,6 @@ logger = logging.getLogger(__name__)
 _CLIENT: Optional[RedisGraphQueryClient] = None
 
 _DEFAULT_MAX_EDGE_AGE_SEC = 86400.0  # 24h -- stale frozen z-scores age out
-
-_PUBLISH_ANOMALY_QUERY = """
-MATCH (o:Organ)-[e:PUBLISHES]->(c:Channel)
-WHERE e.gap_zscore IS NOT NULL
-  AND abs(e.gap_zscore) > $threshold
-  AND e.count > $min_count
-  AND e.last_seen_epoch IS NOT NULL
-RETURN o.organ_id AS organ_id, c.channel AS channel,
-       e.gap_zscore AS zscore, e.count AS count, e.last_seen_epoch AS last_seen_epoch
-ORDER BY abs(e.gap_zscore) DESC
-LIMIT $limit
-"""
 
 _CAUSAL_ANOMALY_QUERY = """
 MATCH (a:Organ)-[e:CAUSALLY_FOLLOWED_BY]->(b:Organ)
@@ -180,14 +137,11 @@ async def fetch_bus_synaptic_anomaly_fragments(
     min_count: int = 5,
     max_edge_age_sec: float | None = None,
 ) -> List[Dict[str, Any]]:
-    """Real edges from the live bus synaptic graph whose latest observation is
-    a genuine statistical outlier against their own history -- not a static
-    threshold, not simulated.
-
-    Publish-gap edges are no longer filtered by ``max_edge_age_sec`` (see
-    module docstring, 2026-09-03) -- age is still attached to each
-    fragment's ``meta`` for a caller that wants it. The causal-latency query
-    keeps its recency filter unchanged (non-goal this pass).
+    """Real causal-latency edges from the live bus synaptic graph whose latest
+    observation is a genuine statistical outlier against their own history --
+    not a static threshold, not simulated. Edges older than
+    ``max_edge_age_sec`` are excluded. (The publish-gap half was retired
+    2026-11 -- see module docstring.)
 
     Same fragment shape as every other recall source (id/source/source_ref/
     uri/text/ts/tags/score/meta) so fusion.py treats it identically, no
@@ -209,55 +163,16 @@ async def fetch_bus_synaptic_anomaly_fragments(
         "limit": per_query_limit,
     }
     try:
-        publish_rows, causal_rows = await asyncio.gather(
-            asyncio.to_thread(
-                client.graph_query,
-                _PUBLISH_ANOMALY_QUERY,
-                query_params,
-            ),
-            asyncio.to_thread(
-                client.graph_query,
-                _CAUSAL_ANOMALY_QUERY,
-                query_params,
-            ),
+        causal_rows = await asyncio.to_thread(
+            client.graph_query,
+            _CAUSAL_ANOMALY_QUERY,
+            query_params,
         )
     except Exception as exc:
         logger.debug("bus_synaptic_anomaly_fetch_skipped error=%s", exc)
         return []
 
     out: List[Dict[str, Any]] = []
-    for row in publish_rows or []:
-        if row.get("zscore") is None:
-            continue
-        last_seen_epoch = row.get("last_seen_epoch")
-        frag_id = f"bus_synaptic_publish:{row.get('organ_id')}:{row.get('channel')}"
-        out.append(
-            {
-                "id": frag_id,
-                "source": "bus_synaptic_anomaly",
-                "source_ref": "falkordb",
-                "uri": frag_id,
-                # No English here any more -- see module docstring. The
-                # resolver in orion-mind's evidence.py/recall_signal_
-                # resolver.py builds the real sentence, gated on the
-                # mesh-wide fraction, not this row's
-                # own z-score.
-                "text": "",
-                "ts": float(last_seen_epoch) if last_seen_epoch is not None else None,
-                "tags": ["bus_synaptic", "anomaly", "publish_gap"],
-                "score": 0.5,
-                "meta": {
-                    "organ_id": row.get("organ_id"),
-                    "channel": row.get("channel"),
-                    "zscore": row.get("zscore"),
-                    "count": row.get("count"),
-                    "last_seen_epoch": last_seen_epoch,
-                    "last_seen_at": _iso_from_epoch(last_seen_epoch),
-                    "max_edge_age_sec": age_sec,
-                    "signal_kind": "publish_gap_zscore",
-                },
-            }
-        )
     for row in causal_rows or []:
         if row.get("zscore") is None:
             continue

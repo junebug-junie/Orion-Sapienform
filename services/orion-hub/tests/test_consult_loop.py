@@ -103,8 +103,10 @@ class FakeOutreach:
         self.replies = list(replies)
         self.calls = []
 
-    async def compose(self, prompt, correlation_id, retrieval_query=None, lane="agent_first", session_id=None):
-        self.calls.append(dict(prompt=prompt, session_id=session_id, lane=lane, retrieval_query=retrieval_query))
+    async def compose(self, prompt, correlation_id, retrieval_query=None, lane="agent_first", session_id=None,
+                      timeout_sec=None):
+        self.calls.append(dict(prompt=prompt, session_id=session_id, lane=lane, retrieval_query=retrieval_query,
+                               correlation_id=correlation_id, timeout_sec=timeout_sec))
         return (self.replies.pop(0) if self.replies else ""), {"model": "MODEL_X"}
 
 
@@ -368,3 +370,17 @@ async def test_orion_turn_recall_searches_the_question(world):
     await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r12", question="Why journal?")
     await world.loop.tick()
     assert world.outreach.calls[0]["retrieval_query"] == "Why journal?"
+
+
+@pytest.mark.asyncio
+async def test_every_bus_correlation_id_is_a_uuid_and_orion_gets_its_budget(world):
+    """BaseEnvelope requires UUID correlation ids: `consult-<id>-t1` failed the first live consult."""
+    import uuid as _uuid
+
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r13", question="q")
+    await world.loop.tick()
+    await world.loop.on_claude_utterance(utt(cid, brief_block()))
+    _uuid.UUID(world.outreach.calls[0]["correlation_id"])
+    _uuid.UUID(world.relay.invites[0]["correlation_id"])
+    _uuid.UUID(world.notify.sent[0].correlation_id)
+    assert world.outreach.calls[0]["timeout_sec"] == world.loop.orion_timeout_sec == 600.0

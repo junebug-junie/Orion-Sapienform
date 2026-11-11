@@ -374,7 +374,8 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   `POST /api/consults/{id}/decision`, `GET /api/debug/consult` (last tick + meter).
 - **Env.** `HUB_CONSULT_ENABLED` (on; needs `HUB_ROOM_CLAUDE_ENABLED=true`), `HUB_CONSULT_TICK_SEC`,
   `HUB_CONSULT_MAX_TURNS`, `HUB_CONSULT_WEEKLY_BRIEF_CAP`, `HUB_CONSULT_CLAUDE_TIMEOUT_SEC`,
-  `HUB_CONSULT_SOURCE_MAX_AGE_HOURS`, `HUB_CONSULT_NOTIFY_TIMEOUT_SEC`, `CHANNEL_CLAUDE_LIMIT`.
+  `HUB_CONSULT_SOURCE_MAX_AGE_HOURS`, `HUB_CONSULT_NOTIFY_TIMEOUT_SEC`, `HUB_CONSULT_ORION_TIMEOUT_SEC`
+  (Orion's turn, per attempt; Orion runs digs), `CHANNEL_CLAUDE_LIMIT`.
 - **Checks.** `tests/test_consult_loop.py` (lifecycle), `tests/test_consult_js.py` (buttons),
   `orion/consult/tests/test_core.py` (gates), eval `evals/run_consult_source_replay.py` (read-only, live DB).
 

@@ -82,6 +82,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def consult_uuid(consult_id: str, purpose: str) -> str:
+    """A stable UUID for one consult's brief / email: bus envelopes require UUID correlation ids."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"orion.consult/{consult_id}/{purpose}"))
+
+
 def _row(rec: Any) -> Dict[str, Any]:
     out = dict(rec)
     if isinstance(out.get("brief_json"), str):
@@ -227,6 +232,7 @@ class ConsultLoop:
         max_turns: int = DEFAULT_MAX_TURNS,
         weekly_brief_cap: int = 3,
         claude_timeout_sec: float = 1200.0,
+        orion_timeout_sec: float = 600.0,
         source_max_age_hours: float = 72.0,
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] = _now,
@@ -244,6 +250,7 @@ class ConsultLoop:
         self.max_turns = max_turns
         self.weekly_brief_cap = weekly_brief_cap
         self.claude_timeout_sec = claude_timeout_sec
+        self.orion_timeout_sec = orion_timeout_sec
         self.source_max_age = timedelta(hours=source_max_age_hours)
         self.source_service = source_service
         self._clock = clock
@@ -423,9 +430,11 @@ class ConsultLoop:
         )
         # retrieval_query: recall searches the consult question, not the whole prompt. The turn has
         # no switch that turns recall off; Orion's own words are what Claude is sent.
+        # Correlation ids ride BaseEnvelope, which requires a UUID (a `consult-...` string failed
+        # the first live consult on 2026-11-11). Orion's turn may run digs: its own time budget.
         text, debug = await outreach.compose(
-            prompt, f"consult-{cid}-t{turn_no}", retrieval_query=row["question"][:500],
-            lane="agent_first", session_id=orion_session_id(cid),
+            prompt, str(uuid.uuid4()), retrieval_query=row["question"][:500],
+            lane="agent_first", session_id=orion_session_id(cid), timeout_sec=self.orion_timeout_sec,
         )
         text = (text or "").strip()
         if not text:
@@ -466,7 +475,7 @@ class ConsultLoop:
         if relay is None:
             await set_status(pool, cid, "open", f"{BUDGET}no_relay", pending_prompt=prompt, pending_correlation_id=None)
             return {"waiting": cid, "for": "relay"}
-        correlation_id = f"consult-{cid}-{uuid.uuid4().hex[:8]}"
+        correlation_id = str(uuid.uuid4())
         # Written BEFORE the invite: a crash after it is a lost reply (resent once), never an
         # unknown request in flight.
         await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_prompt=prompt, pending_correlation_id=correlation_id)
@@ -587,8 +596,8 @@ class ConsultLoop:
 
             env = build_chat_history_envelope(
                 content=text, role="assistant", session_id=orion_session_id(cid),
-                correlation_id=f"consult-{cid}-brief", speaker="Orion", tags=[CONSULT_BRIEF_TAG],
-                message_id=f"consult-brief-{cid}",
+                correlation_id=consult_uuid(cid, "brief"), speaker="Orion", tags=[CONSULT_BRIEF_TAG],
+                message_id=consult_uuid(cid, "brief-message"),
                 client_meta={"unsolicited": True, "source": CONSULT_BRIEF_TAG, "consult_id": cid},
             )
             await publish_chat_history(bus, [env])
@@ -606,7 +615,7 @@ class ConsultLoop:
                 source_service=self.source_service, event_kind=EMAIL_EVENT_KIND, severity="info",
                 title=f"Orion + Claude: {first}", body_md=text + "\n\nAnswer in Hub chat (Yes / No / No because).",
                 tags=["consult"], channels_requested=["email"], dedupe_key=f"consult:{cid}",
-                correlation_id=f"consult-{cid}",
+                correlation_id=consult_uuid(cid, "email"),
             )
             accepted = await asyncio.to_thread(self._notify.send, request)
             return str(getattr(accepted, "email_status", None) or ("accepted" if getattr(accepted, "ok", False) else "refused"))

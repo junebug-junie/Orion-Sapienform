@@ -22,11 +22,11 @@ from scripts.tension_outreach_trigger import TensionTriggerReason
 # --------------------------------------------------------------------------
 
 
-def test_registry_contains_harness_closure_even_though_it_is_currently_quiet() -> None:
-    """The exact term the 2026-09-07 incident fabricated must be in the
-    closed universe of real names, even though it is rarely true -- that is
-    what makes it possible to catch, rather than exclude, when named
-    ungrounded."""
+def test_registry_contains_harness_closure_even_though_it_is_retired() -> None:
+    """The exact term the 2026-09-07 incident fabricated must stay in the
+    closed universe of names even after its producer was retired
+    (2026-11-11) -- that is what makes it possible to catch, rather than
+    ignore, when named ungrounded."""
     assert "harness_closure" in known_real_signal_names()
 
 

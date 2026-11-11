@@ -464,7 +464,6 @@ def reduce_attention_self_model(
     *,
     now: datetime | None = None,
     broadcast_stale_threshold_sec: float = DEFAULT_BROADCAST_STALE_THRESHOLD_SEC,
-    harness_closure_signal: dict | None = None,
     prediction_error_by_domain: dict[str, float] | None = None,
     prediction_error_evidence_by_domain: dict[str, list[str]] | None = None,
     prediction_error_trend_by_domain: dict[str, float] | None = None,
@@ -480,21 +479,6 @@ def reduce_attention_self_model(
     real signal, so it drives the replay/live cadence per the Phase 1 design).
     Falls back to `broadcast.generated_at`, then wall-clock
     `datetime.now(timezone.utc)` if neither input is present.
-
-    `harness_closure_signal` is an optional, intentionally-minimal plain dict
-    -- `{"prediction_error": float, "contributing_turn_ids": list[str]}` --
-    built by the caller from the `node:substrate.harness_closure` FalkorDB
-    node's now-durable metadata (`orion/substrate/falkor_codec.py`'s
-    `contributing_turn_ids_json`, PR #1205 + this patch). Deliberately not a
-    raw graph node or a `falkor_codec` import: this reducer stays decoupled
-    from the store layer, matching every other input here (already-parsed
-    Pydantic/plain data, not raw store objects). When present and non-trivial
-    (`prediction_error > 0.0` and `contributing_turn_ids` non-empty), it only
-    enriches the `field_salience_only` branch's `reason_narrative` with a
-    clause naming sustained prediction-error surprise -- it never changes
-    `attention_reason` itself, and every other branch (`top_down_override`,
-    `bottom_up_salience`) ignores it entirely. Omitting this argument (the
-    default) reproduces today's narrative byte-for-byte.
 
     `prediction_error_by_domain` is an optional, caller-supplied snapshot of
     the current raw `prediction_error` value for each real Predictive-
@@ -806,19 +790,6 @@ def reduce_attention_self_model(
             f"({n_targets} dominant target(s), "
             f"overall_salience={model.field_overall_salience})"
         )
-        harness_error = 0.0
-        harness_turn_ids: list = []
-        if harness_closure_signal:
-            try:
-                harness_error = float(harness_closure_signal.get("prediction_error") or 0.0)
-            except (TypeError, ValueError):
-                harness_error = 0.0
-            harness_turn_ids = list(harness_closure_signal.get("contributing_turn_ids") or [])
-        if harness_error > 0.0 and harness_turn_ids:
-            narrative += (
-                f"; sustained prediction-error surprise across {len(harness_turn_ids)} "
-                f"recent turn(s) (current magnitude={harness_error:.2f})"
-            )
         model.reason_narrative = narrative + "."
     else:
         model.attention_reason = "no_data"

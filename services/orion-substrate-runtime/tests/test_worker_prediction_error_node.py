@@ -160,21 +160,21 @@ def test_contributing_turn_ids_accumulate_across_repeat_writes(monkeypatch) -> N
     now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-1",
     )
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-2",
     )
 
-    node = store.nodes["node:substrate.harness_closure"]
+    node = store.nodes["node:substrate.execution"]
     assert node.metadata["contributing_turn_ids"] == ["corr-1", "corr-2"]
 
 
@@ -186,14 +186,14 @@ def test_contributing_turn_ids_dedupes_same_id_on_refire(monkeypatch) -> None:
 
     for _ in range(3):
         worker._write_prediction_error_node(
-            node_id="node:substrate.harness_closure",
+            node_id="node:substrate.execution",
             error=0.4,
             now=now,
-            reducer_key="post_turn_closure",
+            reducer_key="execution_trajectory",
             contributing_id="corr-1",
         )
 
-    node = store.nodes["node:substrate.harness_closure"]
+    node = store.nodes["node:substrate.execution"]
     assert node.metadata["contributing_turn_ids"] == ["corr-1"]
 
 
@@ -205,14 +205,14 @@ def test_contributing_turn_ids_caps_and_drops_oldest(monkeypatch) -> None:
 
     for i in range(21):
         worker._write_prediction_error_node(
-            node_id="node:substrate.harness_closure",
+            node_id="node:substrate.execution",
             error=0.4,
             now=now,
-            reducer_key="post_turn_closure",
+            reducer_key="execution_trajectory",
             contributing_id=f"corr-{i}",
         )
 
-    node = store.nodes["node:substrate.harness_closure"]
+    node = store.nodes["node:substrate.execution"]
     ids = node.metadata["contributing_turn_ids"]
     assert len(ids) == 20
     # Oldest (corr-0) dropped, most recent (corr-20) retained, order preserved.
@@ -228,28 +228,28 @@ def test_contributing_turn_ids_tolerates_malformed_existing_value(monkeypatch) -
     now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-1",
     )
     # Corrupt the stored value directly to simulate a malformed carried-forward field.
-    bad_metadata = dict(store.nodes["node:substrate.harness_closure"].metadata)
+    bad_metadata = dict(store.nodes["node:substrate.execution"].metadata)
     bad_metadata["contributing_turn_ids"] = "not-a-list"
-    store.nodes["node:substrate.harness_closure"] = store.nodes[
-        "node:substrate.harness_closure"
+    store.nodes["node:substrate.execution"] = store.nodes[
+        "node:substrate.execution"
     ].model_copy(update={"metadata": bad_metadata})
 
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-2",
     )
 
-    node = store.nodes["node:substrate.harness_closure"]
+    node = store.nodes["node:substrate.execution"]
     assert node.metadata["contributing_turn_ids"] == ["corr-2"]
 
 
@@ -262,28 +262,28 @@ def test_contributing_turn_ids_coerces_non_string_stored_items(monkeypatch) -> N
     now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-1",
     )
     # Simulate a stored list with mixed non-string items.
-    mixed_metadata = dict(store.nodes["node:substrate.harness_closure"].metadata)
+    mixed_metadata = dict(store.nodes["node:substrate.execution"].metadata)
     mixed_metadata["contributing_turn_ids"] = [1, 2, "corr-3"]
-    store.nodes["node:substrate.harness_closure"] = store.nodes[
-        "node:substrate.harness_closure"
+    store.nodes["node:substrate.execution"] = store.nodes[
+        "node:substrate.execution"
     ].model_copy(update={"metadata": mixed_metadata})
 
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-4",
     )
 
-    node = store.nodes["node:substrate.harness_closure"]
+    node = store.nodes["node:substrate.execution"]
     assert node.metadata["contributing_turn_ids"] == ["1", "2", "corr-3", "corr-4"]
 
 
@@ -302,28 +302,28 @@ def test_contributing_turn_ids_tolerates_item_that_raises_on_str(monkeypatch) ->
     now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-1",
     )
-    bad_metadata = dict(store.nodes["node:substrate.harness_closure"].metadata)
+    bad_metadata = dict(store.nodes["node:substrate.execution"].metadata)
     bad_metadata["contributing_turn_ids"] = [_Explodes()]
-    store.nodes["node:substrate.harness_closure"] = store.nodes[
-        "node:substrate.harness_closure"
+    store.nodes["node:substrate.execution"] = store.nodes[
+        "node:substrate.execution"
     ].model_copy(update={"metadata": bad_metadata})
 
     # Must not raise.
     worker._write_prediction_error_node(
-        node_id="node:substrate.harness_closure",
+        node_id="node:substrate.execution",
         error=0.4,
         now=now,
-        reducer_key="post_turn_closure",
+        reducer_key="execution_trajectory",
         contributing_id="corr-2",
     )
 
-    node = store.nodes["node:substrate.harness_closure"]
+    node = store.nodes["node:substrate.execution"]
     assert node.metadata["contributing_turn_ids"] == ["corr-2"]
 
 

@@ -220,8 +220,10 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # scalar properties (concept nodes only). These are the only metadata keys
 # already-shipped consumers (SubstrateDynamicsEngine.tick(),
 # attention_broadcast._node_salience(), substrate_pressure_signals()'s
-# evidence_refs, and the AST/HOT reducer's optional harness_closure_signal
-# narrative -- orion/substrate/attention_self_model.py) actually read/write;
+# evidence_refs, and world-first attention's evidence_refs in
+# orion/substrate/attention_broadcast.py) actually read/write. (The AST/HOT
+# reducer's harness_closure_signal narrative was a consumer until 2026-11-11,
+# when node:substrate.harness_closure was retired);
 # see docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
 # item 3's "promote to first-class Cypher properties only with a second
 # consumer" escape hatch. `contributing_turn_ids` was added under this same

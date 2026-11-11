@@ -70,6 +70,18 @@ TRIGGER_MIN_FIRES_7D = 5
 
 _PERCENTILE_KINDS = frozenset({"level", "count"})
 _RATE_KINDS = frozenset({"trigger", "binary"})
+# Value kinds whose stored prediction_error is a real measurement. Everything else
+# (placeholder, bucket, or no glossary entry at all) is never read as a size.
+MEASUREMENT_VALUE_KINDS = _PERCENTILE_KINDS | _RATE_KINDS
+
+
+def node_prediction_error_is_measurement(node_id: str) -> bool:
+    """True only when the glossary says this node's prediction_error is a measurement.
+
+    Placeholder, bucket, and unknown (no glossary entry, or an unreadable glossary)
+    all read False. Shared by the self readings and endogenous curiosity."""
+    value_kind, _ = node_prediction_error_semantics(node_id)
+    return value_kind in MEASUREMENT_VALUE_KINDS
 
 # Plain words for the signals that can reach a prompt today. Cosmetic only: which signals render
 # is decided by the glossary's prompt_sites, and an unlisted node falls back to its short name.
@@ -135,7 +147,7 @@ def prompt_reaching_nodes() -> list[str]:
             continue
         if source_kind_for_node(entry.node) != "internal":
             continue
-        if sem.get("value_kind") not in (_PERCENTILE_KINDS | _RATE_KINDS):
+        if sem.get("value_kind") not in MEASUREMENT_VALUE_KINDS:
             continue
         out.append(entry.node)
     _NODES_CACHE = sorted(set(out))
@@ -245,8 +257,7 @@ def build_self_readings(
     current = cache.current()
     readings: list[SelfReadingV1] = []
     for node_id in node_ids:
-        value_kind, _ = node_prediction_error_semantics(node_id)
-        if value_kind not in (_PERCENTILE_KINDS | _RATE_KINDS):
+        if not node_prediction_error_is_measurement(node_id):
             # placeholder / bucket (or unknown): never rendered as a measurement.
             continue
         try:

@@ -208,7 +208,7 @@ def test_evidence_refs_include_contributing_turn_ids() -> None:
     node inspectable from the attention signal, not just the node id."""
     nodes = [
         _node(
-            "node:substrate.harness_closure",
+            "node:substrate.chat",
             "sustained prediction-error surprise",
             dynamic_pressure=0.6,
             contributing_turn_ids=["turn-1", "turn-2"],
@@ -217,7 +217,7 @@ def test_evidence_refs_include_contributing_turn_ids() -> None:
     signals = substrate_pressure_signals(nodes, min_salience=0.0)
     assert signals
     assert signals[0].evidence_refs == [
-        "node:substrate.harness_closure",
+        "node:substrate.chat",
         "turn-1",
         "turn-2",
     ]

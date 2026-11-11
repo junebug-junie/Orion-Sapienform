@@ -1,7 +1,7 @@
 """The substrate prediction-error node's label is read by a person.
 
 It used to be ``f"substrate:{node_id}"`` -- i.e.
-``substrate:node:substrate.harness_closure``, a non-empty string that is not a
+``substrate:node:substrate.execution``, a non-empty string that is not a
 label, just the id said twice. Confirmed live 2026-08-28: 10 of the 24 nodes
 in the Concept Atlas rendered like that.
 See docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
@@ -16,7 +16,7 @@ from app.worker import _prediction_error_label
 @pytest.mark.parametrize(
     "node_id,expected",
     [
-        ("node:substrate.harness_closure", "Harness closure prediction error"),
+        ("node:substrate.perception_walkway", "Perception walkway prediction error"),
         ("node:substrate.biometrics", "Biometrics prediction error"),
         ("node:substrate.bus_synaptic", "Bus synaptic prediction error"),
         ("substrate.route", "Route prediction error"),

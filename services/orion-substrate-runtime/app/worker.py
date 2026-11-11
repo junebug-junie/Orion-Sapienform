@@ -161,12 +161,10 @@ _VISION_ORGAN_SILENCE_CHECK_SEC = 10.0
 # keep forcing involuntary movement forever off a frozen snapshot. Fail-open
 # toward *not* moving.
 _DRIVE_STATE_MAX_AGE_SEC = 300.0
-# Fixed signal until HarnessPostTurnClosureV1 carries surprise_level_at_draft.
-_HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65
 # node_id -> domain key, matching the fixed identities _write_prediction_error_node()
 # upserts to and the domain names orion.substrate.attention_self_model expects in
-# prediction_error_by_domain. node:substrate.harness_closure is intentionally
-# excluded -- it is not one of that reducer's recognized domains.
+# prediction_error_by_domain. (node:substrate.harness_closure was never in this
+# map and its producer was removed 2026-11-11.)
 # node:substrate.codebase (codebase_prediction_error(), 2026-07-31) is ALSO
 # intentionally excluded here, for a different reason: the design spec
 # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md, Phase 3)
@@ -515,11 +513,11 @@ def _prediction_error_label(node_id: str) -> str:
 
     These nodes render in the Concept Atlas alongside organically-discovered
     topics, so their label is read by a person. It used to be
-    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.harness_closure``
+    ``f"substrate:{node_id}"``, i.e. ``substrate:node:substrate.execution``
     -- a non-empty string that is not a label, just the id said twice. See
     docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
 
-    ``node:substrate.harness_closure`` -> ``"Harness closure prediction error"``.
+    ``node:substrate.execution`` -> ``"Execution prediction error"``.
     Falls back to the raw node_id if it does not match the expected shape --
     never returns an empty label (the schema requires one) and never invents a
     domain name that is not in the id.
@@ -2887,28 +2885,16 @@ class BiometricsSubstrateWorker:
             )
 
     def handle_post_turn_closure(self, closure: HarnessPostTurnClosureV1) -> None:
-        """Bridge unresolved harness surprise into durable prediction_error nodes."""
+        """Persist the turn referent for an unresolved harness turn.
+
+        No prediction_error write. ``node:substrate.harness_closure`` (a fixed
+        0.65 written here on every unresolved closure, never a measured size)
+        was retired 2026-11-11 (retire step 3 of
+        docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md).
+        Its successor is a turn-level self-bet, not a substrate node.
+        """
         if not closure.surprise_unresolved:
             return
-        if _prediction_error_nodes_enabled():
-            logger.info(
-                "post_turn_closure_prediction_error_write corr=%s node_id=%s error=%.2f",
-                closure.correlation_id,
-                "node:substrate.harness_closure",
-                _HARNESS_CLOSURE_UNRESOLVED_ERROR,
-            )
-            self._write_prediction_error_node(
-                node_id="node:substrate.harness_closure",
-                error=_HARNESS_CLOSURE_UNRESOLVED_ERROR,
-                now=datetime.now(timezone.utc),
-                reducer_key="post_turn_closure",
-                contributing_id=closure.correlation_id,
-            )
-        else:
-            logger.info(
-                "post_turn_closure_prediction_error_skipped corr=%s reason=SUBSTRATE_WRITE_PREDICTION_ERROR_NODES_disabled",
-                closure.correlation_id,
-            )
 
         try:
             from .turn_referent_store import persist_turn_referent
@@ -3631,8 +3617,8 @@ class BiometricsSubstrateWorker:
         """Record new readings, prune, and compute each node's magnitude.
 
         A node adds a history row only when its observed_at moved past the
-        last recorded sample -- a stale node (harness_closure sitting at 0.65
-        for hours) must not fill its own history with copies of itself, which
+        last recorded sample -- a stale node (a carried-forward reading that
+        nothing rewrote for hours) must not fill its own history with copies of itself, which
         would drag its percentiles toward the stale value. Returns None (no
         magnitudes attached this tick) when the seed read fails, e.g. the
         migration has not been applied yet.

@@ -38,10 +38,10 @@ DEFAULT_MAX_TURNS = 6  # 3 from Orion, 3 from Claude
 ENDINGS = ("continue",) + FINAL_ENDINGS
 
 # How old a cached meter reading may be. The producer publishes the 5 h window every 300 s and the
-# 168 h window every 3600 s (orion-cocreation-signals ``COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS``);
+# 168 h window every 900 s (orion-cocreation-signals ``COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS``);
 # three missed publishes means the meter is not being read.
 SESSION_READING_MAX_AGE_SEC = 3 * 300.0
-WEEKLY_READING_MAX_AGE_SEC = 3 * 3600.0
+WEEKLY_READING_MAX_AGE_SEC = 3 * 900.0
 
 
 def consult_room_id(consult_id: str) -> str:

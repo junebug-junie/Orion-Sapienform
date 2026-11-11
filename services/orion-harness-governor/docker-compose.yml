@@ -122,6 +122,9 @@ services:
       - HARNESS_FCC_MAX_SESSION_RESUMES=${HARNESS_FCC_MAX_SESSION_RESUMES:-3}
       # Keep the turn's request in the system prompt so CLI compaction cannot erase it.
       - HARNESS_FCC_TASK_ANCHOR_ENABLED=${HARNESS_FCC_TASK_ANCHOR_ENABLED:-true}
+      # Turn working notes (orion/harness/working_notes.py). The dir is under the /mnt/orion-fcc mount.
+      - HARNESS_FCC_WORKING_NOTES_ENABLED=${HARNESS_FCC_WORKING_NOTES_ENABLED:-true}
+      - HARNESS_FCC_WORKING_NOTES_DIR=${HARNESS_FCC_WORKING_NOTES_DIR:-/mnt/orion-fcc/notes}
       - HARNESS_FCC_DISABLE_SKILLS=${HARNESS_FCC_DISABLE_SKILLS:-true}
       - HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE=${HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE:-90}
       - HARNESS_FCC_CONTEXT_PRESSURE_PCT=${HARNESS_FCC_CONTEXT_PRESSURE_PCT:-70}

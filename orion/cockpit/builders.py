@@ -181,6 +181,40 @@ def hop_from_motor_boot(
     )
 
 
+def hop_from_working_notes(
+    *,
+    correlation_id: str,
+    seq: int,
+    payload: dict[str, Any],
+    producer: str = "orion-harness-governor",
+) -> CockpitHopV1:
+    """One turn's working notes (orion/harness/working_notes.py): what it was carried in
+    from earlier turns, what it wrote, and whether that goes forward."""
+    raw = {k: v for k, v in payload.items() if k != "_cockpit"}
+    tainted = raw.get("tainted_by") or []
+    if not raw.get("enabled"):
+        state = "off"
+    elif tainted:
+        state = "held back (" + ", ".join(str(t) for t in tainted)[:120] + ")"
+    elif raw.get("carried_forward"):
+        state = f"{raw.get('kept', 0)} carried"
+    else:
+        state = "nothing carried"
+    summary = {k: raw.get(k) for k in ("written_bytes", "kept", "dropped", "suspicious", "carried_forward")}
+    summary["carried_in_chars"] = len(str(raw.get("carried_in") or ""))
+    summary["tainted_by"] = tainted
+    return _base_hop(
+        correlation_id=correlation_id,
+        seq=seq,
+        stage="working_notes",
+        visor_line=f"working_notes · {raw.get('written_bytes', 0)} bytes · {state}"[:512],
+        status="ok",
+        summary=summary,
+        raw=raw,
+        producer=producer,
+    )
+
+
 _SITUATION_VISOR_CHANNELS = (
     "cabinet",
     "weather",

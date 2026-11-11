@@ -259,6 +259,7 @@ def compile_harness_prefix(
     situation_prompt_fragment: str | None = None,
     reading_binding: ReadingToolBindingV1 | None = None,
     reading_only: bool = False,
+    working_notes_block: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
@@ -336,6 +337,10 @@ def compile_harness_prefix(
     # for tests only.
     now_utc = now if now is not None else datetime.now(timezone.utc)
     parts.extend(format_recent_turns(recent_turns or [], now=now_utc))
+    if working_notes_block:
+        # Rendered by the runner (orion/harness/working_notes.py): carried step notes, quoted,
+        # plus where this turn writes its own. Omitted on non-chat turns.
+        parts.append(working_notes_block)
 
     if user_message.strip():
         parts.append(HARNESS_TASK_HEADER)

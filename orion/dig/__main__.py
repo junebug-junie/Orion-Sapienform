@@ -67,6 +67,7 @@ path of a file with the full result; read only what you need from that file.
   reminisce [<date>]     today's reminiscence: one past week (quiet weeks join the next busy one),
                          five hops, what changed since last.
   reminisce write|rewrite <hop> "<note>" because "<refs>"   save one hop (code checks each ref).
+  turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
@@ -1628,6 +1629,28 @@ def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
     return capped(res.lines, tail=f"full {kind}: {path}")
 
 
+# --- turn steps -----------------------------------------------------------------------------
+
+def cmd_turn_steps(session_id: str, turns: str, out: Out, runner=None) -> str:
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import turn_steps
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    if not turns.isdigit():
+        raise DigError(f"turn-steps: <turns> must be a number 1-{turn_steps.MAX_TURNS}, got {turns!r}")
+    try:
+        sql = turn_steps.build_sql(session_id, int(turns))
+    except ValueError as exc:
+        raise DigError(f"turn-steps: {exc}") from exc
+    try:
+        rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=60.0), sql)
+    except RuntimeError as exc:
+        raise DigError(f"turn-steps: {exc}") from exc
+    steps = turn_steps.parse_rows(rows)
+    path = out.write("turn-steps", [s.__dict__ for s in steps])
+    return capped(turn_steps.render(steps, session_id), tail=f"full steps: {path}")
+
+
 # --- notes ----------------------------------------------------------------------------------
 
 def cmd_notes(text: str | None, out: Out) -> str:
@@ -1720,6 +1743,8 @@ def main(argv: list[str] | None = None) -> int:
             cut = len(a) - 1 - a[::-1].index("because")  # the last one: a hop may say "because"
             text = cmd_reminisce_write(a[1], " ".join(a[2:cut]), " ".join(a[cut + 1:]), rewrite=a[0] == "rewrite",
                                        out=out)
+        elif ns.command == "turn-steps" and len(a) in (1, 2):
+            text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

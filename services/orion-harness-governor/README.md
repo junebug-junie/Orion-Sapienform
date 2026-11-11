@@ -103,6 +103,29 @@ LISTEN orion:harness:run:request:agent    (agent lane, another loop — same cod
 
 Each turn's `claude -p` subprocess is still single-shot: it starts, runs, and exits with no mid-run injection point (see below). What changed (2026-08-20) is that the *prompt it starts with* now carries real recent-turn history, not just the current message. `HarnessRunRequestV1.recent_turns` (`orion/schemas/harness_finalize.py`) holds up to `HARNESS_RECENT_TURNS_MAX` (8) bounded prior user/assistant messages, built by `orion.hub.turn_orchestrator.execute_unified_turn` from the caller's `continuity_messages` via the same `build_turn_window` normalizer the pre-turn-appraisal client already used. `orion/harness/prefix.py::compile_harness_prefix()` renders it into a `RECENT CONVERSATION` section of the compiled prompt before the subprocess ever starts. Before this, every unified-turn (`mode="orion"`) prompt was built from only the single current `user_message` — no prior-turn content at all — which produced generic, isolated-per-turn responses and repeated opening greetings on a live multi-turn session.
 
+## Turn working notes (carry steps across messages)
+
+Every chat message starts a new CLI session, so a turn saw Orion's earlier replies
+but not the steps behind them. Spec: `docs/superpowers/specs/2026-11-05-turn-working-notes-design.md`.
+
+- **Exact record:** `python -P -m orion.dig turn-steps <chat_id> [<n>]` prints the tool calls
+  and the start of each result for the last n tool-using turns of a Hub chat
+  (`cockpit_turn_sighting` via the read-only psql path). Every chat turn's prompt names it.
+- **Short version:** each Hub chat reply gets a notes file
+  (`HARNESS_FCC_WORKING_NOTES_DIR/<session>/<correlation>.md`). Orion appends
+  `- <HH:MMZ> | <fcc|host|db|container:NAME> | <command or path> | ok|failed: <seen>` while it
+  works. At turn end (success or failure) `orion/harness/working_notes.py` keeps only lines in that
+  shape and carries them, quoted, to the next turn of the same session (Redis
+  `orion:harness:working_notes:<session>`, 24 h, 3,000 chars).
+- **Held back:** a turn that ran WebFetch/WebSearch, any MCP tool except orion-introspect and gitnexus,
+  a subagent (`Task`/`Agent`), a resumed session, or `curl`/`wget`/`gh <cmd>`/`git fetch|pull|clone` in Bash has its
+  notes held back; the next turn sees only that they were. The Bash check is a floor, not a wall.
+- **Trace:** cockpit stage `working_notes` per chat turn (`carried_in`, `written`, kept/dropped,
+  `tainted_by`). Logs: `fcc_working_notes_empty|tainted|dropped|suspicious|carried`.
+- **Off:** `HARNESS_FCC_WORKING_NOTES_ENABLED=false` (no file, nothing carried; `turn-steps` stays).
+- **Baseline:** `python -m orion.harness.evals.turn_repeat_baseline --days 14` counts steps a turn
+  redoes from the previous turn of the same chat, and the share of turns the taint rule holds back.
+
 ## Tool-provenance audit
 
 `orion/harness/tool_provenance_audit.py::detect_tool_provenance_mismatch()` runs once per turn in `HarnessRunner.run()`, after the fcc stream completes: flags when `draft_text` uses live-immediacy language ("this turn", "right now", "happening now", "in the background") while that same turn's `grammar_receipts` show a fetch-shaped tool call (`get_file_contents`, `read_file`, a web fetch). It's a post-hoc audit, not prevention — the fcc subprocess is single-shot with no mid-run injection point (the prompt, including the `RECENT CONVERSATION` section above, is fully assembled before the subprocess starts and cannot be changed once it is running), so nothing here can stop a confabulated claim before it's generated (that's `orion/harness/prefix.py`'s `CONTEXT PROVENANCE` block's job, in the compiled motor prompt).

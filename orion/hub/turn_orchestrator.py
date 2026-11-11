@@ -11,7 +11,7 @@ from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.cockpit.builders import extract_mind_quality_fields
-from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER, COCKPIT_WORKING_NOTES_MARKER
 from orion.hub.cockpit_emit import (
     begin_cockpit_timeline,
     emit_association_hop,
@@ -2178,7 +2178,8 @@ async def run_unified_turn(
             step = frame.get("step")
             step_dict = step if isinstance(step, dict) else {}
             is_motor_boot = step_dict.get("_cockpit") == COCKPIT_MOTOR_BOOT_MARKER
-            if not is_motor_boot:
+            # Marker steps are cockpit records, not motor steps: never shown as a step in chat.
+            if not is_motor_boot and step_dict.get("_cockpit") != COCKPIT_WORKING_NOTES_MARKER:
                 await _send_ws(frame)
             try:
                 # Hub already recorded motor_boot pre-dispatch; ignore governor's

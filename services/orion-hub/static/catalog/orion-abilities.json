@@ -257,6 +257,16 @@
           "keywords": ["notes", "continue", "pick up"],
           "covers": {"dig": ["notes"]},
           "source": "orion/dig/__main__.py:cmd_notes"
+        },
+        {
+          "id": "dig-turn-steps",
+          "title": "See the steps of earlier turns in this chat",
+          "description": "Each message starts fresh, so Orion sees earlier replies but not the commands behind them. This prints the tool calls and the start of each result from the last few turns of a chat. Results of web or GitHub reads are not shown.",
+          "message": "What did you actually run in your last couple of turns here? Check your earlier steps before you redo them.",
+          "hint": "(dig: `python -P -m orion.dig turn-steps <chat> [<n>]`)",
+          "keywords": ["steps", "what did you run", "last turn", "commands"],
+          "covers": {"dig": ["turn-steps"]},
+          "source": "orion/dig/__main__.py:cmd_turn_steps; orion/dig/turn_steps.py"
         }
       ]
     },

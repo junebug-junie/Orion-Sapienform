@@ -257,6 +257,6 @@ The migration `manual_migration_gpu_pool_v4_value_order.sql` is optional, becaus
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/3190
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

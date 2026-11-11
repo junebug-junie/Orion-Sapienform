@@ -19,8 +19,9 @@ rule), or by the replica's plan. This answers, from the live tables:
 * The replica's answers to Prime, from curiosity_replica_answers_readout.py (the 14-day refusal-rate alarm).
 * E9, Juniper first (design acceptance checks): is Juniper's chat slower in the 14 days after the replica started
   than in the 14 days before? Two numbers per turn: the whole turn (her message in to the reply out), which also
-  moves with what she asked, and the time her model calls waited for a seat on the chat lane, which is what the
-  replica and Prime can cause. Only the seat wait raises the flag (one-sided permutation, p < 0.05). Juniper's turns
+  moves with what she asked, and the time each of her chat-lane model calls waited for a seat, which is what the
+  replica and Prime can cause. Only the wait per call raises the flag (one-sided permutation, p < 0.05): a per-turn
+  total would grow with the number of steps she asked for. Juniper's turns
   are the ones orion/regulation/juniper_turns.py says are hers. Seat wait is recorded from 2026-10-29 only.
 * The replica family's learned weight in the body economy (want_ledger), first and last value and its basis, so
   the 14-day review can see whether it drifted from its starting value. No pre-registered threshold: no flag.
@@ -286,13 +287,16 @@ def _quantile(values: Sequence[float], q: float) -> Optional[float]:
 
 def _e9_window(turns: Sequence[dict[str, Any]]) -> dict[str, Any]:
     turn_s = [(t["tf"] - t["t0"]).total_seconds() for t in turns if t.get("tf") is not None and t["tf"] >= t["t0"]]
-    # A turn with no usage rows at all was not measured (before 2026-10-29, or the gateway missed it): not a 0 wait.
-    measured = [t for t in turns if (t.get("calls") or 0) > 0]
-    wait_s = [(t.get("chat_wait_ms") or 0) / 1000.0 for t in measured]
-    return {"turns": len(turns), "finished": len(turn_s), "turn_s": turn_s, "wait_s": wait_s,
+    # A turn with no chat-lane call recorded was not measured (usage starts 2026-10-29, or the gateway missed it, or
+    # it used only other lanes): never a 0 wait.
+    measured = [t for t in turns if (t.get("chat_calls") or 0) > 0]
+    per_call_s = [(t.get("chat_wait_ms") or 0) / 1000.0 / t["chat_calls"] for t in measured]
+    total_s = [(t.get("chat_wait_ms") or 0) / 1000.0 for t in measured]
+    return {"turns": len(turns), "finished": len(turn_s), "turn_s": turn_s, "per_call_s": per_call_s,
             "median_turn_s": _quantile(turn_s, 0.5), "p90_turn_s": _quantile(turn_s, 0.9),
-            "wait_measured": len(measured), "median_wait_s": _quantile(wait_s, 0.5), "p90_wait_s": _quantile(wait_s, 0.9),
-            "mean_wait_s": mean(wait_s) if wait_s else None}
+            "wait_measured": len(measured), "measured_from": min((t["t0"] for t in measured), default=None),
+            "median_wait_per_call_s": _quantile(per_call_s, 0.5), "p90_wait_per_call_s": _quantile(per_call_s, 0.9),
+            "median_wait_per_turn_s": _quantile(total_s, 0.5)}
 
 
 def e9_report(turns: Sequence[dict[str, Any]], lane: Mapping[str, Mapping[str, Any]], *, cut: datetime,
@@ -304,7 +308,7 @@ def e9_report(turns: Sequence[dict[str, Any]], lane: Mapping[str, Mapping[str, A
     after = _e9_window([t for t in turns if cut <= t["t0"] < hi])
     p_turn = permutation_p_greater([math.log(max(x, 1e-3)) for x in after["turn_s"]],
                                    [math.log(max(x, 1e-3)) for x in before["turn_s"]], permutations=permutations)
-    p_wait = permutation_p_greater(after["wait_s"], before["wait_s"], permutations=permutations)
+    p_wait = permutation_p_greater(after["per_call_s"], before["per_call_s"], permutations=permutations)
     slower = p_wait is not None and p_wait < E9_ALPHA
 
     def share(w: str) -> Optional[float]:
@@ -312,11 +316,12 @@ def e9_report(turns: Sequence[dict[str, Any]], lane: Mapping[str, Mapping[str, A
         return (got.get("prime_ms") or 0) / got["chat_ms"] if got.get("chat_ms") else None
 
     for w in (before, after):
-        w.pop("turn_s"), w.pop("wait_s")
+        w.pop("turn_s"), w.pop("per_call_s")
     return {"cut": cut, "days_before": days, "days_after": round((hi - cut).total_seconds() / 86400.0, 1),
             "before": before, "after": after, "p_turn_slower": p_turn, "p_wait_slower": p_wait, "slower": slower,
             "prime_share_of_chat_lane": {"before": share("before"), "after": share("after")},
-            "verdict": ("SLOWER: Juniper's calls waited longer for a chat-lane seat after the cut (p < 0.05) -- "
+            "lane_measured_from": (lane.get("before") or {}).get("first_at"),
+            "verdict": ("SLOWER: each of Juniper's chat-lane calls waited longer for a seat after the cut (p < 0.05) -- "
                         "bring it to Juniper" if slower else
                         "UNKNOWN: too few measured turns in a window" if p_wait is None else
                         "no seat-wait slowdown at p < 0.05")}
@@ -418,13 +423,13 @@ WITH t AS (
   WHERE ts >= %(lo_naive)s AND ts < %(hi_pad_naive)s
   GROUP BY 1
 ), w AS (
-  SELECT correlation_id, count(*) AS calls,
+  SELECT correlation_id, count(*) FILTER (WHERE pool_role = 'chat') AS chat_calls,
          sum(wait_ms) FILTER (WHERE pool_role = 'chat') AS chat_wait_ms
   FROM llm_call_usage
   WHERE recorded_at >= %(lo)s AND recorded_at < %(hi_pad)s
   GROUP BY 1
 )
-SELECT t.t0, t.tf, w.calls, w.chat_wait_ms
+SELECT t.t0, t.tf, w.chat_calls, w.chat_wait_ms
 FROM t LEFT JOIN w USING (correlation_id)
 WHERE t.juniper AND t.t0 >= %(lo_naive)s AND t.t0 < %(hi_naive)s
 """
@@ -432,7 +437,8 @@ WHERE t.juniper AND t.t0 >= %(lo_naive)s AND t.t0 < %(hi_naive)s
 E9_LANE_SQL = """
 SELECT CASE WHEN recorded_at < %(cut)s THEN 'before' ELSE 'after' END AS w,
        sum(duration_ms) FILTER (WHERE pool_role = 'chat') AS chat_ms,
-       sum(duration_ms) FILTER (WHERE pool_role = 'chat' AND route = %(route)s) AS prime_ms
+       sum(duration_ms) FILTER (WHERE pool_role = 'chat' AND route = %(route)s) AS prime_ms,
+       min(recorded_at) AS first_at
 FROM llm_call_usage
 WHERE recorded_at >= %(lo)s AND recorded_at < %(hi)s
 GROUP BY 1
@@ -462,9 +468,9 @@ def read_e9(dsn: str, *, cut: datetime, now: datetime, days: int = E9_DAYS) -> O
             cur.execute(E9_TURNS_SQL, params)
             turns = [{"t0": r[0].replace(tzinfo=timezone.utc),
                       "tf": r[1].replace(tzinfo=timezone.utc) if r[1] is not None else None,
-                      "calls": r[2], "chat_wait_ms": r[3]} for r in cur.fetchall()]
+                      "chat_calls": r[2], "chat_wait_ms": r[3]} for r in cur.fetchall()]
             cur.execute(E9_LANE_SQL, params)
-            lane = {r[0]: {"chat_ms": r[1], "prime_ms": r[2]} for r in cur.fetchall()}
+            lane = {r[0]: {"chat_ms": r[1], "prime_ms": r[2], "first_at": r[3]} for r in cur.fetchall()}
         return turns, lane
     except Exception as exc:  # a read failure is "unknown", never a number
         print(f"UNKNOWN: E9 read failed: {exc}", file=sys.stderr)
@@ -548,11 +554,15 @@ def render(report: dict[str, Any]) -> str:
             lines.append(f"Juniper's chat speed (E9), {e['days_before']} days before {e['cut']:%Y-%m-%d %H:%M} UTC vs"
                          f" {e['days_after']} days after:")
             for name, w in (("before", b), ("after", af)):
+                since = f", from {w['measured_from']:%Y-%m-%d}" if w["measured_from"] else ""
                 lines.append(f"  {name:<6} {w['turns']} turns ({w['finished']} finished): whole turn median"
-                             f" {_num(w['median_turn_s'], '.0f')} s, p90 {_num(w['p90_turn_s'], '.0f')} s; seat wait on the"
-                             f" chat lane median {_num(w['median_wait_s'], '.1f')} s, p90 {_num(w['p90_wait_s'], '.1f')} s"
-                             f" ({w['wait_measured']} turns measured)")
-            lines.append(f"  Prime + replica used {_num(sh['before'], '.1%')} of the chat lane's model time before,"
+                             f" {_num(w['median_turn_s'], '.0f')} s, p90 {_num(w['p90_turn_s'], '.0f')} s; seat wait per"
+                             f" chat-lane call median {_num(w['median_wait_per_call_s'], '.1f')} s, p90"
+                             f" {_num(w['p90_wait_per_call_s'], '.1f')} s, per turn median"
+                             f" {_num(w['median_wait_per_turn_s'], '.1f')} s ({w['wait_measured']} turns measured{since})")
+            lane_from = (f" (lane measured from {e['lane_measured_from']:%Y-%m-%d})"
+                         if e.get("lane_measured_from") else "")
+            lines.append(f"  Prime + replica used {_num(sh['before'], '.1%')} of the chat lane's model time before{lane_from},"
                          f" {_num(sh['after'], '.1%')} after. p (whole turn slower) {_num(e['p_turn_slower'])}, which also"
                          f" moves with what was asked; p (seat wait slower) {_num(e['p_wait_slower'])}.")
             lines.append(f"  {e['verdict']}")
@@ -568,6 +578,22 @@ def render(report: dict[str, Any]) -> str:
                          f" {w['decisions']} decisions); {w['verdict']}.")
     lines.append("Needs Juniper: " + (", ".join(report["needs_juniper"]) or "nothing"))
     return "\n".join(lines)
+
+
+def parse_cut(text: str) -> datetime:
+    """An ISO time; one without an offset is UTC, one with an offset (e.g. -06:00 in MDT) keeps it."""
+    at = datetime.fromisoformat(text)
+    return at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at.astimezone(timezone.utc)
+
+
+def build_e9(dsn: str, live: Sequence[dict[str, Any]], *, cut_arg: Optional[str], now: datetime,
+             reader=None) -> Any:
+    """NOT_READ when there is no cut yet (no three-arm run and no --e9-cut), None when the read failed."""
+    cut = parse_cut(cut_arg) if cut_arg else live[0]["decided_at"] if live else None
+    if cut is None:
+        return NOT_READ
+    got = (reader or read_e9)(dsn, cut=cut, now=now)
+    return e9_report(*got, cut=cut, now=now) if got is not None else None
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -587,13 +613,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     answer_rows = answers_readout.read_pg(dsn)
     answers = answers_readout.parse_rows(answer_rows) if answer_rows is not None else None
     now = datetime.now(timezone.utc)
-    live = three_arm_rows(rows)
-    cut = (datetime.fromisoformat(args.e9_cut).replace(tzinfo=timezone.utc) if args.e9_cut
-           else live[0]["decided_at"] if live else None)
-    e9: Any = None
-    if cut is not None:
-        got = read_e9(dsn, cut=cut, now=now)
-        e9 = e9_report(*got, cut=cut, now=now) if got is not None else None
+    e9 = build_e9(dsn, three_arm_rows(rows), cut_arg=args.e9_cut, now=now)
     weight_rows = read_weights(dsn)
     report = build_report(rows, answers, now=now, days=args.days, unblind=args.unblind, e9=e9,
                           weight=weight_report(weight_rows) if weight_rows is not None else None)

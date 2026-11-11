@@ -272,16 +272,16 @@
     offset+=h.video_bytes;
     if(audio && h.audio_frames){
       if(lastSample!==null && lastSample!==h.sample_end-h.audio_frames)flushAudio();
-      if(audioEnd<audio.currentTime || audioEnd>audio.currentTime+.12)flushAudio();
+      // Keep sound close to the picture even after a burst of delayed packets.
+      if(audioEnd<audio.currentTime || audioEnd>audio.currentTime+.05)flushAudio();
       const at=Math.max(audio.currentTime+.025,audioEnd), buffer=audio.createBuffer(2,h.audio_frames,h.sample_rate);
       for(let c=0;c<2;c++){const channel=buffer.getChannelData(c);for(let i=0;i<h.audio_frames;i++)channel[i]=view.getInt16(offset+i*4+c*2,true)/32768;}
       const source=audio.createBufferSource();source.buffer=buffer;source.connect(gain);sources.add(source);source.onended=()=>sources.delete(source);source.start(at);
       audioEnd=at+buffer.duration;lastSample=h.sample_end;
       screen.dataset.audioFrames=String((Number(screen.dataset.audioFrames)||0)+h.audio_frames);
-      // Present the associated frame when this packet's PCM starts, with bounded pending work.
-      await new Promise(resolve=>setTimeout(resolve,Math.max(0,(at-audio.currentTime)*1000)));
-      if(epoch!==transportEpoch || socket!==media)return;
     }
+    // The audio device schedules PCM independently. Waiting for its start here
+    // blocks decoding and presentation credit, adding delay to every round trip.
     if(screen.width!==h.width || screen.height!==h.height){screen.width=h.width;screen.height=h.height;}
     ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
     lastPictureAt=performance.now();pictureReady=true;

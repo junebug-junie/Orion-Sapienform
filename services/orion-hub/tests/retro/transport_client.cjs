@@ -194,6 +194,34 @@ test('media credits are negotiated and acknowledged only after a current frame i
   assert.equal(h.run('globalThis.oldMedia.sent.length'),0,'old decoder acknowledged a replacement connection');
 });
 
+test('PCM cannot hold a fresh picture or its credit behind an audio timer',async()=>{
+  const h=page();
+  const header=Buffer.from(JSON.stringify({version:1,width:1,height:1,format:1,video_bytes:4,
+    audio_frames:1600,sample_rate:48000,sample_end:3200,frame:40}));
+  const prefix=Buffer.alloc(4);prefix.writeUInt32BE(header.length);
+  h.context.packet=require('node:zlib').deflateSync(Buffer.concat([prefix,header,Buffer.alloc(4+1600*4)]));
+  h.run(`mediaFlowControl=true;openMedia(transportEpoch);gain={};
+    globalThis.audioStarts=[];globalThis.stopped=0;
+    sources.add({stop(){globalThis.stopped++;}});
+    audio={currentTime:10,createBuffer:(channels,frames,rate)=>({duration:frames/rate,
+      getChannelData:()=>new Float32Array(frames)}),
+      createBufferSource:()=>({connect(){},stop(){},start(at){globalThis.audioStarts.push(at);}})};
+    lastSample=1600;audioEnd=10.1;`);
+  // No fake timers advance. A picture is ready even when browser timers/audio
+  // stall; the old draw() instead waited for audioEnd and withheld its ACK.
+  let deadline;
+  try{
+    await Promise.race([
+      h.run('draw({data:globalThis.packet,epoch:transportEpoch,socket:media,flow:true,sequence:1})'),
+      new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('picture waited for audio')),500);}),
+    ]);
+  }finally{clearTimeout(deadline);}
+  assert.equal(h.elements.get('screen').dataset.frame,40);
+  assert.equal(h.sockets.at(-1).sent.at(-1).ack,1);
+  assert.equal(h.run('globalThis.stopped'),1,'old queued audio was retained');
+  assert(h.run('globalThis.audioStarts[0]-audio.currentTime')<=.05,'audio trails immediate video by more than 50 ms');
+});
+
 test('old asynchronous decoder failure cannot close a replacement transport or abandon its packet',async()=>{
   const h=page();
   h.run(`media=new WebSocket('old-media');

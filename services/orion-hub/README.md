@@ -4531,6 +4531,10 @@ awaiting browser presentation; while credits are exhausted only the latest nativ
 packet is retained. This also bounds data accepted by socket/proxy buffers, which
 the original one-packet application queue could not bound. A cumulative `{ack: N}`
 on the media socket confirms presentation and is consumed only by the gateway.
+The page draws decoded video immediately, without waiting for scheduled PCM.
+Audio starts 25–50 ms ahead of its clock; a longer queued start flushes old audio.
+This keeps audio scheduling out of the presentation-credit loop. It does not
+measure speaker latency, and bursty connections can still cause audio gaps.
 Older pages/gateways retain the legacy media path. Reload the page when rolling
 back a gateway that advertised this capability.
 

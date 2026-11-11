@@ -10,6 +10,12 @@ let page;
 try{
   page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   await page.evaluateOnNewDocument(delay=>{
+    // Real controllers must not add buttons to the eval's scripted input.
+    // Gamepad scenarios below install their own controlled navigator stub.
+    Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[]});
+    const nativeTimeout=window.setTimeout.bind(window);
+    window.setTimeout=(fn,ms,...args)=>nativeTimeout(fn,
+      window.__stallShortTimers && ms>0 && ms<=125 ? 1000 : ms,...args);
     const NativeMediaSocket=window.WebSocket;
     window.__creditMediaSockets=0;window.__presentationAcks=0;
     window.WebSocket=class extends NativeMediaSocket {
@@ -63,6 +69,14 @@ try{
   assert.equal(await page.evaluate(()=>window.__controlRequests),1,'click invalidated a pending control grant');
   await page.evaluate(()=>window.__restoreControlFetch());
   await page.click('#start');await pause(600);await page.click('#screen');
+  // Real PCM must not stop presentation when browser timers are late. The old
+  // client waited for the scheduled audio start before drawing/returning credit.
+  const beforeTimerStall=await page.$eval('#screen',c=>Number(c.dataset.frame));
+  await page.evaluate(()=>{window.__stallShortTimers=true;});
+  try{
+    await page.waitForFunction(b=>Number(document.querySelector('#screen').dataset.frame)>b+12,
+                              {timeout:800,polling:'raf'},beforeTimerStall);
+  }finally{await page.evaluate(()=>{window.__stallShortTimers=false;});}
   await page.keyboard.down('ArrowRight');await page.keyboard.down('z');
   await pause(Number(process.env.RETRO_EVAL_SECONDS)*1000);
   await page.keyboard.up('ArrowRight');await page.keyboard.up('z');

@@ -9,10 +9,13 @@ const browser=await puppeteer.launch({headless:true,args:['--no-sandbox']});
 const fixture=async()=>(await fetch(url+'/__fixture/log')).json();
 try{
   const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+  await page.evaluateOnNewDocument(()=>{
+    Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[]});
+  });
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=15') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=16') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});

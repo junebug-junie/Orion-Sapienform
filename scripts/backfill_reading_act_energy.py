@@ -30,7 +30,8 @@ DRY RUN is the default: the session is READ ONLY and every item is rolled back; 
 to the database. ``--apply`` commits per act and per hour (both guarded: an act the live writer
 filled meanwhile, and an hour it rewrote meanwhile, are skipped). ``--restore`` puts back the
 earliest apply snapshot's values (run it only after reverting patch 3e, or the live writer
-re-applies the new rule to the hours it still recomputes).
+re-applies the new rule to the hours it still recomputes). Restore is unguarded: it overwrites a
+read act's later live fill too, so run it right after a bad apply, not days later.
 
     python3 scripts/backfill_reading_act_energy.py              # dry run, 30 days
     python3 scripts/backfill_reading_act_energy.py --apply      # after patch 3e is deployed
@@ -151,13 +152,21 @@ def recompute_hour(conn: Any, row: dict[str, Any], *, now: datetime) -> dict[str
     new, _, why_new = fill.attribute_host_hour(conn, row["host"], start, end, now=now, charge_reads=True)
     if old is None or new is None:
         return {"anomaly": f"no_rest: {why_old or why_new}"}
-    drift = max(abs(old.above_rest_wh - float(row["above_rest_wh"])),
-                abs(old.sponsored_wh - float(row["sponsored_wh"])),
-                abs(old.metered_wh - float(row["metered_wh"])))
+    def _off(got: Any) -> float:
+        return max(abs(got.above_rest_wh - float(row["above_rest_wh"])),
+                   abs(got.sponsored_wh - float(row["sponsored_wh"])),
+                   abs(got.metered_wh - float(row["metered_wh"])))
+
+    if _off(new) <= DRIFT_TOL_WH:
+        # Already on the new rule (a re-run, or an hour the live writer recomputed after deploy).
+        return {"anomaly": "", "old": old, "new": new, "already_applied": True, "moved_wh": 0.0}
+    drift = _off(old)
     if drift > DRIFT_TOL_WH:
         # The stored row was computed from other data or config than today's (late samples, a rest
-        # change, an act that opened later): left as it is, said here.
-        return {"anomaly": f"recompute_drift {drift:.3f} Wh", "old": old, "new": new}
+        # change, an act that opened later): left as it is, and the read Wh it still double counts
+        # (the act side is filled regardless) is reported.
+        return {"anomaly": f"recompute_drift {drift:.3f} Wh", "old": old, "new": new,
+                "double_counted_wh": new.metered_wh - old.metered_wh}
     metered = new.metered_wh
     after = {"metered_wh": metered, "leased_unmetered_wh": new.leased_unmetered_wh,
              "unattributed_wh": float(row["above_rest_wh"]) - float(row["sponsored_wh"]) - metered}
@@ -260,6 +269,8 @@ def run(conn: Any, *, days: float, apply: bool, job_dir: Path, now: datetime, li
                      "after": json.dumps({k: round(v, 4) for k, v in after.items()}) if after else "",
                      "wh": round(got.get("moved_wh", 0.0), 4), "above_rest_wh": float(h["above_rest_wh"]),
                      "sponsored_wh": float(h["sponsored_wh"]), "after_raw": after,
+                     "double_counted_wh": got.get("double_counted_wh", 0.0),
+                     "already_applied": bool(got.get("already_applied")),
                      "anomaly": got["anomaly"], "note": "", "error": ""})
         if done % PROGRESS_EVERY == 0:
             print(progress.line(done, errors, anomalies, "hours"), file=out)
@@ -308,6 +319,8 @@ def summarize(rows: list[dict[str, Any]], *, mode: str, now: datetime, days: flo
                          "max": round(per[-1], 2)} if per else None),
         "hour_targets": n_hours, "hours_changed": sum(1 for r in hours if r.get("after_raw") and abs(r["wh"]) > 1e-9),
         "hours_drift": sum(1 for r in hours if str(r["anomaly"]).startswith("recompute_drift")),
+        "wh_still_double_counted_in_drift_hours": round(sum(r.get("double_counted_wh", 0.0) for r in hours), 1),
+        "hours_already_applied": sum(1 for r in hours if r.get("already_applied")),
         "wh_moved_hourly_to_reads": round(moved_wh, 1),
         "wh_moved_by_host": {k: round(v, 1) for k, v in sorted(moved_by_host.items())},
         # Read acts count a lease whole on its own window; the hourly rows clip at the window edge and
@@ -334,8 +347,9 @@ def _report(path: Path, s: dict[str, Any], rows: list[dict[str, Any]]) -> None:
         f"No lease: {s['acts_no_lease']}. Unmeasured: {s['acts_unmeasured']} "
         f"({s.get('acts_unmeasured_by_reason', {})}).",
         f"- Read energy filled: {s['read_wh_total']} Wh (by host {s['read_wh_by_host']}); per read {s['per_read_wh']}.",
-        f"- Hourly rows examined: {s['hour_targets']}; changed: {s['hours_changed']}; left alone for drift: "
-        f"{s['hours_drift']}.",
+        f"- Hourly rows examined: {s['hour_targets']}; changed: {s['hours_changed']}; already on the new rule: "
+        f"{s['hours_already_applied']}; left alone for drift: {s['hours_drift']} (read Wh those still count "
+        f"twice: {s['wh_still_double_counted_in_drift_hours']}).",
         f"- Wh moved in the hourly rows from leased-without-act to metered: {s['wh_moved_hourly_to_reads']} "
         f"(by host {s['wh_moved_by_host']}); read Wh / moved Wh = {s['read_vs_moved_ratio']}.",
         f"- Every changed hour still closes on its stored above-rest energy: max error "

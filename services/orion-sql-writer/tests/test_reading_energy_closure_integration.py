@@ -286,13 +286,15 @@ def test_turn_owners_find_every_read_turn_and_nothing_else(session):
     _world(session)
     corrs = [S1_TRACE, S2_TRACE, F_TURN, "corr-noact", "corr-paint", S1_CORR]
     owners = ids.reading_turn_owners(session, corrs, since=H - timedelta(hours=6), until=H + timedelta(hours=1))
-    # The seed's two trace ids, AND the failed attempt's turn re-derived from its hold; never the
-    # run's own correlation id (the hold's), never another act's turn.
-    assert owners == {S1_TRACE: REQUEST_ID, S2_TRACE: REQUEST_ID, F_TURN: REQUEST_ID}
+    # The seed's two trace ids, the failed attempt's turn re-derived from its hold, and the hold
+    # itself (the run's own correlation id: energy only); never another act's turn.
+    assert owners == {S1_TRACE: REQUEST_ID, S2_TRACE: REQUEST_ID, F_TURN: REQUEST_ID, S1_CORR: REQUEST_ID}
     charged = ids.turns_charged_to_acts(session, corrs, since=H - timedelta(hours=6), until=H + timedelta(hours=1))
-    assert charged == {S1_TRACE, S2_TRACE, F_TURN, "corr-paint"}
-    # The same turn set the read act's GPU and energy are charged over.
-    assert set(ids.reading_cost_ids(session, REQUEST_ID, until=STAGE2_END)) == set(owners)
+    assert charged == {S1_TRACE, S2_TRACE, F_TURN, S1_CORR, "corr-paint"}
+    # The same turn set the read act's energy is charged over (GPU: without the holds).
+    energy_ids = (set(ids.reading_cost_ids(session, REQUEST_ID, until=STAGE2_END))
+                  | set(ids.reading_hold_ids(session, REQUEST_ID)))
+    assert set(owners) <= energy_ids and energy_ids - set(owners) == {S2_CORR, F_CORR}  # not in ``corrs``
 
 
 def test_a_read_with_no_act_is_not_metered(session):
@@ -475,6 +477,8 @@ def test_backfill_moves_both_sides_together_dry_run_writes_nothing_then_apply_th
     again = bf.run(session, days=30, apply=True, job_dir=tmp_path, now=now + timedelta(minutes=1),
                    commit=session.commit, out=io.StringIO())
     assert again["act_targets"] == 0 and again["hours_changed"] == 0
+    # ...because the stored hour already IS the new rule, not because it was rejected as drift.
+    assert (again["hours_already_applied"], again["hours_drift"], again["anomalies"]) == (1, 0, 0)
     assert _stored_hour(session).metered_wh == pytest.approx(stored.metered_wh)
 
     got = bf.restore(session, tmp_path, commit=session.commit)
@@ -498,4 +502,51 @@ def test_backfill_leaves_a_drifted_hour_alone(session, tmp_path):
     out = bf.run(session, days=30, apply=True, job_dir=tmp_path, now=H + timedelta(days=5), commit=session.commit,
                  out=io.StringIO())
     assert out["hours_drift"] == 1 and out["hours_written"] == 0
+    assert out["wh_still_double_counted_in_drift_hours"] > 10.0
     assert _stored_hour(session).metered_wh == pytest.approx(old.metered_wh)
+
+
+def test_the_reads_own_hold_is_charged_its_energy_not_its_slot_time(session):
+    """Review S1: a call inside its run's hold shares the card 1/2 with the hold on both meters; the
+    hold is the read's too, so the read carries the card's whole above-idle share."""
+    _readings(session)
+    session.execute(text("INSERT INTO world_pulse_read_seed (seed_id, status, trace_id, created_at, completed_at, "
+                         "request_id) VALUES (:s, 'failed', :t, :c, :d, CAST(:r AS uuid))"),
+                    {"s": SEED, "t": S1_TRACE, "c": H, "d": STAGE1_END, "r": REQUEST_ID})
+    _turn(session, stage=1, attempt=1, run=S1_RUN, corr=S1_CORR, at=H + timedelta(minutes=5))
+    _hold(session, run=S1_RUN, corr=S1_CORR, lease=S1_HOLD, card="gpu2", start=H + timedelta(minutes=10),
+          end=H + timedelta(minutes=20))
+    _lease(session, "solo", "gpu2", H + timedelta(minutes=10), H + timedelta(minutes=20), S1_TRACE, "agent-gpu2")
+    _open_close(session, _read_act(), corr=REQUEST_ID, source="orion-hub", opened=H + timedelta(minutes=5),
+                closed=STAGE1_END)
+    ledger.refill_late_costs(session, now=NOW)
+    cost = _cost(session, session.execute(text("SELECT act_id FROM grammar_acts")).scalar())
+    assert cost["gpu_slot_s_by_lane"] == {"agent-gpu2": pytest.approx(600.0)}  # the call only
+    hour = _hour(session)
+    # Nothing else is on gpu2: the card's whole share is metered, and all of it is the read's.
+    assert hour.leased_unmetered_wh == pytest.approx(0.0, abs=1e-6)
+    assert cost["wh_by_host"]["circe"] == pytest.approx(hour.metered_wh, rel=2e-3)
+    assert "1 pool hold(s)" in cost["basis"]["wh"]
+    assert _both_ways(session, hour) == pytest.approx(0.0, abs=0.05)
+
+
+def test_an_energy_fill_that_raises_is_retried_not_written_off(session, monkeypatch):
+    """Review S2: one raise must not lock the read uncharged while the hour meters its turns."""
+    _world(session)
+    real = ledger.act_energy_cost
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return real(*a, **k)
+
+    monkeypatch.setattr(ledger, "act_energy_cost", flaky)
+    ledger.refill_late_costs(session, now=NOW)
+    read = session.execute(text("SELECT act_id FROM grammar_acts WHERE actor = 'hub.world_pulse_read'")).scalar()
+    first = _cost(session, read)
+    assert first["gpu_slot_s_by_lane"] and "wh" not in first["basis"]
+    s = ledger.refill_late_costs(session, now=NOW + timedelta(minutes=1))
+    assert s.examined == 1 and _cost(session, read)["wh_by_host"]["circe"] > 0
+    assert _both_ways(session, _hour(session)) == pytest.approx(0.0, abs=0.05)

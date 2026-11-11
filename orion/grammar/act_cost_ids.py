@@ -32,7 +32,12 @@ that test, and it is the inverse of ``cost_correlation_ids``: a turn is charged 
 correlation_id IS the turn, or when the turn is one of a read's turns and the read has an act
 (``reading_turn_owners``). Both sides read the same turn ids, so a read's watt-hours are counted
 once: in the read act's ``wh_by_host`` and in the hour's ``metered_wh``, never also in
-``leased_unmetered_wh``.
+``leased_unmetered_wh``. The read's own holds are energy-only ids (``reading_hold_ids``).
+
+Known limits of that pairing (energy is lost, never counted twice): a read lease whose terminal
+event lands after the read's end + 120 s, and a provisional fill never finalised inside the 96 h
+window, are metered by the hour but charged to no act. With SQL_WRITER_ACT_ENERGY_COST_ENABLED off,
+read turns are still metered (as every other act's are) but no act carries their Wh.
 """
 
 from __future__ import annotations
@@ -94,7 +99,8 @@ _READ_HOLD_OWNERS_SQL = text(
     """
 )
 _READ_ACTS_SQL = text(
-    "SELECT DISTINCT correlation_id FROM grammar_acts WHERE actor = :actor AND correlation_id = ANY(:rids)"
+    "SELECT DISTINCT correlation_id FROM grammar_acts WHERE actor = :actor AND verb = 'look' "
+    "AND correlation_id = ANY(:rids)"
 )
 # The lease's turn IS an act's correlation_id (every actor but reading).
 _TURNS_WITH_ACT_SQL = text("SELECT DISTINCT correlation_id FROM grammar_acts WHERE correlation_id = ANY(:corrs)")
@@ -135,6 +141,23 @@ def reading_cost_ids(conn: Any, request_id: str, *, until: datetime) -> list[str
     return list(dict.fromkeys(ids))
 
 
+def reading_hold_ids(conn: Any, request_id: str) -> list[str]:
+    """The turn ids a read's own pool HOLDS carry: each reading run's correlation id.
+
+    Energy only (attention patch 3e review): a hold and the calls inside it are two leases on one
+    card, and both meters split a card 1/n per lease, so the hold takes half of every call's watts
+    and all of the card's above-idle draw between calls. That is the read's energy too. GPU
+    slot-seconds leave the hold out (it and its calls take one slot)."""
+    rid = _uuid_or_none(request_id)
+    if rid is None:
+        return []
+    seed = conn.execute(_READ_SEED_SQL, {"rid": rid}).first()
+    if seed is None:
+        return []
+    rows = conn.execute(_READ_TURNS_SQL, {"seed": seed[0]}).fetchall()
+    return list(dict.fromkeys(str(r[1]) for r in rows if r[1]))
+
+
 def cost_correlation_ids(conn: Any, *, actor: Optional[str], correlation_id: Optional[str],
                          until: datetime) -> list[str]:
     """The turn ids an act is charged for. One id (its own correlation_id) for every actor but reading."""
@@ -147,8 +170,9 @@ def reading_turn_owners(conn: Any, corrs: Sequence[str], *, since: datetime, unt
     """turn id -> the read act's correlation_id (the seed's request_id), for every id in ``corrs``
     that is one of a read's turns, when that read has an act.
 
-    The same turns ``reading_cost_ids`` charges: the seed's two trace ids, and every turn re-derived
-    from a reading run's pool hold. ``since``/``until`` bound the hold grants scanned: a turn's calls
+    The same turns the read act's energy is charged for: ``reading_cost_ids`` (the seed's two trace
+    ids, and every turn re-derived from a reading run's pool hold) plus ``reading_hold_ids`` (the
+    holds themselves). ``since``/``until`` bound the hold grants scanned: a turn's calls
     run inside its hold, so the window must start one longest hold before the leases looked at."""
     wanted = {str(c) for c in corrs if c}
     if not wanted:
@@ -165,6 +189,8 @@ def reading_turn_owners(conn: Any, corrs: Sequence[str], *, since: datetime, unt
         tid = durable_turn_correlation_id(str(run_id), str(run_corr), str(lease_id), generation)
         if tid in wanted:
             owners.setdefault(tid, str(rid))
+        if str(run_corr) in wanted:  # the hold itself (reading_hold_ids): energy only
+            owners.setdefault(str(run_corr), str(rid))
     if not owners:
         return {}
     with_act = {str(r[0]) for r in conn.execute(_READ_ACTS_SQL, {
@@ -191,4 +217,5 @@ def turns_charged_to_acts(conn: Any, corrs: Sequence[str], *, since: datetime, u
 
 
 __all__ = ["LATE_COST_ACTORS", "READING_ACTOR", "cost_correlation_ids", "late_cost_actor", "reading_cost_ids",
+           "reading_hold_ids",
            "reading_turn_owners", "turns_charged_to_acts", "turns_with_own_act"]

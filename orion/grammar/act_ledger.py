@@ -51,7 +51,13 @@ from orion.autonomy.prediction import (
 )
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
 from orion.schemas.grammar import ActCostV2, ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
-from orion.grammar.act_cost_ids import LATE_COST_ACTORS, cost_correlation_ids, late_cost_actor
+from orion.grammar.act_cost_ids import (
+    LATE_COST_ACTORS,
+    READING_ACTOR,
+    cost_correlation_ids,
+    late_cost_actor,
+    reading_hold_ids,
+)
 from orion.grammar.act_energy_fill import act_energy_cost
 
 logger = logging.getLogger("orion.grammar.act_ledger")
@@ -999,10 +1005,19 @@ def late_read_cost(conn: Any, target: dict[str, Any], *, now: datetime) -> LateC
             merged.pop(field, None)
         for key in ("wh", "usd", "heat"):
             basis.pop(key, None)
-        energy = _isolated(conn, "late_energy", str(target["act_id"]), lambda: act_energy_cost(
-            conn, correlation_ids=ids, since=since, until=until, now=now, priced_at=end), log_prefix="act_cost")
+        act_id = str(target["act_id"])
+        energy_ids = list(dict.fromkeys(ids + (reading_hold_ids(conn, str(target["correlation_id"]))
+                                               if target.get("actor") == READING_ACTOR else [])))
+        energy = _isolated(conn, "late_energy", act_id, lambda: act_energy_cost(
+            conn, correlation_ids=energy_ids, since=since, until=until, now=now, priced_at=end),
+            log_prefix="act_cost")
         if energy is None:
-            basis["wh"] = "unmeasured: the energy fill raised (sql-writer log act_cost_late_energy_failed)"
+            # A raise is retried (no basis["wh"], so the energy arm selects the act again) until
+            # LATE_COST_MAX_FAILURES; only then is it written off as unmeasured.
+            _LATE_COST_FAILURES[act_id] = _LATE_COST_FAILURES.get(act_id, 0) + 1
+            if _LATE_COST_FAILURES[act_id] >= LATE_COST_MAX_FAILURES:
+                basis["wh"] = (f"unmeasured: the energy fill raised {LATE_COST_MAX_FAILURES} times "
+                               "(sql-writer log act_cost_late_energy_failed)")
         elif not energy:
             basis["wh"] = f"{head} at {now.astimezone(timezone.utc).isoformat(timespec='seconds')}: no lease found"
         else:
@@ -1010,7 +1025,7 @@ def late_read_cost(conn: Any, target: dict[str, Any], *, now: datetime) -> LateC
             merged.update(energy)
             basis.update(e_basis)
             stamp = (f"{head} at {now.astimezone(timezone.utc).isoformat(timespec='seconds')}, over the read's "
-                     f"{len(ids)} turn id(s)")
+                     f"{len(ids)} turn id(s) and {len(energy_ids) - len(ids)} pool hold(s)")
             if str(basis.get("wh", "")).startswith("unmeasured"):
                 basis["wh"] = f"{basis['wh']} ({stamp})"  # "unmeasured: <why>" first, as at close
             elif "wh" in basis:

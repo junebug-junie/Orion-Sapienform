@@ -211,6 +211,11 @@ Decide whether there is a real connection between this read and one or more of t
 If there is none, say so: decision "none" is the normal, honest outcome.
 Rules:
 - Cite only pieces listed below, by their exact ref_kind and ref_id.
+- Match the actual entity, event, and question in a cited piece. Evidence about a different contract, model, program, or benchmark cannot resolve that piece's missing facts. Shared wording or nearby dates do not establish a relationship.
+- Explain what information this adds beyond the cited text. Repeating a read's own earlier summary or an existing concept is not independent confirmation.
+- Do not invent a previous belief, confidence change, graph change, or causal explanation. Only the supplied records establish what you previously held and what changed.
+- An unavailable page establishes an access limit, not that its claims are false or its graph nodes lack edges. A single cost figure cannot establish a ratio without the other cost. Open artifacts allow verification; they do not constitute independent verification.
+- Reserve share for a concrete, supported addition worth interrupting Juniper for. A broad thematic association belongs in none; a useful but non-urgent connection belongs in note.
 - read_quote must be copied verbatim from the READ section (summary, what you learned, or retained text).
 - article_summary: 3 to 5 sentences on what the article itself says, for Juniper, without your connection; at most {summary_max} characters.
 - connection: first person, your own words, what the read has to do with the cited pieces; at most {connection_max} characters.

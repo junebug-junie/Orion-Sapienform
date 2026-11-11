@@ -360,17 +360,10 @@ class DurableRunner:
         logger.info("journal_compose_drafted run=%s trigger_kind=%s", run_id, brief.trigger.trigger_kind)
         return draft
 
-    async def _call_memory_distill_llm(
-        self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1,
+    async def _call_frozen_evidence_llm(
+        self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1, purpose: str,
     ) -> dict[str, Any]:
-        """memory.episode_distill: ONE direct LLM gateway call under the run's GPU pool hold.
-
-        Direct, not through cortex-orch: orch would run recall and mix retrieved memories into
-        what the distiller treats as evidence (spec section A). ``options.gpu_lease`` attaches the
-        call to the hold; the route stays the brief's (``memory_distill``). JSON-object output,
-        thinking off (Qwen thinking spends max_tokens before the answer). Raises on transport,
-        a gateway error, or empty text -- each is one bounded attempt for the graph.
-        """
+        """Tool-free gateway call under the supplied hold; no recall changes frozen evidence."""
         import time
 
         from orion.core.bus.bus_schemas import ChatRequestPayload, LLMMessage
@@ -385,7 +378,7 @@ class DurableRunner:
                 "llm_route": brief.llm_route,
                 "max_tokens": int(brief.max_tokens),
                 "temperature": 0.2,
-                "purpose": "memory_episode_distill",
+                "purpose": purpose,
                 "structured_output_method": "json_object_only",
                 "chat_template_kwargs": {"enable_thinking": False},
                 "skip_spark_candidate_publish": True,
@@ -415,12 +408,27 @@ class DurableRunner:
         choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
         first = choices[0] if choices and isinstance(choices[0], dict) else {}
         finish_reason = first.get("finish_reason") if isinstance(first.get("finish_reason"), str) else None
-        logger.info("memory_episode_distilled run=%s episode=%s chars=%s usage=%s finish_reason=%s", run_id,
-                    brief.episode_id, len(text), usage, finish_reason)
+        logger.info("frozen_evidence_judged purpose=%s run=%s chars=%s usage=%s finish_reason=%s",
+                    purpose, run_id, len(text), usage, finish_reason)
         return {"text": text, "finish_reason": finish_reason,
                 "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
                 "model": raw.get("model") or result.get("model"),
                 "latency_ms": int((time.monotonic() - started) * 1000)}
+
+    async def _call_memory_distill_llm(self, prompt: str, **kwargs) -> dict[str, Any]:
+        return await self._call_frozen_evidence_llm(prompt, purpose="memory_episode_distill", **kwargs)
+
+    async def _call_reading_resonance_llm(self, prompt: str, **kwargs) -> dict[str, Any]:
+        await self._reading_resonance_lifecycle(kwargs["brief"], "resonance_started", kwargs["correlation_id"])
+        return await self._call_frozen_evidence_llm(prompt, purpose="reading_resonance", **kwargs)
+
+    async def _reading_resonance_lifecycle(self, brief, stage, correlation_id, error=None):
+        from orion.schemas.reading import ReadingLifecycleV1
+        if brief.reading_request is None:
+            return
+        await self._publish("orion:reading:lifecycle", "reading.lifecycle.v1", ReadingLifecycleV1(
+            request=brief.reading_request, seed_id=brief.packet.seed_id, stage=stage,
+            trace_id=correlation_id, error=error), self._corr_for_admission(correlation_id))
 
     async def _publish_journal_write(self, entry: JournalEntryWriteV1) -> bool:
         return await self._publish_journal(entry) is not None

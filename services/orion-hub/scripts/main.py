@@ -958,6 +958,9 @@ async def startup_event():
             await power_attribution_introspect_listener.start(bus)
 
             world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(
+                resonance={"graph_url": settings.FALKORDB_URI, "lane": settings.HUB_READING_RESONANCE_LANE,
+                           "max_tokens": settings.HUB_READING_RESONANCE_MAX_TOKENS}
+                    if settings.HUB_READING_RESONANCE_ENABLED else None,
                 durable_url=settings.HUB_READING_DURABLE_URL,
                 enabled=settings.HUB_WORLD_PULSE_READ_STAGE2_ENABLED,
                 tick_interval_sec=settings.HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC,
@@ -1002,6 +1005,9 @@ async def startup_event():
                 from orion.world_pulse_read.findings import prior_lookup_from_reader
 
                 reading_finding_outreach = ReadingFindingOutreach(
+                    resonance_timezone=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                    resonance_share_enabled=settings.HUB_READING_RESONANCE_SHARE_ENABLED,
+                    resonance_daily_max=settings.HUB_READING_RESONANCE_DAILY_MAX,
                     enabled=settings.HUB_READING_FINDING_OUTREACH_ENABLED,
                     pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
                     outreach_provider=lambda: endogenous_outreach,

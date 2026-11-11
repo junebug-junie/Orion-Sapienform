@@ -1671,3 +1671,9 @@ are rejected (`ModelOutputRejected`: a bounded retry, each accepted batch alread
 publication; delivery failure retries without regeneration, and the dream-side
 reconciler repairs missed journal delivery using the same ID. Every source survives.
 See the dream README and the 2026-10-14 PR report for activation and migration order.
+
+### Reading resonance
+
+`reading.resonance` accepts `ReadingResonanceRunBriefV1` with frozen evidence and a background resource requirement. The checkpointed graph waits for a GPU hold, makes a tool-free gateway judgment, checks quotes/citations, stores `ReadingResonanceResultV1`, releases the hold and finishes. Invalid output is a terminal rejected receipt. Persistence retries reuse the saved answer; transport attempts are bounded. Hub must have bound the request in `reading_resonance` first; the first completed result wins.
+
+The existing `reading.lifecycle.v1` rail carries resonance start/completion/failure. Apply `manual_migration_reading_resonance.sql` before deployment. Tests in `test_reading_resonance_pg.py` need `TEST_POSTGRES_DSN` pointing to an isolated test database; the runtime image gains no dependency. [Implementation and rollout report](../../docs/superpowers/pr-reports/2026-11-11-reading-resonance-runtime-pr.md).

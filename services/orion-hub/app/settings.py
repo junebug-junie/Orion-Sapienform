@@ -1084,6 +1084,12 @@ class Settings(BaseSettings):
     # read made (accepted + projected) or a belief a curiosity run moved while citing the read. One
     # message per read, through the endogenous outreach path; no daily cap / cooldown for this kind
     # (Juniper 2026-10-13), quiet hours / turn-in-flight / recent-chat still apply.
+    HUB_READING_RESONANCE_ENABLED: bool = True
+    HUB_READING_RESONANCE_SHARE_ENABLED: bool = False
+    HUB_READING_RESONANCE_LANE: str = "agent"
+    HUB_READING_RESONANCE_MAX_TOKENS: int = 900
+    HUB_READING_RESONANCE_DAILY_MAX: int = 12
+
     HUB_READING_FINDING_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_READING_FINDING_OUTREACH_ENABLED"
     )

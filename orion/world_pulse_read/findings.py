@@ -302,6 +302,7 @@ class FindingsResultV1:
     by_seed: dict[str, list[ReadingFindingV1]]
     # Why belief_moved could not be checked ("" when it was): "no_prior_lookup" | "priors_unreadable"
     beliefs_unchecked: str = ""
+    resonance_unchecked: str = ""
 
 
 async def findings_for_reads(
@@ -331,6 +332,12 @@ async def findings_for_reads(
                 result.beliefs_unchecked = "priors_unreadable"
             else:
                 findings += belief_findings(reads, moves, texts)
+    try:
+        from orion.world_pulse_read.resonance_findings import resonance_findings
+        findings += await resonance_findings(conn, [r.seed_id for r in reads], until=until)
+    except Exception as exc:
+        result.resonance_unchecked = type(exc).__name__
+        logger.warning("reading_resonance_findings_unavailable error=%s", result.resonance_unchecked)
     for f in sorted(findings, key=lambda f: (f.observed_at, f.finding_id)):
         result.by_seed.setdefault(f.seed_id, []).append(f)
     return result

@@ -1405,10 +1405,21 @@ class CuriosityInvestigation:
             return WorldviewSnapshot(unavailable_reason="no_graph_configured")
         reader = self._reader
 
+        strained = {}
+        try:
+            from orion.world_pulse_read.resonance_strain import load_strains
+            pool = self._pool_provider()
+            if pool is not None:
+                async with pool.acquire() as conn:
+                    strained = await load_strains(conn, datetime.now(timezone.utc))
+        except Exception:
+            logger.warning("curiosity_reading_strain_unavailable", exc_info=True)
+
         def _read() -> WorldviewSnapshot:
             view = read_snapshot(
                 reader,
                 sample=self.prior_sample,
+                strained=strained,
                 coverage_slots=self.prior_coverage_slots,
                 stale_after=self.stale_prior_tests,
                 rotate_seed=rotate_seed,
@@ -1416,6 +1427,8 @@ class CuriosityInvestigation:
                 counts_cypher=counts_cypher,
                 expected_nats_for=expected_nats_for,
             )
+            offered_strains = [p.prior_id for p in view.live_priors if p.strain_note]
+            logger.info("curiosity_prior_menu strained=%d prior_ids=%s", len(offered_strains), offered_strains)
             if view.is_unavailable or not run_id_of_last:
                 return view
             return replace(view, continuation=read_turn_outcome(reader, run_id_of_last))

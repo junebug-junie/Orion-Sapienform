@@ -14,6 +14,7 @@ from orion.dream import introspect_sql
 from orion.orion_day import gather
 from orion.world_pulse_read import introspect as wp_introspect
 from orion.world_pulse_read import findings as wp_findings
+from orion.world_pulse_read.resonance_findings import RESONANCE_FINDINGS_SQL
 
 LETTER_DATE = date(2026, 9, 29)
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)  # inside the Denver day
@@ -167,6 +168,7 @@ class FakeConn:
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
             gather.CORRECTIONS_SQL: ("corrections", corrections or []),
+            RESONANCE_FINDINGS_SQL: ("reading_resonance", []),
             wp_findings.READ_LINKS_SQL: ("reading_findings", READ_LINK_ROWS if read_links is None else read_links),
             wp_findings.RUN_PRIOR_MOVES_SQL: ("reading_findings", prior_moves or []),
             # R4 immune findings for the closed day: payload_json rows from temporal_self_event.

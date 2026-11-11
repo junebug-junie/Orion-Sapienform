@@ -40,6 +40,7 @@ from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW, EpisodeDistillBriefV1
+from orion.schemas.reading_resonance import READING_RESONANCE_WORKFLOW, ReadingResonanceRunBriefV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
 from orion.schemas.curiosity_compaction import CURIOSITY_COMPACTION_WORKFLOW, CuriosityCompactionBriefV1
@@ -67,7 +68,7 @@ CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 # (and anything else that parses DurableRunRequestV1/DurableRunStateV1) before a producer
 # submits the new workflow. orion_day.letter: orion/schemas/orion_day.py.
 DurableWorkflowV1 = Literal[
-    "curiosity.investigate", "self_sense_eval", "reading.turn", "reverie.visual",
+    "curiosity.investigate", "self_sense_eval", "reading.turn", "reading.resonance", "reverie.visual",
     # (A self-study reflect workflow was removed 2026-10-30 with the reflect loop; zero runs
     # of it ever reached durable_run_workflow, so no stored row carries it.)
     # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs before cortex-orch (orch
@@ -232,11 +233,13 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1
+    brief: ReadingResonanceRunBriefV1 | CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
     def reading_requires_admission(self):
+        if (self.workflow == READING_RESONANCE_WORKFLOW) != isinstance(self.brief, ReadingResonanceRunBriefV1):
+            raise ValueError("reading.resonance requires ReadingResonanceRunBriefV1")
         if (self.workflow == READING_WORKFLOW) != isinstance(self.brief, ReadingRunBriefV1):
             raise ValueError("workflow and reading brief must agree")
         if (self.workflow == REVERIE_VISUAL_WORKFLOW) != isinstance(self.brief, ReverieVisualRunBriefV1):
@@ -259,7 +262,7 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("pr.field_note requires PrFieldNoteBriefV1")
         if (self.workflow == REMINISCENCE_WORKFLOW) != isinstance(self.brief, ReminiscenceRunBriefV1):
             raise ValueError("reminiscence.episode requires ReminiscenceRunBriefV1")
-        if self.workflow in (REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
+        if self.workflow in (READING_RESONANCE_WORKFLOW, REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 

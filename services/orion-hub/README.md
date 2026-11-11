@@ -4735,3 +4735,11 @@ The 8BitDo Pro 2 uses Nintendo face-button positions and L1/R1 for SNES shoulder
 keyboard A/S/Q/W adds Y/X/L/R. Select+L2/R2 still saves/loads. The running session's
 system selects the controls. See [Retro browser runbook](../../docs/runbooks/retro-browser.md)
 and [native service setup](../orion-retro/README.md) for catalog import and verification.
+
+### Reading resonance after Stage 2
+
+Hub freezes recent completed readings with retrieved worldview, memory, graph and open-thread evidence, then submits `reading.resonance` to durable-runs. It reconciles the six-hour completion/submission gap without blocking the Stage 2 tick. Requests retain their original packet, retrieval basis and deadline across retries. A missing store is a logged failure, not an empty successful judgment.
+
+`HUB_READING_RESONANCE_ENABLED` controls new requests; in-flight durable runs finish. `HUB_READING_RESONANCE_SHARE_ENABLED=false` is the default because the historical replay failed share quality. Accepted notes and shares feed the daily letter after current citation hydration. When explicitly enabled, shares retain the existing attention budget/human gates plus normal cooldown, one per root thread per local day, seven-day citation-set dedupe and `HUB_READING_RESONANCE_DAILY_MAX` (12). Strain evidence reopens at most two priors for later tests; resonance does not change belief confidence. The lane defaults to `agent`, output budget to 900 tokens.
+
+Apply `manual_migration_reading_resonance.sql` before deploying the consumers. No runtime dependency or compose change is needed: Hub's compose already loads its env file. See [implementation report](../../docs/superpowers/pr-reports/2026-11-11-reading-resonance-runtime-pr.md) for tests, quality limitations, metric provenance and deferred rollout checks.

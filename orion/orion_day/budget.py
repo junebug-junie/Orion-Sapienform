@@ -134,6 +134,9 @@ def reading_change_lines(r: ReadingItemV1, material: OrionDayMaterialV1) -> list
     beliefs = material.sources.get("reading_beliefs")
     gap = (f"beliefs not checked ({beliefs.error})"
            if beliefs is not None and beliefs.status == "error" else None)
+    resonance = material.sources.get("reading_resonance")
+    if resonance is not None and resonance.status == "error":
+        gap = "; ".join(x for x in (gap, f"reading connections not checked ({resonance.error})") if x)
     if r.findings:
         return [f.headline for f in r.findings] + ([gap] if gap else [])
     if gap:

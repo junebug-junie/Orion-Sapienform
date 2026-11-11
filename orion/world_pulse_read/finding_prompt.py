@@ -85,6 +85,8 @@ def _plain_change(f: ReadingFindingV1) -> list[str]:
     0.55): ...") that other readers (the daily letter) keep. The prompt states the same fact
     without the record's vocabulary, because Orion repeated it back to Juniper as graph mechanics
     ("one link landed in my graph ... accepted because the quote came back verbatim")."""
+    if f.kind == "resonance":
+        return [f.headline, f.evidence_text]
     if f.kind == "link_made":
         idea = f.headline.removeprefix(_LINK_PREFIX).removesuffix(_UNPROJECTED_SUFFIX).strip()
         out = [f"An idea from the piece that you tied to what you already think: {idea}"]

@@ -1,7 +1,7 @@
 """What a read changed in Orion: the seam the daily letter and reading outreach share.
 
 A ``ReadingFindingV1`` is one recorded change a completed read caused, built only from stored
-records (orion/world_pulse_read/findings.py), never from model prose:
+records (orion/world_pulse_read/findings.py):
 
 * ``link_made`` -- Stage 2 proposed a relationship claim, ``reading_quote_rule_v1`` accepted it,
   the journal's latest decision still holds it (provisional/canonical) and, for ``projected``,
@@ -11,9 +11,9 @@ records (orion/world_pulse_read/findings.py), never from model prose:
   formed it) names this read by URL, seed id or request id. Readings never write priors
   themselves (PR #2199 boundary); this is the only path by which a read moves a belief.
 
-One more kind is expected (``resonance``, design branch docs/reading-resonance-design): add the
-value to ``ReadingFindingKind`` and a producer; consumers group by ``seed_id`` and render
-``headline`` / ``evidence_text`` without knowing the kind.
+* ``resonance`` -- a durable judge connected the frozen read to cited records. The stored
+  judgment passed quote/citation validation; findings rehydrate those records before use.
+  This is a grounded interpretation, not proof that a belief or graph changed.
 
 Not a bus payload: producer and consumers all run in Hub. Register it and add a channel the day
 a producer lives in another service.
@@ -25,7 +25,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ReadingFindingKind = Literal["belief_moved", "link_made"]
+ReadingFindingKind = Literal["belief_moved", "link_made", "resonance"]
 
 
 class ReadingFindingV1(BaseModel):
@@ -38,6 +38,11 @@ class ReadingFindingV1(BaseModel):
     headline: str = Field(min_length=1)  # one deterministic line built from the records
     evidence_text: str = ""  # the record text that backs it: the verbatim quote, or Orion's own words on the prior
     evidence_refs: list[str] = Field(default_factory=list)
+    # Resonance: evidence_text holds freshly resolved record excerpts.
+    resonance_decision: Literal["share", "note"] | None = None
+    resonance_root: str | None = None
+    resonance_content_id: str | None = None
+    resonance_article_summary: str | None = None
     # link_made
     assertion_id: str | None = None
     projected: bool | None = None  # None: projection state unknown (journal unreadable)

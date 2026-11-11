@@ -4500,6 +4500,16 @@ class BiometricsSubstrateWorker:
         # seed_count/evidence_refs, and are appended only to the list being
         # stored, after the scored seeds (so they never displace one).
         link_seeds, link_receipt = self._link_accepted_curiosity_seeds()
+        try:
+            from orion.substrate.resonance_seeds import resonance_seeds
+            lookback = max(1, min(24, self._settings.endogenous_curiosity_candidate_retention_hours - 2))
+            reading_resonances = resonance_seeds(self._store.load_unseeded_reading_resonances(lookback_hours=lookback))
+            link_seeds += reading_resonances
+            if reading_resonances:
+                logger.info("reading_resonance_seeds minted=%d", len(reading_resonances))
+        except Exception:
+            logger.warning("reading_resonance_seeds_unavailable", exc_info=True)
+
         if seeds:
             # Visibility, 2026-07-26: which source/node actually won a budget
             # slot this tick. _prediction_error_candidates() (orion/substrate/

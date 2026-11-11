@@ -137,6 +137,12 @@ POLICIES: dict[str, CollectionPolicy] = {
             ),
         ),
         CollectionPolicy(
+            name="orion_worldview_beliefs", source="derived",
+            writer="orion/world_pulse_read/resonance_retrieval.py worldview_index",
+            rebuild="re-run worldview_index over FalkorDB", recall_backing=False, retention=None,
+            reason="One vector per worldview record; stale or retired records are excluded by authoritative reads.",
+        ),
+        CollectionPolicy(
             name="orion_atlas_concepts",
             source="derived",
             writer="orion/world_pulse_read/concept_search.py index_atlas_concepts (upsert per concept node)",

@@ -35,6 +35,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
+from zoneinfo import ZoneInfo
 
 from orion.schemas.reading_finding import ReadingFindingBundleV1, ReadingFindingV1
 from orion.world_pulse_read.finding_prompt import article_appendix, build_reading_finding_prompt
@@ -85,6 +86,8 @@ def bundle_key(bundle: ReadingFindingBundleV1) -> str:
 
 def reportable(finding: ReadingFindingV1) -> bool:
     """A link counts once it is in the graph (the Assertion projected); a moved belief always."""
+    if finding.kind == "resonance":
+        return finding.resonance_decision == "share"
     return finding.kind != "link_made" or finding.projected is True
 
 
@@ -103,7 +106,8 @@ def pending_bundles(
                  if reportable(f) and f.finding_id not in told and failures.get(f.finding_id, 0) < max_attempts]
         if fresh:
             out.append(ReadingFindingBundleV1(seed_id=read.seed_id, title=read.title, url=read.url,
-                                              learned=read.learned, article_summary=read.article_summary,
+                                              learned=read.learned, article_summary=next((f.resonance_article_summary for f in fresh
+                                                  if f.resonance_article_summary), read.article_summary),
                                               findings=fresh))
     return out
 
@@ -137,9 +141,16 @@ class ReadingFindingOutreach:
         tick_interval_sec: float = 300.0,
         lookback_hours: float = 48.0,
         max_attempts: int = 3,
+        resonance_timezone: str = "America/Denver",
+        resonance_share_enabled: bool = False,
+        resonance_daily_max: int = 12,
         min_spacing_sec: float = 0.0,
         clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
+        self._resonance_tz = ZoneInfo(resonance_timezone)
+        self.resonance_share_enabled = resonance_share_enabled
+        self.resonance_daily_max = max(0, resonance_daily_max)
+        self._resonance_sent: list[tuple[datetime, str, str]] = []
         self.enabled = bool(enabled)
         self._pool_provider = pool_provider
         self._outreach_provider = outreach_provider
@@ -252,6 +263,9 @@ class ReadingFindingOutreach:
                 summary["results"].append(self._hold_for_spacing(outreach, bundle, wait))
                 break  # every later bundle waits for the same gap
             summary["results"].append(await self._tell(outreach, bundle))
+            if summary["results"][-1]["reason"] in {"resonance_share_disabled", "resonance_daily_max",
+                    "resonance_thread_already_shared", "resonance_citations_already_shared"}:
+                continue  # held/note-only resonance cannot starve later ordinary findings
             if summary["results"][-1]["reason"] not in TOLD_REASONS | FAILED_REASONS:
                 break  # a gate is closed: every later bundle would hit it too
         return summary
@@ -288,9 +302,28 @@ class ReadingFindingOutreach:
     async def _tell(self, outreach: Any, bundle: ReadingFindingBundleV1) -> dict[str, Any]:
         correlation_id = str(uuid4())  # per attempt: see bundle_key
         decision_id = str(uuid4())
+        resonances = [f for f in bundle.findings if f.kind == "resonance"]
+        if resonances:
+            reason = await self._resonance_gate(resonances)
+            if reason:
+                if reason in {"resonance_thread_already_shared", "resonance_citations_already_shared"}:
+                    async with self._pool_provider().acquire() as conn:
+                        for f in resonances:
+                            await conn.execute("UPDATE reading_resonance SET outreach_note_reason=$2 "
+                                               "WHERE seed_id=$1 AND outreach_note_reason IS NULL", f.seed_id, reason)
+                    self._told.update(f.finding_id for f in resonances)
+                # Keep ordinary findings moving; a suppressed resonance is still in the letter.
+                rest = [f for f in bundle.findings if f.kind != "resonance"]
+                if not rest:
+                    return {"seed_id": bundle.seed_id, "reason": reason}
+                bundle = bundle.model_copy(update={"findings": rest})
+                resonances = []
         meta = decision_meta(bundle, decision_id)
+        if resonances:
+            meta.update(resonance_root=resonances[0].resonance_root,
+                        resonance_content_id=resonances[0].resonance_content_id)
         await outreach.refresh_human_gates()
-        blocked = outreach.blocked_reason(skip_rate_gates=True)
+        blocked = outreach.blocked_reason(skip_rate_gates=not bool(resonances))
         if blocked:
             self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
@@ -333,12 +366,18 @@ class ReadingFindingOutreach:
         )
         result = await outreach.offer_message(
             text=text, correlation_id=correlation_id, tag=READING_FINDING_TAG,
-            model=debug.get("fcc_model_label"), meta=meta, skip_rate_gates=True, provenance=capsule,
-            record_appendix=article_appendix(bundle), require_why_juniper=True,
+            model=debug.get("fcc_model_label"), meta=meta,
+            skip_rate_gates=not any(f.kind == "resonance" for f in bundle.findings), provenance=capsule,
+            record_appendix=article_appendix(bundle) + "".join(
+                "\n\n" + f.evidence_text for f in bundle.findings if f.kind == "resonance"),
+            require_why_juniper=True,
         )
         reason = str(result.get("reason") or ("sent" if result.get("outreach") else "not_sent"))
         if reason == "sent":
             self._last_sent_at = self._clock()
+            for f in bundle.findings:
+                if f.kind == "resonance":
+                    self._resonance_sent.append((self._last_sent_at, f.resonance_root, f.resonance_content_id))
         if reason in TOLD_REASONS:
             self._told.update(bundle.finding_ids)
         elif reason in FAILED_REASONS:
@@ -346,6 +385,27 @@ class ReadingFindingOutreach:
         logger.info("reading_finding_outreach_result seed=%s reason=%s findings=%s",
                     bundle.seed_id, reason, ",".join(bundle.finding_ids))
         return {"seed_id": bundle.seed_id, "reason": reason, "text": text if reason == "sent" else None}
+
+    async def _resonance_gate(self, findings):
+        if not self.resonance_share_enabled:
+            return "resonance_share_disabled"
+        now = self._clock()
+        pool = self._pool_provider()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT decided_at, result_json->>'resonance_root' AS root, "
+                "result_json->>'resonance_content_id' AS content_id FROM endogenous_outreach_decisions "
+                "WHERE decided_at >= $1 AND reason='sent' AND result_json->>'resonance_content_id' IS NOT NULL",
+                now - timedelta(days=7))
+        seen = [(r["decided_at"], r["root"], r["content_id"]) for r in rows] + self._resonance_sent
+        today = {(root, content) for at, root, content in seen if at.astimezone(self._resonance_tz).date() == now.astimezone(self._resonance_tz).date()}
+        if len(today) >= self.resonance_daily_max:
+            return "resonance_daily_max"
+        for f in findings:
+            if any(root == f.resonance_root for root, _ in today):
+                return "resonance_thread_already_shared"
+            if any(content == f.resonance_content_id for at, _, content in seen if at >= now - timedelta(days=7)):
+                return "resonance_citations_already_shared"
+        return None
 
     def _count_failure(self, bundle: ReadingFindingBundleV1) -> None:
         for fid in bundle.finding_ids:

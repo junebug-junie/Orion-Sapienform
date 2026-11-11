@@ -1715,3 +1715,9 @@ Logs: `substrate_strain_news_event kind=... episode_since=... causes=... events_
 
 Budget replay (exit 1 on any day over 8 events, 3 % of ticks, or 10 % taken from other winners):
 `python scripts/analysis/replay_strain_news.py`.
+
+### Follow-ups from reading resonance
+
+The existing curiosity tick reads accepted resonance receipts with `explore_next` and real landed/cited atlas IDs. It offers at most four unscored `concept_expand` candidates per tick. `source:reading_resonance` and the result ID identify their provenance; persisted candidate notes prevent reminting during the bounded retention window. Rows without graph anchors are filtered before the SQL limit so they cannot starve usable follow-ups. This adds no ranking score and does not assert a graph relationship.
+
+Apply `manual_migration_reading_resonance.sql` before rollout. Missing tables/stores log a source failure without stopping ordinary curiosity seeds. [Implementation report](../../docs/superpowers/pr-reports/2026-11-11-reading-resonance-runtime-pr.md).

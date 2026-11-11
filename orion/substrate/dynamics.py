@@ -26,6 +26,7 @@ from .pressure import (
     pressure_edge_multiplier,
 )
 from .store import (
+    DORMANCY_NODE_KINDS,
     InMemorySubstrateGraphStore,
     NodeDynamicsWriteV1,
     encode_decay_stamp,
@@ -228,10 +229,13 @@ class SubstrateDynamicsEngine:
             # stuck non-dormant indefinitely even as real time keeps passing.
             fresh_recency = activations.get(f"{node_id}:recency", node.signals.activation.recency_score)
 
-            if new_activation <= self._dormancy_threshold and fresh_recency <= self._dormancy_threshold:
-                dormant_new = True
-            elif new_activation >= self._revival_threshold:
-                dormant_new = False
+            # Only kinds the store can persist dormancy for (DORMANCY_NODE_KINDS);
+            # any other kind would "flip" every tick and never save it.
+            if str(node.node_kind) in DORMANCY_NODE_KINDS:
+                if new_activation <= self._dormancy_threshold and fresh_recency <= self._dormancy_threshold:
+                    dormant_new = True
+                elif new_activation >= self._revival_threshold:
+                    dormant_new = False
 
             if dormant_new != dormant_prev:
                 metadata["dormant"] = dormant_new

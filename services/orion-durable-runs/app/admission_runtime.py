@@ -207,7 +207,9 @@ class AdmissionRuntime:
         self.bids = RunBidder(
             enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
             market_getter=market_getter or (lambda: None),
-            binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on")
+            binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on",
+            # Attention 3c: reading stage 1 binds (live week; shadow = 3b's value-only bid).
+            reading_binding_enabled=_bind_mode(getattr(settings, "physiology_bid_reading", "shadow")) == "on")
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.

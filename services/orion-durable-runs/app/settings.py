@@ -296,6 +296,12 @@ class Settings(BaseSettings):
     # shadow (or anything else) -> the C3a shadow bid at submit, admission unchanged. Needs the market
     # (ORION_PHYSIOLOGY_BID_ENABLED); does not need ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED.
     physiology_bid_curiosity_investigate: str = Field("on", alias="ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE")
+    # Attention patch 3c (spec 2026-11-07 section 4, decided item 4): reading stage 1 OBEYS its bid. on -> it
+    # bids before asking the pool; funded or a capacity deferral worth its price asks the pool; a price /
+    # sated / consent deferral holds the run and re-bids, at most 2,900 s (under Hub's 3,500 s reclaim), then
+    # asks anyway. shadow -> patch 3b's value-only bid, admission unchanged. Ships SHADOW by Juniper's decided
+    # rule: a family binds only for a deliberate live week with this off switch.
+    physiology_bid_reading: str = Field("shadow", alias="ORION_PHYSIOLOGY_BID_READING")
     # Orion Prime step 3 (2026-10-30): apply Prime's regulate signals (Redis orion:prime:regulate:<family>) as
     # bounded, temporary charges (slow) / credits (quicken) on the bids of families that declare receptors in
     # config/physiology/families.yaml (today only durable.curiosity_investigate). false -> the market never

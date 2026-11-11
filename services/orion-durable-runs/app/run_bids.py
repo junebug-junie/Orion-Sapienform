@@ -39,6 +39,13 @@ the decision is logged and its net is carried, but it reserves nothing and nothi
 reading is patch 3c). Stage 2 never bids: it carries its stage 1's net (one job, one bid). A run whose
 bid has not landed, or a process that restarted, carries no net: the pool keeps it in arrival order.
 
+Attention patch 3c (same spec, section 4): with ORION_PHYSIOLOGY_BID_READING=on, reading's stage 1
+BINDS like curiosity investigate: it bids at its first resource request (producer
+``READING_BINDING_PRODUCER``) and obeys. Funded or queued at the pool: it asks the pool. Deferred on
+price / sated / consent: it is held and re-bids, at most ``READING_HOLD_END_SEC`` (2,900 s, under Hub's
+3,500 s claim reclaim) after its request, then asks the pool anyway. Stage 2 never bids (the second half
+of a funded read). ``shadow`` (the default until the live week starts) keeps patch 3b's value-only bid.
+
 Gated by ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED (and needs the market: ORION_PHYSIOLOGY_BID_ENABLED).
 Best-effort: never raises into admission.
 """
@@ -75,6 +82,11 @@ BINDING_PRODUCER = "orion-durable-runs.admission.binding"
 # Patch 3b: reading's value-only bids, under their own producer so a reader of want_ledger can tell
 # them from Hub's after-the-read looks (same family) and from shadow bids that model a real gate.
 VALUE_PRODUCER = "orion-durable-runs.admission.value"
+# Patch 3c: reading's OBEYED bids (orion/physiology/binding.py BINDING_PRODUCERS lists it).
+READING_BINDING_PRODUCER = "orion-durable-runs.admission.reading.binding"
+# Decided default 6 (2026-11-10): Hub reclaims a reading claim after HUB_WORLD_PULSE_READ_TIMEOUT_SEC=3500,
+# so a held read asks the pool anyway 600 s before that.
+READING_HOLD_END_SEC = 2900.0
 # How long a run's first hold request waits for its shadow bid to land (patch 3b). Short: a cold
 # history read can take far longer, and the hold then goes out without a net (arrival order).
 VALUE_WAIT_SEC = 1.0
@@ -149,14 +161,24 @@ def reading_stage(request: dict[str, Any]) -> tuple[Optional[str], Optional[int]
     return (str(seed), int(stage)) if seed and stage in (1, 2) else (None, None)
 
 
-def reading_want(request: dict[str, Any], tier: int) -> Optional[WantV1]:
-    """Stage 1's value-only want (patch 3b), or None (not reading, stage 2, or no run id)."""
+def reading_binds(request: dict[str, Any], enabled: bool) -> bool:
+    """Patch 3c: True when this run is a reading stage 1 whose bid binds (flag on, not an operator's
+    forced run). Stage 2 never bids: it is the second half of a funded read."""
+    if not enabled or reading_stage(request)[1] != 1:
+        return False
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    return not brief.get("operator_forced")
+
+
+def reading_want(request: dict[str, Any], tier: int, *, producer: str = VALUE_PRODUCER) -> Optional[WantV1]:
+    """Stage 1's want (patch 3b value-only; patch 3c binding with ``producer``), or None (not reading,
+    stage 2, or no run id)."""
     seed, stage = reading_stage(request)
     run_id = str(request.get("run_id") or "")
     if seed is None or stage != 1 or not run_id or tier not in (1, 2):
         return None
     corr = request.get("correlation_id")
-    return WantV1(want_id=run_id, family=READING_FAMILY, producer=VALUE_PRODUCER, verb=READING_VERB,
+    return WantV1(want_id=run_id, family=READING_FAMILY, producer=producer, verb=READING_VERB,
                   object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
                   correlation_id=str(corr) if corr else None)
 
@@ -192,11 +214,13 @@ class RunBidder:
 
     def __init__(self, *, enabled: bool, market_getter: Callable[[], Any],
                  timeout_sec: float = BID_TIMEOUT_SEC, binding_enabled: bool = False,
-                 bind_timeout_sec: float = BIND_TIMEOUT_SEC) -> None:
+                 bind_timeout_sec: float = BIND_TIMEOUT_SEC, reading_binding_enabled: bool = False) -> None:
         self.enabled = bool(enabled)
         # Patch D: BINDING_FAMILIES' runs bid at their first resource_request and obey (``bind``);
         # off -> those runs bid in shadow at submit like every other family.
         self.binding_enabled = bool(binding_enabled)
+        # Patch 3c: reading stage 1 binds (ORION_PHYSIOLOGY_BID_READING=on); off -> 3b's value-only bid.
+        self.reading_binding_enabled = bool(reading_binding_enabled)
         self._bind_timeout = bind_timeout_sec
         self._market = market_getter
         self._timeout = timeout_sec
@@ -213,7 +237,7 @@ class RunBidder:
         self._task_of: dict[str, asyncio.Task] = {}
 
     def _market_or_none(self) -> Any:
-        if not (self.enabled or self.binding_enabled):
+        if not (self.enabled or self.binding_enabled or self.reading_binding_enabled):
             return None
         try:
             return self._market()
@@ -228,7 +252,8 @@ class RunBidder:
         if market is None or getattr(market, "families", None) is None:
             return None
         try:
-            if binding_family(request, self.binding_enabled) is not None:
+            if binding_family(request, self.binding_enabled) is not None \
+                    or reading_binds(request, self.reading_binding_enabled):
                 return None          # its binding bid (``bind``, at resource_request) is its one bid
             run_id = str(request.get("run_id") or "")
             if not run_id or run_id in self._seen:
@@ -345,6 +370,8 @@ class RunBidder:
         Never raises. No market / timeout / failure -> an ``admit`` verdict with ``no_answer:*``."""
         try:
             family = binding_family(request, self.binding_enabled)
+            if family is None and reading_binds(request, self.reading_binding_enabled):
+                family = READING_FAMILY
         except Exception:  # noqa: BLE001
             logger.warning("physiology_bind_family_failed run=%s", request.get("run_id"), exc_info=True)
             return None
@@ -357,9 +384,12 @@ class RunBidder:
             v = BindVerdict(True, "no_answer:market_off" if market is None else "no_answer:no_families_config")
             self._log(request, v)
             return v
-        want = want_for_run(request, cfg.tier, producer=BINDING_PRODUCER)
+        reading = family == READING_FAMILY
+        want = (reading_want(request, cfg.tier, producer=READING_BINDING_PRODUCER) if reading
+                else want_for_run(request, cfg.tier, producer=BINDING_PRODUCER))
         if want is None:
             return None
+        window = min(float(cfg.deferrable_window_s), READING_HOLD_END_SEC) if reading else cfg.deferrable_window_s
         decision = None
         t0 = time.monotonic()
         try:
@@ -367,7 +397,7 @@ class RunBidder:
         except Exception:  # noqa: BLE001 -- incl. timeout: the run asks the pool as before
             logger.warning("physiology_bind_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
         elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)
-        verdict = bind_verdict(decision, now, hold_end(want, cfg.deferrable_window_s))
+        verdict = bind_verdict(decision, now, hold_end(want, window))
         verdict.detail["bid_ms"] = elapsed_ms
         if decision is None or decision.outcome != "funded":
             # Nothing of this want may stay in the book: a held or pool-queued want reserves nothing
@@ -426,5 +456,5 @@ class RunBidder:
 
 __all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "NO_ANSWER_REASONS", "PRODUCER",
            "READING_FAMILY", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC", "RELEASE_EVENT", "RunBidder",
-           "RunValue", "VALUE_PRODUCER", "VALUE_WAIT_SEC", "bind_verdict", "binding_family", "decision_detail", "hold_end", "reading_stage",
+           "READING_BINDING_PRODUCER", "READING_HOLD_END_SEC", "RunValue", "VALUE_PRODUCER", "reading_binds", "VALUE_WAIT_SEC", "bind_verdict", "binding_family", "decision_detail", "hold_end", "reading_stage",
            "reading_want", "want_for_run"]

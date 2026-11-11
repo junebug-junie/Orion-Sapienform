@@ -176,3 +176,55 @@ def test_the_daily_runs_receipt_check_reads_what_the_write_prints(past, capsys):
     assert code == 0, err
     [m] = list(contract.RECEIPT_RE.finditer(out))   # the superseded id in the same line is not a second receipt
     assert m.group(2) == rm.load(dig.reminiscence_path())[0][1].hop_id
+
+
+def _done_week(start: str, end: str, episode: str = "2026-01-05") -> None:
+    """Five live hops about [start, end] in the ledger, as an earlier night wrote them."""
+    path = dig.reminiscence_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as fh:
+        for i, h in enumerate(rm.HOPS):
+            fh.write(rm.ReminiscenceHopV1(hop_id=f"rm:{episode}:{h}:{i:010x}", episode=episode, hop=h,
+                                          period_start=start, period_end=end, note="[reflection] x", claims=[],
+                                          written_at=f"{episode}T10:00:00+00:00").model_dump_json() + "\n")
+
+
+@pytest.fixture
+def quiet(past):
+    """``past`` with week 2 made quiet: the hub commit moves from 07-03 (week 2) to 07-10 (week 3)."""
+    repo = past / "repo"
+    subprocess.run(["git", "-C", str(repo), "reset", "-q", "--hard", "HEAD~1"], check=True)
+    _commit(repo, "2025-07-10T18:00:00Z", {"services/orion-hub/app/main.py": ""}, "the hub")
+    _done_week("2025-06-24", "2025-06-30")
+    return past
+
+
+def test_a_quiet_week_is_read_joined_onto_the_next_week_with_a_commit(quiet, capsys):
+    code, out, err = run(capsys, "reminisce")
+    assert code == 0, err
+    assert "the weeks 2025-07-01..2025-07-14 (the oldest weeks not yet visited, joined up to the next week " \
+           "with a commit; 1 of " in out
+    assert "covers 1 quiet week: no commit on main from 2025-07-01 until the week from 2025-07-08" in out
+    assert "1 commits on main in that period" in out
+    assert "dig open 2025-07-14" in out
+    saved = json.loads(Path(out.strip().splitlines()[-1].removeprefix("full result: ")).read_text())
+    assert (saved["period_start"], saved["period_end"], saved["quiet_weeks"]) == ("2025-07-01", "2025-07-14", 1)
+
+
+def test_a_joined_period_checks_code_then_against_its_last_commit(quiet, capsys):
+    """The hub arrived in week 3; a joined weeks-2-3 period's code is the commit that ended week 3."""
+    code, out, err = run(capsys, "reminisce", "write", "what_it_was",
+                         "[code_then services/orion-hub/app/main.py] After a quiet week, a hub arrived at my centre.",
+                         "because", "services/orion-hub/app/main.py")
+    assert code == 0, err
+    assert "the weeks 2025-07-01..2025-07-14" in out
+    rec = [r for r in rm.load(dig.reminiscence_path())[0] if r.hop == "what_it_was" and r.episode != "2026-01-05"][0]
+    head = subprocess.run(["git", "-C", str(quiet / "repo"), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+    assert (rec.period_start, rec.period_end, rec.period_commit) == ("2025-07-01", "2025-07-14", head)
+
+
+def test_an_unreadable_history_refuses_to_pick_a_period(past, capsys, monkeypatch):
+    monkeypatch.setenv("ORION_DIG_REPO", str(past / "nowhere"))
+    code, _, err = run(capsys, "reminisce")
+    assert code == 1 and "cannot pick the period" in err and "git UNREAD" in err

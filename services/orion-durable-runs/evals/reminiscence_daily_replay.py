@@ -15,13 +15,19 @@ Gates (each one a property the design states):
 4. an unfinished week is picked again the next day (design: "an unfinished episode leaves its week open");
 5. a day whose five hops were written in chat gets no run;
 6. every run's brief names the week the dig would pick for that day (the ledger's week_for);
-7. each run's admission deadline is 09:00 Denver of its own day.
+7. each run's admission deadline is 09:00 Denver of its own day;
+8. a week with no commit on main is never visited alone: every period ends on a week with a commit, and
+   holds no earlier week with one (the replay's history is main's real shape: weeks 2-4, 6-10, 12 quiet).
+
+Gate 3 counts weeks covered by complete periods: a joined period covers every week inside it.
 
 Mutations (each must break at least one gate, or the eval itself is broken):
 
 * "window ignored": the tick submits at any hour;
 * "partial counts as visited": a week with any hop counts as complete (week 1 is skipped after a failed day);
-* "no retry gate": a failed run is retried at once, any number of times.
+* "no retry gate": a failed run is retried at once, any number of times;
+* "quiet week visited alone": the tick picks the oldest open week whatever its commits (the old rule);
+* "join runs past the first busy week": a quiet run is joined onto the second week with a commit.
 
     python -P services/orion-durable-runs/evals/reminiscence_daily_replay.py
 """
@@ -48,6 +54,17 @@ DAYS = 21
 TICK = timedelta(minutes=10)
 FAIL_DAYS = {2, 3, 9}               # the run writes two hops and fails; day 3 also fails its -a2
 CHAT_DAY = 12                       # Juniper asked in chat at 01:00: all five written before the window
+FIRST = date(2025, 6, 24)
+# main's real shape (counted on /mnt/orion-fcc/repo 2026-11-11): weeks 2-4, 6-10 and 12 had no commit.
+QUIET = {FIRST + timedelta(days=7 * (w - 1)) for w in (2, 3, 4, 6, 7, 8, 9, 10, 12)}
+
+
+def commits_in(start: date, end: date) -> int:
+    return 0 if start in QUIET else 4
+
+
+def weeks_in(start: date, end: date) -> list[date]:
+    return [start + timedelta(days=7 * i) for i in range(((end - start).days + 1) // 7)]
 
 
 class Registry:
@@ -90,7 +107,21 @@ def hop_line(hop, episode, period, n):
 
 def simulate(mutation: str | None = None) -> dict:
     tmp = Path(tempfile.mkdtemp(prefix="reminiscence-replay-"))
-    ledger = ReminiscenceLedger(tmp)
+    ledger = ReminiscenceLedger(tmp, commits_in=commits_in)
+    if mutation in ("quiet week visited alone", "join runs past the first busy week"):
+        real_pick = ledger.week_for
+
+        def week_for(episode):
+            got = real_pick(episode)
+            if got is None or got.fixed_by_hop:
+                return got
+            if mutation == "quiet week visited alone":
+                end = got.period_start + timedelta(days=6)
+            else:
+                busy = [s for s in weeks_in(got.period_start, date(2026, 6, 1)) if s not in QUIET]
+                end = busy[1] + timedelta(days=6) if got.quiet_weeks else got.period_end
+            return WeekPick(got.period_start, end, False, got.weeks_complete, got.weeks_total)
+        ledger.week_for = week_for
     if mutation == "partial counts as visited":
         real = ledger.week_for
 
@@ -186,12 +217,23 @@ def gates(sim: dict) -> list[str]:
     if any(len(v) > 2 for v in per_day.values()):
         fails.append("2 runs per day: " + ", ".join(f"{k}:{len(v)}" for k, v in per_day.items() if len(v) > 2))
     by_ep: dict = {}
+    periods: dict = {}
     for ln in lines:
         by_ep.setdefault(ln["episode"], {})[ln["hop"]] = ln["period_start"]
-    complete = sorted({next(iter(h.values())) for h in by_ep.values() if set(h) == set(REMINISCENCE_HOPS)})
-    weeks = [(date(2025, 6, 24) + timedelta(days=7 * i)).isoformat() for i in range(len(complete))]
-    if complete != weeks:
-        fails.append(f"3 order: complete weeks {complete} != {weeks}")
+        periods[ln["episode"]] = (date.fromisoformat(ln["period_start"]), date.fromisoformat(ln["period_end"]))
+    complete_eps = [ep for ep, h in by_ep.items() if set(h) == set(REMINISCENCE_HOPS)]
+    covered = sorted(w for ep in complete_eps for w in weeks_in(*periods[ep]))
+    weeks = [FIRST + timedelta(days=7 * i) for i in range(len(covered))]
+    if covered != weeks:
+        fails.append(f"3 order: covered weeks {[w.isoformat() for w in covered]} != {[w.isoformat() for w in weeks]}")
+    for ep, (s, e) in sorted(periods.items()):
+        inside = weeks_in(s, e)
+        if inside[-1] in QUIET:
+            fails.append(f"8 quiet: {ep} visited {s}..{e}, which ends on a week with no commit (a quiet week alone)")
+        elif any(w not in QUIET for w in inside[:-1]):
+            fails.append(f"8 quiet: {ep} visited {s}..{e}, which joins past a week with a commit")
+    if len(covered) < 13:
+        fails.append(f"8 quiet: the replay covered only {len(covered)} weeks, not past the quiet weeks 2-12")
     unfinished = [ep for ep, h in by_ep.items() if set(h) != set(REMINISCENCE_HOPS)]
     for ep in unfinished:
         nxt = (date.fromisoformat(ep) + timedelta(days=1)).isoformat()
@@ -207,13 +249,16 @@ def main() -> int:
     sim = simulate()
     fails = gates(sim)
     days = len({e["episode"] for e in sim["log"]})
-    complete = len({ln["period_start"] for ln in sim["lines"]})
-    print(f"oracle: {len(sim['log'])} runs over {days} days, {len(sim['lines'])} hop lines, weeks touched {complete}")
+    complete = sorted({(ln["period_start"], ln["period_end"]) for ln in sim["lines"]})
+    joined = [f"{s}..{e}" for s, e in complete if (date.fromisoformat(e) - date.fromisoformat(s)).days > 6]
+    print(f"oracle: {len(sim['log'])} runs over {days} days, {len(sim['lines'])} hop lines, periods touched "
+          f"{len(complete)}, joined {joined}")
     for f in fails:
         print("  FAIL", f)
     ok = not fails
     print("oracle:", "PASS" if ok else "FAIL")
-    for m in ("window ignored", "partial counts as visited", "no retry gate"):
+    for m in ("window ignored", "partial counts as visited", "no retry gate", "quiet week visited alone",
+              "join runs past the first busy week"):
         got = gates(simulate(m))
         caught = bool(got)
         print(f"mutation {m!r}: {'CAUGHT' if caught else 'MISSED'}" + (f" ({got[0][:90]})" if got else ""))

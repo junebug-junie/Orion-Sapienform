@@ -19,6 +19,9 @@ services:
       # app/pr_field_note_ledger.py touches it, and only the field-notes ledger in it; the daily reminiscence
       # reads its ledger here too (app/reminiscence_ledger.py, read-only: ids, dates and booleans).
       - ${PR_FIELD_NOTES_SELF_HOST:-/mnt/orion-fcc/self}:${PR_FIELD_NOTES_LEDGER_DIR:-/mnt/orion-fcc/self}
+      # The daily reminiscence counts main's commits per week in the dig's clone (read-only), so quiet weeks
+      # join onto the next week with a commit (app/reminiscence_ledger.py week_for, the dig's own rule).
+      - ${REMINISCENCE_REPO_DIR:-/mnt/orion-fcc/repo}:${REMINISCENCE_REPO_DIR:-/mnt/orion-fcc/repo}:ro
     environment:
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME:-orion-durable-runs}
@@ -168,6 +171,7 @@ services:
       - REMINISCENCE_HOUR_LOCAL=${REMINISCENCE_HOUR_LOCAL:-3}
       - REMINISCENCE_END_HOUR_LOCAL=${REMINISCENCE_END_HOUR_LOCAL:-9}
       - REMINISCENCE_LEDGER_DIR=${REMINISCENCE_LEDGER_DIR:-/mnt/orion-fcc/self}
+      - REMINISCENCE_REPO_DIR=${REMINISCENCE_REPO_DIR:-/mnt/orion-fcc/repo}
       - REMINISCENCE_TURN_TIMEOUT_SEC=${REMINISCENCE_TURN_TIMEOUT_SEC:-900}
 
 networks:

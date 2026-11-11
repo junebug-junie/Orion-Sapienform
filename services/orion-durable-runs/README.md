@@ -483,7 +483,11 @@ runs the daily half.
   and the agent lanes are contended by day. Today's episode is the Denver date. Five hops already live
   today and no failed run today (Juniper asked in chat, or the run completed): nothing. Five hops live
   but today's run failed (its cross-read ran out of attempts): the retry runs only the cross-read. Else the week is the one today's first hop fixed, or the oldest
-  week that ended before today with no complete episode (the same rule `dig reminisce` uses). One run
+  week that ended before today with no complete episode (the same rule `dig reminisce` uses). A week with
+  no commit on main is never visited alone: it joins every following quiet week and the next week with a
+  commit into one period (design section 1a). The tick counts commits in the dig clone, mounted read-only
+  at `REMINISCENCE_REPO_DIR` (`/mnt/orion-fcc/repo`; the image installs `git`). Unreadable history:
+  `history_unreadable`, no run. Only quiet weeks open: `waiting_for_commit`, no run. One run
   `reminiscence-<episode>` (agent lane, background priority, deadline = the window's end). A day whose run
   failed gets one more (`-a2`) 30 min later, only while two step attempts still fit before 09:00. At most
   one reminiscence run is unfinished at a time. A week left unfinished is picked again the next day.

@@ -3,6 +3,9 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN pip install --no-cache-dir --upgrade pip
+# git: the daily reminiscence tick counts main's commits per week in the read-only dig clone
+# (app/reminiscence_ledger.py week_for -> orion/body_atlas/reminiscence.py git_commits_in).
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 COPY services/orion-durable-runs/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt

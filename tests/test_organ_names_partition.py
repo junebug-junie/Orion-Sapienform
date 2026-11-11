@@ -164,7 +164,7 @@ def test_the_reminiscence_reader_never_hands_back_hop_text():
               and isinstance(n.func, (ast.Attribute, ast.Name))
               and getattr(n.func, "attr", getattr(n.func, "id", "")) in ("append", "open", "write_text", "write")]
     assert writes == []
-    allowed = {"bool", "dict[str, str]", "WeekPick | None"}
+    allowed = {"bool", "dict[str, str]", "WeekPick | None", "date | None"}
     public = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and not f.name.startswith("_")]
     assert len(public) >= 5  # the check really looked at the module's API
     assert {f.name: ast.unparse(f.returns) if f.returns else None for f in public

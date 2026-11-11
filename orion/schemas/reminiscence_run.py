@@ -72,8 +72,10 @@ class ReminiscenceRunBriefV1(BaseModel):
     # The Denver day the hops are written on (the dig's episode). A step that would run on another day
     # fails: its hops would land in another episode.
     episode: date
-    # The week code picked at submit (the same rule `dig reminisce` uses). Shown in the prompt; the dig
-    # decides at write time and the receipt check does not depend on it.
+    # The period code picked at submit (the same rule `dig reminisce` uses): one week, or a run of weeks with
+    # no commit on main joined onto the next week that has one (whole weeks on the grid from
+    # REMINISCENCE_FIRST_DAY). Shown in the prompt; the dig decides at write time and the receipt check does
+    # not depend on it.
     period_start: date
     period_end: date
     weeks_complete: int = Field(ge=0, default=0)
@@ -83,6 +85,13 @@ class ReminiscenceRunBriefV1(BaseModel):
 
     @model_validator(mode="after")
     def _week(self):
-        if (self.period_end - self.period_start).days != 6 or self.period_end >= self.episode:
-            raise ValueError("period must be one 7-day week that ended before the episode day")
+        days = (self.period_end - self.period_start).days + 1
+        on_grid = (self.period_start - REMINISCENCE_FIRST_DAY).days % 7 == 0
+        if days < 7 or days % 7 or not on_grid or self.period_end >= self.episode:
+            raise ValueError("period must be whole weeks (from the 2025-06-24 grid) that ended before the episode day")
         return self
+
+    @property
+    def quiet_weeks(self) -> int:
+        """Weeks with no commit joined onto the period's last week (orion/body_atlas/reminiscence.py quiet_weeks)."""
+        return (self.period_end - self.period_start).days // 7

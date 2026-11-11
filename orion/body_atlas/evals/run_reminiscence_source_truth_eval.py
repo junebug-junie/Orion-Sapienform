@@ -12,11 +12,15 @@ Checks:
   `now` sentence with no live ref, a commit made after the week, ...);
 * **re-check**: a hop whose `now` ref left the body reads STALE naming it; a history-only hop does not;
 * **label truth**: every ref a saved hop stores resolves under its own claim's label in the fixture,
-  computed here from the fixture sets directly (a second implementation, not a call into ``resolve``).
+  computed here from the fixture sets directly (a second implementation, not a call into ``resolve``);
+* **periods**: night after night over main's real shape of quiet weeks (weeks 2-4, 6-10, 12 had no
+  commit), every week is covered once, in order, and no quiet week is visited alone: each period ends on
+  a week with a commit and holds no earlier one (checked from the fixture set, not from ``pick_period``).
 
 Then the **mutations** (code changes, patched in); each must be CAUGHT by its own check:
 the `code_then` check reads today's tree, `lived_record` is allowed before 2026-07-23, a `now`
-sentence needs no ref, the re-check is skipped, and a then-hop accepts a PR merged after the week.
+sentence needs no ref, the re-check is skipped, a then-hop accepts a PR merged after the week, a quiet
+week is visited alone (the pre-join rule), and a quiet run joins past the first week with a commit.
 
     python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py          # built-in (CI)
     python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py --live   # every live hop in
@@ -27,7 +31,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -173,8 +177,60 @@ def check_label_truth() -> list[str]:
     return fails
 
 
+# main's real shape (counted on /mnt/orion-fcc/repo 2026-11-11): week numbers with no commit on main.
+QUIET = {rm.FIRST_DAY + timedelta(days=7 * (w - 1)) for w in (2, 3, 4, 6, 7, 8, 9, 10, 12)}
+NIGHTS_TODAY = date(2025, 10, 1)  # 14 weeks ended: the quiet runs and one busy week after each
+
+
+def _quiet_history(start: date, end: date) -> int:
+    return 0 if start in QUIET else 2
+
+
+def _done(episode: str, start: date, end: date) -> list:
+    return [rm.ReminiscenceHopV1(hop_id=f"rm:{episode}:{h}:{i:010x}", episode=episode, hop=h,
+                                 period_start=start.isoformat(), period_end=end.isoformat(), note="[reflection] x",
+                                 claims=[], written_at=f"{episode}T10:00:00+00:00") for i, h in enumerate(rm.HOPS)]
+
+
+def check_periods() -> list[str]:
+    fails, records, seen = [], [], []
+    for night in range(30):
+        got = rm.pick_period(records, NIGHTS_TODAY, _quiet_history)
+        if got is None:
+            break
+        start, end = got
+        weeks = [start + timedelta(days=7 * i) for i in range(((end - start).days + 1) // 7)]
+        if not weeks or (end - start).days % 7 != 6:
+            fails.append(f"periods: {start}..{end} is not whole weeks")
+            break
+        if weeks[-1] in QUIET:
+            fails.append(f"periods: night {night + 1} visited {start}..{end}: a quiet week visited alone")
+        if any(w not in QUIET for w in weeks[:-1]):
+            fails.append(f"periods: night {night + 1} visited {start}..{end}: joins past a week with a commit")
+        seen += weeks
+        records += _done(f"2026-12-{night + 1:02d}", start, end)
+    want = [rm.FIRST_DAY + timedelta(days=7 * i) for i in range(len(rm.weeks_ended_before(NIGHTS_TODAY)))]
+    if seen != want:
+        fails.append(f"periods: covered {[w.isoformat() for w in seen]} != every week once, in order")
+    return fails
+
+
+def _old_pick(records, today, commits_in):
+    return rm.first_open_week(records, today)
+
+
+def _second_busy_pick(real):
+    def mutated(records, today, commits_in):
+        first = rm.first_open_week(records, today)
+        if first is None or commits_in(*first):
+            return real(records, today, commits_in)
+        busy = [e for s, e in rm.weeks_ended_before(today) if s >= first[0] and commits_in(s, e)]
+        return (first[0], busy[1]) if len(busy) > 1 else real(records, today, commits_in)
+    return mutated
+
+
 def evaluate() -> list[str]:
-    return check_cases() + check_recheck() + check_label_truth()
+    return check_cases() + check_recheck() + check_label_truth() + check_periods()
 
 
 @contextmanager
@@ -205,6 +261,9 @@ MUTATIONS = {
     "re-check skipped": (lambda: _patched(MUTABLE_KINDS=frozenset(), recheck=lambda rec, world: []),
                          "re-check missed a now ref"),
     "a then-hop accepts a later pr": (lambda: _patched(THEN_HOPS=frozenset()), "after this week"),
+    "a quiet week is visited alone": (lambda: _patched(pick_period=_old_pick), "a quiet week visited alone"),
+    "a quiet run joins past the first busy week": (lambda: _patched(pick_period=_second_busy_pick(rm.pick_period)),
+                                                   "joins past a week with a commit"),
 }
 
 
@@ -238,7 +297,7 @@ def main() -> int:
     if "--live" in sys.argv:
         return live_eval()
     fails = evaluate()
-    print(f"oracle: {len(CASES)} reviewed cases, re-check, label truth -> {'PASS' if not fails else 'FAIL'}")
+    print(f"oracle: {len(CASES)} reviewed cases, re-check, label truth, quiet-week periods -> {'PASS' if not fails else 'FAIL'}")
     for f in fails:
         print(f"  {f}")
     missed = []

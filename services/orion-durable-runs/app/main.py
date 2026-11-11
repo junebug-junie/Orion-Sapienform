@@ -634,7 +634,8 @@ async def lifespan(app: FastAPI):
                 from app.reminiscence_poll import ReminiscenceTicker
 
                 reminiscence = ReminiscenceTicker(settings=_settings, pool=admission.pool, submit=admission.submit,
-                                                  ledger=ReminiscenceLedger(_settings.reminiscence_ledger_dir))
+                                                  ledger=ReminiscenceLedger(_settings.reminiscence_ledger_dir,
+                                                                            _settings.reminiscence_repo_dir))
                 _reminiscence_task = asyncio.create_task(reminiscence.run_forever(_stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]

@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from orion.harness.working_notes import outside_reason
+
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 MAX_TURNS = 5
 RESULT_CHARS = 300
@@ -75,6 +77,7 @@ class Step:
     action: str
     status: str = "no result seen"
     result: str = ""
+    outside: bool = False
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -113,8 +116,9 @@ def parse_rows(rows: Iterable[dict[str, str]]) -> list[Step]:
                 continue
             if block.get("type") == "tool_use":
                 inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+                name = str(block.get("name") or "")
                 step = Step(row.get("correlation_id", ""), row.get("turn_at", ""), row.get("ts", ""),
-                            str(block.get("name") or "?"), action_of(str(block.get("name") or ""), inp))
+                            name or "?", action_of(name, inp), outside=outside_reason(name, inp) is not None)
                 steps.append(step)
                 if block.get("id"):
                     by_id[str(block["id"])] = step
@@ -123,7 +127,9 @@ def parse_rows(rows: Iterable[dict[str, str]]) -> list[Step]:
                 if step is None:
                     continue
                 step.status = "failed" if block.get("is_error") else "ok"
-                step.result = result_text(block.get("content"))
+                # Never replay outside text: a later clean turn could copy it into its notes.
+                step.result = ("(outside content; not shown here)" if step.outside
+                               else result_text(block.get("content")))
     return steps
 
 

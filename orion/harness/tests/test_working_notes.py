@@ -72,6 +72,12 @@ def test_shape_rejects(line: str) -> None:
     (_tool_step("Bash", command="curl -s https://x | head"), "Bash:curl"),
     (_tool_step("Bash", command="cd repo && gh pr view 3139 --comments"), "Bash:gh pr view"),
     (_tool_step("Bash", command="gh api repos/a/b/pulls/1"), "Bash:gh api"),
+    (_tool_step("Bash", command="gh pr diff 3168"), "Bash:gh pr diff"),
+    (_tool_step("Bash", command="/usr/bin/curl -s x"), "Bash:curl"),
+    (_tool_step("Bash", command="git fetch origin pull/3/head"), "Bash:git fetch"),
+    (_tool_step("mcp__github__get_file_contents", path="a", ref="refs/pull/3168/head"),
+     "mcp__github__get_file_contents"),
+    (_tool_step("mcp__orion-reading__recommend_reading", url="https://x"), "mcp__orion-reading__recommend_reading"),
 ])
 def test_taint_names_the_tool(step: dict[str, Any], reason: str) -> None:
     assert wn.outside_content_reasons([step]) == [reason]
@@ -81,7 +87,8 @@ def test_taint_names_the_tool(step: dict[str, Any], reason: str) -> None:
     _tool_step("Bash", command="docker ps && which pigz"),
     _tool_step("Bash", command="echo curly braces"),
     _tool_step("Read", file_path="/mnt/orion-fcc/repo/README.md"),
-    _tool_step("mcp__github__get_me"),
+    _tool_step("mcp__orion-introspect__node_history", node_id="n"),
+    _tool_step("Bash", command="gh auth status"),
 ])
 def test_taint_ignores_inside_work(step: dict[str, Any]) -> None:
     assert wn.outside_content_reasons([step]) == []
@@ -272,3 +279,49 @@ async def test_non_chat_and_disabled_turns_get_no_notes(bus: Any, monkeypatch: p
     assert "WORKING NOTES" not in prompts[1]
     assert "orion.dig turn-steps sess-1" in prompts[1]  # Patch 1 needs no flag
     assert not _notes_hops(published, "c2")
+
+
+def test_fold_caps_stored_lines_to_the_prompt_budget() -> None:
+    lines = "\n".join(f"- 07:00Z | fcc | step {i} | ok: {'z' * 150}" for i in range(60))
+    carry = wn.fold_batch(None, _notes(lines), correlation_id="c1", now=NOW)
+    stored = carry["batches"][0]["lines"]
+    assert sum(len(x) + 1 for x in stored) <= wn.CARRY_MAX_CHARS
+    assert stored[-1].startswith("- 07:00Z | fcc | step 59 ")
+
+
+@pytest.mark.asyncio
+async def test_resumed_turn_is_held_back(bus: Any) -> None:
+    prompts: list[str] = []
+    published: list[dict[str, Any]] = []
+    req = _request("c1").model_copy(update={"resume_key": "rk-1"})
+
+    async def capture(*_: Any, **kw: Any) -> None:
+        published.append({"corr": kw["correlation_id"], "step": kw["step"], "index": kw["step_index"]})
+
+    with (
+        patch("orion.harness.runner.publish_harness_run_step", capture),
+        patch("orion.harness.runner.read_last_tool_fetch", AsyncMock(return_value=None)),
+    ):
+        await HarnessRunner(bus, fcc_runner=_motor(prompts, write=GOOD, steps=[])).run(req)
+    hop = [p for p in published if p["step"].get("_cockpit") == COCKPIT_WORKING_NOTES_MARKER][0]
+    assert hop["step"]["tainted_by"] == ["resume"]
+    assert hop["index"] == -1  # a marker, never counted as a motor step
+
+
+@pytest.mark.asyncio
+async def test_motor_exception_still_harvests_notes(bus: Any, tmp_path: Path) -> None:
+    prompts: list[str] = []
+    published: list[dict[str, Any]] = []
+
+    async def crash(*, prompt: str, **__: Any) -> AsyncIterator[dict[str, Any]]:
+        prompts.append(prompt)
+        Path(re.search(r"append one line per step to (\S+) ", prompt).group(1)).write_text(GOOD)
+        yield {"type": "step", "step": _tool_step("Bash", command="docker ps")}
+        raise RuntimeError("motor died")
+
+    with pytest.raises(RuntimeError):
+        await _run(bus, "c1", crash, published)
+    assert _notes_hops(published, "c1")[0]["kept"] == 1
+    assert not list(tmp_path.rglob("*.md"))
+    await _run(bus, "c2", _motor(prompts, write=None, steps=[]), published)
+    assert "> " + GOOD in prompts[1]

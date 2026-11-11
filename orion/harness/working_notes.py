@@ -58,16 +58,17 @@ ENTRY_RE = re.compile(
 
 # Tools whose results are text from outside Orion's own system.
 _OUTSIDE_TOOLS = frozenset({"WebFetch", "WebSearch"})
-_OUTSIDE_TOOL_PREFIXES = ("mcp__firecrawl__",)
-# GitHub MCP reads of text other people wrote (issues, PRs, comments, discussions, search hits).
-_GITHUB_TEXT_READ = re.compile(r"^mcp__github__.*(issue|pull_request|comment|discussion|search)", re.I)
+# Every MCP tool counts as outside content unless it only reads Orion's own records:
+# an allowlist, so a new MCP server is held back until someone checks it.
+_INSIDE_MCP_PREFIXES = ("mcp__orion-introspect__", "mcp__gitnexus__")
 # A subagent's own tool calls never reach this turn's step stream, so the harness
 # cannot tell what it read: treat it as outside content.
 _OPAQUE_TOOLS = frozenset({"Task", "Agent"})
 # Bash fetches. Known-incomplete (a shell can fetch many ways): a floor, not a wall.
 _BASH_FETCH = re.compile(
-    r"(?:^|[\s;&|(`$])(?:curl|wget)\b"
-    r"|\bgh\s+(?:api|issue\s+view|pr\s+view)\b"
+    r"(?:^|[\s;&|(`$/])(?:curl|wget)\b"
+    r"|\bgh\s+(?!auth\b)[a-z]\S*(?:\s+[a-z]\S*)?"
+    r"|\bgit\s+(?:pull|fetch|clone)\b"
 )
 
 _SUSPICIOUS = (
@@ -122,6 +123,17 @@ def _tool_uses(step: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
             yield str(block.get("name") or ""), inp if isinstance(inp, dict) else {}
 
 
+def outside_reason(name: str, inp: dict[str, Any]) -> str | None:
+    """Why one tool call took in outside content, or None when it did not."""
+    if name in _OUTSIDE_TOOLS or name in _OPAQUE_TOOLS:
+        return name
+    if name.startswith("mcp__") and not name.startswith(_INSIDE_MCP_PREFIXES):
+        return name
+    if name == "Bash" and _BASH_FETCH.search(str(inp.get("command") or "")):
+        return "Bash:" + _first_word_of_fetch(str(inp.get("command") or ""))
+    return None
+
+
 def outside_content_reasons(steps: Iterable[dict[str, Any]]) -> list[str]:
     """Names of the tool calls in these steps that took in outside content (sorted, unique)."""
     found: set[str] = set()
@@ -129,21 +141,19 @@ def outside_content_reasons(steps: Iterable[dict[str, Any]]) -> list[str]:
         if not isinstance(step, dict):
             continue
         for name, inp in _tool_uses(step):
-            if (
-                name in _OUTSIDE_TOOLS
-                or name in _OPAQUE_TOOLS
-                or name.startswith(_OUTSIDE_TOOL_PREFIXES)
-                or _GITHUB_TEXT_READ.search(name)
-            ):
-                found.add(name)
-            elif name == "Bash" and _BASH_FETCH.search(str(inp.get("command") or "")):
-                found.add("Bash:" + _first_word_of_fetch(str(inp.get("command") or "")))
+            if (reason := outside_reason(name, inp)) is not None:
+                found.add(reason)
     return sorted(found)
 
 
 def _first_word_of_fetch(command: str) -> str:
     m = _BASH_FETCH.search(command)
-    return " ".join(m.group().lstrip(" \t;&|(`$").split()) if m else "fetch"
+    if not m:
+        return "fetch"
+    words = m.group().lstrip(" \t;&|(`$/").split()
+    if words[0] == "gh":
+        return " ".join(words[:2] if words[1:2] == ["api"] else words[:3])
+    return " ".join(words[:2] if words[0] == "git" else words[:1])
 
 
 # --- shape ------------------------------------------------------------------------------------
@@ -193,6 +203,8 @@ def finish_turn(path: Path, *, tainted_by: list[str]) -> TurnNotes:
         notes.read_error = type(exc).__name__
     try:
         path.unlink(missing_ok=True)
+        if not any(path.parent.iterdir()):
+            path.parent.rmdir()
     except OSError:
         logger.warning("fcc_working_notes_unlink_failed path=%s", path, exc_info=True)
     notes.kept, notes.dropped = parse_entries(notes.raw_text)
@@ -228,6 +240,20 @@ def fold_batch(carry: dict[str, Any] | None, notes: TurnNotes, *, correlation_id
         batches.append({"at": now.isoformat(), "correlation_id": correlation_id, "held_back": notes.tainted_by})
     elif notes.kept:
         batches.append({"at": now.isoformat(), "correlation_id": correlation_id, "lines": notes.kept})
+    # Store no more than the prompt can show: drop the oldest lines past the budget.
+    budget = CARRY_MAX_CHARS
+    for batch in reversed(batches):
+        lines = batch.get("lines")
+        if isinstance(lines, list):
+            keep = []
+            for line in reversed(lines):
+                budget -= len(str(line)) + 1
+                if budget < 0:
+                    break
+                keep.append(line)
+            batch["lines"] = list(reversed(keep))
+        budget -= 60  # the batch header line
+    batches = [b for b in batches if b.get("held_back") or b.get("lines")]
     return {"batches": batches} if batches else None
 
 

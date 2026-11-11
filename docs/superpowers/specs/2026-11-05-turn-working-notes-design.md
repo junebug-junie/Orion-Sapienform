@@ -16,7 +16,11 @@ Implementation notes (deviations from the text below, and why):
   stream, so the harness cannot tell what it read.
 - Baseline (acceptance 1), live 2026-11-11, last 14 days: 50 tool-using chat turns, 44 consecutive
   pairs, 6 pairs redo a step of the turn before (29 repeated steps, 0 of them repeats of a failure).
-  The taint rule would hold back 9 of 50 turns (18%: `gh pr view` 7, `gh api` 4, GitHub PR read 4).
+  The taint rule holds back 16 of 50 turns (32%). Top reasons: `gh pr view` 6, reading-queue MCP 6,
+  GitHub PR read 4, `gh api` 5. Every MCP tool counts as outside content except `orion-introspect` and
+  `gitnexus` (an allowlist, after review found PR-branch file reads and URL tools slipping a denylist).
+- `dig turn-steps` never shows the result text of an outside-content call, so a later clean turn
+  cannot copy it into its notes. A resumed CLI session counts as tainted (`resume`).
   Re-run after 7 days: `python -m orion.harness.evals.turn_repeat_baseline --days 7`.
 Date: 2026-11-05.
 

@@ -117,8 +117,8 @@ but not the steps behind them. Spec: `docs/superpowers/specs/2026-11-05-turn-wor
   works. At turn end (success or failure) `orion/harness/working_notes.py` keeps only lines in that
   shape and carries them, quoted, to the next turn of the same session (Redis
   `orion:harness:working_notes:<session>`, 24 h, 3,000 chars).
-- **Held back:** a turn that ran WebFetch/WebSearch, firecrawl, GitHub MCP issue/PR/comment
-  reads, a subagent (`Task`/`Agent`), or `curl`/`wget`/`gh api|pr view|issue view` in Bash has its
+- **Held back:** a turn that ran WebFetch/WebSearch, any MCP tool except orion-introspect and gitnexus,
+  a subagent (`Task`/`Agent`), a resumed session, or `curl`/`wget`/`gh <cmd>`/`git fetch|pull|clone` in Bash has its
   notes held back; the next turn sees only that they were. The Bash check is a floor, not a wall.
 - **Trace:** cockpit stage `working_notes` per chat turn (`carried_in`, `written`, kept/dropped,
   `tainted_by`). Logs: `fcc_working_notes_empty|tainted|dropped|suspicious|carried`.

@@ -33,7 +33,7 @@ def _confirm(i: int = 0, answer="yes", *, prior=False, pictures=None, status="an
 
 def _same(i: int = 0, answer="no", cosine="0.678"):
     return {"ask_id": f"ask-s{i}", "source_kind": "vision_same_individual", "status": "answered", "answer": answer,
-            "answer_detail": {"names": {"a": "Addy", "b": "Juniper"}},
+            "answer_detail": {"names": {"a": "Person A", "b": "Person B"}},
             "evidence_refs": [f"individual:a{i}", f"individual:b{i}", f"face_cosine:{cosine}"],
             "created_at": NOW - timedelta(hours=8), "answered_at": NOW - timedelta(hours=3)}
 

@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     # unbounded corpus growth from a sibling sink (INNER_FEATURES_CORPUS_PATH,
     # ~104MB/36.8k rows over 5 days) means anything new stays inert until an
     # operator opts in.
+    # Deployed ON via .env_example/docker-compose (2026-11, mood-arc retrain data).
+    # The code default stays empty so a bare test/process never writes to the
+    # host's /mnt/telemetry.
     field_channel_corpus_path: str = Field("", alias="FIELD_CHANNEL_CORPUS_PATH")
     # Same rotation/retention policy shape as orion-spark-introspector's
     # corpus_sink_max_bytes/corpus_sink_rotated_keep (services/orion-spark-
@@ -114,7 +117,7 @@ class Settings(BaseSettings):
     # independently, so there is no collision between the two services'
     # settings despite the identical field names/aliases/defaults.
     corpus_sink_max_bytes: int = Field(200_000_000, ge=1_000_000, alias="CORPUS_SINK_MAX_BYTES")
-    corpus_sink_rotated_keep: int = Field(5, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
+    corpus_sink_rotated_keep: int = Field(40, ge=0, alias="CORPUS_SINK_ROTATED_KEEP")
 
     # Causal Geometry v1 follow-up: the scheduled Phase A -> Phase B producer
     # (orion/substrate/causal_geometry_producer.py, run from

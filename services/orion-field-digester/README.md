@@ -147,7 +147,7 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `FIELD_DIGESTER_PORT` | `8116` | Host port for `docker compose` (compose-only) |
-| `FIELD_CHANNEL_CORPUS_PATH` | (empty) | Field-channel raw-substrate corpus sink path — see section below. Empty/unset = disabled |
+| `FIELD_CHANNEL_CORPUS_PATH` | `/mnt/telemetry/field_channels/corpus/field_channels.jsonl` in compose/.env_example (code default empty) | Field-channel raw-substrate corpus sink path — see section below. Back on since 2026-11 to collect mood-arc retraining data. Empty/unset = disabled |
 | `CORPUS_SINK_MAX_BYTES` | `200000000` | Corpus sink rotation threshold (bytes) |
 | `CORPUS_SINK_ROTATED_KEEP` | `5` | Corpus sink rotated-file retention count |
 | `FIELD_SIGNIFICANCE_WINDOW_SECONDS` | `900.0` | Replay window for `sustained_load_pressure` — see section below |

@@ -93,29 +93,11 @@ edges:
       # reading expires (120 s), transport reliability reads UNMEASURED
       # (absent) instead of the observer's constant 0.0.
 
-  # 2026-07-26: real mesh-wide transport signal, replacing the removed
-  # world_pulse-derived pressure above. node:substrate.bus_synaptic is not a
-  # physical host (unlike node:athena/circe/prometheus above -- atlas was a
-  # fourth physical host here too until its 2026-08-21 decommission) -- it's
-  # the Active-Inference domain node written by services/orion-substrate-
-  # runtime/app/worker.py::_bus_synaptic_tick via a receipt into
-  # substrate_reduction_receipts, consumed into this service's own
-  # substrate_field_state through the same generic prediction_signal
-  # perturbation path (app/ingest/state_deltas.py) the other 5 Active-
-  # Inference domains already use -- not a shared table/row between the two
-  # services (orion-substrate-runtime never touches substrate_field_state
-  # directly). Confirmed live: 100% tick coverage over the same 2h window
-  # used to confirm the edge above was dead. confidence/available_capacity
-  # are intentionally NOT mapped here -- apply_diffusion()'s existing derived-fallback formula
-  # (max(0, 1-pressure) / max(0, 1-0.5*pressure)) already produces them from
-  # this real pressure value once no direct edge claims those channels, so
-  # they get a genuine derivation instead of a second fabricated constant.
-  - source_id: node:substrate.bus_synaptic
-    target_id: capability:transport
-    edge_type: node_capability
-    weight: 0.85
-    channel_map:
-      prediction_error: pressure
+  # node:substrate.bus_synaptic -> capability:transport (prediction_error ->
+  # pressure, 0.85) deleted 2026-11 (PE suite rebuild step 5): the node was a
+  # lull-ending detector, not a forecast, and was retired end to end. Nothing
+  # else maps onto capability:transport.pressure, so that channel is absent
+  # (unmeasured) -- not a quiet 0.0 -- until a real successor is wired.
 
   # 2026-09-25: caller-side RPC delivery. node:substrate.rpc_delivery is written
   # by orion-substrate-runtime's RPC delivery bridge (orion/substrate/
@@ -198,7 +180,7 @@ edges:
   # section for the independence check against every other perceptual signal.
   #
   # Deliberately NO edge below, and NO entry in `nodes:` above (same as
-  # node:substrate.vision/bus_synaptic: neither is declared there either --
+  # the retired node:substrate.vision/bus_synaptic: neither was declared there --
   # both are dynamically-created domain nodes, not part of the static
   # topology). This is the explicit non-goal of the patch that introduces
   # this node: "not promoting a perceptual domain into ACTIVE_INFERENCE_

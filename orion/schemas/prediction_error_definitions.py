@@ -32,15 +32,15 @@ UNSTAMPED_DEFINITION_VERSION = 1
 #   pressure hints -- it was ``1 - repair_pressure`` and double-weighted repair.
 # chat_session v3 (2026-09-29): the turn-change mean averages over only the
 #   turns a batch touched, not every turn ever stored (same fix as route v2).
-# route_arbitration v2 (2026-09-25): the decision-mismatch rate averages over
-#   only the runs a batch actually touched, not every run in the projection.
+# route_arbitration (v2 since 2026-09-25) removed 2026-11: route_prediction_error
+#   and node:substrate.route were retired (PE suite rebuild step 5); nothing
+#   writes a route_arbitration prediction-error receipt any more.
 # node_biometrics v2 (2026-10-20): nodes that stopped reporting (last report older
 #   than 6x their own report interval -- hecate in BMC-only standby) are left out of
 #   the hint-change mean instead of adding a 0.0 delta per frozen key.
 PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {
     "chat_session": 3,
     "node_biometrics": 2,
-    "route_arbitration": 2,
 }
 
 

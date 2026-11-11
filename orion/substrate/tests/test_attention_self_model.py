@@ -288,10 +288,10 @@ class TestPredictedShift:
     def test_falling_trend_is_named_as_falling(self) -> None:
         model = reduce_attention_self_model(
             None, None, now=NOW,
-            prediction_error_trend_by_domain={"route": -0.3, "execution": 0.01},
+            prediction_error_trend_by_domain={"chat": -0.3, "execution": 0.01},
         )
 
-        assert "route" in model.predicted_shift
+        assert "chat" in model.predicted_shift
         assert "falling" in model.predicted_shift
 
     def test_no_trend_data_yields_no_prediction(self) -> None:
@@ -390,18 +390,17 @@ class TestUnconditionalPredictionErrorConfidence:
         assert model.prediction_error_confidence is not None
 
     def test_transport_excluded_from_domain_set(self) -> None:
-        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0, route: 0.0}
-        # mean = 0.0115 -> confidence = 0.9885. If transport's guaranteed
-        # 0.0 were included (5 domains), the mean would instead be 0.0092
-        # (confidence 0.9908) -- this test would fail if transport leaked
-        # back into the filtered set.
+        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0} (route, also
+        # supplied, retired 2026-11) -> mean = 0.0153 -> confidence = 0.9847.
+        # If transport's guaranteed 0.0 leaked back in, the mean would drop
+        # -- this test would fail.
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
             prediction_error_by_domain=_prediction_error_by_domain(),
         )
-        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0115, abs=1e-4)
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0153, abs=1e-4)
         assert "transport" not in model.prediction_error_confidence_basis
-        assert "4 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
+        assert "3 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
 
     def test_only_transport_data_yields_honestly_absent_not_zero(self) -> None:
         # If the caller only ever has transport data (degenerate but
@@ -431,30 +430,25 @@ class TestUnconditionalPredictionErrorConfidence:
         # exclusion -- confirms they are computed independently, not aliased.
         assert model.confidence != model.prediction_error_confidence
 
-    def test_bus_synaptic_included_in_domain_set(self) -> None:
-        # 2026-07-25: bus_synaptic is the reversal condition for the old
-        # transport exclusion -- a real, bounded signal now exists. When
-        # present in the caller's dict, it must be counted (5 domains, not
-        # 4), unlike transport which stays excluded even when supplied.
-        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0, route: 0.0,
-        #  bus_synaptic: 0.30} -> mean = 0.0692 -> confidence = 0.9308
+    def test_retired_bus_synaptic_and_route_are_excluded(self) -> None:
+        # 2026-11 (PE suite rebuild step 5): bus_synaptic and route were
+        # retired. Supplied anyway, they must not move the mean:
+        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0} -> 0.9847.
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
-            prediction_error_by_domain=_prediction_error_by_domain(bus_synaptic=0.30),
+            prediction_error_by_domain=_prediction_error_by_domain(bus_synaptic=0.30, route=0.9),
         )
-        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0692, abs=1e-4)
-        assert "bus_synaptic" in model.prediction_error_confidence_basis
-        assert "5 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
-        assert "transport" not in model.prediction_error_confidence_basis
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0153, abs=1e-4)
+        assert "bus_synaptic" not in model.prediction_error_confidence_basis
+        assert "route" not in model.prediction_error_confidence_basis
+        assert "3 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
 
-    def test_only_bus_synaptic_data_is_sufficient_alone(self) -> None:
-        # Unlike transport (permanently excluded even alone), bus_synaptic
-        # alone must produce a real confidence value, not honestly-absent.
+    def test_only_retired_domain_data_yields_honestly_absent(self) -> None:
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
-            prediction_error_by_domain={"bus_synaptic": 0.5},
+            prediction_error_by_domain={"bus_synaptic": 0.5, "route": 0.5},
         )
-        assert model.prediction_error_confidence == pytest.approx(0.5, abs=1e-4)
+        assert model.prediction_error_confidence is None
 
 
 class TestPredictionErrorByDomainExposed:
@@ -473,7 +467,6 @@ class TestPredictionErrorByDomainExposed:
             "execution": 0.0001,
             "biometrics": 0.0459,
             "chat": 0.0,
-            "route": 0.0,
         }
 
     def test_transport_excluded_even_when_supplied(self) -> None:
@@ -533,7 +526,6 @@ class TestPredictionErrorEvidenceByDomainExposed:
             "execution": ["gev_exec_1"],
             "biometrics": ["gev_bio_1", "gev_bio_2"],
             "chat": [],
-            "route": [],
         }
 
     def test_transport_excluded_even_when_supplied(self) -> None:

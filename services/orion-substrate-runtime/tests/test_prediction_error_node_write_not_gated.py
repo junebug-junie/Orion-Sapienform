@@ -85,8 +85,9 @@ def test_no_prediction_error_node_write_is_gated_on_error_greater_than_zero() ->
 
 def test_every_prediction_error_domain_still_writes_its_node() -> None:
     """Companion to the above: moving a call out of the gate must not have
-    silently deleted it. Asserts all five Active-Inference domains plus
-    transport still have a node write somewhere in the module."""
+    silently deleted it. Asserts the three live Active-Inference domains still
+    have a node write somewhere in the module, and that the domains retired
+    2026-11 (route, bus_synaptic -- PE suite rebuild step 5) do not."""
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
 
     written: set[str] = set()
@@ -95,7 +96,11 @@ def test_every_prediction_error_domain_still_writes_its_node() -> None:
             if kw.arg == "node_id" and isinstance(kw.value, ast.Constant):
                 written.add(str(kw.value.value))
 
-    for domain in ("biometrics", "execution", "chat", "route", "bus_synaptic"):
+    for domain in ("biometrics", "execution", "chat"):
         assert f"node:substrate.{domain}" in written, (
             f"node:substrate.{domain} has no _write_prediction_error_node() call at all"
+        )
+    for retired in ("route", "bus_synaptic"):
+        assert f"node:substrate.{retired}" not in written, (
+            f"node:substrate.{retired} was retired 2026-11 but is written again"
         )

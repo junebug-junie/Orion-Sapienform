@@ -8,7 +8,6 @@ from orion.bus.ewma import compute_ewma_update
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
 from orion.schemas.chat_projection import ChatSessionProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
-from orion.schemas.route_projection import RouteArbitrationProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
@@ -16,12 +15,6 @@ from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
 
 _THRESHOLD = 0.30
-
-# Z-score saturation for bus_synaptic_prediction_error, distinct from _THRESHOLD
-# above (calibrated for 0-1-scale pressure-hint deltas, not z-score units).
-# Reuses the zscore_threshold=3.0 convention already live in
-# services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies() route.
-_BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
 
 # _BUS_SYNAPTIC_CALM_FLOOR (= sqrt(2/pi)) was REMOVED 2026-07-30 along with the
 # mean-based formula it corrected. It was a real fix for a real bias in that
@@ -41,8 +34,8 @@ _BUS_SYNAPTIC_ZSCORE_SATURATION = 3.0
 # both update per real observation (a real edge/a real execution-tick batch), not on
 # a fixed wall-clock cadence like orion-field-digester's alpha=0.02 (which runs once
 # per RECEIPT_POLL_INTERVAL_SEC tick regardless of traffic). Saturation reuses the
-# same z>=3.0 "anomalous" convention as _BUS_SYNAPTIC_ZSCORE_SATURATION above and
-# services/orion-hub/scripts/bus_synaptic_graph_routes.py's anomalies() route.
+# z>=3.0 "anomalous" convention of services/orion-hub/scripts/
+# bus_synaptic_graph_routes.py's anomalies() route.
 _EXECUTION_PREDICTION_ERROR_EWMA_ALPHA = 0.2
 _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 
@@ -381,23 +374,15 @@ def _latest_run(runs) -> Any:
     return best
 
 
-def _route_run_has_decision(run: Any) -> bool:
-    """False for a run created from a trace-start event alone, before any decision
-    event reached it (every categorical decision field still the reducer default)."""
-    return not (
-        run.lane == "unknown" and run.lane_reason == "unknown" and run.output_mode == "unknown"
-    )
-
-
 def _touched_runs(prev_runs, curr_runs) -> list[tuple[str, Any]]:
     """Runs in ``curr_runs`` that the batch between ``prev``/``curr`` actually
     wrote: new trace_ids, plus existing ones whose state changed at all. The
-    route reducer stamps the tick's clock into ``last_updated_at`` on every run it
+    reducer stamps the tick's clock into ``last_updated_at`` on every run/turn it
     creates or merges, so a written run always differs from its ``prev`` copy;
     comparing the whole run (not just the timestamp) also catches a revision that
     somehow kept its timestamp. Runs the batch left alone are identical and are
-    excluded, rather than scored 0.0 against themselves (route_prediction_error's
-    v1 dilution defect)."""
+    excluded, rather than scored 0.0 against themselves (the retired
+    route_prediction_error's v1 dilution defect)."""
     touched: list[tuple[str, Any]] = []
     for trace_id, curr_run in curr_runs.items():
         prev_run = prev_runs.get(trace_id)
@@ -573,9 +558,8 @@ def execution_raw_reading(
 #      live-importable symbol is not the cheap way to preserve that; git
 #      history is.
 #
-# The successor is bus_synaptic_prediction_error() above: mesh-wide real
-# inter-service publish traffic via orion_bus_synapse's per-edge EWMA z-scores,
-# rather than a 2-Redis-Stream "world_pulse" census that was never bus health.
+# Its 2026-07 successor, bus_synaptic_prediction_error(), was itself retired
+# 2026-11 (see the note where it used to live, below).
 def biometrics_prediction_error(
     prev: NodeBiometricsProjectionV1,
     curr: NodeBiometricsProjectionV1,
@@ -748,195 +732,17 @@ def chat_raw_reading(prev: ChatSessionProjectionV1, curr: ChatSessionProjectionV
     return _mean(deltas)
 
 
-def route_prediction_error(
-    prev: RouteArbitrationProjectionV1,
-    curr: RouteArbitrationProjectionV1,
-) -> float:
-    """0-1 surprise score: how much did a route arbitration run's *decision* change
-    this batch?
-
-    **Deliberately not a continuous-magnitude diff like the other three instruments
-    in this module.** ``RouteArbitrationRunStateV1``'s fields
-    (``orion/schemas/route_projection.py``) are categorical/discrete -- ``lane``,
-    ``lane_reason``, ``output_mode`` are strings, ``mind_requested`` is a bool -- there
-    is no numeric magnitude to subtract. Applying ``execution_prediction_error``'s
-    ``abs(cv - pv)`` shape here would be meaningless (strings don't subtract) or
-    would require an arbitrary numeric encoding of categories, which is exactly the
-    kind of hand-authored taxonomy-on-top-of-taxonomy this charter's item 3 was
-    written to avoid (see charter §6 item 3: "not a port of ``tensions.py``'s
-    hand-classified kind vocabulary onto field channels").
-
-    Instead this computes a categorical mismatch rate: for each field compared, score
-    ``1.0`` if the value differs between ``prev``/``curr``, else ``0.0``, then average
-    across the compared fields and across matched runs (by ``trace_id``, mirroring
-    ``reduce_route_trace_events``'s create/update-by-``trace_id`` semantics --
-    ``orion/substrate/route_loop/reducer.py`` line ~146-147). The fields compared
-    (``lane``, ``lane_reason``, ``output_mode``, ``mind_requested``) were chosen
-    because together they represent the arbitration *decision* itself -- which lane a
-    turn was routed to, why, what output mode it produced, and whether mind
-    escalation was requested -- as opposed to bookkeeping fields
-    (``correlation_id``, ``session_id``, ``turn_id``, ``evidence_event_ids``,
-    ``last_updated_at``) that change on every revision by construction and would
-    saturate the score at 1.0 for every batch, making it useless as a surprise
-    signal. ``mind_skip_reason`` was left out: it is a free-text explanation that is
-    non-null only when ``mind_requested`` is already false, so including it would
-    double-count the same underlying decision already captured by ``mind_requested``.
-
-    A mismatch rate averaged over four boolean-valued comparisons is already bounded
-    to ``[0, 1]`` by construction (each per-field score is 0.0 or 1.0, so the mean of
-    N such scores is bounded [0, 1] for any N > 0) -- unlike the other three
-    instruments' unbounded absolute deltas, which need ``min(1.0, mean / _THRESHOLD)``
-    to saturate into a [0, 1] surprise score.
-
-    **Do not apply the module's ``_THRESHOLD = 0.30`` scaling here.** That scaling
-    exists to convert an unbounded continuous magnitude into a saturating [0, 1]
-    score; a categorical mismatch rate has no such unboundedness to correct for, and
-    dividing an already-[0, 1] value by 0.30 would push most non-zero mismatches
-    straight to the 1.0 ceiling, destroying the very distinction (one field flipped
-    vs. all four flipped) that makes this signal informative. If a future patch is
-    tempted to "fix" this into consistency with the other three functions by adding
-    the ``_THRESHOLD`` scale here too, that is a regression, not a cleanup -- leave
-    this deviation as-is unless the field types themselves change from categorical to
-    continuous.
-
-    **Trace_id-match fallback (added 2026-07-22):** same defect and same fix as
-    ``execution_prediction_error`` -- real route-arbitration runs observed live are
-    single-shot creates (confirmed for the one live sample checked; sparse total volume,
-    9-10 receipts ever, limits sample size, but the reducer code path
-    (``orion/substrate/route_loop/reducer.py``) is structurally identical to execution's
-    create-once-per-turn shape). Without a fallback, a trace_id match would essentially
-    never occur and this instrument would read ``0.0`` forever regardless of real
-    arbitration volume. When no trace_id match exists, compare against ``prev``'s
-    most-recently-updated run instead (by ``last_updated_at``).
-
-    **Definition v2 (2026-09-25): average over the runs this batch touched, not
-    every run in the projection.** v1 averaged over ``curr.runs`` in full -- up to
-    ``ROUTE_ARBITRATION_MAX_RUNS`` (2000) runs retained for 24h, ~600-800 live.
-    Every run the batch did not touch is identical in ``prev``/``curr`` and scored
-    0.0 against itself, so one run flipping one of four fields read
-    ``0.25 / 800 ~= 0.0003`` and a full four-field flip topped out near 0.0012:
-    structurally unable to read anything but calm (found in PR #2322/#2326). A run
-    is touched when it is new in ``curr`` or differs from its ``prev`` copy -- the
-    route reducer stamps the tick's clock on every run it creates or merges
-    (``route_loop/grammar_extract.py``/``merge.py``), and eviction only removes
-    runs, so this is exactly the set the batch wrote (see ``_touched_runs``).
-    No touched runs -> 0.0, an
-    honest "no decision was made this tick". Several new runs in one batch all
-    share one clock, so they cannot be ordered among themselves; each is compared
-    against ``prev``'s latest run, as before. Bumped
-    ``orion.schemas.prediction_error_definitions`` so Candidate A's persisted
-    baseline, built on v1's near-zero numbers, restarts.
-
-    **Undecided runs are not decisions (review finding, 2026-09-25).** A route
-    decision arrives as a trace-start event plus a decision event. If a batch
-    boundary splits them, the reducer creates the run with ``lane``/``lane_reason``/
-    ``output_mode`` all ``"unknown"``. v1's huge denominator hid this; under v2 it
-    would read 0.75 twice (unknown vs the last decision, then the real decision vs
-    its own unknown copy). So a touched run with no decision yet is skipped, and a
-    run whose previous copy had no decision is compared against the latest
-    *decided* run in ``prev`` instead.
-    """
-    fields = ("lane", "lane_reason", "output_mode", "mind_requested")
-    run_scores: list[float] = []
-    prev_fallback = _latest_run(
-        {tid: run for tid, run in prev.runs.items() if _route_run_has_decision(run)}
-    )
-    for trace_id, curr_run in _touched_runs(prev.runs, curr.runs):
-        if not _route_run_has_decision(curr_run):
-            continue
-        prev_run = prev.runs.get(trace_id)
-        if prev_run is None or not _route_run_has_decision(prev_run):
-            prev_run = prev_fallback
-        if prev_run is None:
-            continue
-        field_scores = [
-            1.0 if getattr(prev_run, field) != getattr(curr_run, field) else 0.0
-            for field in fields
-        ]
-        run_scores.append(_mean(field_scores))
-    return _mean(run_scores) if run_scores else 0.0
-
-
-def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
-    """0-1 score: what FRACTION of live bus-synaptic edges are currently
-    anomalous (``|zscore| >= _BUS_SYNAPTIC_ZSCORE_SATURATION``), across the
-    bus synaptic graph's (``orion_bus_synapse``) real-time EWMA/z-score edges.
-
-    **Deliberately not a prev/curr diff, unlike the other continuous-magnitude
-    instruments in this module.** The bus synaptic graph
-    (``services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update``)
-    already maintains its own rolling EWMA baseline per edge and computes each
-    edge's z-score against that baseline continuously as new traffic arrives --
-    the "prev expectation" is already baked into the z-score itself. The caller
-    queries current ``|zscore|`` values from FalkorDB (see
-    ``services/orion-substrate-runtime/app/worker.py::_bus_synaptic_tick``) and
-    is responsible for filtering to edges above the graph's own documented
-    cold-start reliability floor and recency window; this function does no
-    filtering itself, it only aggregates whatever list it is given.
-
-    **2026-07-30: this is a COUNTING metric now, not a magnitude one.**
-    It previously computed ``max(0, mean(|z|) - CALM_FLOOR) / (SATURATION -
-    CALM_FLOOR)``. That is retired, and the calm floor is gone with it. The
-    reasoning is kept because two *different* wrong versions preceded this one:
-
-    1. ``mean(|z|)`` over an unbounded, heavy-tailed population is a disguised
-       ``max()``. Live-measured on the real graph: median |z| 0.399, p90
-       1.123, but mean 29.278 -- of which 28.6 came from a SINGLE stale edge
-       carrying |z| = 7087.8. Inter-arrival gap z-scores are heavy-tailed by
-       construction, so one pathological edge dictated the whole reading. The
-       node sat pinned at 1.0, driving continuous false "Bus Anomaly Detected"
-       alerts through ``orion-equilibrium-service``'s transport gate.
-    2. Clamping each edge before averaging fixed the tail but broke the floor,
-       and was caught in review before it merged. ``_BUS_SYNAPTIC_CALM_FLOOR``
-       was ``sqrt(2/pi)``, the theoretical ``E|Z|`` for a *standard normal*
-       population. The real population is narrower than unit normal -- its
-       z-scores are computed against an EWMA variance that the same outliers
-       inflate -- so the clamped live mean was 0.5575 against a floor of
-       0.7979. Negative headroom: pinned at exactly 0.0, needing 19 of 222
-       edges at 3-sigma simultaneously just to leave zero and all 222 to reach
-       the consumer's alert threshold. A permanently-silent detector instead
-       of a permanently-firing one -- CLAUDE.md's metric quality gate step 4
-       ("a metric reading a suspiciously clean 0.0 is not automatically
-       'confirmed calm' either") verbatim.
-
-    Counting the anomalous fraction is immune to both failures *by
-    construction* rather than by calibration, which is why it was chosen over
-    a third attempt at tuning a magnitude:
-
-    - Bounded [0, 1] with no clamp needed -- it is a proportion.
-    - Robust to any tail: one edge at |z| = 7087 counts exactly the same as
-      one edge at |z| = 3.01, namely 1/N. The original bug cannot recur.
-    - Its rest point is an interpretable, theory-anchored quantity rather than
-      a fitted constant: for a genuinely calm standard-normal edge population
-      it is ``P(|Z| >= 3) = 0.0027``. Live-measured baseline on the real mesh
-      (60 samples over 10 minutes): median 0.026, mean 0.027, p95 0.072, max
-      0.094, across 24 distinct values -- roughly 10x the normal-theory value,
-      consistent with the known heavier-than-normal tail, and non-degenerate in
-      both directions (it never read 0.0 and never read 1.0).
-
-      A first 2-minute sample suggested a max of 0.043; the 10-minute sample
-      found 0.094. Recorded because the short window would have supported a
-      materially wrong threshold claim -- the same "window too thin to rank"
-      trap the precision-weighted-attention spec already hit once.
-
-    **Deliberate, disclosed scope limit**: this is a MESH-WIDE detector and
-    structurally cannot resolve a single-organ failure. Live per-organ edge
-    counts put the busiest organ (``orion-social-memory``, 12 of ~235 edges)
-    at 0.051 if every one of its edges went anomalous at once -- below the
-    observed baseline max of 0.094. Even the three busiest organs failing
-    together reads only 0.136, a mere 1.45x that baseline max, so this metric
-    cannot cleanly separate a few-organ event from noise at ANY threshold.
-    What it does resolve reliably is a broad mesh event (>=15-20% of edges,
-    several times the baseline). Single-organ detection needs a
-    per-organ signal, not a lower threshold on this one; ``services/orion-hub/
-    scripts/bus_synaptic_graph_routes.py``'s ``/propagate`` route already
-    walks per-organ blast radius and is the right place to build it. Do not
-    "fix" this by lowering the consumer's threshold into the noise band.
-    """
-    if not edge_zscores:
-        return 0.0
-    anomalous = sum(1 for z in edge_zscores if abs(z) >= _BUS_SYNAPTIC_ZSCORE_SATURATION)
-    return anomalous / len(edge_zscores)
+# route_prediction_error() and bus_synaptic_prediction_error() were DELETED
+# 2026-11 (PE suite rebuild step 5, docs/superpowers/specs/
+# 2026-11-08-prediction-error-suite-rebuild-design.md). Neither was a forecast:
+# route scored a categorical decision-mismatch rate between consecutive route
+# arbitration runs, and bus_synaptic counted the fraction of bus-synaptic edges
+# whose inter-arrival z-score was >= 3 (a lull-ending detector). Their nodes
+# (node:substrate.route, node:substrate.bus_synaptic) are on
+# orion.substrate.prediction_error_freshness.RETIRED_PREDICTION_ERROR_NODE_IDS
+# so a lingering stored value is never read as a reading. The route reducer
+# and projection (orion/substrate/route_loop/) stay. Git history keeps both
+# functions and their calibration notes.
 
 
 # ---------------------------------------------------------------------------

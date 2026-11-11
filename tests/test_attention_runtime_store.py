@@ -270,8 +270,8 @@ def test_advance_node_prediction_error_baseline_skips_malformed_rows_but_advance
     store._engine = fake_engine
 
     baseline = store.advance_node_prediction_error_baseline(
-        target_id="node:substrate.route",
-        reducer_key="route_arbitration",
+        target_id="node:substrate.biometrics",
+        reducer_key="node_biometrics",
         alpha=0.2,
         min_variance=1e-5,
         fetch_limit=200,
@@ -294,8 +294,8 @@ def test_advance_node_prediction_error_baseline_degrades_to_cold_start_on_error(
     store._engine = fake_engine
 
     baseline = store.advance_node_prediction_error_baseline(
-        target_id="node:substrate.bus_synaptic",
-        reducer_key="bus_synaptic",
+        target_id="node:substrate.chat",
+        reducer_key="chat_session",
         alpha=0.2,
         min_variance=1e-5,
         fetch_limit=200,
@@ -306,8 +306,9 @@ def test_advance_node_prediction_error_baseline_degrades_to_cold_start_on_error(
 
 
 # -- definition-version reset (2026-09-25) --------------------------------------
-# route_arbitration and chat_session moved to prediction-error definition v2
-# (orion/schemas/prediction_error_definitions.py). A baseline built on v1 numbers
+# chat_session and node_biometrics moved to prediction-error definition v2+
+# (orion/schemas/prediction_error_definitions.py; route_arbitration, the
+# original vehicle here, was retired 2026-11 -- these use node_biometrics, v2). A baseline built on v1 numbers
 # must restart, and receipts the old producer wrote must not seed the new one.
 
 _CURSOR = datetime(2026, 9, 25, 5, 0, tzinfo=timezone.utc)
@@ -345,7 +346,7 @@ def test_baseline_resets_when_definition_version_moves() -> None:
         persisted=persisted,
     )
 
-    baseline = _advance(store, "node:substrate.route", "route_arbitration")
+    baseline = _advance(store, "node:substrate.biometrics", "node_biometrics")
 
     # 10,254 v1 observations discarded; only the one v2 receipt folded.
     assert baseline.observation_count == 1
@@ -365,7 +366,7 @@ def test_baseline_reset_is_persisted_even_with_no_new_receipts() -> None:
         persisted=persisted,
     )
 
-    baseline = _advance(store, "node:substrate.route", "route_arbitration")
+    baseline = _advance(store, "node:substrate.biometrics", "node_biometrics")
 
     assert baseline.observation_count == 0
     assert baseline.last_value is None
@@ -388,7 +389,7 @@ def test_old_version_receipts_never_seed_a_fresh_baseline() -> None:
         persisted=persisted,
     )
 
-    baseline = _advance(store, "node:substrate.route", "route_arbitration")
+    baseline = _advance(store, "node:substrate.biometrics", "node_biometrics")
 
     assert baseline.observation_count == 0
     assert persisted[-1]["last_receipt_created_at"] == later
@@ -426,7 +427,7 @@ def test_missing_version_column_keeps_legacy_behaviour() -> None:
         persisted=persisted,
     )
 
-    baseline = _advance(store, "node:substrate.route", "route_arbitration")
+    baseline = _advance(store, "node:substrate.biometrics", "node_biometrics")
 
     assert baseline.observation_count == 10255
     assert persisted[-1]["_versioned_sql"] is False
@@ -437,7 +438,7 @@ def test_version_column_probe_is_cached_once_present() -> None:
     store._engine, _conn, calls = _mock_engine_for_baseline(
         existing_row=None, new_rows=[], version_column=True
     )
-    _advance(store, "node:substrate.route", "route_arbitration")
+    _advance(store, "node:substrate.biometrics", "node_biometrics")
     _advance(store, "node:substrate.chat", "chat_session")
     assert calls.count("probe_version_column") == 1
 
@@ -492,7 +493,7 @@ class TestReceiptLookupsStayIndexEligible:
     def test_baseline_advance_filters_the_column(self) -> None:
         sql = self._captured_sql(
             "advance_node_prediction_error_baseline",
-            target_id="node:substrate.route",
+            target_id="node:substrate.biometrics",
             reducer_key="route",
             alpha=0.1,
             min_variance=1e-6,
@@ -514,7 +515,7 @@ def test_version_skipped_receipts_are_logged(caplog) -> None:
         version_column=True,
     )
     with caplog.at_level("WARNING"):
-        _advance(store, "node:substrate.route", "route_arbitration")
+        _advance(store, "node:substrate.biometrics", "node_biometrics")
     assert "node_prediction_error_baseline_version_skipped" in caplog.text
     assert "skipped=1" in caplog.text
 
@@ -534,7 +535,7 @@ def test_advance_failure_forces_a_column_re_probe() -> None:
     fake_engine = MagicMock()
     fake_engine.begin.side_effect = RuntimeError("column does not exist")
     store._engine = fake_engine
-    _advance(store, "node:substrate.route", "route_arbitration")
+    _advance(store, "node:substrate.biometrics", "node_biometrics")
     assert store._definition_version_column is None
 
 

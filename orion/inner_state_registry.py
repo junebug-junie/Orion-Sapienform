@@ -884,8 +884,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "transport_baseline_hourly.timeout_count (gpu_pool_wait keys excluded). "
             "Circular pairs (signal computed from, or sharing a short upstream with, "
             "the outcome) are verdict excluded_circular and never rendered: "
-            "execution x turn_failed / response_repair, chat x response_repair, "
-            "bus_synaptic x rpc_timeout (CIRCULAR_PAIRS)."
+            "execution x turn_failed / response_repair, chat x response_repair "
+            "(CIRCULAR_PAIRS; bus_synaptic x rpc_timeout left with the retired node, 2026-11)."
         ),
     ),
     InnerStateSignal(

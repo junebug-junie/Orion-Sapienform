@@ -118,7 +118,7 @@ Added 2026-07-21 -- see `docs/superpowers/design/2026-07-18-collapse-mirror-meta
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE` | `true` | Master gate for the telemetry-anomaly trigger |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE` | `false` (since 2026-11) | Master gate for the telemetry-anomaly trigger. Off until the mood-arc encoder is retrained: v4 drifted and its bus_synaptic input was retired (PE suite rebuild step 5). |
 | `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Multiplier applied to the encoder's own `recon_error_p95` |
 | `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Source channel (also read by substrate-runtime's brain frame and persisted by sql-writer) |
 | `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_ENABLE` | `true` | One fire per anomaly episode (off = old one-fire-per-window on the shared lane) |

@@ -58,6 +58,7 @@ from orion.substrate.store import (
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
     ACTIVATION_CAS_TOLERANCE,
+    DORMANCY_NODE_KINDS,
     NodeDynamicsWriteV1,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
@@ -1198,7 +1199,7 @@ class FalkorSubstrateStore:
             "n.recency_score = $recency_score",
             f"n.{ACTIVATION_DECAYED_AT_KEY} = ${ACTIVATION_DECAYED_AT_KEY}",
         ]
-        if is_concept and write.dormant is not None:
+        if write.node_kind in DORMANCY_NODE_KINDS and write.dormant is not None:
             params["dormant"] = bool(write.dormant)
             params["dormancy_updated_at"] = write.dormancy_updated_at
             activation_assignments += [

@@ -153,8 +153,11 @@ def test_a_sighting_lifts_the_cluster_and_it_returns_to_rest_within_a_day():
     assert readings[timedelta(minutes=10)] >= 0.5
     assert readings[timedelta(hours=6)] < 0.35
     assert readings[timedelta(hours=20)] <= 0.08
+    # "Rest" is the activation reading above. The dormant FLAG is not set on
+    # entity nodes: the durable store keeps it on concept nodes only
+    # (store.DORMANCY_NODE_KINDS), so the tick no longer decides it here.
     node = store.get_node_by_id(entity_node_id_for_individual("c1"))
-    assert node.metadata["dormant"] is True
+    assert "dormant" not in node.metadata
 
 
 def test_the_old_frozen_shape_fails_the_lifecycle_check():

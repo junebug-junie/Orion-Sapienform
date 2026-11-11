@@ -146,7 +146,7 @@ def test_domain_map_matches_active_inference_domains_exactly():
         f"  only in the reducer:  {sorted(set(ACTIVE_INFERENCE_DOMAINS) - mapped)}\n"
         "If a domain is being retired, remove it from BOTH in the same patch. "
         "If one is being added, wire it into both, or add it here with a comment "
-        "explaining the deliberate asymmetry (see harness_closure/codebase)."
+        "explaining the deliberate asymmetry (see codebase)."
     )
 
 

@@ -172,7 +172,6 @@ def test_cli_prompt_semantics_gate_passes():
 @pytest.mark.parametrize(
     "node_id,kind",
     [
-        ("node:substrate.harness_closure", "placeholder"),
         ("node:substrate.cabinet", "trigger"),
         ("node:substrate.route", "count"),
         ("node:substrate.execution", "level"),
@@ -184,6 +183,12 @@ def test_node_qualified_prediction_error_entries_carry_semantics(node_id, kind):
     assert node.value_kind == kind
     assert node.rest and node.sparsity
     assert node.producer_service == "orion-substrate-runtime"
+
+
+def test_retired_harness_closure_has_no_prediction_error_entry():
+    """Retired 2026-11-11 (fixed 0.65 placeholder, producer removed)."""
+    names = {n.name for n in resolve_field_channels()}
+    assert "node:substrate.harness_closure.prediction_error" not in names
 
 
 def test_vision_organ_has_no_prediction_error_entry():

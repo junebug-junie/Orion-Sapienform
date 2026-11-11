@@ -82,8 +82,9 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # calls "a different, louder failure", for a domain nobody should be alarmed
 # about. A retired domain belongs off the list, not in a warning state forever.
 #
-# `harness_closure` deliberately STAYS: it is excluded from the aggregate but
-# has a live producer, which is exactly what that heading is for.
+# `harness_closure` REMOVED 2026-11-11 for the same reason: its producer (a
+# fixed 0.65, never a measured size) was retired. Until the stored node is
+# deleted it still renders, as an unlisted extra row with its real age.
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "biometrics",
     "bus_synaptic",
@@ -91,7 +92,6 @@ KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "codebase",
     "execution",
     "route",
-    "harness_closure",
 )
 
 _NODE_ID_PREFIX = "node:substrate."

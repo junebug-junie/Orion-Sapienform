@@ -285,6 +285,22 @@ def _prediction_error_candidates(
     min_error: float,
     now: datetime,
 ) -> list[FrontierInvocationSignalV1]:
+    """One candidate per node whose prediction_error is a real measurement and is
+    still above ``min_error`` after staleness decay.
+
+    Value-kind rule (retire step 3, docs/superpowers/specs/2026-11-08-prediction-
+    error-suite-rebuild-design.md): a node whose glossary value_kind is not a
+    measurement (placeholder, bucket, or no entry) never seeds curiosity -- the
+    same rule ``orion.attention.self_readings`` applies to what Orion reads about
+    itself. Before this, ``node:substrate.harness_closure`` (a fixed 0.65) led 130
+    of 1,575 invoked curiosity runs in the 7 days to 2026-11-11. An unreadable
+    glossary reads as "not a measurement" for that tick (fail closed: no
+    prediction-error seeds, other seed sources unaffected).
+    """
+    from orion.attention.self_readings import (
+        node_prediction_error_is_measurement as is_measurement,
+    )
+
     candidates: list[FrontierInvocationSignalV1] = []
     for node in nodes:
         try:
@@ -297,6 +313,10 @@ def _prediction_error_candidates(
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
             if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
+                continue
+            if not is_measurement(node_id):
+                # placeholder / bucket / no glossary entry: the stored number is
+                # not a size, so it is not "sustained prediction error".
                 continue
             candidates.append(
                 FrontierInvocationSignalV1(

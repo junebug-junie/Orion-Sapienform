@@ -13,7 +13,32 @@ from orion.substrate.endogenous_curiosity import (
 )
 from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
 
+import orion.attention.self_readings as self_readings
+import pytest
+
 _NOW = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+
+_REAL_SEMANTICS = self_readings.node_prediction_error_semantics
+# Synthetic ids for the value-kind tests; every other fake id ("node:hot") reads
+# as a level so the budget/decay tests keep testing budget/decay.
+_FAKE_KINDS = {
+    "node:fake.placeholder": "placeholder",
+    "node:fake.bucket": "bucket",
+    "node:fake.unknown": None,
+    "node:fake.trigger": "trigger",
+}
+
+
+@pytest.fixture(autouse=True)
+def _fake_ids_are_levels(monkeypatch):
+    def semantics(node_id: str):
+        if node_id in _FAKE_KINDS:
+            return _FAKE_KINDS[node_id], None
+        if node_id.startswith("node:substrate."):
+            return _REAL_SEMANTICS(node_id)
+        return "level", "higher_is_worse"
+
+    monkeypatch.setattr(self_readings, "node_prediction_error_semantics", semantics)
 
 
 def _node(node_id: str, prediction_error: float, *, observed_at: datetime | None = None) -> SimpleNamespace:
@@ -354,3 +379,55 @@ def test_future_dated_turn_is_treated_as_age_zero_and_naive_is_utc() -> None:
     naive = _turn(0.8, (_NOW - timedelta(seconds=900)).replace(tzinfo=None), turn_id="naive")
     level = repair_appraisal_from_chat_turns([naive], now=_NOW.replace(tzinfo=None)).dimensions["level"]
     assert abs(level - 0.4) < 1e-9
+
+
+def test_non_measurement_value_kinds_never_seed_curiosity() -> None:
+    """Retire step 3: placeholder, bucket, and unknown value kinds are skipped
+    even far above min_error; a real measurement kind at the same value seeds."""
+    nodes = [
+        _node("node:fake.placeholder", 0.95),
+        _node("node:fake.bucket", 0.95),
+        _node("node:fake.unknown", 0.95),
+        _node("node:fake.trigger", 0.9),
+    ]
+    seeds = endogenous_curiosity_candidates(nodes=nodes, config=_enabled(budget=8))
+    assert [s.focal_node_refs for s in seeds] == [["node:fake.trigger"]]
+
+
+def test_lingering_harness_closure_node_never_seeds_curiosity() -> None:
+    """The retired harness_closure node (no glossary entry, no producer) may still
+    sit in the graph at its last 0.65 until it is deleted. Read against the REAL
+    glossary it is not a measurement, so it never seeds -- even fresh."""
+    seeds = endogenous_curiosity_candidates(
+        nodes=[
+            _node("node:substrate.harness_closure", 0.65, observed_at=_NOW),
+            _node("node:substrate.execution", 0.8, observed_at=_NOW),
+        ],
+        config=_enabled(budget=8),
+        now=_NOW,
+    )
+    assert [s.focal_node_refs for s in seeds] == [["node:substrate.execution"]]
+
+
+def test_unreadable_glossary_fails_closed_for_prediction_error_only(monkeypatch) -> None:
+    """Glossary unreadable -> value_kind None -> no prediction-error seeds; other
+    seed sources still run. Exercises the real exception path in
+    world_first.node_prediction_error_semantics."""
+    import orion.attention.world_first as world_first
+    import orion.field.channel_glossary as channel_glossary
+
+    def _boom(*_a, **_k):
+        raise OSError("glossary unreadable")
+
+    monkeypatch.setattr(self_readings, "node_prediction_error_semantics", _REAL_SEMANTICS)
+    monkeypatch.setattr(channel_glossary, "resolve_channel_entry", _boom)
+    monkeypatch.setattr(world_first, "_SEMANTICS_CACHE", {})
+    appraisal = SimpleNamespace(
+        dimensions={"level": 0.9}, causal_molecule_ids=[], summary="x", confidence=0.7
+    )
+    seeds = endogenous_curiosity_candidates(
+        nodes=[_node("node:substrate.execution", 0.9)], repair_appraisal=appraisal, config=_enabled()
+    )
+    assert [n for s in seeds for n in s.notes if n.startswith("source:")] == [
+        "source:repair_pressure"
+    ]

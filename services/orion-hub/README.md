@@ -448,9 +448,9 @@ wrong shape). `scripts/outreach_vocabulary.py` builds two sets:
   identifier that is ever real anywhere in the system: `orion.field.
   channel_glossary.load_glossary()`, `config/metrics/metric_definitions.
   lock.json`, `orion.substrate.attention_self_model.ACTIVE_INFERENCE_DOMAINS`
-  plus the literal `"harness_closure"` (real but currently-quiet — the exact
-  term this fabricated, so it must be in the universe even though it is
-  rarely true), and `config/biometrics/node_catalog.yaml`'s node ids. Only
+  plus the literal `"harness_closure"` (retired 2026-11-11, never true —
+  the exact term this fabricated, kept so naming it is still caught as
+  ungrounded), and `config/biometrics/node_catalog.yaml`'s node ids. Only
   COMPOUND names (containing `"_"` or `":"`) enter from the two broad,
   machine-generated sources — a bare single word like `"pressure"` or
   `"confidence"` is a real registered channel/metric name in those sources
@@ -460,11 +460,8 @@ wrong shape). `scripts/outreach_vocabulary.py` builds two sets:
   universe that is actually true THIS tick: `TensionTriggerReason`'s
   `target_id`, plus `sustained_load_pressure_channel`/`_node_id` when
   `sustained_load_pressure > 0.0` — the exact facts `build_outreach_prompt`
-  already had permission to name. Does **not** yet include a live
-  `harness_closure` prediction-error reading — checked live, nothing threads
-  that reducer input (`orion/substrate/attention_self_model.py`'s
-  `harness_closure_signal` argument) to Hub today; that is a real follow-up,
-  not solved here.
+  already had permission to name. Never grounds `harness_closure`: that node
+  was retired 2026-11-11 (no producer).
 
 `build_outreach_prompt` now states the tick's grounded names explicitly (or
 states plainly that nothing is grounded) and, only when recent-turns history

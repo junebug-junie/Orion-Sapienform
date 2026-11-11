@@ -55,10 +55,10 @@ were built for this purpose; all four already exist for their own reasons):
     py` already treats as "is this a real, registered name" for its own
     definition-change alert.
   * `orion.substrate.attention_self_model.ACTIVE_INFERENCE_DOMAINS`, plus the
-    literal string `"harness_closure"` -- a real but currently-quiet domain
-    (not in the active set; see that constant's own docstring) that is
-    specifically the term the 2026-09-07 incident fabricated, so it MUST be
-    in the closed universe even though it is rarely true.
+    literal string `"harness_closure"` -- the term the 2026-09-07 incident
+    fabricated. Its producer was retired 2026-11-11, so it is now never
+    true; it stays in the closed universe so that naming it is still caught
+    as ungrounded rather than slipping past as an unknown word.
   * `config/biometrics/node_catalog.yaml`'s node ids
     (`orion.biometrics.node_catalog.NodeCatalog`).
 
@@ -115,10 +115,11 @@ from typing import Any, Iterable
 
 logger = logging.getLogger("orion-hub.outreach_vocabulary")
 
-# Real but currently-quiet domain(s), not (yet) in ACTIVE_INFERENCE_DOMAINS,
-# that are nonetheless real enough for Orion to legitimately name -- see
-# module docstring. This literal set exists because of exactly one incident;
-# do not fold ordinary domain-name discovery into it.
+# Names that are never grounded but must stay catchable -- see module
+# docstring. `harness_closure` is retired (2026-11-11, no producer) and is
+# listed only so a message naming it is still blocked as ungrounded. This
+# literal set exists because of exactly one incident; do not fold ordinary
+# domain-name discovery into it.
 _EXTRA_KNOWN_DOMAINS: frozenset[str] = frozenset({"harness_closure"})
 
 # A candidate text token (or a broad-source registry entry) must contain one
@@ -332,13 +333,8 @@ def grounded_signal_names(
     without getting blocked as fabrication. `tension_reason=None` with empty
     context still grounds nothing.
 
-    Does NOT include a live `harness_closure` prediction-error reading.
-    Checked live 2026-09-08: no such reading reaches Hub today.
-    `reduce_attention_self_model`'s own `harness_closure_signal` argument
-    (`orion/substrate/attention_self_model.py`) is a substrate-side reducer
-    input built from a FalkorDB node's metadata, not something this tick's
-    `OutreachContext` has access to -- threading it through is a real
-    follow-up, not solved in this patch (see this patch's PR report).
+    Never grounds `harness_closure`: that node was retired 2026-11-11 (no
+    producer), and the reducer argument that once narrated it is gone.
     """
     facts: set[str] = set()
     if tension_reason is not None:

@@ -1,11 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 783,
+  "metric_count": 782,
   "_last_change": {
     "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   removed metric://bus_channel/orion-cortex-exec/orion:self_study:items:write"
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.harness_closure.prediction_error"
     ]
   },
   "definitions": {
@@ -4697,20 +4697,6 @@
       "prompt_sites": [
         "orion.attention.self_readings:render_self_readings",
         "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
-      ],
-      "notes": "category=self_monitoring level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.harness_closure.prediction_error": {
-      "meaning": "PLACEHOLDER: a fixed 0.65 written each time a harness turn closes with its surprise unresolved -- a yes/no shown as a size, until HarnessPostTurnClosureV1 carries surprise_level_at_draft. FalkorDB node only; not in FieldStateV1 node_vectors.",
-      "value_kind": "placeholder",
-      "rest": "none designed: the node holds 0.65 after the first unresolved closure and nothing writes it lower. 0.65 is not a measured surprise level.",
-      "sparsity": "event_gated",
-      "absent_means": "the node keeps its last 0.65; endogenous curiosity decays its use linearly to 0 over 1800 s of age (orion/substrate/endogenous_curiosity.py:129).",
-      "polarity": "higher_is_worse",
-      "declared_consumers": [
-        "orion.substrate.attention_self_model:reduce_attention_self_model",
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"

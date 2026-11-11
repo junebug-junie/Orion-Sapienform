@@ -84,10 +84,6 @@ _HOP_PATTERNS: dict[str, re.Pattern[str]] = {
         r"post_turn_closure received\s+corr=.*surprise_unresolved=(?P<surprise_unresolved>\S+).*outcome_id=(?P<outcome_id>\S+)",
         re.I,
     ),
-    "prediction_error": re.compile(
-        r"post_turn_closure_prediction_error_write\s+corr=.*node_id=(?P<node_id>\S+)\s+error=(?P<error>[\d.]+)",
-        re.I,
-    ),
     "context_overflow": re.compile(r"exceed_context_size_error|69774 tokens", re.I),
     "final_text_assembly": re.compile(
         r"final_text_assembly\s+corr_id=.*verb=(?P<verb>\S+).*result_len=(?P<result_len>\d+)",
@@ -144,7 +140,6 @@ class TurnTrace:
             "harness_complete",
             "closure_publish",
             "closure_received",
-            "prediction_error",
         ]
         seen = {e.hop for e in self.evidence}
         return [h for h in order if h in seen]
@@ -336,7 +331,6 @@ def format_turn_trace(trace: TurnTrace, *, verbose: bool = False) -> str:
         "harness_complete": "HarnessRunV1 reply",
         "closure_publish": "7. Post-turn closure (publish)",
         "closure_received": "7. Post-turn closure (substrate)",
-        "prediction_error": "7. Prediction error write",
         "context_overflow": "Motor context overflow",
         "final_text_assembly": "Cortex final_text assembly",
     }

@@ -132,7 +132,7 @@ def test_week_stale_node_is_not_rewritten_every_tick(monkeypatch):
     still read as already-recorded instead of re-writing every tick."""
     worker = _make_worker(monkeypatch, history_enabled=True)
     old = datetime.now(timezone.utc) - timedelta(days=9)
-    node = _pe_node("node:substrate.harness_closure", 0.65, old)
+    node = _pe_node("node:substrate.chat", 0.65, old)
     _run_tick(worker, [node])
     _run_tick(worker, [node])
     assert worker._store.save_prediction_error_history_samples.call_count == 1

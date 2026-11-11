@@ -404,10 +404,10 @@ channels:
   # bus_synaptic entry above keeps its digester URN; renaming it is a
   # separate definition change.
   #
-  # Two of these never reach FieldStateV1 node_vectors at all
-  # (harness_closure, cabinet): they live only on the FalkorDB substrate
+  # One of these never reaches FieldStateV1 node_vectors at all
+  # (cabinet): it lives only on the FalkorDB substrate
   # node (`metadata.prediction_error`) and in
-  # substrate_node_prediction_error_history. Their trend_source says so.
+  # substrate_node_prediction_error_history. Its trend_source says so.
   #
   # There is deliberately NO node:substrate.vision_organ prediction_error
   # entry: that node carries vision_frame_staleness and
@@ -415,25 +415,13 @@ channels:
   # (orion/substrate/vision_organ_loop/reducer.py); see those entries.
   # ---------------------------------------------------------------------
 
-  # services/orion-substrate-runtime/app/worker.py:158
-  # _HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65, written by
-  # handle_post_turn_closure (:2172) only when closure.surprise_unresolved.
-  # Never written back down. Live: 113 rows, 1 distinct value (0.650).
-  - node: "node:substrate.harness_closure"
-    producer: orion-substrate-runtime
-    channel: prediction_error
-    level: [node]
-    category: self_monitoring
-    meaning: "PLACEHOLDER: a fixed 0.65 written each time a harness turn closes with its surprise unresolved -- a yes/no shown as a size, until HarnessPostTurnClosureV1 carries surprise_level_at_draft. FalkorDB node only; not in FieldStateV1 node_vectors."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.harness_closure'"
-    consumers:
-      - "orion.substrate.attention_self_model:reduce_attention_self_model"
-      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-    semantics:
-      value_kind: placeholder
-      rest: "none designed: the node holds 0.65 after the first unresolved closure and nothing writes it lower. 0.65 is not a measured surprise level."
-      sparsity: event_gated
-      absent_means: "the node keeps its last 0.65; endogenous curiosity decays its use linearly to 0 over 1800 s of age (orion/substrate/endogenous_curiosity.py:129)."
+  # node:substrate.harness_closure RETIRED 2026-11-11 (retire step 3,
+  # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md):
+  # it was a fixed 0.65, never a measured size, and led 130 of 1,575 invoked
+  # curiosity runs in the 7 days before. Producer removed; no entry, so every
+  # glossary-gated reader treats a lingering node or history row as "not a
+  # measurement". Successor: a turn-level self-bet (draft-time confidence
+  # scored against the reflection verdict), not a substrate node.
 
   # orion/autonomy/cabinet_heat.py:176 cabinet_warming_error(): only when
   # the thermal state is 'elevated' (not 'hot', not 'unknown') AND the rise

@@ -300,13 +300,15 @@ Every hour: "will Juniper send Orion a message in the next hour?" (`app/reachabl
 of the hour from data before it, settled 10 min after the hour ends from `chat_message`
 (`role = 'user'`, outside `orion_*` sessions). Served model: ridge logistic on hours since her last
 message, her clock rules (asleep 03-08, weekend mornings, evenings, Mondays) and whether she typed to
-Claude Code recently (`juniper_affective_state_log`). Graded per local day against a recency-weighted
+Claude Code recently (`juniper_affective_state_log`); the state model alone and the base rate are
+the other two contenders, and the lowest-loss one over 60 days is served. Graded per local day against a recency-weighted
 base rate, for all hours and cold hours (no message in the prior 3 h), as a loss gap, its standard
 error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 `PREDICTION_REACHABLE_ENABLED`. No consumer and no bus event yet.
 
-Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): overall 26 % lower loss (prob_better
-0.95); cold hours 2 % (0.70); under-confident at every level.
+Replay on typing-covered hours 08-14..11-10 (`evals/run_reachable_replay_eval.py`): the state model
+wins overall (~29 % lower loss than base); in cold hours nothing beats the base rate; under-confident
+at every level.
 
 ## Surprise
 

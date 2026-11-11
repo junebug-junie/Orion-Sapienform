@@ -15,7 +15,7 @@ are the past hours; weight = 0.5 ** (age / 60 days).
     reachable_base_rate       baseline. Weighted rate over every past hour, smoothed toward 2 %.
     reachable_state           Markov state only: hours since her last message, 5 buckets, backed off
                               to the base rate.
-    reachable_activity_logit  served. L2 logistic regression (lambda 1) on:
+    reachable_activity_logit  contender. L2 logistic regression (lambda 1) on:
         state buckets          <1 h, 1-3, 3-12, 12-48 (reference: >48 h or never)
         asleep                 03:00-08:00 Denver (her word: asleep by 3; 0 messages in 510 h)
         weekend_morning        Sat/Sun before noon (0 in 361 h)
@@ -34,25 +34,32 @@ better -- no alpha, no pass/fail. Two subsets:
 
     all     every hour
     cold    hours with no message in the 3 h before the origin: the question outreach timing needs
-            ("will she come back?"). Replay 07-31..11-10: +2 % loss, prob_better 0.70.
+            ("will she come back?"). No skill yet (see below).
 
 A Wilcoxon / sign test on daily differences is the wrong test here: most days have no message, the
 model wins each of them by a hair, and the sign test calls that significant even where the mean loss
 is worse (seen in the replay). The paired test is on the mean.
 
-Served: whichever of model and baseline had the lower mean log loss (see ``verdict``).
+Served: whichever of the three had the lowest mean log loss over the last 60 days (see ``verdict``).
+Replay on typing-covered hours (2026-08-14..11-10): the state model wins overall, and none of the three
+beats the base rate in cold hours. Typing to Claude carries 3-4x lift on its own, but it overlaps the
+state and the clock (she codes with Claude while chatting with Orion, in the evening).
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
-
+import pandas as pd
 from scipy.optimize import minimize
+from scipy.special import expit
 
-from app.backtest import paired_win_p
+from app.backtest import paired_gap
+
+logger = logging.getLogger("orion-prediction.reachable")
 
 MODEL = "reachable_activity_logit"
 STATE_MODEL = "reachable_state"
@@ -70,6 +77,7 @@ P_CLIP = 1e-4
 MIN_DAYS = 20                                # settled local days before a verdict is read
 FEATURES = ("state_lt1h", "state_1_3h", "state_3_12h", "state_12_48h", "asleep", "weekend_morning", "evening",
             "monday", "claude_1h", "claude_1_3h", "no_claude_6h")
+COVERED_FRAC = 0.9                           # share of the prior 6 h the typing log must cover
 CALIBRATION_BINS = (0.0, 0.02, 0.05, 0.15, 0.4, 1.0)
 _HOUR_NS = 3_600_000_000_000
 
@@ -87,13 +95,9 @@ def state_bucket(hours_since: float | None) -> int:
 
 
 def _local(origins_ns: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(hour, weekday) in Denver, DST-aware: offsets come from zoneinfo per origin."""
-    hr = np.empty(len(origins_ns), dtype=np.int64)
-    wd = np.empty(len(origins_ns), dtype=np.int64)
-    for i, o in enumerate(origins_ns):
-        t = datetime.fromtimestamp(o / 1e9, tz=LOCAL_TZ)
-        hr[i], wd[i] = t.hour, t.weekday()
-    return hr, wd
+    """(hour, weekday) in Denver, DST-aware."""
+    t = pd.DatetimeIndex(pd.to_datetime(origins_ns, utc=True)).tz_convert(LOCAL_TZ)
+    return t.hour.to_numpy(), t.dayofweek.to_numpy()
 
 
 def _count_before(ev_ns: np.ndarray, ev_w: np.ndarray, at: np.ndarray, back_h: float, skip_h: float = 0.0):
@@ -123,19 +127,45 @@ def features(hours: np.ndarray, msg_ns: np.ndarray, typed_ns: np.ndarray,
     return np.column_stack(cols).astype(float), b
 
 
-def fit_logit(X: np.ndarray, y: np.ndarray, w: np.ndarray, l2: float = L2) -> np.ndarray:
-    """Weighted ridge logistic regression; returns [bias, *coefs]."""
+def fit_logit(X: np.ndarray, y: np.ndarray, w: np.ndarray, l2: float = L2) -> np.ndarray | None:
+    """Weighted ridge logistic regression; [bias, *coefs], or None when the optimiser fails."""
     Xb = np.column_stack([np.ones(len(X)), X])
 
     def f(beta):
         z = Xb @ beta
-        p = np.clip(1 / (1 + np.exp(-z)), 1e-9, 1 - 1e-9)
-        loss = -(w * (y * np.log(p) + (1 - y) * np.log(1 - p))).sum() + l2 * (beta[1:] @ beta[1:])
-        g = Xb.T @ (w * (p - y))
+        # log(1 + e^z) - y z: exact log loss, no overflow, no clip
+        loss = (w * (np.logaddexp(0.0, z) - y * z)).sum() + l2 * (beta[1:] @ beta[1:])
+        g = Xb.T @ (w * (expit(z) - y))
         g[1:] += 2 * l2 * beta[1:]
         return loss, g
 
-    return minimize(f, np.zeros(Xb.shape[1]), jac=True, method="L-BFGS-B").x
+    res = minimize(f, np.zeros(Xb.shape[1]), jac=True, method="L-BFGS-B")
+    if not res.success:
+        logger.warning("reachable_logit_fit_failed %s", res.message)
+        return None
+    return res.x
+
+
+def _covered(intervals: Sequence[tuple[datetime, datetime]]):
+    """Function (a_ns, b_ns arrays) -> seconds of [a, b) covered by the union of the intervals."""
+    iv = sorted((_ns(a), _ns(b)) for a, b in intervals if b > a)
+    merged: list[list[int]] = []
+    for a, b in iv:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    starts = np.array([a for a, _ in merged], dtype=np.int64)
+    ends = np.array([b for _, b in merged], dtype=np.int64)
+    cum = np.concatenate([[0], np.cumsum(ends - starts)]).astype(float)
+
+    def upto(t: np.ndarray) -> np.ndarray:      # covered ns in (-inf, t)
+        i = np.searchsorted(starts, t, side="right")          # intervals starting before t
+        full = cum[np.maximum(i - 1, 0)]
+        part = np.where(i > 0, np.minimum(t, ends[np.maximum(i - 1, 0)]) - starts[np.maximum(i - 1, 0)], 0)
+        return np.where(i > 0, full + part, 0.0)
+
+    return lambda a, b: (upto(b) - upto(a)) / 1e9
 
 
 def _ns_sorted(ts: Iterable[datetime], before_ns: int) -> np.ndarray:
@@ -144,11 +174,19 @@ def _ns_sorted(ts: Iterable[datetime], before_ns: int) -> np.ndarray:
 
 
 def forecast(messages: Sequence[datetime], origin: datetime,
-             typed: Sequence[tuple[datetime, int]] = ()) -> dict:
+             typed: Sequence[tuple[datetime, int]] = (),
+             coverage: Sequence[tuple[datetime, datetime]] | None = None) -> dict:
     """p of a message in ``[origin, origin + 1 h)`` from data strictly before ``origin``.
 
     ``typed``: (window_until, message_count) rows of Juniper's typed Claude Code messages; each count
-    is placed at its window's end, so nothing typed after the origin can leak in."""
+    is placed at its window's end, so nothing typed after the origin can leak in. "claude_1h" therefore
+    means "a ~15 min window ended in the last hour" (typing up to ~75 min ago; 1 h cold-start windows).
+    A live forecast can miss a window that lands late (3 of 1,482 rows landed > 10 min late).
+
+    ``coverage``: (window_since, window_until) of EVERY typing-log row, zero counts included. An hour
+    whose prior 6 h the log covers < 90 % (before the producer existed, 2026-08-14, or an outage) does
+    not know whether she typed: it is left out of training, and when the origin itself is uncovered the
+    served p is the state model's. None = treat everything as covered (tests)."""
     origin = hour_floor(origin)
     o_ns = _ns(origin)
     ts = _ns_sorted(messages, o_ns)
@@ -177,10 +215,20 @@ def forecast(messages: Sequence[datetime], origin: datetime,
     base = float((w @ y + PRIOR_POS) / (w.sum() + PRIOR_HOURS))
     m = b == bucket
     p_state = float((w[m] @ y[m] + K * base) / (w[m].sum() + K))
-    if y.sum() == 0:
-        return {**out, "p": base, "p_state": p_state, "p_baseline": base}
-    beta = fit_logit(X, y, w)
-    p = float(1 / (1 + np.exp(-(beta[0] + x0 @ beta[1:]))))
+    if coverage is None:
+        known, origin_known = np.ones(len(hours), bool), True
+    else:
+        cov = _covered(coverage)
+        six = 6 * _HOUR_NS
+        known = cov(hours - six, hours) >= COVERED_FRAC * six / 1e9
+        origin_known = bool(cov(np.array([o_ns - six]), np.array([o_ns]))[0] >= COVERED_FRAC * six / 1e9)
+    out["typing_log_covered"] = origin_known
+    if not origin_known or y[known].sum() == 0:
+        return {**out, "p": p_state, "p_state": p_state, "p_baseline": base}
+    beta = fit_logit(X[known], y[known], w[known])
+    if beta is None:
+        return {**out, "p": p_state, "p_state": p_state, "p_baseline": base}
+    p = float(expit(beta[0] + x0 @ beta[1:]))
     return {**out, "p": p, "p_state": p_state, "p_baseline": base}
 
 
@@ -205,18 +253,15 @@ def _day_means(rows: Sequence[dict], key: str) -> dict:
 
 def _gap(cand: np.ndarray, ref: np.ndarray) -> dict:
     """Daily mean log-loss gap (cand - ref; negative = cand better), its overlap-aware standard error,
-    and the chance cand is really better: 1 - backtest.paired_win_p's one-sided p, i.e. P(true gap < 0)
-    under a flat prior with the same t approximation. No threshold is applied here."""
+    and the chance cand is really better, P(true gap < 0)
+    under a flat prior with the same t approximation (backtest.paired_gap). No threshold is applied here."""
     from scipy import stats
 
-    d = cand - ref
-    p_low, n = paired_win_p(cand, ref, lag=1)
-    if p_low is None:
+    mean, se, n = paired_gap(cand, ref, lag=1)
+    if mean is None:
         return {"gap_per_day": None, "gap_se": None, "prob_better": None}
-    mean = float(d.mean())
-    t = float(stats.t.ppf(min(max(p_low, 1e-12), 1 - 1e-12), df=n - 1))
-    se = abs(mean / t) if t != 0 else None
-    return {"gap_per_day": mean, "gap_se": se, "prob_better": 1.0 - float(p_low)}
+    prob = (1.0 if mean < 0 else 0.0) if se == 0 else float(stats.t.cdf(-mean / se, df=n - 1))
+    return {"gap_per_day": mean, "gap_se": se, "prob_better": prob}
 
 
 def _subset_verdict(rows: Sequence[dict]) -> dict:
@@ -252,20 +297,22 @@ def verdict(rows: Iterable[dict]) -> dict:
     """``rows``: settled forecasts {origin, p, p_state, p_baseline, state_bucket, happened}.
 
     Reports how much better the model is and how sure that is; it draws no pass/fail line (any alpha
-    would be a convention, not a cost). Served: whichever of model and baseline had the lower mean log
-    loss over the window, once MIN_DAYS days exist (the minimum for the variance estimate); before
-    that, the model. A consumer that acts on the forecast sets its own bar on ``prob_better`` from the
+    would be a convention, not a cost). Served: whichever had the lowest mean log
+    loss over the window among model, state and baseline, once MIN_DAYS days exist (the minimum for
+    the variance estimate); before that, the model. A consumer that acts on the forecast sets its own bar on ``prob_better`` from the
     cost of acting wrongly."""
     rows = [r for r in rows if r.get("happened") is not None]
     out = {"all": _subset_verdict(rows), "cold": _subset_verdict([r for r in rows if r["state_bucket"] >= COLD_BUCKET])}
     out["calibration"] = calibration(rows)
-    vb = out["all"]["vs_baseline"]
-    out["served"] = BASELINE if vb and vb["gap_per_day"] is not None and vb["gap_per_day"] > 0 else MODEL
+    out["served"] = MODEL
+    if out["all"]["n_days"] >= MIN_DAYS and out["all"]["n_hours_with_message"]:
+        ll = out["all"]["log_loss"]
+        out["served"] = min(((ll["model"], MODEL), (ll["state"], STATE_MODEL), (ll["baseline"], BASELINE)))[1]
     return out
 
 
 def served_p(row: dict, served: str) -> float:
-    return row["p_baseline"] if served == BASELINE else row["p"]
+    return {BASELINE: row["p_baseline"], STATE_MODEL: row["p_state"]}.get(served, row["p"])
 
 
 ISSUE_SLACK = timedelta(minutes=10)    # a forecast is issued only in the first 10 min of its hour
@@ -290,7 +337,8 @@ class Reachable:
         if now - origin <= ISSUE_SLACK and not self.store.reachable_exists(origin):
             msgs = self.store.juniper_messages(origin - LOOKBACK, origin)
             typed = self.store.juniper_claude_typed(origin - LOOKBACK, origin)
-            f = forecast(msgs, origin, typed)
+            coverage = self.store.juniper_typing_coverage(origin - LOOKBACK - timedelta(hours=6), origin)
+            f = forecast(msgs, origin, typed, coverage)
             served = self._verdict(now)["served"]
             row = {**f, "forecast_id": f"reachable:{origin.strftime('%Y-%m-%dT%H')}", "issued_at": now,
                    "model": MODEL, "served": served, "settled_at": None, "happened": None, "n_in_window": None}

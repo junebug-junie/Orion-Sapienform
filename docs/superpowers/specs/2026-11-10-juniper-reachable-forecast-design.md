@@ -39,8 +39,10 @@ refuses a channel with no consumer, so the event ships with its consumer.
 | name | role | what |
 |---|---|---|
 | `reachable_base_rate` | baseline | weighted rate over all past hours, prior 2 % (0.5 in 25 h) |
-| `reachable_state` | stored, graded | state-bucket rate, backed off to base (K = 8) |
-| `reachable_activity_logit` | served | ridge logistic (lambda 1): state + clock rules + Claude typing |
+| `reachable_state` | contender | state-bucket rate, backed off to base (K = 8) |
+| `reachable_activity_logit` | contender | ridge logistic (lambda 1): state + clock rules + Claude typing |
+
+Served = whichever of the three has the lowest mean log loss over the last 60 days.
 
 Lambda 1 and half-life 60 d were picked from a 4-point grid (lambda {0.1, 1} x half-life {14, 60})
 on the same replay, for the best cold-hour result. That choice is a forking path; the live record is
@@ -51,8 +53,7 @@ the clean test.
 Juniper, 2026-11-10: "0.05 is arbitrary." The grade draws no pass/fail line. Per subset it reports
 the daily mean log-loss gap (model - reference), its overlap-aware standard error
 (`backtest.paired_win_p`, lag 1, unit = local day), and `prob_better` = the chance the model is
-really better (flat prior, same t approximation). Served = whichever of model and baseline had the
-lower mean loss over the last 60 days. A consumer sets its own bar on `prob_better` from the cost of
+really better (flat prior, t approximation; `backtest.paired_gap`). A consumer sets its own bar on `prob_better` from the cost of
 acting wrongly: outreach timing will have to state that cost.
 
 Subsets: **all** hours; **cold** hours (no message in the 3 h before the origin: "will she come
@@ -61,20 +62,30 @@ and a calibration table. A Wilcoxon / sign test on daily differences is banned h
 the model dozens of hair-thin wins, and the sign test called a cold-hour model "significant"
 (p < 0.001) whose mean loss was worse.
 
-## Replay 2026-07-31..2026-11-10 (evals/run_reachable_replay_eval.py, live data, read-only)
+## Replay (evals/run_reachable_replay_eval.py, live data, read-only)
 
-| subset | hours with message | model LL | base LL | skill | gap/day (se) | prob_better |
+Typing-log coverage (review 2026-11-10): the log starts 2026-08-14 and had outages (one of 23 h). An
+hour whose prior 6 h the log covered < 90 % does not know whether she typed. Those hours are left out
+of training, and an uncovered origin serves the state model's p. 423 of 2,457 replay origins were
+uncovered. The fair test of the typing features is the covered origins (2026-08-14..11-10):
+
+| subset | hours | with message | activity LL | state LL | base LL | activity vs base: gap/day (se), prob_better |
 |---|---|---|---|---|---|---|
-| all | 57 | 0.0798 | 0.1071 | +26 % | -0.027 (0.016) | 0.95 |
-| cold | 22 | 0.0475 | 0.0485 | +2 % | -0.001 (0.002) | 0.70 |
+| all | 2034 | 56 | 0.0930 | 0.0898 | 0.1258 | -0.031 (0.019), 0.94 |
+| cold | 1926 | 21 | 0.0567 | 0.0566 | 0.0553 | +0.002 (0.003), 0.25 |
 
-- Activity vs state alone: no help mid-conversation (prob 0.28 overall), real help in cold hours
-  (prob 0.94). The first version (state x hour of day, no activity) was 6 % worse than base in cold hours.
-- **Calibration: under-confident everywhere.** Stated 0.029 -> 0.094 observed; 0.085 -> 0.19;
-  0.28 -> 0.54. The ridge penalty and thin data shrink toward the base rate. Not refit on this replay
-  (that would tune on the test); revisit with live rows.
-- Honest reading: a usable "she is around" signal overall, a weak "she will come back" signal. Outreach
-  must not consume it before it states its own bar on cold `prob_better`.
+- **The state model is the best forecast overall.** Activity vs state: prob_better 0.18 overall,
+  0.45 in cold hours. Typing to Claude has a 4x lift on its own, but it overlaps the state and the
+  clock (she codes with Claude while chatting with Orion, in the evening).
+- **Cold hours: no forecast beats the base rate.** 21 come-back hours in ~1,900 quiet ones is too
+  few, and none of today's inputs separates them. The Hub attention sensor (#3179, live 2026-11-11)
+  is the next candidate input.
+- Served = lowest mean loss among activity, state and base over the last 60 days. On this replay that
+  is the state model.
+- **Calibration: under-confident everywhere** (all origins): stated 0.03 -> 0.047 observed; 0.077 ->
+  0.14; 0.28 -> 0.47. Not refit on this replay (that would tune on the test).
+- Honest reading: a usable "she is mid-conversation" signal, no "she will come back" signal.
+  Outreach timing must not consume it until it states its own bar on cold `prob_better`.
 
 ## Metric quality gate
 

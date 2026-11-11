@@ -31,6 +31,7 @@ def main() -> None:
     store = PostgresStore(os.environ["POSTGRES_URI"])
     msgs = store.juniper_messages(now - timedelta(days=a.days) - R.LOOKBACK, now)
     typed = store.juniper_claude_typed(now - timedelta(days=a.days) - R.LOOKBACK, now)
+    coverage = store.juniper_typing_coverage(now - timedelta(days=a.days) - R.LOOKBACK - timedelta(hours=6), now)
     store.close()
     if not msgs:
         print(json.dumps({"error": "no messages"}))
@@ -39,11 +40,15 @@ def main() -> None:
     start = max(first, now - timedelta(days=a.days))
     rows, o = [], start
     while o + R.WINDOW <= now:
-        f = R.forecast(msgs, o, typed)
+        f = R.forecast(msgs, o, typed, coverage)
         rows.append({**f, "happened": R.outcome(msgs, o)[0]})
         o += R.WINDOW
     v = R.verdict(rows)
-    v["replay"] = {"from": start.isoformat(), "to": now.isoformat(), "messages": len(msgs), "claude_typed_windows": len(typed)}
+    # The fair test of the typing features: only origins the typing log covered.
+    cov = R.verdict([r for r in rows if r["typing_log_covered"]])
+    v["typing_covered_only"] = {k: cov[k] for k in ("all", "cold")}
+    v["replay"] = {"from": start.isoformat(), "to": now.isoformat(), "messages": len(msgs), "claude_typed_windows": len(typed),
+                   "origins_typing_uncovered": sum(1 for r in rows if not r["typing_log_covered"])}
     print(json.dumps(v, indent=1, default=str))
 
 

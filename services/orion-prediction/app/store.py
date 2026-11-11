@@ -551,6 +551,13 @@ class PostgresStore:
                          (start, end))
         return [(r["t"], int(r["n"])) for r in rows]
 
+    def juniper_typing_coverage(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+        """(window_since, window_until) of every typing-log row, zero counts included: the spans the
+        producer actually read. Gaps = producer absent (before 2026-08-14) or down."""
+        rows = self._all("SELECT window_since AS a, window_until AS b FROM juniper_affective_state_log "
+                         "WHERE window_until > %s AND window_since < %s ORDER BY window_since", (start, end))
+        return [(r["a"], r["b"]) for r in rows]
+
     def reachable_exists(self, origin: datetime) -> bool:
         return bool(self._all("SELECT 1 FROM prediction_reachable_forecast WHERE origin = %s", (origin,)))
 

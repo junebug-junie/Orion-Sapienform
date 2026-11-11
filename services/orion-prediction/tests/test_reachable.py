@@ -65,13 +65,51 @@ def test_typing_to_claude_raises_p_in_cold_hours():
     assert busy["p"] > 3 * quiet["p"]
 
 
-def test_asleep_hours_read_lower_than_evening():
-    msgs = _bursty(60)
+def test_asleep_hours_read_lower_than_daytime():
+    # messages at daytime AND evening hours, never 03-08: asleep must be learned on its own, not via
+    # the evening feature (review 2026-11-10)
+    msgs = sorted(_bursty(60, local_hours=(10, 13, 16)) + _bursty(60, seed=5, local_hours=(19, 21)))
     day = (T0 + timedelta(days=61)).astimezone(R.LOCAL_TZ)
     night = R.forecast(msgs, day.replace(hour=5).astimezone(timezone.utc))
-    eve = R.forecast(msgs, day.replace(hour=20).astimezone(timezone.utc))
-    assert night["features"]["asleep"] and eve["features"]["evening"]
-    assert night["p"] < eve["p"]
+    morning = R.forecast(msgs, day.replace(hour=10).astimezone(timezone.utc))
+    assert night["features"]["asleep"] and not morning["features"]["asleep"]
+    assert not night["features"]["evening"] and not morning["features"]["evening"]
+    assert night["state_bucket"] == morning["state_bucket"]
+    assert night["p"] < morning["p"]
+
+
+def test_uncovered_typing_log_is_not_read_as_not_typing():
+    msgs, typed = _typing_leads(60)
+    origin = T0 + timedelta(days=61, hours=10)
+    full = [(T0 - timedelta(days=1), origin)]
+    covered = R.forecast(msgs, origin, typed, full)
+    assert covered["typing_log_covered"] and covered["p"] != covered["p_state"]
+    # log down for the last 6 h: no typing evidence either way -> the state model is served
+    gap = [(T0 - timedelta(days=1), origin - timedelta(hours=6))]
+    down = R.forecast(msgs, origin, typed, gap)
+    assert not down["typing_log_covered"] and down["p"] == down["p_state"]
+
+
+def test_hours_before_the_log_existed_are_left_out_of_training():
+    msgs, typed = _typing_leads(60)
+    origin = T0 + timedelta(days=61, hours=10)
+    # a pre-log stretch full of messages with no typing: with coverage it is masked, so the
+    # typing lead keeps its full weight
+    early = [T0 - timedelta(days=d, hours=4) for d in range(1, 30)]
+    log = [(T0, origin)]
+    busy = typed + [(origin - timedelta(minutes=15), 4)]
+    masked = R.forecast(sorted(early + msgs), origin, busy, log)
+    unmasked = R.forecast(sorted(early + msgs), origin, busy, [(T0 - timedelta(days=40), origin)])
+    assert masked["p"] > unmasked["p"]
+
+
+def test_covered_seconds_merges_overlaps():
+    t = T0
+    cov = R._covered([(t, t + timedelta(hours=2)), (t + timedelta(hours=1), t + timedelta(hours=3)),
+                      (t + timedelta(hours=5), t + timedelta(hours=6))])
+    a = np.array([R._ns(t - timedelta(hours=1)), R._ns(t + timedelta(hours=2, minutes=30))])
+    b = np.array([R._ns(t + timedelta(hours=7)), R._ns(t + timedelta(hours=5, minutes=30))])
+    assert list(cov(a, b)) == [4 * 3600.0, 30 * 60.0 + 30 * 60.0]
 
 
 def test_state_is_hours_since_last_message_and_local_hour_is_denver():
@@ -152,8 +190,15 @@ def test_served_is_the_lower_loss_forecast():
     bad = [{**r, "p": 0.9 if not r["happened"] else 0.01} for r in rows]   # confidently wrong
     v = R.verdict(bad)
     assert v["all"]["vs_baseline"]["gap_per_day"] > 0 and v["all"]["vs_baseline"]["prob_better"] < 0.01
-    assert v["served"] == R.BASELINE
-    assert R.served_p(bad[0], v["served"]) == bad[0]["p_baseline"]
+    ll = v["all"]["log_loss"]
+    want = R.STATE_MODEL if ll["state"] < ll["baseline"] else R.BASELINE
+    assert v["served"] == want
+    key = {R.STATE_MODEL: "p_state", R.BASELINE: "p_baseline"}[want]
+    assert R.served_p(bad[0], v["served"]) == bad[0][key]
+    # with the state model also broken, the baseline is served
+    worse = [{**r, "p_state": r["p"]} for r in bad]
+    v2 = R.verdict(worse)
+    assert v2["served"] == R.BASELINE and R.served_p(worse[0], v2["served"]) == worse[0]["p_baseline"]
 
 
 def test_calibration_bins_cover_every_row():
@@ -170,6 +215,9 @@ class _Store:
 
     def juniper_claude_typed(self, start, end):
         return []
+
+    def juniper_typing_coverage(self, start, end):
+        return [(start, end)]
 
     def reachable_exists(self, origin):
         return any(r["origin"] == origin for r in self.rows.values())
@@ -210,3 +258,20 @@ def test_tick_issues_once_per_hour_only_early_and_settles_after_grace():
     assert row["n_messages"] == 1 and row["state_bucket"] == 0
     live = rc.live(o + timedelta(hours=1, minutes=12))
     assert live["current"]["served_p"] > 0 and live["grade"]["all"]["vs_baseline"] is None
+
+
+def test_gap_se_is_direct_not_capped_and_matches_paired_win_p():
+    from scipy import stats
+
+    from app.backtest import paired_gap, paired_win_p
+    rng = np.random.default_rng(0)
+    ref = rng.uniform(0.05, 0.1, 40)
+    cand = ref - 0.03 + rng.normal(0, 0.001, 40)       # |t| far above 10
+    mean, se, n = paired_gap(cand, ref)
+    p, _ = paired_win_p(cand, ref)
+    assert abs(mean / se) > 30
+    assert p == stats.t.cdf(mean / se, df=n - 1)
+    g = R._gap(cand, ref)
+    assert g["gap_se"] == se and g["prob_better"] > 0.999
+    same = R._gap(np.full(40, 0.25), np.full(40, 0.5))  # every day exactly 0.25 better
+    assert same["gap_se"] == 0 and same["prob_better"] == 1.0

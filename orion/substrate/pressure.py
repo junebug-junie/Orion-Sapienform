@@ -45,6 +45,11 @@ def prediction_error_pressure(node: BaseSubstrateNodeV1, config: PressureConfig,
     """
     if config.prediction_error_weight <= 0:
         return 0.0
+    # Lazy: prediction_error_freshness imports PressureConfig from this module.
+    from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+
+    if is_retired_prediction_error_node(getattr(node, "node_id", None)):
+        return 0.0  # a retired node's stored value is not a reading
     raw = float(node.metadata.get("prediction_error") or 0.0)
     if raw <= 0.0:
         return 0.0

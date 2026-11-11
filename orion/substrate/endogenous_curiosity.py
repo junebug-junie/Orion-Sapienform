@@ -34,6 +34,7 @@ from typing import Any, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.attention_candidate import NO_CURIOSITY_CONSUMER_NODE_IDS
+from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 from orion.substrate.pressure import PressureConfig
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -58,9 +59,8 @@ HARD_BUDGET_CEILING = 8
 # ::_transport_tick()` (docs/superpowers/specs/2026-07-26-transport-domain-
 # retirement-bus-synaptic-successor-design.md) -- it was a narrow, known-fake
 # "world_pulse" census, not real bus traffic, and this staleness ceiling was only
-# ever a mitigation for it, not a fix. `node:substrate.bus_synaptic` is the real
-# mesh-wide successor and already flows into this same generic node iteration
-# with zero code change here. This staleness-decay guard remains load-bearing
+# ever a mitigation for it, not a fix. Its successor `node:substrate.bus_synaptic`
+# was itself retired 2026-11 and is skipped here (RETIRED_PREDICTION_ERROR_NODE_IDS). This staleness-decay guard remains load-bearing
 # for every other node this function reads, not specifically for transport.
 #
 # `node:substrate.perception` (P2 camera-surprise, PR #1746, shipped
@@ -314,7 +314,7 @@ def _prediction_error_candidates(
             node_id = str(getattr(node, "node_id", "") or "")
             if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
                 continue
-            if not is_measurement(node_id):
+            if is_retired_prediction_error_node(node_id) or not is_measurement(node_id):
                 # placeholder / bucket / no glossary entry: the stored number is
                 # not a size, so it is not "sustained prediction error".
                 continue

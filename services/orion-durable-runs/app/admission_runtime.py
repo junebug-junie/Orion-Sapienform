@@ -173,6 +173,16 @@ def _bind_mode(value: Any) -> str:
     return mode
 
 
+def make_bidder(settings, market_getter=None) -> RunBidder:
+    """The process's bid site, from settings (one place, so the flag wiring is testable)."""
+    return RunBidder(
+        enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
+        market_getter=market_getter or (lambda: None),
+        binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on",
+        # Attention 3c: reading stage 1 binds (live week; shadow = 3b's value-only bid).
+        reading_binding_enabled=_bind_mode(getattr(settings, "physiology_bid_reading", "shadow")) == "on")
+
+
 def _economy_held(state: dict) -> bool:
     """The run is held by its binding bid (``_economy_gate``): no pool request exists yet."""
     return bool((state.get("hold") or {}).get("economy"))
@@ -204,10 +214,7 @@ class AdmissionRuntime:
         # Body economy C3a (SHADOW): want-family runs bid at submit, open at first grant, release at
         # terminal. Logged to want_ledger, never obeyed: admission below is unchanged.
         # Patch D: curiosity investigate's bid BINDS (``_economy_gate`` in ``register``).
-        self.bids = RunBidder(
-            enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
-            market_getter=market_getter or (lambda: None),
-            binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on")
+        self.bids = make_bidder(settings, market_getter)
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.

@@ -66,10 +66,13 @@ def body_signal_ids(node_ids: Iterable[str]) -> list[str]:
         node_prediction_error_semantics,
         source_kind_for_node,
     )
+    from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 
     out = []
     for nid in sorted(set(node_ids)):
         if not nid.startswith(SUBSTRATE_NODE_PREFIX) or source_kind_for_node(nid) != "internal":
+            continue
+        if is_retired_prediction_error_node(nid):  # retired 2026-11; lingering rows are not readings
             continue
         kind, _ = node_prediction_error_semantics(nid)
         if kind in _MEASURABLE_KINDS:

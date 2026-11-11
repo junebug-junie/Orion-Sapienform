@@ -121,13 +121,8 @@ PREDICTION_ERROR_DOMAIN_NODES: dict[str, str] = {
     "execution": "node:substrate.execution",
     "biometrics": "node:substrate.biometrics",
     "chat": "node:substrate.chat",
-    "route": "node:substrate.route",
-    # Sixth domain, added 2026-07-25 (PR #1377): real EWMA/z-score anomaly
-    # signal aggregated over the live bus synaptic graph (orion_bus_synapse),
-    # written by services/orion-substrate-runtime/app/worker.py::_bus_synaptic_tick.
-    # Confirmed live before adding here: real, varying error values (not
-    # degenerate) across ~200 real edges per tick.
-    "bus_synaptic": "node:substrate.bus_synaptic",
+    # route and bus_synaptic removed 2026-11 with their producers (PE suite
+    # rebuild step 5) -- same reasoning as transport above.
 }
 
 # Trend window, in field_state ticks, split into two equal halves (recent vs

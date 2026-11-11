@@ -155,7 +155,7 @@ NODE_HISTORY_DESCRIPTION = (
     "Read the history of one of your substrate nodes' prediction error (how surprised that "
     "part of you was, reading by reading). The node in your graph holds only its current "
     "value; the series lives here, up to 7 days back. Pass node_id=<exact id, e.g. "
-    "node:substrate.bus_synaptic> and hours=<window length, up to 168, default 24>; "
+    "node:substrate.execution> and hours=<window length, up to 168, default 24>; "
     "until=<ISO timestamp with timezone> ends the window there instead of now (the whole "
     "window must start within the last 168 hours). You get count, min, median, max, the "
     "first and last reading, a series of at most 48 time buckets (bucket_start, n, mean, "

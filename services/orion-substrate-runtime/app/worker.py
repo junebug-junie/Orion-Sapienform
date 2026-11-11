@@ -67,20 +67,15 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
-from orion.field.transport_thresholds import (
-    DERIVED_CHANNELS as TRANSPORT_DERIVED_CHANNELS,
-    record_sample as record_transport_sample,
-)
+from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
     biometrics_prediction_error,
-    bus_synaptic_prediction_error,
     perception_prediction_error,
     vision_channel_staleness_pressure,
     chat_prediction_error,
     codebase_prediction_error,
     execution_prediction_error,
-    route_prediction_error,
 )
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
@@ -181,10 +176,9 @@ _DRIVE_STATE_MAX_AGE_SEC = 300.0
 # successor-design.md) but this entry stayed, so the reducer kept reading a node
 # that had stopped moving: live at removal time it held prediction_error=0.556
 # with observed_at=2026-07-24, five days after its last write and seven days
-# stale. node:substrate.bus_synaptic (already below) is the real EWMA successor
-# and already occupies this domain's role in every consumer -- including
-# config/field/orion_field_topology.v1.yaml's capability:transport edge, which
-# migrated to it. This entry was the leftover.
+# stale. This entry was the leftover. (Its 2026-07 successor,
+# node:substrate.bus_synaptic, and node:substrate.route were themselves retired
+# 2026-11 in PE suite rebuild step 5 -- neither was a forecast.)
 #
 # Kept as a set-equality test (tests/test_prediction_error_domain_map.py)
 # against ACTIVE_INFERENCE_DOMAINS rather than a comment, because "the write is
@@ -194,8 +188,6 @@ _PREDICTION_ERROR_DOMAIN_NODE_IDS = {
     "node:substrate.execution": "execution",
     "node:substrate.biometrics": "biometrics",
     "node:substrate.chat": "chat",
-    "node:substrate.route": "route",
-    "node:substrate.bus_synaptic": "bus_synaptic",
 }
 
 
@@ -312,7 +304,8 @@ def _prediction_error_evidence_event_ids(
 # real 0.0 to the FalkorDB node every time. `prediction_error` is not decayed
 # (absent from NODE_DECAY_CHANNELS), so nothing else ever corrected it.
 # vision/perception already emitted every tick for this reason; this extends
-# it to biometrics/execution/chat/route/bus_synaptic/codebase.
+# it to biometrics/execution/chat/codebase (route and bus_synaptic too, until
+# their retirement 2026-11).
 # tests/test_prediction_error_receipt_not_gated.py enforces it structurally.
 def _prediction_error_receipt(
     *,
@@ -591,7 +584,6 @@ class BiometricsSubstrateWorker:
         # report silence (vision organ silence path, perception tick).
         self._process_started_at: datetime = datetime.now(timezone.utc)
         self._sql_engine: Any = None
-        self._bus_synaptic_client: Any = None
         # Wall clock of the vision organ lane's last silence write (rate limit),
         # and of its last idle silence check (the poll runs every second; the
         # projection read behind the check does not need to).
@@ -669,8 +661,6 @@ class BiometricsSubstrateWorker:
         self._last_chat_prediction_error: float | None = None
         self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
         self._world_reading_link_events_cache_at: datetime | None = None
-        self._last_route_prediction_error: float | None = None
-        self._last_bus_synaptic_prediction_error: float | None = None
         # RPC delivery bridge (orion/substrate/rpc_delivery.py): the listener
         # folds orion:rpc_health:snapshot into this rolling window, the tick
         # reads it. Built lazily-cheap here even when the flag is off.
@@ -725,9 +715,6 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._health_loop(), name="substrate-health-monitor"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
-            asyncio.create_task(
-                self._bus_synaptic_tick_loop(), name="substrate-bus-synaptic-tick"
-            ),
             asyncio.create_task(
                 self._perception_prediction_error_tick_loop(),
                 name="substrate-perception-prediction-error-tick",
@@ -1512,47 +1499,6 @@ class BiometricsSubstrateWorker:
                     self._substrate_graph_store_warming = False
 
         threading.Thread(target=_warm, name="substrate-store-warm", daemon=True).start()
-
-    def _get_bus_synaptic_client(self):
-        """Return the cached read-only FalkorDB client for the bus synaptic graph
-        (``orion_bus_synapse``, written by ``orion-bus-mirror``), building it on
-        first use.
-
-        Deliberately a separate client from ``_get_substrate_graph_store`` --
-        that one is a ``ConceptNodeV1``-aware store bound to this service's own
-        durable substrate graph name; this is a plain read-only Cypher client
-        pointed at a *different* graph name on the same FalkorDB instance
-        (``FALKORDB_URI`` already used by ``_get_substrate_graph_store``, same
-        pattern ``orion.substrate.graphdb_store.build_substrate_store_from_env``
-        reads it -- ``os.environ`` directly, not a pydantic ``Settings`` field).
-        Fail-open: returns None on init error (caller decides whether that means
-        "skip this tick").
-        """
-        try:
-            client = self._bus_synaptic_client
-            if client is None:
-                from orion.graph.falkor_client import RedisGraphQueryClient
-
-                client = RedisGraphQueryClient(
-                    uri=os.getenv("FALKORDB_URI", "redis://localhost:6379"),
-                    graph_name=self._settings.falkordb_bus_graph,
-                )
-                self._bus_synaptic_client = client
-            return client
-        except Exception:
-            logger.exception("substrate_bus_synaptic_client_init_failed")
-            return None
-
-    _BUS_SYNAPTIC_EDGE_QUERIES = (
-        "MATCH (o:Organ)-[e:PUBLISHES]->(c:Channel) "
-        "WHERE e.gap_zscore IS NOT NULL AND e.count > $min_count "
-        "AND e.last_seen_epoch > $stale_cutoff_epoch "
-        "RETURN e.gap_zscore AS zscore",
-        "MATCH (a:Organ)-[e:CAUSALLY_FOLLOWED_BY]->(b:Organ) "
-        "WHERE e.latency_zscore IS NOT NULL AND e.count > $min_count "
-        "AND e.last_seen_epoch > $stale_cutoff_epoch "
-        "RETURN e.latency_zscore AS zscore",
-    )
 
     async def _rpc_health_listener_loop(self) -> None:
         """Subscribe to orion:rpc_health:snapshot and fold each snapshot into
@@ -2496,15 +2442,15 @@ class BiometricsSubstrateWorker:
             score = cached_score
 
         # Receipt on EVERY tick, unconditionally -- NOT gated on
-        # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
+        # score > 0.0. This mirrors
         # the retired vision-channel tick's receipt (it lived a few hundred lines above
-        # in this file), not bus_synaptic's, and for the identical
+        # in this file), and for the identical
         # documented reason: the receipt is the ONLY path into
         # orion-field-digester's field-node-vector `prediction_error`
         # channel (state_deltas.py's `target_kind == "prediction_signal"`
         # perturbation, a separate write path from the FalkorDB
         # substrate-graph node `_write_prediction_error_node` writes
-        # below). Gating this receipt the way bus_synaptic's is would
+        # below). Gating this receipt would
         # reproduce the exact bug the retired vision-channel tick's comment
         # documents fixing on this same node shape: a real spike writes
         # the field vector high, then a calm tick with score == 0.0 never
@@ -2527,8 +2473,8 @@ class BiometricsSubstrateWorker:
             )
         )
         # Written every tick, not only on fault -- same "must not
-        # outlive its own evidence" reasoning as node:substrate.vision
-        # and node:substrate.bus_synaptic above: a node that can only go
+        # outlive its own evidence" reasoning as the retired
+        # node:substrate.vision and node:substrate.bus_synaptic: a node that can only go
         # up and never refresh back down to a genuine calm reading
         # produces permanent false alarms in any future consumer polling
         # its raw value.
@@ -2557,120 +2503,6 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._perception_prediction_error_tick)
             except Exception:
                 logger.exception("substrate_perception_prediction_error_tick_loop_failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=interval)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-
-    def _bus_synaptic_tick(self) -> None:
-        """Periodic read of the live bus synaptic graph, feeding
-        ``bus_synaptic_prediction_error`` (mirrors the shared writer the other
-        five Active-Inference domains use). Default-off, fail-open: never raises
-        out of a tick.
-
-        No grammar-event batch, no persisted ``prev`` projection -- unlike
-        every other ``_*_tick`` in this module, this reads FalkorDB fresh each
-        call. The z-score baseline this reads is already maintained
-        continuously by ``orion-bus-mirror``'s own EWMA writer -- see
-        ``bus_synaptic_prediction_error``'s docstring for why that means no
-        prev/curr diff is needed here.
-
-        ``e.last_seen_epoch > stale_cutoff`` (review finding, 2026-07-25):
-        neither this query nor the Hub debug routes it mirrors filter on edge
-        recency -- an edge from a decommissioned organ or abandoned channel
-        keeps its frozen last-computed z-score forever once ``count`` clears
-        the cold-start floor, which would silently drag this "right now"
-        aggregate with stale history. Bounded by
-        ``bus_synaptic_max_edge_age_sec`` (default 1h) so a long-dead edge
-        ages out of the aggregate instead of contributing forever.
-        """
-        if not self._settings.enable_bus_synaptic_tick:
-            return
-
-        client = self._get_bus_synaptic_client()
-        if client is None:
-            return
-
-        try:
-            min_count = self._settings.bus_synaptic_min_edge_count
-            stale_cutoff_epoch = (
-                datetime.now(timezone.utc).timestamp()
-                - self._settings.bus_synaptic_max_edge_age_sec
-            )
-            params = {"min_count": min_count, "stale_cutoff_epoch": stale_cutoff_epoch}
-            zscores: list[float] = []
-            for cypher in self._BUS_SYNAPTIC_EDGE_QUERIES:
-                rows = client.graph_query(cypher, params)
-                for row in rows:
-                    value = row.get("zscore") if isinstance(row, dict) else None
-                    if isinstance(value, (int, float)) and math.isfinite(value):
-                        zscores.append(float(value))
-
-            error = bus_synaptic_prediction_error(zscores)
-            now = datetime.now(timezone.utc)
-            # Cached for the world-model publish tick's execution_context
-            # group (world_model_features.py) -- see _execution_tick's
-            # identical comment.
-            self._last_bus_synaptic_prediction_error = error
-            # caused_by_event_ids intentionally left at its default `()`
-            # (2026-07-31, PR #1547 proposal) -- unlike the four grammar-
-            # event-driven domains above, this tick has no GrammarEventV1
-            # batch in scope at all; it reads FalkorDB edge z-scores
-            # fresh each call (see this method's own docstring). There is
-            # no real per-tick event to name here, and fabricating one
-            # would violate CLAUDE.md's "if you cannot trace it, do not
-            # invent it."
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="bus_synaptic",
-                    node_id="node:substrate.bus_synaptic",
-                    prediction_error=error,
-                    now=now,
-                )
-            )
-            # Write the node on every tick, not just when error > 0.0 (confirmed
-            # live 2026-07-30: gating this the same way as the receipt above left
-            # `node:substrate.bus_synaptic` frozen at a stale prediction_error=1.0
-            # for hours while this tick kept logging real, varying, non-saturated
-            # values every 30s the whole time -- orion-equilibrium-service polls
-            # this node's raw current value with no staleness check of its own
-            # (transport_metacog_gate.py), so a value that can only ever go up
-            # and never refresh back down to a genuine calm reading produces
-            # permanent false "Bus Anomaly Detected" alerts once any real spike
-            # ever occurs. The receipt above is likewise written every tick --
-            # see the comment on _prediction_error_receipt.
-            self._write_prediction_error_node(
-                node_id="node:substrate.bus_synaptic",
-                error=error,
-                now=now,
-                reducer_key="bus_synaptic",
-            )
-            # Fold the reading into the transport lane's EWMA baseline (fast +
-            # slow clocks) that the hub lattice tab and recall resolver read.
-            # Stored on the channel's own scale (capability:transport.pressure).
-            # Fail-open; the tick never depends on it.
-            record_transport_sample(
-                "bus_synaptic_pressure",
-                error * TRANSPORT_DERIVED_CHANNELS["bus_synaptic_pressure"],
-                self._settings.orion_bus_url,
-            )
-            logger.info(
-                "substrate_bus_synaptic_tick_completed edge_count=%d error=%.3f",
-                len(zscores),
-                error,
-            )
-        except Exception:
-            logger.exception("substrate_bus_synaptic_tick_failed")
-
-    async def _bus_synaptic_tick_loop(self) -> None:
-        interval = float(self._settings.bus_synaptic_tick_interval_sec)
-        while not self._stop.is_set():
-            try:
-                await asyncio.to_thread(self._bus_synaptic_tick)
-            except Exception:
-                logger.exception("substrate_bus_synaptic_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -2716,8 +2548,6 @@ class BiometricsSubstrateWorker:
             scalars = ExecutionContextScalars(
                 execution=self._last_execution_prediction_error,
                 chat=self._last_chat_prediction_error,
-                route=self._last_route_prediction_error,
-                bus_synaptic=self._last_bus_synaptic_prediction_error,
             )
             step, meta = assemble_world_model_trajectory_step(
                 now=now,
@@ -3763,6 +3593,8 @@ class BiometricsSubstrateWorker:
             self._pe_history_seed_failed_at = None
             cache = {}
             for node_id, observed_at, value in rows:
+                if is_retired_prediction_error_node(node_id):
+                    continue
                 if observed_at.tzinfo is None:
                     observed_at = observed_at.replace(tzinfo=timezone.utc)
                 cache.setdefault(node_id, deque()).append((observed_at, float(value)))
@@ -3780,6 +3612,10 @@ class BiometricsSubstrateWorker:
         for node in nodes:
             node_id = str(getattr(node, "node_id", "") or "")
             if not node_id.startswith(self._PE_HISTORY_NODE_PREFIX):
+                continue
+            # A retired node's stored value is not a reading: no new history
+            # row, no magnitude (RETIRED_PREDICTION_ERROR_NODE_IDS).
+            if is_retired_prediction_error_node(node_id):
                 continue
             reading = self._node_prediction_error_reading(node)
             if reading is None:
@@ -5071,8 +4907,6 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_route_arbitration(ROUTE_ARBITRATION_PROJECTION_ID)
             return loaded or empty_route_projection(now=now)
 
-        prev_projection = load_projection()
-
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_route_grammar_events(
                 events=batch,
@@ -5082,55 +4916,16 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
-        quarantined: list[str] = []
-        last_id = self._process_events_with_poison_isolation(
+        # The route prediction-error half of this tick (route_prediction_error,
+        # node:substrate.route, its receipt) was retired 2026-11 (PE suite
+        # rebuild step 5): a categorical decision-mismatch rate, not a forecast.
+        # The reducer/projection above stays -- cortex-orch's route grammar and
+        # every route_arbitration reader still need it.
+        return self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
-            quarantined_out=quarantined,
         )
-
-        if last_id is not None:
-            curr_projection = load_projection()
-            error = route_prediction_error(prev_projection, curr_projection)
-            # Cached for the world-model publish tick's execution_context
-            # group (world_model_features.py) -- see _execution_tick's
-            # identical comment above.
-            self._last_route_prediction_error = error
-            evidence_event_ids = _prediction_error_evidence_event_ids(
-                events, quarantined_event_ids=quarantined
-            )
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="route_arbitration",
-                    node_id="node:substrate.route",
-                    prediction_error=error,
-                    now=now,
-                    caused_by_event_ids=evidence_event_ids,
-                )
-            )
-            # Write the node on every tick, not just when error > 0.0 -- the
-            # same fix already applied to bus_synaptic (2026-07-30), extended
-            # here after `route` was found frozen at a stale 0.00025 while its
-            # tick kept running: a categorical/quiet domain returns error == 0.0
-            # on most ticks, so gating the node write left the node holding its
-            # last NON-ZERO value indefinitely. Consumers that poll this node's
-            # raw current value (orion-equilibrium-service, AST/HOT's
-            # prediction_error_by_domain) then read a stale high-water mark as
-            # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above is
-            # likewise written every tick -- see the comment on
-            # _prediction_error_receipt for why it is not an audit-only write.
-            self._write_prediction_error_node(
-                node_id="node:substrate.route",
-                error=error,
-                now=now,
-                reducer_key="route_arbitration",
-                contributing_id=last_id,
-                evidence_event_ids=evidence_event_ids,
-            )
-
-        return last_id
 
     def _llm_inference_tick(self) -> str | None:
         """orion-llm-gateway's own per-window call outcomes -> one llm_inference_node
@@ -5307,8 +5102,8 @@ class BiometricsSubstrateWorker:
             # at signal_strength=1.0 for a full 24h (2026-07-16, see that module's
             # comment) and winning real curiosity-candidate budget slots on a fake
             # signal. bus_synaptic_prediction_error() (node:substrate.bus_synaptic)
-            # already flows into that same consumer automatically -- no new wiring
-            # needed there, killing this write is the entire change. Everything
+            # flowed into that same consumer automatically until it was itself
+            # retired 2026-11 -- killing this write was the entire change. Everything
             # else in this reducer (event processing, projection state, incident
             # logging above, catalog_drift_pressure (observer_failure_pressure retired 2026-10-07) via
             # config/field/orion_field_topology.v1.yaml's still-live edge) is

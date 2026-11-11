@@ -11,10 +11,13 @@ Honesty split (CLAUDE.md "no empty-shell cognition" -- a schema-valid payload
 with meaningless content is not a success state, so this must be flagged, not
 hidden):
 
-- ``execution_context``: REAL. Four of this worker's existing per-domain
+- ``execution_context``: REAL. Two of this worker's existing per-domain
   prediction-error scalars, cached on the worker instance by their own
-  ``_*_tick()`` methods (``_execution_tick``, ``_chat_tick``, ``_route_tick``,
-  ``_bus_synaptic_tick``) as of this patch. ``transport`` is deliberately
+  ``_*_tick()`` methods (``_execution_tick``, ``_chat_tick``). ``route`` and
+  ``bus_synaptic`` filled slots 2-3 until 2026-11, when both prediction-error
+  nodes were retired (PE suite rebuild step 5); those slots are now 0.0 like
+  any other unused slot up to the configured dim (16), so the dim and the
+  world-model consumer are unchanged. ``transport`` is deliberately
   EXCLUDED -- ``transport_prediction_error()`` is a retired metric (CLAUDE.md
   0A "kill means kill", excluded from ``ACTIVE_INFERENCE_DOMAINS`` since
   2026-07-26 because it measures a narrow 2-Redis-Stream census, not real bus
@@ -66,7 +69,7 @@ ALWAYS_ZERO_FILLED_GROUPS: Tuple[str, ...] = ("biometrics", "affect", "memory_po
 # scalar lands in -- kept fixed so a downstream consumer's slot->domain
 # mapping stays stable across ticks even when a domain's cached scalar is
 # `None` this particular tick (its slot is simply left at 0.0).
-_EXECUTION_CONTEXT_DOMAINS: Tuple[str, ...] = ("execution", "chat", "route", "bus_synaptic")
+_EXECUTION_CONTEXT_DOMAINS: Tuple[str, ...] = ("execution", "chat")
 
 
 @dataclass(frozen=True)
@@ -96,11 +99,9 @@ class ExecutionContextScalars:
 
     execution: Optional[float]
     chat: Optional[float]
-    route: Optional[float]
-    bus_synaptic: Optional[float]
 
     def as_ordered_values(self) -> Tuple[Optional[float], ...]:
-        return (self.execution, self.chat, self.route, self.bus_synaptic)
+        return (self.execution, self.chat)
 
 
 def temporal_features(
@@ -156,7 +157,7 @@ def build_execution_context_group(
 ) -> Tuple[WorldModelFeatureGroupV1, List[str]]:
     """Fixed-slot layout (see ``_EXECUTION_CONTEXT_DOMAINS``): whichever
     domains have a real cached scalar populate their slot; the rest -- both
-    "not ticked yet" domains and any slot beyond the four real domains up to
+    "not ticked yet" domains and any slot beyond the real domains up to
     ``dim`` -- stay 0.0. Returns the group plus the list of domain names that
     were actually real this tick (for ``meta.real_execution_context_domains``,
     the honesty trail)."""

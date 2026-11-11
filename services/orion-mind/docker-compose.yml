@@ -52,12 +52,6 @@ services:
       RPC_HEALTH_PUBLISH_ENABLED: ${RPC_HEALTH_PUBLISH_ENABLED:-true}
       RPC_HEALTH_PUBLISH_INTERVAL_SEC: ${RPC_HEALTH_PUBLISH_INTERVAL_SEC:-30}
       RPC_HEALTH_CHANNEL_LATENCY_ENABLED: ${RPC_HEALTH_CHANNEL_LATENCY_ENABLED:-true}
-      RECALL_TRANSPORT_PG_DSN: ${RECALL_TRANSPORT_PG_DSN:-}
-      # Deliberately equal to orion-equilibrium-service's
-      # EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD, not the
-      # lattice policy's watch_at (0.25) -- see recall_signal_resolver.py.
-      RECALL_TRANSPORT_RENDER_GATE_THRESHOLD: ${RECALL_TRANSPORT_RENDER_GATE_THRESHOLD:-0.15}
-      TRANSPORT_THRESHOLDS_DERIVED_ENABLED: ${TRANSPORT_THRESHOLDS_DERIVED_ENABLED:-true}
       # Orion Prime 2A (app/prime_loop.py); see .env_example.
       PRIME_ENABLED: ${PRIME_ENABLED:-true}
       PRIME_TICK_SEC: ${PRIME_TICK_SEC:-15}
@@ -99,17 +93,10 @@ services:
       CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION: ${CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION:-0.2}
       CURIOSITY_REPLICA_ANSWERS_PER_DAY: ${CURIOSITY_REPLICA_ANSWERS_PER_DAY:-3}
       CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC: ${CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC:-1800}
-      TRANSPORT_THRESHOLDS_FAST_HALF_LIFE_SEC: ${TRANSPORT_THRESHOLDS_FAST_HALF_LIFE_SEC:-1800}
-      TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC: ${TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC:-172800}
-      TRANSPORT_THRESHOLDS_MIN_SAMPLES: ${TRANSPORT_THRESHOLDS_MIN_SAMPLES:-2880}
-      TRANSPORT_THRESHOLDS_K_WATCH: ${TRANSPORT_THRESHOLDS_K_WATCH:-5.0}
-      TRANSPORT_THRESHOLDS_K_STEP: ${TRANSPORT_THRESHOLDS_K_STEP:-2.0}
-      TRANSPORT_THRESHOLDS_MAX_STATE_AGE_SEC: ${TRANSPORT_THRESHOLDS_MAX_STATE_AGE_SEC:-600}
-      TRANSPORT_THRESHOLDS_STATE_KEY: ${TRANSPORT_THRESHOLDS_STATE_KEY:-orion:lattice:transport_thresholds:v1}
     volumes:
-      # Read-only repo mount so recall_signal_resolver.py's lattice-policy
-      # loader and orion.field.channel_glossary (imported by evidence.py as
-      # of 2026-09-03) can reach config/ -- the Dockerfile only COPYs
+      # Read-only repo mount so config/ readers (prime_loop.py's
+      # config/physiology/families.yaml at /repo) can reach config/ -- the
+      # Dockerfile only COPYs
       # orion/ and this service dir, not config/ (a sibling of orion/ on
       # disk, never a subdirectory of it). Same dual-path pattern
       # services/orion-hub/docker-compose.yml already uses for the

@@ -271,7 +271,7 @@ def test_node_history_validates_then_rpcs_to_its_own_channel():
         ok=True, operation="node_history", as_of=NOW, total_available=0,
     ).model_dump(mode="json"))
     out = asyncio.run(IntrospectTools(bus, BINDING).invoke(
-        "node_history", {"node_id": "node:substrate.bus_synaptic", "hours": 72},
+        "node_history", {"node_id": "node:substrate.biometrics", "hours": 72},
     ))
     assert out["ok"] is True and out["items"] == []
     [(channel, envelope, _reply, _timeout)] = bus.sent
@@ -280,7 +280,7 @@ def test_node_history_validates_then_rpcs_to_its_own_channel():
 
     request = IntrospectRequestV1.model_validate(envelope.payload)
     assert request.operation == "node_history"
-    assert request.args == {"node_id": "node:substrate.bus_synaptic", "hours": 72.0}
+    assert request.args == {"node_id": "node:substrate.biometrics", "hours": 72.0}
     assert "up to 7 days" in NODE_HISTORY_DESCRIPTION and "not zero" in NODE_HISTORY_DESCRIPTION
 
 

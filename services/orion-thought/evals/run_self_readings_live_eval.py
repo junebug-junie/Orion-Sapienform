@@ -55,7 +55,7 @@ def main() -> int:
             "FROM substrate_node_prediction_error_history "
             "WHERE observed_at > now() - interval '24 hours' AND node_id = ANY(:nodes) "
             "AND ((node_id IN ('node:substrate.execution','node:substrate.chat','node:substrate.codebase') "
-            "AND value >= 0.9) OR (node_id = 'node:substrate.bus_synaptic' AND value >= 0.1) "
+            "AND value >= 0.9) "
             "OR (node_id = 'node:substrate.cabinet' AND value > 0)) "
             "ORDER BY date_trunc('hour', observed_at) DESC, observed_at DESC LIMIT :k"),
             {"nodes": nodes, "k": args.moments})]

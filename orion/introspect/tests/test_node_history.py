@@ -25,7 +25,7 @@ from orion.schemas.introspect import (
 )
 
 NOW = datetime(2026, 10, 13, 18, 0, tzinfo=timezone.utc)
-NODE = "node:substrate.bus_synaptic"
+NODE = "node:substrate.biometrics"
 MCP_BUDGET = 12000
 
 
@@ -235,5 +235,5 @@ def test_index_lists_every_node_with_counts():
     rows = _rows(hours=2) + _rows(node="node:substrate.cabinet", hours=2, every_sec=600)
     item = run(nh.list_history_nodes(FakeConn(rows), NOW - timedelta(hours=2), NOW))
     names = [n["node_id"] for n in item.extra["nodes"]]
-    assert names == ["node:substrate.bus_synaptic", "node:substrate.cabinet"]
+    assert names == ["node:substrate.biometrics", "node:substrate.cabinet"]
     assert "node_id=" in item.text

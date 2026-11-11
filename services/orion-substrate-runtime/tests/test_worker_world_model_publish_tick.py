@@ -40,8 +40,6 @@ def _make_worker(monkeypatch, *, enabled: bool = True) -> BiometricsSubstrateWor
     worker._process_started_at = datetime.now(timezone.utc)
     worker._last_execution_prediction_error = None
     worker._last_chat_prediction_error = None
-    worker._last_route_prediction_error = None
-    worker._last_bus_synaptic_prediction_error = None
     worker._last_perception_embedding_vector = None
     worker._last_perception_embedding_at = None
     worker._bus = None
@@ -73,8 +71,6 @@ def test_world_model_publish_tick_publishes_valid_payload_to_configured_channel(
     worker._bus = _mock_bus()
     worker._last_execution_prediction_error = 0.3
     worker._last_chat_prediction_error = 0.0
-    worker._last_route_prediction_error = None
-    worker._last_bus_synaptic_prediction_error = 0.1
     worker._last_perception_embedding_vector = [0.5] * worker._settings.world_model_dim_vision_embedding
     worker._last_perception_embedding_at = datetime.now(timezone.utc)  # fresh
 
@@ -96,13 +92,13 @@ def test_world_model_publish_tick_publishes_valid_payload_to_configured_channel(
     step = payload.trajectory[0]
     assert step.execution_context.vector[0] == 0.3  # execution
     assert step.execution_context.vector[1] == 0.0  # chat (real 0.0)
-    assert step.execution_context.vector[2] == 0.0  # route (None -> zero slot)
-    assert step.execution_context.vector[3] == 0.1  # bus_synaptic
+    # Slots 2-3 (route, bus_synaptic) retired 2026-11: zero padding.
+    assert step.execution_context.vector[2:4] == [0.0, 0.0]
     assert step.vision_embedding.vector == [0.5] * worker._settings.world_model_dim_vision_embedding
     assert payload.meta is not None
     assert payload.meta["vision_source"] == "real"
     assert set(payload.meta["zero_filled_groups"]) == {"biometrics", "affect", "memory_pointers"}
-    assert payload.meta["real_execution_context_domains"] == ["execution", "chat", "bus_synaptic"]
+    assert payload.meta["real_execution_context_domains"] == ["execution", "chat"]
 
 
 def test_world_model_publish_tick_zero_fills_everything_when_no_state_cached(monkeypatch):

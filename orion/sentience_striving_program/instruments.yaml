@@ -285,7 +285,10 @@ instruments:
       Four live field-native domains (execution, biometrics, chat, route) replaced
       the deleted drives bucket-vote as the substrate for attributable self-
       initiation. transport was retired outright on 2026-07-31 rather than left
-      excluded-but-ticking, per CLAUDE.md's metric-retirement rule.
+      excluded-but-ticking, per CLAUDE.md's metric-retirement rule. route and its
+      2026-07 transport successor bus_synaptic were retired the same way 2026-11
+      (PE suite rebuild step 5): three live domains remain (execution,
+      biometrics, chat).
     last_reviewed: 2026-09-02
     claims:
       - id: transport_retired
@@ -298,6 +301,26 @@ instruments:
           CLAUDE.md records transport as the canonical case of a known-bad metric
           that was excluded from one consumer while still ticking and still
           winning budget slots in another. This claim keeps it dead.
+      - id: bus_synaptic_pe_retired
+        question: "Is node:substrate.bus_synaptic's prediction error really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def bus_synaptic_prediction_error"
+        recorded: 0
+        recorded_at: 2026-11-11
+        note: >-
+          Retired 2026-11 (PE suite rebuild step 5): a lull-ending detector (the
+          fraction of bus edges with |z| >= 3), not a forecast. Producer, node,
+          readers and the mind recall line went together; the raw bus synaptic
+          graph stays.
+      - id: route_pe_retired
+        question: "Is node:substrate.route's prediction error really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def route_prediction_error"
+        recorded: 0
+        recorded_at: 2026-11-11
+        note: >-
+          Retired 2026-11 (PE suite rebuild step 5): a categorical decision-mismatch
+          rate, not a forecast. The route reducer and projection stay.
 
   - id: rpt_lamme_recurrence
     title: "Recurrent Processing Theory (Lamme) -- per-tick recurrence"
@@ -347,14 +370,16 @@ instruments:
     claims:
       - id: dominant_target_not_route
         question: >-
-          Is node:substrate.route still structurally winning the node-target slot
-          every tick, as it did before the PR #1774 variance-floor fix?
-        sql: >-
-          SELECT count(*) FROM substrate_goal_provenance_streak
-          WHERE target_id = 'node:substrate.route'
-        recorded: 0
-        recorded_at: 2026-09-02
+          HISTORICAL (retired 2026-11): Is node:substrate.route still structurally
+          winning the node-target slot every tick, as it did before the PR #1774
+          variance-floor fix?
+        kind: manual
+        recorded: "MOOT: node:substrate.route's prediction error was retired 2026-11 (PE suite rebuild step 5); the node can no longer compete"
+        recorded_at: 2026-11-11
         note: >-
+          Was a sql claim (substrate_goal_provenance_streak WHERE target_id =
+          'node:substrate.route', recorded 0 on 2026-09-02) until the node was
+          retired; kept as history. Original note follows.
           README.md marks this UNVERIFIED, pending real post-deploy observation.
           Live read on 2026-09-02 shows node:substrate.chat holding the slot at
           streak 17, so route is not winning at this instant. That is ONE sample
@@ -380,13 +405,15 @@ instruments:
     claims:
       - id: top1_concentration_root_caused
         question: >-
-          Has node:substrate.bus_synaptic's 36.31% top-1 concentration been
-          root-caused, the way node:substrate.route's was?
+          HISTORICAL (retired 2026-11): Has node:substrate.bus_synaptic's 36.31%
+          top-1 concentration been root-caused, the way node:substrate.route's was?
         kind: manual
-        recorded: "NOT ROOT-CAUSED"
-        recorded_at: 2026-09-02
-        blocks: O4
+        recorded: "MOOT, NOT ROOT-CAUSED: node:substrate.bus_synaptic was retired 2026-11 (PE suite rebuild step 5) before a root cause was written; it can no longer win a slot"
+        recorded_at: 2026-11-11
         note: >-
+          Recorded "NOT ROOT-CAUSED" on 2026-09-02 and blocked O4. The node was
+          retired, not explained, so path-back-open (a) is closed by removal, not
+          by an answer. Original note follows.
           Objective 7's named path-back-open (a), and the load-bearing one:
           36.31% sits in the same range as the killed drives system's own post-fix
           31.65%. No follow-up exists anywhere under docs/ as of 2026-09-02.

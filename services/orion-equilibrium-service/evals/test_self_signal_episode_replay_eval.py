@@ -5,11 +5,13 @@ world_first.node_candidate -> judge_candidate -> self_signal_episode.step_signal
 
 What it pins (numbers are from this fixture; see the PR report):
 - volume: ~9.5 episodes/day total, never more than 15 on one day;
-- without the dwell (open on the first hot poll) it would be >100/day -- the
+- without the dwell (open on the first hot poll) it would be >50/day -- the
   dwell is what makes "high for itself" an episode rather than the top decile
   of every signal's week;
-- the 10-08 06:00Z GPU shed (923 gpu_pool 'unavailable' refusals that hour)
-  opens a bus_synaptic episode within minutes;
+- (until 2026-11: the 10-08 06:00Z GPU shed opened a bus_synaptic episode
+  within minutes; node:substrate.bus_synaptic and node:substrate.route were
+  retired in PE suite rebuild step 5, so their rows are dropped before the
+  replay, as the live history cache drops them);
 - the 10-07 cabinet heating run (06:00-15:00Z, ahead of the first GPU-pool
   refusal at 14:05Z) opens cabinet episodes;
 - placeholders never open (harness_closure); every close is calm/faded,
@@ -40,7 +42,11 @@ FIXTURE = Path(__file__).parent / "fixtures" / "self_signal_pe_history_2026-10-0
 
 @pytest.fixture(scope="module")
 def rows():
-    return rows_from_csv(FIXTURE)
+    from orion.substrate.prediction_error_freshness import RETIRED_PREDICTION_ERROR_NODE_IDS
+
+    # The fixture predates the 2026-11 retirements; the live path
+    # (orion.attention.pe_history_cache) never reads these nodes' rows.
+    return [r for r in rows_from_csv(FIXTURE) if r[0] not in RETIRED_PREDICTION_ERROR_NODE_IDS]
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +73,9 @@ def test_daily_volume(result):
 
 def test_without_the_dwell_every_signal_opens_constantly(rows, result):
     no_dwell = replay(rows, open_dwell_sec=0.0)
-    assert len(no_dwell["episodes"]) / _days(no_dwell) > 100
+    # >100/day while bus_synaptic was in the fixture; ~68/day without the
+    # retired nodes (2026-11).
+    assert len(no_dwell["episodes"]) / _days(no_dwell) > 50
     assert len(no_dwell["episodes"]) > 8 * len(result["episodes"])
 
 
@@ -81,9 +89,10 @@ def test_closes_are_returns_not_silence(result):
     assert set(reasons) <= {"calm", "faded", "still_open"}, reasons
 
 
-def test_10_08_gpu_shed_opens_an_episode(result):
-    eps = episodes_between(result, "2026-10-08T05:55:00+00:00", "2026-10-08T06:30:00+00:00")
-    assert any(e["signal_id"] == "node:substrate.bus_synaptic" for e in eps), eps
+def test_retired_nodes_never_open_an_episode(result):
+    from orion.substrate.prediction_error_freshness import RETIRED_PREDICTION_ERROR_NODE_IDS
+
+    assert not [e for e in result["episodes"] if e["signal_id"] in RETIRED_PREDICTION_ERROR_NODE_IDS]
 
 
 def test_10_07_cabinet_heating_opens_cabinet_episodes(result):

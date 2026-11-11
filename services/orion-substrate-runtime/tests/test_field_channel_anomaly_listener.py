@@ -107,7 +107,8 @@ def test_prediction_error_by_domain_reads_fixed_nodes(monkeypatch):
         _node("sub-concept-seed-orion", None),  # unrelated node, no prediction_error
     ]
     out = worker._brain_frame_prediction_error_by_domain(nodes)
-    assert out == {"execution": 0.001, "biometrics": 0.002, "bus_synaptic": 1.0}
+    # bus_synaptic retired 2026-11 (PE step 5): not a domain any more.
+    assert out == {"execution": 0.001, "biometrics": 0.002}
 
 
 def test_prediction_error_by_domain_empty_when_no_nodes(monkeypatch):

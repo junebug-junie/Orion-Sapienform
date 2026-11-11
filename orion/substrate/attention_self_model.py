@@ -43,6 +43,8 @@ from `ACTIVE_INFERENCE_DOMAINS` (see that constant's docstring) as confirmed
 dead -- a real, bounded replacement now exists: `bus_synaptic`, built on top
 of the bus-synaptic-graph arc. `ACTIVE_INFERENCE_DOMAINS` now covers
 execution/biometrics/chat/route/bus_synaptic (five active domains, not six).
+**2026-11:** route and bus_synaptic retired; three active domains remain
+(execution/biometrics/chat).
 
 **2026-07-31: `transport` is fully gone, not merely excluded.** This docstring
 previously ended "the old broken `transport` domain remains present in
@@ -121,11 +123,18 @@ DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 # started as an additive replacement candidate sitting alongside it and is now
 # simply the transport instrument.
 #
+# **2026-11: `route` and `bus_synaptic` retired** (PE suite rebuild step 5,
+# docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md).
+# Neither was a forecast: route was a categorical decision-mismatch rate and
+# bus_synaptic a lull-ending detector. Producers, nodes and readers were
+# removed together; their node ids sit on
+# orion.substrate.prediction_error_freshness.RETIRED_PREDICTION_ERROR_NODE_IDS.
+#
 # This constant does NOT affect the pre-existing branch-gated
 # `confidence`/`confidence_basis` fields below, which keep their original
 # (unfiltered, all-domains) formula unchanged -- additive only. It DOES now
 # gate `predicted_shift` (2026-07-31), which was previously unfiltered.
-ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat", "route", "bus_synaptic"})
+ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat"})
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:

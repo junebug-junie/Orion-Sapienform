@@ -1,5 +1,15 @@
 # orion/mood_arc — felt-state-trajectory autoencoder
 
+> **2026-11 status (PE suite rebuild step 5).** Kept, not retired: Juniper wants
+> to retrain it once the new prediction-error signals exist. Until then the
+> live scorer still runs and `field_channel_anomaly_score` keeps filling, but
+> equilibrium's metacog trigger is OFF
+> (`EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE=false`). v4 flags
+> ~25-28% of windows (drifted inputs) and its `prediction_error_bus_synaptic`
+> input now reads the 0.0 fill (node retired), so v4 scores are not trusted.
+> The corpus writer is back on (`FIELD_CHANNEL_CORPUS_PATH`, field-digester) so a
+> retrain has fresh rows without bus_synaptic or route.
+
 Offline research pipeline testing whether Orion has recurring **trajectory**
 structure in its felt-state substrate — not just a single-tick `phi` value,
 but a pattern across a *window* of ticks. It is a windowed autoencoder

@@ -620,6 +620,18 @@ reverie). It writes no prediction error: `node:substrate.harness_closure` (a fix
 retired 2026-11-11 (retire step 3,
 `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`).
 
+**Retired 2026-11 (PE suite rebuild step 5): `node:substrate.bus_synaptic` and
+`node:substrate.route`'s prediction error.** Neither was a forecast: bus_synaptic counted the
+fraction of bus edges with `|z| >= 3` (a lull-ending detector), route scored a categorical
+decision-mismatch rate. `_bus_synaptic_tick`, `bus_synaptic_prediction_error()`,
+`route_prediction_error()` and the route PE receipt/node write are deleted; `_route_tick` still
+runs the route reducer and projection. The `SUBSTRATE_BUS_SYNAPTIC_*`, `FALKORDB_BUS_GRAPH` and
+`TRANSPORT_THRESHOLDS_*` env keys are gone from this service. Lingering stored values (the
+FalkorDB nodes, 7-day history rows) are skipped by every generic reader via
+`orion/substrate/prediction_error_freshness.py::RETIRED_PREDICTION_ERROR_NODE_IDS`, and the field
+digester prunes both node ids. `ACTIVE_INFERENCE_DOMAINS` is now execution/biometrics/chat. The
+history notes below describe these domains as they were.
+
 `_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
 lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.biometrics`,
 `node:substrate.chat`, `node:substrate.route`), so repeat writes collapse instead of spawning a new node per event.
@@ -1345,7 +1357,7 @@ must be flagged in `payload.meta`, not hidden):
 
 | Group | Status | Source |
 |---|---|---|
-| `execution_context` | **Real** | Four of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick`/`_route_tick`/`_bus_synaptic_tick` methods. Fixed slot order: `[execution, chat, route, bus_synaptic]`, remaining slots up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16) are 0.0. |
+| `execution_context` | **Real** | Two of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick` methods. Fixed slot order: `[execution, chat]`; slots 2-3 held route/bus_synaptic until their 2026-11 retirement and are now 0.0 like every remaining slot up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16, unchanged). |
 | `temporal` | **Real** | Pure function over wall-clock time (`world_model_features.temporal_features`): hour-of-day/day-of-week/minute-of-hour sin/cos pairs + tanh-squashed session-elapsed time. |
 | `vision_embedding` | **Real when available and correctly dimensioned; zero-filled + flagged otherwise** | See "Unresolved vision-embedding dim" below. |
 | `biometrics` | **Always zero-filled** | The real biometrics numeric vector lives in `orion-field-digester`, not cheaply reachable from this process per CLAUDE.md section 5's service-boundary rule. This is a different signal from `node:substrate.biometrics`'s own prediction-error *scalar* (which this worker does compute) -- that scalar is deliberately not folded into `execution_context` either; see `world_model_features.py`'s module docstring. |

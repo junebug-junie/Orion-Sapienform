@@ -28,12 +28,17 @@ is set by theory, not tuned: for a calibrated forecaster p is uniform, so with t
 ``Var[-ln max(p, P)] = 2 - 2P(1 + ln(1/P)) - (1 - P)^2`` (0.698 at P = 0.05, sd 0.835). Live check:
 the calm-check bands of 2026-11-11 imply sd 0.83-0.90 per horizon.
 
-- calm: z ~ N(0, 1), so the node reads exact 0 about half the time and crosses 0.55 (z > 1.65)
-  about 5 % of the time, whatever n is. Rest point 0.
+- calm: z ~ N(0, 1) for independent outcomes, so the node reads exact 0 about half the time and
+  crosses 0.55 (z > 1.65) about 5 % of the time, whatever n is. Rest point 0. Live, misses are
+  mildly autocorrelated: one outcome per target bucket is kept (shortest horizon) because a 5- and a
+  15-min forecast of the same bucket correlate 0.25, and consecutive 5-min misses still correlate
+  ~0.12, so a 72 h replay (2026-11-11) read z sd 1.2 (room) / 1.04 (body) and crossed 0.55 on
+  9.8 % / 8.4 % of writes, not 5 %.
 - one bad miss (excess +2.05) among 6 calm samples: z ~ 1.0, node ~ 0.33 for the 30 minutes it
   stays in the window; a sustained run of misses drives it to 1.
 - no events (prediction service down, kill switch, no adaptive range) writes nothing: the node's
-  ``observed_at`` ages and every reader treats it as stale/absent, never as calm. Samples older
+  ``observed_at`` ages and every reader treats it as stale/absent after 1800 s, never as calm.
+  Until then the last value stays current (at most the window length, 30 min). Samples older
   than the window never revive the node: an event whose target is already outside the window is
   dropped, so a backlog scored after an outage does not write the past as now.
 """
@@ -41,6 +46,7 @@ the calm-check bands of 2026-11-11 imply sd 0.83-0.90 per horizon.
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -73,8 +79,10 @@ def _aware(ts: datetime) -> datetime:
 def independent_origin(origin_ts: datetime, horizon_min: int) -> bool:
     """True when this origin starts a horizon-long block on the clock (one independent forecast per
     block). Every 5-min origin passes at h=5; one in three at h=15."""
-    block = max(1, int(horizon_min)) * 60
-    return int(_aware(origin_ts).timestamp()) % block == 0
+    # Whole minutes since the epoch: tolerant of seconds on an origin (bucket starts are on the
+    # minute today, live 2026-11-11), never silently dropping every sample if they drift.
+    minute = int(_aware(origin_ts).timestamp()) // 60
+    return minute % max(1, int(horizon_min)) == 0
 
 
 @dataclass(frozen=True)
@@ -104,13 +112,20 @@ class SurpriseReading:
 @dataclass
 class PredictionSurpriseState:
     """In-memory per-node window. Lost on restart by design: the node then ages to stale until the
-    next events arrive (absent, never calm)."""
+    next events arrive (absent, never calm). Thread-safe: the worker folds events in a worker
+    thread while /health reads the window on the event loop."""
 
     samples: dict[str, dict[tuple[int, datetime], SurpriseSample]] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def bump(self, key: str) -> None:
-        self.counts[key] = self.counts.get(key, 0) + 1
+        with self._lock:
+            self.counts[key] = self.counts.get(key, 0) + 1
+
+    def counts_snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self.counts)
 
     def _prune(self, node_id: str, now: datetime) -> None:
         cutoff = _aware(now) - WINDOW
@@ -135,17 +150,28 @@ class PredictionSurpriseState:
         calm_var = calm_excess_variance(float(get("calm_surprisal")))
         if not math.isfinite(excess):
             return node_id, "non_finite_excess"
-        self._prune(node_id, now)
-        self.samples.setdefault(node_id, {})[(hm, origin)] = SurpriseSample(
-            forecast_id=str(get("forecast_id")), horizon_min=hm, origin_ts=origin, target_ts=target,
-            excess=excess, calm_var=calm_var,
-        )
+        with self._lock:
+            self._prune(node_id, now)
+            self.samples.setdefault(node_id, {})[(hm, origin)] = SurpriseSample(
+                forecast_id=str(get("forecast_id")), horizon_min=hm, origin_ts=origin, target_ts=target,
+                excess=excess, calm_var=calm_var,
+            )
         return node_id, "accepted"
 
     def reading(self, node_id: str, *, now: datetime) -> SurpriseReading | None:
         """The node's window as a z-score of summed excess, or None when the window is empty."""
-        self._prune(node_id, now)
-        rows = sorted((self.samples.get(node_id) or {}).values(), key=lambda s: s.target_ts)
+        with self._lock:
+            self._prune(node_id, now)
+            held = list((self.samples.get(node_id) or {}).values())
+        # One outcome per target bucket: a 5- and a 15-min forecast of the same bucket share its
+        # actual (live correlation of their excess 0.25), so counting both overstates the evidence.
+        # The shortest horizon wins (the freshest forecast of that bucket).
+        by_target: dict[datetime, SurpriseSample] = {}
+        for smp in held:
+            cur = by_target.get(smp.target_ts)
+            if cur is None or smp.horizon_min < cur.horizon_min:
+                by_target[smp.target_ts] = smp
+        rows = sorted(by_target.values(), key=lambda s: s.target_ts)
         if not rows:
             return None
         total = sum(s.excess for s in rows)

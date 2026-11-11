@@ -102,3 +102,17 @@ def test_calm_crossing_rate_does_not_depend_on_how_many_outcomes_the_window_hold
                 st.add(_ev(origin_min_ago=5 * i, excess=x, fid=str(i)), now=NOW)
             crossings += st.reading(ROOM_NODE_ID, now=NOW).value >= 0.55
         assert 0.03 <= crossings / trials <= 0.08, (n, crossings / trials)
+
+
+def test_one_outcome_per_target_bucket_the_shortest_horizon_wins():
+    """A 5- and a 15-min forecast of the same bucket share its actual: count it once."""
+    st = PredictionSurpriseState()
+    st.add(_ev(hm=15, origin_min_ago=15, excess=2.0, fid="long"), now=NOW)   # 08:45 -> 09:00
+    st.add(_ev(hm=5, origin_min_ago=5, excess=-0.5, fid="short"), now=NOW)   # 08:55 -> 09:00
+    r = st.reading(ROOM_NODE_ID, now=NOW)
+    assert r.n == 1 and r.forecast_ids == ("short",)
+
+
+def test_an_origin_with_seconds_still_counts():
+    assert independent_origin(datetime(2026, 11, 11, 8, 45, 3, tzinfo=timezone.utc), 15)
+    assert not independent_origin(datetime(2026, 11, 11, 8, 50, 3, tzinfo=timezone.utc), 15)

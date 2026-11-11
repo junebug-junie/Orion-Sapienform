@@ -507,5 +507,5 @@ instruments:
         note: >-
           Re-run before trusting the nodes after any forecaster change. Live replay of the
           node fold (evals/run_surprise_node_replay_eval.py --hours 72, 2026-11-11): exact 0
-          for 57-61 % of writes; the node crosses curiosity's 0.55 bar on 9-13 % of writes
-          (theory 5 %: outcomes in one window are mildly autocorrelated).
+          for 56-58 % of writes; the node crosses curiosity's 0.55 bar on 8-10 % of writes
+          (theory 5 %: consecutive outcomes in one window are mildly autocorrelated).

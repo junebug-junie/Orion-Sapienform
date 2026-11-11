@@ -521,14 +521,14 @@ channels:
       - "orion.attention.world_first:judge_candidate"
     semantics:
       value_kind: surprise_excess
-      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 58-63% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
+      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
       # rest_range: calm z within +-1.65 sigma -> stored value in [0, 0.55]. Live replay
-      # 2026-11-11 (72 h, calm-check-passing day): room p50 0.0 p90 0.635, body p50 0.0 p90 0.514;
-      # misses autocorrelate a little (lag-1 0.12, 5-vs-15 min same target 0.25), so the
-      # live z sd is 1.1-1.4, not 1.0.
+      # 2026-11-11 (72 h, calm-check-passing day, one outcome per target bucket): room p50 0.0
+      # p90 0.516, body p50 0.0 p90 0.520; consecutive 5-min misses correlate ~0.12, so the live
+      # z sd is 1.0-1.2 and 0.55 is crossed on 8-10 % of writes, not 5 %.
       rest_range: [0.0, 0.55]
       sparsity: per_tick
-      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value, ages, and every reader treats it as stale after 1800 s, never as calm."
+      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
@@ -555,14 +555,14 @@ channels:
       - "orion.attention.world_first:judge_candidate"
     semantics:
       value_kind: surprise_excess
-      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 58-63% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
+      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
       # rest_range: calm z within +-1.65 sigma -> stored value in [0, 0.55]. Live replay
-      # 2026-11-11 (72 h, calm-check-passing day): room p50 0.0 p90 0.635, body p50 0.0 p90 0.514;
-      # misses autocorrelate a little (lag-1 0.12, 5-vs-15 min same target 0.25), so the
-      # live z sd is 1.1-1.4, not 1.0.
+      # 2026-11-11 (72 h, calm-check-passing day, one outcome per target bucket): room p50 0.0
+      # p90 0.516, body p50 0.0 p90 0.520; consecutive 5-min misses correlate ~0.12, so the live
+      # z sd is 1.0-1.2 and 0.55 is crossed on 8-10 % of writes, not 5 %.
       rest_range: [0.0, 0.55]
       sparsity: per_tick
-      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value, ages, and every reader treats it as stale after 1800 s, never as calm."
+      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 

@@ -31,7 +31,7 @@ def _worker():
     w._settings = SimpleNamespace(prediction_surprise_nodes_enabled=True,
                                   prediction_surprise_channel="orion:prediction:surprise")
     w.writes = []
-    w._write_prediction_error_node = lambda **kw: w.writes.append(kw)
+    w._write_prediction_error_node = lambda **kw: w.writes.append(kw) or True
     w._store = MagicMock()
     return w
 
@@ -136,3 +136,12 @@ def test_settings_default_on_and_compose_env_parity():
         text = path.read_text()
         assert "SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED" in text, path
         assert "SUBSTRATE_PREDICTION_SURPRISE_CHANNEL" in text, path
+
+
+def test_a_write_the_shared_writer_skipped_is_not_counted_as_written():
+    """The writer is a no-op with SUBSTRATE_WRITE_PREDICTION_ERROR_NODES off: /health must say so."""
+    w = _worker()
+    w._write_prediction_error_node = lambda **kw: False
+    w._process_prediction_surprise(_payload(), now=NOW)
+    counts = w._prediction_surprise_state().counts
+    assert counts.get("node_writes_total") is None and counts["node_write_skipped_total"] == 1

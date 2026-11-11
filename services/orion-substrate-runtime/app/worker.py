@@ -1690,7 +1690,7 @@ class BiometricsSubstrateWorker:
             }
         return {
             "enabled": bool(self._settings.prediction_surprise_nodes_enabled),
-            "counts": dict(state.counts),
+            "counts": state.counts_snapshot(),
             "nodes": nodes,
         }
 
@@ -1744,14 +1744,16 @@ class BiometricsSubstrateWorker:
             )
             if reading is None:
                 return
-            self._write_prediction_error_node(
+            written = self._write_prediction_error_node(
                 node_id=reading.node_id,
                 error=reading.value,
                 now=now,
                 reducer_key=REDUCER_KEY,
                 evidence_event_ids=[f"prediction_forecast:{fid}" for fid in reading.forecast_ids],
             )
-            state.bump("node_writes_total")
+            # Only a real upsert counts (the shared writer is a no-op with
+            # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES off or no graph store).
+            state.bump("node_writes_total" if written else "node_write_skipped_total")
         except Exception:
             state.bump("failed_total")
             logger.exception("substrate_prediction_surprise_failed")
@@ -2828,7 +2830,7 @@ class BiometricsSubstrateWorker:
         evidence_event_ids: Sequence[str] = (),
         extra_channels: dict[str, float] | None = None,
         missing_reason: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
         ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
@@ -2887,7 +2889,7 @@ class BiometricsSubstrateWorker:
         explains, with nothing further to join.
         """
         if not _prediction_error_nodes_enabled():
-            return
+            return False
 
         store = self._get_substrate_graph_store(
             log_label="substrate_prediction_error_store_init_failed"
@@ -2898,7 +2900,7 @@ class BiometricsSubstrateWorker:
                 node_id,
                 reducer_key,
             )
-            return
+            return False
 
         try:
             from orion.core.schemas.cognitive_substrate import (
@@ -2985,12 +2987,14 @@ class BiometricsSubstrateWorker:
                 error,
                 reducer_key,
             )
+            return True
         except Exception:
             logger.warning(
                 "substrate_prediction_error_node_upsert_failed node_id=%s",
                 node_id,
                 exc_info=True,
             )
+            return False
 
     def handle_post_turn_closure(self, closure: HarnessPostTurnClosureV1) -> None:
         """Persist the turn referent for an unresolved harness turn.

@@ -98,9 +98,9 @@ _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
     "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
     "node:prediction.room": ("how much my office's temperature is surprising my own forecast",
-                             "mean excess surprise, 30 min"),
+                             "surprise z-score / 3, last 30 min"),
     "node:prediction.body": ("how much my cabinet's temperature is surprising my own forecast",
-                             "mean excess surprise, 30 min"),
+                             "surprise z-score / 3, last 30 min"),
 }
 
 _STATE_WORDS = {

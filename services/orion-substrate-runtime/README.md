@@ -400,9 +400,12 @@ much the world is surprising Orion's own forecasts. Spec
 - Listens on `orion:prediction:surprise` (`prediction.surprise.v1` from orion-prediction: one per
   scored 5/15-min forecast that passed the producer's issue-time gate).
 - Folds each node's last 30 min of independent outcomes (`orion/substrate/prediction_surprise.py`):
-  summed excess surprise over its calm spread (a z-score, the spread set by theory), stored as
-  `clip(z / 3, 0, 1)` through `_write_prediction_error_node`. Rest point 0 (exact 0 ~60 % of the
-  time in a 72 h live replay).
+  one outcome per target bucket (shortest horizon), summed excess surprise over its calm spread
+  (a z-score, the spread set by theory), stored as `clip(z / 3, 0, 1)` through
+  `_write_prediction_error_node`. Rest point 0 (exact 0 56-58 % of writes in a 72 h live replay).
+- Not read (on purpose, for now) by equilibrium's self-signal episode gate / outcome rollup or
+  Hub's attention-organ history route: those still list `node:substrate.*` only. Widen them once
+  a week of live rows shows the nodes behave.
 - Written only on an accepted outcome. No outcomes = no writes: the node ages and every reader
   (attention, self-readings, curiosity staleness decay) treats it as stale, never calm. FalkorDB
   node only (no field receipt), so the field digester's decay never touches it.

@@ -33,6 +33,7 @@ on:
       - "scripts/analysis/tests/test_curiosity_replica_answers_readout.py"
       - "scripts/analysis/curiosity_three_arm_readout.py"
       - "scripts/analysis/tests/test_curiosity_three_arm_readout.py"
+      - "orion/regulation/juniper_turns.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -61,6 +62,7 @@ on:
       - "scripts/analysis/tests/test_curiosity_replica_answers_readout.py"
       - "scripts/analysis/curiosity_three_arm_readout.py"
       - "scripts/analysis/tests/test_curiosity_three_arm_readout.py"
+      - "orion/regulation/juniper_turns.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:
@@ -90,7 +92,7 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_replica_plan.py orion/curiosity/tests/test_replica_contracts.py orion/curiosity/tests/test_replica_answers.py
       - name: Curiosity replica answers readout (stance from the act note, the 14-day refusal-rate alarm)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_curiosity_replica_answers_readout.py
-      - name: Curiosity three-arm readout (who is in the test, stop rule, permutation test, harm look, fallbacks)
+      - name: Curiosity three-arm readout (who is in the test, stop rule, permutation test, harm look, fallbacks, E9, family weight)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_curiosity_three_arm_readout.py
       - name: Curiosity replica frame eval on live inputs (candidates, grounded, bounded, honest gaps, plan layout)
         run: PYTHONPATH=${{ github.workspace }} python orion/curiosity/replica/evals/run_replica_frame_eval.py

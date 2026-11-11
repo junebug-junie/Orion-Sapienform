@@ -155,3 +155,57 @@ def test_unreadable_answers_go_to_juniper_and_bad_propensity_text_is_not_a_crash
     assert out["needs_juniper"] == ["answers_unknown"]
     assert ro.replica_propensity({"arm_propensities": "{not json"}) == 0.0
     assert ro.replica_propensity({"arm_propensities": "[1, 2]"}) == 0.0
+
+
+# --- E9 (Juniper first) and the replica family weight -------------------------------------------------------------
+
+def turn(day, turn_s, wait_s, *, calls=5):
+    t0 = START + timedelta(days=day)
+    return {"t0": t0, "tf": None if turn_s is None else t0 + timedelta(seconds=turn_s),
+            "calls": calls, "chat_wait_ms": None if wait_s is None else wait_s * 1000}
+
+
+def test_e9_flags_only_a_seat_wait_slowdown_not_a_longer_turn():
+    lane = {"before": {"chat_ms": 1000, "prime_ms": 10}, "after": {"chat_ms": 1000, "prime_ms": 30}}
+    longer = [turn(-1 - i * 0.3, 100, 2.0) for i in range(20)] + [turn(i * 0.3, 300, 2.0) for i in range(20)]
+    out = ro.e9_report(longer, lane, cut=START, now=START + timedelta(days=10), permutations=300)
+    assert out["p_turn_slower"] < 0.05 and not out["slower"] and out["verdict"].startswith("no seat-wait")
+    assert out["prime_share_of_chat_lane"] == {"before": 0.01, "after": 0.03}
+    waited = [turn(-1 - i * 0.3, 100, 1.0) for i in range(20)] + [turn(i * 0.3, 100, 20.0) for i in range(20)]
+    slow = ro.e9_report(waited, lane, cut=START, now=START + timedelta(days=10), permutations=300)
+    assert slow["slower"] and slow["verdict"].startswith("SLOWER")
+    report = ro.build_report([], [], now=START, permutations=10, e9=slow)
+    assert "chat_slower" in report["needs_juniper"] and "seat wait" in ro.render(report)
+
+
+def test_e9_windows_unmeasured_turns_and_unfinished_turns():
+    turns = [turn(-20, 50, 1.0),  # before the 14-day window: out
+             turn(-2, 60, None, calls=0),  # no usage rows: not measured, never a 0 wait
+             turn(-1, None, 3.0),  # never finished
+             turn(1, 70, 0.5), turn(9, 70, 0.5)]  # day 9 is after "now": out
+    out = ro.e9_report(turns, {}, cut=START, now=START + timedelta(days=5), permutations=50)
+    assert out["before"]["turns"] == 2 and out["before"]["finished"] == 1 and out["before"]["wait_measured"] == 1
+    assert out["after"]["turns"] == 1 and out["days_after"] == 5.0
+    assert out["p_wait_slower"] is None and out["verdict"].startswith("UNKNOWN") and not out["slower"]
+    assert out["prime_share_of_chat_lane"] == {"before": None, "after": None}
+
+
+def test_e9_and_weight_unreadable_go_to_juniper_and_are_left_out_when_not_asked():
+    assert ro.build_report([], [], now=START, permutations=10)["needs_juniper"] == []
+    out = ro.build_report([], [], now=START, permutations=10, e9=None, weight=None)
+    assert out["needs_juniper"] == ["e9_unknown"]
+    text = ro.render(out)
+    assert "chat speed (E9): UNKNOWN" in text and "family weight: UNKNOWN" in text
+
+
+def test_weight_report_shows_the_move_and_its_basis():
+    rows = [{"decided_at": START, "family_weight": 1.10, "weight_basis": "prior"},
+            {"decided_at": START + timedelta(days=1), "family_weight": None, "weight_basis": "prior"},
+            {"decided_at": START + timedelta(days=9), "family_weight": 1.25, "weight_basis": "learned"}]
+    out = ro.weight_report(rows)
+    assert out["decisions"] == 2 and abs(out["change"] - 0.15) < 1e-9 and out["learned_decisions"] == 1
+    assert out["verdict"].startswith("learned") and "+0.150" in out["verdict"]
+    assert ro.weight_report(rows[:1])["verdict"].startswith("still on its starting value")
+    assert ro.weight_report([])["verdict"].startswith("NO DATA")
+    rendered = ro.render(ro.build_report([], [], now=START, permutations=10, weight=out))
+    assert "1.100" in rendered and "1.250" in rendered

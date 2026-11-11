@@ -167,6 +167,6 @@ moves `/mnt/orion-fcc/repo` to the merged main.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3187
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

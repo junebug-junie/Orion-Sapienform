@@ -146,7 +146,9 @@ def apply_node_dynamics_write(
     update: dict[str, Any] = {}
     if include_activation:
         metadata[ACTIVATION_DECAYED_AT_KEY] = write.activation_decayed_at
-        if include_concept_only and write.dormant is not None:
+        # Dormancy follows DORMANCY_NODE_KINDS on every backend (in-memory
+        # and Falkor's cache mirror alike), not the caller's flag.
+        if write.node_kind in DORMANCY_NODE_KINDS and write.dormant is not None:
             metadata["dormant"] = write.dormant
             metadata["dormancy_updated_at"] = write.dormancy_updated_at
         bundle = node.signals.activation.model_copy(

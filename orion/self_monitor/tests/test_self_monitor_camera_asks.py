@@ -64,8 +64,26 @@ def test_per_picture_answers_follow_the_appliers_rule() -> None:
     assert adapters.camera_ask(_confirm(answer="yes", pictures=["same", "unsure"])).outcome == "no_change"
 
 
+def test_a_street_handoff_pair_is_its_own_faculty() -> None:
+    row = _same(answer="yes")
+    row["evidence_refs"] = ["individual:a", "individual:b", "handoff:h1", "rule:handoff", "body_cosine:0.812"]
+    bet = adapters.camera_ask(row)
+    assert bet.faculty == "vision.same_person.handoff" and bet.outcome == "upheld" and bet.stated is None
+
+
+def test_unsure_only_pictures_and_pictures_without_an_image_are_read_like_the_applier() -> None:
+    assert adapters.camera_ask(_confirm(answer="yes", pictures=["unsure"])).outcome == "no_change"
+    row = _confirm(answer="no", pictures=["same"])
+    row["answer_detail"]["pictures"][0].pop("image_ref")   # confirm_picture_verdicts drops it
+    assert adapters.camera_ask(row).outcome == "refuted"
+    # the applier applies nothing when the answer is not yes/no, even with pictures
+    assert adapters.camera_ask(_confirm(answer="hmm", pictures=["same"])) is None
+
+
 def test_rows_that_are_not_a_settled_guess_are_skipped() -> None:
     assert adapters.camera_ask(_confirm(answer="")) is None          # live: one answered row, blank answer
+    # live shape: a card closed by a name typed elsewhere (_close_who_is_this)
+    assert adapters.camera_ask(_confirm(answer=None, answer_detail={"resolved_by": "ask-x"})) is None
     assert adapters.camera_ask(_confirm(answer="maybe")) is None
     assert adapters.camera_ask(_confirm(status="dismissed")) is None  # "I don't know" is not a verdict
     assert adapters.camera_ask(_confirm(answered_at=None)) is None
@@ -99,7 +117,7 @@ def test_a_low_hit_rate_without_a_stated_confidence_never_reads_unreliable() -> 
 
 def test_catalog_entries_show_only_when_no_answer_landed() -> None:
     names = {u.faculty for u in UNGRADEABLE}
-    assert {"vision.same_person", "vision.person_confirm"} <= names
+    assert {"vision.same_person", "vision.person_confirm", "vision.person_confirm.camera_prior"} <= names
     assert all(u.gradeability != "ungradeable:source_bug" for u in UNGRADEABLE if u.faculty.startswith("vision."))
     empty = reduce_bets([], now=NOW, window_days=7.0, ungradeable=UNGRADEABLE)
     assert {f.faculty: f.gradeability for f in empty}["vision.same_person"] == "ungradeable:no_stated_confidence"
@@ -110,5 +128,6 @@ def test_catalog_entries_show_only_when_no_answer_landed() -> None:
 
 
 def test_camera_faculties_have_plain_names() -> None:
-    for faculty in ("vision.person_confirm", "vision.person_confirm.camera_prior", "vision.same_person"):
+    for faculty in ("vision.person_confirm", "vision.person_confirm.camera_prior", "vision.same_person",
+                    "vision.same_person.handoff"):
         assert not plain_name(faculty).endswith(" bets"), faculty

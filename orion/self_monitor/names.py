@@ -25,6 +25,7 @@ _EXACT: dict[str, str] = {
     "vision.person_confirm": "guesses about who a camera saw",
     "vision.person_confirm.camera_prior": "office-camera guesses that it is the usual person",
     "vision.same_person": "guesses that two camera faces are the same person",
+    "vision.same_person.handoff": "guesses that a person crossed from one camera to the next",
     "act.hub.world_pulse_read.look": "world-pulse reads",
     "act.topic_foundry.run.maintain": "topic-foundry maintenance runs",
     "act.aitown.session.play": "AI Town sessions",

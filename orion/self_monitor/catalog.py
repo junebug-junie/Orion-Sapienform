@@ -50,6 +50,11 @@ UNGRADEABLE: tuple[Ungradeable, ...] = (
         "when the \"Is this <name>?\" ask opens (orion-prediction)",
     ),
     Ungradeable(
+        "vision.person_confirm.camera_prior", "orion_ask", "ungradeable:no_stated_confidence",
+        "the office camera's prior (config/person_model/camera_priors) chose the name, but the ask "
+        "does not record it; store the prior p on the ask when it opens",
+    ),
+    Ungradeable(
         "body.gpu_power", "power_intent_settled", "ungradeable:source_bug",
         "expected_watts filled on 7/41 settled intents (10-20); record it at intent time",
     ),

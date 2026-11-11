@@ -32,7 +32,9 @@ Vocabulary found live (2026-11-03, 7 days), kept here so a reader can check the 
   guess of Orion's. ``vision_person_confirm`` asks "Is this <name>?" (``source_ref`` =
   ``<individual>|<name>``; ``rule:camera_prior`` in ``evidence_refs`` when the office camera's prior
   chose the name). ``vision_same_individual`` asks "Are these the same person?" for a pair whose face
-  cosine is at least ``same_ask_min_face_cosine``. Juniper settles both: ``answer`` yes/no, and on a
+  cosine is at least ``same_ask_min_face_cosine``; the street handoff loop
+  (``vision_handoff_loop.py``, ``rule:handoff``) opens the same kind for two STORIES' crops, a
+  different guess, so it is its own faculty ``vision.same_person.handoff``. Juniper settles both: ``answer`` yes/no, and on a
   confirm card optionally ``answer_detail.pictures[].verdict`` (same/different/unsure). Neither ask
   records a confidence: the attribution ``score`` is a median top-k cosine that the person model
   rewrites every cycle, and ``face_cosine`` is a similarity, not a probability. So ``stated`` is None
@@ -257,7 +259,9 @@ def percept_expectation(row: Row) -> Optional[SettledBetV1]:
 # story names and person facts carry no guess, so they are not bets.
 CAMERA_ASK_FACULTIES = {"vision_person_confirm": "vision.person_confirm", "vision_same_individual": "vision.same_person"}
 CAMERA_PRIOR_REF = "rule:camera_prior"
-# Juniper's yes/no, the same words the applier accepts (vision_individuals.parse_yes_no).
+HANDOFF_RULE_REF = "rule:handoff"
+# Juniper's yes/no. Twin of ``_YES``/``_NO`` in services/orion-sql-writer/app/vision_individuals.py
+# (the applier's parse_yes_no; an app module, so it cannot be imported here): change both together.
 _ASK_YES = frozenset({"yes", "y", "same", "same person", "yes same person", "yes, same person"})
 _ASK_NO = frozenset({"no", "n", "different", "different people", "not the same", "no different people",
                      "no, different people"})
@@ -270,26 +274,30 @@ def _json(value: Any) -> Any:
 def camera_ask_outcome(row: Row) -> Optional[str]:
     """Juniper's answer to a camera guess -> upheld | refuted | no_change, or None (no usable answer).
 
-    Per-picture answers win, by the applier's own rule (``_apply_person_confirm``): all pictures
-    "same" -> upheld, all "different" -> refuted, any other mix (the cluster holds more than one
-    person, or she was unsure of some) -> no_change: the guess was about the cluster, and she said
-    neither."""
-    detail = _json(row.get("answer_detail")) or {}
-    verdicts = {p.get("verdict") for p in (detail.get("pictures") or []) if isinstance(p, dict)} \
-        if isinstance(detail, dict) else set()
-    verdicts &= {"same", "different", "unsure"}
-    if verdicts:
-        if verdicts == {"same"}:
-            return "upheld"
-        if verdicts == {"different"}:
-            return "refuted"
-        return "no_change"
+    The applier's own order (``_apply_person_confirm``): an answer that is not yes/no applies
+    nothing, so it grades nothing (a card closed by a name typed elsewhere stores ``answer`` NULL).
+    Then per-picture answers win (only pictures with an ``image_ref``, as ``confirm_picture_verdicts``
+    reads them): all "same" -> upheld, all "different" -> refuted, any other mix (the cluster holds
+    more than one person, or she was unsure of some) -> no_change: the guess was about the cluster,
+    and she said neither."""
     answer = " ".join(str(row.get("answer") or "").lower().replace(".", " ").replace("!", " ").split())
     if answer in _ASK_YES:
+        said = "upheld"
+    elif answer in _ASK_NO:
+        said = "refuted"
+    else:
+        return None
+    detail = _json(row.get("answer_detail")) or {}
+    pictures = detail.get("pictures") if isinstance(detail, dict) else None
+    verdicts = {p.get("verdict") for p in (pictures or []) if isinstance(p, dict) and p.get("image_ref")}
+    verdicts &= {"same", "different", "unsure"}
+    if not verdicts:
+        return said
+    if verdicts == {"same"}:
         return "upheld"
-    if answer in _ASK_NO:
+    if verdicts == {"different"}:
         return "refuted"
-    return None
+    return "no_change"
 
 
 def camera_ask(row: Row) -> Optional[SettledBetV1]:
@@ -305,6 +313,9 @@ def camera_ask(row: Row) -> Optional[SettledBetV1]:
     if faculty == "vision.person_confirm" and CAMERA_PRIOR_REF in refs:
         # The office camera's prior chose the name, not the album scores: another mechanism.
         faculty = "vision.person_confirm.camera_prior"
+    elif faculty == "vision.same_person" and HANDOFF_RULE_REF in refs:
+        # Two stories' crops matched across cameras, not two face centroids: another guess.
+        faculty = "vision.same_person.handoff"
     return SettledBetV1(
         bet_id=f"orion_ask:{row['ask_id']}",
         faculty=faculty,

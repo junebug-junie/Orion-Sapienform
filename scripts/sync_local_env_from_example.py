@@ -424,6 +424,8 @@ SYNC_PREFIXES = (
     "ORION_GPU_POOL_SHED_",
     "BUS_ACTION_OUTCOME_OUT",
     "SUBSTRATE_CABINET_HEAT_",
+    # Forecast surprise -> node:prediction.room / .body (substrate-runtime, 2026-11-11).
+    "SUBSTRATE_PREDICTION_SURPRISE_",
     # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
     "ORION_SITUATION_PERCEPTION_",
     "ORION_SITUATION_STREET_",

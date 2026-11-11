@@ -58,7 +58,8 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     codebase, route, biometrics): 50 -> 58 entries, names unchanged at 49."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 60
+    # + node:prediction.room / node:prediction.body (forecast surprise, 2026-11-11): 60 -> 62.
+    assert len(entries) == 62
     assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}
     for retired in (

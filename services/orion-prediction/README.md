@@ -320,11 +320,18 @@ Each scored outcome becomes surprise (`app/surprise.py`; spec
 - **surprisal** = -ln p. **Calm point** = 1 - 0.05 = 0.95: the expected surprisal of a calibrated
   forecaster. **excess** = surprisal - 0.95. Calm reads 0, a bad miss reads up to +2.05.
 - A bucket with no readings stays `missing` (scoring above), never calm.
-- **Gate**, per horizon: the served model is not a baseline, live 80 % coverage in 0.72-0.88 over
-  >= 200 scores, not live-worse than the baseline.
-- **No bus event yet.** A channel with no consumer fails the metric lineage gate, and nothing may
-  consume surprise until the calm check passes. The event (`prediction.surprise.v1`) ships with its
-  first consumer, the substrate node.
+- **Display gate**, per horizon (`/series/{id}/surprise` only): the served model is not a baseline,
+  live 80 % coverage in 0.72-0.88 over >= 200 scores, not live-worse than the baseline.
+- **Bus event** `prediction.surprise.v1` on `orion:prediction:surprise` (2026-11-11, kill switch
+  `PREDICTION_SURPRISE_EVENTS_ENABLED`, on). One per scored row that passes `event_gate`, judged on
+  the row alone: champion; the model that served this horizon in the run that ISSUED the forecast
+  (`prediction_model_run.assignment`) is not a baseline; the range is adaptive
+  (`interval_source = 'adaptive'`, so 5 and 15 min only); a real actual. A missing bucket never
+  publishes. No monitor pass is needed, so outcomes scored right after a restart are not lost; an
+  error building events never costs the scores, exceedance or shadow scoring (`last_error` in
+  `/health` `series.<id>.surprise_events`, with published / refused-by-reason counters).
+  Consumer: orion-substrate-runtime folds it into `node:prediction.room` (office) and
+  `node:prediction.body` (cabinet) (`orion/substrate/prediction_surprise.py`).
 - `GET /series/{id}/surprise?hours=24`: mean excess per horizon vs its 95 % null band (independent
   origins only), share of p <= 0.05 / 0.2, and each horizon's gate reason.
 
@@ -346,8 +353,15 @@ horizon. Exceedance probabilities still use the backtest paths.
 
 Replay with this code (`evals/run_adaptive_interval_replay_eval.py --days 14`, same days and same
 forecasts), days calm at 5/15 min: cabinet 13/13, 12/13 (backtest ranges 2/13, 7/13); office 6/6,
-6/6 (backtest 1/6, 2/6). 80 % coverage 0.76-0.81. Nothing consumes surprise until
-`evals/run_surprise_calm_live_eval.py` shows calm on live forecasts issued with these ranges.
+6/6 (backtest 1/6, 2/6). 80 % coverage 0.76-0.81.
+
+**Calm check, 2026-11-11 (passes)**, live forecasts issued with adaptive ranges, 24 h
+(`evals/run_surprise_calm_live_eval.py --hours 24 --source adaptive`): mean excess cabinet 5 min
++0.004 +-0.230 (n=52, thin: its 5-min model changed 11-10 13:08 and the adaptive pool refills),
+cabinet 15 min -0.072 +-0.167, office 5 min -0.032 +-0.099, office 15 min -0.050 +-0.179; all calm,
+80 % coverage 0.79-0.85. This is what let the bus event ship.
+`evals/run_surprise_node_replay_eval.py --hours 72` replays the event gate and the substrate fold
+over live rows: what the two nodes would have read.
 
 ## Contracts
 
@@ -376,6 +390,7 @@ cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.py --hours 72  # gate + node fold replayed (live, read-only)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]

@@ -12,6 +12,7 @@ from app.surprise import (
     CALM_SURPRISAL,
     P_FLOOR,
     conformal_p_value,
+    event_gate,
     excess,
     horizon_gate,
     summarize,
@@ -104,3 +105,26 @@ def test_long_windows_do_not_call_a_calibrated_forecaster_uncalm():
             for i, x in enumerate(rng.normal(0, 1, 20000))]
     h = summarize(rows, grain_min=5)["5"]
     assert h["null_band_95"] < 0.033 and h["calm"] is True
+
+
+@pytest.mark.parametrize("row,score,reason", [
+    ({"role": "champion", "served_model": "direct_ar", "interval_source": "adaptive"},
+     {"score_status": "scored", "actual": 22.0}, "passed"),
+    ({"role": "baseline", "served_model": "direct_ar", "interval_source": "adaptive"},
+     {"score_status": "scored", "actual": 22.0}, "not_champion"),
+    ({"role": "champion", "served_model": "direct_ar", "interval_source": "adaptive"},
+     {"score_status": "missing", "actual": None}, "no_actual"),
+    ({"role": "champion", "served_model": "direct_ar", "interval_source": "adaptive"},
+     {"score_status": "scored", "actual": float("nan")}, "no_actual"),
+    ({"role": "champion", "served_model": None, "interval_source": "adaptive"},
+     {"score_status": "scored", "actual": 22.0}, "no_issuing_model"),
+    ({"role": "champion", "served_model": "seasonal_naive", "interval_source": "adaptive"},
+     {"score_status": "scored", "actual": 22.0}, "issued_by_baseline"),
+    ({"role": "champion", "served_model": "direct_ar", "interval_source": "backtest:horizon_not_adaptive"},
+     {"score_status": "scored", "actual": 22.0}, "range_not_adaptive"),
+    ({"role": "champion", "served_model": "direct_ar", "interval_source": None},
+     {"score_status": "scored", "actual": 22.0}, "range_not_adaptive"),
+])
+def test_event_gate(row, score, reason):
+    ok, why = event_gate(row, score)
+    assert why == reason and ok is (reason == "passed")

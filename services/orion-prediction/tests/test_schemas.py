@@ -34,3 +34,27 @@ def test_forecast_payload_forbids_unknown_fields_and_bounds_probability():
     with pytest.raises(ValidationError):
         PredictionForecastV1.model_validate({**base, "exceedance": [
             {"name": "x", "threshold": 1, "window_min": 5, "probability": 1.5, "n_paths": 10}]})
+
+
+def test_surprise_payload_is_registered_and_cataloged_with_its_consumer():
+    from orion.schemas.prediction import PredictionSurpriseV1
+
+    assert resolve("PredictionSurpriseV1") is PredictionSurpriseV1
+    doc = yaml.safe_load((REPO / "orion" / "bus" / "channels.yaml").read_text())
+    row = {c["name"]: c for c in doc["channels"]}["orion:prediction:surprise"]
+    assert row["schema_id"] == "PredictionSurpriseV1" and row["message_kind"] == "prediction.surprise.v1"
+    assert row["producer_services"] == ["orion-prediction"]
+    assert row["consumer_services"] == ["orion-substrate-runtime"]
+
+
+def test_surprise_payload_needs_a_real_actual_and_an_adaptive_range():
+    from orion.schemas.prediction import PredictionSurpriseV1
+
+    now = datetime.now(timezone.utc)
+    base = dict(forecast_id="1", series_id="a.b", horizon_min=5, origin_ts=now, issued_at=now, target_ts=now,
+                scored_at=now, issuing_model="direct_ar", interval_source="adaptive", point=22.0, actual=22.1,
+                p_value=0.5, surprisal=0.69, calm_surprisal=0.95, excess=-0.26)
+    PredictionSurpriseV1(**base)
+    for bad in ({"actual": None}, {"interval_source": "backtest"}, {"extra": 1}, {"p_value": 1.5}):
+        with pytest.raises(ValidationError):
+            PredictionSurpriseV1(**{**base, **bad})

@@ -186,6 +186,14 @@ def _street_attention_status() -> dict | None:
         return None
 
 
+def _prediction_surprise_status() -> dict | None:
+    try:
+        return worker.prediction_surprise_status()
+    except Exception:  # noqa: BLE001 -- counters must never cost /health
+        logger.warning("prediction_surprise_status_failed", exc_info=True)
+        return None
+
+
 @app.get("/health")
 async def health() -> dict:
     s = get_settings()
@@ -204,6 +212,8 @@ async def health() -> dict:
         "listeners": listeners["listeners"],
         # node:substrate.street gate counters (orion/substrate/street_attention.py).
         "street_attention": _street_attention_status(),
+        # node:prediction.room / .body windows (orion/substrate/prediction_surprise.py).
+        "prediction_surprise": _prediction_surprise_status(),
         "service": s.service_name,
         "version": s.service_version,
         "node": s.node_name,

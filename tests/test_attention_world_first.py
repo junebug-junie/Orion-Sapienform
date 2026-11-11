@@ -369,3 +369,40 @@ def test_walkway_trace_names_the_floor_it_met() -> None:
         magnitude=mag(0.987, value=1.0), observed_at=NOW, now=NOW, history_values=history,
     )
     assert "mid-rank unusual meets its unusual floor" in judge_candidate(cand).reason
+
+
+# --- forecast surprise (node:prediction.*, value_kind surprise_excess, 2026-11-11) -------------------
+
+
+def test_surprise_excess_is_a_measurement_kind_read_from_the_real_glossary() -> None:
+    from orion.attention.self_readings import node_prediction_error_is_measurement
+    from orion.attention.world_first import (
+        MEASUREMENT_VALUE_KINDS,
+        PREDICTION_ERROR_NODE_PREFIXES,
+        node_prediction_error_semantics,
+        source_kind_for_node,
+    )
+
+    assert "surprise_excess" in MEASUREMENT_VALUE_KINDS
+    for node_id in ("node:prediction.room", "node:prediction.body"):
+        assert node_prediction_error_semantics(node_id) == ("surprise_excess", "higher_is_worse")
+        assert node_prediction_error_is_measurement(node_id)
+        assert source_kind_for_node(node_id) == "internal"   # Juniper 2026-11-11: body signals
+        assert node_id.startswith(PREDICTION_ERROR_NODE_PREFIXES)
+
+
+def test_a_high_forecast_surprise_competes_and_a_calm_one_does_not() -> None:
+    hot = judge_candidate(body("node:prediction.room", 0.97))
+    assert hot.eligible and hot.candidate.value_kind == "surprise_excess"
+    calm = judge_candidate(body("node:prediction.room", 0.40))
+    assert not calm.eligible
+
+
+def test_a_stale_forecast_surprise_is_stale_not_calm() -> None:
+    from orion.attention.world_first import INTERNAL_MAX_AGE_SEC
+
+    age = INTERNAL_MAX_AGE_SEC + 60
+    c = node_candidate(node_id="node:prediction.body", label="x", magnitude=mag(0.99, age=age),
+                       observed_at=NOW - timedelta(seconds=age), now=NOW)
+    v = judge_candidate(c)
+    assert not v.eligible and v.reason.startswith("stale")

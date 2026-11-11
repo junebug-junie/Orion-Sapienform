@@ -64,6 +64,45 @@ class PredictionForecastV1(BaseModel):
     exceedance: list[PredictionExceedanceV1] = Field(default_factory=list)
 
 
+# --- Surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) --------
+
+PREDICTION_SURPRISE_CHANNEL = "orion:prediction:surprise"
+PREDICTION_SURPRISE_KIND = "prediction.surprise.v1"
+
+
+class PredictionSurpriseV1(BaseModel):
+    """One scored forecast outcome, as surprise (services/orion-prediction/app/surprise.py).
+
+    Published only when the outcome passes the issue-time gate (``surprise.event_gate``): a
+    champion row, issued by a real (non-baseline) forecaster for this horizon in the run that
+    ISSUED it, with a volatility-adaptive range (``interval_source == "adaptive"``), and a real
+    actual. A missing bucket never publishes: missing is "no data", never surprise and never calm.
+
+    ``excess`` = surprisal - calm_surprisal. It rests at 0 by theory when the forecaster is
+    calibrated (probability integral transform). ``p_censored``: the value fell outside the 95 %
+    range, so the true p is at or below the floor (0.05).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str
+    series_id: str
+    horizon_min: int = Field(..., ge=1)
+    origin_ts: AwareDatetime
+    issued_at: AwareDatetime
+    target_ts: AwareDatetime
+    scored_at: AwareDatetime
+    issuing_model: str
+    interval_source: Literal["adaptive"]
+    point: float
+    actual: float
+    p_value: float = Field(..., ge=0.0, le=1.0)
+    p_censored: bool = False
+    surprisal: float = Field(..., ge=0.0)
+    calm_surprisal: float = Field(..., ge=0.0)
+    excess: float
+
+
 
 # --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
 #

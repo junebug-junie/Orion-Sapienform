@@ -117,7 +117,7 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     # +1 2026-10-15: node:substrate.perception_walkway (curiosity reads it).
     # +1 2026-10-20: node:substrate.strain (strain news, a trigger).
     # +1 2026-10-20: node:substrate.street (street events -> attention).
-    assert len(ranges) == 13
+    assert len(ranges) == 15
     assert ranges[("node:substrate.street", "prediction_error")] == ("trigger", (0.0, 0.0))
     assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():

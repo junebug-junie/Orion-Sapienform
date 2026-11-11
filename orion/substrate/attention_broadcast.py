@@ -349,8 +349,8 @@ def world_first_signals(
     """
     from orion.attention.world_first import (
         PERCEPTION_NODE_ID,
+        PREDICTION_ERROR_NODE_PREFIXES,
         SOURCE_KIND_KEY,
-        SUBSTRATE_NODE_PREFIX,
         node_candidate,
         perception_absent_reason,
         rank_candidates,
@@ -375,7 +375,7 @@ def world_first_signals(
             if world_first_fenced(node_id):
                 continue
             metadata = dict(getattr(node, "metadata", None) or {})
-            if node_id.startswith(SUBSTRATE_NODE_PREFIX) and metadata.get("prediction_error") is not None:
+            if node_id.startswith(PREDICTION_ERROR_NODE_PREFIXES) and metadata.get("prediction_error") is not None:
                 absent = None
                 if node_id == PERCEPTION_NODE_ID:
                     absent = perception_absent_reason(

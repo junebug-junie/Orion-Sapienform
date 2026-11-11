@@ -75,6 +75,10 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
         "node:substrate.street": False,  # designed_sparse, "written every tick while measurable"
         "node:substrate.biometrics": False,  # per_tick
         "node:substrate.bus_synaptic": False,  # per_tick
+        # per_tick, "written once per gated forecast outcome": a 30-min state, not an event, so no
+        # orienting-window fade (its ~5 min write gap would otherwise read as past the window).
+        "node:prediction.room": False,
+        "node:prediction.body": False,
     }
     from orion.field.channel_glossary import load_glossary
 

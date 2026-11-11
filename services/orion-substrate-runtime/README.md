@@ -391,6 +391,27 @@ behavior thresholds. See
 `docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
 promotion gate and failure model.
 
+## Forecast surprise nodes (2026-11-11, default on)
+
+`node:prediction.room` (office temperature) and `node:prediction.body` (cabinet temperature): how
+much the world is surprising Orion's own forecasts. Spec
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md` (build item 3).
+
+- Listens on `orion:prediction:surprise` (`prediction.surprise.v1` from orion-prediction: one per
+  scored 5/15-min forecast that passed the producer's issue-time gate).
+- Folds each node's last 30 min of independent outcomes (`orion/substrate/prediction_surprise.py`):
+  summed excess surprise over its calm spread (a z-score, the spread set by theory), stored as
+  `clip(z / 3, 0, 1)` through `_write_prediction_error_node`. Rest point 0 (exact 0 ~60 % of the
+  time in a 72 h live replay).
+- Written only on an accepted outcome. No outcomes = no writes: the node ages and every reader
+  (attention, self-readings, curiosity staleness decay) treats it as stale, never calm. FalkorDB
+  node only (no field receipt), so the field digester's decay never touches it.
+- Recorded in `substrate_node_prediction_error_history` (the history recorder covers
+  `node:prediction.*` as well as `node:substrate.*`); glossary `value_kind: surprise_excess`, a
+  measurement kind for attention, curiosity and self-readings.
+- `/health` `prediction_surprise`: per-node window (mean excess, value, n) and verdict counters.
+- Kill switch `SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED` (producer: `PREDICTION_SURPRISE_EVENTS_ENABLED`).
+
 ## Prediction-error magnitude history (2026-10-02, default on)
 
 Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).

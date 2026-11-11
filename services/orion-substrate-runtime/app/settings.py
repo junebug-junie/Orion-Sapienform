@@ -180,6 +180,17 @@ class Settings(BaseSettings):
     # reading. Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill
     # switch (no listener, no node writes).
     street_attention_enabled: bool = Field(True, alias="SUBSTRATE_STREET_ATTENTION_ENABLED")
+    # Forecast surprise -> node:prediction.room (office.temp_c) and node:prediction.body
+    # (athena.cabinet_temp_c): mean excess surprise over the last 30 min of independent forecast
+    # outcomes (orion/substrate/prediction_surprise.py). Subscribes to orion:prediction:surprise.
+    # Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill switch (no listener, no writes;
+    # the nodes age to stale). Producer side: PREDICTION_SURPRISE_EVENTS_ENABLED.
+    prediction_surprise_nodes_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED"
+    )
+    prediction_surprise_channel: str = Field(
+        "orion:prediction:surprise", alias="SUBSTRATE_PREDICTION_SURPRISE_CHANNEL"
+    )
     street_events_channel: str = Field(
         "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
     )

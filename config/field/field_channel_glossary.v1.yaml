@@ -498,6 +498,74 @@ channels:
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
+  # Forecast surprise (2026-11-11, PE suite rebuild spec build item 3,
+  # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md).
+  # orion-prediction scores each office.temp_c forecast and publishes the gated
+  # outcome as prediction.surprise.v1 (services/orion-prediction/app/surprise.py
+  # event_gate: champion, issued by a non-baseline model, adaptive range, real
+  # actual). services/orion-substrate-runtime/app/worker.py
+  # _process_prediction_surprise folds it with orion/substrate/prediction_surprise.py:
+  # summed excess over the last 30 min of independent origins, divided by its
+  # calm spread (theory: Var = 2 - 2P(1 + ln 1/P) - (1-P)^2, P = 0.05), stored
+  # as clip(z / 3, 0, 1). FalkorDB node only; not a FieldStateV1 node vector, so
+  # the field digester's decay/expiry never touches it.
+  - node: "node:prediction.room"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "How much the office's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (office.temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.room'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
+    semantics:
+      value_kind: surprise_excess
+      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 58-63% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
+      # rest_range: calm z within +-1.65 sigma -> stored value in [0, 0.55]. Live replay
+      # 2026-11-11 (72 h, calm-check-passing day): room p50 0.0 p90 0.635, body p50 0.0 p90 0.514;
+      # misses autocorrelate a little (lag-1 0.12, 5-vs-15 min same target 0.25), so the
+      # live z sd is 1.1-1.4, not 1.0.
+      rest_range: [0.0, 0.55]
+      sparsity: per_tick
+      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value, ages, and every reader treats it as stale after 1800 s, never as calm."
+      prompt_sites:
+        - "orion.attention.self_readings:render_self_readings"
+
+  # Forecast surprise (2026-11-11, PE suite rebuild spec build item 3,
+  # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md).
+  # orion-prediction scores each athena.cabinet_temp_c forecast and publishes the gated
+  # outcome as prediction.surprise.v1 (services/orion-prediction/app/surprise.py
+  # event_gate: champion, issued by a non-baseline model, adaptive range, real
+  # actual). services/orion-substrate-runtime/app/worker.py
+  # _process_prediction_surprise folds it with orion/substrate/prediction_surprise.py:
+  # summed excess over the last 30 min of independent origins, divided by its
+  # calm spread (theory: Var = 2 - 2P(1 + ln 1/P) - (1-P)^2, P = 0.05), stored
+  # as clip(z / 3, 0, 1). FalkorDB node only; not a FieldStateV1 node vector, so
+  # the field digester's decay/expiry never touches it.
+  - node: "node:prediction.body"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "How much the cabinet's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (athena.cabinet_temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.body'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
+    semantics:
+      value_kind: surprise_excess
+      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 58-63% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
+      # rest_range: calm z within +-1.65 sigma -> stored value in [0, 0.55]. Live replay
+      # 2026-11-11 (72 h, calm-check-passing day): room p50 0.0 p90 0.635, body p50 0.0 p90 0.514;
+      # misses autocorrelate a little (lag-1 0.12, 5-vs-15 min same target 0.25), so the
+      # live z sd is 1.1-1.4, not 1.0.
+      rest_range: [0.0, 0.55]
+      sparsity: per_tick
+      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value, ages, and every reader treats it as stale after 1800 s, never as calm."
+      prompt_sites:
+        - "orion.attention.self_readings:render_self_readings"
+
   # orion/substrate/prediction_error.py:1354 -- stage 1: 1 - cos(embedding,
   # stream EWMA) (:1451); stage 2: z of that vs its own EWMA, negatives
   # clipped (:290), score = min(1, z/3) (:1478). 2026-10-21: the 30 s tick

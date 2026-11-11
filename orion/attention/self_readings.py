@@ -45,6 +45,7 @@ from typing import Iterable, Mapping
 from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.attention.world_first import (
     MEASUREMENT_VALUE_KINDS,
+    PREDICTION_NODE_PREFIX,
     SUBSTRATE_NODE_PREFIX,
     chat_rate_reading,
     judge_candidate,
@@ -69,7 +70,7 @@ TRIGGER_RATE_WINDOW = timedelta(hours=1)
 # Fewer real firings than this in 7 days: "more than usual" has nothing to stand on.
 TRIGGER_MIN_FIRES_7D = 5
 
-_PERCENTILE_KINDS = frozenset({"level", "count"})
+_PERCENTILE_KINDS = frozenset({"level", "count", "surprise_excess"})
 _RATE_KINDS = frozenset({"trigger", "binary"})
 # Same set world-first attention judges by; everything else (placeholder, bucket,
 # or no glossary entry at all) is never read as a size.
@@ -96,6 +97,10 @@ _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.codebase": ("how unusual the latest change to my own code was", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
     "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
+    "node:prediction.room": ("how much my office's temperature is surprising my own forecast",
+                             "mean excess surprise, 30 min"),
+    "node:prediction.body": ("how much my cabinet's temperature is surprising my own forecast",
+                             "mean excess surprise, 30 min"),
 }
 
 _STATE_WORDS = {
@@ -121,7 +126,12 @@ def _quiet_event_signal(reading) -> bool:
 
 
 def short_name(node_id: str) -> str:
-    return node_id[len(SUBSTRATE_NODE_PREFIX):] if node_id.startswith(SUBSTRATE_NODE_PREFIX) else node_id
+    if node_id.startswith(SUBSTRATE_NODE_PREFIX):
+        return node_id[len(SUBSTRATE_NODE_PREFIX):]
+    if node_id.startswith(PREDICTION_NODE_PREFIX):
+        # "prediction.room": keeps the family visible next to "cabinet", "chat", ...
+        return node_id[len("node:"):]
+    return node_id
 
 
 def prompt_reaching_nodes() -> list[str]:

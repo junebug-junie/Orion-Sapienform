@@ -40,6 +40,10 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
     rows += _series("node:substrate.harness_closure", 60, lambda k: 0.65, now=now)
     # strain news: a trigger. A 0.0 every tick, one 1.0 row per news event (budgeted, rare).
     rows += _series("node:substrate.strain", 5, lambda k: 1.0 if k in _STRAIN_EVENTS else 0.0, now=now)
+    # forecast surprise (node:prediction.*, 2026-11-11): one write per scored outcome (~5 min),
+    # ~60% exact 0.0, otherwise clip(z / 3) mostly below 0.55 (live replay shape).
+    rows += _series("node:prediction.room", 5, lambda k: 0.0 if k % 5 < 3 else (k * 29 % 100) / 180.0, now=now)
+    rows += _series("node:prediction.body", 5, lambda k: 0.0 if k % 5 < 3 else (k * 31 % 100) / 200.0, now=now)
     # perception is the world, not the body: never a self-reading.
     rows += _series("node:substrate.perception", 5, lambda k: 0.0 if k % 2 else 0.9, now=now)
     return rows

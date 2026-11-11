@@ -73,7 +73,8 @@ def test_calm_tick_is_an_explicit_no_winner_frame() -> None:
 
 def test_old_hardcoded_winner_at_one_is_gone() -> None:
     """The bug: min-max crowned a calm node at 1.0 on every frame."""
-    frame = _frame([_node("node:substrate.bus_synaptic", 0.3, 0.03)])
+    # biometrics: a live per-tick level (bus_synaptic, the original case, retired 2026-11)
+    frame = _frame([_node("node:substrate.biometrics", 0.3, 0.03)])
     assert not frame.dominant_targets
     assert all(t.salience_score < 1.0 for t in frame.suppressed_targets)
 

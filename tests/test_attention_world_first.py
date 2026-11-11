@@ -226,11 +226,12 @@ def test_no_declared_polarity_cannot_interrupt() -> None:
 
 def test_rank_is_by_own_percentile_borda_only_breaks_ties() -> None:
     a = body("node:substrate.execution", 0.95)
-    b = body("node:substrate.route", 0.95)
+    # route retired 2026-11 (#3201); biometrics is a live level measurement
+    b = body("node:substrate.biometrics", 0.95)
     c = body("node:substrate.chat", 0.97)
-    r = rank_candidates([a, b, c], tie_break={"node:substrate.route": 0.9, "node:substrate.execution": 0.1})
+    r = rank_candidates([a, b, c], tie_break={"node:substrate.biometrics": 0.9, "node:substrate.execution": 0.1})
     assert [v.candidate.source_id for v in r.eligible] == [
-        "node:substrate.chat", "node:substrate.route", "node:substrate.execution",
+        "node:substrate.chat", "node:substrate.biometrics", "node:substrate.execution",
     ]
 
 
@@ -287,9 +288,12 @@ def test_ceiling_ties_rank_by_mid_rank_not_strict_below() -> None:
 def test_all_zero_history_with_current_zero_is_still_rest() -> None:
     assert midrank_percentile(0.0, [0.0] * 50) == 0.5  # why mid-rank never gates
     m = PredictionErrorMagnitudeV1(value=0.0, age_sec=1, percentile_now=0.0, n_readings_7d=500, band="quiet")
-    c = node_candidate(node_id="node:substrate.route", label="r", magnitude=m, observed_at=NOW, now=NOW,
+    # a live measurement (route, the original case, was retired 2026-11): refused for being at rest,
+    # not for being an unknown kind
+    c = node_candidate(node_id="node:substrate.biometrics", label="r", magnitude=m, observed_at=NOW, now=NOW,
                        history_values=[0.0] * 500)
-    assert not judge_candidate(c).eligible
+    v = judge_candidate(c)
+    assert not v.eligible and "not a measurement" not in v.reason
 
 
 def test_glossary_failure_is_not_cached(monkeypatch) -> None:
@@ -309,7 +313,7 @@ def test_glossary_failure_is_not_cached(monkeypatch) -> None:
 
 
 def test_trace_lists_absent_sources_so_failure_is_not_calm() -> None:
-    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.route", 0.1)])
+    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.biometrics", 0.1)])
     assert r.no_winner and r.trace()["absent_sources"] == [WORLD_CHAT_SOURCE_ID]
 
 

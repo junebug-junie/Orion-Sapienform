@@ -501,3 +501,38 @@ instruments:
         target: "def goal_proposal_from_episode_intent"
         recorded: 0
         recorded_at: 2026-09-02
+
+  - id: forecast_surprise_nodes
+    title: "Forecast surprise as body signals (node:prediction.room / node:prediction.body)"
+    theory: "Predictive Processing (prediction error = surprisal of a stored forecast)"
+    program_ref: "docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, build item 3"
+    module: orion/substrate/prediction_surprise.py
+    outcome: O2
+    storage:
+      # `derived`: the history table holds every PE node's readings; its freshness is not
+      # this instrument's liveness. Live check per node:
+      # SELECT node_id, max(observed_at), count(*) FROM substrate_node_prediction_error_history
+      #  WHERE node_id LIKE 'node:prediction.%' GROUP BY 1
+      kind: derived
+      table: substrate_node_prediction_error_history
+      ts_column: observed_at
+    unlock: >-
+      The first prediction-error signal in Orion that is a real forecast: stored before its
+      target time, scored when the clock says, surprise in one unit with a calm point set by
+      theory (1 - 0.05). Gated per row at issue time (real model, adaptive range, real actual).
+      Two nodes (office, cabinet) that attention, self-readings and curiosity accept as the
+      measurement kind surprise_excess.
+    last_reviewed: 2026-11-11
+    claims:
+      - id: forecast_surprise_calm_check
+        question: >-
+          Over a quiet 24 h, is mean excess surprise within its null band around 0 on every
+          adaptive horizon? (evals/run_surprise_calm_live_eval.py --hours 24 --source adaptive)
+        kind: manual
+        recorded: "PASS (cabinet 5 +0.004 +-0.230 n=52, cabinet 15 -0.072 +-0.167, office 5 -0.032 +-0.099, office 15 -0.050 +-0.179)"
+        recorded_at: 2026-11-11
+        note: >-
+          Re-run before trusting the nodes after any forecaster change. Live replay of the
+          node fold (evals/run_surprise_node_replay_eval.py --hours 72, 2026-11-11): exact 0
+          for 56-58 % of writes; the node crosses curiosity's 0.55 bar on 8-10 % of writes
+          (theory 5 %: consecutive outcomes in one window are mildly autocorrelated).

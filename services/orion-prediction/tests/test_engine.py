@@ -71,8 +71,22 @@ class FakeStore:
         o = self.last_origin(sid)
         return [f for f in self.forecasts if f["role"] == "champion" and f["origin_ts"] == o]
 
+    # hm -> model, as if the ISSUING run had assigned it (surprise event gate); and an interval_source
+    # override for rows the test engine issued with backtest ranges.
+    served_model_override: dict = {}
+    interval_source_override: str | None = None
+
     def due_for_scoring(self, sid, before, limit=2000):
-        return [f for f in self.forecasts if f["scored_at"] is None and f["target_ts"] < before][:limit]
+        # Same columns as PostgresStore.due_for_scoring: served_model from the issuing run's assignment.
+        runs = {r["run_id"]: r for r in self.runs}
+        out = []
+        for f in self.forecasts:
+            if f["scored_at"] is None and f["target_ts"] < before:
+                assignment = (runs.get(f.get("run_id")) or {}).get("assignment") or {}
+                model = self.served_model_override.get(f["horizon_min"], assignment.get(str(f["horizon_min"])))
+                src = self.interval_source_override or f.get("interval_source")
+                out.append({**f, "served_model": model, "interval_source": src})
+        return out[:limit]
 
     def write_scores(self, scores):
         by_id = {f["forecast_id"]: f for f in self.forecasts}
@@ -779,3 +793,132 @@ def test_surprise_summary_reports_each_horizon_with_its_gate_reason():
     for hm, h in out["horizons"].items():
         expected = "served_baseline" if assignment[int(hm)] in BASELINES else "too_few_live_scores"
         assert h["gate"] == expected, hm
+
+
+# --- surprise events (prediction.surprise.v1, issue-time gate) --------------------------------------
+
+def _surprise_events(published):
+    from orion.schemas.prediction import PredictionSurpriseV1
+
+    return [PredictionSurpriseV1.model_validate(e.payload) for c, e in published if c == "orion:prediction:surprise"]
+
+
+def _issued_then_scored(served_at_issue, *, source="adaptive", silent=False, flag=True, monitor=True):
+    """One tick issues one champion + one baseline forecast per horizon; then the 5-min target lands
+    and is scored. Returns (engine, spec, store, published)."""
+    reg, spec, s, store, end = _setup()
+    store.served_model_override = served_at_issue
+    store.interval_source_override = source
+    published = []
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, published)
+    eng.surprise_events_enabled = flag
+    asyncio.run(eng.tick(_sync))
+    if not monitor:
+        eng.state["test.temp"].surprise_gate = {}          # as after a restart: no monitor pass yet
+    future = daily_series(1, amp=1.0, noise=0.05, seed=4, start=end)
+    if silent:
+        future.iloc[0] = np.nan                            # the 5-min target bucket goes silent
+    store.raw += points_of(future)
+    clock.t = end + timedelta(hours=1, minutes=10)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.publish_surprise(spec))
+    return eng, spec, store, published
+
+
+def test_gated_outcome_publishes_one_champion_event_with_its_issue_facts():
+    eng, spec, store, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar", 360: "direct_ar"})
+    evs = _surprise_events(published)
+    # 5 and 60 min targets landed (360 not yet); baseline rows never publish.
+    assert sorted(e.horizon_min for e in evs) == [5, 60]
+    ev = next(e for e in evs if e.horizon_min == 5)
+    row = next(f for f in store.forecasts if f["forecast_id"] == int(ev.forecast_id))
+    assert row["role"] == "champion" and row["horizon_min"] == 5
+    assert ev.issuing_model == "direct_ar" and ev.interval_source == "adaptive"
+    assert ev.origin_ts == row["origin_ts"] and ev.target_ts == row["target_ts"]
+    assert ev.actual == pytest.approx(row["actual"])
+    assert 0.05 <= ev.p_value <= 1 and ev.excess == pytest.approx(ev.surprisal - 0.95)
+    assert ev.calm_surprisal == pytest.approx(0.95)
+    # Drained: a second publish sends nothing new.
+    n = len(published)
+    asyncio.run(eng.publish_surprise(spec))
+    assert len(published) == n and eng.state["test.temp"].surprise_published == 2
+
+
+def test_a_forecast_issued_by_a_baseline_never_publishes():
+    """The gate judges the model that served when the forecast was ISSUED, not today's."""
+    eng, _, _, published = _issued_then_scored({5: "naive", 60: "seasonal_naive", 360: "naive"})
+    assert _surprise_events(published) == []
+    assert eng.state["test.temp"].surprise_gate_refused["issued_by_baseline"] >= 2
+
+
+def test_a_backtest_range_never_publishes():
+    eng, _, _, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, source="backtest:horizon_not_adaptive")
+    assert _surprise_events(published) == []
+    assert eng.state["test.temp"].surprise_gate_refused["range_not_adaptive"] >= 2
+
+
+def test_a_missing_bucket_is_no_data_not_surprise():
+    _, _, store, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, silent=True)
+    assert any(f.get("score_status") == "missing" and f["horizon_min"] == 5 for f in store.forecasts)
+    assert [e.horizon_min for e in _surprise_events(published)] == [60]   # the 5-min miss sends nothing
+
+
+def test_first_scores_after_a_restart_are_judged_not_lost():
+    """#3170 review carry-over: the gate needs no monitor pass, so nothing is dropped before one."""
+    _, _, _, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, monitor=False)
+    assert sorted(e.horizon_min for e in _surprise_events(published)) == [5, 60]
+
+
+def test_kill_switch_publishes_nothing():
+    _, _, _, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, flag=False)
+    assert _surprise_events(published) == []
+
+
+def test_a_surprise_failure_never_costs_the_scores_or_the_rest_of_the_tick(monkeypatch):
+    """#3170 review carry-over: an exception building events must not skip scoring, exceedance or
+    shadow scoring."""
+    reg, spec, s, store, end = _setup()
+    store.served_model_override = {5: "direct_ar", 60: "direct_ar"}
+    store.interval_source_override = "adaptive"
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    monkeypatch.setattr(eng, "surprise_events", lambda *a: 1 / 0)
+    called = []
+    real_exc, real_shadow = eng.score_exceedances, eng.score_shadow
+    monkeypatch.setattr(eng, "score_exceedances", lambda *a: (called.append("exc"), real_exc(*a))[1])
+    monkeypatch.setattr(eng, "score_shadow", lambda *a: (called.append("shadow"), real_shadow(*a))[1])
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=1, minutes=10)
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert any(f.get("score_status") == "scored" for f in store.forecasts)
+    assert st.last_score_error is None and "ZeroDivisionError" in st.last_surprise_error
+    assert called == ["exc", "shadow"]
+
+
+def test_a_publish_failure_drops_that_event_and_keeps_going():
+    reg, spec, s, store, end = _setup()
+    store.served_model_override = {5: "direct_ar", 60: "direct_ar"}
+    store.interval_source_override = "adaptive"
+    failed = []
+
+    async def flaky(channel, env):
+        if channel == "orion:prediction:surprise" and not failed:
+            failed.append(channel)
+            raise ConnectionError("bus down")
+
+    clock = Clock(end + timedelta(seconds=90))
+    eng = Engine(reg, store, backtest_windows=14, backtest_step_min=180, select_interval_sec=6 * 3600,
+                 settle_sec=60, publish_enabled=True, publish=flaky,
+                 source=ServiceRef(name="orion-prediction", version="test", node="test"), clock=clock)
+    asyncio.run(eng.tick(_sync))
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=1, minutes=10)
+    eng.score(spec, clock.t)
+    pending = len(eng.state["test.temp"].pending_surprise)
+    assert pending >= 2
+    assert asyncio.run(eng.publish_surprise(spec)) == pending - 1    # the first failed, the rest went
+    st = eng.state["test.temp"]
+    assert st.surprise_publish_failed == 1 and st.surprise_published == pending - 1

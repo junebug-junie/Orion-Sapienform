@@ -36,6 +36,8 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
         "node:substrate.biometrics", "node:substrate.cabinet",
         "node:substrate.chat", "node:substrate.codebase", "node:substrate.execution",
         "node:substrate.strain",
+        # forecast surprise (value_kind surprise_excess, 2026-11-11): a measurement, the body.
+        "node:prediction.body", "node:prediction.room",
     ])
     # bus_synaptic and route retired 2026-11 (PE suite rebuild step 5).
     assert "node:substrate.bus_synaptic" not in nodes and "node:substrate.route" not in nodes
@@ -282,3 +284,18 @@ def test_stale_trigger_is_unreadable_not_no_recent_events() -> None:
     assert "No recent events: strain" not in block.text
     calm = [r for r in fx.calm_rows() if not (r[0] == "node:substrate.strain" and r[1] > cut)]
     assert sr.project_self_readings(_cache(calm), now=NOW).skip_reason == "calm_partial"
+
+
+def test_a_surprising_forecast_renders_in_plain_words_with_its_row_ref() -> None:
+    """node:prediction.room (value_kind surprise_excess, 2026-11-11) is ranked like a level against
+    its own week and, when high, gets a line Orion can read."""
+    rows = fx.calm_rows() + [("node:prediction.room", NOW - timedelta(seconds=40), 1.0)]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    by = _by_id(block.readings)
+    room = by["node:prediction.room"]
+    assert room.value_kind == "surprise_excess" and room.unusual and room.state == "live"
+    assert "node:prediction.room" in block.shown
+    assert "office's temperature is surprising my own forecast" in block.text
+    assert f"[{room.ref}]" in block.text and room.ref.startswith("pe:prediction.room@")
+    # Its calm sibling stays silent.
+    assert not by["node:prediction.body"].unusual

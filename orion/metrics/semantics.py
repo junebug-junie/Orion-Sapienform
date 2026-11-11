@@ -51,8 +51,11 @@ from typing import Any, Iterable, Mapping
 # count       a small integer count, possibly scaled (few distinct values)
 # bucket      a few fixed tiers dressed as a number (e.g. 0.9 / 0.6 / 0.3)
 # placeholder a hard-coded constant standing in for a measurement not built yet
+# surprise_excess  mean excess surprise of scored forecasts (-ln p minus its calibrated
+#             calm point 0.95): rests at 0 by theory, positive = the world did what the
+#             forecast did not expect (node:prediction.*, 2026-11-11)
 VALUE_KINDS: frozenset[str] = frozenset(
-    {"level", "trigger", "binary", "count", "bucket", "placeholder"}
+    {"level", "trigger", "binary", "count", "bucket", "placeholder", "surprise_excess"}
 )
 
 # per_tick         a reading every producer tick; long zero runs mean calm
@@ -103,6 +106,9 @@ PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
         "metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error",
+        # Forecast surprise (2026-11-11): self-readings render it like any body signal.
+        "metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error",
+        "metric://field_channel/orion-substrate-runtime/node:prediction.body.prediction_error",
         "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score",
         "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score",
         "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience",

@@ -53,15 +53,22 @@ from app.series import Registry, Seasonality, SeriesSpec
 from app.surprise import (
     CALM_SURPRISAL,
     P_FLOOR,
+    conformal_p_value,
+    event_gate,
+    excess,
     horizon_gate,
     summarize as surprise_summarize,
+    surprisal,
 )
 from orion.schemas.prediction import (
     PREDICTION_FORECAST_CHANNEL,
     PREDICTION_FORECAST_KIND,
+    PREDICTION_SURPRISE_CHANNEL,
+    PREDICTION_SURPRISE_KIND,
     PredictionExceedanceV1,
     PredictionForecastV1,
     PredictionStepV1,
+    PredictionSurpriseV1,
 )
 
 logger = logging.getLogger("orion-prediction.engine")
@@ -137,8 +144,16 @@ class SeriesState:
     shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
     not_ready: dict | None = None   # NotReady.detail while the series is too young to select
     # Surprise gate per horizon for the current selection, from the last monitor pass:
-    # hm -> (passes, reason). Shown by /series/{id}/surprise; no bus event until a consumer exists.
+    # hm -> (passes, reason). Display only (/series/{id}/surprise). Events are judged per row on the
+    # ISSUING model (surprise.event_gate), not on this.
     surprise_gate: dict = field(default_factory=dict)
+    pending_surprise: list = field(default_factory=list)   # PredictionSurpriseV1 awaiting publish
+    # Counters for /health: events published, events dropped on a publish error, and per-reason
+    # counts of scored rows the event gate refused (since process start).
+    surprise_published: int = 0
+    surprise_publish_failed: int = 0
+    surprise_gate_refused: dict = field(default_factory=dict)
+    last_surprise_error: str | None = None
     # Champion range source per horizon at the last issue: "adaptive" or "backtest:<reason>".
     interval_source: dict = field(default_factory=dict)
     last_score_error: str | None = None
@@ -149,11 +164,14 @@ class Engine:
                  select_interval_sec: float, settle_sec: float, publish_enabled: bool,
                  publish: Callable[[str, Any], Awaitable[None]] | None = None, source: Any = None,
                  clock: Callable[[], datetime] = utcnow, weather: dict | None = None,
-                 shadow_enabled: bool = True, adaptive_intervals: bool = True):
+                 shadow_enabled: bool = True, adaptive_intervals: bool = True,
+                 surprise_events_enabled: bool = True):
         self.registry = registry
         self.weather = weather            # {"lat", "lon", "refresh_sec"} or None (weather off)
         self.shadow_enabled = shadow_enabled
         self.adaptive_intervals = adaptive_intervals   # app/adaptive.py; False = backtest pool only
+        # PREDICTION_SURPRISE_EVENTS_ENABLED: publish prediction.surprise.v1 for gated scored rows.
+        self.surprise_events_enabled = surprise_events_enabled
         self.weather_state: dict = {}
         self.store = store
         self.backtest_windows = backtest_windows
@@ -671,7 +689,67 @@ class Engine:
                            "in_80": q[q_key(0.1)] <= v <= q[q_key(0.9)],
                            "in_95": q[q_key(0.025)] <= v <= q[q_key(0.975)]})
         self.store.write_scores(scores)
+        if self.surprise_events_enabled:
+            st = self.state[spec.series_id]
+            try:
+                st.pending_surprise.extend(self.surprise_events(spec, due, scores))
+                st.last_surprise_error = None
+            except Exception as exc:  # noqa: BLE001 -- surprise never costs scoring or the rest of the tick
+                st.last_surprise_error = f"{type(exc).__name__}: {exc}"[:300]
+                logger.warning("prediction_surprise_failed series=%s err=%s", spec.series_id, exc)
         return len(scores)
+
+    def surprise_events(self, spec: SeriesSpec, due: list[dict], scores: list[dict]) -> list[PredictionSurpriseV1]:
+        """One event per scored row that passes ``event_gate`` (judged on the row alone: champion,
+        issuing model not a baseline, adaptive range, real actual). Needs no monitor pass, so the
+        first outcomes scored after a restart are judged like any other. A row whose quantiles
+        cannot be read is skipped and counted, never published with a guessed p."""
+        st = self.state[spec.series_id]
+        out = []
+        for r, sc in zip(due, scores):
+            ok, reason = event_gate(r, sc)
+            if not ok:
+                st.surprise_gate_refused[reason] = st.surprise_gate_refused.get(reason, 0) + 1
+                continue
+            try:
+                p, censored = conformal_p_value(float(sc["actual"]), r["quantiles"])
+            except (ValueError, TypeError, KeyError) as exc:
+                st.surprise_gate_refused["bad_quantiles"] = st.surprise_gate_refused.get("bad_quantiles", 0) + 1
+                logger.warning("prediction_surprise_bad_quantiles series=%s forecast_id=%s err=%s",
+                               spec.series_id, r.get("forecast_id"), exc)
+                continue
+            out.append(PredictionSurpriseV1(
+                forecast_id=str(r["forecast_id"]), series_id=spec.series_id, horizon_min=int(r["horizon_min"]),
+                origin_ts=r["origin_ts"], issued_at=r["issued_at"], target_ts=r["target_ts"],
+                scored_at=sc["scored_at"], issuing_model=str(r["served_model"]),
+                interval_source=r["interval_source"], point=float(r["point"]), actual=float(sc["actual"]),
+                p_value=p, p_censored=censored, surprisal=surprisal(p), calm_surprisal=CALM_SURPRISAL,
+                excess=excess(p)))
+        return out
+
+    async def publish_surprise(self, spec: SeriesSpec) -> int:
+        """Publish the pending events, oldest first. Never raises. A failed publish drops that event
+        (the scored row in prediction_forecast is the record) and keeps going."""
+        st = self.state[spec.series_id]
+        pending, st.pending_surprise = st.pending_surprise, []
+        if not pending or not self.publish_enabled or self.publish is None:
+            return 0
+        from orion.core.bus.bus_schemas import BaseEnvelope
+
+        sent = 0
+        for ev in pending:
+            try:
+                await self.publish(PREDICTION_SURPRISE_CHANNEL, BaseEnvelope(
+                    kind=PREDICTION_SURPRISE_KIND, source=self.source, payload=ev.model_dump(mode="json")))
+                sent += 1
+            except Exception as exc:  # noqa: BLE001
+                st.surprise_publish_failed += 1
+                logger.error("prediction_surprise_publish_failed series=%s forecast_id=%s h=%s err=%s",
+                             spec.series_id, ev.forecast_id, ev.horizon_min, exc)
+        st.surprise_published += sent
+        if sent:
+            logger.info("prediction_surprise_published series=%s n=%d", spec.series_id, sent)
+        return sent
 
     def surprise_summary(self, spec: SeriesSpec, now: datetime, window: timedelta) -> dict:
         """Calm check (spec acceptance): mean excess per horizon vs its 95 % null band."""
@@ -865,6 +943,7 @@ class Engine:
         except Exception as exc:  # noqa: BLE001 -- retried next tick; alerted as score_failed
             st.last_score_error = f"{type(exc).__name__}: {exc}"[:300]
             logger.exception("prediction_score_failed series=%s", spec.series_id)
+        await self.publish_surprise(spec)
         if st.served is not None:
             series = await sync(self.load_series, spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
             await self.issue(spec, now, series, sync)

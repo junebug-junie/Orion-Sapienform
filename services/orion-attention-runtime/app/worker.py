@@ -250,6 +250,7 @@ class AttentionRuntimeWorker:
         from orion.attention.world_first import (
             CHAT_RATE_WINDOW,
             PERCEPTION_NODE_ID,
+            PREDICTION_ERROR_NODE_PREFIXES,
             READING_RATE_WINDOW,
             SUBSTRATE_NODE_PREFIX,
             chat_candidate,
@@ -272,7 +273,7 @@ class AttentionRuntimeWorker:
 
         node_ids = {
             k for k in (set(magnitudes) | {
-                k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
+                k for k in field.node_vectors if k.startswith(PREDICTION_ERROR_NODE_PREFIXES)
                 and "prediction_error" in field.node_vectors[k]
             })
             # Recorded but not admitted (fence), unless admitted under a per-node
@@ -289,7 +290,7 @@ class AttentionRuntimeWorker:
             candidates.append(
                 node_candidate(
                     node_id=node_id,
-                    label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX)} prediction error",
+                    label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX).removeprefix('node:')} prediction error",
                     magnitude=mag,
                     observed_at=observed_at,
                     now=now,

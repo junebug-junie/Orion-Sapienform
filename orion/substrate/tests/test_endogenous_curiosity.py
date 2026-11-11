@@ -431,3 +431,17 @@ def test_unreadable_glossary_fails_closed_for_prediction_error_only(monkeypatch)
     assert [n for s in seeds for n in s.notes if n.startswith("source:")] == [
         "source:repair_pressure"
     ]
+
+
+def test_forecast_surprise_nodes_seed_curiosity_as_a_measurement() -> None:
+    """node:prediction.* (value_kind surprise_excess, 2026-11-11) is a real measurement: above
+    min_error it seeds, like any level; below it does not."""
+    seeds = endogenous_curiosity_candidates(
+        nodes=[
+            _node("node:prediction.room", 0.9, observed_at=_NOW),
+            _node("node:prediction.body", 0.2, observed_at=_NOW),
+        ],
+        config=_enabled(budget=8),
+        now=_NOW,
+    )
+    assert [s.focal_node_refs for s in seeds] == [["node:prediction.room"]]

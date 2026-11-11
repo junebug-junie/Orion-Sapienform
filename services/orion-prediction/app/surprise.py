@@ -19,10 +19,15 @@ surprisal of the outcome under the forecast:
   spike (one forecast missed badly); a sustained offset = drift (ranges too wide reads negative,
   too narrow reads positive -- the live 80 % coverage says which).
 
-A horizon passes the gate (``horizon_gate``) only when its forecaster passed selection (the served
-model is not a baseline), its live 80 % coverage sits in the selection band over enough scores, and
-its live record is not worse than the baseline. Same bar the forecast itself must clear. Nothing
-consumes surprise yet (no bus event): the calm check fails today, see README "Surprise".
+A horizon passes the display gate (``horizon_gate``, shown by ``/series/{id}/surprise``) only when
+its forecaster passed selection (the served model is not a baseline), its live 80 % coverage sits in
+the selection band over enough scores, and its live record is not worse than the baseline.
+
+One scored row becomes a ``prediction.surprise.v1`` event only through ``event_gate``, judged on
+the row alone (2026-11-11): champion role, the model that served this horizon in the run that
+ISSUED the forecast is not a baseline, the range came from the adaptive source (5 and 15 min: the
+horizons whose calm check passed on 2026-11-11), and the bucket has a real actual. It needs no
+monitor pass, so outcomes scored right after a restart are judged like any other.
 """
 
 from __future__ import annotations
@@ -80,6 +85,32 @@ def surprisal(p: float) -> float:
 
 def excess(p: float) -> float:
     return surprisal(p) - CALM_SURPRISAL
+
+
+ADAPTIVE_SOURCE = "adaptive"
+
+
+def event_gate(row: Mapping, score: Mapping) -> tuple[bool, str]:
+    """(passes, reason) for publishing one scored forecast row as a surprise event.
+
+    ``row``: a ``due_for_scoring`` row (role, horizon_min, interval_source, served_model = the
+    issuing run's ``assignment[horizon]``). ``score``: its score dict. Pure; never raises on a
+    malformed row (it fails the gate instead)."""
+    if row.get("role") != "champion":
+        return False, "not_champion"
+    if score.get("score_status") != "scored" or score.get("actual") is None:
+        return False, "no_actual"
+    actual = score.get("actual")
+    if not isinstance(actual, (int, float)) or not math.isfinite(float(actual)):
+        return False, "no_actual"
+    model = row.get("served_model")
+    if not model:
+        return False, "no_issuing_model"
+    if model in BASELINES:
+        return False, "issued_by_baseline"
+    if row.get("interval_source") != ADAPTIVE_SOURCE:
+        return False, "range_not_adaptive"
+    return True, "passed"
 
 
 def horizon_gate(hm: int, horizon_live: Mapping | None, served_model: str | None,

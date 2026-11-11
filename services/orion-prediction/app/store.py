@@ -240,9 +240,14 @@ class PostgresStore:
             " ORDER BY horizon_min", (series_id, series_id))
 
     def due_for_scoring(self, series_id: str, before: datetime, limit: int = 2000) -> list[dict]:
+        # role / origin / interval_source / served_model feed the surprise event gate
+        # (app/surprise.py event_gate). served_model is the model that served this horizon in the run
+        # that ISSUED the forecast, not whichever serves at scoring time.
         return self._all(
-            "SELECT forecast_id, target_ts, quantiles, point FROM prediction_forecast "
-            "WHERE series_id = %s AND scored_at IS NULL AND target_ts < %s ORDER BY target_ts LIMIT %s",
+            "SELECT f.forecast_id, f.role, f.horizon_min, f.origin_ts, f.issued_at, f.target_ts, "
+            "f.quantiles, f.point, f.interval_source, r.assignment ->> f.horizon_min::text AS served_model "
+            "FROM prediction_forecast f LEFT JOIN prediction_model_run r ON r.run_id = f.run_id "
+            "WHERE f.series_id = %s AND f.scored_at IS NULL AND f.target_ts < %s ORDER BY f.target_ts LIMIT %s",
             (series_id, before, limit))
 
     def write_scores(self, scores: list[dict]) -> None:

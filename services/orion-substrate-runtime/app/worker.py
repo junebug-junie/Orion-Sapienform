@@ -828,6 +828,16 @@ class BiometricsSubstrateWorker:
                     self._cabinet_heat_tick_loop(), name="substrate-cabinet-heat-tick"
                 )
             )
+        # Forecast surprise -> node:prediction.room / node:prediction.body
+        # (orion/substrate/prediction_surprise.py). Event-driven only: no events,
+        # no writes, and the nodes age to stale (absent, never calm).
+        if self._bus is not None and s.prediction_surprise_nodes_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._prediction_surprise_listener_loop(),
+                    name="substrate-prediction-surprise-listener",
+                )
+            )
         if s.enable_strain_attention:
             self._tasks.append(
                 asyncio.create_task(
@@ -1593,6 +1603,106 @@ class BiometricsSubstrateWorker:
                 continue
             except asyncio.CancelledError:
                 break
+
+    # ------------------------------------------------------------------
+    # Forecast surprise -> node:prediction.room / node:prediction.body
+    # (orion/substrate/prediction_surprise.py; spec 2026-11-08 PE suite rebuild, item 3)
+    # ------------------------------------------------------------------
+
+    _PREDICTION_SURPRISE_LISTENER_NAME = "substrate_prediction_surprise_listener"
+
+    def _prediction_surprise_state(self):
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_prediction_surprise", None)
+        if state is None:
+            from orion.substrate.prediction_surprise import PredictionSurpriseState
+
+            state = PredictionSurpriseState()
+            self._prediction_surprise = state
+        return state
+
+    def prediction_surprise_status(self) -> dict[str, Any]:
+        """Counters and current window per node, for /health (``prediction_surprise``)."""
+        from orion.substrate.prediction_surprise import PREDICTION_SURPRISE_NODE_IDS
+
+        state = self._prediction_surprise_state()
+        now = datetime.now(timezone.utc)
+        nodes: dict[str, Any] = {}
+        for node_id in sorted(PREDICTION_SURPRISE_NODE_IDS):
+            r = state.reading(node_id, now=now)
+            nodes[node_id] = None if r is None else {
+                "mean_excess": round(r.mean_excess, 4), "value": round(r.value, 4), "n": r.n,
+                "newest_target_ts": r.newest_target_ts.isoformat(),
+            }
+        return {
+            "enabled": bool(self._settings.prediction_surprise_nodes_enabled),
+            "counts": state.counts_snapshot(),
+            "nodes": nodes,
+        }
+
+    async def _prediction_surprise_listener_loop(self) -> None:
+        await run_subscription(
+            self._bus,
+            self._settings.prediction_surprise_channel,
+            self._handle_prediction_surprise_message,
+            stop_event=self._stop,
+            name=self._PREDICTION_SURPRISE_LISTENER_NAME,
+        )
+
+    async def _handle_prediction_surprise_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            self._prediction_surprise_state().bump("invalid_total")
+            logger.warning("substrate_prediction_surprise_decode_failed: %s", decoded.error)
+            return
+        await asyncio.to_thread(self._process_prediction_surprise, decoded.envelope.payload or {})
+
+    def _process_prediction_surprise(self, payload: Any, *, now: datetime | None = None) -> None:
+        """Fold one PredictionSurpriseV1 into its node's window and write the node. Fail-open.
+
+        One ``substrate_prediction_surprise`` log line per event (series, horizon, excess,
+        verdict). Writes only on an accepted event, so a quiet or dead producer leaves the node to
+        age (stale = absent to every reader). FalkorDB node only, no field receipt: the node is
+        not a FieldStateV1 node vector, so the field digester's decay/expiry never touches it."""
+        from orion.schemas.prediction import PredictionSurpriseV1
+        from orion.substrate.prediction_surprise import REDUCER_KEY
+
+        state = self._prediction_surprise_state()
+        try:
+            event = PredictionSurpriseV1.model_validate(payload)
+        except ValueError as exc:
+            state.bump("invalid_total")
+            logger.error("substrate_prediction_surprise_invalid err=%s", exc)
+            return
+        try:
+            now = now or datetime.now(timezone.utc)
+            node_id, verdict = state.add(event, now=now)
+            state.bump(verdict)
+            reading = state.reading(node_id, now=now) if verdict == "accepted" and node_id else None
+            logger.info(
+                "substrate_prediction_surprise series=%s h=%d target=%s excess=%+.3f verdict=%s "
+                "node=%s mean_excess=%s n=%s forecast_id=%s",
+                event.series_id, event.horizon_min, event.target_ts.isoformat(), event.excess, verdict,
+                node_id or "none",
+                "none" if reading is None else f"{reading.mean_excess:+.4f}",
+                "none" if reading is None else reading.n,
+                event.forecast_id,
+            )
+            if reading is None:
+                return
+            written = self._write_prediction_error_node(
+                node_id=reading.node_id,
+                error=reading.value,
+                now=now,
+                reducer_key=REDUCER_KEY,
+                evidence_event_ids=[f"prediction_forecast:{fid}" for fid in reading.forecast_ids],
+            )
+            # Only a real upsert counts (the shared writer is a no-op with
+            # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES off or no graph store).
+            state.bump("node_writes_total" if written else "node_write_skipped_total")
+        except Exception:
+            state.bump("failed_total")
+            logger.exception("substrate_prediction_surprise_failed")
 
     # ------------------------------------------------------------------
     # Street events -> node:substrate.street (orion/substrate/street_attention.py)
@@ -2550,7 +2660,7 @@ class BiometricsSubstrateWorker:
         evidence_event_ids: Sequence[str] = (),
         extra_channels: dict[str, float] | None = None,
         missing_reason: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
         ``missing_reason`` (2026-10-21): set when ``error`` is a placeholder
@@ -2609,7 +2719,7 @@ class BiometricsSubstrateWorker:
         explains, with nothing further to join.
         """
         if not _prediction_error_nodes_enabled():
-            return
+            return False
 
         store = self._get_substrate_graph_store(
             log_label="substrate_prediction_error_store_init_failed"
@@ -2620,7 +2730,7 @@ class BiometricsSubstrateWorker:
                 node_id,
                 reducer_key,
             )
-            return
+            return False
 
         try:
             from orion.core.schemas.cognitive_substrate import (
@@ -2707,12 +2817,14 @@ class BiometricsSubstrateWorker:
                 error,
                 reducer_key,
             )
+            return True
         except Exception:
             logger.warning(
                 "substrate_prediction_error_node_upsert_failed node_id=%s",
                 node_id,
                 exc_info=True,
             )
+            return False
 
     def handle_post_turn_closure(self, closure: HarnessPostTurnClosureV1) -> None:
         """Persist the turn referent for an unresolved harness turn.
@@ -3405,7 +3517,10 @@ class BiometricsSubstrateWorker:
     # per-node window seeded once from Postgres, so the 7-day percentiles do
     # not re-read ~200k rows every ~35 s tick. Instance attrs are read with
     # getattr() because tests build the worker via __new__.
-    _PE_HISTORY_NODE_PREFIX = "node:substrate."
+    # node:prediction.* (forecast surprise, orion/substrate/prediction_surprise.py, 2026-11-11) is
+    # recorded too: the attention contests, self-readings and the episode history all rank a node
+    # against this table.
+    _PE_HISTORY_NODE_PREFIX = ("node:substrate.", "node:prediction.")
     _PE_HISTORY_PRUNE_INTERVAL = timedelta(hours=1)
     _PE_HISTORY_SEED_RETRY = timedelta(minutes=5)
     # A reading stamped further ahead than this is treated as producer clock

@@ -508,7 +508,7 @@ def _outcome(row: SelfSignalHourV1, outcome: str) -> OutcomeHourV1 | None:
 
 
 def short_signal(signal_id: str) -> str:
-    return signal_id.removeprefix("node:substrate.")
+    return signal_id.removeprefix("node:substrate.").removeprefix("node:")
 
 
 def clause_for(assoc: SelfSignalOutcomeAssociationV1) -> str:

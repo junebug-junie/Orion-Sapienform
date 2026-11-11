@@ -62,7 +62,8 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     step 5); harness_closure removed 2026-11-11 (#3184): 61 -> 58 entries."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 58
+    # + node:prediction.room / node:prediction.body (forecast surprise, 2026-11-11): 58 -> 60.
+    assert len(entries) == 60
     assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}
     for retired in (

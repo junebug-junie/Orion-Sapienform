@@ -1,13 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 780,
+  "metric_count": 783,
   "_last_change": {
     "change_count": 3,
-    "high_severity_count": 3,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error",
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error",
-      "high   semantics_changed metric://field_channel/orion-field-digester/pressure (meaning: \u2026t, vision). Where an edge feeds it: absent (key and provena\u2026\u2026 -> \u2026t, vision). Absent (key and provenance dropped) on a tick w\u2026\u2026)"
+      "medium added metric://bus_channel/orion-prediction/orion:prediction:surprise",
+      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.body.prediction_error",
+      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error"
     ]
   },
   "definitions": {
@@ -2758,6 +2758,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-prediction/orion:prediction:surprise": {
+      "schema_id": "PredictionSurpriseV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-recall/orion:exec:result:RecallService:*": {
       "schema_id": "RecallReplyV1",
       "all_producers": [
@@ -4577,6 +4588,48 @@
     "metric://field_channel/orion-field-digester/write_failure_pressure": {
       "meaning": "Storage writes that did not land, on node:substrate.storage_write: orion-sql-writer's own count of incoming writes that did not reach their Postgres table (schema/validation reject, constraint violation, serialization error, database unavailable or timed out, grammar queue shed), as the worst table family's failed / max(attempted, 10) over the last 10 minutes of writer windows, counted only once a family has 2+ failures. Idempotent duplicates are not failures; unrouted kinds are not counted. 0.0 means every counted write in the span landed; dropped (unmeasured) when no writer window has been reduced for 180 s.",
       "notes": "category=infra_transport level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.body.prediction_error": {
+      "meaning": "How much the cabinet's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (athena.cabinet_temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py).",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error": {
+      "meaning": "How much the office's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (office.temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py).",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "per_tick",
+      "absent_means": "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error": {

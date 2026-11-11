@@ -43,6 +43,11 @@ try{
   await page.goto(url+'/retro');
   assert.equal(await page.evaluate(async()=> (await fetch('/api/retro/games')).status),200);
   await page.waitForSelector('#player:not([hidden])');await page.$eval('#more',d=>{d.open=true;});
+  const catalog=await page.evaluate(async()=>(await fetch('/api/retro/games')).json());
+  const selectedGame=catalog.find(g=>g.game_id===process.env.RETRO_EVAL_GAME);
+  const options=await page.$$eval('#game option',options=>options.map(o=>({id:o.value,title:o.textContent})));
+  assert.deepEqual(options,catalog.map(g=>({id:g.game_id,title:g.title+(g.system==='snes'?' (SNES)':'')})));
+  assert.equal(await page.$$eval('#game optgroup',groups=>groups.length),0,'games must share one list');
   if(await page.$('#code')) throw new Error('Unexpected access-code prompt');
   await page.select('#game',process.env.RETRO_EVAL_GAME);await page.click('#new');
   await page.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>10,{timeout:10000});
@@ -150,10 +155,30 @@ try{
   const state=await page.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session);
   const actions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
   assert(actions.some(a=>a.mask===384),'gamepad right+A never applied');
-  await page.select('#port','1');await pause(150);await page.click('#join');await pause(400);
-  await page.click('#takeover');await pause(250);
-  const p2actions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
-  assert(p2actions.some(a=>a.port===1 && a.mask===384),'P2 gamepad input never applied');
+  // Extra face/shoulder buttons must reach SNES, while NES keeps ignoring them.
+  await page.evaluate(()=>Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[]}));
+  for(const [key,bit] of [['a',2],['s',512],['q',1024],['w',2048]]){
+    await page.keyboard.down(key);await pause(120);await page.keyboard.up(key);
+    const rows=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+    assert.equal(rows.some(a=>a.mask===bit),selectedGame.system==='snes',`keyboard ${key} system mapping`);
+  }
+  for(const [index,bit] of [[2,2],[3,512],[4,1024],[5,2048]]){
+    await page.evaluate(index=>Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[{
+      id:'8BitDo Pro 2',connected:true,mapping:'standard',axes:[0,0],
+      buttons:Array.from({length:16},(_,i)=>({pressed:i===index}))}]}),index);
+    await pause(160);
+    const rows=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+    assert.equal(rows.slice(-5).some(a=>a.mask===bit),selectedGame.system==='snes',`pad ${index} system mapping`);
+  }
+  await page.evaluate(()=>Object.defineProperty(navigator,'getGamepads',{configurable:true,value:()=>[{
+    id:'8BitDo Pro 2',connected:true,mapping:'standard',axes:[0,0],
+    buttons:Array.from({length:16},(_,i)=>({pressed:[1,15].includes(i)}))}]}));
+  if(selectedGame.ports.includes(1)){
+    await page.select('#port','1');await pause(150);await page.click('#join');await pause(400);
+    await page.click('#takeover');await pause(250);
+    const p2actions=await page.evaluate(async sid=>(await (await fetch(`/api/retro/sessions/${sid}/evidence`)).json()).applied,state.session_id);
+    assert(p2actions.some(a=>a.port===1 && a.mask===384),'P2 gamepad input never applied');
+  }
   if(Number(process.env.RETRO_ACK_DELAY_MS || 0)){
     // Lost acknowledgments still release control; restored ones resume play with no Connect click.
     await page.evaluate(()=>{window.__dropRetroAck=true;});
@@ -301,5 +326,5 @@ try{
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',mediaPresentationCredits:true,delayedControlResponseMs:650,repeatedClicksDuringAcquisition:true,ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,saveLoadInPlace:true,loadFreshSession:true,scrollKeysInert:true,fullscreen:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',mediaPresentationCredits:true,delayedControlResponseMs:650,repeatedClicksDuringAcquisition:true,ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,system:selectedGame.system||'nes',mixedCatalog:true,extraButtonsChecked:true,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,saveLoadInPlace:true,loadFreshSession:true,scrollKeysInert:true,fullscreen:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

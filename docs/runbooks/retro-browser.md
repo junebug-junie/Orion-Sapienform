@@ -60,15 +60,23 @@ before a browser can start a game. No browser-supplied principal is trusted.
 
 Open the Retro tab from Hub's section launcher (`/#retro`). Leaving the tab
 unloads its game frame and releases control. The standalone `/retro` page also works. Choose a game, and start a
-new game. Click the screen. Arrow keys move; Z jumps/flies; X is B; Enter is Start;
+new game. NES and SNES share this list; SNES titles end in `(SNES)`.
+Click the screen. Arrow keys move; Z is A; X is B; Enter is Start;
 Shift is Select. The Start button also sends Start. Sound begins after a click.
+SNES adds keyboard A → Y, S → X, Q → L, W → R. These extra keys are ignored
+by NES sessions. The running game's system controls the mapping; merely browsing
+another title in the dropdown does not change a running game's controls.
 
 A second window can connect to the current game using Player 2. Both windows share the Hub operator. Select the player before connecting. Standard gamepad
-buttons map to the same controls, by position in the NES layout: right face button A, bottom
+buttons map to the same controls, by position in the Nintendo layout: right face button A, bottom
 face button B, D-pad or left stick to move, Start and Select in the middle. An 8BitDo Pro 2
 works in X-input mode (mode switch on the back set to X); the page names the controller it
 found, or says to switch modes when a controller is not in the browser's standard mapping.
 Over Bluetooth some Linux browsers still report X mode as non-standard: use a USB cable then.
+For SNES, top face button is X, left face button is Y, and L1/R1 are L/R.
+L2/R2 keep their save/load chords below. This is a Hub mapping change; it does not
+flash the controller or modify a stored hardware profile. Firmware updates are a
+separate device operation and physical controller input must be checked on Carbon.
 Two pads on one machine: Player 1 takes the first standard pad, Player 2 the second.
 Let Orion play (next to New game): Orion plays in 30-minute turns (Retro's limit), renewed by
 the page when one ends, until you click the game, press a game key or any controller button, or

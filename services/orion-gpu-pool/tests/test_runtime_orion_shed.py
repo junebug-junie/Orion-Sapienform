@@ -42,7 +42,7 @@ def test_check0_reflex_reason_wins_and_orion_reason_is_background_only():
         assert view.blocked == {"background": "orion_self_shed"}       # never system
         rt.on_incident(incident(rt))
         view = rt.shed_view()
-        assert view.blocked == {"background": "cooling_incident", "system": "cooling_incident"}
+        assert view.blocked == {"background": "cooling_incident", "system": "cooling_incident", "starved": "cooling_incident"}
         names = [r["name"] for r in view.reasons]          # precedence order: every reflex before Orion's
         assert names[-1] == "orion_self_shed" and names.index("cooling_incident") < names.index("orion_self_shed")
     run(go())
@@ -203,7 +203,7 @@ def test_check10_reflex_takes_over_mid_shed():
         view = rt.shed_view()
         active = [r["name"] for r in view.reasons if r["active"]]
         assert active == ["cooling_incident"]                 # the pool shows only the reflex
-        assert view.blocked == {"background": "cooling_incident", "system": "cooling_incident"}
+        assert view.blocked == {"background": "cooling_incident", "system": "cooling_incident", "starved": "cooling_incident"}
         status = await rt.orion_shed_request(req(action="status"))
         assert status.state == "preempted_by_reflex"
         assert status.detail["preempted_by_reflex"] == f"cooling_incident:{incident(rt).incident_id}"
@@ -281,7 +281,7 @@ def test_v2_reflex_preempts_the_learned_shed_and_refuses_it_while_active():
         await boot(rt)
         await rt.orion_shed_request(req())
         assert await rt.handle_reflex_shed(reflex(rt)) == "set+orion_shed_preempted"
-        assert rt.shed_view().blocked == {"background": "cabinet_hot", "system": "cabinet_hot"}
+        assert rt.shed_view().blocked == {"background": "cabinet_hot", "system": "cabinet_hot", "starved": "cabinet_hot"}
         assert await rt.handle_reflex_shed(reflex(rt)) == "refreshed"          # per-tick re-send
         assert (await rt.orion_shed_request(req(dispatch_id="d2"))).refusal == "reflex_active"
         assert await rt.handle_reflex_shed(reflex(rt, active=False)) == "cleared"

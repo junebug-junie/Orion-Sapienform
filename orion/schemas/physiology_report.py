@@ -62,11 +62,23 @@ class LimitV1(BaseModel):
     hourly: List[LimitHourV1] = Field(default_factory=list)
 
 
+class WantDeferralV1(BaseModel):
+    """Why a family's bids were deferred: one ``want_ledger`` (reason, binding_constraint) pair and
+    how many deferrals it explains, counted the same way as ``WantFamilyV1.deferred``."""
+
+    reason: str = Field(description="WantDecisionV1.reason: price | sated | capacity_reserved | no_acceptable_lane | ...")
+    binding_constraint: Optional[str] = Field(
+        default=None, description="the constraint that decided it (e.g. lane:agent for capacity_reserved); None when none")
+    count: int = 0
+
+
 class WantFamilyV1(BaseModel):
     family: str
     tier: Optional[int] = None
     funded: int = 0
     deferred: int = 0
+    deferred_by: List[WantDeferralV1] = Field(
+        default_factory=list, description="why the deferrals happened, largest first (at most 6 pairs); [] when none")
 
 
 class WantHourV1(BaseModel):
@@ -431,6 +443,7 @@ __all__ = [
     "UnitCostV1",
     "ValuePerCostV1",
     "VramCardV1",
+    "WantDeferralV1",
     "WantFamilyV1",
     "WantHourV1",
     "WantsV1",

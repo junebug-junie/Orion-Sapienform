@@ -144,6 +144,61 @@ def test_decay_dormancy_and_revival_are_deterministic() -> None:
     assert any(t.node_id == "stale-node" and t.to_state == "active" for t in second.dormancy_transitions)
 
 
+def _stale_node_with_drive(drive_half_life: int | None) -> SubstrateGraphMaterializer:
+    stale = ConceptNodeV1(
+        node_id="stale-node",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Stale",
+        temporal=_temporal(240),
+        provenance=_prov(),
+        signals={"activation": {"activation": 0.05, "recency_score": 0.01, "decay_half_life_seconds": 60}},
+    )
+    drive = DriveNodeV1(
+        node_id="drive-1",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        drive_kind="coherence",
+        temporal=_temporal(0),
+        provenance=_prov(),
+        signals={"salience": 0.9, "activation": {"decay_half_life_seconds": drive_half_life}},
+        metadata={"drive_status": "active", "pressure": 0.8},
+    )
+    materializer = SubstrateGraphMaterializer(store=InMemorySubstrateGraphStore())
+    materializer.apply_record(SubstrateGraphRecordV1(
+        anchor_scope="orion", subject_ref="entity:orion", nodes=[stale, drive],
+        edges=[_edge("drive-1", "drive", "stale-node", "concept", "activates")]))
+    return materializer
+
+
+def test_a_fresh_decaying_drive_keeps_an_old_neighbour_awake() -> None:
+    # Propagation decay mode source (default, 2026-11-03): the drive's activation
+    # already carries the drive's own decay, so it is not decayed again by the
+    # 4-hour-old neighbour's age. The neighbour reads drive x 0.6 x edge confidence.
+    materializer = _stale_node_with_drive(3600)
+    first = SubstrateDynamicsEngine(store=materializer.store).tick(now=datetime.now(timezone.utc))
+    assert not any(t.node_id == "stale-node" and t.to_state == "dormant" for t in first.dormancy_transitions)
+    snap = materializer.store.snapshot().nodes
+    drive_now = snap["drive-1"].signals.activation.activation
+    stale_now = snap["stale-node"].signals.activation.activation
+    assert abs(stale_now - drive_now * 0.6) < 1e-3
+    assert stale_now >= 0.2
+
+
+def test_a_never_decaying_drive_is_still_decayed_once_by_the_neighbours_age() -> None:
+    # A drive with no half-life carries no decay, so the old rule applies: dormant.
+    materializer = _stale_node_with_drive(None)
+    first = SubstrateDynamicsEngine(store=materializer.store).tick(now=datetime.now(timezone.utc))
+    assert any(t.node_id == "stale-node" and t.to_state == "dormant" for t in first.dormancy_transitions)
+
+
+def test_the_same_drive_in_rollback_mode_is_muted_by_the_neighbours_age() -> None:
+    materializer = _stale_node_with_drive(3600)
+    engine = SubstrateDynamicsEngine(store=materializer.store, propagation_decay_mode="receiver_age")
+    first = engine.tick(now=datetime.now(timezone.utc))
+    assert any(t.node_id == "stale-node" and t.to_state == "dormant" for t in first.dormancy_transitions)
+
+
 def test_contradiction_amplification_respects_resolution_and_severity() -> None:
     concept = ConceptNodeV1(
         node_id="concept-x",

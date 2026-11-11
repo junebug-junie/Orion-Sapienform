@@ -19,13 +19,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 ROUTE_MODULES = (
     "substrate_attention_routes",
     "substrate_biometrics_routes",
-    "substrate_consolidation_routes",
-    "substrate_execution_dispatch_routes",
-    "substrate_feedback_routes",
     "substrate_field_routes",
     "substrate_observability_routes",
-    "substrate_policy_routes",
-    "substrate_proposal_routes",
 )
 
 # Known per-call pools that predate this gate, left alone on purpose (each
@@ -71,32 +66,9 @@ def test_route_engine_is_built_once_and_reused(name, fake_create_engine) -> None
 
 def test_each_module_keeps_its_own_pool(fake_create_engine) -> None:
     field = importlib.import_module("scripts.substrate_field_routes")
-    policy = importlib.import_module("scripts.substrate_policy_routes")
-    assert field._engine() is not policy._engine()
+    attention = importlib.import_module("scripts.substrate_attention_routes")
+    assert field._engine() is not attention._engine()
     assert len(fake_create_engine) == 2
-
-
-@pytest.mark.parametrize(
-    ("endpoint", "loader", "kwargs"),
-    [
-        ("consolidation_motifs", "load_recent_motifs", {"limit": 5}),
-        ("consolidation_expectations", "load_expectations_for_motif", {"trigger_motif_id": "m1"}),
-        ("consolidation_schema_candidates", "load_schema_candidates", {"limit": 5}),
-        ("consolidation_tensor_slices_latest", "load_latest_tensor_slices", {"limit": 5}),
-    ],
-)
-def test_consolidation_endpoints_pass_the_module_engine(
-    endpoint, loader, kwargs, fake_create_engine, monkeypatch
-) -> None:
-    """repository._engine_for() builds a fresh engine when none is passed in."""
-    import asyncio
-
-    routes = importlib.import_module("scripts.substrate_consolidation_routes")
-    seen: list = []
-    monkeypatch.setattr(routes, loader, lambda *a, engine=None: seen.append(engine) or [])
-    for _ in range(3):
-        asyncio.run(getattr(routes, endpoint)(**kwargs))
-    assert seen and all(e is routes._engine() for e in seen)
 
 
 def _per_call_engine_functions(path: Path) -> set[tuple[str, str]]:
@@ -177,7 +149,6 @@ def test_no_new_per_call_engines_in_hub_scripts() -> None:
 ORION_DIR = Path(__file__).resolve().parents[3] / "orion"
 KNOWN_ORION_PER_CALL_ENGINES = frozenset(
     {
-        ("consolidation/repository.py", "_engine_for"),
         ("curiosity/compaction_store.py", "engine"),
         ("discussion_window/sql_fetch.py", "fetch_discussion_window"),
         # Built once per cortex-exec runtime (endogenous_runtime.py).
@@ -187,7 +158,6 @@ KNOWN_ORION_PER_CALL_ENGINES = frozenset(
         ("reverie/referent_loader.py", "__init__"),
         ("social/scenario_replay.py", "_memory_service"),
         ("substrate/mutation_worker.py", "_acquire_leader_lock"),
-        ("substrate/prediction_expectation_tuner.py", "postgres_reading_reader"),
     }
 )
 

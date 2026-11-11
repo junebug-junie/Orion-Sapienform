@@ -74,9 +74,9 @@ class SpontaneousThoughtV1(BaseModel):
     next_focus: str | None = None
     drift: str | None = None
 
-    # Phase D grounding — read-only refs into Layer 11 motifs (consolidation
-    # frame ids) + rung-4 episode ids. Empty unless ORION_REVERIE_GROUND_CONSOLIDATION.
-    motif_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+    # Phase D grounding — read-only refs to rung-4 episode ids (ORION_REVERIE_GROUND_EPISODES).
+    # `motif_refs` (Layer 11 consolidation frame ids) was removed with that rung, 2026-11-04;
+    # older stored thoughts carrying it still parse (extra keys are ignored).
     episode_summary_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
 
     # Phase E expectation scoring — additive, optional; set only when the thought

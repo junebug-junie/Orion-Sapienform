@@ -9,7 +9,6 @@ Bring-up, source strategies, curation policy, and rollback: [`docs/world_pulse_d
 | Key | Purpose |
 | --- | --- |
 | `WORLD_PULSE_SOURCES_CONFIG_PATH` | Source registry path. |
-| `ORION_ACTION_OUTCOME_DB_URL` | Postgres DSN for the curiosity gate's bus_synaptic surprise signal. |
 | `WORLD_PULSE_READ_HISTORY_DB_URL` | Read-only DSN for `world_pulse_read_seed`. The arXiv source skips papers already queued or read. Blank disables that dedupe (logged). |
 
 Full list with defaults: `.env_example` and `app/settings.py`.

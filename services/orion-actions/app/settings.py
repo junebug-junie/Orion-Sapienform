@@ -30,6 +30,7 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_skills_docker_health_enabled",
     "actions_journaling_enabled",
     "actions_act_emit_enabled",
+    "self_monitor_act_gate_enabled",
     "actions_journaling_daily_enabled",
     "actions_journal_capability_gaps_enabled",
     "actions_journal_perception_gaps_enabled",
@@ -107,6 +108,14 @@ class Settings(BaseSettings):
     # act producer (not shipped yet), so a journal is never counted twice.
     # Off = no acts. app/act_emit.py.
     actions_act_emit_enabled: bool = Field(True, alias="ACTIONS_ACT_EMIT_ENABLED")
+    # Self-monitor E1 (orion/self_monitor/gate.py): an in-process journal compose whose faculty
+    # (act.actions.journal.make.<trigger_kind>) is held broken/unreliable in a fresh
+    # orion:self_monitor:latest is skipped `track_record_failing` (audited, no act opened), except one
+    # re-test probe per faculty per SELF_MONITOR_PROBE_INTERVAL_SEC. Unknown/stale/absent state
+    # changes nothing. Probes are counted from grammar_acts, so this needs ACTIONS_ACT_EMIT_ENABLED.
+    # A retry of a job that already opened an act (same dedupe key) is always admitted (same_job_retry).
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
     # Body economy Patch C3b: each in-process journal compose places a SHADOW bid (actions.journal,
     # Tier 1; orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the
     # real outcome. Never obeyed; off = no bid, no log line. app/physiology_shadow.py.

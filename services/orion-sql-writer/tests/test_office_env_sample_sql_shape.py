@@ -104,10 +104,52 @@ def test_warming_air_stores_null_readings_and_the_flag() -> None:
     assert row["air_warming"] is True
 
 
+def test_particulate_and_light_round_trip_to_columns() -> None:
+    sample = OfficeEnvSampleV1(
+        ts=NOW,
+        sensor=OfficeEnvSensorV1(id="sht40-office", online=True),
+        measurements=OfficeEnvMeasurementsV1(
+            office_pm1_ug_m3=1, office_pm25_ug_m3=3, office_pm10_ug_m3=4, office_lux=812.25
+        ),
+    )
+    row = _write_keys(sample.model_dump(mode="json", by_alias=True))
+    assert (row["office_pm1_ug_m3"], row["office_pm25_ug_m3"], row["office_pm10_ug_m3"]) == (1, 3, 4)
+    assert row["office_lux"] == 812.25
+    assert "light_saturated" not in row  # omitted unless saturated: NULL, not false
+
+
+def test_sound_level_is_kept_in_payload_json_with_no_column() -> None:
+    """The Hub reads office_sound_dba from payload_json->'measurements' (like PM and lux
+    do), so it needs no column and no migration; the full payload must still be stored."""
+    sample = OfficeEnvSampleV1(
+        ts=NOW,
+        sensor=OfficeEnvSensorV1(id="sht40-office", online=True),
+        measurements=OfficeEnvMeasurementsV1(office_sound_dba=44.5),
+    )
+    row = _write_keys(sample.model_dump(mode="json", by_alias=True))
+    assert "office_sound_dba" not in _columns()
+    assert row["payload_json"]["measurements"]["office_sound_dba"] == 44.5
+
+
+def test_saturated_light_stores_null_lux_and_the_flag() -> None:
+    sample = OfficeEnvSampleV1(
+        ts=NOW,
+        sensor=OfficeEnvSensorV1(id="sht40-office", online=True),
+        measurements=OfficeEnvMeasurementsV1(office_temp_c=21.5),
+        state=OfficeEnvStateV1(light_saturated=True),
+    )
+    row = _write_keys(sample.model_dump(mode="json", by_alias=True))
+    assert "office_lux" not in row
+    assert row["light_saturated"] is True
+
+
 def test_boot_ddl_adds_every_air_column() -> None:
     """The live table predates these columns; create_all will not add them."""
     main_src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
-    for column in ("office_eco2_ppm", "office_tvoc_ppb", "air_warming"):
+    for column in (
+        "office_eco2_ppm", "office_tvoc_ppb", "air_warming",
+        "office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "light_saturated",
+    ):
         assert column in _columns()
         assert f"office_env_sample ADD COLUMN IF NOT EXISTS {column}" in main_src
 
@@ -143,7 +185,9 @@ class _FakeConnection:
             assert column is not None
             sql_type = re.search(r"ADD COLUMN IF NOT EXISTS \w+ (\w+)", sql, re.IGNORECASE)
             assert sql_type is not None
-            data_type = {"INTEGER": "integer", "BOOLEAN": "boolean"}[sql_type.group(1).upper()]
+            data_type = {"INTEGER": "integer", "BOOLEAN": "boolean", "DOUBLE": "double precision"}[
+                sql_type.group(1).upper()
+            ]
             self.column_shapes[column.group(1).lower()] = (data_type, "YES")
             return _Rows([])
         if "FROM information_schema.columns" in sql:

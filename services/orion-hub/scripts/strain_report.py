@@ -59,16 +59,16 @@ FRAME_TIMEOUT_SEC = 1.5
 # orion/inner_state_registry.py under regulation.state.v1 ``cognition_consumers``; a test checks
 # that every key is still listed there, so this list cannot claim a hold that no longer exists.
 # Readers that do not hold anything back (strain news, the strain arc fold) are left out.
+# Curiosity investigations are left out too: since 2026-11-07 strain no longer holds them in
+# Hub; their body-economy bid in durable-runs decides (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE).
 STRAIN_HOLDS: Tuple[Tuple[str, str], ...] = (
-    ("services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick",
-     "curiosity investigations wait"),
     ("services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry",
      "self-inquiry waits (it runs only at idle)"),
     ("services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs",
      "background outreach waits (this report is the one exception per episode)"),
     ("services.orion-dream.app.cycle:run_cycle_once",
      "a due sleep/dream cycle waits"),
-    ("services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level",
+    ("services.orion-thought.app.painting_self_start:arousal_level",
      "a due visual baseline image is deferred"),
     ("services.orion-thought.app.chain:_next_chain_sleep_sec",
      "the pause between reverie chains is doubled"),

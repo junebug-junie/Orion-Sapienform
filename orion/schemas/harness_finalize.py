@@ -62,6 +62,14 @@ class SubstrateFinalizeAppraisalV1(BaseModel):
     )
 
 
+# reflection_source of a reflection the harness wrote because the 5b judge call failed (bad JSON,
+# no GPU slot, gateway error). Its alignment_verdict is "misaligned" so the turn still degrades
+# safely (response repair still runs), but it is not a judgment of the draft. Handled today: the
+# metacog chat-turn gate (reports reflection_failed, no verdict) and response_repair_reason
+# ("reflection_failed"). The turn-outcome molecule still carries alignment_verdict="misaligned".
+REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
+
+
 class FinalizeReflectionV1(BaseModel):
     schema_version: Literal["finalize.reflection.v1"] = "finalize.reflection.v1"
     correlation_id: str
@@ -349,6 +357,12 @@ class HarnessRunV1(BaseModel):
     finalize_degraded_reason: str | None = None
     step_count: int
     exit_code: int | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): "cancel:<reason>" when a
+    # harness cancel killed the process (user_stop, client_disconnect,
+    # durable_attempt_stopped, ...), else the motor's error code (fcc_timeout,
+    # fcc_stream_stalled, fcc_nonzero_exit, ...), else None. None also on records
+    # from governors that predate this field: absent means unknown, never "outside".
+    stop_reason: str | None = None
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]
     grounding_status: str
     grammar_event_ids: list[str] = Field(default_factory=list)

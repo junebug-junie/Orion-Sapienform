@@ -19,6 +19,14 @@ current gate. It never treats "no answer" as "funded".
 
 Tier 0 (Juniper's turns, perception) NEVER bids: ``WantV1.tier`` is 1 or 2 only.
 
+Event wants (attention as the want competition, docs/superpowers/specs/2026-11-04-attention-as-
+want-competition-design.md, patch 1). A loop that sees something worth effort can attach the event:
+``event_ref`` names the row it is about and ``salience`` says how unusual it is for its source. The
+want's own family/verb/object_ref/cost already say which act it would run, so there is no separate
+"affordance" field. Both fields are left out of the serialized want when None, so a want without
+an event is byte-for-byte what it was before (consumers on ``extra=forbid`` keep parsing it while
+they roll forward).
+
 Cost unit. Prices on ``PhysiologyStateV1`` come from dual ascent on the NORMALIZED excess
 ``(use - budget) / budget`` (``orion/physiology/prices.py``), so a price is want-value per unit
 of budget. ``WantDecisionV1.cost_frac`` is therefore each constraint's cost as a FRACTION of that
@@ -27,9 +35,10 @@ constraint's budget (a 1,800 slot-s hold on a 1-slot lane with a 3,600 s window 
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchemaHandler, SerializerFunctionWrapHandler,
+                      model_serializer)
 
 from orion.schemas.grammar import ActCostV2
 
@@ -95,6 +104,32 @@ class WantV1(BaseModel):
     # Acceptable lanes (pool roles, without the "lane:" prefix). Empty: the family config's.
     lanes: List[str] = Field(default_factory=list)
     correlation_id: Optional[str] = Field(default=None, max_length=200)
+    # The event this want is about, as ``<table>:<id>`` (``temporal_self_event:<id>``,
+    # ``grammar_acts:<act_id>``, ...). None: a clock want (hunger only).
+    event_ref: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    # How unusual the event is for its own source, 0..1 (the source's percentile, computed by the
+    # source). Appetite reads intensity = max(hunger, salience): an unusual event can win before the
+    # family's clock is due. None: no event, hunger alone.
+    salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        # The wrap serializer below would blank the serialization JSON schema (FastAPI's OpenAPI for
+        # /physiology/bid). Its output is the validation shape minus unset event fields: publish that.
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
+        out = handler(self)
+        for key in _EVENT_FIELDS:
+            if key in out and out[key] is None:
+                del out[key]
+        return out
+
+
+_EVENT_FIELDS = ("event_ref", "salience")
 
 
 class WantDecisionV1(BaseModel):
@@ -124,7 +159,9 @@ class WantDecisionV1(BaseModel):
     intensity: Optional[float] = None
     value_rank: Optional[float] = None
     graded: Optional[bool] = None
-    # graded | ungraded (outcome_value 1) | no_history (rank = intensity: nothing to rank against)
+    # graded | ungraded (outcome_value 1) | no_history (rank = intensity: nothing to rank against);
+    # an event want: event:graded | event:ungraded (ranked against past event wants) | event_cold:<basis>
+    # (fewer than 10 past event wants: ranked as above)
     value_basis: Optional[str] = None
     family_weight: Optional[float] = None
     # prior (fewer than 10 evidenced acts) | evidence (shrunk toward the evidence rates)
@@ -156,8 +193,45 @@ class WantDecisionV1(BaseModel):
     want: WantV1
 
 
+class FundedEventWantV1(BaseModel):
+    """One event want whose latest decision is ``funded`` and whose event has not expired (patch 2).
+
+    Served by orion-durable-runs ``GET /physiology/event-wants`` from ``want_ledger``; read by Orion
+    Prime as its concern source (``PRIME_CONCERNS_FROM_EVENT_WANTS``). Not a bus payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    want_id: str
+    family: str
+    event_ref: str
+    salience: Optional[float] = None
+    value_rank: Optional[float] = None
+    net: Optional[float] = None
+    decided_at: AwareDatetime
+    # When the event stops being worth effort: the want's window end (its own, else opened_at + the
+    # family's deferrable window).
+    expires_at: Optional[AwareDatetime] = None
+    # What the event is, in words, read from its source row (the read's title, the ask's question).
+    label: str = ""
+
+
+class FundedEventWantsV1(BaseModel):
+    """``GET /physiology/event-wants``: the market's funded, unexpired event wants, highest net first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["physiology.funded_event_wants.v1"] = "physiology.funded_event_wants.v1"
+    as_of: AwareDatetime
+    # Event wants decided in the window, and how many of them are funded and unexpired (before ``limit``).
+    considered: int = 0
+    funded_open: int = 0
+    wants: List[FundedEventWantV1] = Field(default_factory=list)
+
+
 __all__ = [
     "DECISION_REASONS",
+    "FundedEventWantV1",
+    "FundedEventWantsV1",
     "WANT_DECISION_CHANNEL",
     "WANT_DECISION_KIND",
     "WANT_KIND",

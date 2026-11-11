@@ -48,6 +48,7 @@ import json
 import logging
 from typing import Any
 
+from orion.schemas.harness_finalize import REFLECTION_SOURCE_JUDGE_FAILED
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 logger = logging.getLogger("orion.equilibrium.chat_turn_metacog_gate")
@@ -100,8 +101,12 @@ def evaluate_chat_turn_gate_conditions(
 
     reflection = run_artifact.get("reflection")
     if isinstance(reflection, dict):
-        alignment_verdict = reflection.get("alignment_verdict")
-        if alignment_verdict and alignment_verdict != "aligned":
+        alignment_verdict = _judged_verdict(reflection)
+        if _judge_failed(reflection):
+            # The 5b judge call failed; its "misaligned" is a safe default, not a judgment of the
+            # reply. 11-03: 111 of 1,439 turns in 7 days, all read here as misaligned replies.
+            fired.append("reflection_failed=true")
+        elif alignment_verdict and alignment_verdict != "aligned":
             fired.append(f"alignment_verdict={alignment_verdict}")
         if reflection.get("strain_unresolved") is True:
             fired.append("strain_unresolved=true")
@@ -155,6 +160,15 @@ def _capped_grounding_capsule_for_upstream(
     return capped
 
 
+def _judge_failed(reflection: dict[str, Any]) -> bool:
+    return reflection.get("reflection_source") == REFLECTION_SOURCE_JUDGE_FAILED
+
+
+def _judged_verdict(reflection: dict[str, Any]) -> str | None:
+    """The 5b judge's alignment_verdict, or None when the judge never ran (its call failed)."""
+    return None if _judge_failed(reflection) else reflection.get("alignment_verdict")
+
+
 def build_chat_turn_metacog_trigger(
     *,
     correlation_id: str,
@@ -203,8 +217,9 @@ def build_chat_turn_metacog_trigger(
             "compliance_verdict": (run_artifact or {}).get("compliance_verdict"),
             "grounding_status": (run_artifact or {}).get("grounding_status"),
             "exit_code": (run_artifact or {}).get("exit_code"),
-            "finalize_degraded_reason": (run_artifact or {}).get("finalize_degraded_reason"),
-            "alignment_verdict": reflection.get("alignment_verdict") if isinstance(reflection, dict) else None,
+            "finalize_degraded_reason": (run_artifact or {}).get("finalize_degraded_reason")
+            or ("reflection_failed" if isinstance(reflection, dict) and _judge_failed(reflection) else None),
+            "alignment_verdict": _judged_verdict(reflection) if isinstance(reflection, dict) else None,
             "alignment_notes": reflection.get("alignment_notes") if isinstance(reflection, dict) else None,
             "strain_unresolved": reflection.get("strain_unresolved") if isinstance(reflection, dict) else None,
             "surprise_level": (

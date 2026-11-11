@@ -6,8 +6,9 @@ belief a curiosity run moved while citing the read). Delivery: the EXISTING outr
 decision log, the closed-vocabulary grounding guard, sockets + chat history + notification) -- not
 a parallel one.
 
-Gates (Juniper, 2026-10-13: "reach out as much as they want while learning"): no daily cap and no
-cooldown for this kind (``skip_rate_gates``). Disabled, turn-in-flight, recent-chat, quiet hours and
+Gates (Juniper, 2026-10-13: "reach out as much as they want while learning"): no cooldown for this
+kind (``skip_rate_gates``). Since 2026-11-10 (one attention budget) the daily cap counts it like every
+door, and its bid waits for the day's pace. Disabled, turn-in-flight, recent-chat, quiet hours and
 arousal ``strained`` still apply. A finding blocked by them is retried on a later tick (it stays
 pending until told), so quiet hours delay a message instead of losing it.
 
@@ -49,7 +50,9 @@ from orion.world_pulse_read.origin import read_origins
 logger = logging.getLogger("orion-hub.reading_finding_outreach")
 
 READING_FINDING_TAG = "reading_finding_outreach"
-TOLD_REASONS = frozenset({"sent", "orion_passed"})
+# ``no_why_juniper`` (door policy, 2026-11-10): Orion wrote a message but did not say why it is for
+# Juniper. A decision like PASS, not a failure to retry: re-composing would fish for a yes.
+TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 
@@ -291,6 +294,26 @@ class ReadingFindingOutreach:
         if blocked:
             self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
+        # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
+        # bundle stays pending and is retried next tick (the hold waits for the day's pace, at most until
+        # Juniper's waking day ends). Cap-counted since 2026-11-10 (one attention budget).
+        key = str(meta["bundle_key"])
+        admit, economy = await outreach.economy_admit(door=READING_FINDING_TAG, key=key, cap_counted=True)
+        if economy:
+            meta = {**meta, "economy": economy}
+        if not admit:
+            self._record_block_once(outreach, bundle, meta, "economy_held", correlation_id)
+            return {"seed_id": bundle.seed_id, "reason": "economy_held"}
+        sent = False
+        try:
+            result = await self._compose_and_offer(outreach, bundle, meta, correlation_id, decision_id)
+            sent = result.get("reason") == "sent"
+            return result
+        finally:
+            await outreach.economy_done(door=READING_FINDING_TAG, key=key, sent=sent)
+
+    async def _compose_and_offer(self, outreach: Any, bundle: ReadingFindingBundleV1, meta: dict[str, Any],
+                                 correlation_id: str, decision_id: str) -> dict[str, Any]:
         prompt = build_reading_finding_prompt(bundle)
         text, debug = await outreach.compose(
             prompt, correlation_id, retrieval_query=first_sentences(bundle.learned, 2) or None)
@@ -311,7 +334,7 @@ class ReadingFindingOutreach:
         result = await outreach.offer_message(
             text=text, correlation_id=correlation_id, tag=READING_FINDING_TAG,
             model=debug.get("fcc_model_label"), meta=meta, skip_rate_gates=True, provenance=capsule,
-            record_appendix=article_appendix(bundle),
+            record_appendix=article_appendix(bundle), require_why_juniper=True,
         )
         reason = str(result.get("reason") or ("sent" if result.get("outreach") else "not_sent"))
         if reason == "sent":

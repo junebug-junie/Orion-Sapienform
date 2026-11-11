@@ -189,18 +189,3 @@ def test_setting_off_restores_the_direct_path(monkeypatch):
     assert calls[0]["body"]["dispatch_id"] == "dispatch-abc"
     assert result["outcome"] == "produced"
     assert "settlement" not in result
-
-
-def test_kickoff_timeout_stays_under_the_dispatch_route_budget():
-    """The submit RPC must finish well inside the dispatch route's own RPC budget,
-    or dispatch severs a submit that may have succeeded."""
-    from pathlib import Path
-
-    import yaml
-
-    from app.durable_kickoff import DEFAULT_KICKOFF_TIMEOUT_SEC
-
-    repo = Path(verb_adapters.__file__).resolve().parents[3]
-    policy = yaml.safe_load((repo / "config/execution_dispatch/execution_dispatch_policy.v1.yaml").read_text())
-    route = policy["template_to_cortex"]["render_scene"]
-    assert DEFAULT_KICKOFF_TIMEOUT_SEC < float(route["rpc_timeout_sec"])

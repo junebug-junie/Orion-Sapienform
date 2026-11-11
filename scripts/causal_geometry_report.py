@@ -79,14 +79,25 @@ zero-lag overlap is the maximum possible n for a pair). Pairs below
 --min-samples are marked `insufficient_data` in the divergence list and
 never produce a fabricated edge.
 
-Significance: circular time-shift surrogates
----------------------------------------------
+Significance: time-shift surrogates
+-----------------------------------
 For the single (direction, lag) combination with the largest |r| for a pair,
-this script draws --n-surrogates circular shifts of the target array (numpy
-.roll by a uniformly-sampled non-zero offset), recomputes Pearson r each
-time, and computes p_raw = (count(|r_surrogate| >= |r_observed|) + 1) /
-(--n-surrogates + 1) (add-one smoothing, standard permutation-test
-convention, avoids ever reporting p=0.0 off a finite sample).
+the null is built by shifting one series against the other by s buckets,
+guard <= |s| <= n/2 in both directions, and taking Pearson r over the
+overlap only (no wrap-around; guard = max(12, 5% of n) keeps a real
+coupling out of its own null). Each surrogate is two real stretches of the
+series, so it keeps their autocorrelation, daily cycles and bursts: the null
+is "independent, each with its own serial structure". The statistic is
+|atanh(r)|. p_raw is the add-one rank p `(M + 1) / (N + 1)` while at least
+10 surrogates reach the observed value. Past that, if the pair's Bartlett
+effective sample size n_eff is >= 100 and each series' participation size
+(n / kurtosis) is >= 50, a generalized Pareto tail is fitted to the top 250
+surrogates (Knijnenburg et al. 2009; shape clamped to xi >= 0). Otherwise
+there is no extrapolation and p >= 1/(units + 1), units = min(n_eff,
+participation), so after Bonferroni the pair cannot become an edge. See
+`time_shift_pvalue` in `orion/substrate/causal_geometry_engine.py`.
+--n-surrogates caps the shift count (all ~1818 are used at n=2017) and --seed
+only matters when that cap bites. Assumes stationarity.
 
 Multiple-comparisons correction is two separate stages, not one:
 
@@ -115,26 +126,29 @@ Multiple-comparisons correction is two separate stages, not one:
    declare everything at or before that rank significant. An edge is only
    emitted into `edges` if it passes both stages.
 
-n_surrogates floor: these two stages must stay compatible. `circular_shift_
-pvalue`'s add-one smoothing means p_raw can never go below
-`1/(--n-surrogates + 1)`, so stage 1's own floor is
-`n_comparisons/(--n-surrogates + 1)`. If that floor sits too close to
-`alpha`, stage 2's rank-dependent threshold `(i/m)*alpha` becomes nearly
-impossible to clear for a realistic family size m, silently producing 0
-edges regardless of how strong the real correlations are. Confirmed live
-2026-07-29: at the old default of 200 surrogates this floor was `10/201 ~=
-0.0497512` -- just under the old flat `alpha=0.05` (which is why a flat
-per-pair cutoff worked fine before the BH-FDR cutover on 2026-07-28), but
-every tick since then reported `insufficient_data=True`, including for
-physically-obvious correlations like `biometrics:fan`/`biometrics:thermal`
-(r=+0.69). `DEFAULT_N_SURROGATES=2000` drops the floor to `10/2001 ~=
-0.005`, giving BH real headroom (verified live: the same 75-pair family that
-found 0 edges at 200 surrogates found 19 at 2000, at ~35s wall-clock -- an
-acceptable cost since the producer runs this off the event loop on an
-hours-scale cadence, see `orion/substrate/causal_geometry_producer.py`). If
-the channel/pair count grows a lot from here, this floor may need lowering
-again -- re-run this same live check rather than assuming 2000 stays
-sufficient forever.
+p-value resolution: stage 2 needs a continuous p. Until 2026-11-10 p_raw was
+the add-one rank `(count(|r_s| >= |r_obs|) + 1) / (--n-surrogates + 1)`,
+which can never go below `1/(--n-surrogates + 1)`; after stage 1 the floor is
+`n_comparisons/(--n-surrogates + 1)`. When that floor sits above BH's
+first-rank threshold `alpha/m`, BH passes nothing unless enough pairs tie at
+the floor, and then passes all of them together. That happened twice:
+2026-07-29 (200 surrogates, floor 10/201 ~= 0.0498, 0 edges incl.
+fan/thermal r=+0.69; fixed by raising to 2000) and 2026-10-30 onward (2000
+surrogates, floor 10/2001 ~= 0.005 vs 0.05/171 ~= 0.00029 at m=171 pairs;
+0 edges incl. power/thermal r=+0.61, n=2017; edge counts flipped between 0
+and ~20 by how many pairs saturated). The GPD tail above removes that floor
+for pairs with enough independent samples (MIN_REPORTED_PVALUE = 1e-300 so a
+stored p is never a literal 0.0). Pairs failing either gate keep a floor of
+1/(units + 1) >= 0.01 (>= 0.099 after Bonferroni), so they can never pass BH,
+not even as a tied pile.
+Tried and dropped on 2026-11-10 (synthetic nulls in
+orion/substrate/tests/test_causal_geometry_pvalue_calibration.py): a normal
+fit to circular surrogates (liberal on bursty channels), a GPD tail on
+circular surrogates (real links lost to their own near-0 shifts), and a
+guarded circular null (liberal on daily cycles, from the wrap-around seam).
+The participation gate came from review round 2: rare-event channels (a few
+spikes on a flat floor) have n_eff ~ n, and the tail fit turned one chance
+spike coincidence into p ~ 1e-30.
 
 Designed-vs-observed divergence
 --------------------------------
@@ -217,7 +231,7 @@ from orion.substrate.causal_geometry_engine import (  # noqa: E402,F401
     build_capability_channel_index,
     build_snapshot,
     bucketize,
-    circular_shift_pvalue,
+    time_shift_pvalue,
     compute_pairwise_results,
     fetch_channels,
     load_field_topology,
@@ -303,7 +317,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--n-surrogates",
         type=int,
         default=DEFAULT_N_SURROGATES,
-        help=f"number of circular-shift surrogates for significance testing (default {DEFAULT_N_SURROGATES}).",
+        help=f"cap on time-shift surrogates per significance test (default {DEFAULT_N_SURROGATES}).",
     )
     parser.add_argument(
         "--alpha",
@@ -329,7 +343,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--seed",
         type=int,
         default=DEFAULT_SEED,
-        help=f"seed for the circular-shift surrogate RNG, for reproducible runs (default {DEFAULT_SEED}).",
+        help=f"seed for subsampling surrogates when --n-surrogates caps them (default {DEFAULT_SEED}).",
     )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of prose.")
     args = parser.parse_args(argv)

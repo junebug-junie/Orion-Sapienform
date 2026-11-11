@@ -1,11 +1,49 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 771,
+  "metric_count": 783,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 39,
+    "high_severity_count": 16,
     "changes": [
-      "high   removed metric://bus_channel/orion-cortex-exec/orion:self_study:items:write"
+      "high   removed metric://bus_channel/orion-cortex-exec/orion:self_study:items:write",
+      "high   removed metric://bus_channel/orion-embodiment/orion:aitown_session:start:reply:*",
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:aitown_session:start:request",
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome",
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request",
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request",
+      "high   removed metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request",
+      "high   removed metric://bus_channel/orion-feedback-runtime/orion:feedback:frame",
+      "high   removed metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*",
+      "high   removed metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*",
+      "high   removed metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder",
+      "high   routing_changed metric://bus_channel/*/orion:exec:result:* (declared_consumers: \u2026, 'orion-harness-governo\u2026 -> \u2026, 'orion-hardware-watch', 'orion-harness-governo\u2026)",
+      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:exec:request:background (all_producers: \u2026ch', 'orion-execution-dispatch-runtime', 'orion-ha\u2026 -> \u2026ch', 'orion-hardware-watch', 'orion-ha\u2026)",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:shed:reply:* (declared_consumers: ['orion-execution-dispatch-runtime'] -> ['orion-durable-runs'])",
+      "high   routing_changed metric://inner_state/orion-durable-runs/physiology.state.v1 (declared_consumers: - -> ['services.orion-durable-runs.app.temporal_self_graph:_bind\u2026)",
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026ation.tick (strained holds; engaged doubles the cooldown)',\u2026 -> \u2026ation.tick (engaged doubles the cooldown; strain no longer \u2026)",
+      "medium added metric://bus_channel/orion-closet-env/orion:closet:env:sample",
+      "medium added metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome",
+      "medium added metric://bus_channel/orion-durable-runs/orion:gpu_pool:shed:request",
+      "medium added metric://bus_channel/orion-hub/orion:curiosity:replica:focus_refusal:result:*",
+      "medium added metric://bus_channel/orion-hub/orion:curiosity:replica:plan:request",
+      "medium added metric://bus_channel/orion-mind/orion:curiosity:replica:focus_refusal:request",
+      "medium added metric://bus_channel/orion-mind/orion:curiosity:replica:plan:result:*",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.state.v1",
+      "medium added metric://inner_state/orion-durable-runs/self_monitor.state.v1#window_days",
+      "medium annotation_changed metric://inner_state/orion-durable-runs/physiology.state.v1 (notes: cadence=per_tick composition=no_cognition_consumer -> cadence=per_tick composition=shadow_declared_not_composed)"
     ]
   },
   "definitions": {
@@ -141,6 +179,7 @@
       "declared_consumers": [
         "*",
         "orion-cortex-orch",
+        "orion-hardware-watch",
         "orion-harness-governor",
         "orion-hub",
         "orion-thought"
@@ -307,7 +346,7 @@
       "all_producers": [
         "orion-actions",
         "orion-cortex-orch",
-        "orion-execution-dispatch-runtime",
+        "orion-hardware-watch",
         "orion-harness-governor"
       ],
       "declared_consumers": [
@@ -547,6 +586,17 @@
       "schema_id": "BiometricsPayload",
       "all_producers": [
         "orion-biometrics"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-closet-env/orion:closet:env:sample": {
+      "schema_id": "ClosetEnvSampleV1",
+      "all_producers": [
+        "orion-closet-env"
       ],
       "declared_consumers": [
         "orion-sql-writer"
@@ -1218,6 +1268,19 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:autonomy:action:outcome": {
+      "schema_id": "ActionOutcomeEmitV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:curiosity:turn:request": {
       "schema_id": "CuriosityTurnRequestV1",
       "all_producers": [
@@ -1291,6 +1354,17 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:gpu_pool:shed:request": {
+      "schema_id": "GpuPoolShedReasonRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:harness:run:cancel": {
       "schema_id": "HarnessRunCancelV1",
       "all_producers": [
@@ -1353,17 +1427,6 @@
         "orion-durable-runs"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-embodiment/orion:aitown_session:start:reply:*": {
-      "schema_id": "AITownSessionStartResultV1",
-      "all_producers": [
-        "orion-embodiment"
-      ],
-      "declared_consumers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-embodiment/orion:chat:history:turn": {
@@ -1595,74 +1658,6 @@
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:aitown_session:start:request": {
-      "schema_id": "AITownSessionStartRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-embodiment"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome": {
-      "schema_id": "ActionOutcomeEmitV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime",
-        "orion-spark-concept-induction"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request": {
-      "schema_id": "GpuPoolShedReasonRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-gpu-pool"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:retro_leisure:start:request": {
-      "schema_id": "RetroLeisureStartRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-execution-dispatch-runtime/orion:world_pulse_read:pull:request": {
-      "schema_id": "WorldPulseReadPullRequestV1",
-      "all_producers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-feedback-runtime/orion:feedback:frame": {
-      "schema_id": "FeedbackFrameV1",
-      "all_producers": [
-        "orion-feedback-runtime"
-      ],
-      "declared_consumers": [
-        "orion-spark-concept-induction"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-field-digester/orion:causal_geometry:snapshot": {
       "schema_id": "CausalGeometrySnapshotV1",
       "all_producers": [
@@ -1760,7 +1755,7 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
-        "orion-execution-dispatch-runtime"
+        "orion-durable-runs"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2173,6 +2168,28 @@
       "notes": "kind=event stability=None",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:curiosity:replica:focus_refusal:result:*": {
+      "schema_id": "CuriosityFocusRefusalResultV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:curiosity:replica:plan:request": {
+      "schema_id": "CuriosityOfferPlanRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:curiosity:turn:reply:*": {
       "schema_id": "CuriosityTurnResultV1",
       "all_producers": [
@@ -2437,17 +2454,6 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-hub/orion:retro_leisure:start:reply:*": {
-      "schema_id": "RetroLeisureStartResultV1",
-      "all_producers": [
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-hub/orion:room:claude:request": {
       "schema_id": "RoomClaudeRequestV1",
       "all_producers": [
@@ -2512,17 +2518,6 @@
         "orion-whisper-tts"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:world_pulse_read:pull:reply:*": {
-      "schema_id": "WorldPulseReadPullResultV1",
-      "all_producers": [
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-execution-dispatch-runtime"
-      ],
-      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {
@@ -2709,6 +2704,28 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-mind/orion:curiosity:replica:focus_refusal:request": {
+      "schema_id": "CuriosityFocusRefusalRequestV1",
+      "all_producers": [
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-mind/orion:curiosity:replica:plan:result:*": {
+      "schema_id": "CuriosityOfferPlanResultV1",
+      "all_producers": [
+        "orion-mind"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-notify/orion:notify:config:preference": {
@@ -4943,7 +4960,10 @@
       "rest": "Each constraint at rest: heat below the 31 C soft line; lane slot-seconds well under slots x 3600 (0 when no lease ran); attention:juniper 0 sends today; claude state clear with 0 limit events. Energy (month-to-date USD) only grows within a month and resets at the local month start: its rest is the month start, not 0.",
       "sparsity": "per_tick",
       "absent_means": "A constraint whose source failed, went stale or was never observed has level=None and a no_reading reason (e.g. claude:no_observation while orion-cocreation-signals' COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED is false). Never 0. Redis orion:physiology:latest expired (TTL 360 s): the whole body is unknown.",
-      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_graph:_binding_step -> app.body_binding:plan_constraint -> orion.temporal_self.arcs:_fold_binding (felt state, body economy Organ 5: one `binding` arc per constraint episode whose price.bind_state binds; read by the chat stance cue, the Day letter and recent arcs)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-durable-runs/physiology.want.decision.v1": {
@@ -5021,15 +5041,250 @@
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
         "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_strain (strain loop part 1: one `strain` arc per episode from the arousal_transition rows; read by the chat stance cue, the Day letter and the reverie arc block)",
         "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
-        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (engaged doubles the cooldown; strain no longer holds it since 2026-11-07, its durable-runs bid decides)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._strain_report_once -> scripts.strain_report (strain loop part 3: a strained episode >= 60 min may pass the strained refusal with ONE grounded report, once per episode and once per local day; reads since, reasons, cabinet_temp_c, gpu_queue_depth)",
-        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
         "services.orion-substrate-runtime.app.worker:BiometricsSubstrateWorker._strain_attention_tick -> orion.regulation.strain_news:strain_news (strained -> rare budgeted news events on node:substrate.strain for attention; the level itself never competes)",
-        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
+        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)",
+        "services.orion-thought.app.painting_self_start:arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec; moved from orion-proposal-runtime 2026-11-05, ladder retirement PR 2)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = at or above stated_mean - slack (record.py _slack). Wilson upper bound of calibrated_share; not printed. The cue re-checks it with no slack, only once the window's own candidate is no longer miscalibrated (hysteresis lag).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no stated graded bet: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = at or below stated_mean + slack (record.py _slack). Wilson lower bound of calibrated_share; not printed. The cue re-checks it with no slack, only once the window's own candidate is no longer miscalibrated (hysteresis lag).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no stated graded bet: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "calm = stated_mean inside [calibrated_lo - slack, calibrated_hi + slack] (record.py _slack); not judged when the confidence is pooled. Not one value: the share that came true over the same bets as stated_mean. Printed by the cue for a miscalibrated faculty only.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet stated a confidence: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "0.0 = no try failed to start (24 of 40 live, 2026-11-03). Wilson lower bound of the failed-to-execute share; not printed, it decides whether a broken line prints the counts (only when > 0.5).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "None = no attempt in the window: no broken count line.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: the decay-weighted share of graded bets that came true (0-1). For a success faculty 1.0 is the good end; for event and interval faculties the judged number is calibrated_share, not this. Printed by the cue and E2 only for an unreliable faculty.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet in the window: nothing is printed (the cue skips the sentence, E2 prints '?'). Never read as 0 or 1.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: Wilson upper bound of reliability. The cue does not print it; it decides whether an unreliable line prints (only when < 0.5). Saturates at 1.0 on a small or all-success window (11 of 39 live, 2026-11-03).",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet: no unreliable line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: Wilson lower bound of reliability. Not printed: its only reader, the E3 self-finding outreach, was retired 2026-11-10.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean": {
+      "schema_id": "FacultyRecordV1",
+      "value_kind": "level",
+      "rest": "no designed rest: the mean confidence Orion stated before the outcome, over the graded bets that stated one (interval bets: the stated coverage, 0.8). Printed by the cue next to calibrated_share for a miscalibrated faculty.",
+      "sparsity": "per_tick",
+      "absent_means": "None = no graded bet stated a confidence: no miscalibrated line.",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "prompt_sites": [
+        "orion.self_monitor.cue:project_track_record_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded": {
+      "schema_id": "FacultyRecordV1",
+      "declared_consumers": [
+        "orion.self_monitor.cue:project_track_record_cue",
+        "orion.self_monitor.questions:question_text"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1"
+      ],
+      "notes": "scalar field on FacultyRecordV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.state.v1": {
+      "schema_id": "SelfMonitorStateV1",
+      "value_kind": "bucket",
+      "rest": "reliable or unknown for every faculty: no faculty fails to execute, works less than half the time, or states a confidence its outcomes contradict. Not the live state: patch 1's report (7 days to 2026-11-03) read 1 broken, 1 unreliable and 8 miscalibrated of 46 faculties, so the bucket can and does leave rest.",
+      "sparsity": "per_tick",
+      "absent_means": "Redis orion:self_monitor:latest expired (TTL 3 h, three hourly evaluations), the organ is off (SELF_MONITOR_ENABLED=false) or durable-runs is down: track record unknown, and every reader behaves as if the organ did not exist (orion.self_monitor.view: unknown changes nothing). A faculty missing from a fresh state is untracked, never reliable.",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed rows; read by the Day letter and recent arcs)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/self_monitor.state.v1#window_days": {
+      "schema_id": "SelfMonitorStateV1",
+      "declared_consumers": [
+        "services.orion-durable-runs.app.temporal_self_chronicle:Chronicler -> orion.temporal_self.arcs:_fold_faculty (one `faculty` arc per stretch a faculty is broken / unreliable / miscalibrated, from the self_monitor node's faculty_status_changed rows; read by the Day letter and recent arcs)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-durable-runs/self_monitor.state.v1"
+      ],
+      "notes": "scalar field on SelfMonitorStateV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {
@@ -5485,10 +5740,6 @@
         "metric://inner_state/orion-hub/repair_pressure_appraisal.v1"
       ],
       "notes": "scalar field on RepairPressureAppraisalV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder": {
-      "notes": "cadence=multi_service composition=no_cognition_consumer",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1": {

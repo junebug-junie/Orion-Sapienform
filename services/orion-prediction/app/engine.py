@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 import numpy as np
 import pandas as pd
 
+from app.adaptive import FALLBACK_SOURCE, MAX_HORIZON, adaptive_offsets, pool_since
 from app.backtest import (
     COVERAGE_BAND,
     GATE_VERSION,
@@ -49,6 +50,12 @@ from app.live import RETENTION as SHADOW_RETENTION, verdicts as live_verdicts, w
 from app.frame import covariate_series, floor_ts, mask_windows, to_grain, train_ready, training_slice
 from app.models import BASELINES, build_models, split_seasonalities
 from app.series import Registry, Seasonality, SeriesSpec
+from app.surprise import (
+    CALM_SURPRISAL,
+    P_FLOOR,
+    horizon_gate,
+    summarize as surprise_summarize,
+)
 from orion.schemas.prediction import (
     PREDICTION_FORECAST_CHANNEL,
     PREDICTION_FORECAST_KIND,
@@ -129,6 +136,12 @@ class SeriesState:
     events: dict = field(default_factory=dict)   # with_events summary, for /health
     shadow_failed: dict = field(default_factory=dict)   # contender -> last error (last issue)
     not_ready: dict | None = None   # NotReady.detail while the series is too young to select
+    # Surprise gate per horizon for the current selection, from the last monitor pass:
+    # hm -> (passes, reason). Shown by /series/{id}/surprise; no bus event until a consumer exists.
+    surprise_gate: dict = field(default_factory=dict)
+    # Champion range source per horizon at the last issue: "adaptive" or "backtest:<reason>".
+    interval_source: dict = field(default_factory=dict)
+    last_score_error: str | None = None
 
 
 class Engine:
@@ -136,10 +149,11 @@ class Engine:
                  select_interval_sec: float, settle_sec: float, publish_enabled: bool,
                  publish: Callable[[str, Any], Awaitable[None]] | None = None, source: Any = None,
                  clock: Callable[[], datetime] = utcnow, weather: dict | None = None,
-                 shadow_enabled: bool = True):
+                 shadow_enabled: bool = True, adaptive_intervals: bool = True):
         self.registry = registry
         self.weather = weather            # {"lat", "lon", "refresh_sec"} or None (weather off)
         self.shadow_enabled = shadow_enabled
+        self.adaptive_intervals = adaptive_intervals   # app/adaptive.py; False = backtest pool only
         self.weather_state: dict = {}
         self.store = store
         self.backtest_windows = backtest_windows
@@ -255,6 +269,8 @@ class Engine:
         zoo = set(build_models(spec, list(usable)))
         fits = (champ["grain_min"] == spec.grain_min
                 and (champ.get("metrics") or {}).get("covariates", []) == list(spec.covariates)
+                # direct_arx's column set depends on which covariates are overlap-only.
+                and (champ.get("metrics") or {}).get("overlap_covariates", []) == list(spec.overlap_covariates)
                 and (champ.get("metrics") or {}).get("gate_version") == GATE_VERSION
                 and all(r.ndim == 2 and r.shape[1] == spec.max_horizon_steps for r in residuals.values())
                 and set(assignment) == set(spec.horizons_min) == set(base_assignment)
@@ -321,7 +337,8 @@ class Engine:
                 (base_id, "baseline_blend", sel.baseline_assignment, True, base_res)):
             rows.append({**common, "run_id": run_id, "kind": kind, "model": kind,
                          "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
-                         "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION,
+                         "metrics": {"covariates": list(spec.covariates),
+                                     "overlap_covariates": list(spec.overlap_covariates), "gate_version": GATE_VERSION,
                                      "train_from": spec.train_from.isoformat() if spec.train_from else None,
                                      "events_key": st.events.get("fingerprint"), "shadow": list(shadow)},
                          "assignment": {str(k): v for k, v in assignment.items()},
@@ -459,7 +476,40 @@ class Engine:
         return rows, failed
 
     # --- issue ----------------------------------------------------------------------------
-    def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime) -> dict:
+    def adapt_intervals(self, spec: SeriesSpec, origin: pd.Timestamp, point: np.ndarray, swapped: np.ndarray,
+                        assignment: dict[int, str], qs: dict[str, np.ndarray], out: dict) -> dict[str, np.ndarray]:
+        """Champion ranges at the served horizons from recent live scores of the model serving each
+        horizon now, scaled by the last hour's difficulty (app/adaptive.py). A horizon keeps its
+        backtest range when the pool or the current difficulty is too thin, past MAX_HORIZON, when its step
+        fell back to the baseline model, or when anything here fails (never costs the forecast)."""
+        source = {hm: "backtest:disabled" for hm in spec.horizons_min}
+        if self.adaptive_intervals:
+            try:
+                since = pool_since(origin.to_pydatetime())
+                rows = self.store.champion_pool(spec.series_id, since, int(MAX_HORIZON.total_seconds() // 60))
+                offsets, reasons = adaptive_offsets(rows, origin, spec.horizons_min, spec.grain_min,
+                                                    owners=assignment)
+            except Exception as exc:  # noqa: BLE001 -- the backtest range is a valid forecast
+                logger.warning("prediction_adaptive_failed series=%s err=%s: %s", spec.series_id,
+                               type(exc).__name__, str(exc)[:200])
+                offsets, reasons = {}, {hm: f"error:{type(exc).__name__}" for hm in spec.horizons_min}
+            qs = {k: v.copy() for k, v in qs.items()}
+            for hm in spec.horizons_min:
+                j = spec.steps(hm) - 1
+                if swapped[j]:
+                    source[hm] = FALLBACK_SOURCE
+                    continue
+                if hm not in offsets:
+                    source[hm] = f"backtest:{reasons.get(hm, 'unknown')}"
+                    continue
+                for k, q in enumerate(QUANTILES):
+                    qs[q_key(q)][j] = point[j] + offsets[hm][k]
+                source[hm] = "adaptive"
+        out["interval_source"] = source
+        return qs
+
+    def build_forecast(self, spec: SeriesSpec, series: pd.Series, origin: pd.Timestamp, now: datetime,
+                       adapt: bool = True) -> dict:
         """Champion + baseline rows and the publishable payload. Refuses stale input outright: a
         forecast from a sensor that stopped is the last value extended, not a forecast."""
         st = self.state[spec.series_id]
@@ -477,7 +527,10 @@ class Engine:
         zoo = build_models(spec, list(served.usable))
         needed = sel.models_needed()
         X = None
-        if any(zoo[n].uses_covariates for n in needed):
+        # Shadow contenders reuse this X (build_shadow): load it when any of them needs covariates too,
+        # or a covariate contender behind an all-history-only serve never builds a live record.
+        shadow = set(served.shadow) if self.shadow_enabled else set()
+        if any(zoo[n].uses_covariates for n in needed | {m for m in shadow if m in zoo}):
             cov = self.load_covariates(spec, train.index)
             X = cov.to_numpy(dtype=float) if cov is not None else None
         # Each model on its own: one dead covariate must not take down horizons (or the baseline)
@@ -492,6 +545,7 @@ class Engine:
         if any(o in failed for o in base_owners):
             raise RuntimeError(f"baseline model failed: {failed}")
         fallback_steps = 0
+        swap = np.zeros(h, dtype=bool)
         out = {"rows": [], "payload": None}
         for role, assignment in (("champion", sel.assignment), ("baseline", sel.baseline_assignment)):
             owners = step_owner(assignment, spec.grain_min, h)
@@ -506,6 +560,8 @@ class Engine:
                 residuals[:, swap] = served.residuals["baseline"][:, swap]
             point = stitch(paths, owners)
             qs = quantile_paths(point, residuals)
+            if role == "champion" and adapt:
+                qs = self.adapt_intervals(spec, origin, point, swap, sel.assignment, qs, out)
             _check_not_degenerate(point, qs, spec)
             steps = []
             for hm in spec.horizons_min:
@@ -515,7 +571,9 @@ class Engine:
                 out["rows"].append({"run_id": served.run_ids[role], "series_id": spec.series_id,
                                     "model": f"{role}_blend", "role": role, "issued_at": now,
                                     "origin_ts": origin.to_pydatetime(), "target_ts": target.to_pydatetime(),
-                                    "horizon_min": hm, "point": float(point[j]), "quantiles": quant})
+                                    "horizon_min": hm, "point": float(point[j]), "quantiles": quant,
+                                    "interval_source": (out.get("interval_source", {}).get(hm, "backtest:not_adapted")
+                                                        if role == "champion" else "backtest")})
                 steps.append(PredictionStepV1(target_ts=target.to_pydatetime(), horizon_min=hm,
                                               point=float(point[j]), quantiles=quant))
             if role == "champion":
@@ -545,6 +603,7 @@ class Engine:
             built = await sync(self.build_forecast, spec, series, origin, now)
         except InputStale:
             st.last_issue_error = None   # alerts_for reports input_stale itself
+            st.interval_source = {}
             return False
         except DegenerateForecast as exc:
             st.last_issue_error = ("degenerate_forecast", str(exc)[:300])
@@ -562,6 +621,10 @@ class Engine:
                     for e in p.exceedance]
         await sync(self.store.insert_issue, built["rows"], exc_rows)
         st.last_issue_error = None
+        src = built.get("interval_source", {})
+        if src != st.interval_source:
+            logger.info("prediction_interval_source series=%s %s", spec.series_id, src)
+        st.interval_source = src
         if built["failed_models"]:
             st.last_issue_error = ("model_fallback", f"{built['fallback_steps']} step(s) served by the baseline; "
                                                      f"failed: {built['failed_models']}"[:300])
@@ -609,6 +672,17 @@ class Engine:
                            "in_95": q[q_key(0.025)] <= v <= q[q_key(0.975)]})
         self.store.write_scores(scores)
         return len(scores)
+
+    def surprise_summary(self, spec: SeriesSpec, now: datetime, window: timedelta) -> dict:
+        """Calm check (spec acceptance): mean excess per horizon vs its 95 % null band."""
+        rows = self.store.scored_with_quantiles(spec.series_id, now - window)
+        st = self.state[spec.series_id]
+        horizons = surprise_summarize([r for r in rows if r["role"] == "champion"], spec.grain_min)
+        for hm, h in horizons.items():
+            ok, reason = st.surprise_gate.get(int(hm), (False, "no_gate_verdict_yet"))
+            h["gate"] = reason
+        return {"window_hours": window.total_seconds() / 3600, "calm_surprisal": CALM_SURPRISAL,
+                "p_floor": P_FLOOR, "horizons": horizons}
 
     def score_exceedances(self, spec: SeriesSpec, now: datetime) -> int:
         """Outcome of each stored threshold probability once its window has passed (plus settle):
@@ -715,6 +789,8 @@ class Engine:
             alerts["forecast_stale"] = f"last forecast {last_issued.isoformat() if last_issued else 'never'}"
         if st.last_issue_error:
             alerts[st.last_issue_error[0]] = st.last_issue_error[1]
+        if st.last_score_error:
+            alerts["score_failed"] = st.last_score_error
         if st.last_select_error:
             alerts["selection_failed"] = st.last_select_error
         if st.last_tick_error:
@@ -743,6 +819,13 @@ class Engine:
         live = await sync(self.live_metrics, spec, now)
         last_issued = await sync(self.store.last_issued, spec.series_id)
         st.alerts = self.alerts_for(spec, now, live, last_issued)
+        assignment = st.served.selection.assignment if st.served is not None else {}
+        st.surprise_gate = {
+            hm: horizon_gate(hm, live["horizons"].get(str(hm)), assignment.get(hm),
+                             (live.get("shadow") or {}).get(f"{assignment.get(hm)}@{hm}"))
+            for hm in spec.horizons_min
+        }
+
         codes = frozenset(st.alerts)
         if codes != st.published_alert_codes:
             logger.warning("prediction_alerts_changed series=%s active=%s", spec.series_id, st.alerts)
@@ -774,10 +857,17 @@ class Engine:
                 st.last_select_error = f"{type(exc).__name__}: {exc}"[:300]
                 st.next_select_at = now + self.select_interval   # back off a full interval
                 logger.exception("prediction_select_failed series=%s", spec.series_id)
+        # Score before issuing: the adaptive range (app/adaptive.py) reads the newest outcomes. A scoring
+        # fault must not cost the forecast: record it, issue anyway (the range then falls back).
+        try:
+            await sync(self.score, spec, now)
+            st.last_score_error = None
+        except Exception as exc:  # noqa: BLE001 -- retried next tick; alerted as score_failed
+            st.last_score_error = f"{type(exc).__name__}: {exc}"[:300]
+            logger.exception("prediction_score_failed series=%s", spec.series_id)
         if st.served is not None:
             series = await sync(self.load_series, spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
             await self.issue(spec, now, series, sync)
-        await sync(self.score, spec, now)
         await sync(self.score_exceedances, spec, now)
         if self.shadow_enabled:
             await sync(self.score_shadow, spec, now)

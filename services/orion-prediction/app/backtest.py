@@ -40,7 +40,7 @@ GATE_ALPHA = 0.05
 # An incumbent keeps its horizon while its backtest win stays under this (hysteresis band 0.05..0.10).
 STAY_ALPHA = 0.10
 # Bumped when the gate rule changes; a stored selection from another gate version is not restored.
-GATE_VERSION = 3   # 3: live verdicts from shadow forecasts + incumbent hysteresis
+GATE_VERSION = 4   # 3: live verdicts + incumbent hysteresis; 4: live promotion needs window coverage too
 MAX_FILLED_SHARE = 0.10
 MIN_TRAIN_STEPS_DAYS = 2
 MIN_PATHS = 10
@@ -276,6 +276,8 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_m
     """Per horizon, a candidate serves when (in order):
 
     - its LIVE verdict (app/live.py, shadow forecasts vs the baseline) is ``worse``: never;
+    - it has a residual on fewer than MIN_WINDOW_SHARE of the reference's windows: never (no
+      comparable backtest; this applies to the live route too);
     - its live verdict is ``better`` (Holm-adjusted) AND it beats the baseline in the backtest
       (rel_mae < 1): yes, even on a borderline backtest p -- live can promote, not overrule a loss;
     - otherwise the backtest decides: rel_mae < 1, enough windows, and a paired win at p < GATE_ALPHA --
@@ -318,11 +320,15 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_m
             lv = live.get((name, hm))
             m["live"] = lv
             alpha = STAY_ALPHA if incumbent.get(hm) == name else GATE_ALPHA
-            backtest_ok = bool(m["rel_mae"] is not None and m["rel_mae"] < 1.0
-                               and m["p_win"] is not None and m["p_win"] < alpha
-                               and m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n)))
+            # Window coverage is a precondition for BOTH routes. A model with residuals on too few of
+            # the reference's windows has no comparable backtest, and its stitched residual column
+            # would leave the blend short of MIN_PATHS (live 2026-11-02, office.temp_c: direct_ar
+            # promoted by a live 'better' with 8 of 16 windows -> every reselect refused).
+            covered = m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n))
+            backtest_ok = bool(covered and m["rel_mae"] is not None and m["rel_mae"] < 1.0
+                               and m["p_win"] is not None and m["p_win"] < alpha)
             verdict = lv["verdict"] if lv else "pending"
-            live_win = (verdict == "better" and m["rel_mae"] is not None and m["rel_mae"] < 1.0
+            live_win = (covered and verdict == "better" and m["rel_mae"] is not None and m["rel_mae"] < 1.0
                         and lv.get("rel_mae") is not None)
             if verdict == "worse":
                 m["passed"], m["passed_by"] = False, None

@@ -147,6 +147,8 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # decode_entity_node falls back to "unknown"/[] for real stored values.
     "entity_type",
     "aliases_json",
+    # named camera clusters: when the name was set (falkor_codec.LABEL_SET_AT_KEY).
+    "label_set_at",
     # assertion nodes (falkor_codec.encode_node_properties' assertion branch)
     "assertion_predicate",
     "statement_key",

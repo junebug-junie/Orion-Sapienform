@@ -354,9 +354,9 @@ navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
   a shed it reads "Orion is waiting: cabinet hot". A solo session is shown live
   when the page opens, by watching only (media socket); clicking the game or
   `Take this controller` acquires a controller, which preempts Orion.
-- **Solo leisure** (`scripts/retro_leisure.py`). Started only by the allocator's
-  `play` act (Lane C calls `should_start(config)` and then
-  `run_leisure_session(config, act_id=...)`). Doer gates, checked at start and every
+- **Solo leisure** (`scripts/retro_leisure.py`). Started only by Hub's leisure
+  timer (`scripts/retro_leisure_self_start.py`, every 300 s, since 2026-11-05; it calls
+  `should_start(config)` and then `run_leisure_session(config, act_id=...)`). Doer gates, checked at start and every
   30 s, each with a named reason in the journal: arousal known and not strained,
   no `cabinet_hot`, no relay socket open and no human Retro action in 10 min, no
   game already running, one start per 3 h, 90 min per rolling 24 h, 30 min per

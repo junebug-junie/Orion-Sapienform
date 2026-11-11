@@ -767,7 +767,9 @@ class AttentionRuntimeStore:
                                     CASE WHEN jsonb_typeof(l->'source_refs') = 'array'
                                          THEN l->'source_refs' ELSE '[]'::jsonb END
                                 ) AS r
-                                WHERE r LIKE 'node:%'
+                                -- world:% too: a world goal (chat, reading) must be
+                                -- able to win precedence like a body node does.
+                                WHERE r LIKE 'node:%' OR r LIKE 'world:%'
                             ) AS refs
                         FROM substrate_attention_broadcast_projection
                         WHERE generated_at > now() - make_interval(secs => :max_age)

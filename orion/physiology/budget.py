@@ -19,8 +19,10 @@ What each price charges (``use`` against ``budget``, in the reading's own unit):
 * ``lane:<role>``: lease-seconds asked of the seat in the last hour (``detail.lease_s``: occupied
   slot time plus gap borrowers) against slots x window. A seat with 0 live slots that still holds a
   lease is ``exogenous_bind``. The waiting backlog is hunger, NOT an input here.
-* ``attention:juniper``: today's cap-counted outreach, extrapolated to the end of the local day,
-  against the daily cap.
+* ``attention:juniper``: with pacing ``on`` (2026-11-10, ``orion.physiology.attention_pacing``), the
+  price is the pacing threshold: what one more message must be worth, given the messages already
+  sent today against what Juniper's waking day has budgeted by now. ``shadow``: today's cap-counted
+  outreach, extrapolated to the end of the local day, against the daily cap (dual ascent).
 * ``claude``: ``limited`` is ``exogenous_bind`` (the limit resets on its own clock); ``clear`` is a
   use of 0; ``unknown`` is no_reading.
 
@@ -110,6 +112,14 @@ class BudgetConfig:
     energy_trailing_hours: int = 168
     # Pace the day only after this much of it: one early message is not a day's rate (review).
     juniper_min_elapsed_h: float = 6.0
+    # One attention budget (2026-11-10, orion/physiology/attention_pacing.py). "on": the
+    # attention:juniper price IS the pacing threshold psi(sent / allowance) (per message, posted per
+    # unit of the daily cap). "shadow": the dual-ascent price as before; the pacing price rides in
+    # the reading's detail for comparison. Juniper's waking day = the Hub's quiet hours' complement
+    # (HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR / _END_HOUR, owner services/orion-hub/.env_example).
+    juniper_pacing: str = "on"
+    juniper_waking_start_hour: int = 8
+    juniper_waking_end_hour: int = 23
     # Warn this many days before a heat sensitivity entry goes stale (it then reads no_reading).
     heat_stale_warn_days: float = 7.0
     # A constraint absent from a tick keeps its carry this long (a lane missing for a tick is
@@ -290,6 +300,48 @@ def juniper_ask(reading: PhysiologyConstraintReadingV1, now: datetime, cfg: Budg
                 f"{sent:.0f} of {_f(reading.budget, 0)} cap-counted messages by {local:%H:%M} local; day-end pace {pace:.1f}")
 
 
+def juniper_pacing(reading: PhysiologyConstraintReadingV1, now: datetime, cfg: BudgetConfig) -> Optional[dict]:
+    """The pacing threshold's inputs and price for this tick, or None (no reading / no cap). Pure.
+
+    ``price_per_msg``: the want-value one more message must beat (``attention_pacing.message_price``).
+    ``allowance``: messages the day has budgeted by now. ``rate_per_hour``: how fast the allowance
+    grows right now (0 outside the waking day). Choice reads the last two for a held want's relief."""
+    from orion.physiology import attention_pacing as ap
+
+    if reading.level is None or not reading.budget or reading.budget <= 0:
+        return None
+    cap = int(round(float(reading.budget)))
+    budget = ap.pace_budget(cap)
+    frac = ap.waking_fraction(now, tz=cfg.tz, start_hour=cfg.juniper_waking_start_hour,
+                              end_hour=cfg.juniper_waking_end_hour)
+    allow = ap.allowance(frac, budget)
+    z = ap.pace(float(reading.level), frac, budget)
+    span_h = ap.waking_span_hours(now, tz=cfg.tz, start_hour=cfg.juniper_waking_start_hour,
+                                  end_hour=cfg.juniper_waking_end_hour)
+    rate = (budget - 1) / span_h if 0.0 < frac < 1.0 and span_h > 0 else 0.0
+    return {"price_per_msg": ap.message_price(z), "allowance": allow, "pace": z, "rate_per_hour": rate,
+            "waking_fraction": frac, "cap": cap, "pace_budget": budget, "span_h": span_h}
+
+
+def juniper_pacing_price(reading: PhysiologyConstraintReadingV1, pacing: dict) -> PhysiologyPriceV1:
+    """The posted attention:juniper price under pacing: psi per message, in want-value per unit of the
+    daily cap (the unit every price uses; Choice's charge is price x msgs / cap = psi x msgs). Pure."""
+    from orion.physiology import attention_pacing as ap
+
+    cap = float(pacing["cap"])
+    sent = float(reading.level or 0.0)
+    ahead = sent >= pacing["allowance"]
+    why = (f"{sent:.0f} message(s) today against {pacing['allowance']:.1f} budgeted by now (paced to "
+           f"{pacing['pace_budget']:.0f}, cap {cap:.0f}); "
+           f"pace {pacing['pace']:.2f}; the next message must be worth more than {pacing['price_per_msg']:.3f}")
+    return PhysiologyPriceV1(
+        value=round(pacing["price_per_msg"] * cap, 6), ceiling=round(ap.VALUE_HIGH * cap, 6),
+        ceiling_source="sized", bind_state="binding" if ahead else "slack",
+        use=round(sent, 4), budget=round(float(pacing["allowance"]), 4),
+        excess=round(sent - float(pacing["allowance"]), 4),
+        horizon_sec=round(float(pacing["span_h"]) * 3600.0, 1), why=why[:600])
+
+
 def claude_ask(reading: PhysiologyConstraintReadingV1) -> _Ask:
     st = reading.state
     if reading.level is None or st not in ("clear", "limited"):
@@ -430,9 +482,17 @@ def price_state(state: PhysiologyStateV1, body: BodyInputs, carry: Optional[Mapp
         tick = (now - prev_at).total_seconds() if prev_at is not None else cfg.nominal_tick_sec
         tick = min(max(tick, 1.0), cfg.max_tick_sec)
         price, out_carry[r.constraint] = price_constraint(r, ask, prev, now, tick, cfg)
+        update: dict = {}
+        if r.constraint == ATTENTION_JUNIPER:
+            pacing = juniper_pacing(r, now, cfg)
+            if pacing is not None:
+                update["detail"] = {**r.detail, **{f"pacing_{k}": round(float(v), 6) for k, v in pacing.items()},
+                                    "pacing_mode": cfg.juniper_pacing}
+                if cfg.juniper_pacing == "on":
+                    price = juniper_pacing_price(r, pacing)
         if price.bind_state == "stuck_at_ceiling":
             warnings.append(f"price_stuck_at_ceiling:{r.constraint}")
-        readings.append(r.model_copy(update={"price": price}))
+        readings.append(r.model_copy(update={"price": price, **update}))
     if cfg.heat_config is not None:
         for host, e in sorted(cfg.heat_config.hosts.items()):
             left = cfg.heat_max_age_days - (now - e.fitted_at).total_seconds() / 86400.0
@@ -452,6 +512,8 @@ __all__ = [
     "energy_ask",
     "heat_ask",
     "juniper_ask",
+    "juniper_pacing",
+    "juniper_pacing_price",
     "lane_ask",
     "claude_ask",
     "price_constraint",

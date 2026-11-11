@@ -31,7 +31,13 @@ Status: a probability bet records the event (``happened`` / ``not_happened``); i
 low-p event that did not happen -- the Brier score grades the number. A range bet is ``upheld`` (the
 outcome fell inside) or ``broken``. Void rows never count toward a grade:
     failed_to_execute       the turn ran but errored or was cut short (exit_code != 0, no final_text, or
-                            the harness's cut-short notice in place of a reply)
+                            the harness's cut-short notice in place of a reply). Includes the motor's own
+                            kills (timeout, stall, context ceiling), a nonzero exit with no cancel, and
+                            every old record with no ``stop_reason``.
+    interrupted             the turn was stopped from outside before it finished: its record's
+                            ``stop_reason`` is a known harness cancel (Juniper's stop, a client disconnect,
+                            durable-runs stopping the attempt on a GPU recall, worker recovery; see
+                            orion/harness/stop_reason.py). Not Orion failing, so not a failed turn.
     ungradeable_bad_record  the bet or the turn record is not a JSON object (one bad row must not stall
                             every later pass, so it settles void instead of raising)
     expired_unsettled       no turn record EXPIRY after the bet
@@ -41,7 +47,8 @@ outcome fell inside) or ``broken``. Void rows never count toward a grade:
 
 Grades, per faculty and per caller (session_id prefix: world-pulse, curiosity, self, ...; a bare UUID
 session is a chat session, ``chat``; no session id is ``unknown``):
-    p faculties     Brier, and skill against the per-caller base rate. Callers differ a lot (curiosity
+    p faculties     Brier, skill against the per-caller base rate, and the sorting score (``sort_auc``,
+                    ``sort_p``: within-caller AUC and its one-sided p-value; see grading.sorting_score). Callers differ a lot (curiosity
                     fetches, chat mostly does not), so a single base rate would credit Orion for knowing
                     who called. The per-caller rate is computed on the same rows (in-sample), which
                     makes it a slightly stricter bar, not a looser one.
@@ -60,8 +67,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
-from orion.prediction.grading import grade
+from orion.prediction.grading import grade, sorting_score
 from orion.harness.cut_short import CUT_SHORT_MARKER
+from orion.harness.stop_reason import is_outside_stop
 
 logger = logging.getLogger("orion-prediction.turn_self_bets")
 
@@ -121,7 +129,10 @@ def observe(artifact: dict | None) -> tuple[str | None, dict]:
     code = artifact.get("exit_code")
     if (code not in (0, None) or not isinstance(text, str) or not text.strip()
             or text.lstrip().startswith(CUT_SHORT_MARKER)):
-        return "failed_to_execute", {"exit_code": code}
+        # Only a known outside cancel is "interrupted"; a missing or unknown stop_reason
+        # stays a failure (old records have none and are not backfilled).
+        void = "interrupted" if is_outside_stop(artifact.get("stop_reason")) else "failed_to_execute"
+        return void, {"exit_code": code}
     fetches = artifact.get("source_fetches")
     steps = _num(artifact.get("step_count"))
     return None, {
@@ -175,6 +186,9 @@ def settle(bet: dict, artifact: dict | None, now: datetime,
         if not void and value is not None:
             row["observed"] = float(value)   # what the turn did, recorded even when nothing was stated
         if void:
+            # Voids every faculty of the turn, stated or not: the self-monitor reads "all rows
+            # failed_to_execute" as one failed turn (orion/self_monitor/collect.py, turn.run, #3078)
+            # and never as a failed guess; "interrupted" rows are no turn.run bet at all.
             row["void_reason"] = void
         elif not stated:
             row["void_reason"] = "ungradeable_no_stated"
@@ -230,6 +244,10 @@ def _grade_p(rows: list[dict]) -> dict:
     out["brier_caller_base_rate"] = ref
     out["skill_vs_caller"] = (1 - out["brier"] / ref) if out["brier"] is not None and ref > 0 else None
     out["mean_stated_p"] = statistics.fmean(r["stated_p"] for r in rows) if rows else None
+    # Sorting, within each caller: does stance give the turns where it happened the higher p?
+    # Immune to a shifting base rate (11-03: replies doubled on 10-31 and the 7-day "usual" lagged).
+    srt = sorting_score([r["stated_p"] for r in rows], [r["hit"] for r in rows], [r["caller"] for r in rows])
+    out.update(sort_auc=srt["auc"], sort_pairs=srt["pairs"], sort_p=srt["p_value"])
     return out
 
 

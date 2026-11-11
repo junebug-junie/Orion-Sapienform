@@ -37,13 +37,8 @@ sys.path.append(str(_HUB_ROOT.parents[1]))
 MODULES = (
     "substrate_attention_routes",
     "substrate_biometrics_routes",
-    "substrate_consolidation_routes",
-    "substrate_execution_dispatch_routes",
-    "substrate_feedback_routes",
     "substrate_field_routes",
     "substrate_observability_routes",
-    "substrate_policy_routes",
-    "substrate_proposal_routes",
 )
 REQUESTS_PER_MODULE = 25
 
@@ -81,17 +76,6 @@ def main() -> int:
                 with engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
             engines_per_module[name] = len(seen)
-        # The consolidation endpoints reach Postgres through
-        # orion/consolidation/repository.py, which builds its own engine unless
-        # one is passed in -- call the real endpoints, not just `_engine()`.
-        import asyncio
-
-        routes = importlib.import_module("scripts.substrate_consolidation_routes")
-        for _ in range(REQUESTS_PER_MODULE):
-            asyncio.run(routes.consolidation_motifs(limit=5))
-            asyncio.run(routes.consolidation_schema_candidates(limit=5))
-            asyncio.run(routes.consolidation_tensor_slices_latest(limit=5))
-            asyncio.run(routes.consolidation_expectations(trigger_motif_id="route-pool-eval"))
         # Shared substrate stores the hub holds as singletons; its autonomy loop
         # reads review telemetry every 30 s (149 connections held, 2026-11-02).
         # Read-only calls only: their persist methods rewrite live tables.

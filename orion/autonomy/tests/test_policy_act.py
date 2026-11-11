@@ -35,16 +35,17 @@ def _gap_signal() -> FrontierInvocationSignalV1:
     )
 
 
-def _goal() -> FieldGoalProvenanceV1:
+def _goal(field_target_id: str = "world:chat", target_kind: str = "channel") -> FieldGoalProvenanceV1:
+    # Default is a world goal: fetch/recall require one (requires_world_goal).
     return FieldGoalProvenanceV1.model_validate(
         {
             "artifact_id": "goal-gap-gpu",
             "subject": "attention",
             "model_layer": "field_attention",
-            "entity_id": "node:substrate.biometrics",
+            "entity_id": field_target_id,
             "kind": "memory.field_goals.proposed.v1",
-            "field_target_id": "node:substrate.biometrics",
-            "target_kind": "node",
+            "field_target_id": field_target_id,
+            "target_kind": target_kind,
             "salience_score": 0.8,
             "source_field_tick_id": "tick-1",
             "source_attention_frame_id": "frame-1",
@@ -99,54 +100,22 @@ async def test_policy_act_executes_fetch_when_allowed(monkeypatch, tmp_path) -> 
     backend.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_policy_act_fetch_surfaces_domain_surprise_in_notes(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
-    backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
-    decision, outcome = await maybe_execute_readonly_fetch_after_goal(
-        goal=_goal(),
-        subject="orion",
-        curiosity_signals=[_gap_signal()],
-        spawned_correlation_id="wp-run-gap-gpu",
-        fetch_backend=backend,
-        surprise_source=lambda: 0.037,
-    )
-    assert decision.outcome == "allowed"
-    assert outcome is not None
-    assert outcome.surprise == 0.037
-    assert any("0.037" in note for note in decision.notes)
+def test_policy_act_has_no_surprise_source_injection() -> None:
+    """Retired 2026-11-10 (prediction-error suite rebuild, retire step 1): the ambient
+    bus_synaptic value used to be read on every policy act, stamped onto the action
+    outcome and attached to the capability decision's notes. Nothing read either."""
+    import inspect
 
+    from orion.autonomy import policy_act
 
-@pytest.mark.asyncio
-async def test_policy_act_fetch_reads_real_surprise_source_exactly_once(
-    monkeypatch, tmp_path
-) -> None:
-    """Regression: the gate decision (CapabilityEvaluationContext.domain_surprise_score)
-    and the outcome (ActionOutcomeRefV1.surprise) must share one real read, not each
-    call surprise_source() independently -- found in review, since two reads at two
-    different moments could disagree with each other about the same real event."""
-    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
-    backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
-    call_count = 0
-
-    def _counting_source() -> float:
-        nonlocal call_count
-        call_count += 1
-        return 0.037
-
-    decision, outcome = await maybe_execute_readonly_fetch_after_goal(
-        goal=_goal(),
-        subject="orion",
-        curiosity_signals=[_gap_signal()],
-        spawned_correlation_id="wp-run-gap-gpu",
-        fetch_backend=backend,
-        surprise_source=_counting_source,
-    )
-    assert decision.outcome == "allowed"
-    assert outcome.surprise == 0.037
-    assert call_count == 1
+    for fn in (
+        policy_act.maybe_execute_readonly_fetch_after_goal,
+        policy_act.maybe_execute_readonly_recall_after_goal,
+        policy_act.maybe_compose_autonomy_episode_after_fetch,
+        policy_act.maybe_execute_substrate_act_after_metabolism,
+        policy_act._execute_readonly_recall,
+    ):
+        assert "surprise_source" not in inspect.signature(fn).parameters, fn.__name__
 
 
 @pytest.mark.asyncio
@@ -222,37 +191,6 @@ async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) ->
     seed = journal_dispatch.await_args.kwargs["narrative_seed"]
     assert "hardware compute gpu" in seed
     assert "GPU news" in seed
-
-
-@pytest.mark.asyncio
-async def test_policy_act_episode_journal_surfaces_domain_surprise_in_notes(monkeypatch) -> None:
-    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
-    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    from orion.autonomy.models import FetchedArticleRefV1
-
-    fetch_outcome = ActionOutcomeRefV1(
-        action_id="fetch-test",
-        kind="web.fetch.readonly",
-        summary="fetched 2 article(s)",
-        success=True,
-        surprise=0.0,
-        observed_at=datetime.now(timezone.utc),
-        query="hardware compute gpu recent news coverage",
-        articles=[
-            FetchedArticleRefV1(url="https://example.com/a", title="GPU news", salience=0.67)
-        ],
-        salience=0.67,
-    )
-    decision, _result = await maybe_compose_autonomy_episode_after_fetch(
-        goal=_goal(),
-        curiosity_signals=[_gap_signal()],
-        spawned_correlation_id="wp-run-gap-gpu",
-        fetch_outcome=fetch_outcome,
-        journal_dispatch=AsyncMock(return_value={"write": {"entry_id": "entry-1"}}),
-        surprise_source=lambda: 0.2251,
-    )
-    assert decision.outcome == "allowed"
-    assert any("0.2251" in note for note in decision.notes)
 
 
 @pytest.mark.asyncio
@@ -556,59 +494,6 @@ async def test_recall_capability_finds_content(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recall_capability_uses_real_surprise_source_when_available(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
-    bus = _fake_recall_bus(_fake_recall_reply(n=2))
-    decision, outcome = await maybe_execute_readonly_recall_after_goal(
-        goal=_goal(),
-        subject="orion",
-        curiosity_signals=[_gap_signal()],
-        spawned_correlation_id="wp-run-gap-gpu",
-        bus=bus,
-        surprise_source=lambda: 0.1675,
-    )
-    assert decision.outcome == "allowed"
-    assert outcome is not None
-    # Real value used even on a successful recall hit, not the old redundant
-    # 0.0-on-success proxy.
-    assert outcome.surprise == 0.1675
-    # The same real read also reaches CapabilityEvaluationContext.domain_surprise_score,
-    # surfaced advisory-only in decision.notes (no rule gates on it yet).
-    assert any("0.1675" in note for note in decision.notes)
-
-
-@pytest.mark.asyncio
-async def test_recall_capability_reads_real_surprise_source_exactly_once(
-    monkeypatch, tmp_path
-) -> None:
-    """Same regression guard as the fetch path's equivalent test."""
-    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
-    bus = _fake_recall_bus(_fake_recall_reply(n=2))
-    call_count = 0
-
-    def _counting_source() -> float:
-        nonlocal call_count
-        call_count += 1
-        return 0.1675
-
-    decision, outcome = await maybe_execute_readonly_recall_after_goal(
-        goal=_goal(),
-        subject="orion",
-        curiosity_signals=[_gap_signal()],
-        spawned_correlation_id="wp-run-gap-gpu",
-        bus=bus,
-        surprise_source=_counting_source,
-    )
-    assert decision.outcome == "allowed"
-    assert outcome.surprise == 0.1675
-    assert call_count == 1
-
-
-@pytest.mark.asyncio
 async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
@@ -623,6 +508,8 @@ async def test_recall_capability_empty_reply_degrades(monkeypatch, tmp_path) -> 
     assert decision.outcome == "allowed"
     assert outcome is not None
     assert outcome.success is False
+    # Retired stamp: a not-found recall used to write surprise=1.0; now the 0.0 default.
+    assert outcome.surprise == 0.0
 
 
 @pytest.mark.asyncio
@@ -816,3 +703,30 @@ async def test_substrate_act_fetch_subject_comes_from_episode_intent_not_goal(
     assert result.fetch_attempted is True
     assert captured["subject"] == "orion"
     assert captured["subject"] != _goal().subject
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_body_goal_spends_no_fetch_or_recall(monkeypatch, tmp_path) -> None:
+    """Regression (prediction-error suite rebuild, Decision 1): a bus
+    prediction-error goal no longer unlocks a web fetch or a recall RPC."""
+    import orion.autonomy.policy_act as policy_act
+
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    monkeypatch.setattr(
+        policy_act, "get_active_goal", lambda: _goal("node:substrate.bus_synaptic", "node")
+    )
+    fetch_backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    bus = _fake_recall_bus(_fake_recall_reply(n=3))
+
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_backend=fetch_backend,
+        recall_bus=bus,
+    )
+
+    fetch_backend.assert_not_awaited()
+    assert result.fetch_attempted is False
+    assert result.recall_attempted is False

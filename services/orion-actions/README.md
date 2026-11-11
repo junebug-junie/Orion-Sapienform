@@ -129,6 +129,21 @@ compose does.
 - Switch: `ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
   compose never waits on it. Code: `app/physiology_shadow.py`.
 
+### Self-monitor journal gate (2026-11-03, rung 6 E1)
+
+Every in-process journal compose passes `_dispatch_journal`. When the self-monitor (Redis
+`orion:self_monitor:latest`) holds its faculty `act.actions.journal.make.<trigger_kind>` (e.g.
+`walkway_grade`) `broken` or `unreliable`, the compose is skipped and audited `skipped` /
+`track_record_failing`; no act opens. One re-test probe per faculty per
+`SELF_MONITOR_PROBE_INTERVAL_SEC` (21600) runs, marked `self_monitor_probe` in its audit row. Probes
+are counted from `grammar_acts`, so keep `ACTIONS_ACT_EMIT_ENABLED` on. Unknown or stale state changes
+nothing. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`. Retries of the same job are never refused
+(option A, 2026-11-03): a journal whose dedupe key (the act's `test_before = journal:<dedupe_key>`: one
+walkway night, one daily window, one trigger's content) already opened an act inside the probe window is
+admitted as `same_job_retry`, marked `self_monitor_same_job_retry` in its audit row, and spends no probe. So a
+held-broken walkway_grade still gets its whole night of retries once the night's first try (the probe) ran;
+only a new job's first try is refused.
+
 ### Act ledger producers (2026-10-23, body economy A5)
 
 Two activities publish one act per attempt on `orion:grammar:event`, persisted to `grammar_acts`

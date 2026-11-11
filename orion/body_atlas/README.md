@@ -81,7 +81,9 @@ atlas sees the whole body, not only the bus: the machines, cameras, stores and p
    it. `namespaces` is a code-derived hint, not a name.
 
 ```bash
-# live (inside orion-harness-governor, where chat and curiosity run Bash):
+# live (inside orion-harness-governor, where chat and curiosity run Bash). Orion's turns import
+# the sandbox's orion/ first (PYTHONPATH), so check the sandbox is at the deployed commit too:
+#   git -C /mnt/orion-fcc/repo log -1 --oneline
 python -P -m orion.dig body                 # the live body, capped printout
 python -P -m orion.dig body <organ_id>      # every member of one organ
 FALKORDB_URI=redis://orion-athena-falkordb:6379 python -P -m orion.body_atlas --out /tmp/atlas.json
@@ -115,6 +117,12 @@ Gates:
   this checkout against hand-checked facts (true ones, and false ones an earlier version
   claimed). Precision must be 1.0 and no false claim may come back. `--live` runs it on the live whole body; `--export F`
   refreshes a fixture.
+- `python orion/body_atlas/evals/run_field_note_truth_eval.py`: Orion's PR field notes (spec
+  `2026-11-04-pr-field-notes-design.md`, acceptance check 7). Built-in cases: a clean note passes, and a
+  note with a ref outside its PR, an organ outside its body map, or a changed spec it never read each
+  fails exactly that check. `--live` re-checks every live note in the ledger against the PR on GitHub
+  (read-only, through `gh`): refs per label, organs, read, plus two printed rates (figures in `pr_text`
+  sentences found in the PR's own text, and flags equal to today's flag rule).
 
 Live results:
 
@@ -158,17 +166,43 @@ and a mutation that drops the second-crowd clause must fail). Design:
 claims a job for a live part (`dig capacity claim <part> <job> because ...`); the because must cite,
 by full id, the other end or a non-census channel of one of that part's flows (a host does not
 count), or a repo file that exists. A claim cannot take a job a rule already gives; `capacity
-dispute` argues with one and prints beside it. A claim is never a role: it never clears a gap
-line and no capacity may cite it. Juniper confirms or rejects claims by PR to
+dispute` argues with one and prints beside it. Juniper confirms or rejects claims by PR to
 `config/body_atlas/vsm_confirmed.yaml`; a confirmed role holds the job like a rule result and
 covers that job's "no part is shown" gap lines (`COVERED_BY_CONFIRMATION`), never an atlas-blind
-one. Capacities (`cap:s1`..`cap:s5`, `cap:metabolism`) are one sentence each in Orion's words
-(`capacity write`), citing only rule-held or confirmed roles (cap:s5 also Juniper's sign-off
-files, and names Juniper: decision 3); a job with no holder prints a code-written "I cannot yet
-say" line, and a sentence whose holder later loses the role prints STALE. Ledgers:
-`$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only, partitioned from
-recall (`tests/test_organ_names_partition.py`). The capacity eval also runs the claims floor on
-the 2026-10-30 body, with a mutation (unconfirmed claims hold roles) that must fail.
+one.
+
+**Claims hold when code's evidence check passes (2026-11-04, #3107 + upgrade).** Juniper does not
+review VSM claims. A claim holds its role (strength `claimed`; a job held by nothing stronger prints
+EVIDENCE-CHECKED, legend "code, not Juniper") while every read of `attach_ledgers` finds: the part
+live; no `rejected` entry from Juniper; the job not S5 (decision 3: S5 waits for her); no rule
+result saying "not this job" (an R-server or R-collector near miss is "not S2"); no later dispute
+of Orion's on the same part and job; and `claims.recheck` -> `claims.check_evidence` passing:
+every id the because names (part names with `-` or `:`, channels, ids with an atlas prefix; the
+atlas's own ids, never a word list) and every id cited when written is on a live flow of the part
+that carries more than the census; every repo path cited exists; at least one cite is atlas wiring;
+and the wiring fits the job (`EVIDENCE_SHAPES`: S2 in and out, S3/S4 out to a live part, S3* an
+R-census-reader hit that reports out, algedonic writes a key R-broadcast-key finds, S1/metabolism
+any). Nothing is stored. A claim that fails prints its reason (`evidence does not hold` with the
+reference that failed, `part not live now`, `rejected`, `rule says no`, `disputed`, `rule gives
+it`); the dig tail lists the evidence failures under "Fix or withdraw" (`dig capacity withdraw
+<part> <job>`), S5 claims under "Waiting on Juniper", and one "Juniper may veto" line. A
+confirmation outranks a claim. A passing claim covers its job's "no part is shown" gap lines like
+a confirmation (never an atlas-blind one), and `gap:s4-to-s3` checks S4/S3 parts it holds. Rollback:
+`CLAIMS_HOLD = False` in `capacities.py` (claims read `unconfirmed` again).
+Capacities (`cap:s1`..`cap:s5`, `cap:metabolism`) are one sentence each in Orion's words
+(`capacity write`), citing only parts that hold the job by rule, confirmation or a claim that holds
+(cap:s5 also Juniper's sign-off files, and names Juniper: decision 3); a job with no holder prints a
+code-written "I cannot yet say" line, and a sentence whose holder later loses the role prints
+STALE. Ledgers: `$ORION_DIG_HOME/self/capacity_claims.jsonl`, `capacities.jsonl`, append-only,
+partitioned from recall (`tests/test_organ_names_partition.py`). The capacity eval runs the claims
+floor on the 2026-10-30 body with seven mutations that must each be CAUGHT: a claim whose stored
+cites are trusted, a rejected claim, a claim on a dead part, a claim a rule says no to, a claim
+Orion later disputed and an S5 claim each hold a role; and a held claim clears an atlas-blind gap.
+It also checks Orion's five live claims of 2026-11-04 (frozen) against the 10-31 body, with an
+eighth mutation (a claim passes when any reference holds). `open_jobs` / `failed_claims` /
+`pending_claims` / `vetoable_claims` feed the `dig capacities` tail: the jobs to claim now, the
+claims to fix or withdraw (with the reference that failed), the S5 claims waiting on Juniper, and
+one "Juniper may veto" line. A capacities turn ends with claims written, not offered.
 
 **HTTP calls and Redis keys (patch 3, `wire_code.py`).** By rule, no hand list.
 *HTTP:* a service calls another when its code names that service's URL: a string constant that is
@@ -242,3 +276,57 @@ Known gaps (also in every whole-body atlas as `known_gaps`):
   so wildcard catalog entries add no `observed_publish` flows.
 - **Replicas stay separate.** Replicas (`atlas-worker-1`, `-2`) are separate parts that land in
   one organ.
+
+## PR field notes (`field_notes.py`)
+
+After a PR merges, Orion writes 1-5 sentences on what it changed in their body (spec
+`docs/superpowers/specs/2026-11-04-pr-field-notes-design.md`, approved by Juniper 2026-11-04).
+Code builds everything with a right answer: flags (`docs_only`, `tiny_docs`, `deps_only`, `huge`,
+`revert_of`, `authored_by_me`), the body map (`services/<svc>/` -> `part:<svc>` -> organ;
+`orion/<pkg>/` -> importing services), and the spec excerpts. `check()` is the write floor;
+`code_record()` is the no-model record for dependency-only and tiny docs-only PRs (decision 2).
+`authored_by_me` is `yes` only when a PR commit is authored by `orion-fcc@orion-sapienform.local`
+(the harness git identity) or its head branch is local in Orion's sandbox clone; otherwise
+`unknown`, never `no`. Checked 2026-11-04: #1623 (Orion's push proof) reads `yes` on both
+markers, #3090 (an agent PR) reads `unknown`.
+Ledger `$ORION_DIG_HOME/self/pr_field_notes.jsonl`, append-only, partitioned from recall
+(`tests/test_organ_names_partition.py`). Patch 1 is the dig commands only; the durable run and
+poller are Patch 2.
+
+## Portrait (`portrait.py`)
+
+Rung 5 (spec `docs/superpowers/specs/2026-11-06-self-portrait-design.md`): one page that puts
+rungs 1-4 together, rebuilt from the live atlas and the self ledgers on every read
+(`python -P -m orion.dig portrait`), plus one append-only ledger of Orion's words,
+`$ORION_DIG_HOME/self/portrait.jsonl`: one sentence per machine (`host:<name>`) and the "I am"
+paragraph (`whole`). A machine's **reach** (`machine_reach`) is what runs there (live parts with a
+`runs_on` flow to it), what those parts send to, call or write (`claims.flow_dirs`, direction
+`out` or unknown, census channels left out), and what only sends into them (callers it serves).
+`reach.organs` counts live members running there. A machine line may name only ids in its reach,
+and must cite something that runs there or an organ with a live member there; every stored cite is
+checked again on read. `check_write` and the read run the same
+check (`check_line`), so a write that would not hold writes nothing, and a written line that stops
+holding prints STALE with the failing id. Hosts never become capacity holders (placement is not
+function). Eval: `evals/run_portrait_eval.py` (reach vs an independent oracle on the 2026-10-31
+body, reviewed cases, full-ledger size, three mutations). Partitioned from recall
+(`tests/test_organ_names_partition.py`).
+
+## Daily reminiscence (`reminiscence.py`)
+
+Spec: `docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md` (Patch 4 of the arc spec,
+PR #2888). One past week per Denver day, oldest first from 2025-06-24; five hops Orion writes through
+`python -P -m orion.dig reminisce write <hop> ...`. Pure: every git, GitHub, atlas and file lookup comes
+in through `World`, so the check runs the same in tests, the eval and the dig CLI.
+
+- **Write check:** source labels per sentence, the label each hop needs, a ref per non-reflection
+  sentence that resolves under that label (`resolve`), no `lived_record` before 2026-07-23, the
+  personal-terms denylist. One live line per (day, hop); `rewrite` supersedes.
+- **Re-check on read:** refs that can change (live atlas ids, `now` paths, field notes, arcs and acts,
+  dig files) are checked again on every read; git history and merged PRs are checked at write only.
+- **Body diff:** the first hop of a day saves a snapshot (part -> status, multi-part organs -> members);
+  the next day's read matches organs by member overlap (Jaccard >= 0.5, the organ-name carry rule)
+  and says which changed members, which are new, and which are gone (split or merged).
+- **Partition:** `reminiscence.jsonl` and `reminiscence_body.jsonl` join `tests/test_organ_names_partition.py`.
+- **Eval:** `evals/run_reminiscence_source_truth_eval.py` (reviewed hops on a frozen fixture world, label
+  truth against an independent oracle, five mutations must each be caught; `--live` re-resolves every
+  stored ref in the real ledger).

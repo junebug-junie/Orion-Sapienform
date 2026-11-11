@@ -43,9 +43,10 @@ OWNERS: dict[str, str] = {
     # orion-durable-runs (Temporal Self rev 4 R3: "reuses the dream setting's existing
     # meaning, so the threshold is not copied"). Two services need the env key; one owns it.
     "DREAM_IDLE_MINUTES": "services/orion-dream/.env_example",
-    # The outreach daily cap. Enforced by the Hub's outreach gate; read by orion-durable-runs as
-    # the attention:juniper line of the Body organ (body economy Patch A3). One owner.
-    "HUB_ENDOGENOUS_OUTREACH_DAILY_CAP": "services/orion-hub/.env_example",
+    # Juniper's waking day: the Hub's quiet hours. Enforced by the Hub's outreach gate; read by
+    # orion-durable-runs as the day the attention:juniper pacing price accrues over (2026-11-10).
+    "HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR": "services/orion-hub/.env_example",
+    "HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR": "services/orion-hub/.env_example",
 }
 
 # Lines owned by a Python MODULE, not an env file (body economy Patch B, 2026-10-27).
@@ -72,6 +73,8 @@ _THERMAL_LINE_NAME = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|trip|limit|t
 RETIRED_KEYS: dict[str, str] = {
     "ORION_THERMAL_HOT_C": "orion/autonomy/thermal_gate.py DEFAULT_HOT_C",  # env-key-single-source: sample
     "ORION_THERMAL_HOT_REARM_C": "orion/autonomy/thermal_gate.py DEFAULT_HOT_REARM_C",  # env-key-single-source: sample
+    # One attention budget (2026-11-10): the outreach daily cap is a module constant read by Hub and the body.
+    "HUB_ENDOGENOUS_OUTREACH_DAILY_CAP": "orion/physiology/attention_pacing.py JUNIPER_DAILY_CAP",  # env-key-single-source: sample
 }
 _THERMAL_NAME_IN_TEXT = re.compile(r"(?i)(hot|crit|elevat|rearm|re_arm|trip|limit|threshold|line)\w*_c\b")
 _ENV_KEY = re.compile(r"^\s*-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
+
 from datetime import datetime, timedelta, timezone
 
 from orion.physiology.body import (
@@ -379,7 +381,7 @@ def test_backlog_detail_survives_the_schema_and_the_stored_row():
 def test_juniper_counts_cap_counted_sends_against_the_daily_cap():
     r = juniper_reading(JuniperInput(True, sent_today=3, cap_counted_today=2, newest_decision_at=NOW), NOW, CFG)
     # Level and line count the same thing; every send that reached Juniper is in detail.
-    assert r.level == 2.0 and r.budget == 4.0 and r.budget_kind == "daily_cap"
+    assert r.level == 2.0 and r.budget == float(JUNIPER_DAILY_CAP) and r.budget_kind == "daily_cap"
     assert r.detail["sent_today_all_sources"] == 3
 
 

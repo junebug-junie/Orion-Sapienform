@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # by full age every tick -- rollback only. Validated in
     # orion.substrate.activation.normalize_decay_mode (unknown value raises).
     dynamics_decay_mode: str = Field("since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
+    # source (2026-11-03): activation propagated from a decaying neighbour is
+    # decayed once, by that neighbour's clock, not again by the receiver's age.
+    # receiver_age: the pre-2026-11-03 double decay -- rollback only. Ignored
+    # when SUBSTRATE_DYNAMICS_DECAY_MODE=legacy. Validated in
+    # orion.substrate.activation.normalize_propagation_decay_mode.
+    dynamics_propagation_decay_mode: str = Field("source", alias="SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE")
     enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
     episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
     # bus_synaptic_prediction_error: own explicit flag, not piggybacked on
@@ -243,21 +249,6 @@ class Settings(BaseSettings):
     # broadcast loops. Default off: OpenLoopV1 is extra="forbid", so every
     # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
     # manual_migration_node_prediction_error_history_v1.sql first.
-    # Rung 6 (orion/substrate/prediction_expectation.py): record each raw
-    # execution/chat reading before it becomes surprise, as the replay corpus
-    # Orion tunes their own expectation settings from. Retention must exceed
-    # the Hub tuner's window (SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS,
-    # default 72) plus a 6 h post-adoption check.
-    prediction_raw_readings_enabled: bool = Field(True, alias="SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED")
-    prediction_raw_reading_retention_hours: float = Field(
-        192.0, ge=84.0, alias="SUBSTRATE_PREDICTION_RAW_READING_RETENTION_HOURS"
-    )
-    # Use Orion's self-tuned expectation (control surface prediction_expectation.<domain>)
-    # instead of the calibrated constants. False = constants, i.e. rung 6 kill switch.
-    prediction_expectation_live_enabled: bool = Field(True, alias="SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED")
-    prediction_expectation_refresh_sec: float = Field(
-        60.0, ge=5.0, alias="SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC"
-    )
     pe_history_enabled: bool = Field(True, alias="SUBSTRATE_PE_HISTORY_ENABLED")
     # Floor 25h: below that the prune would delete the readings the 24h and
     # prior-24h windows need (0 would delete every row just written). Below
@@ -504,6 +495,10 @@ class Settings(BaseSettings):
     # claim per named camera cluster, via the journal (app/person_graph_loop.py). false = none written.
     person_graph_enabled: bool = Field(True, alias="PERSON_GRAPH_ENABLED")
     person_graph_interval_sec: float = Field(600.0, gt=0.0, alias="PERSON_GRAPH_INTERVAL_SEC")
+    # Same pass: move each named camera cluster node's observed_at to its newest sighting
+    # (vision_individual.last_seen_at) and give it a 6 h half-life, so "seen recently" rises
+    # and fades. false = no sighting writes (nodes fade to rest within a day).
+    person_sighting_refresh_enabled: bool = Field(True, alias="PERSON_SIGHTING_REFRESH_ENABLED")
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(

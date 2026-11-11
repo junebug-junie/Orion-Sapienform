@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, NamedTuple, Sequence
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 from orion.situational.street_material import (
     REDUCER_EVENT_TYPES_SQL,
@@ -30,7 +30,8 @@ from orion.situational.street_material import (
     split_caption_sql,
     street_caption_line,
 )
-from orion.vision.walkway_rollup import LIVING_KINDS, count_range, split_note, window_peak
+from orion.vision.motion_story_gate import gate_passed, tally_from_counts
+from orion.vision.walkway_rollup import LIVING_KINDS, count_range, local_midnight, split_note, window_peak
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +527,39 @@ _STREET_EXPECTATIONS_SQL = text(
     ") ORDER BY window_start LIMIT 20"
 )
 
+# INDIVIDUAL WINDOWS (2026-11-03). One row per individual-subject expectation
+# above: the FIRST time a sighting of that individual fell inside its OWN
+# window, up to now (the rhythm reducer's own rule, exactly:
+# services/orion-sql-writer/app/vision_rhythm.py `_occurred` -- min, clipped
+# to [window_start, window_end], NOT stationary, any stream), its kind, who
+# gave its name, and whether the individuals reducer has processed crops
+# through about now (`caught_up`; else an absence claim could be a crop still
+# in the queue -- the reducer's own `_individuals_caught_up` guard).
+# Read back to each window's start, not the 60-minute sightings
+# lookback: on 11-03 "Rowan" had an open 10:05-13:09 window, the 12:00 turn
+# could only say "Rowan usually comes around 11:39" (the lookback guard
+# forbids an absence claim), and the model wrote "Rowan right on her usual
+# 11:39" with no sighting at all. A window that never overlapped a sighting
+# is now said as "no match ... yet today". Status 'open' alone cannot say
+# that: the reducer scores a window only after it closes.
+_STREET_INDIVIDUAL_WINDOWS_SQL = text(
+    "SELECT w.individual_id, i.kind, a.asked_of AS named_by, a.answered_at AS named_at, "
+    "  (SELECT min(greatest(s.started_at, w.window_start)) FROM vision_individual_sighting s "
+    "    WHERE s.individual_id = w.individual_id "
+    "      AND s.ended_at >= w.window_start "
+    "      AND s.started_at <= least(w.window_end, CAST(:until AS timestamptz)) "
+    "      AND NOT s.stationary) AS matched_at, "
+    "  COALESCE((SELECT c.last_created_at >= CAST(:now AS timestamptz) - make_interval(secs => :caught_up_grace) "
+    "            FROM vision_individuals_cursor c WHERE c.stream_id = :stream_id), false) AS caught_up "
+    "FROM unnest(CAST(:ids AS text[]), CAST(:starts AS timestamptz[]), CAST(:ends AS timestamptz[])) "
+    "  AS w(individual_id, window_start, window_end) "
+    "LEFT JOIN vision_individual i ON i.individual_id = w.individual_id "
+    "LEFT JOIN orion_ask a ON a.ask_id = i.label_ask_id AND a.answer IS NOT NULL"
+)
+# The individuals cursor normally runs ~50 s behind live (11-03); past this
+# it is lagging and "no match yet" could be a crop it has not processed.
+STREET_INDIVIDUALS_CAUGHT_UP_GRACE_SEC = 120
+
 _STREET_UNRESOLVED_SQL = text(
     "SELECT observed_at, description FROM vision_unresolved "
     "WHERE stream_id = :stream_id "
@@ -572,6 +606,106 @@ STREET_CAPTION_MAX = 2
 # leaving room for the rhythm line. A camera caption adds a ~85-char label
 # (detector labels capped at 3), and the brief shows at most one.
 STREET_BRIEF_CAPTION_CHARS = 100
+
+# MOTION STORIES (2026-11-03; plan: docs/superpowers/specs/2026-10-16-walkway-
+# motion-stories-proposal.md, PR #2736 -- "the street line gains what moved").
+# A story is orion-sql-writer's sentence about one tracked passage
+# (`vision_motion_story`, app/vision_motion.py). It reaches Orion only behind
+# Juniper's spot-check gate (orion/vision/motion_story_gate.py), counted on the
+# newest rules version with published clean stories -- the walkway rollups'
+# rule (services/orion-sql-writer/app/vision_rollup.py `story_gate`), so a
+# verdict on old rules never vouches for new ones. Gate closed, unreadable,
+# or STREET_MOTION_LINE_ENABLED=false: no story line. Today's newest
+# STREET_STORY_MAX (since local midnight), each with its local time; a story
+# told "together with" one already shown is the same passage and is skipped.
+# No stories is no line: the street line never says "nobody passed".
+STREET_MOTION_LINE_ENV = "STREET_MOTION_LINE_ENABLED"
+STREET_STORY_MAX = 2
+STREET_STORY_CHARS = 160
+_STREET_STORY_VERSION_SQL = text(
+    "SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean"
+)
+_STREET_STORY_VERDICTS_SQL = text(
+    "SELECT CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict, count(*) AS n "
+    "FROM vision_motion_story_verdict v JOIN vision_motion_story s ON s.story_id = v.story_id "
+    "WHERE s.published AND s.clean AND s.rules_version = :v GROUP BY 1"
+)
+_STREET_STORIES_SQL = text(
+    "SELECT story_id, started_at, sentence, together_story_ids FROM vision_motion_story "
+    "WHERE stream_id = :stream_id AND published AND clean AND rules_version = :v "
+    "  AND ended_at >= CAST(:since AS timestamptz) AND started_at >= CAST(:since AS timestamptz) "
+    "  AND started_at <= CAST(:until AS timestamptz) "
+    "  AND sentence IS NOT NULL AND sentence <> '' "
+    "ORDER BY started_at DESC LIMIT 8"
+)
+
+
+def street_motion_line_enabled() -> bool:
+    return (os.getenv(STREET_MOTION_LINE_ENV) or "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _ids(raw: Any) -> set[str]:
+    """`together_story_ids`: a list (psycopg2 text[]), a JSON list, or a `{a,b}` array literal."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = [x.strip().strip('"') for x in raw.strip("{}").split(",")] if raw.startswith("{") else []
+        raw = parsed if isinstance(parsed, list) else []
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _clip_sentence(text_: str, limit: int = STREET_STORY_CHARS) -> str:
+    t = " ".join(str(text_ or "").split()).rstrip(".")
+    if len(t) <= limit:
+        return t
+    cut = t[: limit - 1].rsplit(" ", 1)[0].rstrip(",;")
+    return cut + "\u2026"
+
+
+def street_story_line(stories: list[dict[str, Any]] | None, *, camera: str, tz: Any) -> str | None:
+    """"Walkway motion stories today (spot-checked): at 18:22, A person walked ...;
+    at 12:51, ... ." Rows are already gated, newest first. None for none."""
+    shown: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for row in stories or []:
+        sid = str(row.get("story_id") or "")
+        together = _ids(row.get("together_story_ids"))
+        sentence = _clip_sentence(row.get("sentence") or "")
+        if not sentence or (sid and sid in seen) or (together & seen):
+            continue
+        ts = _utc(row.get("started_at"))
+        at = f"at {ts.astimezone(tz):%H:%M}, " if ts else ""
+        shown.append((sid, at + sentence))
+        seen.add(sid)
+        seen |= together
+        if len(shown) >= STREET_STORY_MAX:
+            break
+    if not shown:
+        return None
+    camera = (camera or "").strip() or "camera"
+    head = f"{camera[:1].upper()}{camera[1:]} motion stories today (spot-checked)"
+    return f"{head}: " + "; ".join(t for _, t in shown) + "."
+
+
+def _gated_stories(conn: Any, stream_id: str, *, since: datetime, until: datetime) -> list[dict[str, Any]] | None:
+    """Today's published clean stories IF Juniper's spot-check gate passed, else None."""
+    version_rows = _street_rows(conn, _STREET_STORY_VERSION_SQL, {}, "story_gate_version")
+    if not version_rows or version_rows[0].get("v") is None:
+        return None
+    version = int(version_rows[0]["v"])
+    verdicts = _street_rows(conn, _STREET_STORY_VERDICTS_SQL, {"v": version}, "story_gate_verdicts")
+    if verdicts is None:
+        return None
+    counts = {str(r["verdict"]): int(r["n"] or 0) for r in verdicts if r.get("verdict")}
+    if not gate_passed(tally_from_counts(counts, 0, version)):
+        return None
+    return _street_rows(
+        conn, _STREET_STORIES_SQL, {"stream_id": stream_id, "v": version, "since": since, "until": until}, "stories"
+    )
+
 
 # One head-count row per counted zone, `<stream>:<zone>` (orion-sql-writer's
 # vision_individuals.no_embed_presence_id), recognised by a flag in the
@@ -720,6 +854,8 @@ def _who_line(
     if props is None:
         props = {"person": people_props}
     named: list[str] = []
+    guessed: dict[str, str] = {}
+    guess_rows: dict[tuple[str, str], int] = {}
     seen_names: set[str] = set()
     named_by_kind: dict[str, set[str]] = {}
     # kind -> distinct_days per individual, in first-seen (most recent) order.
@@ -737,6 +873,16 @@ def _who_line(
                 named.append(label)
             named_by_kind.setdefault(str(row.get("kind") or "").strip(), set()).add(label.casefold())
             continue
+        guess = str(row.get("guess") or "").strip()
+        if guess:
+            # The camera's prior chose this name (office camera): a guess, said as one.
+            # It counts like a name in the people range, and as the SAME name as a
+            # record Juniper named, so the two never stand for two people.
+            kind_g = str(row.get("kind") or "").strip() or "something"
+            guessed.setdefault(guess.casefold(), guess)
+            named_by_kind.setdefault(kind_g, set()).add(guess.casefold())
+            guess_rows[(kind_g, guess.casefold())] = guess_rows.get((kind_g, guess.casefold()), 0) + 1
+            continue
         kind = str(row.get("kind") or "").strip() or "something"
         try:
             days = int(row.get("distinct_days") or 0)
@@ -747,8 +893,26 @@ def _who_line(
         else:
             new[kind] = new.get(kind, 0) + 1
 
+    # A guess never hides a second person: when one window held more of a kind
+    # than the names and guesses listed, the rest are still people Orion does not
+    # know, even if every record of that kind carries the prior's guess.
+    if guessed and peaks is not None:
+        for kind, keys in named_by_kind.items():
+            seen = int(peaks.get(kind, 0) or 0) - int(props.get(kind, 0) or 0)
+            if kind in _LIVING_KINDS and kind not in recurring and kind not in new and seen > len(keys):
+                new[kind] = 0
+    elif guessed:
+        # No window count to tell one person from several: every guessed record
+        # past the first of a name may be someone else ("up to N"), never silence.
+        for (kind, _name), n in guess_rows.items():
+            if n > 1:
+                new[kind] = new.get(kind, 0) + n - 1
     # (phrase, how many individuals it stands for; None = a range, no count)
     phrases: list[tuple[str, int | None]] = [(name, 1) for name in named]
+    phrases += [
+        (f"probably {name} (my guess from who is usually here, not confirmed)", 1)
+        for key, name in guessed.items() if key not in seen_names
+    ]
     # One kind stays together: its recurring phrase, then its new one.
     kinds = list(recurring) + sorted(k for k in new if k not in recurring)
     for living in (True, False):
@@ -762,7 +926,8 @@ def _who_line(
                     peak=None if peaks is None else int(peaks.get(kind, 0) or 0),
                     props=int(props.get(kind, 0) or 0),
                 )
-                phrases.append((_living_phrase(kind, low, high, recurring=rec), None))
+                if high > 0:
+                    phrases.append((_living_phrase(kind, low, high, recurring=rec), None))
                 continue
             if kind in recurring:
                 phrases.append((_recurring_phrase(kind, recurring[kind]), len(recurring[kind])))
@@ -813,6 +978,57 @@ def _past_peak(peak_minute: Any, window_start: datetime | None, *, now: datetime
     return now > peak
 
 
+STREET_PERSON_MATCH_CAVEAT = "A person match is the camera's guess, not a confirmed sighting."
+
+
+def _name_origin(window: Mapping[str, Any], tz: Any) -> str:
+    """Where a name came from, so the model never has to invent it (11-03:
+    "I started calling that slot Rowan" -- Juniper had named that person on
+    10-25, answering "Who is this?"). Every vision_individual label is set by
+    an answered ask; without one, say nothing rather than guess. The kind
+    rides along: the same reply called Rowan a vehicle."""
+    if str(window.get("named_by") or "").strip().lower() != "juniper":
+        return ""
+    kind = str(window.get("kind") or "").strip()
+    what = f"{'an' if kind[:1] in 'aeiou' else 'a'} {kind}, " if kind else ""
+    when = _utc(window.get("named_at"))
+    return f" ({what}name from Juniper, {when.astimezone(tz):%m-%d})" if when else f" ({what}name from Juniper)"
+
+
+def _individual_outcome(
+    label: str,
+    status: str,
+    peak: str | None,
+    row: Mapping[str, Any],
+    window: Mapping[str, Any],
+    *,
+    now: datetime,
+    tz: Any,
+) -> str | None:
+    """One rhythm phrase for an individual whose own window was read.
+
+    "Matched", not "came": a sighting of an individual is a re-identification
+    guess. The time said is the match's own time, never the peak.
+    """
+    name = label + _name_origin(window, tz)
+    usual = f"usually around {peak}" if peak else "usually"
+    matched = _utc(window.get("matched_at"))
+    if matched is not None and status in ("open", "met"):
+        return f"{name} matched at {matched.astimezone(tz):%H:%M} ({usual})"
+    if status == "met":
+        return f"{name} matched inside the usual window ({usual})"
+    if status == "missed":
+        return f"no match for {name} in the usual window ({usual})"
+    if status == "open":
+        window_start = _utc(row.get("window_start"))
+        # An absence claim only once the individuals reducer has caught up:
+        # missing or lagging cursor reads as "not known yet".
+        if window.get("caught_up") is True and _past_peak(row.get("peak_minute"), window_start, now=now, tz=tz):
+            return f"no match for {name} yet today ({usual})"
+        return f"{name} usually comes" + (f" around {peak}" if peak else "")
+    return None
+
+
 def summarize_street(
     *,
     sightings: list[dict[str, Any]] | None,
@@ -825,6 +1041,8 @@ def summarize_street(
     captions: list[dict[str, Any]] | None = None,
     people_windows: list[dict[str, Any]] | None = None,
     stationary_people: int | Mapping[str, int] | None = None,
+    stories: list[dict[str, Any]] | None = None,
+    individual_windows: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Pure: rows in, a few short plain-English lines out.
 
@@ -836,7 +1054,11 @@ def summarize_street(
     last 15 minutes and `stationary_people` the stationary individuals then,
     by kind (a bare int: persons only); together they are the floor of the
     range of every living kind, people and dogs (None: unread, the line can
-    only say "up to").
+    only say "up to"). `stories` are today's motion stories that passed
+    Juniper's spot-check gate, newest first (None: gate closed or unread).
+    `individual_windows` maps an individual id to its
+    `_STREET_INDIVIDUAL_WINDOWS_SQL` row (None: unread; individuals keep the
+    older wording, which can make no absence claim for an old window).
     """
     lines: list[str] = []
     camera = (camera or "").strip() or "camera"
@@ -877,6 +1099,9 @@ def summarize_street(
 
     # 2. What was expected, and did it happen.
     outcomes: list[str] = []
+    # Indexes of outcomes that are person matches: the caveat rides only on
+    # what survives the outcomes[:4] cut below.
+    person_outcomes: set[int] = set()
     for row in expectations or []:
         label = str(row.get("subject_label") or "").strip()
         if not label:
@@ -884,8 +1109,19 @@ def summarize_street(
         status = str(row.get("status") or "")
         peak = _hhmm(row.get("peak_minute"))
         at = f" around {peak}" if peak else ""
+        subject_kind, _, subject_ref = str(row.get("subject_key") or "").partition(":")
+        window = (individual_windows or {}).get(subject_ref) if subject_kind == "individual" else None
+        if window is not None:
+            said = _individual_outcome(label, status, peak, row, window, now=now, tz=tz)
+            if said:
+                if str(window.get("kind") or "") == "person":
+                    person_outcomes.add(len(outcomes))
+                outcomes.append(said)
+            continue
         if status == "met":
-            outcomes.append(f"{label} came as expected{at}")
+            # The peak is the usual time, not when it came: "came as expected
+            # around 11:39" read as an arrival time (11-03).
+            outcomes.append(f"{label} came as expected (usually{at})" if at else f"{label} came as expected")
         elif status == "missed":
             outcomes.append(f"{label} did not come (usually{at})")
         elif status == "open":
@@ -920,7 +1156,10 @@ def summarize_street(
             else:
                 outcomes.append(f"{label} usually comes{at}")
     if outcomes:
-        lines.append(f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + ".")
+        rhythm = f"{camera[:1].upper()}{camera[1:]} rhythm: " + "; ".join(outcomes[:4]) + "."
+        if any(i < 4 for i in person_outcomes):
+            rhythm += " " + STREET_PERSON_MATCH_CAVEAT
+        lines.append(rhythm)
 
     # 3. Things I could not name (last hour).
     names = [r for r in unresolved or [] if str(r.get("description") or "").strip()]
@@ -962,6 +1201,17 @@ def summarize_street(
         elif count is None:
             lines.append(f"People are on the {zone}.")
         # count == 0 with state present contradicts itself: say nothing.
+
+    # 5. What moved: spot-checked motion stories (already gated by the caller).
+    # Last, so a length cut (chat stance) drops them before the rhythm and patio
+    # lines; its own failure costs only this line.
+    try:
+        story = street_story_line(stories, camera=camera, tz=tz)
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.info("situation_street_story_line_failed err=%s", type(exc).__name__)
+        story = None
+    if story:
+        lines.append(story)
     return lines
 
 
@@ -986,6 +1236,74 @@ def _street_rows(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> li
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+# Prior guesses (2026-11-04, office camera): the person model's guess for an
+# unnamed individual when the camera's prior chose the name (basis = 'prior',
+# config/person_model/camera_priors.*.yaml) -- "probably Juniper", because she is
+# almost always the one in the office. Only these are shown; a guess the scores
+# chose stays unshown, as before (names otherwise appear only when Juniper gave
+# them). Own statement, own failure: before the basis column exists it fails and
+# the line reads as before.
+_STREET_PRIOR_GUESSES_SQL = text(
+    "SELECT DISTINCT ON (a.individual_id) a.individual_id, a.person_label "
+    "FROM vision_person_attribution a "
+    "WHERE a.individual_id IN :ids AND a.revoked_at IS NULL "
+    "  AND a.band = 'unsure' AND a.basis = 'prior' "
+    "ORDER BY a.individual_id, a.decided_at DESC"
+).bindparams(bindparam("ids", expanding=True))
+
+
+def _read_prior_guesses(conn: Any, sightings: list[dict[str, Any]] | None) -> dict[str, str]:
+    """individual id -> prior-chosen name, for the unnamed individuals sighted."""
+    ids = sorted({str(r.get("individual_id")) for r in sightings or []
+                  if r.get("individual_id") and not str(r.get("label") or "").strip()})
+    if not ids:
+        return {}
+    rows = _street_rows(conn, _STREET_PRIOR_GUESSES_SQL, {"ids": ids}, "prior_guesses")
+    return {str(r["individual_id"]): str(r["person_label"]).strip() for r in rows or [] if r.get("person_label")}
+
+
+def _read_individual_windows(
+    conn: Any, expectations: list[dict[str, Any]] | None, window: Mapping[str, Any]
+) -> dict[str, dict[str, Any]] | None:
+    """`_STREET_INDIVIDUAL_WINDOWS_SQL` for every individual-subject
+    expectation with a window start, keyed by individual id. None when the
+    read failed (or there was nothing to read): the caller keeps its older
+    wording for those subjects."""
+    ids: list[str] = []
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for row in expectations or []:
+        kind, _, ref = str(row.get("subject_key") or "").partition(":")
+        start, end = _utc(row.get("window_start")), _utc(row.get("window_end"))
+        if kind == "individual" and ref and start is not None and end is not None and ref not in ids:
+            ids.append(ref)
+            starts.append(start)
+            ends.append(end)
+    if not ids:
+        return None
+    rows = _street_rows(
+        conn, _STREET_INDIVIDUAL_WINDOWS_SQL,
+        {**window, "ids": ids, "starts": starts, "ends": ends,
+         "caught_up_grace": STREET_INDIVIDUALS_CAUGHT_UP_GRACE_SEC},
+        "individual_windows",
+    )
+    if rows is None:
+        return None
+    return {str(r.get("individual_id")): r for r in rows if r.get("individual_id")}
+
+
+# The word each summary sentence uses for its camera ("On the walkway just
+# now: ..."). A stream id that already names a place or a thing is used as is;
+# cam0 is an id, not a word (2026-11-04: the office camera joined the Street
+# line, and "On the cam0 just now" is not English).
+STREET_CAMERA_WORDS = {"cam0": "office camera"}
+
+
+def street_camera_word(stream_id: str) -> str:
+    sid = (stream_id or "").strip()
+    return STREET_CAMERA_WORDS.get(sid, sid)
 
 
 def fetch_street_summary(
@@ -1028,11 +1346,15 @@ def fetch_street_summary(
                 sightings = _street_rows(
                     conn, _STREET_SIGHTINGS_PRE_STATIONARY_SQL, sightings_params, "sightings_pre_stationary"
                 )
+            guesses = _read_prior_guesses(conn, sightings)
+            if guesses and sightings:
+                sightings = [{**r, "guess": guesses.get(str(r.get("individual_id")))} for r in sightings]
             expectations = _street_rows(
                 conn, _STREET_EXPECTATIONS_SQL,
                 {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
                 "expectations",
             )
+            individual_windows = _read_individual_windows(conn, expectations, window)
             unresolved = _street_rows(
                 conn, _STREET_UNRESOLVED_SQL,
                 {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
@@ -1056,6 +1378,13 @@ def fetch_street_summary(
                 {**window, "lookback": STREET_RECENT_MINUTES},
                 "stationary_people",
             )
+            stories = None
+            if street_motion_line_enabled():
+                try:
+                    stories = _gated_stories(conn, stream_id, since=local_midnight(now.astimezone(tz).date(), tz), until=until)
+                except Exception as exc:  # noqa: BLE001 -- a story-gate problem costs only the story line
+                    logger.info("situation_street_stories_failed err=%s", type(exc).__name__)
+                    stories = None
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
         return StreetSummary(stream_id, [], False)
@@ -1099,12 +1428,14 @@ def fetch_street_summary(
             patio=patio,
             now=now,
             tz=tz,
-            camera=stream_id,
+            camera=street_camera_word(stream_id),
             captions=captions,
             # Without the props read the floor could still hold the patio
             # skeleton, so an unread props count makes the floor unread too.
             people_windows=people_windows if stationary_rows is not None else None,
             stationary_people={str(r.get("kind") or ""): int(r.get("n") or 0) for r in stationary_rows or []},
+            stories=stories,
+            individual_windows=individual_windows,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

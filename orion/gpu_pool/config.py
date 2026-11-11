@@ -23,8 +23,13 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 # the validator inserts it just below ``interactive``. That is what lets this code ship to every
 # loader -- including circe's lane controller, which reads the live checkout's YAML -- before any
 # YAML names it.
-PRIORITIES = ("urgent", "interactive", "perception", "system", "background")
-Priority = Literal["urgent", "interactive", "perception", "system", "background"]
+# ``starved`` (2026-11-03, Orion Prime reliability): Orion's own work whose last try already lost
+# its whole seat wait to the queue. Below perception, above system, so it goes ahead of other
+# system work by priority instead of by arrival; shed by heat like system (shed.py SHEDDABLE).
+# The word is the scheduling one: work that keeps losing to higher-priority work is starved.
+# A config file that predates it still loads: the validator inserts it just above ``system``.
+PRIORITIES = ("urgent", "interactive", "perception", "starved", "system", "background")
+Priority = Literal["urgent", "interactive", "perception", "starved", "system", "background"]
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
 SwapGuard = Literal["thermal"]   # visual_baseline deleted in stage 5.4
@@ -54,6 +59,11 @@ class Defaults(BaseModel):
     # Stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     # Parsed and validated from 4.1; read by the hold/actuation engine from 4.3.
     hold_clawback_grace_sec: float = Field(600, ge=0)   # a recalled hold finishes its current node within this
+    # A swap seat drained only because BACKGROUND owner work is waiting (today: every diffusion
+    # job) gives a running hold this long instead, so a ~1 min image does not kill a 10-60 min
+    # reading/curiosity turn (live 10-28..11-04: 81 turns killed by gpu2 drains). A non-background
+    # owner arriving later still gets hold_clawback_grace_sec, counted from the recall.
+    background_drain_grace_sec: float = Field(3600, ge=0)
     swap_min_residency_sec: float = Field(600, ge=0)    # after a seat unloads, evicted residents stay this long
     actuate_ack_sec: float = Field(10, gt=0)            # no "accepted" within this -> actuator_unreachable
     # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md).
@@ -298,11 +308,13 @@ class PoolConfig(BaseModel):
     @field_validator("priorities", mode="after")
     @classmethod
     def _insert_perception(cls, value: list[str]) -> list[str]:
-        """Pre-perception configs list four priorities; slot ``perception`` in below ``interactive``."""
-        if "perception" in value or "interactive" not in value:
-            return value
+        """Pre-perception configs list four priorities; slot ``perception`` in below ``interactive``.
+        Pre-starved configs lack ``starved``; slot it in just above ``system``."""
         out = list(value)
-        out.insert(out.index("interactive") + 1, "perception")
+        if "perception" not in out and "interactive" in out:
+            out.insert(out.index("interactive") + 1, "perception")
+        if "starved" not in out and "system" in out:
+            out.insert(out.index("system"), "starved")
         return out
 
     @model_validator(mode="after")

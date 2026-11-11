@@ -57,6 +57,9 @@ def economy(monkeypatch):
     from scripts.settings import settings
 
     monkeypatch.setattr(settings, "HUB_PHYSIOLOGY_SHADOW_BID_ENABLED", True, raising=False)
+    # These tests pin the C3b SHADOW seam. Patch D (ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on, shipped)
+    # replaces the tick's compose-point shadow bid with a binding one: tests/test_outreach_bind.py.
+    monkeypatch.setattr(settings, "ORION_PHYSIOLOGY_BID_HUB_OUTREACH", "shadow", raising=False)
     return eco
 
 
@@ -147,12 +150,12 @@ def _outreach(**overrides):
 def _stub_tick(monkeypatch, published: list) -> None:
     from scripts.endogenous_outreach import EndogenousOutreach, OutreachContext
 
-    async def fake_gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
+    async def fake_gather(self, session_id, daydream=None):
         return OutreachContext(curiosity_summaries=["sustained prediction error on node:x"], recent_turns=[],
                                presence=None)
 
     async def fake_generate(self, prompt, session_id, correlation_id, **_kw):
-        return "something worth saying", {"stub": True}
+        return "something worth saying\nWhy Juniper: stub reason.", {"stub": True}
 
     async def fake_act(bus, **kw):
         published.append(kw["correlation_id"])
@@ -341,9 +344,10 @@ async def test_outreach_compose_still_bids_on_every_compose(economy, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer", ANSWERS)
-async def test_leisure_refusal_is_unchanged_and_logged_by_dispatch_id(economy, caplog, answer) -> None:
-    from orion.schemas.retro_leisure import RetroLeisureStartRequestV1
-    from scripts.retro_leisure_listener import RetroLeisureListener
+async def test_leisure_refusal_is_unchanged_and_logged_by_act_id(economy, caplog, answer) -> None:
+    from types import SimpleNamespace
+
+    from scripts.retro_leisure_self_start import RetroLeisureSelfStart
 
     caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
     economy.answer = answer
@@ -355,15 +359,16 @@ async def test_leisure_refusal_is_unchanged_and_logged_by_dispatch_id(economy, c
         async def run_leisure_session(self, config, *, act_id=None):
             raise AssertionError("refused: never runs")
 
-    listener = RetroLeisureListener(None, config_provider=lambda: None, pool_provider=lambda: None,
-                                    runner_provider=lambda: _Runner())
-    out = await listener.start(RetroLeisureStartRequestV1(dispatch_id="dispatch:t1", correlation={}))
+    timer = RetroLeisureSelfStart(config_provider=lambda: SimpleNamespace(RETRO_LEISURE_ENABLED=True),
+                                  pool_provider=lambda: None, runner_provider=lambda: _Runner())
+    out = await timer.tick()
     await _drain()
-    assert (out.state, out.refusal) == ("refused", "cabinet_hot")
+    assert (out["result"], out["refusal"]) == ("refused", "cabinet_hot")
     (want,) = economy.wants
-    assert (want.want_id, want.family, want.verb) == ("dispatch:t1", "hub.retro_leisure", "play")
+    assert (want.want_id, want.family, want.verb) == (out["act_id"], "hub.retro_leisure", "play")
+    assert want.producer == "orion-hub.retro_leisure"
     f = _fields(_shadow_lines(caplog)[0])
-    assert (f["want_id"], f["real"]) == ("dispatch:t1", "blocked:cabinet_hot")
+    assert (f["want_id"], f["real"]) == (out["act_id"], "blocked:cabinet_hot")
 
 
 # --- retro co-play ---------------------------------------------------------------------------
@@ -439,13 +444,14 @@ async def test_a_slow_economy_never_holds_a_producer(economy, caplog, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_leisure_start_logs_ran_on_the_dispatch_id(economy, caplog, monkeypatch) -> None:
-    from orion.schemas.retro_leisure import RetroLeisureStartRequestV1
+async def test_leisure_start_logs_ran_on_the_act_id(economy, caplog, monkeypatch) -> None:
+    from types import SimpleNamespace
+
     from scripts import act_emit
-    from scripts import retro_leisure_listener as rl
+    from scripts import retro_leisure_self_start as rs
 
     caplog.set_level(logging.INFO, logger="orion-hub.physiology_shadow")
-    monkeypatch.setattr(rl, "START_GRACE_SEC", 0.01)
+    monkeypatch.setattr(rs, "START_GRACE_SEC", 0.01)
     opened = []
 
     async def fake_open(bus, *, dispatch_id, session_id):
@@ -462,14 +468,14 @@ async def test_leisure_start_logs_ran_on_the_dispatch_id(economy, caplog, monkey
         async def run_leisure_session(self, config, *, act_id=None):
             await hold.wait()
 
-    listener = rl.RetroLeisureListener(None, config_provider=lambda: None, pool_provider=lambda: None,
-                                       runner_provider=lambda: _Runner())
-    out = await listener.start(RetroLeisureStartRequestV1(dispatch_id="dispatch:t2", correlation={}))
+    timer = rs.RetroLeisureSelfStart(config_provider=lambda: SimpleNamespace(RETRO_LEISURE_ENABLED=True),
+                                     pool_provider=lambda: None, runner_provider=lambda: _Runner())
+    out = await timer.tick()
     await _drain()
-    assert out.state == "started" and opened == ["dispatch:t2"]
+    assert out["result"] == "started" and opened == [out["act_id"]]
     f = _fields(_shadow_lines(caplog)[0])
-    assert (f["want_id"], f["real"]) == ("dispatch:t2", "ran")
-    listener.session_task.cancel()
+    assert (f["want_id"], f["real"]) == (out["act_id"], "ran")
+    timer.session_task.cancel()
 
 
 @pytest.mark.asyncio

@@ -78,14 +78,10 @@ from orion.substrate.prediction_error import (
     perception_prediction_error,
     vision_channel_staleness_pressure,
     chat_prediction_error,
-    chat_raw_reading,
     codebase_prediction_error,
     execution_prediction_error,
-    execution_raw_reading,
     route_prediction_error,
 )
-from orion.substrate.mutation_control_surface import RuntimeControlSurfaceStore, get_prediction_expectation
-from orion.substrate.prediction_expectation import Expectation
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
     process_transport_grammar_events,
@@ -324,18 +320,55 @@ def _prediction_error_receipt(
     *,
     reducer_key: str,
     node_id: str,
-    prediction_error: float,
+    prediction_error: float | None,
     now: datetime,
     caused_by_event_ids: Sequence[str] = (),
     definition_version: int | None = None,
+    missing_reason: str | None = None,
 ) -> Any:
+    """Field-bound receipt for one prediction-error write.
+
+    ``missing_reason`` set (2026-11-10, PE suite rebuild spec retire step 8):
+    the producer has no reading this tick. The delta then carries NO
+    ``pressure_hints.prediction_error`` and names the reason under
+    ``after[PREDICTION_ERROR_MISSING_REASON_KEY]``; orion-field-digester
+    (state_deltas.py) drops the node's ``prediction_error`` channel instead of
+    writing a value. Before this, the perception tick sent a 0.0 placeholder
+    here, and the field read a dead camera as a calm one (live 2026-11-08
+    09:00:33-09:01:34: three 0.0 field writes over a 95 s embedding gap).
+    ``prediction_error`` must be None exactly when ``missing_reason`` is set.
+    """
     from orion.schemas.prediction_error_definitions import prediction_error_definition_version
     from orion.schemas.reduction_receipt import ReductionReceiptV1
     from orion.schemas.state_delta import StateDeltaV1
+    from orion.substrate.prediction_error_freshness import PREDICTION_ERROR_MISSING_REASON_KEY
     import uuid
 
+    reason = str(missing_reason).strip() if missing_reason is not None else ""
+    if bool(reason) == (prediction_error is not None):
+        raise ValueError(
+            "_prediction_error_receipt needs exactly one of prediction_error or missing_reason"
+        )
     delta_id = f"prediction_error:{reducer_key}:{now.isoformat()}"
     receipt_id = f"receipt:prediction_error:{reducer_key}:{uuid.uuid4().hex[:8]}"
+    after: dict[str, Any] = {
+        "node_id": node_id,
+        "pressure_hints": (
+            {} if prediction_error is None else {"prediction_error": round(prediction_error, 4)}
+        ),
+        # Which formula produced this number. The attention runtime
+        # restarts its precision baseline for this target when the
+        # version moves and folds only matching receipts
+        # (orion/schemas/prediction_error_definitions.py). Kept out of
+        # pressure_hints so no digester channel is created for it.
+        "definition_version": (
+            definition_version
+            if definition_version is not None
+            else prediction_error_definition_version(reducer_key)
+        ),
+    }
+    if reason:
+        after[PREDICTION_ERROR_MISSING_REASON_KEY] = reason
     return ReductionReceiptV1(
         receipt_id=receipt_id,
         state_deltas=[
@@ -345,20 +378,7 @@ def _prediction_error_receipt(
                 target_kind="prediction_signal",
                 target_id=node_id,
                 operation="update",
-                after={
-                    "node_id": node_id,
-                    "pressure_hints": {"prediction_error": round(prediction_error, 4)},
-                    # Which formula produced this number. The attention runtime
-                    # restarts its precision baseline for this target when the
-                    # version moves and folds only matching receipts
-                    # (orion/schemas/prediction_error_definitions.py). Kept out of
-                    # pressure_hints so no digester channel is created for it.
-                    "definition_version": (
-                        definition_version
-                        if definition_version is not None
-                        else prediction_error_definition_version(reducer_key)
-                    ),
-                },
+                after=after,
                 caused_by_event_ids=list(
                     caused_by_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
                 ),
@@ -649,13 +669,8 @@ class BiometricsSubstrateWorker:
         # would repeat CLAUDE.md 0A's own documented mistake.
         self._last_execution_prediction_error: float | None = None
         self._last_chat_prediction_error: float | None = None
-        # Rung 6: Orion's self-tuned expectation per domain, cached
-        # (monotonic fetch time, value) so the hot tick doesn't hit Postgres.
-        self._prediction_expectation_cache: dict[str, tuple[float, Expectation | None]] = {}
         self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
         self._world_reading_link_events_cache_at: datetime | None = None
-        self._control_surface_store: RuntimeControlSurfaceStore | None = None
-        self._last_raw_reading_prune_monotonic = 0.0
         self._last_route_prediction_error: float | None = None
         self._last_bus_synaptic_prediction_error: float | None = None
         # RPC delivery bridge (orion/substrate/rpc_delivery.py): the listener
@@ -1683,14 +1698,14 @@ class BiometricsSubstrateWorker:
         await asyncio.to_thread(self._process_street_event, decoded.envelope.payload or {})
 
     def _process_street_event(self, payload: Any, *, now: datetime | None = None) -> None:
-        """Gate one StreetEventV1, log the verdict, record Rung 6, write on pass.
+        """Gate one StreetEventV1, log the verdict, score handoff surprise, write on pass.
 
         One ``substrate_street_event`` log line per received event (kind,
         salience, verdict, reason, correlation_id). Fail-open."""
         from orion.schemas.vision import StreetEventV1
-        from orion.substrate.prediction_expectation import domain_specs
         from orion.substrate.street_attention import (
-            STREET_HANDOFF_DOMAIN,
+            STREET_HANDOFF_EWMA_ALPHA,
+            STREET_HANDOFF_MIN_VARIANCE,
             STREET_NODE_ID,
             street_handoff_raw_reading,
         )
@@ -1714,12 +1729,8 @@ class BiometricsSubstrateWorker:
         raw = street_handoff_raw_reading(event)
         surprise_z: float | None = None
         if raw is not None:
-            self._record_prediction_raw_reading(STREET_HANDOFF_DOMAIN, raw, event.occurred_at)
-            expectation = self._prediction_expectation(STREET_HANDOFF_DOMAIN) or domain_specs()[
-                STREET_HANDOFF_DOMAIN
-            ].default
             surprise_z = state.handoff_surprise_z(
-                raw, alpha=expectation.alpha, min_variance=expectation.min_variance
+                raw, alpha=STREET_HANDOFF_EWMA_ALPHA, min_variance=STREET_HANDOFF_MIN_VARIANCE
             )
         logger.info(
             "substrate_street_event kind=%s salience=%.3f p_value=%s verdict=%s reason=%r "
@@ -2289,11 +2300,13 @@ class BiometricsSubstrateWorker:
 
         A real reading publishes that score. Missing input -- embeddings stale,
         baseline still warming, or no scored frame in the window -- still
-        writes the receipt and graph node (0.0, see below), but marks the node
-        with ``prediction_error_missing_reason`` so the value is never recorded
-        in substrate_node_prediction_error_history and never read as calm
-        (orion/substrate/prediction_error_freshness.py). Raises on failure; the
-        caller isolates each node."""
+        writes the receipt and graph node, marked with
+        ``prediction_error_missing_reason``. The receipt then carries no value,
+        so the field digester drops the field channel (absent, not 0.0). The
+        graph node keeps a 0.0 placeholder plus the reason, so it is never
+        recorded in substrate_node_prediction_error_history and never read as
+        calm (orion/substrate/prediction_error_freshness.py). Raises on
+        failure; the caller isolates each node."""
         last_at = embedding_at
         if last_at is None:
             # Nothing observed since this process started -- same startup-
@@ -2346,8 +2359,9 @@ class BiometricsSubstrateWorker:
         # exercised `surprise_n == 0`, never the real `== 1` case).
         #
         # 2026-10-21: the 0.0 written for stale / warming / no-frame is a
-        # placeholder for the field digester's receipt path (below), NOT a
-        # reading. It carries missing_reason, which keeps it out of
+        # placeholder for the graph node (below), NOT a reading; since
+        # 2026-11-10 the field receipt sends no value at all for it. It
+        # carries missing_reason, which keeps it out of
         # substrate_node_prediction_error_history (the percentile window every
         # attention contest ranks against) and out of the self-model. Before
         # this, 49 h of stale zeros (2026-10-18..20) made 31% of the room
@@ -2389,11 +2403,18 @@ class BiometricsSubstrateWorker:
         # sends a corrective receipt, so the field vector never refreshes
         # back down -- confirmed live there as a stuck
         # prediction_error=0.5714 while the eye was actually healthy.
+        #
+        # 2026-11-10 (PE suite rebuild spec, retire step 8): a missing tick's
+        # receipt carries the missing_reason and NO prediction_error value, so
+        # the digester drops the field channel (absent = unmeasured) instead of
+        # writing the 0.0 placeholder into it. Still sent every tick: absence
+        # has to replace a stale held spike just as a real 0.0 replaces it.
         self._store.save_receipt(
             _prediction_error_receipt(
                 reducer_key=reducer_key,
                 node_id=node_id,
-                prediction_error=score,
+                prediction_error=None if missing_reason else score,
+                missing_reason=missing_reason,
                 now=now,
             )
         )
@@ -2929,6 +2950,7 @@ class BiometricsSubstrateWorker:
             engine = SubstrateDynamicsEngine(
                 store=store,
                 decay_mode=self._settings.dynamics_decay_mode,
+                propagation_decay_mode=self._settings.dynamics_propagation_decay_mode,
             )
             result = engine.tick(now=datetime.now(timezone.utc))
             logger.info(
@@ -4753,62 +4775,6 @@ class BiometricsSubstrateWorker:
             except asyncio.CancelledError:
                 break
 
-    def _prediction_expectation(self, domain: str) -> Expectation | None:
-        """Orion's adopted expectation for ``domain`` (rung 6), or None to
-        use the calibrated constants. Refreshed at most every
-        SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC.
-
-        A failed read keeps the last value actually read (never silently the
-        defaults while the Hub believes an adoption is live), and a store that
-        fell back to memory/sqlite at boot is rebuilt while a Postgres URL is
-        configured, so one DB blip cannot pin the constants for the process's
-        whole life.
-        """
-        # `is True`: tests build this worker with __new__ and MagicMock
-        # settings; anything but an explicit True means "behave as before".
-        if getattr(self._settings, "prediction_expectation_live_enabled", False) is not True:
-            return None
-        cache = self.__dict__.setdefault("_prediction_expectation_cache", {})
-        now_mono = time.monotonic()
-        cached = cache.get(domain)
-        if cached is not None and now_mono - cached[0] < self._settings.prediction_expectation_refresh_sec:
-            return cached[1]
-        previous = cached[1] if cached is not None else None
-        try:
-            store = getattr(self, "_control_surface_store", None)
-            if store is None or (store.source_kind() != "postgres" and store.postgres_url):
-                # Resolves SUBSTRATE_CONTROL_PLANE_POSTGRES_URL like every other
-                # control-surface reader (scripts/check_control_surface_store_parity.py).
-                store = RuntimeControlSurfaceStore()
-                self._control_surface_store = store
-                if store.source_kind() != "postgres":
-                    logger.warning(
-                        "prediction_expectation_store_not_postgres source_kind=%s error=%s",
-                        store.source_kind(),
-                        store.last_error(),
-                    )
-            expectation: Expectation | None = get_prediction_expectation(domain, store=store, strict=True)
-        except Exception:
-            logger.warning("prediction_expectation_read_failed domain=%s keeping=%s", domain, previous, exc_info=True)
-            expectation = previous
-        cache[domain] = (now_mono, expectation)
-        return expectation
-
-    def _record_prediction_raw_reading(self, domain: str, raw_reading: float | None, now: datetime) -> None:
-        """Append the rung-6 replay corpus row; prune at most hourly. Best effort."""
-        if raw_reading is None or getattr(self._settings, "prediction_raw_readings_enabled", False) is not True:
-            return
-        try:
-            self._store.save_prediction_raw_reading(domain=domain, observed_at=now, raw_value=raw_reading)
-            now_mono = time.monotonic()
-            if now_mono - getattr(self, "_last_raw_reading_prune_monotonic", 0.0) >= 3600.0:
-                self._last_raw_reading_prune_monotonic = now_mono
-                self._store.prune_prediction_raw_readings(
-                    older_than=now - timedelta(hours=self._settings.prediction_raw_reading_retention_hours)
-                )
-        except Exception:
-            logger.warning("prediction_raw_reading_write_failed domain=%s", domain, exc_info=True)
-
     def _execution_tick(self) -> str | None:
         spec = REDUCER_SPECS[1]
         events = self._store.fetch_execution_grammar_events(
@@ -4846,11 +4812,7 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = load_projection()
-            raw_reading = execution_raw_reading(prev_projection, curr_projection)
-            error = execution_prediction_error(
-                prev_projection, curr_projection, expectation=self._prediction_expectation("execution")
-            )
-            self._record_prediction_raw_reading("execution", raw_reading, now)
+            error = execution_prediction_error(prev_projection, curr_projection)
             # execution_prediction_error mutates curr_projection's EWMA baseline
             # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
             # that regardless of whether error > 0.0 this tick, or the baseline
@@ -4940,11 +4902,7 @@ class BiometricsSubstrateWorker:
 
         if last_id is not None:
             curr_projection = _load_chat_projection()
-            raw_reading = chat_raw_reading(prev_projection, curr_projection)
-            error = chat_prediction_error(
-                prev_projection, curr_projection, expectation=self._prediction_expectation("chat")
-            )
-            self._record_prediction_raw_reading("chat", raw_reading, now)
+            error = chat_prediction_error(prev_projection, curr_projection)
             # chat_prediction_error mutates curr_projection's EWMA baseline
             # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
             # that regardless of whether error > 0.0 this tick, mirroring

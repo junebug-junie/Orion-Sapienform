@@ -58,9 +58,10 @@ handed in. Both Hub and orion-durable-runs import from here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from orion.curiosity.worldview import (
@@ -75,6 +76,7 @@ from orion.curiosity.worldview import (
     LIVE_PRIORS_LIMIT,
 )
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.text_fit import fit_to_budget
 
 # --- names ------------------------------------------------------------------
 
@@ -82,6 +84,12 @@ LINE_INVESTIGATE = "investigate"
 LINE_SELF_INQUIRY = "self_inquiry"
 
 SELF_INQUIRY_TAG = "curiosity_self_inquiry"
+# The fit hop: one writing turn, no tools, in which the model that wrote an
+# over-budget self answer rewrites it into SELF_DEFINITION_TEXT_CAP.
+SELF_FIT_TAG = "curiosity_self_fit"
+# The fit-store field a run's `:SelfDefinition` uses (lived answers use their
+# question_id, which can never equal this: question ids are dotted).
+SELF_FIT_DEFINITION_FIELD = "definition"
 LABEL_SELF_DEFINITION = "SelfDefinition"
 LABEL_LIVED_ANSWER = "LivedAnswer"
 LABEL_SELF_QUESTION_MINT = "SelfQuestionMint"
@@ -91,8 +99,13 @@ LABEL_SELF_QUESTION_MINT = "SelfQuestionMint"
 SELF_CONCEPT_ID = "self:definition"
 SELF_DEFINITION_PRODUCER = "curiosity_self_inquiry"
 
-# Hard cap on the mirrored text. The prompt asks for a paragraph; a definition
-# that is a whole essay would crowd the chat identity kernel it feeds.
+# Reading budget for an answer Orion wrote about themself: how much of it a
+# reader is shown. It is NOT a storage cap. Every durable path keeps the full
+# text; a cut at storage time ended 77 of 141 lived rows inside a word
+# (live 2026-11-03). When an answer runs over, the model that wrote it gets one
+# more hop to rewrite it into the budget (`fit_text`, mirrored as the row's
+# content). Readers that still get an over-budget text call
+# `orion.text_fit.fit_to_budget`, which cuts at a sentence, never mid-word.
 SELF_DEFINITION_TEXT_CAP = 1200
 SELF_DEFINITION_EVIDENCE_CAP = 24
 
@@ -243,6 +256,9 @@ class SelfDefinition:
     evidence: list[str] = field(default_factory=list)
     revises: str = ""
     written_at: Optional[int] = None
+    # Orion's own shorter version, written by the fit hop when `text` runs over
+    # SELF_DEFINITION_TEXT_CAP. Empty when the answer fits or the hop failed.
+    fit_text: str = ""
 
     @property
     def is_substantive(self) -> bool:
@@ -261,6 +277,8 @@ class LivedAnswer:
     evidence: list[str] = field(default_factory=list)
     revises: str = ""
     written_at: Optional[int] = None
+    # Same as SelfDefinition.fit_text.
+    fit_text: str = ""
 
     @property
     def is_substantive(self) -> bool:
@@ -317,10 +335,11 @@ def build_self_definition(row: dict[str, Any]) -> Optional[SelfDefinition]:
         return None
     return SelfDefinition(
         run_id=run_id,
-        text=text[:SELF_DEFINITION_TEXT_CAP],
+        text=text,
         evidence=_evidence_list(row.get("evidence")),
         revises=str(row.get("revises") or "").strip(),
         written_at=_as_int(row.get("written_at")),
+        fit_text=str(row.get("fit_text") or "").strip(),
     )
 
 
@@ -398,10 +417,11 @@ def build_lived_answer(row: dict[str, Any]) -> Optional[LivedAnswer]:
         run_id=run_id,
         question_id=question_id,
         family=str(row.get("family") or "lived").strip() or "lived",
-        text=text[:SELF_DEFINITION_TEXT_CAP],
+        text=text,
         evidence=_evidence_list(row.get("evidence")),
         revises=str(row.get("revises") or "").strip(),
         written_at=_as_int(row.get("written_at")),
+        fit_text=str(row.get("fit_text") or "").strip(),
     )
 
 
@@ -628,7 +648,7 @@ def build_self_question_mint(row: dict[str, Any]) -> Optional[SelfQuestionMint]:
     return SelfQuestionMint(
         run_id=run_id,
         question_id=question_id,
-        text=text[:SELF_DEFINITION_TEXT_CAP],
+        text=fit_to_budget(text, SELF_DEFINITION_TEXT_CAP),
         family=family,
         written_at=_as_int(row.get("written_at")),
     )
@@ -675,6 +695,74 @@ def lived_concept_id(question_id: str) -> str:
     return f"self:lived:{question_id}"
 
 
+def needs_fit(answer: "SelfDefinition | LivedAnswer | None") -> bool:
+    """True when the answer runs over the reading budget and has no fit yet."""
+    return (
+        answer is not None
+        and len(answer.text.strip()) > SELF_DEFINITION_TEXT_CAP
+        and not answer.fit_text.strip()
+    )
+
+
+# A fit shorter than this is not the answer made shorter, it is a different,
+# emptier answer ("Done." / "I am Orion."). Refused; the full text stands.
+FIT_MIN_CHARS = 300
+
+
+# Share of the fit's content words that must appear in the original answer. A
+# rewrite reuses the answer's own words; a reply that mostly doesn't is new
+# content (recall leaking in, or a different answer), not a fit.
+FIT_MIN_WORD_OVERLAP = 0.5
+_WORD = re.compile(r"[A-Za-z0-9_']{4,}")
+# A lead-in line the model adds about the reply itself ("Here is the
+# rewritten answer:", "# Rewritten", "Rewritten (1180 chars):").
+_FIT_LEAD_IN = re.compile(r"^\s*(?:#+\s.*|[^\n]{0,80}:\s*)\n+")
+
+
+def _content_words(text: str) -> set[str]:
+    return {w.lower() for w in _WORD.findall(text or "")}
+
+
+def accept_fit_text(raw: str, original: str) -> str:
+    """The fit hop's reply as a usable fit, or "" to refuse it.
+
+    Refused: empty or error text, a reply under FIT_MIN_CHARS, and a reply
+    whose words are mostly not the original's (never mirrored as Orion's
+    words). A leading meta line is dropped first. A reply still over budget is
+    kept, cut at a sentence: it is the model's own shorter version."""
+    from orion.cognition.cortex_payload_extract import looks_like_error_text
+
+    text = str(raw or "").strip()
+    text = _FIT_LEAD_IN.sub("", text, count=1).strip().strip('"').strip()
+    if len(text) < FIT_MIN_CHARS or looks_like_error_text(text):
+        return ""
+    words = _content_words(text)
+    if not words or len(words & _content_words(original)) / len(words) < FIT_MIN_WORD_OVERLAP:
+        return ""
+    return fit_to_budget(text, SELF_DEFINITION_TEXT_CAP)
+
+
+def fit_source_hash(text: str) -> str:
+    """Ties a stored fit to the exact answer it was written from: a retried
+    turn that rewrites the answer must not inherit the old answer's fit."""
+    return hashlib.sha1(str(text or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def mirrored_content(answer: "SelfDefinition | LivedAnswer") -> str:
+    """What the self_concept_history row holds: Orion's fitted version when the
+    fit hop wrote one, else the full text. Never a blind cut. The full text
+    always stays on the graph node; readers apply the budget themselves."""
+    fit = answer.fit_text.strip()
+    if fit:
+        return fit_to_budget(fit, SELF_DEFINITION_TEXT_CAP)
+    return answer.text.strip()
+
+
+def with_fit_text(answer, fit_text: str):
+    """A copy of the answer carrying the fit hop's text."""
+    return replace(answer, fit_text=str(fit_text or "").strip())
+
+
 def build_self_definition_history_write(
     definition: Optional[SelfDefinition], *, version: int
 ) -> Optional[SelfConceptHistoryV1]:
@@ -694,7 +782,7 @@ def build_self_definition_history_write(
         entry_id=f"self-definition:{definition.run_id}",
         concept_id=SELF_CONCEPT_ID,
         version=max(1, int(version)),
-        content=definition.text[:SELF_DEFINITION_TEXT_CAP],
+        content=mirrored_content(definition),
         evidence_refs=evidence[: SELF_DEFINITION_EVIDENCE_CAP + 1],
         produced_by=SELF_DEFINITION_PRODUCER,
     )
@@ -714,10 +802,11 @@ def self_definition_to_detail(definition: Optional[SelfDefinition]) -> Optional[
         return None
     return {
         "run_id": definition.run_id,
-        "text": definition.text[:SELF_DEFINITION_TEXT_CAP],
+        "text": definition.text,
         "evidence": list(definition.evidence),
         "revises": definition.revises,
         "written_at": definition.written_at,
+        "fit_text": definition.fit_text,
     }
 
 
@@ -742,7 +831,7 @@ def build_lived_answer_history_write(
         entry_id=entry_id,
         concept_id=lived_concept_id(answer.question_id),
         version=max(1, int(version)),
-        content=answer.text[:SELF_DEFINITION_TEXT_CAP],
+        content=mirrored_content(answer),
         evidence_refs=evidence[: SELF_DEFINITION_EVIDENCE_CAP + 1],
         produced_by=SELF_DEFINITION_PRODUCER,
     )
@@ -762,10 +851,11 @@ def lived_answer_to_detail(answer: Optional[LivedAnswer]) -> Optional[dict[str, 
         "run_id": answer.run_id,
         "question_id": answer.question_id,
         "family": answer.family,
-        "text": answer.text[:SELF_DEFINITION_TEXT_CAP],
+        "text": answer.text,
         "evidence": list(answer.evidence),
         "revises": answer.revises,
         "written_at": answer.written_at,
+        "fit_text": answer.fit_text,
     }
 
 

@@ -284,3 +284,120 @@ def test_downsample_marks_a_per_field_gap_rows_do_not_show():
     marked = [p for p in out if "office_eco2_ppm" in (p.get("gap_fields") or [])]
     assert len(marked) == 1
     assert all("office_temp_c" not in (p.get("gap_fields") or []) for p in out)
+
+
+# --- PMSA003I + TSL2591 (read from payload_json for deploy-order safety) ---
+
+
+def _payload(measurements: dict, state: dict | None = None) -> str:
+    # asyncpg returns the json column as text.
+    return json.dumps({"measurements": measurements, "state": state or {}})
+
+
+def test_latest_reads_pm_and_lux_from_payload_json(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(payload_json=_payload(
+            {"office_temp_c": 21.4, "office_pm1_ug_m3": 2, "office_pm25_ug_m3": 5,
+             "office_pm10_ug_m3": 7, "office_lux": 312.5, "office_sound_dba": 41.5},
+            {"light_saturated": False},
+        ))
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    sample = client.get("/api/office/env/latest").json()["sample"]
+    assert sample["office_pm1_ug_m3"] == 2.0
+    assert sample["office_pm25_ug_m3"] == 5.0
+    assert sample["office_pm10_ug_m3"] == 7.0
+    assert sample["office_lux"] == 312.5
+    assert sample["office_sound_dba"] == 41.5
+    assert sample["light_saturated"] is False
+
+
+def test_latest_saturated_light_has_flag_and_no_lux(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(payload_json=_payload({"office_temp_c": 21.4}, {"light_saturated": True}))
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    sample = client.get("/api/office/env/latest").json()["sample"]
+    assert sample["light_saturated"] is True
+    assert "office_lux" not in sample  # too bright to measure, never 0
+
+
+def test_latest_pre_sensor_row_has_no_pm_or_light_keys(client, monkeypatch):
+    """A row written before the PMSA003I/TSL2591 existed: absent, not zero."""
+    async def latest(*, node: str):
+        return _row(payload_json=_payload({"office_temp_c": 21.4}))
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    sample = client.get("/api/office/env/latest").json()["sample"]
+    for key in ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "light_saturated"):
+        assert key not in sample
+    assert sample["office_temp_c"] == 21.4
+
+
+def test_latest_publisher_dead_hides_pm_lux_and_saturation(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(
+            ts=datetime(2026, 10, 27, 18, 0, 0, tzinfo=timezone.utc),
+            payload_json=_payload({"office_pm25_ug_m3": 5, "office_lux": 10.0}, {"light_saturated": True}),
+        )
+
+    monkeypatch.setattr(office_env_routes, "_latest_query", latest)
+    sample = client.get("/api/office/env/latest").json()["sample"]
+    assert "office_pm25_ug_m3" not in sample and "office_lux" not in sample
+    assert "light_saturated" not in sample
+
+
+def test_history_includes_pm_and_lux_points_and_stats(client, monkeypatch):
+    async def rows(*, node: str, hours: int):
+        return [
+            {"t": SAMPLE_TS, "office_temp_c": 21.0, "office_pm25_ug_m3": 4.0, "office_pm10_ug_m3": 6.0, "office_lux": None},
+            {"t": SAMPLE_TS + timedelta(seconds=30), "office_temp_c": 21.0, "office_pm25_ug_m3": 8.0, "office_lux": 120.0},
+        ]
+
+    monkeypatch.setattr(office_env_routes, "_history_query", rows)
+    body = client.get("/api/office/env/history?window=24h").json()
+    assert body["points"][0]["office_pm25_ug_m3"] == 4.0
+    assert "office_lux" not in body["points"][0]
+    stats = body["stats"]
+    assert stats["pm25_min"] == 4.0 and stats["pm25_max"] == 8.0
+    assert stats["pm10_min"] == 6.0 and stats["pm10_max"] == 6.0
+    assert stats["lux_min"] == 120.0 and stats["pm1_min"] is None
+    # The pre-existing stats keys are still there (response shape is backward compatible).
+    for key in ("temp_min", "humidity_max", "eco2_min", "tvoc_max", "n_raw", "n"):
+        assert key in stats
+
+
+_NEW_COLUMNS = ("office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3", "office_lux", "office_sound_dba", "light_saturated")
+
+
+def _bare_column_refs(sql: str) -> list[str]:
+    """New-column names used as bare SQL identifiers, i.e. not inside payload_json->>'x'
+    and not as an ``AS x`` alias or a reference to that alias in the outer query."""
+    import re
+
+    inner = sql.split("FROM office_env_sample")[0]
+    inner = inner[inner.rfind("SELECT"):]  # the subquery's select list, which reads the table
+    inner = re.sub(r"\(payload_json->'measurements'->>'[a-z0-9_]+'\)::double precision AS [a-z0-9_]+", "", inner)
+    return [c for c in _NEW_COLUMNS if re.search(rf"\b{c}\b", inner)]
+
+
+def test_queries_never_name_the_new_columns_directly():
+    """Deploy-order safety: Hub may run before sql-writer has added these columns. A query
+    that names one fails with UndefinedColumn and blanks the whole office strip."""
+    assert _bare_column_refs(office_env_routes.HISTORY_SQL) == []
+    assert _bare_column_refs(office_env_routes.LATEST_SQL) == []
+    for col in _NEW_COLUMNS[:-1]:
+        assert f"payload_json->'measurements'->>'{col}'" in office_env_routes.HISTORY_SQL
+
+
+def test_history_sql_reads_only_pre_existing_columns():
+    """Every column the inner SELECT reads from the table is one that existed before the
+    PM/light sensors (or payload_json), so the query works on an un-migrated table."""
+    import re
+
+    inner = office_env_routes.HISTORY_SQL.split("FROM office_env_sample")[0]
+    inner = inner[inner.rfind("SELECT") + len("SELECT"):]
+    inner = re.sub(r"\(payload_json->'measurements'->>'[a-z0-9_]+'\)::double precision AS [a-z0-9_]+", "payload_json", inner)
+    read = {tok.strip().split(" AS ")[0].strip() for tok in inner.split(",")}
+    old_columns = {"ts", "office_temp_c", "office_humidity_pct", "office_eco2_ppm", "office_tvoc_ppb", "payload_json"}
+    assert read <= old_columns, read - old_columns

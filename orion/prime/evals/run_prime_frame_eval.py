@@ -20,6 +20,10 @@ would send to the model and checks it is something a mind could act on honestly:
                curiosity investigate and the dream cycle as signalable (step 4 added dream, slow only); a slow
                signal to each goes; the same signal to self-inquiry (no receptors) is refused with a reason Prime
                can read; quicken to dream is refused; the frame stays under the cap.
+* attention_background -- (2026-11-03) a tick where only the active arc moved records no change (attention
+               no longer wakes Prime), yet the frame still names the live active arc under ATTENTION.
+* starved_try  -- after a try that never reached the model, the next frame says so in Prime's own outcome
+               lines, and that line is not a change (it cannot wake Prime by itself).
 
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_frame_eval.py`` (exit 1 on any failed check).
 """
@@ -155,6 +159,25 @@ def run() -> list[tuple[str, bool, str]]:
                     and dream_quicken.move is None and "not quicken" in (dream_quicken.move_refusal or "")
                     and "declares no receptors" in (refused.move_refusal or "") and len(reg_frame) <= FRAME_CHAR_CAP,
                     f"receptors {receptors}; self_inquiry: {refused.move_refusal!r}"))
+    # attention_background (2026-11-03): attention is background, not a trigger.
+    from orion.prime.state import PrimeSnapshotV1, note_no_model, observe
+
+    quiet = PrimeStateV1(seen_binding=[], last_thought_at=inputs.now - timedelta(minutes=10))
+    ticked = observe(quiet, PrimeSnapshotV1(binding=[], body_ok=True), inputs.now)
+    bg_frame = build_frame(ticked, _inputs(data))
+    active_id = active.get("arc_id")
+    results.append(("attention_background", ticked.pending_changes == [] and "ATTENTION" in bg_frame
+                    and (not active_id or active_id in bg_frame),
+                    f"changes after an attention-only tick: {ticked.pending_changes}; active arc {active_id} in frame"))
+
+    # starved_try: the line a no-seat try leaves (orion/mindloop/runtime.py _note_no_model) reaches the next frame.
+    line = "a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again"
+    starved = note_no_model(PrimeStateV1(pending_changes=["quiet: nothing has woken me for 6 hours"]), "no_seat",
+                            inputs.now, base=timedelta(seconds=300))
+    starved = starved.model_copy(update={"recent_outcomes": [line]})
+    s_frame = build_frame(starved, _inputs(data))
+    results.append(("starved_try", line in s_frame and starved.pending_changes == ["quiet: nothing has woken me for 6 hours"]
+                    and len(s_frame) <= FRAME_CHAR_CAP, "the no-seat line is shown, and is not a change"))
     return results
 
 

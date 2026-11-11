@@ -10,3 +10,8 @@ httpx==0.28.1
 PyYAML>=6.0,<7
 jinja2>=3.1,<4
 SQLAlchemy==2.0.*
+# orion/prediction/grading.py (the self-monitor's Brier skill; same pin as orion-prediction)
+numpy==2.2.6
+# Pinned 2026-11-05 for the cooling act's old orion.substrate import (orion/substrate/__init__ imports
+# requests). That import is gone (2026-11-10); the pin stays at the version the image already resolves.
+requests==2.34.2

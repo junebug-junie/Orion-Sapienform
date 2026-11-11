@@ -133,8 +133,14 @@ class Settings(BaseSettings):
     PRIME_REFRACTORY_SEC: float = Field(default=300.0, ge=0.0, alias="PRIME_REFRACTORY_SEC")
     # How often open questions are checked against curiosity's runs (one Hub read).
     PRIME_SETTLE_INTERVAL_SEC: float = Field(default=300.0, gt=0.0, alias="PRIME_SETTLE_INTERVAL_SEC")
-    # circe chat lane 0 at background priority (config/gpu_pool.yaml route `prime`).
+    # circe chat lane 0 at pool priority system (config/gpu_pool.yaml route `prime`).
     PRIME_LLM_ROUTE: str = Field(default="prime", alias="PRIME_LLM_ROUTE")
+    # The same call at pool priority `starved`, used only after a try that got no pool seat
+    # (config/gpu_pool.yaml route `prime_starved`; orion/prime/state.py wants_starved_route).
+    PRIME_STARVED_LLM_ROUTE: str = Field(default="prime_starved", alias="PRIME_STARVED_LLM_ROUTE")
+    # How long one try may wait for a pool seat BEFORE its PRIME_LLM_TIMEOUT_SEC of generation
+    # (llm-gateway option gateway_pool_wait_sec). 0 = no separate seat wait (the old single budget).
+    PRIME_SEAT_WAIT_SEC: float = Field(default=600.0, ge=0.0, le=900.0, alias="PRIME_SEAT_WAIT_SEC")
     # The pool role the bid names (config/physiology/families.yaml family `prime`).
     PRIME_BID_LANE: str = Field(default="chat", alias="PRIME_BID_LANE")
     PRIME_MAX_TOKENS: int = Field(default=700, gt=0, alias="PRIME_MAX_TOKENS")
@@ -152,6 +158,65 @@ class Settings(BaseSettings):
     PRIME_REGULATE_ENABLED: bool = Field(default=True, alias="PRIME_REGULATE_ENABLED")
     # Where Prime reads the receptors: the read-only repo mount (docker-compose volumes).
     PRIME_FAMILIES_PATH: str = Field(default="/repo/config/physiology/families.yaml", alias="PRIME_FAMILIES_PATH")
+    # Attention as the want competition, patch 2: Prime's concerns come from the events Orion's body economy
+    # FUNDED (durable-runs GET /physiology/event-wants, from want_ledger: reading and camera-ask event wants)
+    # instead of Temporal Self attention arcs. A new concern must name one of those events. false: arcs, as
+    # before. ROLL BACK WITH THIS FLAG, not an image revert: an older image cannot read a saved concern that
+    # carries event_ref and starts Prime empty. Shipped ON: in the 14-day replay 42 of 43 real concern bets had a
+    # funded event to name (services/orion-durable-runs/evals/event_wants_replay.py; that eval exits 1 on a
+    # separate check, camera salience is not mostly low; see the patch 2 PR report).
+    PRIME_CONCERNS_FROM_EVENT_WANTS: bool = Field(default=True, alias="PRIME_CONCERNS_FROM_EVENT_WANTS")
+    # Event wants decided in this many hours are considered; at most this many are shown (highest net first).
+    PRIME_EVENT_WANTS_HOURS: float = Field(default=24.0, gt=0.0, le=72.0, alias="PRIME_EVENT_WANTS_HOURS")
+    PRIME_EVENT_WANTS_LIMIT: int = Field(default=8, ge=1, le=50, alias="PRIME_EVENT_WANTS_LIMIT")
+    # Self-monitor E1 act gate on Prime's own acts (orion/self_monitor/gate.py; app/prime_loop.py): an act
+    # whose faculty (act.prime.<verb>, e.g. act.prime.predict) is held broken/unreliable in a fresh
+    # orion:self_monitor:latest is not opened (track_record_failing), except one re-test probe per faculty
+    # per SELF_MONITOR_PROBE_INTERVAL_SEC. Unknown/stale/absent state changes nothing. Shipped ON.
+    SELF_MONITOR_ACT_GATE_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    SELF_MONITOR_PROBE_INTERVAL_SEC: float = Field(default=21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
+    # Read-only grammar_acts read for the gate's probe and same-job bookkeeping. Empty: the in-process
+    # memo alone decides (a restart may then probe once early).
+    SELF_MONITOR_LEDGER_PG_DSN: str = Field(default="", alias="SELF_MONITOR_LEDGER_PG_DSN")
+
+    # The curiosity replica (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md; app/replica_loop.py):
+    # instance #2 of the loop library. Answers Hub's plan requests on the replica arm: one model call per plan,
+    # family curiosity.replica (tier 2, lane chat). Off: no listener, no bids; Hub's replica-arm runs then time
+    # out to the uncertainty order. Shipped ON.
+    CURIOSITY_REPLICA_ENABLED: bool = Field(default=True, alias="CURIOSITY_REPLICA_ENABLED")
+    # The wait between ticks; a plan request wakes the loop at once.
+    CURIOSITY_REPLICA_TICK_SEC: float = Field(default=15.0, gt=0.0, alias="CURIOSITY_REPLICA_TICK_SEC")
+    # The no-model backoff's base (the library floors it at 60 s). A request's own deadline bounds retries.
+    CURIOSITY_REPLICA_REFRACTORY_SEC: float = Field(default=0.0, ge=0.0, alias="CURIOSITY_REPLICA_REFRACTORY_SEC")
+    # How often open plans are checked against their run's score (Postgres, read-only).
+    CURIOSITY_REPLICA_SETTLE_INTERVAL_SEC: float = Field(default=300.0, gt=0.0, alias="CURIOSITY_REPLICA_SETTLE_INTERVAL_SEC")
+    # The warm chat lane Prime uses (config/gpu_pool.yaml route `prime`); no new allocation.
+    CURIOSITY_REPLICA_LLM_ROUTE: str = Field(default="prime", alias="CURIOSITY_REPLICA_LLM_ROUTE")
+    # Most a try may wait for a seat; cut further so seat wait + generation end before Hub's deadline.
+    CURIOSITY_REPLICA_SEAT_WAIT_SEC: float = Field(default=45.0, ge=0.0, le=300.0, alias="CURIOSITY_REPLICA_SEAT_WAIT_SEC")
+    CURIOSITY_REPLICA_BID_LANE: str = Field(default="chat", alias="CURIOSITY_REPLICA_BID_LANE")
+    CURIOSITY_REPLICA_MAX_TOKENS: int = Field(default=500, gt=0, alias="CURIOSITY_REPLICA_MAX_TOKENS")
+    # Generation budget per plan (also the bid's cost ceiling). A request with less time left than this
+    # (minus a 5 s answer margin) is answered "unfunded"/"model_failed" instead of tried.
+    CURIOSITY_REPLICA_LLM_TIMEOUT_SEC: float = Field(default=40.0, gt=0.0, alias="CURIOSITY_REPLICA_LLM_TIMEOUT_SEC")
+    # Hub (host network on athena): recent investigate runs for the frame (/curiosity/api/runs).
+    CURIOSITY_REPLICA_HUB_URL: str = Field(default="http://100.92.216.81:8080", alias="CURIOSITY_REPLICA_HUB_URL")
+    # Read-only Postgres: Hub's plan rows, the runs' spend-log scores, the newest chat-history digest.
+    # Empty: those frame sections show as unavailable and open plans are never graded.
+    CURIOSITY_REPLICA_PG_DSN: str = Field(default="", alias="CURIOSITY_REPLICA_PG_DSN")
+    # Answers to Prime (design section 9, patch 4; orion/curiosity/replica/answers.py): support / challenge /
+    # refuse a focus Prime queued or a regulate signal on curiosity, each an act. Off: stances are recorded on
+    # the plan row only. Shipped ON.
+    CURIOSITY_REPLICA_ANSWERS_ENABLED: bool = Field(default=True, alias="CURIOSITY_REPLICA_ANSWERS_ENABLED")
+    # Holdback: refusals recorded but not applied; challenges recorded but not shown to Prime (deterministic draw).
+    CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION: float = Field(default=0.2, ge=0.0, le=1.0,
+                                                               alias="CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION")
+    CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION: float = Field(default=0.2, ge=0.0, le=1.0,
+                                                                 alias="CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION")
+    # Caps: answers in any 24 h, and the least time between two answers (the Prime-replica loop guard).
+    CURIOSITY_REPLICA_ANSWERS_PER_DAY: int = Field(default=3, ge=0, alias="CURIOSITY_REPLICA_ANSWERS_PER_DAY")
+    CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC: float = Field(default=1800.0, ge=0.0,
+                                                           alias="CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC")
 
     # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
     ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")

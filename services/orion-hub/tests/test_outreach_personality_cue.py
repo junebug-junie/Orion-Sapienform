@@ -81,8 +81,7 @@ def test_novelty_filter_keeps_the_cue():
 
 
 def _quiet_context_reads(monkeypatch, *, situation_delay=0.0):
-    for name in ("_fetch_curiosity_content", "_fetch_recent_turns", "_fetch_embodied_presence",
-                 "_fetch_current_daydream", "_fetch_open_priors"):
+    for name in ("_fetch_recent_turns", "_fetch_embodied_presence", "_fetch_current_daydream"):
         monkeypatch.setattr(eo, name, lambda *a, **k: None)
 
     async def read_situation(bus):

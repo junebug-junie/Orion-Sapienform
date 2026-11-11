@@ -19,7 +19,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
 
-from app.run_bids import PRODUCER, RunBidder, want_for_run  # noqa: E402
+from app.run_bids import BINDING_FAMILIES, PRODUCER, RunBidder, want_for_run  # noqa: E402
 from orion.physiology.families import load_families  # noqa: E402
 
 FAMS, _ = load_families(ROOT / "config/physiology/families.yaml")
@@ -79,6 +79,8 @@ def test_a_run_becomes_a_want_that_joins_its_act():
     ("curiosity.investigate", "self_inquiry", "durable.self_inquiry"),
     ("self_sense_eval", None, "durable.self_sense_eval"),
     ("journal.compose", None, "durable.journal_compose"),
+    ("pr.field_note", None, "durable.pr_field_note"),   # tier 1, Juniper 2026-11-04
+    ("reminiscence.episode", None, "durable.reminiscence"),   # tier 2, design default 2026-11-07
 ])
 def test_every_want_family_run_bids_once_at_its_families_yaml_tier(workflow, line, family):
     async def go():
@@ -205,3 +207,19 @@ def test_a_run_refused_before_any_grant_still_releases_its_reservation():
         assert m.opened == [] and m.released == [req.run_id]
         await rt.close()
     asyncio.run(with_database(scenario))
+
+
+def test_pr_field_note_is_tier_one_with_a_day_to_wait():
+    """Juniper's decision 1 (2026-11-04): critical upkeep, a ~24 h deferrable window, the agent lanes."""
+    fam = FAMS.get("durable.pr_field_note")
+    assert fam is not None and fam.tier == 1 and fam.deferrable_window_s == 86400
+    assert set(fam.lanes) == {"agent", "agent-gpu2"} and fam.receptors == ()
+
+
+def test_reminiscence_is_tier_two_on_the_agent_lanes_for_its_overnight_window():
+    """Daily reminiscence Patch 2: the design's default tier 2 (Juniper may change it), agent lanes, a window
+    as long as the 03:00-09:00 Denver run window, shadow (not binding), no receptors."""
+    fam = FAMS.get("durable.reminiscence")
+    assert fam is not None and fam.tier == 2 and fam.deferrable_window_s == 21600
+    assert set(fam.lanes) == {"agent", "agent-gpu2"} and fam.receptors == ()
+    assert "durable.reminiscence" not in BINDING_FAMILIES

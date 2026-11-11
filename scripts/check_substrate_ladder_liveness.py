@@ -104,7 +104,7 @@ def connection_params(explicit: Optional[str] = None):
     )
 
 
-def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[datetime]], list[int], list[str]]:
+def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[datetime]], list[str]]:
     newest: dict[str, Optional[datetime]] = {}
     errors: list[str] = []
     with conn.cursor() as cur:
@@ -118,13 +118,7 @@ def read_freshness(conn, lookback_sec: float) -> tuple[dict[str, Optional[dateti
                 newest[rung.name] = cur.fetchone()[0]
             except Exception as exc:  # noqa: BLE001 - one bad rung must not hide the rest
                 errors.append(f"{rung.name}: {exc.__class__.__name__}: {str(exc).strip()}")
-        motif_counts: list[int] = []
-        try:
-            cur.execute(ll.CONSOLIDATION_MOTIF_SQL, [6 * 3600, ll.CONSOLIDATION_EMPTY_RUN])
-            motif_counts = [int(r[0]) for r in cur.fetchall()]
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"consolidation:motifs: {exc.__class__.__name__}: {str(exc).strip()}")
-    return newest, motif_counts, errors
+    return newest, errors
 
 
 def read_detection_rates(
@@ -545,8 +539,8 @@ def build_report(args) -> ll.LadderReport:
             conn = psycopg2.connect(params, connect_timeout=10) if isinstance(params, str) else psycopg2.connect(connect_timeout=10, **params)
             conn.set_session(readonly=True, autocommit=True)
             try:
-                newest, motifs, errors = read_freshness(conn, args.lookback_hours * 3600)
-                report.rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=motifs)
+                newest, errors = read_freshness(conn, args.lookback_hours * 3600)
+                report.rungs = ll.evaluate_ladder(newest, now)
                 report.cannot_check += errors
                 camera_fresh = {
                     r.rung.split(":", 1)[1]: not r.red
@@ -672,11 +666,9 @@ def check_skew(args) -> tuple[list[ll.SkewResult], list[str]]:
 
 def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
     for r in report.rungs:
-        mark = "RED " if r.red else "ok  "
-        if r.rung == "consolidation:motifs":
-            print(f"{mark}consolidation:motifs: {'last %d frames empty' % int(r.max_age_sec) if r.red else 'motifs present'}")
-        else:
-            print(f"{mark}{r.summary()}")
+        print(f"{'RED ' if r.red else 'ok  '}{r.summary()}")
+    for name, retired_on, replaced_by in ll.RETIRED_RUNGS:
+        print(f"retired {name} ({retired_on}): {replaced_by}")
     for d in report.detection_rates:
         if d.status != "unknown":  # unknown is printed under CANNOT CHECK
             print(f"{'RED ' if d.red else ('ok  ' if d.green else 'note')}{d.summary()}")

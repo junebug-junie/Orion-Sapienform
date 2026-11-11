@@ -3,25 +3,20 @@ on:
   pull_request:
     paths:
       - 'orion/reverie/**'
+      - 'config/reverie/**'
       - 'orion/schemas/reverie_visual.py'
       - 'orion/schemas/reverie_visual_run.py'
       - 'orion/schemas/durable_run.py'
-      - 'orion/schemas/*frame.py'
-      - 'orion/proposals/**'
-      - 'orion/policy/**'
-      - 'orion/execution_dispatch/**'
       - 'orion/autonomy/**'
-      - 'orion/feedback/**'
-      - 'config/proposals/**'
+      - 'config/physiology/families.yaml'
+      - 'orion/physiology/client.py'
+      - 'orion/self_monitor/gate.py'
+      - 'orion/regulation/arousal_read.py'
       - 'services/orion-thought/**'
-      - 'services/orion-proposal-runtime/**'
-      - 'services/orion-execution-dispatch-runtime/**'
-      - 'services/orion-feedback-runtime/**'
       - 'services/orion-cortex-exec/app/verb_adapters.py'
       - 'services/orion-cortex-exec/app/durable_kickoff.py'
       - 'services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py'
       - 'services/orion-sql-db/manual_migration_reverie_visual*.sql'
-      - 'tests/test_visual_baseline_pipeline.py'
       - 'tests/test_visual_baseline_arousal_reader.py'
       - 'services/orion-analytics/models/marts/dim_reverie_outcomes.sql'
       - 'tests/test_dim_reverie_outcomes_covers_terminal_reasons.py'
@@ -56,15 +51,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r services/orion-thought/requirements.txt pytest pytest-asyncio
-      - name: Admission, accounting and feedback contracts
+      - name: Admission and accounting contracts
         run: >-
-          python -m pytest -q tests/test_visual_baseline_pipeline.py
-          tests/test_motor_allocator.py tests/test_proposal_frame_builder.py
-          tests/test_policy_decision_builder.py tests/test_execution_dispatch_builder.py
-          tests/test_action_outcome_resolution.py tests/test_feedback_runtime_store.py
-          tests/test_express_outward_action.py tests/test_visual_baseline_arousal_reader.py
+          python -m pytest -q tests/test_visual_baseline_arousal_reader.py
           tests/test_dim_reverie_outcomes_covers_terminal_reasons.py
-          orion/reverie/tests/test_proposal.py orion/reverie/tests/test_proposal_world_winner.py
+          orion/reverie/tests/test_baseline_policy_file.py
       - name: Thought storage, source, HTTP and replica contracts
         run: >-
           python -m pytest -q services/orion-thought/tests/test_visual_activity.py
@@ -77,18 +68,15 @@ jobs:
           services/orion-thought/tests/test_visual_steps_db.py
           services/orion-thought/tests/test_bus_listener_visual_step.py
           services/orion-thought/tests/test_painting_act.py
+          services/orion-thought/tests/test_painting_self_start.py
+          services/orion-thought/tests/test_physiology_shadow_bid.py
           services/orion-thought/tests/test_visual_painting_gap_monitor.py
           services/orion-thought/tests/test_settings_mind_enrichment.py
-      # One process per service: both services' tests import a top-level `app` package.
-      - name: Durable render settlement contracts (execution-dispatch)
-        run: python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py
-      - name: Durable render parking contracts (feedback-runtime)
-        run: python -m pytest -q services/orion-feedback-runtime/tests/test_visual_settlement_parking.py
+      - name: Painting self-start replay (fixture)
+        run: python -P services/orion-thought/evals/painting_self_start_replay.py
       - name: Durable render kickoff (cortex-exec)
         run: |
           pip install -r services/orion-cortex-exec/requirements.txt
           PYTHONPATH=services/orion-cortex-exec:. python -m pytest -q services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py
-      - name: Scheduling replay eval
-        run: python -m pytest -q services/orion-proposal-runtime/evals/test_baseline_replay.py
       - name: Image degradation eval
         run: PYTHONPATH=services/orion-thought:. python -m pytest -q services/orion-thought/evals/test_visual_chain_honesty_eval.py

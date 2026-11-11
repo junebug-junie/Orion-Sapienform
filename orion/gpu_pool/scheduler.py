@@ -31,6 +31,11 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
      both runs
   H4 hold recall uses defaults.hold_clawback_grace_sec; a swap seat with max_hold_sec drains once
      it has been loaded that long, then unloads (today's DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC)
+  H5 a swap seat that drains only because background-priority owner work waits (every diffusion
+     job today) recalls its holds with ``draining_background`` and defaults.background_drain_grace_sec,
+     so the running node finishes instead of dying at hold_clawback_grace_sec (live 10-28..11-04: 81
+     gpu2 turns killed for ~1 min images). If the seat later drains for anything else, the hold gets
+     hold_clawback_grace_sec counted from its recall, then is aborted
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
      unload, cooldown after a failed load, or a failing guard (thermal)
   S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the
@@ -99,7 +104,11 @@ from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
 URGENT = "urgent"
-PREEMPTIBLE = ("background", "system")
+PREEMPTIBLE = ("background", "system", "starved")
+# H5 recall reason: a hold recalled from a seat that drains only for background owner demand.
+BACKGROUND_DRAIN = "draining_background"
+# H5 abort reason: that long grace cut back because the seat now drains for something else.
+BACKGROUND_DRAIN_CUT = "background_drain_cut"
 
 
 @dataclass(frozen=True)
@@ -294,6 +303,8 @@ class _Ctx:
     operator_granted: set[str]
     # Stage 7.3 gap pinning: holds whose run has a call waiting this tick (charged last).
     wanting: set[str] = field(default_factory=set)
+    # Seats draining this tick only for background-priority owner demand (H5).
+    background_drain: set[str] = field(default_factory=set)
 
     def charged(self, role: str) -> set[str]:
         """H3 gap pinning: the idle holds on ``role`` whose gap a one-off call is using right now.
@@ -558,17 +569,21 @@ def schedule(
     swap_roles = [r for r, spec in cfg.roles.items() if spec.swap is not None]
     frozen_seats = set(frozen or ()) | {r for r in swap_roles if cfg.roles[r].launch is None}
     max_held: set[str] = set()
+    operator_drain: set[str] = set()
     for seat in swap_roles:
         spec = cfg.roles[seat]
         if seat in frozen_seats:
             continue
         if ctx.loaded(seat):
             # A resident owner that could actually run there wants its card back: the seat drains.
-            if not spec.operator_only and any(
-                    ctx.cfg.owns(q.work_class, ev) and ctx.fits(q, ev)
-                    for q in queued + backlogged if q.lease_id not in shed_of
-                    for ev in cfg.evicted_by(seat)):
+            demand = [q for q in queued + backlogged if q.lease_id not in shed_of
+                      and any(ctx.cfg.owns(q.work_class, ev) and ctx.fits(q, ev)
+                              for ev in cfg.evicted_by(seat))]
+            if not spec.operator_only and demand:
                 ctx.draining.add(seat)
+                # H5: only background owners waiting -> running holds get the long grace.
+                if all(q.priority == "background" for q in demand):
+                    ctx.background_drain.add(seat)
             # H4: a seat loaded for max_hold_sec gives its card back (loaded_at is only set when
             # the pool itself loaded or adopted the seat, never by observation alone).
             # A warm-standby seat gives its card back on a resident's demand (above), not on a
@@ -582,6 +597,9 @@ def schedule(
                                         for q in queued):
             # An operator is taking the cards: everything the seat evicts drains.
             ctx.draining.update(cfg.evicted_by(seat))
+            operator_drain.update(cfg.evicted_by(seat))
+    # H5 holds only while background demand is the seat's sole reason to drain.
+    ctx.background_drain -= max_held | operator_drain
 
     # Backlogged work that something can serve again rejoins the queue in its original place.
     still_backlogged: list[LeaseView] = []
@@ -733,9 +751,32 @@ def schedule(
             recalled.add(lease.lease_id)
             if reason == PREEMPT:
                 grace = d.urgent_preempt_grace_sec
+            elif reason == "draining" and lease.kind == "hold" and lease.role in ctx.background_drain:
+                # H5: background owner waiting -> let the running node finish (own reason, so a
+                # later non-background owner can cut it back to the normal grace below).
+                reason = BACKGROUND_DRAIN
+                grace = max(d.hold_clawback_grace_sec, d.background_drain_grace_sec)
             else:
                 grace = d.hold_clawback_grace_sec if lease.kind == "hold" else d.clawback_grace_sec
             out.append(Recall(lease.lease_id, now + timedelta(seconds=grace), reason))
+
+    # H5: a hold on its long background-drain grace whose seat now drains for anything else
+    # (a non-background owner, max_hold, an operator) gets only the normal hold grace, counted
+    # from its recall; past that it is aborted like any expired recall.
+    long_grace = max(d.hold_clawback_grace_sec, d.background_drain_grace_sec)
+    for lease in leases:
+        if (lease.status == "recalling" and lease.reason == BACKGROUND_DRAIN and lease.recall_by is not None
+                and lease.recall_by > now and lease.role in ctx.draining
+                and lease.role not in ctx.background_drain
+                # Section 1 already expired it this tick (heartbeat lost): one decision per lease.
+                and (lease.expires_at is None or lease.expires_at > now)):
+            # Derived from config, so a grace change across a restart only shifts the cut (never
+            # past recall_by, which section 1 still enforces).
+            recalled_at = lease.recall_by - timedelta(seconds=long_grace)
+            if (now - recalled_at).total_seconds() >= d.hold_clawback_grace_sec:
+                # Own reason: the published recall_by said +long_grace; the history must say why
+                # the hold went earlier.
+                out.append(Abort(lease.lease_id, BACKGROUND_DRAIN_CUT))
 
     # U1 bookkeeping, before any recall: each waiting urgent lease (up to the cap) is owed one
     # pause. A pause already under way (recalling urgent_preempt) on a slot it could take pays

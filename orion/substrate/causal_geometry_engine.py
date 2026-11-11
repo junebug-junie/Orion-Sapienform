@@ -11,8 +11,8 @@ three-phase design, and `scripts/causal_geometry_report.py`'s own (still
 present) module docstring for the detailed rationale behind the fixed
 constants, the source tables, resampling, lagged cross-correlation, the
 Bonferroni-corrected-per-pair + Benjamini-Hochberg-corrected-across-pairs
-surrogate significance test (see that docstring's "n_surrogates floor" note
-for a 2026-07-29 fix to how those two stages interact), and the
+surrogate significance test (see that docstring's "p-value resolution" note
+for two live incidents where a floored p starved BH), and the
 designed-vs-observed
 divergence matching rule (including the `#<capability_channel>` target_id
 disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
@@ -20,6 +20,7 @@ disambiguation suffix -- see `orion/substrate/field_topology_plasticity.py`'s
 """
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,9 +45,10 @@ LAG_GRID_SECONDS: Tuple[int, ...] = (0, 300, 600, 900, 1800)
 
 DEFAULT_WINDOW_HOURS = 168.0
 DEFAULT_MIN_SAMPLES = 30
-# 200 surrogates was a live bug (see compute_pairwise_results' comment on the
-# Bonferroni floor): raised to 2000 on 2026-07-29 so the per-pair Bonferroni
-# correction and the family-wise BH-FDR correction can actually coexist.
+# Cap on time-shift surrogates per test (see time_shift_surrogate_rs: every
+# eligible shift is used when there are at most this many -- 1818 at n=2017).
+# Since 2026-11-10 it no longer sets the smallest reportable p: past the last
+# 10 surrogates the p can come from a tail fit (see surrogate_tail_pvalue).
 DEFAULT_N_SURROGATES = 2000
 DEFAULT_ALPHA = 0.05
 DEFAULT_BIOMETRICS_NODE = "athena"
@@ -236,7 +238,235 @@ def _best_direction(
     return best
 
 
-def circular_shift_pvalue(
+# Smallest p-value time_shift_pvalue reports. A tail fit can underflow to an
+# exact 0.0, which would read as "certain"; no finite sample supports that.
+# Far below any BH threshold, so it never decides an edge -- it only keeps the
+# stored `significance` honest.
+MIN_REPORTED_PVALUE = 1e-300
+
+# Fisher z of |r| -> 1 is infinite; clip just inside so a perfectly
+# collinear pair gets a huge-but-finite z instead of inf/nan.
+_R_CLIP = 1.0 - 1e-12
+
+# Null shifts: |s| from the guard up to MAX_SHIFT_FRACTION * n. The guard
+# keeps a real effect out of its own null (see time_shift_surrogate_rs).
+GUARD_FRACTION = 0.05
+GUARD_MIN = 12
+MAX_SHIFT_FRACTION = 0.5
+
+# Tail-fit knobs (Knijnenburg et al. 2009, "Fewer permutations, more accurate
+# P-values", Bioinformatics 25:i161): plain rank p when at least
+# MIN_EXCEEDANCES surrogates reach the observed statistic; otherwise fit a
+# generalized Pareto distribution (GPD) to the top TAIL_FIT_SIZE surrogates.
+MIN_EXCEEDANCES = 10
+TAIL_FIT_SIZE = 250
+_MIN_TAIL_FIT_SIZE = 20
+
+# Extrapolating past the surrogates needs a tail built from many roughly
+# independent values: Bartlett effective sample size >= N_EFF_MIN, and each
+# series' participation size >= PARTICIPATION_MIN. Otherwise there is no tail
+# fit and p >= 1/(units + 1) (see time_shift_pvalue).
+N_EFF_MIN = 100.0
+PARTICIPATION_MIN = 50.0
+
+
+def time_shift_surrogate_rs(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    *,
+    n_surrogates: int = DEFAULT_N_SURROGATES,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    """Pearson r of `xs` against `ys` shifted in time, over the overlap only.
+
+    For every shift s with guard <= |s| <= MAX_SHIFT_FRACTION * n, in both
+    directions: r(xs[s:], ys[:n-s]) and r(xs[:n-s], ys[s:]). No wrap-around:
+    each surrogate is two real, contiguous stretches of the two series, so a
+    daily cycle, a regime change or a burst is never cut and re-glued.
+    guard = max(GUARD_MIN, GUARD_FRACTION * n).
+
+    Why not circular shifts (the pre-2026-11-10 null): (1) shifts near 0 keep
+    a real coupling (live power/thermal: the 15 largest surrogates were all
+    within 25 buckets of 0, r up to 0.60 against an observed 0.68), so the
+    effect sits in its own null; (2) leaving those shifts out of a circular
+    null made persistent and periodic nulls badly liberal, because the
+    wrap-around seam shrinks r at every far shift (daily-cycle null: 357
+    false edges over 5 seeds). Overlap shifts have no seam, so the guard is
+    safe. Their r has a little more spread (overlap n/2..n), which only makes
+    the test conservative for short-memory series.
+
+    All shifts at once: overlap sums via cumulative sums, the cross term via
+    one zero-padded FFT, O(n log n). When there are more eligible shifts than
+    `n_surrogates`, that many are drawn without replacement from `rng`.
+
+    Returns an empty array when either series is constant or there are no
+    eligible shifts. Raises ValueError on a length mismatch (a caller bug).
+    """
+    n = len(ys)
+    if len(xs) != n:
+        raise ValueError(f"time_shift_surrogate_rs: len(xs)={len(xs)} != len(ys)={n}")
+    guard = max(GUARD_MIN, int(n * GUARD_FRACTION))
+    max_shift = int(n * MAX_SHIFT_FRACTION)
+    if max_shift < guard:
+        return np.array([], dtype=float)
+    sx = float(np.std(xs))
+    sy = float(np.std(ys))
+    if sx == 0.0 or sy == 0.0:
+        return np.array([], dtype=float)
+    x = (np.asarray(xs, dtype=float) - np.mean(xs)) / sx
+    y = (np.asarray(ys, dtype=float) - np.mean(ys)) / sy
+    size = 2 * n
+    # lin[s] = sum_t x[t + s] * y[t]; lin[size - s] = sum_t x[t] * y[t + s].
+    lin = np.fft.irfft(np.fft.rfft(x, size) * np.conj(np.fft.rfft(y, size)), size)
+    cx = np.concatenate([[0.0], np.cumsum(x)])
+    cxx = np.concatenate([[0.0], np.cumsum(x * x)])
+    cy = np.concatenate([[0.0], np.cumsum(y)])
+    cyy = np.concatenate([[0.0], np.cumsum(y * y)])
+    shifts = np.arange(guard, max_shift + 1)
+    m = (n - shifts).astype(float)
+
+    def _r(sum_xy, a_lo, a_hi, b_lo, b_hi):
+        sa = cx[a_hi] - cx[a_lo]
+        saa = cxx[a_hi] - cxx[a_lo]
+        sb = cy[b_hi] - cy[b_lo]
+        sbb = cyy[b_hi] - cyy[b_lo]
+        cov = sum_xy - sa * sb / m
+        var_a = saa - sa * sa / m
+        var_b = sbb - sb * sb / m
+        # One-pass variances lose precision when an overlap stretch is nearly
+        # constant; the series are standardized (variance 1 per point), so a
+        # stretch below 1e-10 per point is treated as constant -> r = 0, the
+        # same rule as _pearson's std == 0.
+        ok = (var_a > 1e-10 * m) & (var_b > 1e-10 * m)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = np.where(ok, cov / np.sqrt(np.maximum(var_a * var_b, 1e-300)), 0.0)
+        return r
+
+    # x[s:] against y[:n-s]
+    r_fwd = _r(lin[shifts], shifts, np.full_like(shifts, n), np.zeros_like(shifts), n - shifts)
+    # x[:n-s] against y[s:]
+    r_bwd = _r(lin[size - shifts], np.zeros_like(shifts), n - shifts, shifts, np.full_like(shifts, n))
+    rs = np.clip(np.concatenate([r_fwd, r_bwd]), -1.0, 1.0)
+    if rs.size > n_surrogates:
+        if rng is None:
+            rng = np.random.default_rng()
+        rs = rng.choice(rs, size=n_surrogates, replace=False)
+    return rs
+
+
+def _acf(values: np.ndarray) -> np.ndarray:
+    """Sample autocorrelation at lags 0..n-1 (FFT, zero-padded, biased)."""
+    n = len(values)
+    centered = np.asarray(values, dtype=float) - np.mean(values)
+    spec = np.fft.rfft(centered, 2 * n)
+    acov = np.fft.irfft(spec * np.conj(spec), 2 * n)[:n]
+    if acov[0] <= 0.0:
+        return np.zeros(n)
+    return acov / acov[0]
+
+
+def effective_sample_size(xs: np.ndarray, ys: np.ndarray) -> float:
+    """Bartlett (1946) effective number of independent pairs for a
+    cross-correlation: n / (1 + 2 * sum_{k=1}^{n/4} rho_x(k) rho_y(k)).
+
+    Used only as a gate on tail extrapolation, not as the test itself (as
+    the test it is liberal for persistent series: the truncated sum is noisy).
+    Live 2026-11-10: power/thermal 208, cpu/power 621; a near-trending pair
+    disk_capacity/mem 8 (r=-0.76, the classic spurious-trend case).
+    """
+    n = len(xs)
+    if n < 8:
+        return float(n)
+    k = max(2, n // 4 + 1)  # lags 1 .. n // 4
+    product_sum = float(np.sum(_acf(xs)[1:k] * _acf(ys)[1:k]))
+    return float(n / max(1.0, 1.0 + 2.0 * product_sum))
+
+
+def participation_size(values: np.ndarray) -> float:
+    """Roughly how many points carry a series' variance: n / mean(z^4)
+    (n over the kurtosis). Gaussian noise: n/3. A channel that is flat
+    except for 3 spikes: ~3, however long it is.
+
+    Bartlett's n_eff only sees autocorrelation, so a rare-event channel
+    (isolated spikes on a flat floor) reads as n_eff ~ n. Its null tail is
+    then pure floor noise, and a GPD fitted to it extrapolates a single
+    coincidence of two spikes to p ~ 1e-30 (review round 2: false edges in
+    2-3 of 10 seeds of an m=171 null family).
+    """
+    v = np.asarray(values, dtype=float)
+    sd = float(np.std(v))
+    if sd == 0.0:
+        return 0.0
+    z = (v - float(np.mean(v))) / sd
+    return float(len(v) / max(1.0, float(np.mean(z ** 4))))
+
+
+def _gpd_tail_survival(exceedances: np.ndarray, y: float) -> Optional[float]:
+    """Survival P(Y > y) of a GPD fitted to `exceedances` (all >= 0).
+
+    Shape xi by probability-weighted moments (Hosking & Wallis 1987),
+    clamped at xi >= 0 (exponential is the lightest tail allowed): a bounded
+    fitted tail would declare values just past the largest surrogate
+    impossible, which a finite set of shifts cannot show. When clamped, sigma
+    is the exponential MLE (the mean). Returns None when no usable fit exists.
+    """
+    ys = np.sort(exceedances)
+    m = len(ys)
+    a0 = float(np.mean(ys))
+    if not np.isfinite(a0) or a0 <= 0.0:
+        return None
+    plot_pos = (np.arange(1, m + 1) - 0.35) / m
+    a1 = float(np.mean((1.0 - plot_pos) * ys))
+    denom = a0 - 2.0 * a1
+    if denom <= 0.0:
+        # denom = mean(y * (2p - 1)) is >= 0 for sorted data, so this is a
+        # degenerate input, not a shape estimate. No fit -> the caller uses
+        # the rank p; never fall back to an exponential that may be lighter
+        # than the data.
+        return None
+    xi, sigma = 0.0, a0
+    k = a0 / denom - 2.0  # Hosking's k = -xi
+    if -k > 0.0:
+        xi, sigma = -k, 2.0 * a0 * a1 / denom
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        return None
+    if xi < 1e-9:
+        return math.exp(-y / sigma)
+    return (1.0 + xi * y / sigma) ** (-1.0 / xi)
+
+
+def surrogate_tail_pvalue(null_stats: np.ndarray, observed: float, *, allow_tail_fit: bool = True) -> float:
+    """One-sided p of `observed` against surrogate values `null_stats`.
+
+    - At least MIN_EXCEEDANCES surrogates >= observed: the add-one rank p
+      `(M + 1) / (N + 1)`. No shape assumption.
+    - Fewer, and `allow_tail_fit`: a GPD fitted to the top TAIL_FIT_SIZE
+      surrogates (Pickands-Balkema-de Haan: exceedances over a high threshold
+      are GPD whatever the parent), `(N_tail / N) * S(observed - t)`, never
+      above the rank p. A heavy-tailed null (bursty channels) gets a heavy
+      fitted tail instead of being mistaken for normal.
+    - Otherwise: the rank p, which bottoms out at 1/(N+1).
+    """
+    stats = np.asarray(null_stats, dtype=float)
+    n = len(stats)
+    if n == 0:
+        return 1.0
+    m_exceed = int(np.sum(stats >= observed))
+    rank_p = (m_exceed + 1) / (n + 1)
+    if m_exceed >= MIN_EXCEEDANCES or not allow_tail_fit:
+        return float(rank_p)
+    n_tail = min(TAIL_FIT_SIZE, n // 4)
+    if n_tail < _MIN_TAIL_FIT_SIZE:
+        return float(rank_p)
+    top = np.sort(stats)[::-1]
+    threshold = 0.5 * (top[n_tail - 1] + top[n_tail])
+    survival = _gpd_tail_survival(top[:n_tail] - threshold, observed - threshold)
+    if survival is None:
+        return float(rank_p)
+    return float(min(rank_p, max(MIN_REPORTED_PVALUE, (n_tail / n) * survival)))
+
+
+def time_shift_pvalue(
     xs: np.ndarray,
     ys: np.ndarray,
     observed_r: float,
@@ -244,28 +474,59 @@ def circular_shift_pvalue(
     n_surrogates: int = DEFAULT_N_SURROGATES,
     rng: Optional[np.random.Generator] = None,
 ) -> float:
-    """Circular time-shift surrogate p-value for a Pearson correlation.
+    """Two-sided p-value for a Pearson r against a time-shift null.
 
-    Shifts `ys` by a uniformly-sampled non-zero circular offset (numpy.roll)
-    `n_surrogates` times, recomputes Pearson r against the fixed `xs` each
-    time, and returns the add-one-smoothed fraction of surrogate |r| >=
-    observed |r|. Add-one smoothing (standard permutation-test convention)
-    means this never reports p=0.0 off a finite surrogate sample.
+    Null: `xs` and `ys` are independent, each keeping its own serial
+    structure. Shifting one series against the other (time_shift_surrogate_rs)
+    samples that null without modelling the autocorrelation. Statistic:
+    |atanh(r)| (Fisher z; monotone in |r|). p is read by
+    `surrogate_tail_pvalue`: rank p in the body; past the last
+    MIN_EXCEEDANCES surrogates a GPD tail fit, but only when the pair's
+    Bartlett effective sample size is at least N_EFF_MIN and each series'
+    participation size is at least PARTICIPATION_MIN. Otherwise the p is the
+    rank p, never finer than 1/(units + 1): such a pair cannot become an edge
+    (near-trending pairs, slow on/off regimes, pure daily rhythms, rare-event
+    channels).
+
+    2026-11-10: replaced the add-one circular-shift rank p, whose floor
+    (1/2001; 0.005 after the within-pair Bonferroni x10) sat above BH's
+    first-rank threshold 0.05/171 = 0.00029. BH then passed nothing unless 18+
+    pairs tied at the floor, and passed all of them when they did (0 edges
+    since 2026-10-30, including power->thermal r=+0.61, n=2017). Rejected on
+    the way, each by a synthetic null in
+    `orion/substrate/tests/test_causal_geometry_pvalue_calibration.py`: a
+    normal fit to circular surrogates (false edges in every seed on bursty
+    channels, ~0 power on daily cycles), a GPD tail on unguarded circular
+    surrogates (real links lost to their own near-0 shifts), and a guarded
+    circular null (daily-cycle and regime nulls liberal).
+
+    Assumes stationarity: trending pairs are caught only by the n_eff gate.
+    Shifts count array positions, not wall-clock time: `_aligned_arrays`
+    drops missing buckets, so on gappy channels (attention:salience,
+    bus_synaptic:*) a shift spans gaps.
+    Returns 1.0 when no null can be built (constant series, n too short).
+    Never returns 0.0 -- floored at MIN_REPORTED_PVALUE.
     """
-    n = len(ys)
-    if n < 2:
+    if len(xs) != len(ys):
+        raise ValueError(f"time_shift_pvalue: len(xs)={len(xs)} != len(ys)={len(ys)}")
+    rs = time_shift_surrogate_rs(xs, ys, n_surrogates=n_surrogates, rng=rng)
+    if rs.size == 0:
         return 1.0
-    if rng is None:
-        rng = np.random.default_rng()
-    observed_abs = abs(observed_r)
-    count_ge = 0
-    for _ in range(n_surrogates):
-        shift = int(rng.integers(1, n)) if n > 1 else 0
-        shifted = np.roll(ys, shift)
-        r = _pearson(xs, shifted)
-        if r is not None and abs(r) >= observed_abs:
-            count_ge += 1
-    return (count_ge + 1) / (n_surrogates + 1)
+    null_z = np.abs(np.arctanh(np.clip(rs, -_R_CLIP, _R_CLIP)))
+    obs_z = abs(math.atanh(max(-_R_CLIP, min(_R_CLIP, float(observed_r)))))
+    n_eff = effective_sample_size(xs, ys)
+    participation = min(participation_size(xs), participation_size(ys))
+    if n_eff >= N_EFF_MIN and participation >= PARTICIPATION_MIN:
+        return surrogate_tail_pvalue(null_z, obs_z)
+    # Too few independent or informative values: no extrapolation, and no p
+    # finer than 1/(units + 1), the floor of a shift test over that many
+    # exchangeable units. After Bonferroni x10 that is >= 10/101 ~= 0.099 >
+    # alpha, so such a pair cannot become an edge at all -- it is excluded,
+    # not ranked. That also means a pile of trending pairs can never tie at a
+    # floor and pass BH together (the old cliff, in miniature).
+    units = min(n_eff, participation)
+    rank_p = surrogate_tail_pvalue(null_z, obs_z, allow_tail_fit=False)
+    return float(max(rank_p, 1.0 / (units + 1.0)))
 
 
 class PairResult:
@@ -321,7 +582,7 @@ def compute_pairwise_results(
                 results.append(result)
                 continue
             winner = max(candidates, key=lambda c: abs(c.r))
-            p_raw = circular_shift_pvalue(
+            p_raw = time_shift_pvalue(
                 winner.xs, winner.ys, winner.r, n_surrogates=n_surrogates, rng=rng
             )
             # Bonferroni correction for the implicit multiple comparisons within
@@ -330,13 +591,14 @@ def compute_pairwise_results(
             # search; it is NOT a correction across the whole channel x channel
             # matrix -- see _apply_fdr_correction below for that.
             #
-            # This step's own floor (`n_comparisons/(n_surrogates+1)`, from
-            # circular_shift_pvalue's add-one smoothing) must stay well below
-            # `alpha`, or _apply_fdr_correction's rank-dependent BH threshold
-            # becomes nearly impossible to clear -- see
-            # scripts/causal_geometry_report.py's module docstring's
-            # "n_surrogates floor" note for the live incident (2026-07-28/29)
-            # that this constrains DEFAULT_N_SURROGATES against.
+            # p_raw is continuous past the surrogate rank floor for pairs with
+            # enough independent samples (GPD tail fit, see time_shift_pvalue),
+            # so this product has no resolution floor
+            # that could starve _apply_fdr_correction's rank-dependent BH
+            # threshold. Two earlier floors did exactly that: 10/201 (fixed
+            # 2026-07-29 by raising n_surrogates) and 10/2001 = 0.005 vs
+            # 0.05/171 (fixed 2026-11-10 by dropping the rank p) -- see
+            # scripts/causal_geometry_report.py's "p-value resolution" note.
             n_comparisons = 2 * len(lag_grid_seconds)
             p_value = min(1.0, p_raw * n_comparisons)
             result.winner = winner
@@ -610,7 +872,8 @@ def build_snapshot(
         else:
             notes.append(
                 f"{n_pairs_with_data} pair(s) had enough data to test but none cleared "
-                f"--alpha={alpha} after {n_surrogates} circular-shift surrogates each -- "
+                f"--alpha={alpha} (BH-FDR; up to {n_surrogates} time-shift "
+                "surrogates each, GPD tail past the last 10) -- "
                 "this is reported honestly as insufficient_data rather than a fabricated graph."
             )
 

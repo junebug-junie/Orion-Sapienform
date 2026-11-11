@@ -1401,9 +1401,9 @@ class AskCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     Posts task_type=vqa to orion-vision-host's /v1/vision/task with
     request.use_latest_frame=true (see runner.py::_resolve_latest_frame_path)
-    -- resolves to whatever orion-vision-edge captured most recently, not a
-    capture freshly triggered by this call (vision-edge already captures
-    continuously at ~5s cadence regardless of any downstream consumer; for a
+    -- resolves to the office camera's (cam0, orion-vision-retina-office) most
+    recent frame, not a capture freshly triggered by this call (the retina
+    captures continuously at 2 frames/s regardless of any consumer; for a
     slow-moving room this is the practical equivalent of "look now" without
     inventing a second capture path).
 

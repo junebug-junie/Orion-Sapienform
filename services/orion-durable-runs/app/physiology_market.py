@@ -16,6 +16,11 @@ floor until a first read succeeds), it never fails the bid.
 Bid sites in this process (Patch C3a): durable-runs' own admission (``app.run_bids``) calls
 ``Market.bid`` in-process, ``mark_opened`` at the run's first grant and ``release`` at its terminal.
 
+Event rank (attention as the want competition, patch 2). An event want (``WantV1.salience``) ranks
+against the family's own past event wants: their recorded intensities, read from ``want_ledger``
+(30 days, the first decision per want, real producers only) with the act history. A failed read keeps
+the last one; with none, an event want is ranked as any want (``event_cold:<basis>``).
+
 Prime's regulate signals (Orion Prime step 3, ``orion.physiology.prime_charge``). When
 ``prime_regulation`` is on and the want's family declares the signal's direction as a receptor
 (config/physiology/families.yaml), each bid reads ``orion:prime:regulate:<family>`` from the same Redis
@@ -26,6 +31,10 @@ Either way the market writes what the charge did to this want back into the same
 Off, unreadable, expired or not received: no charge, exactly as before. A Redis error never fails a bid.
 Only bids from ``orion.physiology.binding.BINDING_PRODUCERS`` (the obeyed ones) read the signal: a shadow bid of
 the same family (its producer rolled back to shadow, or a forced dream sleep) is never charged or recorded.
+The receiving organ may REFUSE the signal (curiosity replica patch 4: field ``refusal`` of the same hash,
+``prime_charge.PrimeChargeRefusalV1``). From the next bid on the charge is not applied on either arm; the
+decision's ``why`` names the refusal (treated arm), and each want's record is ``unchanged`` -- what really
+happened -- with what the charge would have done in its ``why``.
 
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
@@ -89,6 +98,16 @@ SELECT decision_id, family, tier, decided_at
 """
 
 
+# The first decision per event want (a re-bid of the same want is not a new event).
+EVENT_HISTORY_SQL = """
+SELECT DISTINCT ON (want_id) family, (decision->>'intensity')::float AS intensity
+  FROM want_ledger
+ WHERE decided_at >= %(since)s AND decision->'want' ? 'salience' AND decision->>'intensity' IS NOT NULL
+   AND NOT (producer = ANY(%(synthetic)s))
+ ORDER BY want_id, decided_at
+"""
+
+
 def _utc(v: Any) -> Optional[datetime]:
     if v is None:
         return None
@@ -131,11 +150,24 @@ async def read_funded(pool: Any, now: datetime) -> list[FundedWant]:
     return [FundedWant(str(r["decision_id"]), _utc(r["decided_at"]), str(r["family"]), int(r["tier"])) for r in rows]
 
 
+async def read_event_history(pool: Any, now: datetime) -> dict[str, list[float]]:
+    """family -> intensities of its past event wants (30 days). Raises on a failed read."""
+    async with pool.connection() as conn:
+        rows = await (await conn.execute(EVENT_HISTORY_SQL, {"since": now - HISTORY_WINDOW,
+                                                             "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
+    out: dict[str, list[float]] = {}
+    for r in rows:
+        if r["intensity"] is not None:
+            out.setdefault(str(r["family"]), []).append(float(r["intensity"]))
+    return out
+
+
 @dataclass
 class _Cached:
     at: datetime
     acts: list[ActRecord]
     uses: list[UseRecord]
+    events: Optional[dict[str, list[float]]] = None
 
 
 class Market:
@@ -161,6 +193,7 @@ class Market:
         # signal is never read; bids are exactly as before.
         self.prime_regulation = bool(prime_regulation)
         self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0, "prime_applied": 0, "prime_control": 0,
+                       "prime_refused": 0,
                        "prime_read_failed": 0}
 
     async def _history(self, now: datetime) -> _Cached:
@@ -172,7 +205,12 @@ class Market:
             if not acts:
                 # An act ledger read that returns nothing is not "no hunger anywhere": unknown.
                 raise RuntimeError("grammar_acts returned no rows")
-            self._cache = _Cached(at=now, acts=acts, uses=uses)
+            try:
+                events = await read_event_history(self._pool_getter(), now)
+            except Exception:  # noqa: BLE001 -- keep the last one; none yet: event wants rank as any want
+                logger.warning("physiology_bid_event_history_read_failed", exc_info=True)
+                events = self._cache.events if self._cache is not None else None
+            self._cache = _Cached(at=now, acts=acts, uses=uses, events=events)
             try:
                 self.book.seed_funded(await read_funded(self._pool_getter(), now), now)
             except Exception:  # noqa: BLE001 -- keep the last count; no floor until a first read succeeds
@@ -203,7 +241,7 @@ class Market:
         if self._weights is None or self._weights[0] != key:
             self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
         ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
-                            weights=self._weights[1])
+                            weights=self._weights[1], event_history=hist.events)
         # dataclasses.replace keeps every field (C1 rebuilt the context by hand and dropped
         # tier1_recent_use, so Tier 2's line forgot Tier 1's measured use).
         return dataclasses.replace(ctx, stale_after_sec=self._stale)
@@ -220,16 +258,24 @@ class Market:
         else:
             # Only an OBEYED bid takes Prime's charge (a shadow bid would grade Prime on holds that never happened).
             sig = await self._prime_signal(want.family, now) if want.producer in BINDING_PRODUCERS else None
-            applied = sig if sig is not None and sig.arm == "treated" else None
+            refusal = await self._prime_refusal(sig) if sig is not None else None
+            applied = sig if sig is not None and sig.arm == "treated" and refusal is None else None
             other = None
             if sig is not None:
                 # The same bid decided the other way, on a throwaway copy of the book (it must not reserve or
                 # count anything): what the charge changed is read from two real decisions, both arms alike.
+                # Refused: the "other way" is the charge as Prime sent it (what the refusal took away).
                 other = decide(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
                                prime=None if applied is not None else sig)
-            decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
+            if refusal is not None and sig.arm == "treated":
+                # Not applied, and the decision says why (the refusal names the charge it removed).
+                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
+                                  prime_refusal=refusal)
+            else:
+                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
             if sig is not None and other is not None:
-                await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None)
+                await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None,
+                                                refusal=refusal)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
         try:
             await self._publish(decision)
@@ -267,16 +313,39 @@ class Market:
             return None
         return sig
 
+    async def _prime_refusal(self, sig: pc.PrimeRegulationV1) -> Optional[pc.PrimeChargeRefusalV1]:
+        """The organ's refusal of exactly ``sig`` (curiosity replica patch 4), or None. Never raises: an
+        unread refusal is no refusal, so the charge applies as Prime sent it."""
+        redis = self._redis_getter()
+        if redis is None:
+            return None
+        try:
+            raw = await redis.hget(pc.key(sig.family), pc.REFUSAL_FIELD)
+        except Exception:  # noqa: BLE001
+            self.counts["prime_read_failed"] += 1
+            logger.warning("prime_refusal_read_failed family=%s", sig.family, exc_info=True)
+            return None
+        return pc.refusal_for(sig, pc.parse_refusal(raw))
+
     async def _record_prime_effect(self, sig: pc.PrimeRegulationV1, want: WantV1, decision: WantDecisionV1,
-                                   other: WantDecisionV1, now: datetime, *, applied: bool) -> None:
+                                   other: WantDecisionV1, now: datetime, *, applied: bool,
+                                   refusal: Optional[pc.PrimeChargeRefusalV1] = None) -> None:
         """Write what the charge did (treated) or would have done (control) to this want. Best-effort.
-        ``decision`` is the one the market made; ``other`` the same bid decided the other way."""
+        ``decision`` is the one the market made; ``other`` the same bid decided the other way. Refused by the
+        organ: the charge did nothing (``unchanged``), whatever the arm; what it would have done is in ``why``."""
         if decision.net is None or other.net is None:
             return          # the market could not price the want: nothing to say about the charge
         with_c, without_c = (decision, other) if applied else (other, decision)
         eff = pc.effect_between(sig.direction, with_c, without_c)
-        self.counts["prime_applied" if applied else "prime_control"] += 1
-        why = decision.why if applied else f"held back (control, not applied): with it, {with_c.why}"
+        if refusal is not None:
+            self.counts["prime_refused"] += 1
+            arm = "" if sig.arm == "treated" else " (a control signal: never applied either way)"
+            why = (f"refused by {refusal.by}{arm}: {refusal.reason[:160]}; without the refusal it would have "
+                   f"been {eff}: {with_c.why}")
+            eff = "unchanged"
+        else:
+            self.counts["prime_applied" if applied else "prime_control"] += 1
+            why = decision.why if applied else f"held back (control, not applied): with it, {with_c.why}"
         net_with, net_without = with_c.net, without_c.net
         redis = self._redis_getter()
         if redis is None:
@@ -284,7 +353,7 @@ class Market:
         k, field_name = pc.key(sig.family), f"{pc.WANT_FIELD_PREFIX}{want.want_id}"
         try:
             prev = await redis.hget(k, field_name)
-            if prev is None and await redis.hlen(k) >= pc.MAX_WANT_FIELDS + 1:      # + the signal field
+            if prev is None and await redis.hlen(k) >= pc.MAX_WANT_FIELDS + 2:      # + the signal and refusal fields
                 return
             prev_m = None
             if prev is not None:
@@ -329,4 +398,4 @@ class Market:
                 "prime_regulation": self.prime_regulation, **self.counts}
 
 
-__all__ = ["Market", "act_from_row", "read_funded", "read_history", "use_from_row"]
+__all__ = ["Market", "act_from_row", "read_event_history", "read_funded", "read_history", "use_from_row"]

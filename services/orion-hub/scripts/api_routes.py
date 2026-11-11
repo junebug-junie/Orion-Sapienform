@@ -162,14 +162,7 @@ from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdap
 from orion.substrate.mutation_control_surface import (
     chat_reflective_lane_threshold_history,
     control_surface_store,
-    get_prediction_expectation,
     inspect_chat_reflective_lane_threshold,
-)
-from orion.substrate.prediction_expectation_tuner import (
-    BASELINE_METRIC_REF as PREDICTION_EXPECTATION_BASELINE_REF,
-    REPLAY_CORPUS_ID as PREDICTION_EXPECTATION_CORPUS_ID,
-    PredictionExpectationTuner,
-    postgres_reading_reader,
 )
 from orion.substrate.recall_strategy_readiness import (
     compute_recall_strategy_readiness,
@@ -189,11 +182,6 @@ from .substrate_attention_routes import router as substrate_attention_router
 from .attention_loops_routes import router as attention_loops_router
 from .sentience_program_routes import router as sentience_program_router
 from .substrate_observability_routes import router as substrate_observability_router
-from .substrate_proposal_routes import router as substrate_proposal_router
-from .substrate_policy_routes import router as substrate_policy_router
-from .substrate_execution_dispatch_routes import router as substrate_execution_dispatch_router
-from .substrate_feedback_routes import router as substrate_feedback_router
-from .substrate_consolidation_routes import router as substrate_consolidation_router
 from .substrate_lattice_routes import router as substrate_lattice_router
 from .self_brain_routes import router as self_brain_router
 from .field_channel_glossary_routes import router as field_channel_glossary_router
@@ -207,11 +195,13 @@ from .cabinet_sensors_routes import router as cabinet_sensors_router
 from .cabinet_ambient_routes import router as cabinet_ambient_router
 from .cabinet_cooling_routes import router as cabinet_cooling_router
 from .office_env_routes import router as office_env_router
+from .closet_env_routes import router as closet_env_router
 from .cabinet_climate_routes import router as cabinet_climate_router
 from .energy_routes import router as energy_router
 from .biometrics_preview_routes import router as biometrics_preview_router
 from .reverie_routes import router as reverie_router
 from .dream_routes import router as dream_router
+from .hub_attention_routes import router as hub_attention_router
 router.include_router(grammar_atlas_router)
 router.include_router(chat_turn_trace_router)
 router.include_router(chat_cockpit_router)
@@ -221,11 +211,6 @@ router.include_router(substrate_attention_router)
 router.include_router(attention_loops_router)
 router.include_router(sentience_program_router)
 router.include_router(substrate_observability_router)
-router.include_router(substrate_proposal_router)
-router.include_router(substrate_policy_router)
-router.include_router(substrate_execution_dispatch_router)
-router.include_router(substrate_feedback_router)
-router.include_router(substrate_consolidation_router)
 router.include_router(substrate_lattice_router)
 router.include_router(self_brain_router)
 router.include_router(field_channel_glossary_router)
@@ -237,11 +222,13 @@ router.include_router(cabinet_sensors_router)
 router.include_router(cabinet_ambient_router)
 router.include_router(cabinet_cooling_router)
 router.include_router(office_env_router)
+router.include_router(closet_env_router)
 router.include_router(cabinet_climate_router)
 router.include_router(energy_router)
 router.include_router(biometrics_preview_router)
 router.include_router(reverie_router)
 router.include_router(dream_router)
+router.include_router(hub_attention_router)
 
 
 def _hub_uses_host_network_mode() -> bool:
@@ -472,34 +459,11 @@ SUBSTRATE_MUTATION_STORE = SubstrateMutationStore(
     postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_MUTATION_SURFACES: Dict[str, Dict[str, Any]] = {}
-# Rung 6 producer. Module-level because the scheduler builds a fresh worker
-# every tick, and the tuner's per-domain "last assessed" clock must survive
-# between ticks. Built lazily: it needs the control-plane Postgres URL.
-_PREDICTION_EXPECTATION_TUNER: PredictionExpectationTuner | None = None
 # Review telemetry ids already turned into signals. The scheduler re-reads the
 # newest N rows every tick with no cursor; before 2026-10-16 that turned ~30
 # real reviews a day into ~65k signals. Bounded, oldest evicted first.
 _MUTATION_SEEN_TELEMETRY_IDS: "OrderedDict[str, None]" = OrderedDict()
 _MUTATION_SEEN_TELEMETRY_MAX = 5000
-
-
-def _prediction_expectation_tuner() -> PredictionExpectationTuner | None:
-    global _PREDICTION_EXPECTATION_TUNER
-    if _PREDICTION_EXPECTATION_TUNER is None:
-        postgres_url = SUBSTRATE_MUTATION_STORE.postgres_url
-        if not postgres_url:
-            return None
-        _PREDICTION_EXPECTATION_TUNER = PredictionExpectationTuner(
-            read_readings=postgres_reading_reader(postgres_url),
-            read_live=lambda domain: get_prediction_expectation(domain, strict=True),
-            window=timedelta(hours=_env_float(
-                "SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS", default=72.0, minimum=6.0, maximum=192.0
-            )),
-            min_interval=timedelta(minutes=_env_float(
-                "SUBSTRATE_PREDICTION_EXPECTATION_INTERVAL_MIN", default=60.0, minimum=5.0, maximum=1440.0
-            )),
-        )
-    return _PREDICTION_EXPECTATION_TUNER
 
 
 def _unseen_review_telemetry(records: list) -> list:
@@ -1064,7 +1028,19 @@ def health():
         "listeners_ok": listeners["ok"],
         "listeners_down": listeners["down"],
         "listeners": listeners["listeners"],
+        "retro_leisure_self_start": _retro_leisure_self_start_health(),
     }
+
+
+def _retro_leisure_self_start_health() -> dict[str, Any] | None:
+    """The leisure timer's last tick (scripts/retro_leisure_self_start.py), or None before startup."""
+    try:
+        import scripts.main as hub_main
+
+        timer = getattr(hub_main, "retro_leisure_self_start", None)
+        return timer.snapshot() if timer is not None else None
+    except Exception:  # noqa: BLE001 -- health never fails on a status block
+        return None
 
 
 @router.get("/api/substrate/tier-outcomes/latest")
@@ -4735,7 +4711,10 @@ class _ScheduledCyclePatchApplier(PatchApplier):
     ) -> None:
         super().__init__(surfaces=surfaces)
         self.allow_apply = bool(allow_apply)
-        self.allowed_classes = set(allowed_classes or set())
+        # None = every class; an explicit set (even empty) = only those.
+        # Empty since 2026-11-03: every auto-promotable class is retired, so
+        # the unattended cycle applies nothing.
+        self.allowed_classes = None if allowed_classes is None else set(allowed_classes)
         self.attempted = 0
         self.blocked = 0
         self.completed = 0
@@ -4743,7 +4722,7 @@ class _ScheduledCyclePatchApplier(PatchApplier):
     def apply(self, *, proposal, decision):  # type: ignore[override]
         if decision.action == "auto_promote":
             self.attempted += 1
-        if self.allowed_classes and proposal.mutation_class not in self.allowed_classes:
+        if self.allowed_classes is not None and proposal.mutation_class not in self.allowed_classes:
             if decision.action == "auto_promote":
                 self.blocked += 1
             return None
@@ -5027,31 +5006,26 @@ def execute_substrate_mutation_scheduled_cycle(
         applier = _ScheduledCyclePatchApplier(
             surfaces=SUBSTRATE_MUTATION_SURFACES,
             allow_apply=apply_enabled,
-            # routing_threshold_patch and graph_consolidation_param_patch are
-            # retired (RETIRED_MUTATION_CLASSES). Rung 6's self-tuned prediction
-            # expectation is the only class this unattended cycle may apply.
-            # The env flags keep their historical "routing" names (a live Hub
-            # API response reads them by these keys).
-            allowed_classes={"prediction_expectation_patch"},
+            # routing_threshold_patch, graph_consolidation_param_patch and
+            # prediction_expectation_patch (2026-11-03) are retired
+            # (RETIRED_MUTATION_CLASSES). No class may be applied by this
+            # unattended cycle: it still reads signals, proposes and trials
+            # for operator review, but applies nothing. The env flags keep
+            # their historical "routing" names (a live Hub API response reads
+            # them by these keys).
+            allowed_classes=set(),
         )
         corpus = ReplayCorpusRegistry(
             corpus_by_class={
                 "routing_threshold_patch": "replay-routing-v1",
                 "recall_weighting_patch": "replay-recall-v1",
                 "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
-                "prediction_expectation_patch": PREDICTION_EXPECTATION_CORPUS_ID,
             },
             baseline_metric_ref_by_class={
                 "routing_threshold_patch": "baseline-routing-v1",
                 "recall_weighting_patch": "baseline-recall-v1",
                 "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
-                "prediction_expectation_patch": PREDICTION_EXPECTATION_BASELINE_REF,
             },
-        )
-        tuner = (
-            _prediction_expectation_tuner()
-            if _env_flag("SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED", default=True)
-            else None
         )
         worker = SubstrateAdaptationWorker(
             store=SUBSTRATE_MUTATION_STORE,
@@ -5064,7 +5038,6 @@ def execute_substrate_mutation_scheduled_cycle(
             trial_runner=SubstrateTrialRunner(
                 scorer=ClassSpecificScorer(),
                 corpus_registry=corpus,
-                prediction_expectation_evaluator=tuner.trial_metrics if tuner is not None else None,
             ),
             decision_engine=DecisionEngine(),
             applier=applier,
@@ -5088,7 +5061,7 @@ def execute_substrate_mutation_scheduled_cycle(
         # retired 2026-09-05 (RETIRED_MUTATION_CLASSES) -- that zone's BASE
         # signal is a permanent no-op now (_RETIRED_TELEMETRY_ZONES), so this
         # filter alone made the scheduled cycle apply nothing for real,
-        # regardless of allowed_classes below. "world_ontology" is
+        # regardless of allowed_classes (now set(), see above). "world_ontology" is
         # graph_consolidation's real zone (TARGET_SURFACE_BY_ZONE) and is
         # live in production today (confirmed: 141 operator_review/
         # world_ontology rows in the last 14 days, 2026-09-08) -- this is
@@ -5168,33 +5141,11 @@ def execute_substrate_mutation_scheduled_cycle(
         if telemetry_override is None:
             telemetry = _unseen_review_telemetry(telemetry)
 
-        # Rung 6: enqueue evidence-derived proposals before the worker runs,
-        # so their trials happen in this same cycle. Never fatal to the cycle.
-        prediction_expectation_proposals = 0
-        post_adoption_delta_by_proposal: Dict[str, float] = {}
-        if tuner is not None and _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False):
-            _t_tuner = time.monotonic()
-            # Separate guards: a failed proposal must not skip monitoring.
-            if proposals_enabled:
-                try:
-                    prediction_expectation_proposals = len(
-                        tuner.propose(store=SUBSTRATE_MUTATION_STORE, now=tick_now)
-                    )
-                except Exception:
-                    logger.warning("prediction_expectation_propose_failed", exc_info=True)
-            if monitor_enabled:
-                try:
-                    post_adoption_delta_by_proposal = tuner.post_adoption_deltas(store=SUBSTRATE_MUTATION_STORE)
-                except Exception:
-                    logger.warning("prediction_expectation_post_adoption_failed", exc_info=True)
-            _phase_sec["prediction_expectation_tuner"] = time.monotonic() - _t_tuner
-
         _t_run = time.monotonic()
         result = worker.run_cycle(
             telemetry=telemetry,
             measured_metrics_by_proposal={},
             measured_metrics_by_class=class_metrics_override or None,
-            post_adoption_delta_by_proposal=post_adoption_delta_by_proposal or None,
             post_adoption_delta_by_target_surface=(
                 post_adoption_delta_by_target_surface_override if monitor_enabled else None
             ),
@@ -5222,7 +5173,6 @@ def execute_substrate_mutation_scheduled_cycle(
             "signals_processed": int(result.get("signals", 0)),
             "signal_intake": signal_intake,
             "proposals_created": int(result.get("proposals", 0)),
-            "prediction_expectation_proposals": prediction_expectation_proposals,
             "trials_executed": int(result.get("trials", 0)),
             "adoptions_completed": int(result.get("adoptions", 0)),
             "decisions_made": len([event for event in traces if event.get("event") == "mutation_decision_recorded"]),
@@ -5327,30 +5277,18 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         allow_apply=apply_allowed,
         blocked_reason=";".join(apply_blockers) if apply_blockers else None,
     )
-    # Same store as the scheduled cycle, so rung-6 proposals and adoptions
-    # can be due here too: trial and monitor them the same way, never by
-    # default-rejecting a proposal or settling an adoption unmeasured.
-    manual_tuner = _prediction_expectation_tuner()
     corpus = ReplayCorpusRegistry(
         corpus_by_class={
             "routing_threshold_patch": "replay-routing-v1",
             "recall_weighting_patch": "replay-recall-v1",
             "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
-            "prediction_expectation_patch": PREDICTION_EXPECTATION_CORPUS_ID,
         },
         baseline_metric_ref_by_class={
             "routing_threshold_patch": "baseline-routing-v1",
             "recall_weighting_patch": "baseline-recall-v1",
             "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
-            "prediction_expectation_patch": PREDICTION_EXPECTATION_BASELINE_REF,
         },
     )
-    manual_post_adoption_deltas: Dict[str, float] = {}
-    if manual_tuner is not None:
-        try:
-            manual_post_adoption_deltas = manual_tuner.post_adoption_deltas(store=SUBSTRATE_MUTATION_STORE)
-        except Exception:
-            logger.warning("prediction_expectation_post_adoption_failed", exc_info=True)
     worker = SubstrateAdaptationWorker(
         store=SUBSTRATE_MUTATION_STORE,
         detectors=MutationDetectors(
@@ -5364,7 +5302,6 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         trial_runner=SubstrateTrialRunner(
             scorer=ClassSpecificScorer(),
             corpus_registry=corpus,
-            prediction_expectation_evaluator=manual_tuner.trial_metrics if manual_tuner is not None else None,
         ),
         decision_engine=DecisionEngine(),
         applier=applier,
@@ -5399,7 +5336,6 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         telemetry=telemetry,
         measured_metrics_by_proposal={},
         measured_metrics_by_class=request.class_metrics or None,
-        post_adoption_delta_by_proposal=manual_post_adoption_deltas or None,
         post_adoption_delta_by_target_surface=request.post_adoption_delta_by_target_surface or None,
         replay_telemetry=telemetry,
         now=now,
@@ -5886,9 +5822,10 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             # at staging; see graph_consolidation.recent_activity below.
             # Plain English, not jargon: this string is the first line a
             # human reads on this page.
-            # 2026-10-16: one surface now changes live behavior without
-            # approval -- rung 6's prediction_expectation_patch.
-            "summary": "Orion can suggest changes to itself and try some out quietly. One kind of change Orion makes alone: how surprised they expect to be (checked on held-out data first, undone automatically if it turns out worse). Everything else waits for you.",
+            # 2026-10-16..2026-11-03 one surface (rung 6's
+            # prediction_expectation_patch) changed live behavior without
+            # approval; retired 2026-11-03, so none does now.
+            "summary": "Orion can suggest changes to itself and try some out quietly, but nothing changes how it actually behaves without you approving it first.",
             "safe_next_action": "build_recall_v2_manual_canary",
             "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
             "warnings": [],

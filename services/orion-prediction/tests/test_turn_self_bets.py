@@ -271,3 +271,60 @@ def test_relative_faculties_are_graded_as_probabilities():
              "void_reason": None, "stated_p": 0.8 if h else 0.2, "hit": h} for h in [True, False] * 30]
     g = grade_faculty("turn.self.more_steps_than_usual", rows)
     assert g["brier"] == pytest.approx(0.04) and g["skill_vs_caller"] == pytest.approx(1 - 0.04 / 0.25)
+
+
+def test_relative_grade_reports_the_within_caller_sorting_score():
+    rows = [{"faculty": "turn.self.longer_reply_than_usual", "caller": c, "status": "happened" if h else "not_happened",
+             "void_reason": None, "stated_p": p, "hit": h}
+            for c in ("self", "chat") for p, h in [(0.7, True), (0.3, False), (0.6, True), (0.4, True)] * 15]
+    g = grade_faculty("turn.self.longer_reply_than_usual", rows)
+    assert g["sort_auc"] == pytest.approx(1.0) and g["sort_pairs"] == 2 * 45 * 15 and g["sort_p"] < 1e-6
+
+
+@pytest.mark.parametrize("art,age", [(_art(code=1), timedelta(minutes=10)), (None, timedelta(hours=7))])
+def test_a_crashed_or_lost_turn_voids_every_faculty_so_it_reads_as_one_failed_turn(art, age):
+    # The self-monitor counts a turn as failed only when ALL its rows are failed_to_execute
+    # (turn.run, #3078), and skips those rows on the guess faculties. Marking the unstated ones
+    # no_stated instead would make every crashed v2 turn read as a turn that ran.
+    reason = "failed_to_execute" if art is not None else "expired_unsettled"
+    assert {r["void_reason"] for r in settle(_bet(pred=PRED_V2, age=age), art, NOW)} == {reason}
+
+
+def test_relative_grade_reports_the_within_caller_sorting_score():
+    rows = [{"faculty": "turn.self.longer_reply_than_usual", "caller": c, "status": "happened" if h else "not_happened",
+             "void_reason": None, "stated_p": p, "hit": h}
+            for c in ("self", "chat") for p, h in [(0.7, True), (0.3, False), (0.6, True), (0.4, True)] * 15]
+    g = grade_faculty("turn.self.longer_reply_than_usual", rows)
+    assert g["sort_auc"] == pytest.approx(1.0) and g["sort_pairs"] == 2 * 45 * 15 and g["sort_p"] < 1e-6
+
+
+@pytest.mark.parametrize("reason", ["user_stop", "client_disconnect", "ws_error", "durable_attempt_stopped",
+                                    "worker_recovery"])
+def test_a_turn_stopped_from_outside_is_interrupted_not_failed(reason):
+    # Live 2026-11-04: ~127 of 262 failed turns in 7 days were GPU recalls or Juniper's stop, all counted
+    # as Orion failing to run. The record now says who stopped the turn.
+    art = dict(_art(text="", code=-9), stop_reason=f"cancel:{reason}")
+    rows = settle(_bet(), art, NOW)
+    assert {r["status"] for r in rows} == {"void"}
+    assert {r["void_reason"] for r in rows} == {"interrupted"}
+    assert all(r["hit"] is None and r["observed"] is None for r in rows)
+
+
+@pytest.mark.parametrize("stop_reason", ["fcc_timeout", "fcc_stream_stalled", "fcc_context_ceiling_exceeded",
+                                         "fcc_nonzero_exit", "cancel:some_new_reason", "cancel:",
+                                         "cancel:durable_attempt_timeout", None, 7])
+def test_the_motors_own_kills_and_unknown_reasons_stay_failed_to_execute(stop_reason):
+    # One direction only: a motor kill is a real failure, and an unknown or absent reason never loosens.
+    art = dict(_art(text="", code=-9), stop_reason=stop_reason)
+    assert {r["void_reason"] for r in settle(_bet(), art, NOW)} == {"failed_to_execute"}
+
+
+def test_an_old_record_without_stop_reason_stays_failed_to_execute():
+    assert "stop_reason" not in _art(code=-9)
+    assert {r["void_reason"] for r in settle(_bet(), _art(code=-9), NOW)} == {"failed_to_execute"}
+
+
+def test_a_cancel_reason_on_a_turn_that_finished_does_not_void_it():
+    # A cancel that lost the race to a finished reply: the turn ran, so it is graded.
+    art = dict(_art(), stop_reason="cancel:user_stop")
+    assert not any(r["void_reason"] in ("interrupted", "failed_to_execute") for r in settle(_bet(), art, NOW))

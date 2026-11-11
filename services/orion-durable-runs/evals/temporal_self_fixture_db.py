@@ -42,6 +42,8 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql",
     REPO / "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql",
     REPO / "services/orion-sql-db/manual_migration_vision_handoff_v1.sql",
+    # Office sessions (office camera design PR #3127 step B).
+    REPO / "services/orion-sql-db/manual_migration_vision_office_session_v1.sql",
 )
 
 
@@ -149,8 +151,19 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
             "source_kind": "arousal_transition", "source_table": "regulation",
             "source_ref": r.get("source_ref") or r["event_id"], "subject_ref": "orion:arousal",
             "label": payload.get("to"), "payload_json": payload})
+    # Felt state: the physiology node's own binding rows live in the chronicle's event table too.
+    for r in rows.get("body_binding", []):
+        payload = r["payload_json"] if isinstance(r["payload_json"], dict) else json.loads(r["payload_json"])
+        out["temporal_self_event"].append({
+            "event_id": r["event_id"], "day_id": r.get("day_id") or "", "occurred_at": r["occurred_at"],
+            "source_kind": "body_binding", "source_table": "physiology",
+            "source_ref": r.get("source_ref") or r["event_id"],
+            "subject_ref": f"orion:body:{payload.get('constraint')}",
+            "label": payload.get("constraint"), "payload_json": payload})
     # Orion plays Zelda (section F): the export emits whole retro_play_sessions rows.
     out["retro_play_sessions"].extend(dict(r) for r in rows.get("retro_play", []))
+    # Office sessions: the adapter reads whole vision_office_session rows.
+    out["vision_office_session"].extend(dict(r) for r in rows.get("office_session", []))
     for r in rows.get("memory_episode", []):
         out["episode_memory"].append(dict(r, created_at=r.get("occurred_at")))
     out["orion_biometrics_cluster"].extend(dict(r) for r in rows.get("body_cluster", []))

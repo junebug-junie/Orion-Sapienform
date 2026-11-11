@@ -42,7 +42,23 @@ CURIOSITY_KINDS = ("self_inquiry", "curiosity_investigation")
 
 _CODE_PATH_RE = re.compile(r"(services/|orion/|docs/|\.py\b|\.ya?ml\b)")
 _READ_SHELL_RE = re.compile(r"\b(cat|sed|head|tail|grep|rg|find|ls|wc|awk|git)\b")
-_DIG_SUBCOMMAND_RE = re.compile(r"orion\.dig\s+(?:--dig\s+\S+\s+)?([a-z_]+)")
+# Hyphens included: `body-economy` and `name-organs` are their own subcommands, not `body`/`name`.
+_DIG_SUBCOMMAND_RE = re.compile(r"-m\s+orion\.dig\s+(?:--dig\s+\S+\s+)?([a-z][a-z_-]*)")
+
+
+def _shell_commands(name: str, tool_input: dict) -> list[str]:
+    """Shell commands a tool call runs: Bash, or the context-mode batch/execute tools.
+
+    Orion often runs dig through ``ctx_batch_execute`` (a list of commands), so
+    reading only Bash missed real dig use (seen live 2026-11-03).
+    """
+    if name == "Bash":
+        return [str(tool_input.get("command") or "")]
+    if name.endswith("ctx_batch_execute"):
+        return [str(c.get("command") or "") for c in tool_input.get("commands") or [] if isinstance(c, dict)]
+    if name.endswith("ctx_execute") and tool_input.get("language") in (None, "shell", "bash", "sh"):
+        return [str(tool_input.get("code") or "")]
+    return []
 
 
 def _text(content) -> str:
@@ -80,15 +96,16 @@ def summarize_session(records: Iterable[dict]) -> dict:
                 continue
             name = part.get("name")
             tool_input = part.get("input") or {}
-            command = str(tool_input.get("command") or "")
-            if name == "Bash" and "orion.dig" in command:
-                used_dig = True
-                match = _DIG_SUBCOMMAND_RE.search(command)
-                subcommands.append(match.group(1) if match else "?")
-            elif name in ("Read", "Grep", "Glob") and _CODE_PATH_RE.search(json.dumps(tool_input)):
+            if name in ("Read", "Grep", "Glob") and _CODE_PATH_RE.search(json.dumps(tool_input)):
                 read_code = True
-            elif name == "Bash" and _READ_SHELL_RE.search(command) and _CODE_PATH_RE.search(command):
-                read_code = True
+                continue
+            for command in _shell_commands(str(name), tool_input):
+                dig_calls = _DIG_SUBCOMMAND_RE.findall(command)
+                if dig_calls:
+                    used_dig = True
+                    subcommands.extend(dig_calls)
+                elif _READ_SHELL_RE.search(command) and _CODE_PATH_RE.search(command):
+                    read_code = True
     return {"kind": kind or "empty", "used_dig": used_dig, "read_code": read_code, "dig_subcommands": subcommands}
 
 

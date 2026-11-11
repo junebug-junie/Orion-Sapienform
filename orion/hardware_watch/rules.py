@@ -378,3 +378,89 @@ def shed_verdict(cabinet: Sequence[TempPoint], now: datetime,
     if rise is not None and rise >= cfg.rise_c:
         return ShedVerdict(True, "cabinet_rising", newest.value, rise)
     return ShedVerdict(False, None, newest.value, rise)
+
+
+# --- docker image prune (ladder retirement PR 4, 2026-11-06) ----------------------------------
+#
+# The disk rule replaces the proposal -> policy -> dispatch path for ``skills.runtime.image_prune.v1``.
+# Spec: docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md ("PR 4").
+#
+# The rule only decides WHEN to ask. The skill (orion-cortex-exec) still measures the disk and the
+# dangling-image count itself and declines unless both clear its own gate, so this threshold is the
+# skill's own disk floor, not a second, different one. tests/test_image_prune_disk_rule_parity.py
+# pins it to services/orion-cortex-exec/app/verb_adapters.py's IMAGE_PRUNE_MIN_DISK_PCT.
+IMAGE_PRUNE_MIN_DISK_PCT = 70.0
+
+#: Skill decisions that mean "the skill measured and answered": the next ask waits the full cooldown.
+#: Anything else (no reply, an unreadable reply, the skill could not measure, a failed prune) waits
+#: only ``retry_sec``: a missed prune costs a few MB, a retry storm costs a docker call per tick.
+#: ``would_act`` is NOT an answer here: the rule always asks in execute mode, so a preview answer means
+#: the execute mode was lost on the way (the watcher logs it as a warning and retries).
+IMAGE_PRUNE_ANSWERED = frozenset({
+    "pruned", "pruned_nothing", "declined_nothing_to_reclaim", "declined_no_pressure",
+})
+
+
+@dataclass(frozen=True)
+class DiskReading:
+    """One reading of the docker data volume. ``used_pct`` is None when it could not be read."""
+
+    used_pct: float | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ImagePruneRuleConfig:
+    min_disk_pct: float = IMAGE_PRUNE_MIN_DISK_PCT
+    # How long after an answered ask before the next one (12 h). The disk sat above the floor for the
+    # whole 14-day replay window, so this, not the disk, sets the ask rate: 2 asks a day. The replay
+    # sweep (evals/run_image_prune_replay_eval.py --sweep) kept up with the real dangling-image growth
+    # at 12 h (1,925 images against the real 1,993) with half the asks of 6 h (28 against 56).
+    cooldown_sec: float = 43200.0
+    # How long after an unanswered ask (RPC error, unreadable reply, skill could not measure).
+    retry_sec: float = 1800.0
+    # No ask until this long after the process starts: the post-pull rebuild restarts services one by
+    # one, so cortex-exec may be mid-restart and other images mid-build when this one comes up.
+    start_delay_sec: float = 600.0
+
+
+@dataclass(frozen=True)
+class ImagePruneState:
+    started_at: datetime
+    in_flight: bool = False
+    last_finished_at: datetime | None = None
+    last_outcome: str | None = None
+
+
+@dataclass(frozen=True)
+class ImagePruneVerdict:
+    ask: bool
+    reason: str            # ask | in_flight | starting | disk_unreadable | below_threshold | cooldown | retry_wait
+    wait_sec: float = 0.0  # how long the hold has left (0 when none or unknown)
+
+
+def image_prune_verdict(disk: DiskReading, now: datetime, state: ImagePruneState,
+                        cfg: ImagePruneRuleConfig = ImagePruneRuleConfig()) -> ImagePruneVerdict:
+    """Should the watcher ask cortex-exec to run ``skills.runtime.image_prune.v1`` now?
+
+    ``now`` must be taken AFTER ``disk`` and ``state`` were read (the #3134 lesson). A
+    ``last_finished_at`` later than ``now`` (an ask that finished while this tick was reading) is an
+    age of 0, so it holds; it is never a negative age that reads as "long ago".
+    Order: one ask at a time; the start delay; an unreadable disk never asks; below the skill's own
+    floor never asks; then the hold after the last ask (cooldown if answered, retry otherwise)."""
+    if state.in_flight:
+        return ImagePruneVerdict(False, "in_flight")
+    since_start = max(0.0, _age(now, state.started_at))
+    if since_start < cfg.start_delay_sec:
+        return ImagePruneVerdict(False, "starting", cfg.start_delay_sec - since_start)
+    if disk.used_pct is None or not math.isfinite(disk.used_pct):
+        return ImagePruneVerdict(False, "disk_unreadable")
+    if disk.used_pct < cfg.min_disk_pct:
+        return ImagePruneVerdict(False, "below_threshold")
+    if state.last_finished_at is not None:
+        answered = state.last_outcome in IMAGE_PRUNE_ANSWERED
+        hold = cfg.cooldown_sec if answered else cfg.retry_sec
+        age = max(0.0, _age(now, state.last_finished_at))
+        if age < hold:
+            return ImagePruneVerdict(False, "cooldown" if answered else "retry_wait", hold - age)
+    return ImagePruneVerdict(True, "ask")

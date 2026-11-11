@@ -91,6 +91,8 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    # SelfMonitorStateV1 / FacultyRecordV1 were declared here (writer orion-durable-runs) until the
+    # self_monitor node (rung 6 patch 2, PR #3066) became a writer code can see: same rule as above.
     "orion.schemas.prediction:ActionBetCountsV1": (
         "orion-prediction",
         "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "
@@ -153,11 +155,6 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     "orion.schemas.person_model:PersonRefV1": (None, "config/person_model/people.yaml the reader loads itself (load_people)"),
     "orion.schemas.person_model:PronounEvidenceV1": (None, "nested in PersonRefV1 rows of config/person_model/people.yaml"),
     "orion.autonomy.models:CapabilityPolicyRuleV1": (None, "capability policy YAML the reader loads itself"),
-    "orion/consolidation/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/execution_dispatch/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/feedback/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/policy/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/proposals/policy.py": (None, "policy YAML the reader loads itself"),
     "orion/reverie/baseline.py": (None, "policy YAML the reader loads itself"),
     "orion/gpu_pool/config.py": (None, "pool YAML the reader loads itself"),
     "orion/schemas/world_pulse.py": (None, "source registry YAML the reader loads itself"),

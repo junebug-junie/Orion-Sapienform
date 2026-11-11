@@ -80,10 +80,11 @@ def test_rows_to_points_skips_absent_values_and_keeps_sources():
     ]
 
 
-def test_overlay_returns_all_four_series_with_window_grain(monkeypatch):
+def test_overlay_returns_every_series_with_window_grain(monkeypatch):
     results = {
         "office_temp_c": [{"t": T0, "v": 26.1}],
         "cabinet_temp_c": [{"t": T0, "v": 28.2}],
+        "closet_temp_c": [{"t": T0, "v": 27.1}],
         "outdoor_temp_c": [{"t": T0, "v": 14.3}],
         "orion_watts": [{"t": T0, "v": 1570.0, "sources": 4}],
     }
@@ -96,6 +97,8 @@ def test_overlay_returns_all_four_series_with_window_grain(monkeypatch):
     assert body["series_grain_sec"]["outdoor_temp_c"] == 3600
     assert body["series_grain_sec"]["orion_watts"] == 900
     assert body["series"]["orion_watts"] == [{"t": "2026-10-28T12:00:00Z", "v": 1570.0, "sources": 4}]
+    assert body["series"]["closet_temp_c"] == [{"t": "2026-10-28T12:00:00Z", "v": 27.1}]
+    assert body["series_grain_sec"]["closet_temp_c"] == 900
     assert set(body["series"]) == set(cabinet_climate_routes.SERIES)
 
 
@@ -103,6 +106,7 @@ def test_one_failed_series_empties_only_that_series(monkeypatch):
     results = {
         "office_temp_c": [{"t": T0, "v": 26.1}],
         "cabinet_temp_c": RuntimeError("boom"),
+        "closet_temp_c": [{"t": T0, "v": 27.1}],
         "outdoor_temp_c": [],
         "orion_watts": [{"t": T0, "v": 1570.0, "sources": 3}],
     }
@@ -129,3 +133,50 @@ def test_unsupported_window_is_rejected(monkeypatch):
 
 def test_watts_sql_does_not_count_a_zero_watt_node_as_a_source():
     assert "chassis_watts')::double precision > 0" in cabinet_climate_routes._WATTS_SQL
+
+
+def test_closet_series_is_closet_temperature_only():
+    sql = cabinet_climate_routes._CLOSET_SQL
+    assert "FROM closet_env_sample" in sql
+    assert "avg(closet_temp_c)" in sql and "closet_temp_c IS NOT NULL" in sql
+    assert "co2" not in sql.lower()
+
+
+class _FakeConnection:
+    def __init__(self, failures):
+        self.failures = failures
+
+    async def fetch(self, sql, *args):
+        for marker, exc in self.failures.items():
+            if marker in sql:
+                raise exc
+        return [{"t": T0, "v": 1.0}]
+
+    async def close(self):
+        pass
+
+
+def _run_query_series(monkeypatch, failures):
+    import asyncio
+
+    import asyncpg
+
+    async def fake_connect(dsn):
+        return _FakeConnection(failures)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unused")
+    monkeypatch.setattr(asyncpg, "connect", fake_connect)
+    return asyncio.run(cabinet_climate_routes.query_series_rows(hours=24, grain_sec=300))
+
+
+def test_missing_closet_table_reads_as_no_rows_not_an_error(monkeypatch):
+    import asyncpg
+
+    out = _run_query_series(monkeypatch, {"closet_env_sample": asyncpg.exceptions.UndefinedTableError("missing")})
+    assert out["closet_temp_c"] == []
+    assert out["office_temp_c"] == [{"t": T0, "v": 1.0}]
+
+
+def test_other_closet_failures_still_surface_as_errors(monkeypatch):
+    out = _run_query_series(monkeypatch, {"closet_env_sample": RuntimeError("boom")})
+    assert isinstance(out["closet_temp_c"], RuntimeError)

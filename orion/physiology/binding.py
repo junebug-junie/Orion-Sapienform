@@ -4,7 +4,10 @@ Pure. Shared by every producer whose bid binds, so they all obey the same rule:
 
 * orion-durable-runs admission (``app.run_bids``: curiosity investigate, #3010), before a run asks the
   GPU pool for a hold;
-* orion-dream (``app.physiology_bind``: the dream cycle), before a sleep opens its act.
+* orion-dream (``app.physiology_bind``: the dream cycle), before a sleep opens its act;
+* orion-hub outreach (``scripts.outreach_bind``: hub.outreach), before a door composes a message;
+* orion-durable-runs' cooling world act (``app.cooling_act``, via ``orion.autonomy.shed_act.shed_verdict``),
+  which is stricter: only ``funded`` sheds, and "no answer" or the window's end never does.
 
 Design: docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Patch D row. The rule shape
 and the live evidence behind it: docs/superpowers/pr-reports/2026-10-30-patch-d-curiosity-binding-pr.md.
@@ -29,6 +32,8 @@ REBID_DEFAULT_SEC = 600.0       # the market named no relief time (a stuck price
 BINDING_PRODUCERS = frozenset({
     "orion-durable-runs.admission.binding",     # curiosity investigate (#3010), services/orion-durable-runs/app/run_bids.py
     "orion-dream.dream_cycle.binding",          # the dream cycle, services/orion-dream/app/physiology_bind.py
+    "orion-durable-runs.cooling_act.binding",   # the cooling world act, services/orion-durable-runs/app/cooling_act.py
+    "orion-hub.outreach.binding",               # Hub outreach (hub.outreach), services/orion-hub/scripts/outreach_bind.py
 })
 # The market could not decide: these are "no answer", not deferrals.
 NO_ANSWER_REASONS = frozenset({"physiology_unavailable", "unknown_family", "family_never_bids"})

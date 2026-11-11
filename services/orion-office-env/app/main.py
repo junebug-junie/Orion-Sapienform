@@ -11,9 +11,13 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
+from typing import Union
+
+from orion.schemas.telemetry.closet_env import SAMPLE_KIND_V1 as CLOSET_SAMPLE_KIND_V1
+from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
 from orion.schemas.telemetry.office_env import SAMPLE_KIND_V1, OfficeEnvSampleV1
 
-from .sample import build_sample
+from .sample import build_closet_sample, build_sample
 from .serial_reader import FrameStore, run_reader
 from .settings import Settings, get_settings
 
@@ -21,7 +25,8 @@ logger = logging.getLogger("orion-office-env")
 
 _STORE = FrameStore()
 _STATUS: dict[str, Any] = {
-    "office_sensor": "unknown",
+    "room": "unknown",
+    "sensor": "unknown",
     "sample_age_sec": None,
     "serial_open": False,
     "frames_ok": 0,
@@ -51,20 +56,32 @@ def office_status() -> dict[str, Any]:
     return dict(_STATUS)
 
 
+EnvSample = Union[OfficeEnvSampleV1, ClosetEnvSampleV1]
+
+
+def room_target(settings: Settings) -> tuple[str, str]:
+    """(bus kind, channel) for this container's room."""
+    if settings.ENV_ROOM == "closet":
+        return CLOSET_SAMPLE_KIND_V1, settings.CLOSET_ENV_SAMPLE_CHANNEL
+    return SAMPLE_KIND_V1, settings.OFFICE_ENV_SAMPLE_CHANNEL
+
+
 def make_sample(
     store: FrameStore, settings: Settings, now_fn: Callable[[], datetime] = _utcnow
-) -> OfficeEnvSampleV1:
+) -> EnvSample:
     frame, received_at = store.latest()
-    sample = build_sample(
+    closet = settings.ENV_ROOM == "closet"
+    sample = (build_closet_sample if closet else build_sample)(
         frame=frame,
         received_at=received_at,
         now=now_fn(),
         stale_after_sec=settings.OFFICE_STALE_AFTER_SEC,
         node=settings.INSTANCE_ID,
-        sensor_id=settings.OFFICE_SENSOR_ID,
+        sensor_id=settings.CLOSET_SENSOR_ID if closet else settings.OFFICE_SENSOR_ID,
     )
     _STATUS.update(
-        office_sensor="stale" if sample.state.stale else "fresh",
+        room=settings.ENV_ROOM,
+        sensor="stale" if sample.state.stale else "fresh",
         sample_age_sec=sample.provenance.sample_age_sec,
         serial_open=store.serial_open,
         frames_ok=store.frames_ok,
@@ -74,39 +91,39 @@ def make_sample(
     return sample
 
 
-async def publish_sample(bus: OrionBusAsync, settings: Settings, sample: OfficeEnvSampleV1) -> None:
+async def publish_sample(bus: OrionBusAsync, settings: Settings, sample: EnvSample) -> None:
     if not getattr(bus, "enabled", False):
-        logger.info("Bus disabled; skipping office sample publish")
+        logger.info("Bus disabled; skipping %s sample publish", settings.ENV_ROOM)
         return
+    kind, channel = room_target(settings)
     envelope = BaseEnvelope(
-        kind=SAMPLE_KIND_V1,
+        kind=kind,
         source=ServiceRef(
             name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.INSTANCE_ID
         ),
-        payload=sample.model_dump(mode="json", by_alias=True),
+        # exclude_none: absent readings are omitted on the wire, never sent as null. It also
+        # keeps a payload without PM/lux readings valid for a sql-writer that predates them.
+        payload=sample.model_dump(mode="json", by_alias=True, exclude_none=True),
     )
     try:
-        await bus.publish(settings.OFFICE_ENV_SAMPLE_CHANNEL, envelope)
+        await bus.publish(channel, envelope)
         logger.info(
-            "Published office sample temp_c=%s humidity_pct=%s eco2_ppm=%s tvoc_ppb=%s "
-            "air_warming=%s stale=%s channel=%s",
-            sample.measurements.office_temp_c,
-            sample.measurements.office_humidity_pct,
-            sample.measurements.office_eco2_ppm,
-            sample.measurements.office_tvoc_ppb,
-            sample.state.air_warming,
-            sample.state.stale,
-            settings.OFFICE_ENV_SAMPLE_CHANNEL,
+            "Published %s sample %s state=%s channel=%s",
+            settings.ENV_ROOM,
+            sample.measurements.model_dump(exclude_none=True),
+            sample.state.model_dump(),
+            channel,
         )
     except Exception:
-        logger.exception("Failed to publish office sample channel=%s", settings.OFFICE_ENV_SAMPLE_CHANNEL)
+        logger.exception("Failed to publish %s sample channel=%s", settings.ENV_ROOM, channel)
 
 
 async def publish_loop() -> None:
     settings = get_settings()
     logger.info(
-        "Starting orion-office-env service=%s port=%s interval_sec=%s",
+        "Starting orion-office-env service=%s room=%s port=%s interval_sec=%s",
         settings.SERVICE_NAME,
+        settings.ENV_ROOM,
         settings.OFFICE_SERIAL_PORT,
         settings.OFFICE_PUBLISH_INTERVAL_SEC,
     )

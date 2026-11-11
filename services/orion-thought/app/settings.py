@@ -240,9 +240,11 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_CHAIN",
     )
 
-    # --- Reverie grounding (Phase D, default-off, read-only) ---
-    reverie_ground_consolidation: bool = Field(
-        False, alias="ORION_REVERIE_GROUND_CONSOLIDATION"
+    # --- Reverie grounding (Phase D, read-only): recent rung-4 episode ids. Renamed from
+    # ORION_REVERIE_GROUND_CONSOLIDATION when the consolidation rung (its motif half) was killed
+    # 2026-11-04. ON, as it was live. ---
+    reverie_ground_episodes: bool = Field(
+        True, alias="ORION_REVERIE_GROUND_EPISODES"
     )
 
     # --- Compaction request (Phase E, default-off, queue only) ---
@@ -312,6 +314,25 @@ class ThoughtSettings(BaseSettings):
     # (orion.physiology.client -> durable-runs POST /physiology/bid) and logs it beside the step's
     # real outcome (app/physiology_shadow.py). Never obeyed; off = no bid, no log line.
     thought_physiology_shadow_bid_enabled: bool = Field(True, alias="THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED")
+    # Ladder retirement PR 2 (2026-11-05): Orion starts its own waking paintings
+    # (app/painting_self_start.py): the visual-baseline schedule (config/reverie/visual_baseline.v1.yaml,
+    # 5400 s after each painting, 600 s retry), arousal deferral, the self-monitor act gate, a SHADOW
+    # hunger bid on thought.painting, then one reverie.visual durable run (POST <url>/runs). The
+    # proposal template render_scene and proposal-runtime's baseline read are gone: this is the only
+    # trigger. Off = Orion paints only when a dream hop or a manual run asks.
+    painting_self_start_enabled: bool = Field(True, alias="ORION_PAINTING_SELF_START_ENABLED")
+    painting_self_start_tick_sec: float = Field(60.0, gt=0.0, alias="ORION_PAINTING_SELF_START_TICK_SEC")
+    painting_self_start_durable_runs_url: str = Field(
+        "http://orion-athena-durable-runs:8121", alias="ORION_PAINTING_SELF_START_DURABLE_RUNS_URL"
+    )
+    # Temporal Self rev 4, R3 reader 4 (moved from orion-proposal-runtime with the schedule, same
+    # name): while arousal reads `strained`, a due baseline painting is deferred by retry_sec.
+    visual_baseline_arousal_enabled: bool = Field(True, alias="ORION_VISUAL_BASELINE_AROUSAL_ENABLED")
+    # Self-monitor E1 (orion/self_monitor/gate.py), the gate execution-dispatch held for this act:
+    # a painting faculty held broken/unreliable is refused `track_record_failing`, except one
+    # re-test probe per window. Same names and defaults as orion-execution-dispatch-runtime.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
     # Slower than the text chain's ~90s cadence (design doc §4: "slower cadence
     # than the text chain"). Real cadence is max(this, actual run duration) --
     # intentional, not a bug (design doc §4).
@@ -580,6 +601,10 @@ class ThoughtSettings(BaseSettings):
         3, alias="ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS"
     )
 
+    # Source repointed 2026-11-07 (ladder retirement PR 6): curiosity's self-inquiry
+    # answers (self_concept_history, ~6 a day; a 6 h window holds one 78.7% of the
+    # time, read live), because the analysis rows below had one trigger, the retired
+    # dispatch rung. The history that follows is about the old source.
     # Patch 5 (design doc §16): a second, richer context-seed alongside
     # reverie_context_* above -- self_study_analysis.py's four deterministic
     # window-contrast analyses (concept induction, vision events, affective
@@ -710,6 +735,14 @@ class ThoughtSettings(BaseSettings):
     personality_cue_timeout_sec: float = Field(0.5, gt=0.0, le=5.0, alias="PERSONALITY_CUE_TIMEOUT_SEC")
     personality_cue_max_age_sec: float = Field(3600.0, gt=0.0, alias="PERSONALITY_CUE_MAX_AGE_SEC")
     personality_cue_top_k: int = Field(5, ge=1, le=12, alias="PERSONALITY_CUE_TOP_K")
+
+    # --- Self-monitor track record (app/self_track_record_cue.py; spec 2026-10-20 step 3) ---
+    # What Orion is failing at or misjudging right now (broken / unreliable / miscalibrated
+    # faculties only, <= 300 chars), rendered by a fixed template (orion/self_monitor/cue.py, no
+    # LLM) from the state orion-durable-runs publishes to Redis orion:self_monitor:latest on
+    # ORION_BUS_URL. Read every 5 min in the background; absent / stale / unparseable renders
+    # nothing. Shown to stance_react and reverie's coalition branch. false = both prompts as before.
+    self_track_record_cue_enabled: bool = Field(True, alias="SELF_TRACK_RECORD_CUE_ENABLED")
 
     # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
     # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over

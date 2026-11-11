@@ -59,6 +59,7 @@ from .settings import settings
 from .temporal_self_cue import build_stance_cue
 from .personality_cue import build_personality_cue
 from .self_readings_cue import build_self_readings_block
+from .self_track_record_cue import build_self_track_record_cue
 from .visual_steps import run_visual_step
 
 logger = logging.getLogger("orion-thought.bus")
@@ -167,6 +168,7 @@ def build_stance_react_context(
     temporal_self_cue: str | None = None,
     self_readings: str | None = None,
     personality_cue: str | None = None,
+    self_track_record: str | None = None,
     label_estimates: bool = False,
 ) -> dict[str, Any]:
     stance_inputs = (
@@ -244,6 +246,9 @@ def build_stance_react_context(
     if personality_cue:
         # Personality graph read-back: what Orion keeps coming back to (rendered, no LLM; a record).
         context["personality_cue"] = personality_cue
+    if self_track_record:
+        # Self-monitor step 3: what Orion is failing at or misjudging, from settled bets (no LLM).
+        context["self_track_record"] = self_track_record
     if label_estimates and mind_coloring is not None:
         # Mind's frontier scores / confidences are an LLM's numbers: say so in the prompt.
         context["self_readings_label_estimates"] = True
@@ -282,6 +287,7 @@ def build_stance_react_plan_request(
     temporal_self_cue: str | None = None,
     self_readings: str | None = None,
     personality_cue: str | None = None,
+    self_track_record: str | None = None,
     label_estimates: bool = False,
 ) -> PlanExecutionRequest:
     """Build the cortex-exec plan request for the stance_react verb (one attempt, on the turn's own
@@ -290,7 +296,8 @@ def build_stance_react_plan_request(
     context = build_stance_react_context(
         request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
         temporal_self_cue=temporal_self_cue, self_readings=self_readings,
-        personality_cue=personality_cue, label_estimates=label_estimates,
+        personality_cue=personality_cue, self_track_record=self_track_record,
+        label_estimates=label_estimates,
     )
     return PlanExecutionRequest(
         plan=plan,
@@ -315,6 +322,7 @@ async def execute_stance_react(
     temporal_self_cue: str | None = None,
     self_readings: str | None = None,
     personality_cue: str | None = None,
+    self_track_record: str | None = None,
     label_estimates: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | str]:
     """Run the stance_react plan once, on the turn's own route and correlation id, with the whole
@@ -330,7 +338,8 @@ async def execute_stance_react(
     plan_request = build_stance_react_plan_request(
         request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
         temporal_self_cue=temporal_self_cue, self_readings=self_readings,
-        personality_cue=personality_cue, label_estimates=label_estimates,
+        personality_cue=personality_cue, self_track_record=self_track_record,
+        label_estimates=label_estimates,
     )
     exec_result = await client.execute_plan(
         source=_source(),
@@ -613,6 +622,8 @@ async def run_stance_react(
         day_cue = await cue_task
         readings = await readings_task
         personality = await personality_task
+        # Self-monitor track record: renders from a background-refreshed cache, never waits on Redis.
+        track_record = await build_self_track_record_cue(request.correlation_id, purpose="stance")
         exec_result, raw_payload = await execute_stance_react(
             request,
             client=client,
@@ -621,6 +632,7 @@ async def run_stance_react(
             temporal_self_cue=day_cue.text or None,
             self_readings=readings.text or None,
             personality_cue=personality.text or None,
+            self_track_record=track_record.text or None,
             label_estimates=readings_enabled,
         )
     finally:

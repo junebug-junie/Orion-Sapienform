@@ -38,6 +38,8 @@ import threading
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
+from orion.physiology.attention_pacing import CAP_EXEMPT_DOOR_POLICIES, CAP_EXEMPT_SOURCES
+
 logger = logging.getLogger("orion-hub.endogenous_outreach_decisions")
 
 
@@ -221,11 +223,11 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
     direction as the bug being fixed, so it narrows the gap without closing
     it completely.
 
-    Counts `reason='sent'` rows from the *background* endogenous tick (and any
-    other non-Door-A sender). Curiosity Door-A (`source='curiosity_outreach'`)
-    is excluded: those sends do not consume the shared daily cap (2026-09-22).
-    Reading findings (`source='reading_finding_outreach'`, 2026-10-13) are excluded
-    for the same reason: they skip the cap and must not starve the background tick.
+    Counts `reason='sent'` rows from EVERY door (one attention budget, 2026-11-10):
+    the tick, curiosity Door-A, readings and office visits all count. Not counted:
+    `orion.physiology.attention_pacing.CAP_EXEMPT_SOURCES` (the strain report),
+    sends Juniper asked for (`CAP_EXEMPT_DOOR_POLICIES`) and forced (operator)
+    sends. The body's attention:juniper line reads the same lists.
     """
     if not decision_log_enabled():
         # UNKNOWN, not zero. With the log switched off the table stops
@@ -245,12 +247,13 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
             row = conn.execute(
                 text(
                     "SELECT count(*) FROM endogenous_outreach_decisions "
-                    "WHERE reason = 'sent' "
-                    "AND coalesce(result_json->>'source', '') "
-                    "NOT IN ('curiosity_outreach', 'reading_finding_outreach') "
+                    "WHERE reason = 'sent' AND NOT forced "
+                    "AND NOT (coalesce(result_json->>'source', '') = ANY(:exempt)) "
+                    "AND NOT (coalesce(result_json->>'door_policy', '') = ANY(:exempt_policies)) "
                     "AND (decided_at AT TIME ZONE :tz)::date = CAST(:d AS date)"
                 ),
-                {"tz": tz_name, "d": local_date},
+                {"tz": tz_name, "d": local_date, "exempt": list(CAP_EXEMPT_SOURCES),
+                 "exempt_policies": list(CAP_EXEMPT_DOOR_POLICIES)},
             ).scalar()
         return None if row is None else int(row)
     except Exception as exc:  # noqa: BLE001
@@ -260,16 +263,26 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
 
 def collect_used_content_ids(
     grounding_rows: Iterable[Dict[str, Any]],
-) -> Tuple[Set[str], Set[str]]:
-    """Fold grounding objects from successful sends into used-ID sets.
+) -> Tuple[Set[str], Set[str], Set[str]]:
+    """Fold grounding objects from successful sends into used-ID sets:
+    ``(prior_ids, curiosity_content_ids, daydream_ids)``.
 
     Pure: no DB. Empty / non-list / blank entries are ignored so a malformed
-    historical row cannot poison the novelty gate.
+    historical row cannot poison the novelty gate. ``daydream_id`` is one string
+    per row (door policy, 2026-11-10); rows from before it carry none.
     """
     priors: Set[str] = set()
     curiosity: Set[str] = set()
+    daydreams: Set[str] = set()
     for row in grounding_rows:
         if not isinstance(row, dict):
+            continue
+        did = str(row.get("daydream_id") or "").strip()
+        if did:
+            daydreams.add(did)
+        # A row Orion composed but declined (``_reason`` set by the fetch: orion_passed /
+        # no_why_juniper) marks only its daydream used: the prior / curiosity lanes stay sent-only.
+        if row.get("_reason") not in (None, "sent"):
             continue
         for raw in row.get("prior_ids") or []:
             pid = str(raw or "").strip()
@@ -279,23 +292,26 @@ def collect_used_content_ids(
             cid = str(raw or "").strip()
             if cid:
                 curiosity.add(cid)
-    return priors, curiosity
+    return priors, curiosity, daydreams
 
 
 def fetch_recently_used_outreach_content_ids(
     *, lookback_days: int = 7
-) -> Tuple[Set[str], Set[str]]:
-    """Prior / curiosity content IDs used in successful outreach recently.
+) -> Tuple[Set[str], Set[str], Set[str]]:
+    """Prior / curiosity / daydream content IDs used in successful outreach recently.
 
-    Fail-open to ``(set(), set())`` when the decision log is disabled, the
+    Fail-open to ``(set(), set(), set())`` when the decision log is disabled, the
     engine is unavailable, or the query errors -- a broken ledger must not
     invent silence (same direction as other Hub outreach reads).
 
-    Only ``reason='sent'`` rows count: blocked ticks and force-debug noise
-    are not "already said." Curiosity ``offer_message`` rows that never
-    wrote grounding IDs contribute nothing here (organic-only novelty).
+    Background-tick rows only. ``reason='sent'`` rows mark every lane's ids used:
+    blocked ticks are not "already said." A tick Orion composed and declined
+    (``orion_passed``, ``no_why_juniper``; door policy review, 2026-11-10) marks
+    its DAYDREAM used too: otherwise the same picture is composed again on the
+    next 10 s tick until a new daydream arrives (the readings door treats a
+    decline as decided for the same reason).
     """
-    empty: Tuple[Set[str], Set[str]] = (set(), set())
+    empty: Tuple[Set[str], Set[str], Set[str]] = (set(), set(), set())
     if not decision_log_enabled():
         return empty
     days = max(1, int(lookback_days))
@@ -311,12 +327,12 @@ def fetch_recently_used_outreach_content_ids(
                 conn.execute(
                     text(
                         """
-                        SELECT result_json->'grounding' AS grounding
+                        SELECT reason, result_json->'grounding' AS grounding
                         FROM endogenous_outreach_decisions
-                        WHERE outreach
-                          AND reason = 'sent'
+                        WHERE reason IN ('sent', 'orion_passed', 'no_why_juniper')
                           AND decided_at >= now() - make_interval(days => :days)
                           AND result_json ? 'grounding'
+                          AND coalesce(result_json->>'source', '') = ''
                         """
                     ),
                     {"days": days},
@@ -327,17 +343,15 @@ def fetch_recently_used_outreach_content_ids(
         groundings: List[Dict[str, Any]] = []
         for row in rows:
             g = row.get("grounding")
-            if isinstance(g, dict):
-                groundings.append(g)
-            elif isinstance(g, str):
+            if isinstance(g, str):
                 import json
 
                 try:
-                    parsed = json.loads(g)
+                    g = json.loads(g)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(parsed, dict):
-                    groundings.append(parsed)
+            if isinstance(g, dict):
+                groundings.append({**g, "_reason": row.get("reason")})
         return collect_used_content_ids(groundings)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -397,4 +411,35 @@ def fetch_strain_report_history(*, lookback_days: int = 30) -> Optional[List[Dic
         ]
     except Exception as exc:  # noqa: BLE001
         logger.warning("endogenous_outreach_strain_history_failed days=%s err=%s", days, exc)
+        return None
+
+
+def finding_already_told(finding_key: str, *, lookback_days: int = 30) -> Optional[bool]:
+    """Whether a ``sent`` row already names ``result_json.finding_key`` (door policy,
+    2026-11-10). ``None`` = unknown (log off, no engine, query error); the caller decides."""
+    key = str(finding_key or "").strip()
+    if not key:
+        return False
+    if not decision_log_enabled():
+        return None
+    days = max(1, int(lookback_days))
+    try:
+        from scripts.pg_engine import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        if engine is None:
+            return None
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT 1 FROM endogenous_outreach_decisions "
+                    "WHERE reason = 'sent' AND result_json->>'finding_key' = :k "
+                    "AND decided_at >= now() - make_interval(days => :days) LIMIT 1"
+                ),
+                {"k": key, "days": days},
+            ).first()
+        return row is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_finding_told_failed key=%s err=%s", key, exc)
         return None

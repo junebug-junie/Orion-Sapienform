@@ -1,16 +1,36 @@
 """Orion Prime's resident loop (rollout step 2A): orion-mind keeps thinking between conversations.
 
 Design: docs/superpowers/specs/2026-10-29-orion-prime-design.md, sections 7.2 and 8. Pure logic is in
-orion/prime/; this module does the I/O.
+orion/prime/; this module does Prime's I/O. Since 2026-11-04 (curiosity replica design, section 10) Prime is
+instance #1 of the loop library ``orion/mindloop/``: the tick, the Juniper-first yield, the bid, the model call
+with its seat wait, no-model backoff and starved route, the thought act, act publishing and the state in Redis
+are ``orion/mindloop/runtime.py``; this module keeps what only Prime does (its reads, concerns, frame, answer,
+moves and how they settle). Log line names (``prime_thought``, ``prime_try_no_model``, ``prime_started`` ...),
+the actor, act ids, family, Redis key and env keys did not change.
 
 Two clocks:
 
 * **tick** (every PRIME_TICK_SEC, CPU only): read the body (durable-runs GET /physiology/state) and
-  attention (GET /temporal-self/frame), record what changed (orion.prime.state.observe), settle any
+  attention (GET /temporal-self/frame; with PRIME_CONCERNS_FROM_EVENT_WANTS, the funded event wants
+  instead, GET /physiology/event-wants, Prime's only concern source then), record what changed
+  (orion.prime.state.observe), settle any
   open question, save the state to Redis. Most ticks stop here.
 * **thought** (only when something changed, the refractory interval has passed, no Juniper turn is
   running, and the body economy FUNDS the bid): one model call on route PRIME_LLM_ROUTE (circe chat
-  lane 0 at background priority), then at most one move.
+  lane 0 at pool priority system), then at most one move.
+
+Seat wait and generation are two numbers (2026-11-03). The call may wait PRIME_SEAT_WAIT_SEC for a pool
+seat and then generate for PRIME_LLM_TIMEOUT_SEC (the gateway's ``gateway_pool_wait_sec`` option); the
+bid's cost ceiling is the generation alone. A try that never reached the model (no seat, no gateway
+reply, or an upstream 5xx after one immediate retry) is not a thought: no act is opened, the refractory
+interval does not start, and the next tick re-bids (orion/prime/state.py ``note_no_model``, with a
+bounded backoff). After a no-seat try the next one goes on PRIME_STARVED_LLM_ROUTE (pool priority
+``starved``: ahead of other system work, still behind Juniper's turn and shed by heat).
+
+The thought act is opened only once the model answered (or failed in a way that is the model's own:
+empty, unparseable, out of generation time), stamped with the time the try started, and closed at once.
+That keeps the act ledger honest: a ``prime`` infer act is a thought that happened, so queue failures
+neither count as failed thoughts nor reset the market's hunger for the ``prime`` family.
 
 Prime obeys its own bid: ``funded`` thinks, anything else (deferred, no answer, flag off) waits. It is
 the first producer whose decision binds (every other bid is still shadow); it never fails open.
@@ -28,13 +48,39 @@ record and closes the act (1 = the charge changed at least one decision). A shar
 (PRIME_HOLDBACK_FRACTION): written as ``control``, never applied, graded the same way. PRIME_REGULATE_ENABLED
 false: the move is not offered and any regulate answer is refused (signals already sent are still graded).
 
+Organs answer (curiosity replica patch 4, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9).
+Curiosity's planner (app/replica_loop.py, same process, separate state) may challenge or refuse a question or
+signal of Prime's. Prime reads only the replica's published replies view (Redis ``orion:curiosity:replica:replies``):
+in its frame (ORGAN REPLIES, while answering is on) and when it settles -- a treated question the organ refused
+closes 0 at once with ``refused by curiosity.replica: <reason>`` (still the treated arm: intention to treat); a
+regulate act's note names a refusal of its signal (the market's record already shows the charge did nothing).
+
 Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tracked by JUNIPER_TURNS.
 Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
 all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
 work today: a thought whose model call (in a worker thread) overlapped a turn is recorded ``preempted``
-and discarded, and the ``prime`` route's background priority keeps a Prime call from STARTING while
-Juniper's call holds the slot. A call already generating is NOT cancelled (the bus RPC has no cancel);
-the gateway generates nothing for a call granted after its 60 s budget (llm-gateway app/main.py).
+and discarded, and the pool ranks Juniper's turn (interactive) ahead of both Prime routes (system,
+starved), so a Prime call does not START while Juniper's call waits for the slot. A call already
+generating is NOT cancelled (the bus RPC has no cancel); the gateway generates nothing for a call
+granted after its seat wait (llm-gateway app/main.py).
+
+Self-monitor act gate (E1, 2026-11-03; orion/self_monitor/gate.py): Prime opens its acts itself, so
+the gate sits here, on the same faculty names the organ grades (``act.prime.<verb>[.<name>]``) and the
+same rules: refuse-only, an unknown/stale/absent state or a gate fault changes nothing, one re-test
+probe per faculty per SELF_MONITOR_PROBE_INTERVAL_SEC, spent only when the act really opens. Where
+each verb is gated, and what a refusal means:
+
+* ``predict`` (a concern bet): before the concern's act opens. A refusal places no bet; the concern
+  itself stays in Prime's state, keeps its TTL, can be kept, dropped or settled by a question, and
+  shows in the track record as before. Prime is told once per concern (a frame line, not a change).
+  When a concern whose act never opened ends, a late open+close is placed only if the gate admits it
+  as an ordinary act at that moment; while the faculty is failing it is not (not even as the probe:
+  its outcome is known, so it would test nothing) and the record is marked sent with no act. The
+  probe is spent only after the open was published.
+* ``ask`` / ``regulate`` (a move): before the holdback arm is drawn, so a refusal removes the move
+  from both arms alike and the treated/control comparison stays fair. Shown as "my move was not sent".
+* ``infer`` (the thought): before the bid. A refusal is no bid and no model call; the probe is spent
+  only when the model was reached (the thought act opens), matching the act's own rule.
 
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
@@ -45,25 +91,27 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
-import time
 import urllib.request
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Iterator, Optional
+from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.grammar.acts import act_closed_event, act_opened_event
-from orion.grammar.publish import GRAMMAR_EVENT_CHANNEL
+from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.introspect.transport import (
     QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL,
     REQUEST_KIND,
     RESULT_KIND,
     RESULT_PREFIX,
 )
+from orion.mindloop.gate import GATE_RECHECK_SEC, build_act_gate, gate_why
+from orion.mindloop.instance import LoopIdentity
+from orion.mindloop.runtime import MindLoopRuntime, ModelReply, utcnow
+from orion.mindloop.turns import JUNIPER_TURNS, JuniperTurns
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import (
+    ACTOR,
+    organ_refusal,
+    refusal_words,
     CONCERN_COMPONENT,
     REGULATE_COMPONENT,
     regulate_act,
@@ -88,6 +136,7 @@ from orion.prime.acts import (
 )
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
+    PRIME_CONCERNS_KEY,
     PrimeNominationV1,
     PrimeRegulationOpenV1,
     PrimeSnapshotV1,
@@ -95,6 +144,7 @@ from orion.prime.state import (
     new_id,
     note_outcome,
     observe,
+    concerns_view,
     trim_record,
     wants_to_think,
 )
@@ -103,18 +153,24 @@ from orion.prime.thought import (
     RegulateMoveV1,
     apply_answer,
     build_frame,
+    event_ids,
     parse_answer,
+    shows_organ_replies,
     summary_note,
+    woke_note,
     system_prompt,
 )
 from orion.refs import RefV1, resolve as resolve_ref
+from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaRepliesViewV1
 from orion.schemas.grammar import ActV1
+from orion.schemas.physiology_want import FundedEventWantsV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
     IntrospectResultV1,
     IntrospectToolBindingV1,
     QueueCuriosityFocusArguments,
 )
+from orion.self_monitor.gate import GateDecision
 
 logger = logging.getLogger("orion-mind.prime")
 
@@ -127,45 +183,19 @@ CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL +
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
 
+# Prime on the bus, in the body economy, the ledger, Redis and the logs (orion/mindloop/instance.py).
+PRIME_IDENTITY = LoopIdentity(
+    name="prime", family=FAMILY, actor=ACTOR, producer=PRODUCER, state_key=STATE_KEY, settings_prefix="PRIME_",
+    source_service=SOURCE_SERVICE, thought_component=THOUGHT_COMPONENT, thought_ref="prime_thought:", tier=1,
+    logger_name=logger.name, verb="infer", temperature=0.4, thinking=False, cost_unit="thought",
+)
 
-class JuniperTurns:
-    """Juniper's live turns through run_mind. Thread-safe: run_mind runs on the request path."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._active = 0
-        self._last_started = 0.0
-
-    @contextmanager
-    def turn(self) -> Iterator[None]:
-        with self._lock:
-            self._active += 1
-            self._last_started = time.monotonic()
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._active -= 1
-
-    def active(self) -> bool:
-        with self._lock:
-            return self._active > 0
-
-    def started_since(self, mono: float) -> bool:
-        with self._lock:
-            return self._active > 0 or self._last_started >= mono
-
-
-JUNIPER_TURNS = JuniperTurns()
+__all__ = ["JUNIPER_TURNS", "JuniperTurns", "PRIME_IDENTITY", "PrimeRuntime", "STATE_KEY", "build_act_gate"]
 
 
 def _get_json(url: str) -> Any:
     with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_SEC) as resp:  # noqa: S310 -- internal service URL
         return json.loads(resp.read())
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
@@ -174,7 +204,10 @@ def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
     return state.model_copy(update={"recent_outcomes": [*state.recent_outcomes, text][-MAX_RECENT_OUTCOMES:]})
 
 
-class PrimeRuntime:
+class PrimeRuntime(MindLoopRuntime):
+    identity = PRIME_IDENTITY
+    state_model = PrimeStateV1
+
     def __init__(
         self,
         *,
@@ -184,95 +217,109 @@ class PrimeRuntime:
         get_json: Callable[[str], Any] = _get_json,
         bid: Optional[Callable[[Any], Awaitable[Any]]] = None,
         release: Optional[Callable[[str], Awaitable[Any]]] = None,
-        clock: Callable[[], datetime] = _utcnow,
+        clock: Callable[[], datetime] = utcnow,
         turns: JuniperTurns = JUNIPER_TURNS,
     ) -> None:
-        self.s = settings
-        self.bus = bus
-        self.llm = llm
+        super().__init__(settings=settings, bus=bus, llm=llm, bid=bid, release=release, clock=clock, turns=turns)
+        self.state: PrimeStateV1
         self.get_json = get_json
-        if bid is None or release is None:
-            from orion.physiology.client import abid, arelease
-
-            bid, release = bid or abid, release or arelease
-        self.bid, self.release = bid, release
-        self.clock = clock
-        self.turns = turns
-        self.state = PrimeStateV1()
+        # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
+        self._bet_refused_at: dict[str, datetime] = {}
         self._last_settle: Optional[datetime] = None
-        self._stop = asyncio.Event()
-        self._task: Optional[asyncio.Task] = None
-        self.source = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
 
-    # --- lifecycle -------------------------------------------------------------------------
-    async def start(self, *, connect: bool = False) -> None:
-        """Start the loop task. ``connect``: the task connects the bus first, retrying with backoff,
-        so a bus blip at boot delays Prime instead of disabling it for the process lifetime."""
-        self._task = asyncio.create_task(self._run(connect=connect), name="orion-prime")
+    # --- persistence: Prime's first published call ------------------------------------------
+    async def save(self) -> None:
+        """Save the state, then publish the read-only concerns view (curiosity replica design section 2):
+        ids, words, age and arc of the open concerns, for another loop instance to read without touching
+        Prime's state. Written on every save, so its ``as_of`` doubles as Prime's liveness: a reader that
+        finds it old knows Prime stopped."""
+        await super().save()
+        try:
+            await self.bus.redis.set(PRIME_CONCERNS_KEY, concerns_view(self.state, now=self.clock()).model_dump_json())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prime_concerns_view_publish_failed err=%s", type(exc).__name__)
 
-    async def _connect(self) -> bool:
-        delay = 1.0
-        while not self._stop.is_set():
-            try:
-                await self.bus.connect()
-                return True
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("prime_bus_connect_failed err=%s retry_in=%.0fs", type(exc).__name__, delay)
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=delay)
-            except asyncio.TimeoutError:
-                pass
-            delay = min(delay * 2, 60.0)
-        return False
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._task = None
-
-    async def _run(self, *, connect: bool = False) -> None:
-        if connect and not await self._connect():
-            return
-        await self.load()
+    # --- loop hooks (orion/mindloop/runtime.py) ----------------------------------------------
+    def _log_started(self) -> None:
         logger.info("prime_started tick_sec=%s route=%s holdback=%s concerns=%d open_questions=%d",
                     self.s.PRIME_TICK_SEC, self.s.PRIME_LLM_ROUTE, self.s.PRIME_HOLDBACK_FRACTION,
                     len(self.state.concerns), len(self.state.open_nominations))
-        while not self._stop.is_set():
-            try:
-                await self.tick()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                logger.exception("prime_tick_failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=float(self.s.PRIME_TICK_SEC))
-            except asyncio.TimeoutError:
-                pass
 
-    # --- persistence -----------------------------------------------------------------------
-    async def load(self) -> None:
+    async def _upkeep(self) -> tuple[FrameInputs, datetime]:
+        """Read the body and attention, record what changed, settle what is due, publish concern acts."""
+        snap, inputs = await self._read_body_and_attention()
+        now = self.clock()
+        self.state = lapse_concerns(observe(self.state, snap, now), now)
+        await self._maybe_settle(now)
+        await self._settle_regulations(now)
+        await self._flush_concern_acts()
+        return inputs, now
+
+    def _wants_to_think(self, now: datetime) -> bool:
+        return wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC)))
+
+    def _pending_count(self) -> int:
+        return len(self.state.pending_changes)
+
+    def _tell(self, text: str) -> None:
+        self.state = _with_outcome_line(self.state, text)
+
+    def _thought_act(self, thought_id: str, horizon_sec: float) -> ActV1:
+        return thought_act(thought_id, llm_timeout_sec=horizon_sec)
+
+    def _woke_note(self) -> str:
+        return woke_note(list(self.state.pending_changes))
+
+    def _new_thought_id(self) -> str:
+        return new_id()
+
+    def _parse_answer(self, parsed: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
+        return parse_answer(parsed)
+
+    async def _after_think(self) -> None:
+        await self._flush_concern_acts()
+
+    # --- organ replies (curiosity replica patch 4) --------------------------------------------
+    def _organ_replies_on(self) -> bool:
+        """The replica answers Prime in this process (its own two switches)."""
+        return bool(getattr(self.s, "CURIOSITY_REPLICA_ENABLED", False)) and bool(
+            getattr(self.s, "CURIOSITY_REPLICA_ANSWERS_ENABLED", False))
+
+    async def _read_organ_replies(self) -> tuple[Optional[CuriosityReplicaRepliesViewV1], Optional[str]]:
+        """The replica's published replies view; (None, None) when none was ever published."""
         try:
-            raw = await self.bus.redis.get(STATE_KEY)
+            raw = await self.bus.redis.get(REPLIES_KEY)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_state_load_failed err=%s (starting empty)", type(exc).__name__)
-            return
+            return None, f"{type(exc).__name__}: {str(exc)[:120]}"
         if not raw:
-            return
+            return None, None
         try:
-            self.state = PrimeStateV1.model_validate_json(raw)
+            return CuriosityReplicaRepliesViewV1.model_validate_json(raw), None
         except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_state_unreadable err=%s (starting empty)", str(exc)[:200])
+            return None, f"the replies view is unreadable ({str(exc)[:120]})"
 
-    async def save(self) -> None:
-        try:
-            await self.bus.redis.set(STATE_KEY, self.state.model_dump_json())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_state_save_failed err=%s", type(exc).__name__)
+    async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
+        """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
+        curiosity, curiosity_err = await self._read_curiosity()
+        inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        # Once per thought, never per tick: the report takes ~1.5 s to build.
+        inputs.energy, inputs.energy_error = await self._read(
+            f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/physiology/report")
+        inputs.organ_replies_on = self._organ_replies_on()
+        if inputs.organ_replies_on:
+            inputs.organ_replies, inputs.organ_replies_error = await self._read_organ_replies()
+        receptors, receptors_err = self._receptors()
+        inputs.receptors, inputs.receptors_error = receptors, receptors_err
+        if receptors is not None or receptors_err:
+            for reg in self.state.open_regulations:
+                rec = await self._read_regulation(reg.family, reg.signal_id)
+                inputs.regulation_effects[reg.signal_id] = (
+                    None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
+        frame = build_frame(self.state, inputs)
+        reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
+                                                    organ_replies=shows_organ_replies(inputs)), frame)
+        reply.context.update(curiosity=curiosity, receptors=receptors)
+        return reply
 
     # --- reads -----------------------------------------------------------------------------
     async def _read(self, url: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -289,18 +336,25 @@ class PrimeRuntime:
         body, body_err = await self._read(f"{base}/physiology/state")
         if body is not None and not body.get("ok", False):
             body, body_err = None, "body state not ok"
+        # Attention is read for the frame (background), never as a change that wakes Prime. Event mode
+        # (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants replace the Temporal Self arcs.
+        if self._event_mode():
+            events, events_err = await self._read(
+                f"{base}/physiology/event-wants?hours={float(self.s.PRIME_EVENT_WANTS_HOURS):g}"
+                f"&limit={int(self.s.PRIME_EVENT_WANTS_LIMIT)}")
+            if events is not None:
+                # Only the documented contract's fields reach the frame (FundedEventWantsV1).
+                try:
+                    events = FundedEventWantsV1.model_validate(events).model_dump(mode="json")
+                except Exception as exc:  # noqa: BLE001
+                    events, events_err = None, f"not a funded event wants payload ({type(exc).__name__})"
+            snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
+            inputs = FrameInputs(now=self.clock(), body=body, body_error=body_err, events=events,
+                                 events_error=events_err, event_mode=True, bid_lane=self.s.PRIME_BID_LANE)
+            return snap, inputs
         temporal, temporal_err = await self._read(f"{base}/temporal-self/frame")
         active = (temporal or {}).get("active_arc") or {}
-        prices = (body or {}).get("prices")
-        binding = (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
-                   if isinstance(prices, dict) else None)
-        snap = PrimeSnapshotV1(
-            active_arc_id=active.get("arc_id"),
-            active_arc_label=active.get("subject_label") or active.get("subject_ref"),
-            binding=binding,
-            temporal_self_ok=temporal is not None,
-            body_ok=body is not None,
-        )
+        snap = PrimeSnapshotV1(binding=self._binding(body), body_ok=body is not None)
         arc_ids = [a.get("arc_id") for a in (temporal or {}).get("arcs_today") or [] if a.get("arc_id")]
         if active.get("arc_id"):
             arc_ids.append(active["arc_id"])
@@ -308,45 +362,97 @@ class PrimeRuntime:
                              temporal_error=temporal_err, arc_ids=arc_ids, bid_lane=self.s.PRIME_BID_LANE)
         return snap, inputs
 
+    def _event_mode(self) -> bool:
+        return bool(getattr(self.s, "PRIME_CONCERNS_FROM_EVENT_WANTS", False))
+
+    @staticmethod
+    def _binding(body: Optional[dict[str, Any]]) -> Optional[list[str]]:
+        prices = (body or {}).get("prices")
+        return (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
+                if isinstance(prices, dict) else None)
+
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         base = self.s.PRIME_HUB_URL.rstrip("/")
         return await self._read(f"{base}/curiosity/api/runs?days={CURIOSITY_RUNS_DAYS}&line=investigate")
 
-    # --- acts ------------------------------------------------------------------------------
-    async def _publish(self, event: Any) -> bool:
-        try:
-            await self.bus.publish(GRAMMAR_EVENT_CHANNEL, BaseEnvelope(
-                kind="grammar.event.v1", source=self.source, payload=event.model_dump(mode="json")))
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("prime_act_publish_failed act=%s err=%s", event.act.act_id if event.act else "-",
-                           type(exc).__name__)
-            return False
+    # --- self-monitor act gate (E1): Prime's own acts -------------------------------------
+    async def _concern_bet(self, concern_id: str, text: str, now: datetime) -> tuple[bool, Optional[GateDecision]]:
+        """(may open, the decision). The probe is spent by the caller only after the open was published,
+        so a failed publish spends nothing (and leaves no in-process memo a restart could lose)."""
+        refused_at = self._bet_refused_at.get(concern_id)
+        ref = f"prime_concern:{concern_id}"
+        d = await self._gate_decide("predict", ref, job_key=ref, recheck_soon=(
+            refused_at is not None and (now - refused_at).total_seconds() < GATE_RECHECK_SEC))
+        if d is None or d.admit:
+            self._bet_refused_at.pop(concern_id, None)
+            return True, d
+        if refused_at is None:
+            # Once per concern: a frame line, not a change (a refusal must not wake Prime by itself).
+            self.state = _with_outcome_line(self.state, f"my bet that the concern {text[:120]!r} leads somewhere "
+                                                        f"was not placed: {gate_why(d, self.gate.probe_interval_sec)}")
+            logger.info("prime_act_refused verb=predict concern=%s gate=%s", concern_id, d.label())
+            self._bet_refused_at[concern_id] = now
+        elif (now - refused_at).total_seconds() >= GATE_RECHECK_SEC:
+            self._bet_refused_at[concern_id] = now
+        return False, d
 
-    async def _open(self, act: ActV1, component: str, *, at: Optional[datetime] = None) -> bool:
-        return await self._publish(act_opened_event(act, source_service=SOURCE_SERVICE, source_component=component,
-                                                    at=at))
+    def _bet_opened(self, d: Optional[GateDecision], concern_id: str) -> None:
+        if d is None:
+            return
+        ref = f"prime_concern:{concern_id}"
+        if d.probe:
+            self.gate.claim_probe(d.faculty, now=self.clock(), job_key=ref)
+        else:
+            self.gate.note_job_started(d.faculty, ref, now=self.clock())
 
-    async def _close(self, act: ActV1, component: str, *, produced: bool, note: str,
-                     at: Optional[datetime] = None) -> bool:
-        return await self._publish(act_closed_event(act, produced=produced, source_service=SOURCE_SERVICE,
-                                                    source_component=component, note=note, at=at))
+    async def _late_concern_bet_allowed(self, concern_id: str) -> bool:
+        """A concern whose act never opened has ended: open+close it now only if the gate admits it as an
+        ordinary act NOW (gate off, unknown/stale/absent view, healthy faculty, or a same-job retry). A
+        failing faculty -> no late bet, not even as its probe: the outcome is known, so a late open would
+        test nothing."""
+        ref = f"prime_concern:{concern_id}"
+        d = await self._gate_decide("predict", ref, job_key=ref)
+        return d is None or (d.admit and not d.probe)
+
+    async def _move_refusal(self, move: Any, *, thought_id: str) -> Optional[str]:
+        """None: the move may go (probe spent if it was one). Else why it was refused. Asked before the
+        holdback arm is drawn, so both arms are refused alike."""
+        if isinstance(move, RegulateMoveV1):
+            verb, ref = "regulate", f"physiology_family:{move.family}"
+        else:
+            verb = "ask"
+            ref = f"curiosity_focus:{prime_focus_id(question=move.question, why=move.why, thought_id=thought_id)}"
+        d = await self._gate_decide(verb, ref)
+        if self._admit(d):
+            return None
+        logger.info("prime_act_refused verb=%s gate=%s", verb, d.label() if d else "-")
+        what = "signals" if verb == "regulate" else "questions"
+        return gate_why(d, self.gate.probe_interval_sec).replace("these", f"my {what}", 1)
 
     async def _flush_concern_acts(self) -> None:
         """Open the act of every concern that has none yet (new, or held from before concern acts), then
         publish the close of every unpublished concern record. Marked done only after a publish
         succeeds, so a failed or interrupted send is retried next tick; the ledger keeps the first open
-        and the first close of an act, so a retry never counts twice."""
+        and the first close of an act, so a retry never counts twice. The self-monitor gate decides
+        each open (see the module docstring)."""
         now = self.clock()
         concerns = []
         for c in self.state.concerns:
-            if c.act_opened_at is None and await self._open(concern_act(c.concern_id), CONCERN_COMPONENT, at=now):
-                c = c.model_copy(update={"act_opened_at": now})
+            if c.act_opened_at is None:
+                allowed, decision = await self._concern_bet(c.concern_id, c.text, now)
+                if allowed and await self._open(concern_act(c.concern_id), CONCERN_COMPONENT, at=now):
+                    self._bet_opened(decision, c.concern_id)
+                    c = c.model_copy(update={"act_opened_at": now})
             concerns.append(c)
         records = []
         for r in self.state.concern_record:
             if not r.published:
                 act = concern_act(r.concern_id)
+                if r.act_opened_at is None and not await self._late_concern_bet_allowed(r.concern_id):
+                    # No bet was placed for this concern, so there is no act to close.
+                    logger.info("prime_concern_ended_without_bet concern=%s end=%s", r.concern_id, r.end)
+                    records.append(r.model_copy(update={"published": True}))
+                    continue
                 opened = r.act_opened_at is not None or await self._open(act, CONCERN_COMPONENT, at=r.opened_at)
                 if opened and await self._close(act, CONCERN_COMPONENT, produced=r.produced, note=r.note,
                                                 at=r.closed_at):
@@ -354,109 +460,35 @@ class PrimeRuntime:
                     r = r.model_copy(update={"published": True})
             records.append(r)
         self.state = self.state.model_copy(update={"concerns": concerns, "concern_record": trim_record(records)})
+        live = {c.concern_id for c in self.state.concerns} | {r.concern_id for r in self.state.concern_record
+                                                             if not r.published}
+        for cid in [k for k in self._bet_refused_at if k not in live]:
+            del self._bet_refused_at[cid]
 
-    # --- the tick --------------------------------------------------------------------------
-    async def tick(self) -> None:
-        snap, inputs = await self._read_body_and_attention()
-        now = self.clock()
-        self.state = lapse_concerns(observe(self.state, snap, now), now)
-        await self._maybe_settle(now)
-        await self._settle_regulations(now)
-        await self._flush_concern_acts()
-        await self.save()
-        if self.turns.active():
-            logger.info("prime_yield reason=juniper_turn pending=%d", len(self.state.pending_changes))
-            return
-        if not wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC))):
-            return
-        from orion.schemas.physiology_want import WantV1
-
-        want = WantV1(want_id=f"prime-think-{uuid4().hex[:12]}", family=FAMILY, producer=PRODUCER, verb="infer",
-                      tier=1, lanes=[self.s.PRIME_BID_LANE], cost=self._cost_ceiling())
-        decision = await self.bid(want)
-        outcome = getattr(decision, "outcome", None)
-        if outcome != "funded":
-            # Never fail open: no answer is "not funded" (orion/physiology/client.py).
-            logger.info("prime_bid_not_funded outcome=%s reason=%s binding=%s pending=%d",
-                        outcome or "none", getattr(decision, "reason", None) or "-",
-                        getattr(decision, "binding_constraint", None) or "-", len(self.state.pending_changes))
-            return
-        try:
-            await self.think(inputs)
-        finally:
-            await self.release(want.want_id)
-            await self._flush_concern_acts()
-            await self.save()
-
-    def _cost_ceiling(self) -> Any:
-        """One thought's lane cost at its enforced maximum: the model call's timeout, on Prime's lane.
-
-        Without it a family with no measured slot time is priced at a whole lane window
-        (orion/physiology/choice.py "priced_at_one_window"). Live 10-30, every Prime bid was then
-        deferred capacity_reserved on lane:chat (24/24), so Prime could never think and never build the
-        history that would price it. Same rule as a dispatch route's cold_cost_ceiling_sec: charge the
-        doer's enforced maximum while nothing is on record."""
-        from orion.schemas.grammar import ActCostV2
-
-        ceiling = float(self.s.PRIME_LLM_TIMEOUT_SEC)
-        return ActCostV2(gpu_slot_s_by_lane={self.s.PRIME_BID_LANE: ceiling},
-                         basis={"gpu_slot_s_by_lane": f"ceiling: PRIME_LLM_TIMEOUT_SEC {ceiling:g} s per thought"})
-
-    # --- the thought -----------------------------------------------------------------------
-    async def think(self, inputs: FrameInputs) -> None:
-        now = self.clock()
-        thought_id = new_id()
-        act = thought_act(thought_id, llm_timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC))
-        await self._open(act, THOUGHT_COMPONENT)
-        # Counts for the refractory interval from the moment it opens, whatever happens next (a failed,
-        # preempted or crashed thought must not retry every tick); its pending changes stay unless applied.
-        self.state = self.state.model_copy(update={"last_thought_at": now})
-        try:
-            produced, note = await self._think(act, thought_id, inputs, now)
-        except Exception as exc:  # noqa: BLE001 -- the act always closes
-            logger.exception("prime_thought_crashed thought=%s", thought_id)
-            produced, note = False, f"failed: {type(exc).__name__}: {str(exc)[:160]}"
-        await self._close(act, THOUGHT_COMPONENT, produced=produced, note=note)
-
-    async def _think(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime) -> tuple[bool, str]:
-        curiosity, curiosity_err = await self._read_curiosity()
-        inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
-        receptors, receptors_err = self._receptors()
-        inputs.receptors, inputs.receptors_error = receptors, receptors_err
-        if receptors is not None or receptors_err:
-            for reg in self.state.open_regulations:
-                rec = await self._read_regulation(reg.family, reg.signal_id)
-                inputs.regulation_effects[reg.signal_id] = (
-                    None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
-        frame = build_frame(self.state, inputs)
-        started = time.monotonic()
-        try:
-            parsed, err, _meta = await asyncio.to_thread(
-                self.llm.request_json,
-                system_prompt=system_prompt(receptors), user_prompt=frame, route=self.s.PRIME_LLM_ROUTE,
-                max_tokens=int(self.s.PRIME_MAX_TOKENS), temperature=0.4, thinking=False,
-                timeout_sec=float(self.s.PRIME_LLM_TIMEOUT_SEC),
-            )
-        except Exception as exc:  # noqa: BLE001
-            parsed, err = None, f"{type(exc).__name__}: {str(exc)[:160]}"
-        if self.turns.started_since(started):
-            logger.info("prime_thought_preempted thought=%s", thought_id)
-            return False, "preempted: a Juniper turn started"
-        answer, perr = (None, err) if err else parse_answer(parsed)
-        if answer is None:
-            logger.info("prime_thought_failed thought=%s err=%s", thought_id, perr)
-            return False, f"failed: {perr}"
+    async def _conclude(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime,
+                        reply: ModelReply, answer: Any) -> tuple[bool, str]:
+        curiosity, receptors = reply.context.get("curiosity"), reply.context.get("receptors")
         schedule = (curiosity or {}).get("schedule") or {}
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
-                               receptors=receptors)
+                               receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None)
+        if inputs.event_mode:
+            new = set(applied.added)
+            for c in applied.state.concerns:
+                if c.concern_id in new:
+                    logger.info("prime_concern_added concern=%s event_ref=%s", c.concern_id, c.event_ref)
         self.state = applied.state
         if applied.move is not None and applied.refs:
             unopened = await self._unresolved(applied.refs)
             if unopened:
                 applied.move, applied.refs = None, []
                 applied.move_refusal = f"it cites {'; '.join(unopened)}, which a curiosity run could not open"
+        if applied.move is not None:
+            gate_refusal = await self._move_refusal(applied.move, thought_id=thought_id)
+            if gate_refusal:
+                applied.move, applied.refs = None, []
+                applied.move_refusal = gate_refusal
         if applied.move_refusal:
             self.state = _with_outcome_line(self.state, f"my move was not sent: {applied.move_refusal}")
         if isinstance(applied.move, RegulateMoveV1):
@@ -465,7 +497,8 @@ class PrimeRuntime:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
         note = summary_note(applied)
-        logger.info("prime_thought thought=%s %s reading=%r", thought_id, note, answer.reading[:200])
+        logger.info("prime_thought thought=%s route=%s %s reading=%r", thought_id, reply.route, note,
+                    answer.reading[:200])
         return True, note
 
     async def _unresolved(self, refs: list[RefV1]) -> list[str]:
@@ -632,6 +665,11 @@ class PrimeRuntime:
                 continue
             market_on = None if rec[1] else await self._market_regulation_on()
             produced, note = settle_regulation(reg, rec[1], market_on=market_on)
+            replies, _ = await self._read_organ_replies()
+            refused = organ_refusal(reg.act_id, replies)
+            if refused is not None:
+                # The market already graded what happened (unchanged from the refusal on); name who and why.
+                note = f"{note}; {refusal_words(refused)} (at {refused.at.strftime('%H:%MZ')})"
             if not await self._close(act, REGULATE_COMPONENT, produced=produced, note=note):
                 keep.append(reg)
                 continue
@@ -653,10 +691,17 @@ class PrimeRuntime:
         if not isinstance(runs, list):
             logger.info("prime_settle_skipped err=%s", err or "no runs list")
             return
+        replies = None
+        if any(n.arm == "treated" for n in self.state.open_nominations):
+            replies, _ = await self._read_organ_replies()
         keep: list[PrimeNominationV1] = []
         for nom in self.state.open_nominations:
             settled = settle_nomination(arm=nom.arm, focus_id=nom.focus_id, opened_at=nom.opened_at, queued=nom.queued,
                                         queue_error=nom.queue_error, runs=runs, now=now)
+            refused = organ_refusal(nom.act_id, replies) if settled is None and nom.arm == "treated" else None
+            if refused is not None:
+                # The organ refused it: no run was shown it. Still the treated arm (intention to treat).
+                settled = Settlement(False, refusal_words(refused))
             if settled is None and nom.arm == "treated":
                 gone = treated_focus_gone(nom.focus_id, curiosity)
                 nom = nom.model_copy(update={"gone_reads": nom.gone_reads + 1 if gone else 0})

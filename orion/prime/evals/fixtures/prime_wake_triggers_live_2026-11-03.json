@@ -1,0 +1,705 @@
+{
+ "source": "live conjourney: physiology_state (binding set per tick, change points only) and grammar_acts actor=prime closes of ask/regulate (settlements) and predict faded/lapsed, captured 2026-11-03",
+ "window": {
+  "start": "2026-10-30T08:31:01.83109+00:00",
+  "end": "2026-11-03T03:26:18.439862+00:00"
+ },
+ "live_thought_tries_in_window": 257,
+ "binding_changes": [
+  {
+   "at": "2026-10-30T08:31:01.83109+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-10-30T14:04:34.025599+00:00",
+   "binding": [
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-30T15:08:47.959218+00:00",
+   "binding": [
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-30T15:12:20.857802+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-30T15:14:20.861102+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-30T15:22:20.843338+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-30T15:56:20.887892+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-30T18:08:37.027591+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-30T18:12:29.621729+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-30T18:34:29.817614+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-30T19:56:51.416662+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-30T21:21:57.104657+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T00:19:40.880096+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-31T00:58:25.914261+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T01:00:25.916439+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-31T01:03:03.065904+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T01:26:29.114893+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T01:30:29.109748+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T01:56:29.124887+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-31T02:18:31.079352+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T02:30:44.204148+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T02:52:31.089791+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T03:02:32.036136+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-31T03:12:32.035311+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T04:14:37.94884+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T04:20:37.936864+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T04:27:44.223423+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T04:30:54.152975+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T06:00:56.769996+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-10-31T09:02:46.167844+00:00",
+   "binding": [
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-31T09:09:05.044832+00:00",
+   "binding": [
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T09:32:46.171068+00:00",
+   "binding": [
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T10:49:09.825435+00:00",
+   "binding": [
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T11:02:48.491923+00:00",
+   "binding": [
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-10-31T11:04:48.491685+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-10-31T14:28:50.101829+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-31T14:30:50.097415+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-10-31T14:40:50.104181+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-10-31T14:58:50.096177+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-10-31T15:04:50.111889+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-10-31T17:32:34.376889+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T17:34:50.262789+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T17:39:07.982677+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-10-31T17:40:50.258666+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-01T06:00:00.860862+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-11-01T08:04:02.138987+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T08:06:02.151177+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-11-01T14:04:06.249967+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T14:32:07.095177+00:00",
+   "binding": [
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T14:54:23.105941+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T15:00:10.463421+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-11-01T15:02:10.458484+00:00",
+   "binding": [
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-01T15:04:10.438319+00:00",
+   "binding": [
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T15:24:10.460498+00:00",
+   "binding": [
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-01T15:58:10.479134+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-01T16:36:10.489425+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T16:56:10.503774+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-01T17:46:10.51286+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-01T18:06:10.502417+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T18:36:10.50351+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T18:56:10.518674+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-01T19:12:10.514681+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-01T19:14:33.210662+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-01T19:18:10.529048+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-01T20:14:23.470212+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-01T21:28:19.859935+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-01T22:38:19.968993+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-02T06:00:47.142719+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-11-02T08:07:02.843905+00:00",
+   "binding": [
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-02T09:40:56.562254+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-11-02T10:04:56.56381+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-02T10:06:56.563348+00:00",
+   "binding": []
+  },
+  {
+   "at": "2026-11-02T15:37:05.296135+00:00",
+   "binding": [
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-02T15:51:05.303185+00:00",
+   "binding": [
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-02T15:57:05.303588+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-02T17:33:08.101096+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-02T18:03:09.875261+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-02T18:49:09.885004+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-02T19:44:11.612357+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-02T22:16:12.979608+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-02T22:22:11.161796+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-02T22:24:35.989909+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent"
+   ]
+  },
+  {
+   "at": "2026-11-02T22:27:00.219759+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:00:13.500632+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:06:13.497521+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:08:04.688139+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:10:00.243028+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:12:13.500304+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:25:58.070986+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:30:13.515917+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:36:11.335824+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:38:13.50497+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:agent-gpu2"
+   ]
+  },
+  {
+   "at": "2026-11-02T23:48:13.511798+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:04:13.509878+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:12:13.513861+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:14:08.905927+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:16:20.853244+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:20:13.498583+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:24:13.518452+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:28:34.272268+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:36:13.513767+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:38:14.219556+00:00",
+   "binding": [
+    "attention:juniper",
+    "lane:chat"
+   ]
+  },
+  {
+   "at": "2026-11-03T00:44:13.525814+00:00",
+   "binding": [
+    "attention:juniper"
+   ]
+  }
+ ],
+ "own_act_closes": [
+  {
+   "at": "2026-10-30T16:05:03.734326+00:00",
+   "verb": "ask",
+   "note": "control run 34d7345e36e7 died"
+  },
+  {
+   "at": "2026-10-31T07:03:49.338424+00:00",
+   "verb": "ask",
+   "note": "treated run 01dcc09053b4 reached_out_blocked"
+  },
+  {
+   "at": "2026-10-31T08:05:55.211506+00:00",
+   "verb": "ask",
+   "note": "treated run d44ff22bda74 died"
+  },
+  {
+   "at": "2026-10-31T09:58:19.182446+00:00",
+   "verb": "ask",
+   "note": "treated run 5a62a0ef765e reached_out_blocked"
+  },
+  {
+   "at": "2026-11-01T07:46:22.294387+00:00",
+   "verb": "ask",
+   "note": "treated run bf4100697f08 reached_out_blocked"
+  },
+  {
+   "at": "2026-11-02T07:32:35.812937+00:00",
+   "verb": "ask",
+   "note": "treated run 17cc2fa66b39 reached_out_blocked disposition=exp"
+  }
+ ],
+ "live_thought_tries_note": "grammar_acts actor=prime verb=infer opened in the window (attention moves were a trigger then)"
+}

@@ -42,6 +42,14 @@ class RetinaMetrics:
     # ring_source.BLIND_AFTER_FAILED_BURSTS (status degraded).
     ring_consecutive_failed_bursts: int = 0
     ring_blind: bool = False
+    # Push listeners in a row found dead; ring_deaf once it reaches
+    # ring_source.DEAF_AFTER_LISTENER_DEATHS (status degraded).
+    ring_consecutive_listener_deaths: int = 0
+    ring_listener_restarts: int = 0
+    ring_deaf: bool = False
+    # Push messages the patched FCM client skipped instead of dying on.
+    ring_push_messages_skipped: int = 0
+    ring_push_last_skip_error: str | None = None
     ring_last_event_kind: str | None = None
     ring_last_event_ts: float | None = None
     # Every recorded push, whatever the live view did (2026-10-20: a ding
@@ -99,7 +107,11 @@ def make_system_health_envelope(
         # ring_blind: Ring events arrive but every recent live view gave no
         # picture. 2026-10-21..23 the doorbell was blind ~2.5 days while
         # source_ok stayed true (aiortc video buffer too small).
-        status="ok" if source_ok and not capture_stalled and not metrics.ring_blind else "degraded",
+        # ring_deaf: the push listener dies on every start. 2026-10-28..11-03
+        # it died within a second of each of ~1,440 daily restarts (one
+        # unpadded FCM message redelivered forever) while health read "ok".
+        status="ok" if source_ok and not capture_stalled and not metrics.ring_blind
+        and not metrics.ring_deaf else "degraded",
         details={
             "camera_id": camera_id,
             "stream_id": stream_id,
@@ -127,6 +139,11 @@ def make_system_health_envelope(
             "ring_bursts_failed": metrics.ring_bursts_failed,
             "ring_consecutive_failed_bursts": metrics.ring_consecutive_failed_bursts,
             "ring_blind": metrics.ring_blind,
+            "ring_consecutive_listener_deaths": metrics.ring_consecutive_listener_deaths,
+            "ring_listener_restarts": metrics.ring_listener_restarts,
+            "ring_deaf": metrics.ring_deaf,
+            "ring_push_messages_skipped": metrics.ring_push_messages_skipped,
+            "ring_push_last_skip_error": metrics.ring_push_last_skip_error,
             "ring_last_event_kind": metrics.ring_last_event_kind,
             "ring_last_event_ts": metrics.ring_last_event_ts,
             "dings_total": metrics.ring_dings_total,

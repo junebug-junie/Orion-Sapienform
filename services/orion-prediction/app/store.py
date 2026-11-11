@@ -26,7 +26,7 @@ OFFICE_ENV_READ_TIMEOUT_MS = 10_000
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 TABLES = {
     "prediction_model_run": ("run_id", "selection_id", "kind", "assignment", "residual_paths"),
-    "prediction_forecast": ("forecast_id", "role", "quantiles", "score_status", "in_80"),
+    "prediction_forecast": ("forecast_id", "role", "quantiles", "score_status", "in_80", "interval_source"),
     "prediction_experiment": ("experiment_id", "design", "guard", "status"),
     "prediction_intervention": ("intervention_id", "action", "arm", "experiment_id"),
     "prediction_effect_estimate": ("estimate_id", "claim_kind", "effect", "details"),
@@ -249,6 +249,24 @@ class PostgresStore:
             "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
             (series_id, since))
 
+    def champion_pool(self, series_id: str, since: datetime, max_horizon_min: int) -> list[dict]:
+        """Scored champion rows for the adaptive range (app/adaptive.py), each with ``owner``: the model
+        its run served at that horizon (prediction_model_run.assignment)."""
+        return self._all(
+            "SELECT f.origin_ts, f.horizon_min, f.point, f.actual, f.interval_source, "
+            "r.assignment ->> f.horizon_min::text AS owner "
+            "FROM prediction_forecast f JOIN prediction_model_run r ON r.run_id = f.run_id "
+            "WHERE f.series_id = %s AND f.role = 'champion' AND f.scored_at IS NOT NULL "
+            "AND f.score_status = 'scored' AND f.target_ts >= %s AND f.horizon_min <= %s",
+            (series_id, since, max_horizon_min))
+
+    def scored_with_quantiles(self, series_id: str, since: datetime) -> list[dict]:
+        """Scored rows with what surprise needs (the surprise calm check)."""
+        return self._all(
+            "SELECT role, origin_ts, horizon_min, actual, quantiles, interval_source FROM prediction_forecast "
+            "WHERE series_id = %s AND score_status = 'scored' AND target_ts >= %s ORDER BY horizon_min, origin_ts",
+            (series_id, since))
+
     # --- shadow forecasts ---------------------------------------------------------------------
     def insert_shadow(self, rows: list[dict]) -> None:
         """Shadow rows in their OWN transaction, after the served issue committed: a shadow failure
@@ -294,7 +312,7 @@ class PostgresStore:
         """One issue's forecast rows and threshold probabilities in ONE transaction: a failure leaves
         neither, so the next tick re-issues the bucket instead of skipping it half-written."""
         f_sql = ("INSERT INTO prediction_forecast (run_id, series_id, model, role, issued_at, origin_ts, target_ts, "
-                 "horizon_min, point, quantiles) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
+                 "horizon_min, point, quantiles, interval_source) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) "
                  "ON CONFLICT (series_id, role, origin_ts, horizon_min) DO NOTHING")
         e_sql = ("INSERT INTO prediction_exceedance (series_id, origin_ts, issued_at, name, threshold, window_start, "
                  "window_end, probability, n_paths, served_baseline) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
@@ -302,7 +320,8 @@ class PostgresStore:
         with self.pool.connection() as conn, conn.transaction():
             for r in forecast_rows:
                 conn.execute(f_sql, (r["run_id"], r["series_id"], r["model"], r["role"], r["issued_at"],
-                                     r["origin_ts"], r["target_ts"], r["horizon_min"], r["point"], _j(r["quantiles"])))
+                                     r["origin_ts"], r["target_ts"], r["horizon_min"], r["point"], _j(r["quantiles"]),
+                                     r.get("interval_source")))
             for r in exceedance_rows:
                 conn.execute(e_sql, (r["series_id"], r["origin_ts"], r["issued_at"], r["name"], r["threshold"],
                                      r["window_start"], r["window_end"], r["probability"], r["n_paths"],

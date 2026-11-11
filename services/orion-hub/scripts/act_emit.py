@@ -14,8 +14,9 @@ orion/hub/turn_orchestrator.py):
   0 by the writer if neither arrives. A read refused before work never opens.
 
 - Retro leisure session -> ``play`` (Orion plays Zelda, 2026-10-22, spec section E). Opened by
-  scripts/retro_leisure_listener.py when the motor allocator's dispatch starts a session (key: the
-  dispatch id; test_before ``retro_leisure_dispatch:<dispatch_id>``). Expects a session summary with
+  scripts/retro_leisure_self_start.py, Hub's own leisure timer, when it starts a session (key: the
+  act id ``retro_self_start:<uuid>``; test_before ``retro_leisure_dispatch:<act id>``, the prefix kept
+  from the dispatch era so the act key reads the same in grammar_acts). Expects a session summary with
   at least one real planner decision within PLAY_HORIZON_SEC; closed by
   scripts/retro_memory_export.py at session end (1, or 0 for an empty or unexportable session),
   expired at 0 by the writer if neither arrives.
@@ -179,8 +180,7 @@ async def publish_read_closed(bus: Any, seed: Any, *, produced: bool, note: str 
 # Play: 2400 s from the session start. Not measured yet (no session has run): it is the leisure
 # runner's own enforced session cap, 1800 s (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
 # section E, "Maximum 30 minutes per session"), plus 600 s for the end-of-session save state and the
-# memory export that closes the act. Same value as the dispatch route's act horizon
-# (config/execution_dispatch/execution_dispatch_policy.v1.yaml retro_leisure_session).
+# memory export that closes the act. (Until 2026-11-05 also the retired dispatch route's act horizon.)
 PLAY_HORIZON_SEC = 2400.0
 PLAY_BASIS = (
     "artifact_produced (a session summary with >= 1 real planner decision) by 2400s after the leisure "
@@ -270,9 +270,19 @@ async def publish_coplay_closed(bus: Any, *, key: str, retro_session_id: str | N
         return False
 
 
+# The leisure play act's key (grammar_acts.test_before) and the shadow want's object_ref. The prefix
+# dates from the dispatch era (ladder retirement PR 1 moved the trigger into Hub, 2026-11-05) and is
+# kept so every hub.retro_leisure act key has one shape.
+PLAY_OBJECT_PREFIX = "retro_leisure_dispatch:"
+
+
+def play_object_ref(act_id: str) -> str:
+    return f"{PLAY_OBJECT_PREFIX}{act_id}"
+
+
 def _play_act(dispatch_id: str, session_id: str | None):
+    """``dispatch_id`` is the play act's id (a self-start id since 2026-11-05; the name is historic)."""
     from orion.grammar.acts import build_act
-    from orion.schemas.retro_leisure import retro_leisure_object_ref
 
     return build_act(
         actor="hub.retro_leisure",
@@ -282,7 +292,7 @@ def _play_act(dispatch_id: str, session_id: str | None):
         horizon_sec=PLAY_HORIZON_SEC,
         basis=PLAY_BASIS,
         object_ref=(f"retro_session:{session_id}" if session_id else None),
-        test_before=retro_leisure_object_ref(str(dispatch_id)),
+        test_before=play_object_ref(str(dispatch_id)),
     )
 
 

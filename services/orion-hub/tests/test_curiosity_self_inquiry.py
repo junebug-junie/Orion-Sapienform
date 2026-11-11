@@ -803,18 +803,18 @@ def test_self_senses_are_read_live_per_camera(monkeypatch) -> None:
 
     def _fetch(streams, **kw):
         seen["streams"] = list(streams)
-        seen["counted"] = list(kw["count_individuals_for"])
+        seen["counted"] = list(kw["people_range_for"])
         return [
             CameraEye("cam0", now - timedelta(days=50), now - timedelta(seconds=5)),
-            CameraEye("walkway", now - timedelta(hours=3), now - timedelta(hours=2), 4),
+            CameraEye("walkway", now - timedelta(hours=3), now - timedelta(hours=2), {"low": 1, "high": 4}),
         ]
 
     monkeypatch.setattr(camera_eyes, "fetch_camera_eyes", _fetch)
     loop = _self_loop(_FakeBus(), camera_stream_ids=("cam0", "walkway", "cam0"), camera_street_stream_ids=("walkway",))
     clauses = asyncio.run(loop._read_self_senses())
     assert seen == {"streams": ["cam0", "walkway"], "counted": ["walkway"]}
-    assert clauses[0].startswith("your room camera (cam0") and clauses[0].endswith("receiving frames (newest within the last 15 min)")
-    # Stale walkway: says so, and drops the count it can no longer vouch for.
+    assert clauses[0].startswith("your office camera (cam0") and clauses[0].endswith("receiving frames (newest within the last 15 min)")
+    # Stale walkway: says so, and drops the people range it can no longer vouch for.
     assert "your outdoor camera (walkway" in clauses[1]
     assert clauses[1].endswith("no frames arriving, last frame 2 h ago")
 
@@ -837,7 +837,7 @@ def test_self_inquiry_kickoff_puts_the_eyes_in_the_prompt(monkeypatch) -> None:
     loop = _self_loop(_FakeBus(), reader=_DefinitionReader(), conn=_GrantConn(), kickoff_via_cortex=False)
     # The module's own globals (conftest may re-import it under another name).
     ci_globals = type(loop).tick_self_inquiry.__globals__
-    clauses = ["your room camera (cam0): receiving frames (newest within the last 15 min)"]
+    clauses = ["your office camera (cam0): receiving frames (newest within the last 15 min)"]
     seen = {}
 
     async def _senses(self):

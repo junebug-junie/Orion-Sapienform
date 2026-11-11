@@ -1,7 +1,8 @@
 name: orion-prime-tests
 
 # Orion Prime 2A (docs/superpowers/specs/2026-10-29-orion-prime-design.md): the resident loop in
-# orion-mind (app/prime_loop.py) and its pure logic (orion/prime/): the tick, the thought's answer,
+# orion-mind (app/prime_loop.py, an instance of the loop library orion/mindloop/) and its pure logic (orion/prime/): the tick, the thought's answer,
+# plus the loop library's second instance, the curiosity replica (app/replica_loop.py, orion/curiosity/replica/),
 # Prime's acts, how a question settles, the narrator readout's arithmetic, and the frame eval on live
 # inputs captured 2026-10-30. Fake bus, model and market; no DB, Redis or LLM.
 
@@ -9,6 +10,12 @@ on:
   pull_request:
     paths:
       - "orion/prime/**"
+      - "orion/mindloop/**"
+      - "orion/curiosity/replica/**"
+      - "orion/curiosity/tests/test_replica_*.py"
+      - "orion/curiosity/worldview.py"
+      - "orion/curiosity/value.py"
+      - "orion/schemas/curiosity_replica.py"
       - "orion/refs.py"
       - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
@@ -21,11 +28,20 @@ on:
       - "orion/schemas/introspect.py"
       - "orion/schemas/physiology_want.py"
       - "services/orion-mind/**"
+      - "orion/self_monitor/**"
+      - "scripts/analysis/curiosity_replica_answers_readout.py"
+      - "scripts/analysis/tests/test_curiosity_replica_answers_readout.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
     paths:
       - "orion/prime/**"
+      - "orion/mindloop/**"
+      - "orion/curiosity/replica/**"
+      - "orion/curiosity/tests/test_replica_*.py"
+      - "orion/curiosity/worldview.py"
+      - "orion/curiosity/value.py"
+      - "orion/schemas/curiosity_replica.py"
       - "orion/refs.py"
       - "orion/dig/tests/test_refs_contract.py"
       - "orion/curiosity/focus.py"
@@ -38,6 +54,9 @@ on:
       - "orion/schemas/introspect.py"
       - "orion/schemas/physiology_want.py"
       - "services/orion-mind/**"
+      - "orion/self_monitor/**"
+      - "scripts/analysis/curiosity_replica_answers_readout.py"
+      - "scripts/analysis/tests/test_curiosity_replica_answers_readout.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:
@@ -61,10 +80,20 @@ jobs:
           python -m pip install httpx
       - name: Prime pure logic + readout arithmetic
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/prime
+      - name: Loop library (orion/mindloop; a second instance runs on it with its own key, family and actor)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/mindloop
+      - name: Curiosity replica pure parts and contracts (candidates, plan check, frame, grading, answers to Prime)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_replica_plan.py orion/curiosity/tests/test_replica_contracts.py orion/curiosity/tests/test_replica_answers.py
+      - name: Curiosity replica answers readout (stance from the act note, the 14-day refusal-rate alarm)
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_curiosity_replica_answers_readout.py
+      - name: Curiosity replica frame eval on live inputs (candidates, grounded, bounded, honest gaps, plan layout)
+        run: PYTHONPATH=${{ github.workspace }} python orion/curiosity/replica/evals/run_replica_frame_eval.py
       - name: References contract (every kind has a resolver, a dig command and a test)
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/dig/tests/test_refs_contract.py
       - name: Frame eval on live inputs (grounded, bounded, honest gaps, settles)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_frame_eval.py
+      - name: Wake replay on the live trigger timeline (attention is not a trigger; rate, daily wake, quiet floor)
+        run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_wake_replay.py
       - name: orion-mind (resident loop + every existing Mind test)
         working-directory: services/orion-mind
         run: PYTHONPATH=${{ github.workspace }}/services/orion-mind:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests

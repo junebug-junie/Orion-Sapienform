@@ -16,6 +16,13 @@ receptor for that direction (design section 4.2: an unhandled signal is a visibl
 Prime's to the same family has not been graded yet (refractory per receiver, section 11), or when regulation
 is off.
 
+Organ replies (curiosity replica patch 4, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9).
+Curiosity's own planner may answer a question or signal of Prime's: challenge it (it still happens) or refuse it
+(the question is not shown to the run; the signal stops charging curiosity). The frame's ORGAN REPLIES section
+lists those of the last 48 h with the organ's reason (``_organ_reply_lines``), from the replica's published view
+(Redis ``orion:curiosity:replica:replies``). Held-back answers are never in the view, so never shown. The section
+and its prompt paragraph appear when answering is on (``FrameInputs.organ_replies_on``) or the view holds a reply.
+
 References (orion/refs.py): a move cites ids only through ``refs`` (``[{kind, id}]``, kinds arc and
 act). Refused here when a ref is malformed, or when the question or why contains an id-looking word
 (``orion.refs.ID_TOKEN_RE``) that is not one of the refs; refused by the runtime when a ref does not
@@ -43,6 +50,7 @@ from orion.prime.state import (
     track_record,
 )
 from orion.refs import RefV1, id_tokens_not_in, parse_refs
+from orion.schemas.curiosity_replica import REPLICA_ACTOR, CuriosityReplicaRepliesViewV1
 from orion.schemas.introspect import FOCUS_TEXT_CAP
 
 READING_CAP = 600
@@ -54,6 +62,8 @@ class ConcernAddV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
     text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
     arc_id: Optional[str] = None
+    # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event want this concern is about.
+    event_id: Optional[str] = None
 
 
 class ConcernDropV1(BaseModel):
@@ -150,11 +160,45 @@ runs. Only one move per thought, so a regulate move replaces a question:
          "why": "...", "hours": 1-6}"""
 
 
-def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]]) -> str:
-    """The base prompt, plus the regulate move only when regulation is on and some family receives it."""
+# Event mode (attention as the want competition, patch 2): concerns come from the events Orion's body
+# economy funded, not from Temporal Self arcs. Swapped into SYSTEM_PROMPT by system_prompt(events=True).
+EVENT_CONCERN_RULE = ("- Every concern you add must name an event_id listed under EVENTS WORTH EFFORT (copy it exactly).\n"
+                      "  A concern without one is not added. Those events are the ones Orion's body economy judged\n"
+                      "  worth effort now; pick the one that matters, or add nothing.\n")
+_ARC_RULE = '- arc_id must be an arc_id listed under ATTENTION (the hex id after "arc_id"), or null.\n'
+_ARC_JSON = '''"add": [{"text": "...", "arc_id": null}]'''
+_EVENT_JSON = '''"add": [{"text": "...", "event_id": "<event_id>"}]'''
+# Event mode shows no arcs, so a move may point only at an act.
+_ARC_REFS = '''To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
+  {"kind": "act", "id": "<act_...>"})'''
+_EVENT_REFS = '''To point it at an act, put it in "refs" ({"kind": "act", "id": "<act_...>"}); describe the
+  event in words'''
+_ARC_REFS_JSON = '''"refs": [{"kind": "arc" | "act", "id": "..."}]'''
+_EVENT_REFS_JSON = '''"refs": [{"kind": "act", "id": "..."}]'''
+
+
+ORGAN_REPLIES_PROMPT = """
+
+Organs can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,
+and you see its reason) or refuse it (the question is not shown to the run and counts as not settled; the
+signal stops charging curiosity). Its replies are under ORGAN REPLIES. A refusal is information about the
+organ, not a command: you may ask differently, wait, or drop the concern."""
+
+
+def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
+                  organ_replies: bool = False) -> str:
+    """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
+    the organ-replies paragraph when that section is in the frame.
+    ``events``: concerns come from funded event wants (event_id), not arcs."""
+    base = SYSTEM_PROMPT
+    if events:
+        base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
+                .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
     if receptors and any(receptors.values()):
-        return SYSTEM_PROMPT + REGULATE_PROMPT
-    return SYSTEM_PROMPT
+        base += REGULATE_PROMPT
+    if organ_replies:
+        base += ORGAN_REPLIES_PROMPT
+    return base
 
 
 @dataclass
@@ -169,6 +213,11 @@ class FrameInputs:
     curiosity: Optional[dict[str, Any]] = None
     curiosity_error: Optional[str] = None
     arc_ids: list[str] = field(default_factory=list)
+    # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants (GET /physiology/event-wants)
+    # replace the attention arcs. None with no error: event mode is off.
+    events: Optional[dict[str, Any]] = None
+    events_error: Optional[str] = None
+    event_mode: bool = False
     # Prime's own lane (PRIME_BID_LANE): its price is the one that decides Prime's thinking.
     bid_lane: str = "chat"
     # Regulation (step 3). None: off, the sections are not shown. family -> directions it receives.
@@ -176,6 +225,18 @@ class FrameInputs:
     receptors_error: Optional[str] = None
     # signal_id -> the market's record so far (None: unread).
     regulation_effects: dict[str, Optional[list[pc.PrimeChargeEffectV1]]] = field(default_factory=dict)
+    # durable-runs GET /physiology/report (read at thought time): the month's money and each machine's draw.
+    energy: Optional[dict[str, Any]] = None
+    energy_error: Optional[str] = None
+    # Organ replies (curiosity replica patch 4): the replica's published view; None = none published or unread.
+    organ_replies: Optional[CuriosityReplicaRepliesViewV1] = None
+    organ_replies_error: Optional[str] = None
+    # Answering is on in this process (CURIOSITY_REPLICA_ENABLED and CURIOSITY_REPLICA_ANSWERS_ENABLED).
+    organ_replies_on: bool = False
+
+
+def shows_organ_replies(inputs: "FrameInputs") -> bool:
+    return bool(inputs.organ_replies_on or (inputs.organ_replies is not None and inputs.organ_replies.replies))
 
 
 def _num(value: Any) -> float:
@@ -216,6 +277,38 @@ def _body_lines(inputs: FrameInputs) -> list[str]:
     return lines
 
 
+# Why Prime gets no per-organ cost (2026-11-04): over 30 days the act ledger's per-act dollar costs summed
+# to well under $1 against about $25/month of activity cost (curiosity $0.17 on 23 of 81 acts; painting,
+# reading and Prime itself none). Per-organ figures would be ~50x wrong; Prime had already blamed the
+# activity cost on "attention:juniper" (Juniper's message cap) for lack of anything better.
+NO_PER_ORGAN_COST = ("per-organ cost is not measured: acts carry only a few percent of the activity cost, so "
+                     "slowing one organ saves an unknown, probably small amount; the idle floor is not touched "
+                     "by slowing anything")
+
+
+def _energy_lines(inputs: FrameInputs) -> list[str]:
+    """Each machine's idle cost and its draw above idle now (GET /physiology/report ``hosts``), plus why there
+    is no per-organ cost. The month's totals (always-on body per month, activity pace) are NOT repeated here:
+    the BODY section's energy line already states them, computed by the producer (orion/physiology/budget.py).
+    Recomputing them from ``money.floor_usd`` is wrong: that is month-to-date plus idling for the hours left,
+    not a month of idling (review of PR #3120)."""
+    if inputs.energy is None:
+        return [f"(unavailable: {inputs.energy_error or 'not read'})"]
+    lines: list[str] = []
+    for h in inputs.energy.get("hosts") or []:
+        if not isinstance(h, dict) or not h.get("host"):
+            continue
+        rest, now = h.get("rest_usd_per_month"), h.get("usd_per_month_at_this_rate")
+        if isinstance(rest, (int, float)) and isinstance(now, (int, float)):
+            lines.append(f"- {h['host']}: idling costs about ${rest:.0f} a month; right now it runs "
+                         f"{_num(h.get('above_rest_w')):.0f} W above idle, about ${now:.1f} a month at this rate")
+    if not lines:
+        lines.append("(no machine figures in the report)")
+    lines.append("the month's totals (always-on body vs activity pace) are in the energy line under BODY")
+    lines.append(NO_PER_ORGAN_COST)
+    return lines
+
+
 def _attention_lines(inputs: FrameInputs) -> list[str]:
     if inputs.temporal is None:
         return [f"(unavailable: {inputs.temporal_error or 'not read'})"]
@@ -231,6 +324,30 @@ def _attention_lines(inputs: FrameInputs) -> list[str]:
         label = arc.get("subject_label") or arc.get("subject_ref") or "?"
         lines.append(f"- arc_id {arc.get('arc_id')}: {arc.get('kind')} {label!r}, {arc.get('status')}, "
                      f"returned {arc.get('attention_returns', 0)}x, last seen {_age(inputs.now, arc.get('last_seen_at'))}")
+    return lines
+
+
+def event_ids(inputs: FrameInputs) -> list[str]:
+    """The event ids (event_ref) a concern may name: the funded event wants this frame shows."""
+    return [str(w.get("event_ref")) for w in (inputs.events or {}).get("wants") or [] if w.get("event_ref")]
+
+
+def _event_lines(inputs: FrameInputs) -> list[str]:
+    if inputs.events is None:
+        return [f"(unavailable: {inputs.events_error or 'not read'})"]
+    wants = inputs.events.get("wants") or []
+    if not wants:
+        return ["(none: nothing the body economy funded is open now)"]
+    lines = []
+    for w in wants:
+        sal = w.get("salience")
+        unusual = f"how unusual {_num(sal):.2f}" if sal is not None else "how unusual unknown"
+        lines.append(f"- event_id {w.get('event_ref')}: {w.get('label') or '(no words recorded)'} "
+                     f"({w.get('family')}; {unusual}; market value {_num(w.get('net')):.2f}; "
+                     f"funded {_age(inputs.now, w.get('decided_at'))})")
+    funded = inputs.events.get("funded_open")
+    if isinstance(funded, int) and funded > len(wants):
+        lines.append(f"({funded - len(wants)} more funded events not shown)")
     return lines
 
 
@@ -258,7 +375,8 @@ def _curiosity_lines(inputs: FrameInputs) -> list[str]:
 
 def _concern_line(c: PrimeConcernV1, now: datetime) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
-    return (f"- concern_id {c.concern_id}: {c.text} (arc {c.arc_id or 'none'}, held since "
+    about = f"event {c.event_ref}" if c.event_ref else f"arc {c.arc_id or 'none'}"
+    return (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
             f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
 
 
@@ -282,6 +400,40 @@ def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
     return lines
 
 
+ORGAN_REPLIES_WINDOW_H = 48
+# The replica writes its view on every 15 s save; older than this, it has probably stopped.
+ORGAN_REPLIES_STALE_SEC = 900.0
+
+
+def _organ_reply_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
+    """Challenges and refusals of Prime's acts in the last 48 h, with the organ's reason. Held-back ones are
+    never in the view. A view that could not be read, or was never published, is a gap, not calm."""
+    if inputs.organ_replies_error:
+        return [f"(unavailable: {inputs.organ_replies_error})"]
+    view = inputs.organ_replies
+    if view is None:
+        return [f"(unavailable: {REPLICA_ACTOR} has published no replies view)"]
+    asked = {n.act_id: n.question for n in state.open_nominations}
+    lines = []
+    age = (inputs.now - view.as_of).total_seconds()
+    if age > ORGAN_REPLIES_STALE_SEC:
+        lines.append(f"(the organ's view was last written {_age(inputs.now, view.as_of.isoformat())}: "
+                     f"{REPLICA_ACTOR} may not be running, so a recent reply may be missing)")
+    for r in sorted(view.replies, key=lambda r: r.at, reverse=True):
+        if (inputs.now - r.at).total_seconds() > ORGAN_REPLIES_WINDOW_H * 3600:
+            continue
+        what = "question" if r.target_kind == "focus" else "signal"
+        about = asked.get(r.prime_act_id) or r.about
+        did = ("refused it: the question was not shown to the run" if r.stance == "refuse" and r.target_kind == "focus"
+               else "refused it: the charge no longer applies" if r.stance == "refuse"
+               else "challenged it (it still went ahead)")
+        lines.append(f"- {_age(inputs.now, r.at.isoformat())}, {REPLICA_ACTOR} {did}; your {what} "
+                     f"{about[:160]!r} (act {r.prime_act_id}). Its reason: {r.reason}")
+    if not any(line.startswith("- ") for line in lines):
+        lines.append(f"(no challenge or refusal from an organ in the last {ORGAN_REPLIES_WINDOW_H} h)")
+    return lines
+
+
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
@@ -294,13 +446,18 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
             f"- {n.question!r} (asked {_age(inputs.now, n.opened_at.isoformat())}"
             f"{'; held back as a control, not sent' if n.arm == 'control' else ''})"
             for n in state.open_nominations) or "(none)"),
-        "ATTENTION (Temporal Self, today):\n" + "\n".join(_attention_lines(inputs)),
+        ("EVENTS WORTH EFFORT (funded by Orion's body economy, highest value first):\n" + "\n".join(_event_lines(inputs))
+         if inputs.event_mode else "ATTENTION (Temporal Self, today):\n" + "\n".join(_attention_lines(inputs))),
         "BODY:\n" + "\n".join(_body_lines(inputs)),
+        "ENERGY MONEY:\n" + "\n".join(_energy_lines(inputs)),
         "CURIOSITY:\n" + "\n".join(_curiosity_lines(inputs)),
     ]
     if inputs.receptors is not None or inputs.receptors_error:
         sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
                         + "\n".join(_regulation_lines(state, inputs)))
+    if shows_organ_replies(inputs):
+        sections.append(f"ORGAN REPLIES (last {ORGAN_REPLIES_WINDOW_H} h, newest first):\n"
+                        + "\n".join(_organ_reply_lines(state, inputs)))
     return f"Now: {inputs.now.isoformat()}\n\n" + "\n\n".join(sections)
 
 
@@ -351,10 +508,11 @@ def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
 
 def apply_answer(
     state: PrimeStateV1, answer: PrimeAnswerV1, *, now: datetime, arc_ids: list[str], focus_pending: Optional[bool],
-    receptors: Optional[Mapping[str, Sequence[str]]] = None,
+    receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
-    ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused)."""
+    ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
+    ``event_ids``: event mode is on; a new concern must name one of these funded events (else not added)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -378,6 +536,19 @@ def apply_answer(
     for add in answer.concerns.add:
         if len(concerns) >= MAX_CONCERNS:
             warnings.append(f"concern not added, already holding {MAX_CONCERNS}: {add.text[:80]!r}")
+            continue
+        if event_ids is not None:
+            if add.event_id not in event_ids:
+                warnings.append(f"concern not added, it names no funded event shown in the frame "
+                                f"(event_id {add.event_id!r}): {add.text[:80]!r}")
+                continue
+            if any(c.event_ref == add.event_id for c in concerns):
+                warnings.append(f"concern not added, a concern already holds event {add.event_id!r}: {add.text[:80]!r}")
+                continue
+            concern = PrimeConcernV1(concern_id=new_id(), text=add.text, event_ref=add.event_id, opened_at=now,
+                                     last_evidence_at=now)
+            concerns.append(concern)
+            added.append(concern.concern_id)
             continue
         arc_id = add.arc_id if add.arc_id in arc_ids else None
         if add.arc_id and arc_id is None:
@@ -425,11 +596,21 @@ def apply_answer(
                    [] if refusal else refs)
 
 
+WOKE_NOTE_CAP = 160
+
+
+def woke_note(changes: list[str]) -> str:
+    """Why the thought woke, first on the act's close note so the 500-char note cap never cuts it.
+    Lets the wake mix be measured from the ledger instead of inferred (2026-11-04)."""
+    text = "; ".join(" ".join(c.split()) for c in changes) or "nothing pending"
+    return "woke: " + (text if len(text) <= WOKE_NOTE_CAP else text[:WOKE_NOTE_CAP - 3] + "...")
+
+
 def summary_note(applied: Applied) -> str:
     """The thought act's close note: what the thought changed (concerns are never edited silently)."""
+    # Most important first: the act note is cut at 500 chars (orion/grammar/acts.py) after a ~170-char
+    # "woke:" prefix, so the move goes before the unbounded drop reasons and warnings.
     parts = [f"concerns +{len(applied.added)} -{len(applied.dropped)} kept {len(applied.kept)}"]
-    if applied.dropped:
-        parts.append("dropped " + "; ".join(applied.dropped))
     if isinstance(applied.move, RegulateMoveV1):
         m = applied.move
         parts.append(f"move regulate {m.direction} {m.family} for {m.hours:g} h: {m.why[:120]!r}")
@@ -440,6 +621,8 @@ def summary_note(applied: Applied) -> str:
         parts.append(f"move refused: {applied.move_refusal}")
     else:
         parts.append("no move")
+    if applied.dropped:
+        parts.append("dropped " + "; ".join(applied.dropped))
     if applied.warnings:
         parts.append("warnings: " + "; ".join(applied.warnings))
     return " | ".join(parts)

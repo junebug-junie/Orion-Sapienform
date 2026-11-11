@@ -87,6 +87,21 @@ Known gap: this is plain pub/sub. If the Hub's publish fails or this service is 
 
 Log line to look for: `ask_answered entity_created ask_id=... individual_id=... node_id=entity:vision_individual:...`.
 
+### A sighting refreshes the named cluster (2026-11-03)
+
+Design: `docs/superpowers/specs/2026-11-03-person-graph-sighting-refresh-design.md`. Before this, every named cluster node held the value of its first tick (0.625) forever, because it had no decay half-life, and its `observed_at` was the naming time, not the time the person was last seen.
+
+- Every 10 minutes the person-graph pass (`app/person_graph_loop.py`, `_refresh_sightings`) reads each linked, non-copied cluster's `vision_individual.last_seen_at` (orion-sql-writer updates it on every matched crop). It moves the cluster node's `observed_at` forward to that time and gives the node a 6 h half-life (`SIGHTING_HALF_LIFE_SECONDS` in `orion/substrate/adapters/vision_individual.py`). New walkway day nodes get the same half-life.
+- Every other typed named cluster (linked as a belonging, linked to a `not_a_person` row, or not linked) gets the half-life only (`half_lives_set=N` in the trace), so its frozen birth value can rest. Its `observed_at` does not move.
+- The pass never writes activation. The substrate tick seeds the node from the fresh `observed_at`: a sighting reads about 0.55, about 0.27 six hours later, and goes dormant (< 0.08) about 18 h later.
+- A rename is not a sighting: renaming keeps `observed_at` and moves only `label_set_at`, and rename writes skip the tick-owned activation fields.
+- Walkway day nodes stop reading a flat 0.3, but they do not light up with a sighting either. The tick decays propagated input by the day node's own age, and its `observed_at` is the start of the day, so its echo is small (about 0.04). The cluster carries the "seen recently" signal; the day node is not separate evidence.
+- The rename guard now compares Postgres `labeled_at` with the node's `label_set_at` (when its name was set), not with `observed_at`. The first refresh copies the old `observed_at` into `label_set_at`. It is a native Falkor property on entity nodes.
+- Person nodes, attention and `node:substrate.perception_walkway` do not change.
+- Trace: `person_graph synced ... sightings_refreshed=N`. A pass with no new sighting writes nothing (`sightings_refreshed=0`).
+- Kill switch: `PERSON_SIGHTING_REFRESH_ENABLED=false` (default true). Nodes then fade to rest within a day.
+- Eval: `python services/orion-substrate-runtime/evals/run_person_sighting_replay_eval.py` replays 14 days of walkway hour rollups (read-only) through the real dynamics engine and fails if one person holds more than 25% of the active person-hours.
+
 ## Bus listener liveness on `/health`
 
 Every bus listener runs through `orion.core.bus.resilience.run_subscription`, which resubscribes after a Redis drop and records its state. `GET /health` reports it:
@@ -227,6 +242,19 @@ seeds and propagates activation pressure from those `prediction_error` values.
   the existing stamp when an incoming record with an older `observed_at` wins the activation
   max, so a replayed record's value is treated as fresh as of that stamp (under-decay, not
   compounding).
+- `SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE` (default `source`, 2026-11-03): how activation
+  that arrives through an edge is decayed. `source`: a neighbour's activation is propagated as
+  it stands this tick (its seed decayed by its own age, its stored value decayed since its last
+  decay) and is not decayed again by the receiving node's age, so an old node reached by a fresh
+  neighbour hears it (a walkway day node, observed at the day's start, now reads about cluster
+  x 0.6 x 0.8 after a sighting instead of ~0.04, and fades with the cluster). A neighbour with no half-life carries no decay,
+  so the first decaying node it reaches still decays it by that node's age -- otherwise the
+  never-decaying topic-foundry evidence would pin ~700 old concepts at ~0.3 forever (measured
+  on the live graph, `scripts/replay_substrate_propagation_decay.py`). The same old rule applies
+  when the receiver decays more slowly than the signal (a 6 h hub feeding a 30-day concept): the
+  tick persists the echo into the receiver's stored value, which then fades on the receiver's
+  clock, so taking it as is would hold it for weeks after the hub went quiet. `receiver_age` is the old
+  double decay; rollback only. Ignored when `SUBSTRATE_DYNAMICS_DECAY_MODE=legacy`.
 
 Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the
@@ -403,30 +431,16 @@ broadcast still runs with `magnitude=None`.
 3. Rebuild this service.
 4. Only then set the flag.
 
-## Self-tuned prediction expectation (rung 6, 2026-10-16, default on)
+## Self-tuned prediction expectation (rung 6) -- retired 2026-11-03
 
-The execution and chat ticks turn a raw per-tick reading (mean absolute change
-in pressure hints) into surprise by comparing it with a running expectation.
-Two settings shape that expectation: the smoothing rate `alpha` and the
-variance floor `min_variance`. They used to be hardcoded. Now Orion revises
-them:
-
-1. Each tick writes its raw reading to `substrate_prediction_raw_reading`
-   (`SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`, pruned at
-   `SUBSTRATE_PREDICTION_RAW_READING_RETENTION_HOURS`). Apply
-   `services/orion-sql-db/manual_migration_prediction_raw_reading_v1.sql` first.
-2. The Hub's mutation scheduler replays those readings under candidate
-   settings, trials the best one on readings it was not chosen on, applies it,
-   and rolls it back if later readings show it is clearly worse
-   (`orion/substrate/prediction_expectation_tuner.py`).
-3. This service reads the adopted setting from the shared control surface
-   (`prediction_expectation.<domain>`, via `SUBSTRATE_CONTROL_PLANE_POSTGRES_URL`),
-   cached for `SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC`. An unreadable or
-   out-of-bounds value falls back to the calibrated constants.
-
-Kill switch: `SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED=false` scores with
-the constants (readings are still recorded). Live check:
-`python services/orion-substrate-runtime/evals/run_prediction_expectation_live_check.py`.
+From 2026-10-16 to 2026-11-03 this service recorded each execution, chat and
+street-handoff raw reading to `substrate_prediction_raw_reading` and read
+Orion's self-tuned smoothing rate and variance floor from the control surface.
+That tuner proposed 16 times and adopted once; its input reading was mostly
+zeros. It is retired: this service no longer writes the table (kept, not
+dropped) and scores all three domains with their calibrated constants
+(`prediction_error.py`, `street_attention.py`). Successor: the self-monitor
+organ (design PR #2827, not yet merged).
 
 ## AST/HOT self-model tick (rung 4)
 
@@ -860,7 +874,7 @@ written.** Confirmed live: the node was frozen at `prediction_error=1.0` for hou
 kept logging real, varying, non-saturated values (0.000-0.144) every 30s the whole time --
 `orion-equilibrium-service`'s `_bus_synaptic_poll_loop` (`transport_metacog_gate.py`) polls this
 node's raw current value with no staleness check of its own, so the frozen value produced recurring
-false "Bus Anomaly Detected" alerts, functionally the same downstream symptom as the
+false "Bus Anomaly Detected" alerts (that Hub notifier was retired 2026-11-10), functionally the same downstream symptom as the
 `SubstrateDynamicsEngine.tick()` clobber bug fixed 2026-07-29 (`falkor_codec.py`'s
 `EXTERNALLY_OWNED_METADATA_KEYS`) but via a different, still-live mechanism that fix didn't touch.
 Split the gate in `_bus_synaptic_tick()`: the receipt write (an audit trail of notable events) stays
@@ -1393,21 +1407,16 @@ L1-5  substrate_field_state          orion-field-digester        (this service's
 L6    substrate_self_state           orion-self-state-runtime    "how is Orion doing"
   |     13 named 0-1 dimensions, memoryless recompute every 2s (see below)
   v
-L7    substrate_proposal_frames      orion-proposal-runtime      self_state -> POSSIBLE actions
+L7    (retired 2026-11-07)          proposals: each real act starts itself (want market)
   v
-L8    substrate_policy_decision_frames orion-policy-runtime      proposals -> governed decision
+L8    (retired 2026-11-07)          policy: becomes the want market's consent gate
   v
-L9    ExecutionDispatchFrameV1       orion-execution-dispatch-   policy+proposal+self_state ->
-                                      runtime                     dispatch envelope
-                                                                   (EXECUTION_DISPATCH_MODE=
-                                                                    dry_run by default -- L9 has
-                                                                    never mutated the real world)
+L9    (retired 2026-11-07)          dispatch: the act ledger grades every real act
   v
-L10   substrate_feedback_frames      orion-feedback-runtime      scores the dry-run outcome
+L10   (retired 2026-11-04)          the act ledger grades every real act; world-action
+                                                                   scoring runs in orion-sql-writer
   v
-L11   consolidation windows/motifs   orion-consolidation-runtime  folds L6-L10 history into
-                                                                   memory windows; consumed by
-                                                                   orion-dream/compaction_applier.py
+L11   (retired 2026-11-04)          killed outright
 ```
 
 Each layer's own README states its literal `X + Y -> service -> Z` data flow; this
@@ -1623,9 +1632,10 @@ Pure rules: `orion/substrate/street_attention.py`.
   coalition contains the node; counters under `/health` -> `street_attention`. A passed event's
   correlation id rides on the node (`contributing_turn_ids`) into the broadcast's
   `attended_node_ids`.
-- **Rung 6 `street_handoff`:** one raw reading per `handoff_met|late|missed`: `-ln(p_value)` nats
-  (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U` is Exponential(1)).
-  Recorded under `SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED`; no per-domain flag.
+- **Handoff surprise (`street_handoff`):** one raw reading per `handoff_met|late|missed`:
+  `-ln(p_value)` nats (p floored at 1e-6). Calibrated rest point: mean 1 nat, variance 1 (`-ln U`
+  is Exponential(1)). Scored against a fixed EWMA (alpha 0.2, variance floor 1e-3) and logged as
+  `handoff_surprise_z`; not stored.
 - **Kill switch:** `SUBSTRATE_STREET_ATTENTION_ENABLED=false` (no listener, no writes), or add
   the id to `NO_ATTENTION_CONSUMER_NODE_IDS`.
 

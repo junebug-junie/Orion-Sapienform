@@ -2,17 +2,17 @@
 
 Contract: orion/schemas/aitown_session.py. Arithmetic: orion/embodiment/town_sessions.py.
 
-What "Orion chooses" means, mechanically (the same path as solo Zelda leisure):
+What "Orion chooses" means, mechanically (ladder retirement PR 3, 2026-11-05; until then the
+proposal arena offered ``aitown_session``, the motor allocator admitted it, and dispatch sent one
+``orion:aitown_session:start:request`` RPC here):
 
-1. The proposal arena offers ``aitown_session`` on every tick the action warrant allows (Orion's
-   field pressure is high enough to act at all).
-2. The motor allocator (orion-execution-dispatch-runtime) admits or refuses it against every other
-   candidate, on the ``play:aitown.session`` act's own belief (how often a session produced a town
-   conversation) and its measured cost (session length). One session at a time.
-3. An admitted dispatch sends one ``orion:aitown_session:start:request`` RPC here. This controller
-   places a SHADOW bid for the ``aitown.session`` want (logged, not obeyed until Patch D), then runs
-   its own gate: the kill switch, the daily cap, the gap since the last session, and no session
-   already open. If it passes, it unpauses the town and opens the ``play`` act.
+1. embodiment's own timer (``app/town_self_start.py``) ticks every ``EMBODIMENT_TOWN_SELF_START_TICK_SEC``.
+   It holds the self-monitor act gate dispatch held, and the controller's last refusal for its own
+   ``retry_after_sec`` (dispatch's refusal hold).
+2. It places a SHADOW bid for the ``aitown.session`` want (logged, not obeyed until Patch D), BEFORE
+   the gate, then calls ``start_session``. This controller runs its own gate: the kill switch, the
+   daily cap, the gap since the last session, and no session already open. If it passes, it
+   unpauses the town and opens the ``play`` act.
 
 The hard cap does not depend on any of that: every tick (``EMBODIMENT_TOWN_TICK_SEC``) the
 controller pauses the town when the open session reaches ``EMBODIMENT_TOWN_SESSION_MAX_SEC`` or the
@@ -30,21 +30,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.embodiment import town_sessions as ts
 from orion.schemas.aitown_session import (
     AITOWN_SESSION_FAMILY,
-    AITOWN_SESSION_START_REPLY_PREFIX,
-    AITOWN_SESSION_START_REQUEST_KIND,
-    AITOWN_SESSION_START_RESULT_KIND,
     AITownSessionRowV1,
-    AITownSessionStartRequestV1,
-    AITownSessionStartResultV1,
     aitown_session_object_ref,
 )
 
@@ -59,16 +52,33 @@ DEFAULT_HOLD_SEC = 300.0
 #: under-charge by up to this much, plus the time the town ran while embodiment was down (bounded by
 #: AI Town's own ~5-10 min idle stop when no page is open).
 LAST_SEEN_WRITE_SEC = 15.0
-REPLAY_CACHE = 256
 ACT_VERB = "play"
 #: Spare time after the session cap for the close to land before the act's horizon.
 ACT_HORIZON_SLACK_SEC = 600.0
 
 
-def session_id_for(dispatch_id: str) -> str:
+def session_id_for(act_id: str) -> str:
     """The session's one id: also the play act's correlation id, the shadow want id, and the NPC
-    calls' X-Orion-Correlation-Id. Deterministic, so a replayed dispatch maps to the same session."""
-    return str(uuid5(NAMESPACE_URL, f"orion:aitown_session:{dispatch_id}"))
+    calls' X-Orion-Correlation-Id. Deterministic from the act id (``aitown_self_start:<uuid>``; a
+    dispatch id before 2026-11-05)."""
+    return str(uuid5(NAMESPACE_URL, f"orion:aitown_session:{act_id}"))
+
+
+@dataclass
+class StartOutcome:
+    """One start attempt's answer (the dispatch era's AITownSessionStartResultV1, now in-process).
+    ``refusal`` is set only for ``state=refused``: ``disabled`` | ``daily_cap`` | ``cooldown`` |
+    ``session_open`` | ``manual_session_open`` | ``ledger_unknown`` | ``town_unreachable`` |
+    ``resume_failed`` | ``already_ran``. ``retry_after_sec``: how long the same refusal will hold, from
+    the controller's own clock (the next local midnight for ``daily_cap``); None = no clock of its own."""
+
+    act_id: str
+    state: str
+    session_id: Optional[str] = None
+    object_ref: Optional[str] = None
+    refusal: Optional[str] = None
+    retry_after_sec: Optional[float] = None
+    gates: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -125,15 +135,15 @@ class ConvexTown:
         aitown_client.set_deployment_env(CORRELATION_ENV, value)
 
 
-def _act(cfg: TownConfig, dispatch_id: str, session_id: str):
+def _act(cfg: TownConfig, act_id: str, session_id: str):
     from orion.grammar.acts import build_act
 
     return build_act(
-        actor=AITOWN_SESSION_FAMILY, verb=ACT_VERB, key=str(dispatch_id), signal_id="artifact_produced",
+        actor=AITOWN_SESSION_FAMILY, verb=ACT_VERB, key=str(act_id), signal_id="artifact_produced",
         horizon_sec=cfg.session_max_sec + ACT_HORIZON_SLACK_SEC,
         basis=(f"artifact_produced (Orion spoke at least one line in AI Town) by {cfg.session_max_sec:.0f}s "
                f"session cap + {ACT_HORIZON_SLACK_SEC:.0f}s for the close; not yet measured (no session has run)"),
-        object_ref=f"aitown_session:{session_id}", test_before=aitown_session_object_ref(dispatch_id),
+        object_ref=f"aitown_session:{session_id}", test_before=aitown_session_object_ref(act_id),
     )
 
 
@@ -162,7 +172,6 @@ class TownSessionController:
         self._rows: list[AITownSessionRowV1] = []
         self._pending_stop = False
         self._last_write: dict[str, float] = {}
-        self._seen: OrderedDict[str, AITownSessionStartResultV1] = OrderedDict()
 
     # --- state ------------------------------------------------------------------------------
 
@@ -170,6 +179,22 @@ class TownSessionController:
     def heartbeat_wanted(self) -> bool:
         """Keep the town awake only while Orion's own session is open."""
         return self.orion is not None
+
+    def act_attempt_rows(self, secs: float) -> list[dict]:
+        """The ``play`` acts this controller opened in the last ``secs``, in the act ledger's shape
+        (object_ref, test_before, opened_at): the self-monitor gate's "last real attempt" read. Every
+        Orion row is an act this controller opened, and it is the ledger's only writer. Raises before
+        the ledger is loaded (the gate reads that as unreadable, never as a refusal)."""
+        from datetime import datetime, timezone
+
+        if not self._booted:
+            raise RuntimeError("aitown_session_ledger_not_loaded")
+        rows = list(self._rows)
+        cutoff = self.clock() - float(secs)   # after the copy: never older than the rows it ages
+        return [{"object_ref": f"aitown_session:{r.session_id}",
+                 "test_before": aitown_session_object_ref(r.dispatch_id or ""),
+                 "opened_at": datetime.fromtimestamp(r.started_at, tz=timezone.utc)}
+                for r in rows if r.kind == "orion" and r.started_at > cutoff]
 
     def note_utterance(self) -> None:
         """Orion spoke a line in town (the play act's artifact)."""
@@ -366,47 +391,33 @@ class TownSessionController:
             logger.info("aitown_session_closed session=%s kind=manual reason=town_paused seconds=%.0f",
                         row.session_id, now - row.started_at)
 
-    # --- the start RPC ----------------------------------------------------------------------
+    # --- the start (called by app/town_self_start.py) ---------------------------------------
 
-    def _refused(self, req: AITownSessionStartRequestV1, reason: str, retry: Optional[float] = None,
-                 gates: Optional[dict] = None) -> AITownSessionStartResultV1:
-        return AITownSessionStartResultV1(dispatch_id=req.dispatch_id, state="refused", refusal=reason,
-                                          retry_after_sec=retry, gates=gates or {})
+    def _refused(self, act_id: str, reason: str, retry: Optional[float] = None,
+                 gates: Optional[dict] = None) -> StartOutcome:
+        return StartOutcome(act_id=act_id, state="refused", refusal=reason, retry_after_sec=retry, gates=gates or {})
 
-    async def start(self, req: AITownSessionStartRequestV1) -> AITownSessionStartResultV1:
-        from app.physiology_shadow import ShadowBid
-
+    async def start_session(self, act_id: str) -> StartOutcome:
+        """One start attempt under every cap. The caller placed the shadow bid already."""
         async with self._lock:
-            prior = self._seen.get(req.dispatch_id)
-            if prior is not None:
-                return prior
-            session_id = session_id_for(req.dispatch_id)
-            shadow = ShadowBid(family=AITOWN_SESSION_FAMILY, verb=ACT_VERB, tier=2, want_id=session_id,
-                               object_ref=aitown_session_object_ref(req.dispatch_id),
-                               enabled=self.cfg.shadow_bid_enabled)
-            shadow.place()
-            out = await self._start(req, session_id)
-            shadow.settle("ran" if out.state == "started" else f"blocked:{out.refusal}")
-            if out.state == "started":
-                self._seen[req.dispatch_id] = out
-                while len(self._seen) > REPLAY_CACHE:
-                    self._seen.popitem(last=False)
-            return out
+            return await self._start(act_id, session_id_for(act_id))
 
-    async def _start(self, req: AITownSessionStartRequestV1, session_id: str) -> AITownSessionStartResultV1:
-        now = self.clock()
+    async def _start(self, act_id: str, session_id: str) -> StartOutcome:
         rows: Optional[list[AITownSessionRowV1]]
         try:
             rows = await ts.load_rows(self._redis())
         except Exception:  # noqa: BLE001
             logger.warning("aitown_session_ledger_read_failed", exc_info=True)
             rows = None
+        # The clock is taken AFTER the ledger read: every age below (the gap since the last session,
+        # today's seconds) is measured against a time no earlier than the rows it reads (#3134).
+        now = self.clock()
         if rows is not None:
             self._rows = list(rows)
         if not self._booted:
-            return self._refused(req, "ledger_unknown", DEFAULT_HOLD_SEC)
+            return self._refused(act_id, "ledger_unknown", DEFAULT_HOLD_SEC)
         if self._pending_stop:
-            return self._refused(req, "town_unreachable", DEFAULT_HOLD_SEC)
+            return self._refused(act_id, "town_unreachable", DEFAULT_HOLD_SEC)
         # The live in-memory sessions are the truth for "open" (the ledger can lag one write).
         live = [r for r in (rows or []) if r.session_id not in {x.session_id for x in (self.orion, self.manual) if x}]
         live += [x for x in (self.orion, self.manual) if x is not None]
@@ -418,67 +429,54 @@ class TownSessionController:
         gates = {"orion_seconds_today": None if used is None else round(used, 1),
                  "daily_cap_sec": self.cfg.daily_cap_sec}
         if reason is None and any(r.session_id == session_id for r in live):
-            # A dispatch replayed after a restart: never a second row under the same id (it would
-            # overwrite the first one's counted seconds and reopen its act).
+            # Never a second row under the same id (it would overwrite the first one's counted seconds
+            # and reopen its act). Act ids are minted fresh per attempt, so this is only a guard.
             reason = "already_ran"
         if reason is not None:
             retry = ts.retry_after_sec(reason, live, now, min_gap_sec=self.cfg.min_gap_sec, tz=self.cfg.tz)
             if reason == "session_open" and self.orion is not None:
                 retry = max(1.0, self.cfg.session_max_sec - (now - self.orion.started_at))
-            logger.info("aitown_session_refused dispatch_id=%s refusal=%s", req.dispatch_id, reason)
-            return self._refused(req, reason, retry, gates)
+            logger.info("aitown_session_refused act_id=%s refusal=%s", act_id, reason)
+            return self._refused(act_id, reason, retry, gates)
         # The town running with no Orion session is Juniper's, even if the tick has not seen it yet:
         # never absorb her time into Orion's session (or pause her at Orion's cap).
         try:
             running = await asyncio.to_thread(self.town.engine_running, self._world_id())
         except Exception as exc:  # noqa: BLE001
-            return self._refused(req, "town_unreachable", DEFAULT_HOLD_SEC, {**gates, "error": type(exc).__name__})
+            return self._refused(act_id, "town_unreachable", DEFAULT_HOLD_SEC, {**gates, "error": type(exc).__name__})
         if running:
-            logger.info("aitown_session_refused dispatch_id=%s refusal=manual_session_open (not yet ticked)",
-                        req.dispatch_id)
-            return self._refused(req, "manual_session_open", None, gates)
+            logger.info("aitown_session_refused act_id=%s refusal=manual_session_open (not yet ticked)", act_id)
+            return self._refused(act_id, "manual_session_open", None, gates)
         try:
             await asyncio.to_thread(self.town.resume)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("aitown_session_resume_failed dispatch_id=%s", req.dispatch_id, exc_info=True)
-            return self._refused(req, "resume_failed", DEFAULT_HOLD_SEC, {**gates, "error": type(exc).__name__})
-        row = AITownSessionRowV1(session_id=session_id, kind="orion", started_at=now, last_seen_at=now,
-                                 start_reason="want_funded", dispatch_id=req.dispatch_id)
+            logger.warning("aitown_session_resume_failed act_id=%s", act_id, exc_info=True)
+            return self._refused(act_id, "resume_failed", DEFAULT_HOLD_SEC, {**gates, "error": type(exc).__name__})
+        # The session starts when the town is really resumed (after two Convex calls that can take
+        # 15-25 s each under contention), not at the gate's clock.
+        started = self.clock()
+        row = AITownSessionRowV1(session_id=session_id, kind="orion", started_at=started, last_seen_at=started,
+                                 start_reason="want_funded", dispatch_id=act_id)
         if not await self._save(row):
             # No ledger row = no cap accounting: do not run uncounted.
             try:
                 await asyncio.to_thread(self.town.stop)
             except Exception:  # noqa: BLE001
                 self._pending_stop = True
-            return self._refused(req, "ledger_unknown", DEFAULT_HOLD_SEC, gates)
+            return self._refused(act_id, "ledger_unknown", DEFAULT_HOLD_SEC, gates)
         self.orion = row
         await self._set_correlation(session_id)
         await self._act_event(row, closed=False)
-        logger.info("aitown_session_opened session=%s kind=orion reason=want_funded dispatch_id=%s used_today=%s",
-                    session_id, req.dispatch_id, gates["orion_seconds_today"])
-        return AITownSessionStartResultV1(dispatch_id=req.dispatch_id, state="started", session_id=session_id,
-                                          object_ref=aitown_session_object_ref(req.dispatch_id), gates=gates)
-
-    async def handle(self, envelope: BaseEnvelope, *, publish: Callable[[str, BaseEnvelope], Awaitable[Any]],
-                     source_ref: Any) -> None:
-        reply = str(envelope.reply_to or "")
-        # Never answer on a subject outside the start reply prefix.
-        if envelope.kind != AITOWN_SESSION_START_REQUEST_KIND or not reply.startswith(AITOWN_SESSION_START_REPLY_PREFIX):
-            return
-        try:
-            req = AITownSessionStartRequestV1.model_validate(envelope.payload)
-        except ValueError:
-            logger.warning("aitown_session_request_invalid correlation_id=%s", envelope.correlation_id, exc_info=True)
-            return
-        result = await self.start(req)
-        out = BaseEnvelope(kind=AITOWN_SESSION_START_RESULT_KIND, source=source_ref,
-                           correlation_id=envelope.correlation_id, payload=result.model_dump(mode="json"))
-        await publish(reply, out)
+        logger.info("aitown_session_opened session=%s kind=orion reason=want_funded act_id=%s used_today=%s",
+                    session_id, act_id, gates["orion_seconds_today"])
+        return StartOutcome(act_id=act_id, state="started", session_id=session_id,
+                            object_ref=aitown_session_object_ref(act_id), gates=gates)
 
 
 __all__ = [
     "CORRELATION_ENV",
     "ConvexTown",
+    "StartOutcome",
     "TownConfig",
     "TownSessionController",
     "session_id_for",

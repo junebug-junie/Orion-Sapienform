@@ -34,7 +34,7 @@ def test_live_chain_reads_oldest_first_and_names_each_choice():
         f"2. After that read, you chose to read {GB10} next (a link you came across while working on it).",
         f"3. After that read, you chose to read {DGX} next (a link you came across while working on it). "
         "This is the read below.",
-        "Your reading pipeline ran each of these reads on its own timer.",
+        "Each of these reads ran later, on its own, in the background.",
     ]
 
 
@@ -77,5 +77,12 @@ def test_prompt_carries_the_chain_and_no_longer_asserts_self_direction():
     assert "Nobody asked you to read it" not in prompt and "it changed you" not in prompt
     assert "why that change matters to you" not in prompt
     assert f"2. After that read, you chose to read {GB10} next" in prompt
-    assert "one link is one link" in prompt
-    assert prompt.rstrip().endswith("reply with exactly the single word PASS and nothing else.")
+    # 2026-11-10 rewrite (Juniper: graph mechanics read as plumbing): the change is the idea, not
+    # the record line, and the prompt asks what caught Orion's interest.
+    assert "one link is one link" not in prompt and "Link made:" not in prompt
+    assert "An idea from the piece that you tied to what you already think: GB10 is associated" in prompt
+    assert "why it caught your interest" in prompt and "Why Juniper:" in prompt
+    assert "reply with exactly the single word PASS and nothing else." in prompt
+    from orion.hub.why_juniper import WHY_JUNIPER_INSTRUCTION
+
+    assert prompt.rstrip().endswith(WHY_JUNIPER_INSTRUCTION)  # the Why Juniper line is the last ask

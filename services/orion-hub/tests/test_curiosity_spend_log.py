@@ -20,7 +20,15 @@ import pytest
 import scripts.curiosity_offer_decisions as spend
 from orion.curiosity.journal import INVESTIGATION_TAG
 from orion.curiosity.self_inquiry import SELF_INQUIRY_TAG
-from orion.curiosity.value import ARM_UNCERTAINTY_ORDER, ARM_VALUE_ORDER, RunOutcome, kl_nats
+from orion.curiosity.kickoff_prompt import ORDER_SENTENCE
+from orion.curiosity.value import (
+    ARM_REPLICA_ORDER,
+    ARM_UNCERTAINTY_ORDER,
+    ARM_VALUE_ORDER,
+    RunOutcome,
+    kl_nats,
+    offer_arm,
+)
 from orion.schemas.durable_run import CuriosityTurnRequestV1
 from scripts.curiosity_offer_decisions import (
     INSERT_DECISION_SQL,
@@ -37,6 +45,7 @@ ATLAS_NEEDLE = "p.last_run_id AS last_run_id, p.why AS why"
 LIVE_NEEDLE = "p.status IS NULL OR NOT p.status IN"
 REVISION_NEEDLE = "MATCH (n:PriorRevision)"
 MIGRATION = Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_migration_curiosity_spend_v1.sql"
+REPLICA_MIGRATION = Path(__file__).resolve().parents[3] / spend.REPLICA_MIGRATION
 
 
 def _jsonb(text):
@@ -67,6 +76,7 @@ class _SpendConn(_FakeConn):
                 "stale_offered": _jsonb(args[4]),
                 "material_ids": _jsonb(args[5]),
                 "constants": _jsonb(args[6]),
+                "arm_propensities": None if args[7] is None else _jsonb(args[7]),
                 "turn_snapshot": None,
                 "turn_started_at": None,
             }
@@ -172,6 +182,10 @@ def test_a_tick_records_the_offer_the_start_snapshot_and_what_the_run_moved() ->
     run_id, decision = next(iter(conn.decisions.items()))
     assert decision["arm"] == ARM_UNCERTAINTY_ORDER  # the value switch is off by default
     assert decision["value_arm_propensity"] == 0.0
+    # The whole draw is recorded, all three arms (the loop's own defaults leave both switches off).
+    assert decision["arm_propensities"] == {
+        ARM_VALUE_ORDER: 0.0, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 1.0,
+    }
     assert [o["prior_id"] for o in decision["offered"]] == ["p2", "p3", "p1"]
     assert all(o["expected_nats"] > 0 for o in decision["offered"])
     assert decision["turn_snapshot"] is not None
@@ -252,6 +266,9 @@ def test_the_value_arm_orders_by_measured_progress_and_says_so() -> None:
     (decision,) = conn.decisions.values()
     assert decision["arm"] == ARM_VALUE_ORDER
     assert decision["value_arm_propensity"] == 1.0
+    assert decision["arm_propensities"] == {
+        ARM_VALUE_ORDER: 1.0, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 0.0,
+    }
     assert [o["prior_id"] for o in decision["offered"]] == ["lean", "half"]
     assert decision["offered"][0]["expected_nats"] > decision["offered"][1]["expected_nats"]
     assert decision["constants"]["history_tests"] == 5
@@ -507,8 +524,14 @@ def test_the_migration_declares_every_column_the_writer_uses() -> None:
     outcomes_ddl = ddl.split("CREATE TABLE IF NOT EXISTS curiosity_run_outcomes", 1)[1].split(");", 1)[0]
     insert_cols = re.search(r"\(\s*([a-z_,\s]+)\)\s*VALUES", INSERT_DECISION_SQL).group(1)
     upsert_cols = re.search(r"\(\s*([a-z_,\s]+)\)\s*VALUES", UPSERT_OUTCOME_SQL).group(1)
+    # Columns added later by ALTER (the replica migration's arm_propensities) count as declared too.
+    added = set(re.findall(
+        r"ALTER TABLE curiosity_offer_decisions ADD COLUMN IF NOT EXISTS ([a-z_]+)\s",
+        REPLICA_MIGRATION.read_text(encoding="utf-8"),
+    ))
+    assert added == {"arm_propensities"}
     for col in [c.strip() for c in insert_cols.split(",")] + ["turn_snapshot", "turn_started_at", "decided_at"]:
-        assert re.search(rf"^\s*{col}\s", decisions_ddl, re.M), f"curiosity_offer_decisions.{col}"
+        assert col in added or re.search(rf"^\s*{col}\s", decisions_ddl, re.M), f"curiosity_offer_decisions.{col}"
     for col in [c.strip() for c in upsert_cols.split(",")] + ["completed_at"]:
         assert re.search(rf"^\s*{col}\s", outcomes_ddl, re.M), f"curiosity_run_outcomes.{col}"
     assert "run_id text PRIMARY KEY" in decisions_ddl
@@ -587,7 +610,9 @@ def test_both_arms_read_the_same_words_about_the_order() -> None:
     assert _ordering_lines(prompts[False]) == _ordering_lines(prompts[True])
     for prompt in prompts.values():
         assert "least sure about come first" not in prompt
-        assert "the code estimates a test could change your mind the most" in prompt
+        assert ORDER_SENTENCE in prompt
+        # The sentence names no rule: it must stay true on the replica arm too.
+        assert "the code estimates a test could change your mind the most" not in prompt
 
 
 def test_offered_rows_record_which_slot_each_prior_came_from() -> None:
@@ -605,3 +630,25 @@ def test_offered_rows_record_which_slot_each_prior_came_from() -> None:
         [Prior("a", "c", 0.5, "open", 0), Prior("b", "c", 0.9, "open", 1, coverage=True)], _Model()
     )
     assert [(r["prior_id"], r["slot"]) for r in rows] == [("a", "order"), ("b", "coverage")]
+
+
+def test_with_the_replica_arm_off_the_draw_is_the_old_two_arm_draw() -> None:
+    """Rollback (HUB_CURIOSITY_REPLICA_ARM_ENABLED=false): the draw is three-way but the replica band
+    has width 0, so a run is value or uncertainty exactly as before patch 3, and its row says
+    P(replica) = 0. The live config (three equal arms) is tested in test_curiosity_replica_plan.py."""
+    bus = _FakeBus()
+    conn = _SpendConn()
+    states = [_state("half", 0.5, 0), _state("lean", 0.7, 0)]
+    reader = _reader(states)
+    loop = _graph_loop(
+        bus, reader=reader, conn=conn, value_order_enabled=True, value_order_propensity=0.5,
+        replica_arm_enabled=False, replica_arm_propensity=0.3333,
+    )
+    _moves_during_turn(loop, reader, lambda rid: states)
+    assert asyncio.run(loop.tick()) is None
+    ((run_id, decision),) = conn.decisions.items()
+    assert decision["arm_propensities"] == {
+        ARM_VALUE_ORDER: 0.5, ARM_REPLICA_ORDER: 0.0, ARM_UNCERTAINTY_ORDER: 0.5,
+    }
+    assert decision["arm"] == offer_arm(run_id, enabled=True, propensity=0.5)[0]
+    assert decision["arm"] != ARM_REPLICA_ORDER

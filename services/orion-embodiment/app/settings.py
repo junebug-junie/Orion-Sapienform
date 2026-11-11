@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # 2026-10-30). With sessions on, the session controller heartbeats during Orion's sessions only.
     world_heartbeat_enabled: bool = Field(False, alias="EMBODIMENT_WORLD_HEARTBEAT_ENABLED")
     # AI Town sessions (Juniper 2026-10-30, app/town_sessions.py). true: the town is paused except in
-    # a session Orion chose (motor allocator -> orion:aitown_session:start:request) or one Juniper
+    # a session Orion chose (this service's own timer, app/town_self_start.py) or one Juniper
     # opened by hand. false: Orion's sessions are refused and an open one is closed `disabled`;
     # Juniper's manual sessions are still logged. Shipped ON.
     town_sessions_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_SESSIONS_ENABLED")
@@ -59,7 +59,19 @@ class Settings(BaseSettings):
     # Set the Convex env var ORION_TOWN_CORRELATION_ID to the open session's id, so NPC LLM calls
     # carry X-Orion-Correlation-Id (patches/orion-town-correlation-id.patch) into llm_call_usage.
     town_correlation_env_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_CORRELATION_ENV_ENABLED")
-    # SHADOW bid for the aitown.session want at each start request (logged, never obeyed).
+    # Ladder retirement PR 3 (2026-11-05, app/town_self_start.py): Orion's sessions start on this
+    # service's own timer, which replaced the dispatch runtime's start RPC. Each tick bids, then asks
+    # the controller's caps above. false: Orion never starts a session (Juniper's Unfreeze still works).
+    # 300 s: dispatch's own ask cadence (its refusal hold, FAILURE_HOLD_SEC). Shipped ON.
+    town_self_start_enabled: bool = Field(True, alias="EMBODIMENT_TOWN_SELF_START_ENABLED")
+    town_self_start_tick_sec: float = Field(300.0, ge=10.0, alias="EMBODIMENT_TOWN_SELF_START_TICK_SEC")
+    # Self-monitor E1 (orion/self_monitor/gate.py), carried over from dispatch: a session whose
+    # faculty (act.aitown.session.play) is held broken/unreliable in a fresh orion:self_monitor:latest
+    # is refused `track_record_failing`, except one re-test probe per SELF_MONITOR_PROBE_INTERVAL_SEC.
+    # Unknown/stale/absent state changes nothing.
+    self_monitor_act_gate_enabled: bool = Field(True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    self_monitor_probe_interval_sec: float = Field(21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
+    # SHADOW bid for the aitown.session want at each timer attempt, before the caps (logged, never obeyed).
     physiology_shadow_bid_enabled: bool = Field(True, alias="EMBODIMENT_PHYSIOLOGY_SHADOW_BID_ENABLED")
     orion_sprite: str = Field("f1", alias="EMBODIMENT_ORION_SPRITE")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")

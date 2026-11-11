@@ -111,6 +111,9 @@ NEVER_SYNC_KEYS = frozenset(
         # Cursor Auto key + worldview graph password for orion-curiosity-peer.
         # Empty in .env_example; --force must never wipe a pasted live value.
         "CURSOR_API_KEY",
+        # Orion's own GitHub identity (classic PAT, scope repo). Empty in
+        # .env_example; --force must never wipe the live token.
+        "ORION_GITHUB_TOKEN",
         "ORION_CURIOSITY_GRAPH_PASSWORD",
         # The house meter's Green Button usage point (orion-energy). Empty in
         # .env_example; the ENERGY_ prefix below would otherwise let --force
@@ -127,6 +130,14 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Self-monitor effects (rung 6, 2026-11-03): E1 act gate in orion-thought (was dispatch-runtime) + orion-actions
+    # (SELF_MONITOR_ACT_GATE_ENABLED, SELF_MONITOR_PROBE_INTERVAL_SEC) and E2 in Hub
+    # (SELF_MONITOR_QUESTIONS_*). Without this the default run visited all three and added nothing.
+    "SELF_MONITOR_",
+    # Ladder retirement PR 2 (2026-11-05): orion-thought's painting trigger (app/painting_self_start.py).
+    "ORION_PAINTING_SELF_START_",
+    # Ladder retirement PR 1 (2026-11-05): Hub's leisure timer (scripts/retro_leisure_self_start.py).
+    "RETRO_LEISURE_SELF_START_",
     # Body economy Patch A3 (2026-10-23): durable-runs' physiology node (Organ 1 Body).
     "ORION_PHYSIOLOGY_",
     "CHANNEL_PHYSIOLOGY_",
@@ -139,21 +150,19 @@ SYNC_PREFIXES = (
     "HARDWARE_WATCH_",
     "LLM_GATEWAY_POOL_",
     "LLM_GATEWAY_EXECUTOR_",
-    # Substrate pending-marker reconcilers (2026-09-25): bounded window + full-sweep schedule.
-    # None of the policy / execution-dispatch / feedback runtimes were visited before this.
-    "POLICY_RECONCILE_",
-    "DISPATCH_RECONCILE_",
-    "FEEDBACK_RECONCILE_",
-    # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff, and the feedback
-    # runtime's park-until-settled bound.
+    # POLICY_RECONCILE_ / DISPATCH_RECONCILE_ (the substrate pending-marker reconcilers) retired
+    # with the policy and dispatch rungs, 2026-11-07 (ladder retirement PR 6).
+    # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff.
     "CORTEX_EXEC_RENDER_SCENE_",
-    "FEEDBACK_VISUAL_SETTLE_",
     # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
     "ENERGY_",
     # Hub's curiosity energy-stakes hold; no HUB_ prefix, so ENERGY_ above misses it.
     "ORION_ENERGY_STAKES_",
     # Hub Energy strip (daily-bar timezone); no generic HUB_ prefix is synced.
     "HUB_ENERGY_",
+    # Hub attention minutes (2026-11-10). Not "HUB_ATTENTION_": that would also sweep the
+    # older HUB_ATTENTION_ORGAN_* keys into this decision.
+    "HUB_ATTENTION_TRACKER_",
     # Act ledger (rung 2, "doing on one track"): hub say/ask/look producers and the
     # sql-writer act materialiser + horizon resolver. No generic HUB_/SQL_WRITER_ prefix
     # is synced, so without these the flags never reach a live .env.
@@ -217,7 +226,6 @@ SYNC_PREFIXES = (
     "CHANNEL_PRE_TURN_",
     "REPAIR_PRESSURE_WEIGHTS_",
     "REPAIR_PRESSURE_PROBE_",
-    "TRANSPORT_PROPOSAL_",
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
@@ -401,16 +409,20 @@ SYNC_PREFIXES = (
     # Orion Prime 2A resident loop (orion-mind, 2026-10-30). Same blind spot: without the prefix the
     # eleven PRIME_* keys never reach the live .env.
     "PRIME_",
-    # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
-    # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
-    # (feedback runtime) and the cabinet attention bridge (substrate runtime). The pool's own
+    # The curiosity replica (orion-mind, 2026-11-04 patch 3): loop-library instance #2. Hub's side
+    # (HUB_CURIOSITY_REPLICA_ARM_*) is already covered by HUB_CURIOSITY_.
+    "CURIOSITY_REPLICA_",
+    # Attend-to-act loop (2026-10-01): settle-time scoring (sql-writer since 2026-11-04; was the feedback
+    # runtime) and the cabinet attention bridge (substrate runtime). Since 2026-11-05 (ladder retirement
+    # PR 5) the cooling world act lives in orion-durable-runs: ORION_COOLING_ACT_*, the hardware-watch URL,
+    # the rise threshold, the shed RPC/TTL/caps and the outcome channel. The pool's own
     # GPU_POOL_ORION_SHED_* keys are already covered by GPU_POOL_.
-    "ORION_WORLD_ACTION",
-    "ORION_WORLD_SETTLEMENT_",
-    "ORION_WORKSPACE_WINNER_",
+    "SQL_WRITER_WORLD_SETTLEMENT_",
+    "ORION_COOLING_ACT_",
     "ORION_HARDWARE_WATCH_HEALTH_URL",
     "ORION_SHED_",
     "ORION_GPU_POOL_SHED_",
+    "BUS_ACTION_OUTCOME_OUT",
     "SUBSTRATE_CABINET_HEAT_",
     # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
     "ORION_SITUATION_PERCEPTION_",
@@ -424,8 +436,19 @@ SYNC_PREFIXES = (
     "WALKWAY_SEEN_",
     # Caption motion cross-check (orion-sql-writer, 2026-10-23, spec PR #2763 item 3 C).
     "VISION_CAPTION_MOTION_",
+    # PR field notes Patch 2 (orion-durable-runs GitHub poll + pr.field_note runs, 2026-11-04).
+    "PR_FIELD_NOTES_",
+    # Daily reminiscence Patch 2 (orion-durable-runs overnight tick + reminiscence.episode runs, 2026-11-07).
+    "REMINISCENCE_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
+    # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).
+    # Neither matched a prefix: the default run visited the .env and added nothing.
+    "PERSON_GRAPH_",
+    "PERSON_SIGHTING_",
+    # Substrate dynamics tick (orion-substrate-runtime): propagation decay mode
+    # (2026-11-03) matched no prefix, so the default run added nothing.
+    "SUBSTRATE_DYNAMICS_",
 )
 
 SYNC_EXACT = frozenset(
@@ -477,7 +500,8 @@ SYNC_EXACT = frozenset(
         # Temporal Self R3 reader 1: the dream reads arousal (orion-dream). No DREAM_ prefix is synced.
         "DREAM_IDLE_FROM_AROUSAL_ENABLED",
         "DREAM_AROUSAL_MAX_HOLD_HOURS",
-        # Temporal Self R3 reader 4 (orion-proposal-runtime): no ORION_VISUAL_ prefix is synced.
+        # Temporal Self R3 reader 4 (orion-thought's painting trigger since 2026-11-05; was
+        # orion-proposal-runtime): no ORION_VISUAL_ prefix is synced.
         "ORION_VISUAL_BASELINE_AROUSAL_ENABLED",
         # Temporal Self R3 reader 6 (orion-hub mutation cycle): no SUBSTRATE_AUTONOMY_ prefix is synced.
         "SUBSTRATE_AUTONOMY_AROUSAL_ENABLED",
@@ -561,11 +585,9 @@ DEFAULT_SERVICES = (
     "orion-substrate-runtime",
     "orion-field-digester",
     "orion-attention-runtime",
-    # orion-self-state-runtime deleted 2026-07-22 (SelfStateV1 burn).
-    "orion-proposal-runtime",
-    "orion-policy-runtime",
-    "orion-execution-dispatch-runtime",
-    "orion-feedback-runtime",
+    # orion-self-state-runtime deleted 2026-07-22 (SelfStateV1 burn); orion-proposal-runtime,
+    # orion-policy-runtime and orion-execution-dispatch-runtime deleted 2026-11-07 (ladder
+    # retirement PR 6).
     "orion-thought",
     "orion-harness-governor",
     "orion-dream",

@@ -428,6 +428,7 @@ def apply_batch(
     stationary_min_sec: float = 1800.0,
     stationary_iou: float = 0.5,
     stationary_max_gap_sec: float = 300.0,
+    stationary_streams: Optional[Iterable[str]] = None,
     cannot_link: Optional[Dict[str, Iterable[str]]] = None,
     cannot_link_margin: float = 0.10,
     continuation_threshold: Optional[float] = None,
@@ -603,8 +604,12 @@ def apply_batch(
         if continuation_threshold is not None:
             _observe(ind.individual_id, crop.observed_at, crop.box_xyxy)
         assigned += 1
-        advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
-                           min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
+        # Prop detection only on streams that have props (None: every stream).
+        # The office camera stays out: a person at a desk sits still for hours
+        # (2026-11-04), and a prop gets no asks, attention or "who is around".
+        if stationary_streams is None or crop.stream_id in stationary_streams:
+            advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
+                               min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
         crop_stationary[crop.crop_id] = ind.stationary
 
         zone_key = crop.zone or _NO_ZONE
@@ -1151,6 +1156,9 @@ class IndividualsConfig:
     stationary_min_sec: float = 1800.0
     stationary_iou: float = 0.5
     stationary_max_gap_sec: float = 300.0
+    # Streams the stationary rule applies to (VISION_STATIONARY_STREAMS). Others
+    # never mark an individual stationary. None = every stream.
+    stationary_streams: Optional[Tuple[str, ...]] = None
     # Visual confirmation asks (2026-10-15). A person with at least this many
     # face crops gets "who is this?" the same day, and only people with this
     # many faces are compared for "are these the same person?". <= 0 disables both.
@@ -1165,6 +1173,8 @@ class IndividualsConfig:
     confirm_ask_daily_cap: int = 6
     # Daily cap for "Is this <name>?" asks, separate from the slow rule's cap.
     person_confirm_ask_daily_cap: int = 6
+    # "Is this <name>?" for camera-prior guesses (the office), its own daily slots.
+    person_confirm_prior_ask_daily_cap: int = 2
     # Splits on "someone else" picture answers (app/vision_split.py) and the
     # matcher's cannot-link rule. False: verdicts are recorded only.
     split_on_verdict_enabled: bool = True
@@ -1502,6 +1512,7 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 face_match_threshold=cfg.face_match_threshold if cfg.face_match_threshold > 0 else None,
                 stationary_min_sec=cfg.stationary_min_sec, stationary_iou=cfg.stationary_iou,
                 stationary_max_gap_sec=cfg.stationary_max_gap_sec,
+                stationary_streams=None if cfg.stationary_streams is None else set(cfg.stationary_streams),
                 continuation_threshold=cfg.continuation_threshold if cfg.continuation_enabled else None,
                 continuation_gap_sec=min(cfg.continuation_gap_sec, cfg.merge_gap_sec),
                 continuation_max_disp=cfg.continuation_max_disp,
@@ -2118,13 +2129,25 @@ ASKED_TODAY_SQL = (
     "AND created_at >= :d "
     "AND NOT (evidence_refs @> CAST(:face AS jsonb)) "
     # A name Juniper typed on a walkway story card is not a question Orion asked (2026-10-18).
-    "AND NOT coalesce(answer_detail ? 'story_id', false)"
+    "AND NOT coalesce(answer_detail ? 'story_id', false) "
+    # Office sessions open their own "who is this?" under VISION_OFFICE_ASK_DAILY_CAP
+    # (app/vision_office_sessions.py OFFICE_RULE_REF, 2026-11-05).
+    "AND NOT (evidence_refs @> '[\"rule:office_session\"]'::jsonb)"
 )
 # "Is this <name>?" asks have their own cap (person_confirm_ask_daily_cap). Until
 # 2026-10-22 they shared ask_daily_cap with the slow rule, which opens first and
 # used both slots every day: 0 were ever asked.
 PERSON_CONFIRM_ASKED_TODAY_SQL = (
-    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d"
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d "
+    "AND NOT (evidence_refs @> '[\"rule:camera_prior\"]'::jsonb)"
+)
+# "Is this Juniper?" from a camera prior (the office) has its own slots (2026-11-07):
+# the shared cap was used on walkway guesses every day (6/6 on 11-04..06), so the
+# office guesses -- ranked last -- were never asked and her office album never grew.
+PRIOR_RULE_REF = "rule:camera_prior"
+PRIOR_CONFIRM_ASKED_TODAY_SQL = (
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_person_confirm' AND created_at >= :d "
+    "AND evidence_refs @> '[\"rule:camera_prior\"]'::jsonb"
 )
 CONFIRM_ASKED_TODAY_SQL = (
     "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "
@@ -2371,12 +2394,27 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
 
     if conn.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar() is None:
         return []
-    asked_today = conn.execute(text(PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": local_day_start(now, tz)}).scalar() or 0
+    day = local_day_start(now, tz)
+    asked_today = conn.execute(text(PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": day}).scalar() or 0
     budget = remaining_ask_budget(daily_cap=cfg.person_confirm_ask_daily_cap, asked_today=int(asked_today))
-    if budget <= 0:
+    prior_asked = conn.execute(text(PRIOR_CONFIRM_ASKED_TODAY_SQL), {"d": day}).scalar() or 0
+    prior_budget = remaining_ask_budget(daily_cap=cfg.person_confirm_prior_ask_daily_cap, asked_today=int(prior_asked))
+    if budget <= 0 and prior_budget <= 0:
         return []
+    from app.vision_person_model import attribution_has_basis
+
+    # Camera-prior guesses (basis = 'prior', the office camera) rank after guesses the
+    # scores chose, and at most one is open per name: one office visit is split into
+    # several records, and each would otherwise take one of the day's asks.
+    has_basis = attribution_has_basis(conn)
+    basis_col = "g.basis" if has_basis else "NULL"
+    open_prior_names = {str(n).casefold() for (n,) in conn.execute(text("""
+        SELECT g2.person_label FROM orion_ask o JOIN vision_person_attribution g2
+          ON o.source_ref = g2.individual_id || '|' || g2.person_label
+        WHERE o.source_kind = 'vision_person_confirm' AND o.status = 'open'
+          AND g2.revoked_at IS NULL AND g2.basis = 'prior'"""))} if has_basis else set()
     cands = conn.execute(text(f"""
-        SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days
+        SELECT g.individual_id, g.person_label, i.sighting_count, i.distinct_days, {basis_col} AS basis
         FROM vision_person_attribution g JOIN vision_individual i USING (individual_id)
         WHERE g.revoked_at IS NULL AND g.band = 'unsure' AND i.label IS NULL AND NOT i.stationary
           AND i.sighting_count >= :min_s
@@ -2388,25 +2426,33 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
           AND NOT EXISTS (SELECT 1 FROM orion_ask o WHERE o.status = 'open' AND (
                 (o.source_kind = 'vision_individual' AND o.source_ref = g.individual_id) OR
                 (o.source_kind = 'vision_person_confirm' AND o.source_ref LIKE g.individual_id || '|%')))
-        ORDER BY g.score DESC, g.individual_id
+        ORDER BY ({basis_col} IS NOT DISTINCT FROM 'prior'), g.score DESC, g.individual_id
     """), {"cool": now - timedelta(days=cfg.ask_cooldown_days), "min_s": PERSON_CONFIRM_MIN_SIGHTINGS}).fetchall()
     out: List[dict] = []
-    for iid, person, sc, dd in cands:
-        if len(out) >= budget:
-            break
+    opened = {"evidence": 0, "prior": 0}
+    for iid, person, sc, dd, basis in cands:
+        lane = "prior" if basis == "prior" else "evidence"
+        if opened[lane] >= (prior_budget if lane == "prior" else budget):
+            continue  # this lane's slots are used; the other lane may still have some
+        if lane == "prior" and str(person).casefold() in open_prior_names:
+            continue
         srows = _sighting_rows(conn, iid)
         images = _images(srows, now, cfg)
         if not images:
             continue  # no picture, no ask; it stays a candidate
+        if lane == "prior":
+            open_prior_names.add(str(person).casefold())
+        refs = [f"sighting:{row[0]}" for row in srows[:5]]
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=person_confirm_question(person=person, sighting_count=int(sc or 0), distinct_days=int(dd or 0)),
-            evidence_refs=[f"sighting:{row[0]}" for row in srows[:5]],
+            evidence_refs=refs + [PRIOR_RULE_REF] if lane == "prior" else refs,
             image_ref=images[0], image_refs=images, created_at=now,
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_PERSON_CONFIRM, source_ref=f"{iid}{PAIR_SEP}{person}",
         )
         if _insert_ask(conn, ask):
+            opened[lane] += 1
             out.append(ask.model_dump(mode="json"))
     return out
 

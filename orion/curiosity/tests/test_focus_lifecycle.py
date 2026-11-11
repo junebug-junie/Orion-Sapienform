@@ -25,6 +25,7 @@ from orion.curiosity.tests.focus_fixtures import FocusPool, FocusTable
 ADMIN_DSN = os.environ.get("ORION_MEMORY_EPISODE_TEST_DATABASE_URL")
 MIGRATION = Path(__file__).resolve().parents[3] / cf.MIGRATION
 REFS_MIGRATION = Path(__file__).resolve().parents[3] / cf.REFS_MIGRATION
+REFUSED_MIGRATION = Path(__file__).resolve().parents[3] / cf.REFUSED_MIGRATION
 RUN_A, RUN_B = "a1a1a1a1a1a1", "b2b2b2b2b2b2"
 
 
@@ -52,6 +53,7 @@ def run(backend: str, scenario) -> None:
             async with pool.acquire() as conn:
                 await conn.execute(MIGRATION.read_text())
                 await conn.execute(REFS_MIGRATION.read_text())
+                await conn.execute(REFUSED_MIGRATION.read_text())
             await scenario(pool)
         finally:
             await pool.close()
@@ -491,3 +493,87 @@ def test_a_stored_ref_that_is_not_a_valid_reference_is_dropped_never_printed_as_
     raw = '[{"kind": "arc", "id": "8d87adeca2ce06a5"}, {"kind": "arc", "id": "x; rm -rf /"}, {"kind": "run", "id": "a"}]'
     assert cf._refs_value(raw) == ({"kind": "arc", "id": "8d87adeca2ce06a5"},)
     assert cf._refs_value("not json") == () and cf._refs_value(None) == ()
+
+
+# --- refused by the organ (curiosity replica, design 2026-11-04 section 9) ----------------------
+
+PRIME_CHAT = cf.PRIME_CORRELATION_PREFIX + "thought-1"
+REPLICA = "curiosity.replica"
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_the_organ_refuses_a_pending_prime_focus_and_no_run_is_shown_it(backend):
+    async def scenario(pool):
+        queued = await q(pool, "why does the bus stall at noon?", chat=PRIME_CHAT)
+        refused = await cf.refuse_focus(pool, focus_id=queued.focus.focus_id, refused_by=REPLICA,
+                                        reason="  three runs this week already   looked at the bus ",
+                                        act_id="act-9")
+        assert refused.status == cf.REFUSED_BY_ORGAN
+        assert refused.refused_by == REPLICA and refused.refused_act_id == "act-9"
+        assert refused.refused_reason == "three runs this week already looked at the bus"
+        # Out of the slot: nothing pending, the next run takes nothing.
+        assert await cf.read_pending(pool) is None
+        assert await cf.take_focus(pool, run_id=RUN_A) is None
+        row = (await _all(pool))[queued.focus.focus_id]
+        assert row.status == cf.REFUSED_BY_ORGAN
+        story = cf.focus_story(row)
+        assert "refused by curiosity.replica" in story and "no run was shown it" in story
+        assert "cleared by Juniper" not in story
+        # Prime re-asking the same words is not reported as queued.
+        with pytest.raises(cf.FocusRefused, match="refused_by_organ"):
+            await q(pool, "why does the bus stall at noon?", chat=PRIME_CHAT)
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+@pytest.mark.parametrize("origin,chat,words", [
+    ("juniper", PRIME_CHAT, "Juniper asked"),  # even under Prime's prefix: origin decides
+    ("juniper", "chat-1", "Juniper asked"),
+    ("self", "chat-1", "in a conversation"),
+])
+def test_the_organ_can_never_refuse_juniper_or_a_conversation_focus(backend, origin, chat, words):
+    async def scenario(pool):
+        queued = await q(pool, "look at the fan curve", origin=origin, chat=chat)
+        with pytest.raises(cf.OrganRefusalNotAllowed, match=words):
+            await cf.refuse_focus(pool, focus_id=queued.focus.focus_id, refused_by=REPLICA, reason="no")
+        row = await cf.read_pending(pool)
+        assert row is not None and row.focus_id == queued.focus.focus_id and row.refused_by is None
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_a_taken_focus_cannot_be_refused_and_a_refusal_needs_a_reason(backend):
+    async def scenario(pool):
+        queued = await q(pool, "why does the bus stall?", chat=PRIME_CHAT)
+        for reason in ("", "   ", "x" * (cf.REFUSAL_REASON_MAX + 1)):
+            with pytest.raises(cf.OrganRefusalNotAllowed):
+                await cf.refuse_focus(pool, focus_id=queued.focus.focus_id, refused_by=REPLICA, reason=reason)
+        with pytest.raises(cf.OrganRefusalNotAllowed, match="name who"):
+            await cf.refuse_focus(pool, focus_id=queued.focus.focus_id, refused_by=" ", reason="ok")
+        await cf.take_focus(pool, run_id=RUN_A)
+        with pytest.raises(cf.OrganRefusalNotAllowed, match="taken"):
+            await cf.refuse_focus(pool, focus_id=queued.focus.focus_id, refused_by=REPLICA, reason="late")
+        with pytest.raises(cf.OrganRefusalNotAllowed, match="no such focus"):
+            await cf.refuse_focus(pool, focus_id=cf.focus_id_for("x", "y", "self", None),
+                                  refused_by=REPLICA, reason="gone")
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_juniper_clear_still_reads_cleared_not_refused(backend):
+    async def scenario(pool):
+        queued = await q(pool, "why does the bus stall?", chat=PRIME_CHAT)
+        assert await cf.clear_focus(pool, focus_id=uuid.UUID(queued.focus.focus_id))
+        row = (await _all(pool))[queued.focus.focus_id]
+        assert row.status == cf.CLEARED and row.refused_by is None
+        assert "cleared by Juniper" in cf.focus_story(row)
+
+    run(backend, scenario)
+
+
+def test_refuse_sql_guard_matches_prime_prefix():
+    # The SQL guard spells the prefix literally; it must be the one Prime writes.
+    assert f"LIKE '{cf.PRIME_CORRELATION_PREFIX}%'" in cf.REFUSE_SQL

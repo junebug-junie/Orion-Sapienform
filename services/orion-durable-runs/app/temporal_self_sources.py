@@ -124,12 +124,17 @@ FROM dream_hypothesis WHERE created_at >= %(lo)s AND created_at < %(hi)s
 """),
     # Time is observed_at, else created_at; observed_at is indexed (and never null live: 0 of
     # 144,909 on 10-10), so the two branches keep the read off a 201 MB seq scan.
+    # Act rows only (2026-11-07, ladder retirement PR 6): the act ledger's ``act:<verb>`` rows and the
+    # cooling world act's ``self_regulate`` rows. The dispatch ladder's own kinds (summarize, maintain,
+    # inspect) stopped with dispatch; reading a kind that cannot arrive any more is a dead source.
     SourceQuery("action_outcome", """
 SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
 FROM substrate_action_outcomes WHERE observed_at >= %(lo)s AND observed_at < %(hi)s
+  AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
 UNION ALL
 SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
 FROM substrate_action_outcomes WHERE observed_at IS NULL AND created_at >= %(lo)s AND created_at < %(hi)s
+  AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
 """),
     # Time is the trigger's naive-UTC timestamp; the metacog row is written up to ~9 min later
     # (live p99 12.7 s, max 532 s), so the TEXT row time is only a lower-bounded superset. The
@@ -188,6 +193,19 @@ SELECT event_id, occurred_at, payload_json FROM temporal_self_event
 WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
   AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
+    # Felt state (body economy Organ 5): the physiology node's own binding rows in the event table
+    # (app/body_binding.py). Only the physiology node writes this kind; the adapter keeps their ids.
+    SourceQuery("body_binding", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'body_binding' AND source_table = 'physiology'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Self-monitor organ patch 2: the self_monitor node's own faculty rows (status changes, keepalives).
+    SourceQuery("faculty_status_changed", """
+SELECT event_id, occurred_at, payload_json FROM temporal_self_event
+WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
+  AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
     # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
     # session end). Available at ended_at, so the window is on ended_at and needs no slack.
     SourceQuery("retro_play", """
@@ -243,6 +261,14 @@ SELECT 'street_event' AS origin, event_id, handoff_id, event, created_at
 FROM vision_handoff_street_outbox
 WHERE created_at >= %(lo)s AND kind IN ('handoff_met', 'handoff_late', 'handoff_missed')
 """, slack=timedelta(minutes=10), optional_table="vision_handoff_street_outbox"),
+    # Office sessions (office camera design PR #3127 step B): one FINAL row per visit to a room camera
+    # (orion-sql-writer app/vision_office_sessions.py). Available at closed_at (when the row became
+    # final, never rewritten after), so the window is on closed_at and needs no slack.
+    SourceQuery("office_session", """
+SELECT session_id, stream_id, status, started_at, ended_at, closed_at, who_text, label, unknown_people, ask_id
+FROM vision_office_session
+WHERE status = 'closed' AND closed_at >= %(lo)s AND closed_at < %(hi)s AND stream_id = ANY(%(room_streams)s)
+""", optional_table="vision_office_session"),
 )
 
 TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"

@@ -53,7 +53,14 @@ DEFAULT_SUBPROCESS_TIMEOUT_SEC = 300
 # failing on this timeout again. deploy/systemd/orion-backup-databases.
 # service's TimeoutStartSec was widened in the same change so the outer
 # service-level timeout doesn't just become the next place this fails.
-POSTGRES_DUMP_TIMEOUT_SEC = 5400
+#
+# Bumped 5400s -> 7200s on 2026-11-05 alongside the gzip -> zstd switch:
+# with the cluster at 105GB, nightly runs straddled the 5400s ceiling and
+# failed 2 of the last 3 nights (Nov 3/5) with "gzip timed out after 5400".
+# The real fix is the compressor (see capture_postgres), but the ceiling
+# gets headroom too, and TimeoutStartSec in the systemd service was widened
+# to 4h in the same change -- same coupling as 2026-08-18.
+POSTGRES_DUMP_TIMEOUT_SEC = 7200
 
 
 @dataclass(frozen=True)
@@ -162,6 +169,34 @@ def _terminate_stale_pg_dump_backends(*, container: str, pg_user: str, log: list
             log.append(f"terminated stale pg_dump backend(s): {terminated}")
 
 
+def _require_container_zstd(*, container: str, log: list[str]) -> None:
+    """Fail fast if the container has no zstd.
+
+    Same reasoning as the old host-side `shutil.which("gzip")` check: the dump
+    is only useful if it can actually be compressed, and finding that out after
+    pg_dumpall has already opened a cluster-wide read wastes the whole dump.
+    Checked inside the container because that is where zstd runs -- the athena
+    host has no zstd binary (confirmed live 2026-11-05).
+    """
+    try:
+        proc = _run(["docker", "exec", container, "zstd", "--version"], log=log, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        # A wedged daemon hangs docker exec; without this the bare
+        # TimeoutExpired escapes instead of the RuntimeError the caller's
+        # manifest path expects, same as _terminate_stale_pg_dump_backends guards.
+        raise RuntimeError(
+            f"zstd probe in container {container} timed out (wedged docker daemon?)"
+        ) from exc
+    if proc.returncode != 0:
+        # Not "zstd binary not found": a stopped or restarting container also
+        # fails this probe ("No such container" / "is not running"), and naming
+        # only the missing-binary cause sends the operator to the wrong fix.
+        raise RuntimeError(
+            f"zstd probe failed in container {container} (rc {proc.returncode}): "
+            f"{proc.stderr.decode(errors='replace')[:300]}"
+        )
+
+
 def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[str]) -> None:
     """pg_dumpall inside the running container -- logical dump, always
     consistent regardless of concurrent writes, unlike a raw data-dir copy.
@@ -173,39 +208,63 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     """
     # Clear any backend orphaned by a prior run's timeout before starting a new
     # dump -- see _terminate_stale_pg_dump_backends for why this can happen.
-    if not shutil.which("gzip"):
-        raise RuntimeError("gzip binary not found on PATH")
+    _require_container_zstd(container=container, log=log)
     _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
     dest_dir.mkdir(parents=True)
-    dest_file = dest_dir / "pg_dumpall.sql.gz"
+    dest_file = dest_dir / "pg_dumpall.sql.zst"
     cmd = ["docker", "exec", container, "pg_dumpall", "-U", pg_user]
-    log.append("$ " + " ".join(cmd) + f" | gzip > {dest_file}")
+    # -i is load-bearing, not decoration: without it Docker never forwards
+    # stdin to the in-container zstd, which then reads an empty stream, writes
+    # a 13-byte empty frame, and exits 0 while pg_dumpall's client dies of
+    # SIGPIPE (rc -13). Reproduced live on athena 2026-11-05.
+    # -T0 lets zstd use the container's cores; measured ~620 MB/s per docker
+    # attach hop, so the stream copy is not the bottleneck (detoast is), but
+    # parallel compression is free headroom either way.
+    comp_cmd = ["docker", "exec", "-i", container, "zstd", "-3", "-q", "-T0"]
+    log.append("$ " + " ".join(cmd) + " | " + " ".join(comp_cmd) + f" > {dest_file}")
     dump: subprocess.Popen | None = None
-    gz: subprocess.Popen | None = None
+    comp: subprocess.Popen | None = None
     # pg_dumpall's stderr goes to a temp file rather than a pipe: it is being
-    # read only after gzip finishes, and a pipe deep enough to fill its buffer
-    # would deadlock the dump against a gzip that is still waiting on stdin.
+    # read only after the compressor finishes, and a pipe deep enough to fill
+    # its buffer would deadlock the dump against a compressor still waiting on
+    # stdin.
     with tempfile.TemporaryFile() as dump_err_file:
         try:
             with dest_file.open("wb") as fh:
                 dump = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=dump_err_file)
                 try:
-                    gz = subprocess.Popen(
-                        ["gzip"], stdin=dump.stdout, stdout=fh, stderr=subprocess.PIPE
+                    # zstd runs *inside* the container, not on the host: athena
+                    # has no zstd binary on PATH (confirmed live 2026-11-05),
+                    # but the postgres image ships one. Two separate docker-exec
+                    # processes piped at the OS level -- deliberately not one
+                    # `sh -c 'pg_dumpall | zstd'` inside the container, because
+                    # that would collapse both exit codes into the pipeline's
+                    # tail and lose pg_dumpall's failure (see below).
+                    comp = subprocess.Popen(
+                        comp_cmd, stdin=dump.stdout, stdout=fh, stderr=subprocess.PIPE
                     )
                 finally:
-                    # Drop our own handle so gzip sees EOF when pg_dumpall exits.
+                    # Drop our own handle so the compressor sees EOF when pg_dumpall exits.
                     dump.stdout.close()
-                _, gz_err = gz.communicate(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
-                dump.wait(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+                # One deadline shared across both waits, not two full
+                # timeouts in series: communicate() plus wait() at
+                # POSTGRES_DUMP_TIMEOUT_SEC each would allow 2x7200s, which
+                # equals the service's TimeoutStartSec=4h and lets a hung
+                # pg_dumpall client after compressor EOF eat the whole unit
+                # window before systemd kills it, starving falkordb/chroma.
+                dump_started = time.monotonic()
+                _, comp_err = comp.communicate(timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+                remaining = POSTGRES_DUMP_TIMEOUT_SEC - (time.monotonic() - dump_started)
+                dump.wait(timeout=max(1, round(remaining)))
         except BaseException:
-            # Not just TimeoutExpired: if starting gzip raises (FileNotFoundError,
-            # or OSError on fork), pg_dumpall is already running and would be left
-            # behind entirely. Killing the local docker-exec client is not enough
-            # on its own -- see _terminate_stale_pg_dump_backends for why the
-            # server-side backend survives it and holds locks on every table,
-            # which is the documented 2026-08-16/17/18 lock storm.
-            for proc in (gz, dump):
+            # Not just TimeoutExpired: if starting the compressor raises
+            # (FileNotFoundError, or OSError on fork), pg_dumpall is already
+            # running and would be left behind entirely. Killing the local
+            # docker-exec client is not enough on its own -- see
+            # _terminate_stale_pg_dump_backends for why the server-side backend
+            # survives it and holds locks on every table, which is the
+            # documented 2026-08-16/17/18 lock storm.
+            for proc in (comp, dump):
                 if proc is not None:
                     proc.kill()
             _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
@@ -213,18 +272,25 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
             raise
         dump_err_file.seek(0)
         dump_err = dump_err_file.read()
-    # Both exit codes are checked, and pg_dumpall's on its own account: gzip
-    # exits 0 after faithfully compressing a *truncated* stream, so a dump that
-    # died halfway would otherwise be stored as a healthy snapshot and only be
-    # discovered at restore time.
+    # Both exit codes are checked, and pg_dumpall's on its own account: the
+    # compressor exits 0 after faithfully compressing a *truncated* stream, so
+    # a dump that died halfway would otherwise be stored as a healthy snapshot
+    # and only be discovered at restore time.
     failures = []
     if dump.returncode != 0:
         failures.append(
             f"pg_dumpall failed ({dump.returncode}): {dump_err.decode(errors='replace')[:500]}"
         )
-    if gz.returncode != 0:
-        failures.append(f"gzip failed ({gz.returncode}): {gz_err.decode(errors='replace')[:500]}")
+    if comp.returncode != 0:
+        failures.append(f"zstd failed ({comp.returncode}): {comp_err.decode(errors='replace')[:500]}")
     if failures:
+        # Sweep here too, not only on the exception path: a compressor that
+        # exits early kills the local docker-exec client while the *server-side*
+        # pg_dump backend survives it and holds locks on every table until the
+        # next night's pre-flight sweep -- the documented 2026-08-16/17/18 lock
+        # storm. A non-zero returncode without an exception (e.g. SIGPIPE -13)
+        # is exactly that case.
+        _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
         dest_file.unlink(missing_ok=True)
         raise RuntimeError("; ".join(failures))
 
@@ -302,7 +368,7 @@ def capture_stopped_container_tree(
     like the sqlite-only case already confirmed live for Convex. Stopping
     for the copy window is the simple, actually-consistent alternative --
     both of these are non-critical services where a few seconds of downtime
-    during the 03:45 backup window is an acceptable trade, unlike Postgres/
+    during the 05:00 Mountain backup window is an acceptable trade, unlike Postgres/
     FalkorDB above which stay up via their own online-backup mechanisms.
     """
     dest_dir.mkdir(parents=True)

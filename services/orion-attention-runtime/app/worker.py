@@ -38,8 +38,10 @@ def _camera_absent_reason(field: FieldStateV1) -> str | None:
     """The field carries the vision organ's `vision_frame_staleness` (1.0 = no
     camera delivering; key dropped = unmeasured); the rule itself is the one
     shared with the broadcast (`perception_absent_reason`). Embedding-only
-    staleness is not visible here: perception then writes 0.0, reads quiet,
-    and cannot win either."""
+    staleness is not visible here. Perception still cannot win on it: its
+    candidate magnitude comes from the prediction-error history, which never
+    records a missing tick. (Since 2026-11-10 the field also drops perception's
+    `prediction_error` key while input is missing, instead of holding 0.0.)"""
     from orion.attention.world_first import perception_absent_reason
 
     vec = field.node_vectors.get(_VISION_ORGAN_NODE) or {}

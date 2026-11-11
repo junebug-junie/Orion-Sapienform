@@ -492,8 +492,8 @@ postgres-headroom-watch:
 
 # Substrate ladder liveness (2026-09-20 incident: a FieldStateV1 forbid-field was
 # added, only the producer redeployed, attention/proposal wrote nothing for ~48h
-# while every container read "Up"). Two checks: every rung table still has a
-# recent row (bounded index scans), and every container that validates a
+# while every container read "Up"). Two checks: every live rung table still has a
+# recent row (bounded index scans; L7-L11 are listed as retired, never read), and every container that validates a
 # schema another service writes can read what that writer's container writes
 # (orion/schema_skew_discovery.py finds every forbid-model (file, writer,
 # readers) triple from call sites; `--list-candidates` shows them; one docker
@@ -542,6 +542,16 @@ eval-self-sense:
 .PHONY: eval-bonsai-replay
 eval-bonsai-replay:
 	@ORION_BUS_URL=$${ORION_BUS_URL:-redis://100.92.216.81:6379/0} PYTHONPATH=. $(METRIC_PYTHON) scripts/run_bonsai_replay_eval.py $(ARGS)
+
+# Person learning Phase 1 acceptance check (docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md):
+# leave-one-cluster-out over every cluster Juniper named; writes one vision_person_model_eval row
+# (wrong accepts, correct accepts, unsure rate, cross-day separation per channel). Exit 1 = a wrong
+# accept (gate failed). ~20 min of CPU, so nightly cron, not a sql-writer tick. Needs POSTGRES_URI.
+.PHONY: eval-person-recognition
+eval-person-recognition:
+	@test -n "$$POSTGRES_URI" || { echo "POSTGRES_URI is required" >&2; exit 2; }
+	@date -u +"%Y-%m-%dT%H:%M:%SZ eval-person-recognition"
+	@PYTHONWARNINGS=ignore $(METRIC_PYTHON) services/orion-sql-writer/evals/run_person_recognition_eval.py --live "$$POSTGRES_URI" --write $(ARGS)
 
 # Temporal Self patch 4, acceptance check 6: do Orion's citations of its own day describe the cited
 # arc correctly? Read-only over thought_decision.day_citations (label verified by default), the

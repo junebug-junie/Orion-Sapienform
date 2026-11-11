@@ -142,11 +142,27 @@ caller's own rate scores exactly 0, so stance only scores by telling long turns 
    - the motor never sees the v2 fields.
 2. Live, within a day of deploy: new `thought_decision` rows carry `turn.self_prediction.v2`, and
    `/turn-self-bets/live` shows the two new faculties with counts.
-3. **Decision, about 2 weeks after deploy** (at least 200 graded turns on the main callers):
-   - **Keep** a bet only if `skill_vs_caller > 0` and a paired test of its Brier score against the
-     caller-rate guess has a one-sided p below 0.05.
+3. **Decision on 2026-11-21, over bets placed 2026-11-07 or later** (revised 11-03, see below):
+   - **Keep** a bet if its within-caller sorting score (`sort_auc` at
+     `/turn-self-bets/live?since=2026-11-07T00:00:00Z`) is above 0.5 with `sort_p` below 0.05. This
+     means stance puts the turns that ran long above the ones that did not, better than chance.
    - **Drop** a bet that fails, removing its prompt line.
+   - `skill_vs_caller` (Brier) is the second signal, not the gate. A bet that sorts well but has
+     negative Brier skill is miscalibrated, not blind. Fixing that is the job of the feedback proposal.
    - The result goes in the arc's handoff, either way.
+
+   **Why revised.** On 10-31, Orion's replies doubled in length (world-pulse median about 3,000 to
+   about 6,500 characters). That is when the new model went live on circe. The 7-day "usual" lagged
+   behind, so on 11-03 73% of turns counted as "longer than usual", and the Brier skill punished
+   stance for a change it could not see. The sorting score ignores where the bar sits, so it does
+   not move with such a shift. Starting at 11-07 keeps the reply-length jump out of the reference.
+
+   **First live read, 11-03 (96 graded v2 turns, plus a 7-day read of the old bets):**
+   - longer reply: `sort_auc` 0.73, p 0.001;
+   - more steps: 0.58, p 0.11 (too few pairs yet);
+   - fetches a page: 0.58, p < 0.001;
+   - **asks a question: 0.49, p 0.68.** Inside each caller, stance cannot tell which turns will end
+     on a question. Its earlier positive Brier skill came from knowing the caller.
 
 ## Recommended next patch
 

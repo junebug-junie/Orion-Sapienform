@@ -4,8 +4,21 @@ from app.smoke import run_smoke
 
 OK = (
     b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0},'
+    b'"air":{"eco2_ppm":612,"tvoc_ppb":32,"since_init_ms":5000},'
+    b'"particulate":{"pm1_ug_m3":1,"pm25_ug_m3":2,"pm10_ug_m3":3},'
+    b'"light":{"lux":310.5,"full":4000,"ir":900,"gain_x":25,"saturated":false}}\n'
+)
+NO_PM = (
+    b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0},'
     b'"air":{"eco2_ppm":612,"tvoc_ppb":32,"since_init_ms":5000}}\n'
 )
+NO_LIGHT = (
+    b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0},'
+    b'"air":{"eco2_ppm":612,"tvoc_ppb":32,"since_init_ms":5000},'
+    b'"particulate":{"pm1_ug_m3":1,"pm25_ug_m3":2,"pm10_ug_m3":3}}\n'
+)
+CLOSET = b'{"schema":"orion.office_env_frame.v1","seq":4,"uptime_ms":1,"co2":{"co2_ppm":612,"temp_c":29.1,"humidity_pct":23.0}}\n'
+
 NO_AIR = b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1,"environment":{"temp_c":20.0,"humidity_pct":40.0}}\n'
 NO_ENV = b'{"schema":"orion.office_env_frame.v1","seq":9,"uptime_ms":1}\n'
 
@@ -53,3 +66,21 @@ def test_fail_when_port_missing() -> None:
         raise OSError("nope")
 
     assert run_smoke(port="p", baud=1, seconds=5, open_port=boom, clock=_clock()) == 2
+
+
+def test_warn_when_new_office_sensors_missing() -> None:
+    assert run_smoke(port="p", baud=1, seconds=5, open_port=lambda *a, **k: Ser([NO_PM]), clock=_clock()) == 5
+    assert run_smoke(port="p", baud=1, seconds=5, open_port=lambda *a, **k: Ser([NO_LIGHT]), clock=_clock()) == 6
+
+
+def test_sensor_counts_if_any_frame_in_window_carried_it() -> None:
+    # The light reading arrives in one frame and is missing in the last one (gain step).
+    lines = [OK, NO_LIGHT]
+    assert run_smoke(port="p", baud=1, seconds=5, open_port=lambda *a, **k: Ser(lines), clock=_clock()) == 0
+
+
+def test_closet_room_needs_only_scd40() -> None:
+    kw = dict(port="p", baud=1, seconds=5, room="closet", clock=_clock())
+    assert run_smoke(open_port=lambda *a, **k: Ser([CLOSET]), **kw) == 0
+    kw["clock"] = _clock()
+    assert run_smoke(open_port=lambda *a, **k: Ser([NO_ENV]), **kw) == 7

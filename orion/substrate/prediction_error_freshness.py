@@ -26,6 +26,12 @@ producer says so in ``metadata[PREDICTION_ERROR_MISSING_REASON_KEY]``, and
 Seen live 2026-10-18 04:06 -> 10-20 05:51: no embeddings for 49 h, the room
 camera node wrote 0.0 every 30 s, and those zeros (31% of its 7-day window)
 pulled its p90 to 0.137 against 0.205 over live hours only.
+
+Field side (2026-11-10). The same key also rides on the field-bound
+``prediction_signal`` receipt, with no value. orion-field-digester then drops
+the node's ``prediction_error`` field channel instead of writing 0.0, so the
+field reads "unmeasured" too (services/orion-field-digester/app/ingest/
+state_deltas.py). The 0.0 placeholder now lives only on the graph node.
 """
 
 from __future__ import annotations

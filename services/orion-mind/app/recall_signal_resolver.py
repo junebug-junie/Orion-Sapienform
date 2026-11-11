@@ -199,8 +199,8 @@ def fetch_bus_synaptic_prediction_error_series(
     ``substrate_field_state`` is a shared snapshot table every reducer
     writes to, so a pure time window could return hundreds of rows most of
     which never touched this node. Also bounded by ``max_age_sec`` (the same
-    horizon ``orion/substrate/bus_synaptic_surprise.py``'s staleness guard
-    uses) so a genuinely stalled pipeline returns ``[]`` -- the "not
+    horizon as ``orion/substrate/prediction_error_freshness.py``'s
+    ``PE_STALENESS_HORIZON_SEC``) so a genuinely stalled pipeline returns ``[]`` -- the "not
     writing" state -- rather than a long-frozen series read as current.
     """
     if not dsn or not str(dsn).strip():

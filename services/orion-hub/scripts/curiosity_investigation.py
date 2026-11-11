@@ -99,12 +99,19 @@ from orion.regulation.arousal_view import (
 from .arousal_reader import ArousalReader
 from .rest_drive_reader import RestDriveReader
 from .personality_cue_reader import cue_status, read_personality_cue
+from .outreach_door_policy import (
+    ALREADY_TOLD_REASON,
+    NOT_FOR_JUNIPER_REASON,
+    curiosity_finding_key,
+    curiosity_reaches_juniper,
+)
 from .energy_stakes_gate import (
     HOLD_REASON as ENERGY_HOLD_REASON,
     EnergyHold,
     energy_stakes_hold,
     hold_attention_row,
 )
+from .curiosity_replica_plan import plan_offer
 from .curiosity_offer_decisions import (
     load_prior_test_history,
     load_turn_snapshot,
@@ -124,6 +131,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_prior_drift_preamble,
     build_resume_preamble,
+    kickoff_material_ids,
     offered_priors_in_prompt,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
@@ -166,14 +174,21 @@ from orion.curiosity.self_inquiry import (
     SELF_INQUIRY_PG_TABLE_NAMES,
     SELF_INQUIRY_PG_TABLES,
     SELF_INQUIRY_TAG,
+    SELF_DEFINITION_TEXT_CAP,
+    SELF_FIT_DEFINITION_FIELD,
+    SELF_FIT_TAG,
     LedgerRow,
     LivedAnswer,
     OpenLivedQuestion,
     SelfDefinition,
     build_lived_answer_history_write,
     build_self_definition_history_write,
+    accept_fit_text,
+    fit_source_hash,
     lived_answer_from_detail,
     lived_concept_id,
+    needs_fit,
+    with_fit_text,
     read_latest_self_definition,
     read_current_lived_answers,
     valid_question_id,
@@ -191,6 +206,7 @@ from orion.personality.naming_check import check_naming
 from orion.cognition.recall_query import cap_retrieval_query
 from orion.curiosity.self_inquiry_prompt import (
     PreviousLivedAnswer,
+    build_answer_fit_prompt,
     build_self_inquiry_prompt,
     build_self_naming_prompt,
 )
@@ -205,11 +221,12 @@ from orion.curiosity.self_question_pool import (
 )
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.value import (
+    ARM_REPLICA_ORDER,
     ARM_VALUE_ORDER,
     YieldModel,
     build_yield_model,
     diff_snapshots,
-    offer_arm,
+    draw_offer_arm,
     revision_agreement,
     valid_confidence,
 )
@@ -329,6 +346,26 @@ _DAILY_COUNT_KEY_PREFIX = "orion:curiosity:count:"
 _LAST_RUN_KEY = "orion:curiosity:last_run_id"
 _STATE_TTL_SEC = 172800
 
+# The fit hop (orion/curiosity/self_inquiry.py, SELF_FIT_TAG). One Redis hash
+# per run: field = "definition" or a lived question_id, value = Orion's own
+# shorter version. Written inside the turn (under the run's GPU hold), read at
+# mirror time, which on the durable path is a later event in this process or a
+# restarted one. TTL is the state TTL: a mirror never lands days later.
+_SELF_FIT_KEY_PREFIX = "orion:curiosity:self_fit:"
+# Motor time per hop. A rewrite of one paragraph is well under this. Under a GPU
+# hold the hop's turn limit is this PLUS the finalize reserve, because
+# `_generate` gives the motor the limit minus that reserve.
+SELF_FIT_TIMEOUT_SEC = 300.0
+# Under a GPU hold: skip the hop when the motor would get less than this before
+# the hold ends, and end the hop this long before the hold so the reply lands.
+SELF_FIT_MIN_TIMEOUT_SEC = 60.0
+SELF_FIT_DEADLINE_MARGIN_SEC = 30.0
+# A run writes one definition or one lived answer; an investigation run can
+# revise a few. Bounded so a run that revised many cannot hold the GPU long:
+# all hops of one turn also share SELF_FIT_TOTAL_SEC of wall time.
+SELF_FIT_MAX_PER_RUN = 3
+SELF_FIT_TOTAL_SEC = 900.0
+
 # Urgent runs (start_urgent). One open run per incident, held by an NX key the
 # must-deliver reporter releases when the run ends; the incident hash is what
 # the Hub urgent list and the reporter read back.
@@ -392,6 +429,7 @@ _SENSE_EVAL_LAST_RUN_KEY = "orion:curiosity:self_sense_eval:last_run_id"
 SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
 SELF_CONCEPT_HISTORY_WRITE_KIND = "self_concept.history.write.v1"
 SELF_CONCEPT_ENTRY_EXISTS_SQL = "SELECT 1 FROM self_concept_history WHERE entry_id = $1"
+SELF_CONCEPT_CONTENT_SQL = "SELECT content FROM self_concept_history WHERE entry_id = $1"
 SELF_CONCEPT_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) + 1 FROM self_concept_history WHERE concept_id = $1"
 )
@@ -533,10 +571,11 @@ class SchedulingGateInputs:
     rest_drive_cooldown_sec: Optional[float] = None
     # Arousal (scripts/arousal_reader.py, Temporal Self R3). `arousal_level` is a fresh
     # "engaged" / "idle" / "strained", or None when unknown or this line's flag is off --
-    # None is exactly the behaviour before arousal existed. `strained` holds the run;
-    # `arousal_engaged_cooldown_sec` is the stretched cooldown kept while Juniper is talking
-    # (investigation line); `arousal_idle_only` makes the line run only at `idle`
-    # (self-inquiry). The daily cap, the hour window and `enabled` never read any of it.
+    # None is exactly the behaviour before arousal existed. `arousal_engaged_cooldown_sec` is
+    # the stretched cooldown kept while Juniper is talking (investigation line; strain does
+    # not hold that line -- its body-economy bid does); `arousal_idle_only` makes the line run
+    # only at `idle`, so engaged and strained both hold it (self-inquiry). The daily cap, the
+    # hour window and `enabled` never read any of it.
     arousal_level: Optional[str] = None
     arousal_engaged_cooldown_sec: Optional[float] = None
     arousal_idle_only: bool = False
@@ -719,8 +758,12 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
     ):
         return REST_DRIVE_BLOCK_REASON
     # Arousal, last: it only ever adds a hold after every pacing gate has passed, so the
-    # reason names exactly what arousal blocked. Unknown (None) skips all three.
-    if inp.arousal_level == "strained":
+    # reason names exactly what arousal blocked. Unknown (None) skips all of it.
+    # Strain no longer holds the investigation line (retired 2026-11-07): those runs obey
+    # their body-economy bid in durable-runs (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE=on,
+    # #3010), which is what decides now. Self-inquiry (idle-only) still runs only at idle,
+    # so strained and engaged both hold it; its family's bid does not bind yet.
+    if inp.arousal_idle_only and inp.arousal_level == "strained":
         return AROUSAL_STRAINED_REASON
     if inp.arousal_idle_only and inp.arousal_level == "engaged":
         return AROUSAL_ENGAGED_REASON
@@ -850,7 +893,7 @@ class CuriosityInvestigation:
         # kickoff as "YOUR EYES" (orion.situational.camera_eyes). Empty = no
         # section. Live = a frame within camera_live_max_age_sec.
         camera_stream_ids: Tuple[str, ...] = (),
-        # Which of those are street cameras (individuals counted) and the
+        # Which of those are street cameras (people range for today) and the
         # timezone for "since"/"today" -- the situation brief's own settings,
         # so both surfaces say the same thing.
         camera_street_stream_ids: Tuple[str, ...] = (),
@@ -938,6 +981,12 @@ class CuriosityInvestigation:
         spend_log_enabled: bool = True,
         value_order_enabled: bool = False,
         value_order_propensity: float = 0.5,
+        # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
+        # orion-mind plans the top of the offer for this share of runs; Hub waits at most
+        # replica_plan_deadline_sec for the plan, then uses the uncertainty order.
+        replica_arm_enabled: bool = False,
+        replica_arm_propensity: float = 0.0,
+        replica_plan_deadline_sec: float = 90.0,
         yield_window: int = 3,
         yield_pseudo_tests: float = 2.0,
         # --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED, default off) ---
@@ -979,6 +1028,8 @@ class CuriosityInvestigation:
         # within TURN_RESULT_CACHE_SEC: the cached result is replied as-is.
         self._turn_inflight: dict[str, asyncio.Future] = {}
         self._turn_results: dict[str, tuple[CuriosityTurnResultV1, float]] = {}
+        # Fit-hop results when the bus has no redis (tests); see `_store_fit`.
+        self._self_fits: dict[tuple[str, str], str] = {}
         # Short Mind subject keyed by run_id so durable runner callbacks and
         # in-process `_generate` share the same appraisal text without putting
         # the full kickoff on StanceReactRequestV1.user_message. World-curiosity
@@ -1158,6 +1209,12 @@ class CuriosityInvestigation:
         self.spend_log_enabled = bool(spend_log_enabled)
         self.value_order_enabled = bool(value_order_enabled)
         self.value_order_propensity = float(value_order_propensity)
+        self.replica_arm_enabled = bool(replica_arm_enabled)
+        self.replica_arm_propensity = float(replica_arm_propensity)
+        self.replica_plan_deadline_sec = float(replica_plan_deadline_sec)
+        # The scored history the last yield model was built from (the replica's candidates show each
+        # prior's last move from it). Set by _load_yield_model.
+        self._last_prior_history: list = []
         self.yield_window = int(yield_window)
         self.yield_pseudo_tests = float(yield_pseudo_tests)
         # Energy as a stake: a fresh orion-energy snapshot at/over RMP's
@@ -1169,7 +1226,7 @@ class CuriosityInvestigation:
         # multiplied. Unknown/off leaves every gate exactly as it was.
         self.rest_drive_reader = rest_drive_reader
         # Orion's arousal (one Redis GET per tick, shared by two lines, two flags):
-        # investigation line -- strained holds, engaged stretches the cooldown;
+        # investigation line -- engaged stretches the cooldown (strain is the bid's call);
         # self-inquiry -- runs only at idle. Unknown/off leaves every gate as it was.
         self.arousal_reader = arousal_reader
         self.arousal_pacing_enabled = bool(arousal_pacing_enabled)
@@ -1381,6 +1438,7 @@ class CuriosityInvestigation:
             history = await load_prior_test_history(
                 self._pool_provider(), days=SPEND_HISTORY_DAYS
             )
+        self._last_prior_history = list(history)
         return build_yield_model(
             history, window=self.yield_window, pseudo_tests=self.yield_pseudo_tests
         )
@@ -1394,16 +1452,19 @@ class CuriosityInvestigation:
         view: WorldviewSnapshot,
         material: StudyMaterial,
         model: YieldModel,
+        arm_propensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         if not self.spend_log_enabled:
             return
-        material_ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
-        material_ids += [f"relation:{r.decision_id}" for r in material.relations]
+        # Exactly what `build_kickoff_prompt` renders from `material` (it always
+        # renders the material section), street captions and day card included.
+        material_ids = kickoff_material_ids(material)
         await record_offer_decision(
             self._pool_provider(),
             run_id=run_id,
             arm=arm,
             value_arm_propensity=value_arm_propensity,
+            arm_propensities=arm_propensities,
             offered=offered_rows(view.live_priors, model),
             stale_offered=offered_rows(view.stale_priors, model),
             material_ids=material_ids,
@@ -2422,9 +2483,18 @@ class CuriosityInvestigation:
         # first, or expected belief change (entropy x measured learning
         # yield). A per-run random arm, so the two can be compared; with the
         # switch off every run is the uncertainty arm. See orion/curiosity/value.py.
-        arm, value_arm_propensity = offer_arm(
-            run_id, enabled=self.value_order_enabled, propensity=self.value_order_propensity
+        # The draw is three-way (value / replica / uncertainty): on the replica arm orion-mind's
+        # curiosity replica writes the top of the order (docs/superpowers/specs/2026-11-04-curiosity-
+        # replica-design.md). The arm is drawn BEFORE any plan exists, so every replica-arm run counts
+        # as replica, fallback or not (intention to treat).
+        draw = draw_offer_arm(
+            run_id,
+            value_enabled=self.value_order_enabled,
+            value_propensity=self.value_order_propensity,
+            replica_enabled=self.replica_arm_enabled,
+            replica_propensity=self.replica_arm_propensity,
         )
+        arm, value_arm_propensity = draw.arm, draw.value_arm_propensity
         yield_model = await self._load_yield_model()
         expected_nats_for = (
             (
@@ -2440,10 +2510,29 @@ class CuriosityInvestigation:
         view = await self._read_worldview(
             last_run_id, rotate_seed=run_id, expected_nats_for=expected_nats_for
         )
+        if arm == ARM_REPLICA_ORDER:
+            # After the arm draw and the worldview read, before the offer row: the row records the
+            # order this run is really shown. `view` is the uncertainty order (the fallback); a good
+            # plan only re-orders its top. The plan's reasons go to the plan row, never into `view`.
+            view = (await plan_offer(
+                bus=self._bus,
+                pool=self._pool_provider(),
+                run_id=run_id,
+                view=view,
+                yield_model=yield_model,
+                history=self._last_prior_history,
+                sample=self.prior_sample,
+                stale_after=self.stale_prior_tests,
+                coverage_slots=self.prior_coverage_slots,
+                deadline_sec=self.replica_plan_deadline_sec,
+                source=self._source_ref,
+                focus_enabled=self.focus_enabled,
+            )).view
         await self._record_offer(
             run_id=run_id,
             arm=arm,
             value_arm_propensity=value_arm_propensity,
+            arm_propensities=draw.propensities,
             view=view,
             material=material,
             model=yield_model,
@@ -2677,6 +2766,9 @@ class CuriosityInvestigation:
             hop_notes=hops,
         )
         await self._enqueue_help_requests_after_run(run_id)
+        if not self.kickoff_via_cortex:
+            # `_turn_result_for` already ran the hop on the cortex branch.
+            await self._fit_run_answers_quietly(run_id, correlation_id, source_tag=INVESTIGATION_TAG)
         await self._mirror_investigation_lived_answers(run_id, correlation_id)
         # `evidence=` is OPERATOR TELEMETRY and stays out of the journal on
         # purpose. The journal is Orion's own written result; an orphan-rate
@@ -3315,7 +3407,7 @@ class CuriosityInvestigation:
                 asyncio.to_thread(
                     fetch_camera_eyes,
                     self.camera_stream_ids,
-                    count_individuals_for=self.camera_street_stream_ids,
+                    people_range_for=self.camera_street_stream_ids,
                     tz_name=self.camera_timezone,
                     now=now,
                 ),
@@ -3369,10 +3461,35 @@ class CuriosityInvestigation:
             return read_latest_self_definition(reader), read_self_definition_count(reader)
 
         try:
-            return await asyncio.to_thread(_read)
+            latest, count = await asyncio.to_thread(_read)
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_self_context_read_failed err=%s", exc)
             return None, None
+        return await self._with_mirrored_fit(latest), count
+
+    async def _with_mirrored_fit(self, definition: Optional[SelfDefinition]) -> Optional[SelfDefinition]:
+        """The graph keeps the full definition; the mirrored row holds Orion's
+        fit when the hop wrote one. Read-back shows that fit, so the prompt and
+        chat show Orion the same words. No fit -> the definition unchanged."""
+        if definition is None or not needs_fit(definition):
+            return definition
+        pool = self._pool_provider()
+        if pool is None:
+            return definition
+        try:
+            async with pool.acquire() as conn:
+                content = await conn.fetchval(
+                    SELF_CONCEPT_CONTENT_SQL, f"self-definition:{definition.run_id}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_self_definition_fit_lookup_failed run=%s err=%s", definition.run_id, exc)
+            return definition
+        content = str(content or "").strip()
+        full = definition.text.strip()
+        # A prefix of the full text is a cut (the pre-2026-11-03 blind cut), not a fit.
+        if content and len(content) <= SELF_DEFINITION_TEXT_CAP and not full.startswith(content):
+            return with_fit_text(definition, content)
+        return definition
 
     async def _read_previous_lived(
         self, question_id: str, *, run_id: str = ""
@@ -3675,6 +3792,9 @@ class CuriosityInvestigation:
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
+        if text and not self.kickoff_via_cortex:
+            # `_turn_result_for` already ran the hop on the cortex branch.
+            await self._fit_run_answers_quietly(run_id, correlation_id, source_tag=SELF_INQUIRY_TAG)
         return None, text, debug
 
     # --- the naming branch --------------------------------------------------
@@ -3988,6 +4108,7 @@ class CuriosityInvestigation:
         if definition is None:
             logger.info("curiosity_self_definition_not_mirrored run=%s reason=absent", run_id)
             return False
+        definition = await self._with_stored_fit(run_id, SELF_FIT_DEFINITION_FIELD, definition)
         version = await self._next_self_concept_version("self:definition")
         row = build_self_definition_history_write(definition, version=version)
         if row is None:
@@ -4039,6 +4160,7 @@ class CuriosityInvestigation:
         if answer is None:
             logger.info("curiosity_lived_answer_not_mirrored run=%s reason=absent", run_id)
             return False
+        answer = await self._with_stored_fit(run_id, answer.question_id, answer)
         version = await self._next_self_concept_version(lived_concept_id(answer.question_id))
         row = build_lived_answer_history_write(answer, version=version, per_question=per_question)
         if row is None:
@@ -4081,6 +4203,159 @@ class CuriosityInvestigation:
             correlation_id,
         )
         return True
+
+    # --- the fit hop -------------------------------------------------------
+    #
+    # An answer Orion wrote about themself that runs over the reading budget
+    # (SELF_DEFINITION_TEXT_CAP) gets ONE more turn from the same model, under
+    # the same GPU hold: "rewrite this to fit". The reply is mirrored as the
+    # self_concept_history row; the full answer stays on the graph node. A
+    # refused or failed hop leaves the full text as the row, and readers cut it
+    # at a sentence (orion/text_fit.py). Never a blind mid-word cut.
+
+    async def _fit_run_answers(
+        self,
+        run_id: str,
+        correlation_id: str,
+        *,
+        source_tag: str,
+        gpu_lease: GpuLeaseRefV1 | None = None,
+        deadline: float | None = None,
+    ) -> int:
+        """Run the fit hop for every over-budget answer this run will mirror.
+        Returns how many fits were stored. Never raises: the turn already
+        succeeded (cancellation still propagates).
+
+        Only answers that WILL be mirrored: a `:SelfDefinition` only on the
+        self-inquiry line (investigation runs mirror lived answers only), and
+        only evidenced answers (no evidence -> no row). All hops of one turn
+        share SELF_FIT_TOTAL_SEC and end before ``deadline``."""
+        if self._reader is None:
+            return 0
+        try:
+            definition = (
+                await asyncio.to_thread(read_self_definition, self._reader, run_id)
+                if source_tag == SELF_INQUIRY_TAG
+                else None
+            )
+            lived = await asyncio.to_thread(read_lived_answers_for_run, self._reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_self_fit_read_failed run=%s err=%s", run_id, exc)
+            return 0
+        targets: list[tuple[str, Any]] = []
+        if needs_fit(definition) and definition.is_substantive:
+            targets.append((SELF_FIT_DEFINITION_FIELD, definition))
+        targets += [(a.question_id, a) for a in lived if needs_fit(a) and a.is_substantive]
+        if len(targets) > SELF_FIT_MAX_PER_RUN:
+            logger.info(
+                "curiosity_self_fit_capped run=%s over_budget=%s fitting=%s",
+                run_id, len(targets), SELF_FIT_MAX_PER_RUN,
+            )
+        total_end = time.monotonic() + SELF_FIT_TOTAL_SEC
+        end = total_end if deadline is None else min(total_end, deadline - SELF_FIT_DEADLINE_MARGIN_SEC)
+        reserve = self.held_turn_finalize_reserve_sec if gpu_lease is not None else 0.0
+        fitted = 0
+        for field_name, answer in targets[:SELF_FIT_MAX_PER_RUN]:
+            if await self._read_stored_fit(run_id, field_name, answer.text):
+                continue  # a retried turn already fitted this exact answer
+            timeout = min(SELF_FIT_TIMEOUT_SEC, end - time.monotonic() - reserve)
+            if timeout < SELF_FIT_MIN_TIMEOUT_SEC:
+                logger.info(
+                    "curiosity_self_fit_skipped run=%s field=%s reason=no_time_left chars=%s",
+                    run_id, field_name, len(answer.text),
+                )
+                break
+            try:
+                raw, debug = await self._generate(
+                    build_answer_fit_prompt(answer.text),
+                    str(uuid5(NAMESPACE_URL, f"{correlation_id}:{SELF_FIT_TAG}:{field_name}")),
+                    source=SELF_FIT_TAG,
+                    require_lookup=False,
+                    timeout_sec=timeout + reserve,
+                    resume_key=f"{run_id}:{SELF_FIT_TAG}:{field_name}",
+                    **(
+                        {
+                            "gpu_lease": gpu_lease,
+                            "fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
+                        }
+                        if gpu_lease is not None
+                        else {}
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curiosity_self_fit_failed run=%s field=%s err=%s", run_id, field_name, exc)
+                continue
+            fit = accept_fit_text(raw, answer.text)
+            if not fit:
+                logger.info(
+                    "curiosity_self_fit_refused run=%s field=%s chars=%s reply_chars=%s error=%s",
+                    run_id, field_name, len(answer.text), len(raw or ""),
+                    (debug or {}).get("error") or "-",
+                )
+                continue
+            if await self._store_fit(run_id, field_name, answer.text, fit):
+                fitted += 1
+                logger.info(
+                    "curiosity_self_fit_stored run=%s field=%s chars=%s fit_chars=%s reply_chars=%s",
+                    run_id, field_name, len(answer.text), len(fit), len(raw or ""),
+                )
+        return fitted
+
+    async def _fit_run_answers_quietly(self, run_id: str, correlation_id: str, **kwargs) -> None:
+        """`_fit_run_answers` for callers whose turn already succeeded: a cancel
+        mid-hop (Hub shutdown) must not turn that success into a refund or a
+        retry, so the hop is shielded and its cancellation is swallowed here."""
+        try:
+            await asyncio.shield(self._fit_run_answers(run_id, correlation_id, **kwargs))
+        except asyncio.CancelledError:
+            logger.info("curiosity_self_fit_cancelled run=%s", run_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_fit_crashed run=%s", run_id, exc_info=True)
+
+    async def _store_fit(self, run_id: str, field_name: str, source_text: str, fit: str) -> bool:
+        value = json.dumps({"src": fit_source_hash(source_text), "fit": fit})
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            self._self_fits[(run_id, field_name)] = value
+            return True
+        key = f"{_SELF_FIT_KEY_PREFIX}{run_id}"
+        try:
+            await redis.hset(key, field_name, value)
+            await redis.expire(key, _STATE_TTL_SEC)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_self_fit_store_failed run=%s field=%s", run_id, field_name, exc_info=True)
+            return False
+
+    async def _read_stored_fit(self, run_id: str, field_name: str, source_text: str) -> str:
+        """The stored fit, only when it was written from exactly ``source_text``."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            raw = self._self_fits.get((run_id, field_name), "")
+        else:
+            try:
+                raw = await redis.hget(f"{_SELF_FIT_KEY_PREFIX}{run_id}", field_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("curiosity_self_fit_read_back_failed run=%s field=%s", run_id, field_name, exc_info=True)
+                return ""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            stored = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(stored, dict) or stored.get("src") != fit_source_hash(source_text):
+            return ""
+        return str(stored.get("fit") or "")
+
+    async def _with_stored_fit(self, run_id: str, field_name: str, answer):
+        """The answer carrying its stored fit, when the hop wrote one for this text."""
+        if answer is None or answer.fit_text.strip():
+            return answer
+        fit = await self._read_stored_fit(run_id, field_name, answer.text)
+        return with_fit_text(answer, fit) if fit else answer
 
     async def _self_concept_entry_exists(self, entry_id: str) -> bool:
         """True when this row is already mirrored. False on any read failure:
@@ -4656,6 +4931,7 @@ class CuriosityInvestigation:
         correlation_id: str,
         run_id: str,
         line: str,
+        **extra_keys: Any,
     ) -> None:
         """Write a decision row for a reach-out that never reached `offer_message`.
 
@@ -4669,7 +4945,7 @@ class CuriosityInvestigation:
         `no_outreach_loop` by definition). Best-effort: never raises into the
         investigation, matching `_record`'s own contract.
         """
-        extra = {"run_id": run_id, "line": line}
+        extra = {**{k: v for k, v in extra_keys.items() if v is not None}, "run_id": run_id, "line": line}
         try:
             recorder = getattr(outreach, "record_blocked", None) if outreach is not None else None
             if callable(recorder):
@@ -4700,6 +4976,30 @@ class CuriosityInvestigation:
                 reason,
                 exc,
             )
+
+    async def _curiosity_door(self, run_id: str, line: str) -> tuple[bool, str]:
+        """(may_send, why) for this run's reach-out (``outreach_door_policy.curiosity_reaches_juniper``).
+
+        A self-inquiry run needs no lookup. Otherwise the run's taken focus decides; when it cannot
+        be read the run is treated as unasked (``focus_unreadable``): a system finding is the
+        default for a non-self-inquiry line, and the run's records keep the result. Never raises."""
+        ok, why = curiosity_reaches_juniper(line)
+        if ok:
+            return ok, why
+        try:
+            provider = getattr(self, "_pool_provider", None)
+            pool = provider() if callable(provider) else None
+            if pool is None:
+                return False, f"{why}:focus_unreadable"
+            focus = (await read_focus_for_runs(pool, [run_id])).get(run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_outreach_focus_read_failed run=%s err=%s", run_id, exc)
+            return False, f"{why}:focus_unreadable"
+        if focus is None:
+            return False, why
+        return curiosity_reaches_juniper(
+            line, focus_origin=focus.origin, focus_chat_correlation_id=focus.chat_correlation_id,
+        )
 
     async def _maybe_reach_out(
         self,
@@ -4785,7 +5085,32 @@ class CuriosityInvestigation:
             )
             return "no_outreach_loop"
 
-        blocked = outreach.blocked_reason(skip_schedule_gates=True)
+        # Door policy (2026-11-10, scripts/outreach_door_policy.py): only self-inquiry results reach
+        # Juniper unasked; an investigation of Orion's own code and systems reaches her only when
+        # she asked for that run (a juniper-origin focus carrying her chat turn). The run's own
+        # records (journal, graph, run story) are unchanged either way. Before composing: a
+        # refused run spends no compose turn.
+        verdict, door_why = await self._curiosity_door(run_id, line)
+        if not verdict:
+            logger.info("curiosity_outreach_not_for_juniper run=%s line=%s why=%s", run_id, line, door_why)
+            self._record_outreach_skip(
+                outreach, NOT_FOR_JUNIPER_REASON, correlation_id=correlation_id, run_id=run_id,
+                line=line, door_policy=door_why,
+            )
+            return NOT_FOR_JUNIPER_REASON
+        finding_key = curiosity_finding_key(run_id)
+        already = getattr(outreach, "already_told", None)
+        if callable(already) and await already(finding_key):
+            self._record_outreach_skip(
+                outreach, ALREADY_TOLD_REASON, correlation_id=correlation_id, run_id=run_id,
+                line=line, door_policy=door_why, finding_key=finding_key,
+            )
+            return ALREADY_TOLD_REASON
+
+        # A run Juniper asked for is her own request: the daily cap neither holds nor counts it.
+        asked = door_why == "asked_by_juniper"
+        blocked = (outreach.blocked_reason(skip_schedule_gates=True, cap_exempt=True) if asked
+                   else outreach.blocked_reason(skip_schedule_gates=True))
         if blocked:
             logger.info(
                 "curiosity_outreach_blocked run=%s reason=%s why=%s",
@@ -4794,7 +5119,8 @@ class CuriosityInvestigation:
                 outcome.reach_out_why[:120],
             )
             self._record_outreach_skip(
-                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line
+                outreach, str(blocked), correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
             )
             return str(blocked)
 
@@ -4825,7 +5151,8 @@ class CuriosityInvestigation:
             except LeaseUnavailable as exc:
                 logger.warning("curiosity_outreach_gpu_lease_rejected run=%s reason=%s", run_id, exc.reason)
                 self._record_outreach_skip(
-                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line
+                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
                 )
                 return "gpu_lease_invalid"
 
@@ -4848,7 +5175,8 @@ class CuriosityInvestigation:
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
             self._record_outreach_skip(
-                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line
+                outreach, "empty_generation", correlation_id=correlation_id, run_id=run_id, line=line,
+                door_policy=door_why, finding_key=finding_key,
             )
             return "empty_generation"
 
@@ -4857,8 +5185,11 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             tag=OUTREACH_TAG,
             model=debug.get("fcc_model_label"),
-            meta={"run_id": run_id, "line": line},
+            meta={"run_id": run_id, "line": line, "door_policy": door_why},
             skip_schedule_gates=True,
+            require_why_juniper=True,
+            finding_key=finding_key,
+            **({"cap_exempt": True} if asked else {}),
         )
         logger.info(
             "curiosity_outreach_result run=%s sent=%s reason=%s",
@@ -5286,6 +5617,16 @@ class CuriosityInvestigation:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                     await self._stamp_corrections(request.run_id)
                     await self._stamp_focus(request.run_id, turn_ok=bool(text))
+                if text and request.source_tag in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
+                    # After the spend/focus stamps: the hop is not part of the
+                    # investigation's measured spend. Ends before the turn's limit.
+                    await self._fit_run_answers_quietly(
+                        request.run_id,
+                        request.correlation_id,
+                        source_tag=request.source_tag,
+                        gpu_lease=request.gpu_lease,
+                        deadline=received + request.timeout_sec,
+                    )
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,

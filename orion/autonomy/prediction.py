@@ -4,8 +4,8 @@ WHY THIS EXISTS
 ---------------
 Orion's autonomy loop dispatches ~5,400 real actions a day drawn from 15
 distinct targets, and until this module nothing scored whether any of them
-did anything. The `surprise` field already written onto every
-`action_outcomes` row is a global bus-traffic reading
+did anything. The `surprise` field on `action_outcomes` rows was (until
+its retirement on 2026-11-10) a global bus-traffic reading
 (`latest_bus_synaptic_prediction_error()`), fetched once per tick and
 stamped identically onto every candidate in that tick -- pruning Docker
 images and reading `channels.yaml` get the same number, because the number

@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+from orion.physiology.attention_pacing import CAP_EXEMPT_DOOR_POLICIES, CAP_EXEMPT_SOURCES
 from orion.physiology.body import (
     LEASE_CLOSE_EVENTS,
     BacklogInput,
@@ -54,9 +55,11 @@ logger = logging.getLogger("orion-durable-runs.physiology_store")
 
 # Rates from before the month start seed the carry-forward for the month's first hours.
 PRICE_SEED_LOOKBACK = timedelta(days=14)
-# Outreach sources the Hub's daily cap does not count (scripts/endogenous_outreach_decisions.py
-# count_sent_on). They still reach Juniper, so ``sent_today`` counts them.
-CAP_EXEMPT_SOURCES = ("curiosity_outreach", "reading_finding_outreach")
+# Outreach sources the Hub's daily cap does not count. One owner (orion/physiology/attention_pacing.py), read
+# by Hub's count_sent_on too: office_reach_out was missing here 2026-11-05..11-07 while Hub's own copy had it.
+# Since 2026-11-10 (one attention budget) every door counts except the strain report; forced sends are
+# excluded by their ``forced`` column. They still reach Juniper, so ``sent_today`` counts them all.
+# (CAP_EXEMPT_SOURCES is imported above from orion.physiology.attention_pacing.)
 
 ENERGY_HOURS_SQL = (
     "SELECT hour_start, SUM(kwh) AS kwh FROM orion_energy_hourly "
@@ -124,8 +127,9 @@ WHERE observed_at >= %(since)s
 """
 JUNIPER_SENT_SQL = """
 SELECT count(*) FILTER (WHERE reason = 'sent') AS sent,
-       count(*) FILTER (WHERE reason = 'sent'
-                        AND coalesce(result_json->>'source', '') <> ALL(%(exempt)s)) AS cap_counted
+       count(*) FILTER (WHERE reason = 'sent' AND NOT forced
+                        AND coalesce(result_json->>'source', '') <> ALL(%(exempt)s)
+                        AND coalesce(result_json->>'door_policy', '') <> ALL(%(exempt_policies)s)) AS cap_counted
 FROM endogenous_outreach_decisions
 WHERE (decided_at AT TIME ZONE %(tz)s)::date = %(day)s::date AND decided_at >= %(since)s
 """
@@ -289,7 +293,8 @@ async def read_juniper(pool: Any, now: datetime, tz: ZoneInfo) -> JuniperInput:
         async with pool.connection() as conn:
             row = await (await conn.execute(JUNIPER_SENT_SQL, {
                 "tz": str(tz), "day": local.date().isoformat(), "since": day_start - timedelta(hours=2),
-                "exempt": list(CAP_EXEMPT_SOURCES)})).fetchone()
+                "exempt": list(CAP_EXEMPT_SOURCES),
+                "exempt_policies": list(CAP_EXEMPT_DOOR_POLICIES)})).fetchone()
             newest = await (await conn.execute(JUNIPER_NEWEST_SQL)).fetchone()
     except Exception:  # noqa: BLE001
         logger.warning("physiology_juniper_read_failed", exc_info=True)

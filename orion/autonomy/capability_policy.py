@@ -12,6 +12,7 @@ from orion.autonomy.models import (
     CapabilityPolicyRuleV1,
     CapabilityPolicyV1,
 )
+from orion.schemas.attention_candidate import is_world_source_id
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -45,15 +46,6 @@ class CapabilityEvaluationContext:
     # an honest absence (missing_goal reason code below), not a fabricated one.
     goal: FieldGoalProvenanceV1 | None
     budget_used: dict[str, int] = field(default_factory=dict)
-    # Real, ambient, mesh-wide surprise signal -- see
-    # docs/superpowers/specs/2026-07-24-efe-capability-gate-design.md's 2026-07-28 re-scope.
-    # Sourced from bus_synaptic_prediction_error() (orion/substrate/bus_synaptic_surprise.py),
-    # not a per-domain judgment-call mapping -- the same real value regardless of which
-    # capability is being evaluated. `None` means "not available this call" (caller didn't
-    # supply a domain_surprise_source, or the real read failed/was stale) -- honest absence,
-    # never silently coerced to 0.0 here.
-    domain_surprise_score: float | None = None
-    domain_surprise_source: str | None = None  # always "bus_synaptic" when score is present
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -83,14 +75,12 @@ def _decision(
     outcome: str,
     reason_code: str,
     auto_execute: bool = False,
-    notes: list[str] | None = None,
 ) -> CapabilityDecisionV1:
     return CapabilityDecisionV1(
         capability_id=capability_id,
         outcome=outcome,  # type: ignore[arg-type]
         reason_code=reason_code,
         auto_execute=auto_execute,
-        notes=notes or [],
     )
 
 
@@ -133,105 +123,67 @@ def _layer_a_episode_journal_enabled(ctx: CapabilityEvaluationContext) -> tuple[
     return True, "layer_a_satisfied"
 
 
-def _domain_surprise_gate(
-    ctx: CapabilityEvaluationContext, rule: CapabilityPolicyRuleV1
-) -> tuple[bool, str]:
-    """Real, independent condition on the ambient bus_synaptic surprise signal -- never
-    paired with, compared against, or gated on `required_drive_origins`. Absence of the
-    field is deliberately not "no threshold, so pass" -- when a rule DOES require a
-    threshold and the signal wasn't supplied, that's an honest denial, not a silent pass.
-    """
-    if rule.required_domain_surprise_below is None:
-        return True, "no_surprise_gate"
-    if ctx.domain_surprise_score is None:
-        return False, "domain_surprise_unavailable"
-    if ctx.domain_surprise_score >= rule.required_domain_surprise_below:
-        return False, "domain_surprise_insufficient"
-    return True, "domain_surprise_satisfied"
-
-
-def _domain_surprise_note(ctx: CapabilityEvaluationContext) -> str | None:
-    """Advisory-only observability (Acceptance check #5): surface the real value in
-    CapabilityDecisionV1.notes on every decision, regardless of whether any rule actually
-    gates on it yet -- lets the signal be observed against real traffic before anything
-    flips to a hard gate.
-    """
-    if ctx.domain_surprise_score is None:
-        return None
-    return (
-        f"domain_surprise_score={ctx.domain_surprise_score:.4f} "
-        f"source={ctx.domain_surprise_source or 'unknown'}"
-    )
-
-
 def evaluate_capability(capability_id: str, ctx: CapabilityEvaluationContext) -> CapabilityDecisionV1:
-    # Computed once, up front, and attached to EVERY returned decision below --
-    # Acceptance check #5 ("observe against real traffic before hard-gating") needs the
-    # real value visible on every real call, not just the ones that reach the final
-    # allowed/surprise-gate return. Fixed 2026-07-28 after review found the note was
-    # previously unreachable on requires_promote/earlier-denial paths, silently biasing
-    # any correlation analysis built on it toward already-readonly-eligible traffic.
-    surprise_note = _domain_surprise_note(ctx)
-    notes = [surprise_note] if surprise_note else None
-
     policy = load_capability_policy()
     rule = _find_rule(policy, capability_id)
     if rule is None:
-        return _decision(capability_id, outcome="denied", reason_code="unknown_capability", notes=notes)
+        return _decision(capability_id, outcome="denied", reason_code="unknown_capability")
 
     if rule.budget_per_cycle > 0 and ctx.budget_used.get(capability_id, 0) >= rule.budget_per_cycle:
         return _decision(
-            capability_id, outcome="denied", reason_code="capability_budget_exhausted", notes=notes
+            capability_id, outcome="denied", reason_code="capability_budget_exhausted"
         )
 
     requires_goal = _goal_status_level(rule.requires_goal_status) > 0
     if requires_goal and ctx.goal is None:
-        return _decision(capability_id, outcome="denied", reason_code="missing_goal", notes=notes)
+        return _decision(capability_id, outcome="denied", reason_code="missing_goal")
 
     if rule.required_signal_kinds:
         present = set(ctx.signal_kinds)
         if not set(rule.required_signal_kinds).issubset(present):
             return _decision(
-                capability_id, outcome="denied", reason_code="missing_signal_kinds", notes=notes
+                capability_id, outcome="denied", reason_code="missing_signal_kinds"
             )
 
     if ctx.goal is not None:
         required_level = _goal_status_level(rule.requires_goal_status)
         if _goal_status_level(ctx.goal.proposal_status) < required_level:
             return _decision(
-                capability_id, outcome="denied", reason_code="goal_status_insufficient", notes=notes
+                capability_id, outcome="denied", reason_code="goal_status_insufficient"
             )
+
+    if rule.requires_world_goal and (
+        ctx.goal is None or not is_world_source_id(ctx.goal.field_target_id)
+    ):
+        return _decision(
+            capability_id, outcome="denied", reason_code="goal_not_about_world"
+        )
 
     if rule.side_effect_class == "external":
         goal_level = _goal_status_level(ctx.goal.proposal_status) if ctx.goal is not None else 0
         if goal_level < _PLANNED_STATUS_LEVEL:
             return _decision(
-                capability_id, outcome="requires_promote", reason_code="requires_promote", notes=notes
+                capability_id, outcome="requires_promote", reason_code="requires_promote"
             )
     elif rule.side_effect_class == "write" and capability_id != _EPISODE_JOURNAL_CAPABILITY:
         goal_level = _goal_status_level(ctx.goal.proposal_status) if ctx.goal is not None else 0
         if goal_level < _PLANNED_STATUS_LEVEL:
             return _decision(
-                capability_id, outcome="requires_promote", reason_code="requires_promote", notes=notes
+                capability_id, outcome="requires_promote", reason_code="requires_promote"
             )
 
     if rule.auto_execute and rule.side_effect_class == "readonly":
         ok, reason = _layer_a_readonly_auto_enabled(ctx)
         if not ok:
-            return _decision(capability_id, outcome="denied", reason_code=reason, notes=notes)
+            return _decision(capability_id, outcome="denied", reason_code=reason)
     elif rule.auto_execute and capability_id == _EPISODE_JOURNAL_CAPABILITY:
         ok, reason = _layer_a_episode_journal_enabled(ctx)
         if not ok:
-            return _decision(capability_id, outcome="denied", reason_code=reason, notes=notes)
-
-    ok, reason = _domain_surprise_gate(ctx, rule)
-    if not ok:
-        return _decision(capability_id, outcome="denied", reason_code=reason, notes=notes)
+            return _decision(capability_id, outcome="denied", reason_code=reason)
 
     return _decision(
         capability_id,
         outcome="allowed",
         reason_code="allowed",
         auto_execute=rule.auto_execute,
-        notes=notes,
     )

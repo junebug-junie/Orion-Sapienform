@@ -135,6 +135,13 @@ class PresenceStore:
         await self._op(self.redis.lpush(JOURNAL_KEY, json.dumps(row, separators=(',', ':'))))
         await self._op(self.redis.ltrim(JOURNAL_KEY, 0, JOURNAL_MAX - 1))
 
+    async def lock_free(self) -> Optional[bool]:
+        """True when no leisure runner holds the lock; None when unreadable."""
+        try:
+            return (await self._op(self.redis.get(LOCK_KEY))) is None
+        except Exception:  # noqa: BLE001
+            return None
+
     async def acquire_lock(self, owner: str, ttl_sec: int) -> bool:
         return bool(await self._op(self.redis.set(LOCK_KEY, owner, nx=True, ex=ttl_sec)))
 

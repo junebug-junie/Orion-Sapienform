@@ -8,7 +8,7 @@ TRUNCATEs the walkway tables -- e.g.:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
     for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1 \\
-             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1; do
+             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 vision_person_basis_v1 person_record_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_vision_person_model.py
 """
@@ -284,6 +284,108 @@ def test_eval_mcnemar_is_exact_and_two_sided() -> None:
     assert mcnemar_p(6, 0) == pytest.approx(2 / 64)      # 2 * 0.5**6
     assert mcnemar_p(5, 0) > 0.05                       # 5 wins and no losses is not enough
     assert auc([0.9, 0.8], [0.1, 0.2]) == 1.0 and auc([0.5], [0.5]) == 0.5
+
+
+# --- alpha split over real people, longer face street (2026-11-03) ---------------------------------------
+
+
+def _things(names, clusters: int = 2, seed: int = 11) -> dict:
+    """Album labels that are not one person (a decoration, a role): random directions."""
+    rng = np.random.default_rng(seed)
+    return {n: {1: [_crop(f"{n}-{k}-{j}", f"{n}-c{k}", f"2026-10-{k + 1:02d}", rng.normal(0, 1, 8))
+                    for k in range(clusters) for j in range(3)]} for n in names}
+
+
+def test_not_a_person_labels_do_not_widen_the_alpha_split() -> None:
+    """Live 2026-11-03: 16 album labels, 4 not one real person (a decoration, two
+    delivery roles, a pair). Counting them made a bar need 319 impostor clusters, not 259."""
+    people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
+    not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
+    assert pm.people_count(album, CFG, not_people) == 8 and pm.people_count(album, CFG) == 12
+    # 170 street + 7 x 2 people + 4 x 2 things = 192 impostor clusters: alpha / 12
+    # needs 193 (no bar), alpha / 8 needs 192.
+    split_all = pm.fit_bar("Juniper", "body", album, CFG, _street())
+    split_people = pm.fit_bar("Juniper", "body", album, CFG, _street(), not_people)
+    assert len(split_people.impostor_clusters) == 192
+    assert split_all.bar.accept_at is None and split_people.bar.accept_at is not None
+    # The things keep their albums and bars, and still count as impostors.
+    bars = pm.fit_all(album, CFG, _street(), not_people=not_people)
+    assert ("skeleton", "body") in bars and bars[("Juniper", "body")].accept_at is not None
+    assert pm.people_count(album, CFG, frozenset({"SKELETON"})) == 12      # names arrive casefolded
+
+
+def test_a_not_a_person_label_never_gets_an_accept_bar() -> None:
+    """Review finding: "probably A and B" names known people. A label outside the
+    split must not be able to accept, or the split no longer bounds false accepts."""
+    album = {"A and B": {1: _person("ab", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    armed = pm.fit_bar("A and B", "body", album, CFG, _street())          # counted as a person: arms
+    assert armed.bar.accept_at is not None
+    fit = pm.fit_bar("A and B", "body", album, CFG, _street(), frozenset({"a and b"}))
+    assert fit.bar.accept_at is None and fit.genuine_clusters    # still scored, still asked about
+    bars = pm.fit_all(album, CFG, _street(), not_people=frozenset({"a and b"}))
+    near = [_crop(f"n{i}", "near", "2026-10-15", _vec(1, 0.02 * i)) for i in range(3)]
+    (g,) = pm.attribute({"near": near}, album, bars, {}, CFG)
+    assert g["person_label"] == "A and B" and g["band"] == "unsure"
+
+
+def test_split_people_only_off_is_the_old_split_over_every_label() -> None:
+    people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
+    off = pm.PersonModelConfig(alpha_split_people_only=False)
+    not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
+    assert pm.people_count(album, off, not_people) == len(album)
+    assert pm.fit_bar("Juniper", "body", album, off, _street(), not_people).bar.accept_at is None
+    # Off: not_people is ignored entirely, bars equal the old call's.
+    assert pm.fit_all(album, off, _street(), not_people=not_people) == pm.fit_all(album, off, _street())
+
+
+def test_missing_person_tables_mean_everyone_counts_as_a_person() -> None:
+    class _Conn:
+        def execute(self, *_a, **_k):
+            class _R:
+                def scalar(self):
+                    return True       # to_regclass(...) IS NULL
+            return _R()
+    assert pm.not_a_person_names(_Conn()) == frozenset()
+
+
+def _faced(cid: str, cluster: str, day: str, v) -> pm.Crop:
+    return _crop(cid, cluster, day, v, face=v)
+
+
+def test_face_bars_calibrate_on_the_longer_street_body_bars_do_not() -> None:
+    rng = np.random.default_rng(5)
+    album = {"J": {1: [_faced(f"j{k}{i}", f"jc{k}", f"2026-10-0{k + 1}", _vec(1, 0.01 * i)) for k in range(3)
+                       for i in range(3)]}}
+    st = lambda pre, n: {f"{pre}{i}": [_faced(f"{pre}{i}-{j}", f"{pre}{i}", "2026-10-12",  # noqa: E731
+                                              rng.normal(0, 1, 8)) for j in range(3)] for i in range(n)}
+    street = st("now", 10)
+    face_street = {**street, **st("old", 25)}
+    bars = pm.fit_all(album, CFG, street, face_street)
+    assert bars[("J", "face")].n_impostor == 35 and bars[("J", "body")].n_impostor == 10
+    old = pm.fit_all(album, CFG, street)          # no face street = the guess street, as before
+    assert old[("J", "face")].n_impostor == 10
+
+
+def test_face_window_not_longer_means_one_street(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(pm, "unnamed_clusters", lambda conn, now, cfg, tz, days=None: calls.append(days) or {"a": []})
+    street, face = pm.street_pools(None, NOW, pm.PersonModelConfig(face_candidate_days=30.0), ZONE)
+    assert street is face and calls == [None]
+
+
+def test_settings_ship_the_face_window_and_people_split_on() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    cfg = person_model_config(Settings())
+    assert cfg.face_candidate_days == 90.0 and cfg.face_candidate_days > cfg.candidate_days
+    assert cfg.alpha_split_people_only is True
+    off = person_model_config(Settings(VISION_PERSON_FACE_CANDIDATE_DAYS=30, VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY=False))
+    assert off.face_candidate_days == 30.0 and off.alpha_split_people_only is False
+    # The face window is pointless past the prune of unnamed clusters.
+    assert cfg.face_candidate_days <= Settings().vision_sighting_retention_days
 
 
 # --- the cycle against real Postgres --------------------------------------------------------------------
@@ -724,3 +826,241 @@ def test_no_marks_only_the_crops_orion_guessed_on(pg) -> None:
         vi._apply_answers(conn, NOW)
         n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE source='confirm_no'")).scalar()
     assert n == pm.ATTRIBUTION_CROPS
+
+
+@needs_pg
+def test_face_street_reaches_back_further_than_the_guess_street(pg) -> None:
+    with pg.begin() as conn:
+        _add_cluster(conn, "recent", None, [_vec(1)], day=5)
+        _add_cluster(conn, "old", None, [_vec(0, 1)], day=60)
+        _add_cluster(conn, "ancient", None, [_vec(0, 0, 1)], day=120)
+        street, face = pm.street_pools(conn, NOW, CFG, ZONE)
+    assert set(street) == {"recent"} and set(face) == {"recent", "old"}
+
+
+@needs_pg
+def test_not_a_person_names_come_from_the_person_record(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        if conn.execute(text("SELECT to_regclass('person') IS NULL")).scalar():
+            pytest.skip("manual_migration_person_record_v1.sql not applied")
+        conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
+        _add_cluster(conn, "deco", "Skeleton", [_vec(1)], day=1)
+        _add_cluster(conn, "jun", "Juniper", [_vec(0, 1)], day=1)
+        _add_cluster(conn, "gone", "Old name", [_vec(0, 0, 1)], day=1)
+        _add_cluster(conn, "lag", "PersonT", [_vec(0, 0, 0, 1)], day=1)
+        conn.execute(text(
+            "INSERT INTO person (person_id, display_name, status) VALUES "
+            "('p-deco', 'Halloween decor', 'not_a_person'), ('p-jun', 'Juniper', 'active'), "
+            "('p-ups', 'UPS delivery', 'not_a_person'), ('p-ted', 'PersonT', 'active')"))
+        conn.execute(text(
+            "INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by, revoked_at) VALUES "
+            "('l1', 'p-deco', 'vision_individual', 'deco', 'camera_name', NULL), "
+            "('l2', 'p-jun', 'vision_individual', 'jun', 'camera_name', NULL), "
+            "('l3', 'p-deco', 'vision_individual', 'gone', 'camera_name', now()), "
+            "('l4', 'p-deco', 'vision_individual', 'lag', 'camera_name', NULL)"))
+        names = pm.not_a_person_names(conn)
+        conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
+    # The linked label (not just the row's own name) counts; a revoked link and a
+    # name an active person also carries do not.
+    assert names == frozenset({"halloween decor", "skeleton", "ups delivery"})
+
+
+# --- camera priors (2026-11-04, the office camera: "99% of the time it is me in there") ---
+
+import dataclasses as _dc
+
+PRIORS = {"cam0": {"Juniper": 0.97, "Sibling": 0.01}}
+
+
+def _on(stream: str, crops):
+    return [_dc.replace(c, stream=stream) for c in crops]
+
+
+def _office_world():
+    """Juniper's and Sibling's albums are walkway crops; an office crop scores
+    higher against Sibling's (clothes and light), as on her first office visit."""
+    album = {
+        "Juniper": {1: _on("walkway", [_crop("j1", "jc", "2026-10-01", _vec(1, 0.6))])},
+        "Sibling": {1: _on("walkway", [_crop("s1", "sc", "2026-10-01", _vec(1, 0.1))])},
+    }
+    bars = {("Juniper", "body"): pm.Bar("Juniper", "body", None, None, 29, 1500),
+            ("Sibling", "body"): pm.Bar("Sibling", "body", None, None, 272, 1500)}
+    office = {"o1": _on("cam0", [_crop("o1a", "o1", "2026-11-05", _vec(1, 0.05))])}
+    return album, bars, office
+
+
+def test_office_guess_follows_the_prior_when_no_match_is_confident() -> None:
+    album, bars, office = _office_world()
+    (raw,) = pm.attribute(office, album, bars, {}, CFG)
+    assert raw["person_label"] == "Sibling" and raw["basis"] == "evidence"   # what happened on 11-05
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Juniper" and g["band"] == "unsure" and g["basis"] == "prior"
+
+
+def test_a_confident_match_beats_the_prior() -> None:
+    album, bars, office = _office_world()
+    bars[("Sibling", "body")] = pm.Bar("Sibling", "body", 0.5, None, 272, 1500)   # armed, and the crop clears it
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Sibling" and g["band"] == "accept" and g["basis"] == "evidence"
+
+
+def test_an_outdoor_reject_bound_cannot_rule_her_out_in_the_office() -> None:
+    album, bars, office = _office_world()
+    bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)   # learned outdoors
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Juniper" and g["basis"] == "prior"
+    # Once her album holds an office crop, the bound is in-camera and counts: she is
+    # ruled out, and the guess falls back to the scores (the 1% prior names nobody).
+    album["Juniper"][1].append(_on("cam0", [_crop("j2", "jo", "2026-11-05", _vec(0, 1))])[0])
+    (g2,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g2["person_label"] == "Sibling" and g2["basis"] == "evidence"
+
+
+def test_prior_names_match_album_names_ignoring_case_and_other_cameras_are_unchanged() -> None:
+    album, bars, office = _office_world()
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors={"cam0": {"juniper ": 0.97}})
+    assert g["person_label"] == "Juniper" and g["basis"] == "prior"
+    walk = {"w1": _on("walkway", office["o1"])}
+    (w,) = pm.attribute(walk, album, bars, {}, CFG, priors=PRIORS)
+    assert w["person_label"] == "Sibling" and w["basis"] == "evidence"
+
+
+def test_after_her_no_a_small_prior_never_names_the_guess() -> None:
+    """Review finding: a "no" must not walk down the 1% names ("Is this <sibling>?")."""
+    album, bars, office = _office_world()
+    (g,) = pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Sibling" and g["basis"] == "evidence"   # the scores', as on any camera
+
+
+def test_a_small_prior_relaxes_no_reject_and_a_misspelled_prior_changes_nothing() -> None:
+    album, bars, office = _office_world()
+    bars[("Sibling", "body")] = pm.Bar("Sibling", "body", None, 1.01, 272, 1500)   # rejects every crop
+    bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)
+    # Juniper ruled out: the 1% sibling's reject still counts, so there is no guess at all.
+    assert pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS) == []
+    # A prior naming nobody in the album: the same guesses as with no prior.
+    assert pm.attribute(office, album, bars, {}, CFG, priors={"cam0": {"Junper": 0.97}}) == \
+        pm.attribute(office, album, bars, {}, CFG)
+
+
+def test_camera_priors_file_example_and_local_first(tmp_path) -> None:
+    from orion.person_model.camera_priors import load_camera_priors
+
+    ex = tmp_path / "camera_priors.example.yaml"
+    ex.write_text("streams:\n  cam0:\n    Juniper: 0.97\n")
+    assert load_camera_priors(ex) == {"cam0": {"Juniper": 0.97}}
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("streams:\n  cam0:\n    A: 0.8\n    B: 0.5\n")
+    with pytest.raises(ValueError):
+        load_camera_priors(bad)
+    dup = tmp_path / "dup.yaml"
+    dup.write_text("streams:\n  cam0:\n    Juniper: 0.5\n    juniper: 0.4\n")
+    with pytest.raises(ValueError):
+        load_camera_priors(dup)
+    assert load_camera_priors(tmp_path / "missing.yaml") == {}
+
+
+@needs_pg
+def test_write_attributions_stores_basis_and_works_without_the_column(pg) -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    now = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc)
+    g = {"individual_id": "o1", "person_label": "Juniper", "channel": "body", "score": 0.7, "band": "unsure",
+         "basis": "prior"}
+    with pg.begin() as conn:
+        pm.write_attributions(conn, [g], now)
+        assert conn.execute(text("SELECT basis FROM vision_person_attribution WHERE individual_id='o1'")).scalar() == "prior"
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN basis"))
+        try:
+            pm.write_attributions(conn, [{**g, "individual_id": "o2"}], now)   # before the migration: still lands
+            assert conn.execute(text(
+                "SELECT count(*) FROM vision_person_attribution WHERE individual_id='o2'")).scalar() == 1
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS basis text"))
+
+
+@needs_pg
+def test_office_prior_asks_rank_last_and_one_is_open_per_name(pg) -> None:
+    """Review finding: one office visit splits into several records, each guessed
+    Juniper by the camera prior. They must not take the day's asks: evidence
+    guesses go first, and only one prior "Is this Juniper?" is open at a time."""
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        for iid in ("off-1", "off-2", "off-3", "walk-1"):
+            _add_cluster(conn, iid, None, [_vec(1, 0.1)], 0)
+            _thumb(conn, iid)
+            conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = :i"), {"i": iid})
+        for iid, person, score, basis in (("off-1", "Juniper", 0.9, "prior"), ("off-2", "Juniper", 0.8, "prior"),
+                                          ("off-3", "Juniper", 0.7, "prior"), ("walk-1", "Sibling", 0.5, "evidence")):
+            conn.execute(text(
+                "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+                "model_version, decided_at, basis) VALUES (:i, :p, 'body', :s, 'unsure', :v, :t, :b)"),
+                {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    assert [a["source_ref"] for a in opened] == ["walk-1|Sibling", "off-1|Juniper"]
+    assert "rule:camera_prior" in opened[1]["evidence_refs"] and "rule:camera_prior" not in opened[0]["evidence_refs"]
+    with pg.begin() as conn:   # the next cycle: her office ask is still open, so no second one
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []
+
+
+@needs_pg
+def test_office_prior_asks_have_their_own_slots_when_the_walkway_used_the_shared_cap(pg) -> None:
+    """2026-11-07: walkway guesses used all 6 shared "Is this X?" slots every day, so office
+    (camera prior) guesses were never asked and her office album never grew."""
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0, person_confirm_ask_daily_cap=1,
+                               person_confirm_prior_ask_daily_cap=2)
+    with pg.begin() as conn:
+        # An office ask already opened today (another name): it uses an office slot, never the shared one.
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, status, created_at, expires_at, "
+            "source_kind, source_ref) VALUES ('ask-earlier', 'juniper', 'Is this X?', "
+            "'[\"sighting:s0\", \"rule:camera_prior\"]'::jsonb, 'answered', :t, :e, 'vision_person_confirm', "
+            "'off-old|Other')"), {"t": NOW - timedelta(minutes=5), "e": NOW + timedelta(days=7)})
+        for iid in ("off-a", "walk-a", "walk-b"):
+            _add_cluster(conn, iid, None, [_vec(1, 0.1)], 0)
+            _thumb(conn, iid)
+            conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = :i"), {"i": iid})
+        for iid, person, score, basis in (("walk-a", "Sibling", 0.9, "evidence"), ("walk-b", "Sibling2", 0.8, "evidence"),
+                                          ("off-a", "Juniper", 0.4, "prior")):
+            conn.execute(text(
+                "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+                "model_version, decided_at, basis) VALUES (:i, :p, 'body', :s, 'unsure', :v, :t, :b)"),
+                {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    # The shared slot goes to the best walkway guess (the earlier office ask did not use it); the
+    # office guess gets its own slot anyway.
+    assert sorted(a["source_ref"] for a in opened) == ["off-a|Juniper", "walk-a|Sibling"]
+    with pg.begin() as conn:   # both lanes are used up for today
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []
+
+
+@needs_pg
+def test_a_zero_office_cap_never_asks_office_guesses(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0, person_confirm_ask_daily_cap=6,
+                               person_confirm_prior_ask_daily_cap=0)
+    with pg.begin() as conn:
+        _add_cluster(conn, "off-z", None, [_vec(1, 0.1)], 0)
+        _thumb(conn, "off-z")
+        conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = 'off-z'"))
+        conn.execute(text(
+            "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+            "model_version, decided_at, basis) VALUES ('off-z', 'Juniper', 'body', 0.4, 'unsure', :v, :t, 'prior')"),
+            {"v": pm.MODEL_VERSION, "t": NOW})
+        assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []

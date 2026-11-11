@@ -37,6 +37,7 @@ def summarize(arc: TemporalSelfArcV1) -> ArcSummaryV1:
         attention_returns=arc.attention_returns, cumulative_dwell_sec=round(arc.cumulative_dwell_sec, 3),
         last_seen_at=arc.last_seen_at, episode_began_at=arc.episode_began_at,
         causes_now=None if arc.causes_now is None else list(arc.causes_now),
+        binding=None if arc.binding is None else arc.binding.model_copy(),
     )
 
 
@@ -60,7 +61,9 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
     # Non-reverie arcs first (most recent), reverie fills what is left; then chronological.
     # Street arcs (passers-by, PR #2763 item 1) rank with reverie: they fill leftover slots and never
     # push Orion's own arcs (sleep, conversation, strain, company) out of a busy day's frame.
-    ranked = sorted(arcs, key=lambda a: (a.kind in ("reverie", "street"), -a.began_at.timestamp(),
+    # Faculty arcs (self-monitor patch 2) are days-long facts about Orion's track record, read by the
+    # Day letter from the closed day's full arc list: in the frame they also only fill leftover slots.
+    ranked = sorted(arcs, key=lambda a: (a.kind in ("reverie", "street", "faculty"), -a.began_at.timestamp(),
                                          a.arc_id))[:ARCS_IN_FRAME_CAP]
 
     def _latest(kind: str):

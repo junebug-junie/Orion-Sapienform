@@ -82,6 +82,14 @@ class FakeStore:
     def live_scores(self, sid, since):
         return [f for f in self.forecasts if f.get("score_status") == "scored" and f["target_ts"] >= since]
 
+    def scored_with_quantiles(self, sid, since):
+        return self.live_scores(sid, since)
+
+    def champion_pool(self, sid, since, max_h):
+        assign = {r["run_id"]: r["assignment"] for r in self.runs}
+        return [{**f, "owner": (assign.get(f["run_id"]) or {}).get(str(f["horizon_min"]), f.get("owner"))}
+                for f in self.live_scores(sid, since) if f["role"] == "champion" and f["horizon_min"] <= max_h]
+
     exceedances: list = []
 
     fail_next_issue = False
@@ -369,6 +377,38 @@ def test_restore_refuses_a_selection_made_with_different_covariates():
     plain = parse_registry(spec_doc(train_window="10d"))
     assert _engine(plain, store, clock, []).restore(plain.get("test.temp")) is False
     assert _engine(reg, store, clock, []).restore(spec) is True
+
+
+def test_restore_refuses_a_selection_made_with_different_overlap_covariates():
+    """direct_arx's columns depend on which covariates are overlap-only: a stored selection made
+    with another split must not be restored (its residuals were measured on other columns)."""
+    import dataclasses
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    asyncio.run(_engine(reg, store, clock, []).tick(_sync))
+    moved = dataclasses.replace(spec, overlap_covariates=("test.watts",))
+    assert _engine(reg, store, clock, []).restore(moved) is False
+    assert _engine(reg, store, clock, []).restore(spec) is True
+
+
+def test_shadow_covariate_contender_gets_covariates_when_nothing_served_uses_them(monkeypatch):
+    import dataclasses
+    monkeypatch.setattr(engine_mod, "build_models", lambda spec, usable: {
+        k: v for k, v in real_build_models(spec, usable).items() if k in FAST + ("direct_arx",)})
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    base = {hm: "naive" for hm in st.served.selection.assignment}
+    sel = dataclasses.replace(st.served.selection, assignment=base)
+    st.served = dataclasses.replace(st.served, selection=sel, shadow=("direct_arx",))
+    origin = eng.latest_complete_bucket(spec, clock.t)
+    series = eng.load_series(spec, clock.t, timedelta(days=10))
+    built = eng.build_forecast(spec, series, origin, clock.t)
+    assert built["X"] is not None
+    rows, failed = eng.build_shadow(spec, built, origin, clock.t)
+    assert failed == {} and {r["model"] for r in rows} == {"direct_arx"}
 
 
 def test_restore_refuses_a_selection_from_another_gate_version():
@@ -708,3 +748,34 @@ def test_not_ready_backs_off_even_when_a_stale_selection_would_force_a_reselect(
         asyncio.run(eng.tick(_sync))
     st = eng.state["test.temp"]
     assert len(calls) == 1 and st.not_ready is not None and st.served is served   # keeps serving the old one
+
+
+# --- surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) ---------
+
+def test_monitor_sets_a_gate_verdict_per_horizon():
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    asyncio.run(eng.tick(_sync))
+    gate = eng.state["test.temp"].surprise_gate
+    assert set(gate) == {5, 60, 360}
+    # A fresh series has too few live scores (or serves a baseline): nothing passes yet.
+    assert not any(ok for ok, _ in gate.values())
+
+
+def test_surprise_summary_reports_each_horizon_with_its_gate_reason():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=7)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.monitor(spec, clock.t, _sync))
+    out = eng.surprise_summary(spec, clock.t, timedelta(hours=24))
+    assert out["calm_surprisal"] == pytest.approx(0.95)
+    assert set(out["horizons"]) == {"5", "60", "360"}
+    from app.models import BASELINES
+    assignment = eng.state["test.temp"].served.selection.assignment
+    for hm, h in out["horizons"].items():
+        expected = "served_baseline" if assignment[int(hm)] in BASELINES else "too_few_live_scores"
+        assert h["gate"] == expected, hm

@@ -13,7 +13,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("check_verb_physiology", REPO / "scripts" / "check_verb_physiology.py")
@@ -164,18 +163,12 @@ def test_families_match_act_ledger_actors() -> None:
         "daily_metacog_v1": _const("services/orion-actions/app/act_emit.py", "DAILY_METACOG_ACTOR"),
         "journal.compose": _const("services/orion-actions/app/act_emit.py", "JOURNAL_ACTOR"),
         "dream_cycle": _const("services/orion-dream/app/act_emit.py", "ACTOR"),
+        # The painting verb's actor: orion-thought's painting trigger since 2026-11-05 (ladder retirement
+        # PR 2); before that the render_scene dispatch route's `act:` named it.
+        "skills.imagination.render_scene.v1": _const("services/orion-thought/app/painting_self_start.py",
+                                                     "PAINT_ACTOR"),
     }
-    policy = yaml.safe_load((REPO / "config/execution_dispatch/execution_dispatch_policy.v1.yaml").read_text())
-    routes = {**(policy.get("proposal_kind_to_cortex") or {}), **(policy.get("template_to_cortex") or {})}
-    with_yaml = 0
-    for route in routes.values():
-        actor = (route.get("act") or {}).get("actor")
-        verb = route.get("cortex_verb")
-        if not actor or verb not in parsed:  # orion.* verbs are code-registered, no YAML to check
-            continue
-        with_yaml += 1
-        expected[verb] = actor
-    assert with_yaml >= 1, "no dispatch route with an act actor maps to a verb YAML any more"
+    # The dispatch policy's act routes were checked here too until the dispatch rung retired (2026-11-07).
     assert {verb: parsed[verb].family for verb in expected} == expected
     assert parsed["chat_general"].tier == 0 and parsed["chat_general"].family == "turn"
     assert parsed["stance_react"].tier == 0

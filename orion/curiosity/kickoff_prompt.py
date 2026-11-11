@@ -12,15 +12,16 @@ with nothing behind it:
 
   1. NOT CHOOSE. No ranking language, no "notably", no "this one stands out".
      The crystallization sample is explicitly described as random so Orion does
-     not read position in the list as significance. Open priors ARE ordered --
-     by the code's estimate of where a test could change Orion's mind most,
-     starting from how uncertain Orion itself said it was -- and the prompt
-     says so out loud, because an ordering presented as neutral is the
-     back-door ranking this whole arc exists to delete. The sentence is the
-     same whichever order a run gets (most-uncertain first, or the spend
-     log's value order: uncertainty weighed by measured learning yield), and
-     true of both: the order is the experiment's treatment, so the words
-     describing it must not differ between arms. Orion still chooses.
+     not read position in the list as significance. Open priors ARE ordered,
+     and the prompt says so out loud, because an ordering presented as
+     neutral is the back-door ranking this whole arc exists to delete. The
+     sentence (`ORDER_SENTENCE`) is the same whichever order a run gets --
+     most-uncertain first, the spend log's value order (uncertainty weighed
+     by measured learning yield), or the curiosity replica's plan -- and true
+     of all three: the order is the experiment's treatment, so the words
+     describing it must not differ between arms, and it says only that the
+     order was chosen before the run, never by whom or why (the replica's
+     reasons never reach Orion). Orion still chooses.
   2. SAY WHAT IS NOT SHOWN. The counts are included precisely because the
      sample is a slice of 646 -- without them, a menu of 12 reads as the whole
      of Orion's mind.
@@ -69,6 +70,19 @@ from orion.curiosity.worldview import (
 )
 
 DEFAULT_MAX_HOPS = 5
+
+# What the live-priors section says about their order. One sentence for every offer arm (uncertainty,
+# value, replica), true of each: the order was chosen before the run and is not a recommendation. It
+# names no rule and no planner, so the prompt is byte-identical across arms except for the prior
+# lines (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 5). The self-inquiry
+# line renders the same section, so it carries the same sentence. It went live with patch 2 (before the
+# replica arm exists), on both live arms at once: runs on either side of that deploy must not be pooled
+# in the value-vs-uncertainty comparison (the design already says compare only concurrent runs).
+ORDER_SENTENCE = (
+    "These are ORDERED, and the order is not neutral: it is a presentation "
+    "choice made before this run, not a recommendation. Which one, if any, "
+    "is worth your time is your call."
+)
 
 # Expanded by the sandbox shell, not here: the harness stamps these env vars.
 GRAPH_URI = (
@@ -212,11 +226,7 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "or revised is still here on purpose: one test is not a settled "
             "question, and confidence is allowed to move DOWN on the second "
             "look.",
-            "These are ORDERED, and the order is not neutral: first come the ones "
-            "where the code estimates a test could change your mind the most, "
-            "starting from how unsure you are. That is a presentation choice, "
-            "not a recommendation -- which one, if any, is worth your time is "
-            "your call.",
+            ORDER_SENTENCE,
             "",
         ]
         lines += [f"  - {p.preview()}" for p in view.live_priors if not p.coverage]
@@ -318,6 +328,34 @@ def _material_section(material: StudyMaterial) -> list[str]:
     lines += _street_captions_section(material)
     lines += _street_day_section(material)
     return lines
+
+
+def kickoff_material_ids(material: StudyMaterial) -> list[str]:
+    """Ids of the study material `_material_section` puts into the kickoff prompt.
+
+    Recorded with the run (`curiosity_offer_decisions.material_ids`) so a query
+    can show which investigations saw which material. Reads the same lists the
+    sections render, with the same gates: a card listed here is a card that was
+    in the prompt, and nothing fetched-but-not-shown is listed. Street ids
+    (2026-11-03): `street_caption:<vision_events.event_id>` per caption shown,
+    and `street_day:<stream_id>:<day label>@<computed_at>` for the day card --
+    the label is the local date, which with stream_id and grain='day' names one
+    `vision_rollup` row; computed_at says which version of that all-day-upserted
+    row was read (omitted when the row had none).
+
+    Known gaps: a caption with an empty event_id is shown but not recorded
+    (vision_events always sets one); unresolved percepts are not recorded yet.
+    Street ids come last, so a downstream cap (personality situation_refs, 50)
+    would drop them first -- unreachable at today's sample sizes (~22 ids).
+    """
+    ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
+    ids += [f"relation:{r.decision_id}" for r in material.relations]
+    ids += [f"street_caption:{c.event_id}" for c in material.street_captions if c.event_id]
+    card = material.street_day
+    if card is not None:
+        version = f"@{card.computed_at}" if card.computed_at else ""
+        ids.append(f"street_day:{card.stream_id or 'walkway'}:{card.day}{version}")
+    return ids
 
 
 def _street_day_section(material: StudyMaterial) -> list[str]:

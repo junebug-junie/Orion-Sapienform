@@ -98,3 +98,13 @@ def test_regulation_verdict_needs_enough_signals_and_a_significant_rate_differen
     broken = [{**a, "opened_at": None} for a in acts]
     assert rpt.regulation(broken, starts)["verdict"] == "too_few"
     assert rpt.binomial_two_sided(5, 10, 0.5) == 1.0
+
+
+def test_wake_replay_eval_passes_on_its_live_fixture():
+    """Attention moves no longer wake Prime: the replayed live timeline (10-30..11-03) still wakes it
+    every day, at well under the live rate, and the quiet floor bounds the longest silence."""
+    from orion.prime.evals import run_prime_wake_replay
+
+    results = run_prime_wake_replay.run()
+    assert {name for name, _, _ in results} == {"rate_drops", "still_wakes", "floor_bounds"}
+    assert all(ok for _, ok, _ in results), results

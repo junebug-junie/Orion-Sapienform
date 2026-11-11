@@ -106,8 +106,23 @@ def test_degraded_path_does_not_let_the_marker_evict_an_authored_line() -> None:
 def test_long_definitions_are_clipped_for_the_prompt() -> None:
     beliefs = _beliefs(_snap("self_definition", {**_DEFINITION, "content": "x" * 5000}))
     out = _project_identity_from_beliefs(beliefs, {})
-    assert len(out["orion_identity_summary"][0]) < 1100
+    assert len(out["orion_identity_summary"][0]) < 1400
     assert out["orion_identity_summary"][0].endswith("…")
+
+
+def test_a_long_definition_is_cut_at_a_sentence_not_mid_word() -> None:
+    sentence = "I am made of services and records, and I am unsure of much of it. "
+    content = (sentence * 25).strip()
+    beliefs = _beliefs(_snap("self_definition", {**_DEFINITION, "content": content}))
+    line = _project_identity_from_beliefs(beliefs, {})["orion_identity_summary"][0]
+    assert line.endswith("it. …")
+
+
+def test_a_definition_inside_the_budget_is_shown_whole() -> None:
+    content = ("I am made of services. " * 50).strip()[:1190].rsplit(" ", 1)[0]
+    beliefs = _beliefs(_snap("self_definition", {**_DEFINITION, "content": content}))
+    line = _project_identity_from_beliefs(beliefs, {})["orion_identity_summary"][0]
+    assert line.endswith(content)
 
 
 def test_the_producer_is_registered_and_the_adapter_maps_ctx() -> None:

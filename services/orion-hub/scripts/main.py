@@ -59,7 +59,6 @@ from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
-from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.curiosity_urgent import urgent_request_loop
@@ -77,20 +76,24 @@ from orion.world_pulse_read.concept_search import (
     OBJECT_MIN_CENTERED_SIMILARITY as READING_OBJECT_MIN_SIMILARITY,
 )
 from scripts.reading_listener import ReadingListener
-from scripts.world_pulse_read_pull_listener import WorldPulseReadPullListener
-from scripts.retro_leisure_listener import RetroLeisureListener
+from scripts.retro_leisure_self_start import RetroLeisureSelfStart, build_act_gate
 from scripts.curiosity_introspect_listener import CuriosityIntrospectListener
 from scripts.orion_day_introspect_listener import SEARCH_COLLECTION as ORION_DAY_SEARCH_COLLECTION, OrionDayIntrospectListener
 from scripts.node_history_introspect_listener import NodeHistoryIntrospectListener
 from scripts.power_attribution_introspect_listener import PowerAttributionIntrospectListener
 from scripts.orion_day_correction_listener import OrionDayCorrectionListener
 from scripts.curiosity_focus_listener import CuriosityFocusListener
+from scripts.curiosity_focus_refusal_listener import CuriosityFocusRefusalListener
 from scripts.reading_turn_listener import ReadingTurnListener
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
 from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
 from scripts.reading_finding_outreach import ReadingFindingOutreach
+from scripts.office_reach_out import OfficeReachOut
+from scripts.reading_event_wants import ReadingEventWants
+from scripts.self_monitor_questions import SelfMonitorQuestionMinter
 from scripts.orion_day_letter import DurableRunsClient, OrionDayLetterLoop
 from scripts.endogenous_outreach import EndogenousOutreach
+from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.harness_step_relay import HarnessStepRelay
@@ -350,39 +353,26 @@ tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
-bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 
 endogenous_outreach: Optional[EndogenousOutreach] = None
 collapse_mirror_chat_reply_handler = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
 reading_listener = None
-world_pulse_read_pull_listener = None
-retro_leisure_listener = None
-
-
-def _cabinet_temp_reading() -> tuple[float | None, float | None]:
-    """(temp_c, age_sec) from Hub's own cabinet sensor snapshot -- the reading orion-thought's
-    thermal gate fetches over HTTP from this same route. Never raises: no reading is unknown."""
-    try:
-        from scripts.cabinet_sensors_routes import api_cabinet_sensors_latest
-
-        payload = api_cabinet_sensors_latest() or {}
-        env = ((payload.get("snapshot") or {}).get("frame") or {}).get("environment") or {}
-        temp, age = env.get("temp_c"), payload.get("age_sec")
-        return (None if temp is None else float(temp)), (None if age is None else float(age))
-    except Exception:  # noqa: BLE001
-        logger.warning("cabinet_temp_reading_failed", exc_info=True)
-        return None, None
+retro_leisure_self_start = None
 curiosity_introspect_listener = None
 orion_day_introspect_listener = None
 node_history_introspect_listener = None
 power_attribution_introspect_listener = None
 orion_day_correction_listener = None
 curiosity_focus_listener = None
+curiosity_focus_refusal_listener = None
 reading_turn_listener = None
 world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 reading_finding_outreach: Optional[ReadingFindingOutreach] = None
+office_reach_out: Optional[OfficeReachOut] = None
+reading_event_wants: Optional[ReadingEventWants] = None
+self_monitor_question_minter: Optional[SelfMonitorQuestionMinter] = None
 orion_day_letter: Optional[OrionDayLetterLoop] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
@@ -488,7 +478,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -594,13 +584,6 @@ async def startup_event():
             if settings.NOTIFY_IN_APP_ENABLED:
                 await notification_cache.start(bus)
 
-            bus_synaptic_trigger_notifier = BusSynapticTriggerNotifier(
-                enabled=True,
-                metacog_trigger_channel="orion:equilibrium:metacog:trigger",
-                notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
-            )
-            await bus_synaptic_trigger_notifier.start(bus)
-
             # Orion speaks first, on a real trigger (2026-08-16 -- see
             # scripts/tension_outreach_trigger.py). Off unless explicitly
             # enabled -- see scripts/endogenous_outreach.py for the safety gates.
@@ -632,7 +615,7 @@ async def startup_event():
                 strain_report_enabled=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED,
                 strain_report_min_episode_sec=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC,
                 strain_report_timezone=settings.ORION_SITUATION_TIMEZONE,
-                daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
+                daily_cap=JUNIPER_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
                 timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
@@ -733,6 +716,9 @@ async def startup_event():
                 spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
                 value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,
                 value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
+                replica_arm_enabled=settings.HUB_CURIOSITY_REPLICA_ARM_ENABLED,
+                replica_arm_propensity=settings.HUB_CURIOSITY_REPLICA_ARM_PROPENSITY,
+                replica_plan_deadline_sec=settings.HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC,
                 yield_window=settings.HUB_CURIOSITY_YIELD_WINDOW,
                 yield_pseudo_tests=settings.HUB_CURIOSITY_YIELD_PSEUDO_TESTS,
                 # Energy as a stake (default off): reads the latest
@@ -863,15 +849,6 @@ async def startup_event():
                 # atlas routes already use. Callable so we never build a
                 # second orphan store.
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
-                # Reading pull (thinking rung 3 follow-up): the allocator's extra read, gated here.
-                pull_enabled=settings.HUB_WORLD_PULSE_READ_PULL_ENABLED,
-                pull_daily_cap=settings.HUB_WORLD_PULSE_READ_PULL_DAILY_CAP,
-                pull_arousal_reader=ArousalReader(
-                    enabled=settings.HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED,
-                    max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
-                    name="reading_pull",
-                ),
-                pull_thermal_reader=_cabinet_temp_reading,
             )
             reading_turn_listener = ReadingTurnListener(
                 world_pulse_read_pipeline._source_ref, lambda: harness_step_relay,
@@ -892,19 +869,18 @@ async def startup_event():
                 documents=settings.reading_document_policy(),
             )
             await reading_listener.start(bus)
-            world_pulse_read_pull_listener = WorldPulseReadPullListener(
-                world_pulse_read_pipeline, world_pulse_read_pipeline._source_ref,
-            )
-            await world_pulse_read_pull_listener.start(bus)
-            # Orion plays Zelda (section E): the motor allocator's leisure start. The runner is
-            # scripts/retro_leisure.py (imported per request; missing -> `runner_unavailable`, never
-            # a fake session). Session end -> scripts/retro_memory_export.py (section F).
-            retro_leisure_listener = RetroLeisureListener(
-                world_pulse_read_pipeline._source_ref,
+            # Orion plays Zelda (section E): Hub's own leisure timer (ladder retirement PR 1). Each
+            # tick bids, then asks scripts/retro_leisure.py's gate (imported per tick; missing ->
+            # `runner_unavailable`, never a fake session). Session end -> scripts/retro_memory_export.py.
+            retro_leisure_self_start = RetroLeisureSelfStart(
                 config_provider=lambda: settings,
                 pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                tick_sec=float(settings.RETRO_LEISURE_SELF_START_TICK_SEC),
+                enabled=bool(settings.RETRO_LEISURE_SELF_START_ENABLED),
+                gate=build_act_gate(settings, pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                                    loop=asyncio.get_running_loop()),
             )
-            await retro_leisure_listener.begin(bus)
+            await retro_leisure_self_start.begin(bus)
             # orion-introspect `curiosity` tool: the Curiosity tab's own run
             # join, same pool and the same graph reader the routes build.
             curiosity_introspect_listener = CuriosityIntrospectListener(
@@ -955,6 +931,14 @@ async def startup_event():
                 schedule_provider=read_curiosity_schedule,
             )
             await curiosity_focus_listener.start(bus)
+            # The curiosity replica's focus refusals (orion-mind; design 2026-11-04 section 9): refuse a
+            # pending focus PRIME queued, with a reason. Never Juniper's focus (orion/curiosity/focus.py).
+            curiosity_focus_refusal_listener = CuriosityFocusRefusalListener(
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=world_pulse_read_pipeline._source_ref,
+                enabled=settings.HUB_CURIOSITY_FOCUS_ENABLED,
+            )
+            await curiosity_focus_refusal_listener.start(bus)
             # orion-introspect `node_history` tool: a substrate node's prediction-error
             # readings over a window, from substrate_node_prediction_error_history.
             node_history_introspect_listener = NodeHistoryIntrospectListener(
@@ -1027,6 +1011,50 @@ async def startup_event():
                 await reading_finding_outreach.start()
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("reading_finding_outreach_start_failed")
+
+            # Each finished read posts an event want into the body economy (attention as the want
+            # competition, patch 2): salience = the links it made, as a percentile of 30 days of reads.
+            try:
+                reading_event_wants = ReadingEventWants(
+                    enabled=settings.HUB_READING_EVENT_WANTS_ENABLED,
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    tick_interval_sec=settings.HUB_READING_EVENT_WANTS_TICK_SEC,
+                    lookback_sec=settings.HUB_READING_EVENT_WANTS_LOOKBACK_SEC,
+                )
+                await reading_event_wants.start()
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("reading_event_wants_start_failed")
+
+            # Office camera design step C: each office visit with a story gets Orion's attention (a
+            # perception.office event want) and ONE curious Hub chat message, through the same outreach path.
+            try:
+                office_reach_out = OfficeReachOut(
+                    reach_out_enabled=settings.HUB_OFFICE_REACH_OUT_ENABLED,
+                    event_wants_enabled=settings.HUB_OFFICE_EVENT_WANTS_ENABLED,
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    outreach_provider=lambda: endogenous_outreach,
+                    tick_interval_sec=settings.HUB_OFFICE_REACH_OUT_TICK_SEC,
+                    lookback_hours=settings.HUB_OFFICE_REACH_OUT_LOOKBACK_HOURS,
+                    min_entries=settings.HUB_OFFICE_REACH_OUT_MIN_ENTRIES,
+                    min_minutes=settings.HUB_OFFICE_REACH_OUT_MIN_MINUTES,
+                    max_attempts=settings.HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS,
+                    timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                )
+                await office_reach_out.start()
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("office_reach_out_start_failed")
+            # Self-monitor E2 (rung 6): a faculty newly held broken/unreliable mints ONE self-question
+            # into curiosity_self_questions (minted_by='orion'), once per status episode.
+            try:
+                self_monitor_question_minter = SelfMonitorQuestionMinter(
+                    enabled=settings.SELF_MONITOR_QUESTIONS_ENABLED,
+                    redis_provider=lambda: bus.redis if bus is not None else None,
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    tick_interval_sec=settings.SELF_MONITOR_QUESTIONS_TICK_SEC,
+                )
+                await self_monitor_question_minter.start()
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("self_monitor_questions_start_failed")
 
 
             # Claude as a third room participant. Hub only publishes the
@@ -1672,7 +1700,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, world_pulse_read_pull_listener, retro_leisure_listener, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1736,11 +1764,6 @@ async def shutdown_event() -> None:
         await vision_frame_cache_runtime.cache.stop()
     if notification_cache is not None:
         await notification_cache.stop()
-    if bus_synaptic_trigger_notifier is not None:
-        try:
-            await bus_synaptic_trigger_notifier.stop()
-        except Exception:
-            pass
     if curiosity_investigation is not None:
         try:
             await curiosity_investigation.stop()
@@ -1750,12 +1773,9 @@ async def shutdown_event() -> None:
     if reading_listener is not None:
         await reading_listener.stop()
         reading_listener = None
-    if world_pulse_read_pull_listener is not None:
-        await world_pulse_read_pull_listener.stop()
-        world_pulse_read_pull_listener = None
-    if retro_leisure_listener is not None:
-        await retro_leisure_listener.stop()
-        retro_leisure_listener = None
+    if retro_leisure_self_start is not None:
+        await retro_leisure_self_start.stop()
+        retro_leisure_self_start = None
     if curiosity_introspect_listener is not None:
         await curiosity_introspect_listener.stop()
         curiosity_introspect_listener = None
@@ -1774,6 +1794,9 @@ async def shutdown_event() -> None:
     if curiosity_focus_listener is not None:
         await curiosity_focus_listener.stop()
         curiosity_focus_listener = None
+    if curiosity_focus_refusal_listener is not None:
+        await curiosity_focus_refusal_listener.stop()
+        curiosity_focus_refusal_listener = None
     if reading_turn_listener is not None:
         await reading_turn_listener.stop()
         reading_turn_listener = None
@@ -1795,6 +1818,24 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("reading_finding_outreach_stop_failed", exc_info=True)
         reading_finding_outreach = None
+    if office_reach_out is not None:
+        try:
+            await office_reach_out.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("office_reach_out_stop_failed", exc_info=True)
+        office_reach_out = None
+    if reading_event_wants is not None:
+        try:
+            await reading_event_wants.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("reading_event_wants_stop_failed", exc_info=True)
+        reading_event_wants = None
+    if self_monitor_question_minter is not None:
+        try:
+            await self_monitor_question_minter.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("self_monitor_questions_stop_failed", exc_info=True)
+        self_monitor_question_minter = None
     if orion_day_letter is not None:
         try:
             await orion_day_letter.stop()

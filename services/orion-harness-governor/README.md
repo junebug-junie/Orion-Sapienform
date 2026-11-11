@@ -34,6 +34,16 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 `GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
 silently is visible immediately rather than inferred later from turns going unanswered.
 
+## Why a turn stopped (`stop_reason`)
+
+`HarnessRunV1.stop_reason` (on the reply and the `orion:harness:run:artifact` record, stored in
+`harness_turn_trace.run_artifact`) says why the motor stopped: `cancel:<reason>` when a
+`harness.run.cancel.v1` killed the process (the cancel listener passes `HarnessRunCancelV1.reason`
+to `cancel_fcc_turn`), else the motor's error code (`fcc_timeout`, `fcc_stream_stalled`,
+`fcc_nonzero_exit`, ...), else null. orion-prediction voids a turn's self-bets `interrupted`
+(not `failed_to_execute`) only for the known outside cancels in `orion/harness/stop_reason.py`.
+Records written before 2026-11-04 have no `stop_reason` and stay as they are.
+
 ## Draft-first display (spec L8)
 
 When the Hub sets `HarnessRunRequestV1.draft_preview` (interactive chat only,
@@ -244,6 +254,8 @@ other content. Whole-turn and stalled-stream deadlines remain in force.
 A compaction whose summary has no `Summary:` section kept no record of the task (9 of 22 stored compactions, 2026-09-15..10-11: the summarizer carried on with the task instead). The motor logs `fcc_compaction_degenerate`, emits a `context_compaction_degenerate` trace step, counts it in `fcc_degenerate_compactions`, and never takes the compaction message as the turn's draft. It skips the terminal `"result"` event so a finished answer is never double-counted into a kill.
 
 **Cut-short turns** (`orion/harness/cut_short.py`): when the motor stops a still-working turn (`fcc_context_ceiling_exceeded`, `fcc_timeout`, `fcc_stream_stalled`, `fcc_stream_line_limit`), the draft is no longer the last text fragment (usually a lead-in like "Let me check X:"). It is built from the turn's own recorded findings -- interim notes and every tool result paired with its call -- under a `[Cut short - not a finished answer.]` marker, with `compliance_verdict=partial`, `grounding_status=<code>`. A cut-short turn with no findings fails instead of shipping a marker with nothing behind it. Finalize skips response repair for cut-short drafts (`run_harness_finalize_chain(cut_short=True)`) so the findings are not rewritten into something that reads finished, and the governor re-attaches the marker as a backstop. Two exceptions keep the old path: a timeout/stall after the CLI's own `result` event (the process hung on exit, `fcc_result_seen`; the text is the finished answer) and reading-only machine turns (their consumer needs JSON and retries on a clean `turn_error:<code>`). Privacy: tool-result excerpts in a cut-short draft are capped at 300 chars and scrubbed of credential-shaped values (`scrub_secrets`, best effort), because this is the first path that puts tool output into user-visible text and journals.
+
+**Text tool calls** (`orion/harness/fcc_motor.py::text_tool_call`, `_resume_need`, `_resume_held_final`): Strata turns a `<tool_call>` into a real tool call only when the request declared that tool. FCC runs the CLI with `ENABLE_TOOL_SEARCH=true`, so an MCP tool is declared only after `ToolSearch` loads it. When an ordinary turn's final answer ENDS on a `<tool_call>` block, the call never ran. The motor holds that final and resumes the same CLI session once (`--resume`; a spawn even for a warm chat turn, after the slot is released) with a note that names the tool and, for an `mcp__*` tool, says to load it with `ToolSearch` `select:<name>` first. Reading turns use the same seam with their own needs (undeclared tool, not JSON). No resume without a session id, with too little time left, or without the session transcript on disk; the held final is then stamped `fcc_text_tool_call_resume_skipped` (`fcc_reading_resume_skipped` on reading turns). A resume that fails on its own before any step keeps the held final. A durable run records its session end on the frame that finally leaves, so a killed resume reads `interrupted`. If the answer is still a text call, the runner cuts the raw call out of the findings and builds a cut-short draft (`grounding_status=fcc_text_tool_call`) so finalize does not "repair" it into a summary of work that never ran; with no other findings the motor fails. Evidence: log lines `fcc_text_tool_call_resume` / `fcc_text_tool_call_resume_skipped` / `fcc_text_tool_call_resume_failed` / `harness_text_tool_call_final`, final metadata `fcc_text_tool_call_resume` (with `held_metadata` from the first run). Replay over live turns: `python -m orion.harness.evals.text_tool_call_replay`.
 
 ### Reflection fail-closed fallback
 
@@ -501,6 +513,11 @@ contract-only PR ahead of the responder is refused on purpose: a channel with
 no responder would read as "unknown" on every call.
 
 ## Dig kit: `dig body-economy` (skills.physiology.state.v1 from Bash, 2026-10-29)
+
+Turns import the sandbox's `orion/` before `/app` (`PYTHONPATH`, `orion/fcc/context_budget.py`), so a
+dig change is live for Orion only once the sandbox is at that commit. The post-pull rebuild resets it
+after each deploy (`SANDBOX_SYNC` line in `~/.orion/post_pull_rebuild.log`). Check it:
+`git -C /mnt/orion-fcc/repo log -1 --oneline`.
 
 Chat and curiosity turns both run here with Bash and the dig brief line (`orion/dig/brief.py`). Orion reads
 their own body economy with `python -P -m orion.dig body-economy [<section>...] [--window 24h|7d|30d]

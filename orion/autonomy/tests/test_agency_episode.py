@@ -123,11 +123,10 @@ def test_source_disagreements_and_invalid_chronology_are_explicit():
     assert "answers_edge_missing:b1" in issues
     assert "brief_store_disagreement:b1" in issues
     data["outcomes"]["rows"][0].update(predicted_delta=0.9, observed_at="2026-08-01T00:00:00Z")
-    data["feedback_frames"]["rows"][0]["source_execution_dispatch_frame_id"] = "other"
     issues = episode(data, "motor")["issues"]
     assert "outcome_prediction_mismatch:1" in issues
     assert "outcome_precedes_dispatch:1" in issues
-    assert "feedback_dispatch_mismatch:1" in issues
+    assert not any(i.startswith("feedback_") for i in issues)  # feedback rung retired 2026-11-04
 
 
 def test_prose_and_request_envelopes_are_not_exported():

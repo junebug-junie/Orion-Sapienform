@@ -76,7 +76,8 @@ FROM dream_hypothesis WHERE created_at >= :start AND created_at < :end;
 
 SELECT json_build_object('k','action_outcome','id',id,'observed_at',observed_at,'created_at',created_at,
   'claim_upheld',claim_upheld,'dispatch_kind',dispatch_kind,'target_id',target_id,'prediction_error',prediction_error)
-FROM substrate_action_outcomes WHERE created_at >= :start AND created_at < :end;
+FROM substrate_action_outcomes WHERE created_at >= :start AND created_at < :end
+  AND (dispatch_kind LIKE 'act:%' OR dispatch_kind = 'self_regulate');
 
 SELECT json_build_object('k','metacog_observation','id',m.id,'correlation_id',m.correlation_id,'severity',m.severity,
   'trigger_kind',m.trigger_kind,'timestamp',m.timestamp,'trigger_timestamp',t.timestamp)
@@ -125,6 +126,18 @@ FROM vision_presence_transition WHERE occurred_at >= :start AND occurred_at < :e
 SELECT json_build_object('k','arousal_transition','event_id',event_id,'day_id',day_id,'occurred_at',occurred_at,
   'source_ref',source_ref,'payload_json',payload_json)
 FROM temporal_self_event WHERE source_kind = 'arousal_transition' AND source_table = 'regulation'
+  AND occurred_at >= :start AND occurred_at < :end;
+
+-- Felt state: the physiology node's binding rows (in the chronicle's event table).
+SELECT json_build_object('k','body_binding','event_id',event_id,'day_id',day_id,'occurred_at',occurred_at,
+  'source_ref',source_ref,'payload_json',payload_json)
+FROM temporal_self_event WHERE source_kind = 'body_binding' AND source_table = 'physiology'
+  AND occurred_at >= :start AND occurred_at < :end;
+
+-- Self-monitor organ patch 2: the self_monitor node's faculty status-change and keepalive rows.
+SELECT json_build_object('k','faculty_status_changed','event_id',event_id,'day_id',day_id,'occurred_at',occurred_at,
+  'source_ref',source_ref,'payload_json',payload_json)
+FROM temporal_self_event WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
   AND occurred_at >= :start AND occurred_at < :end;
 
 -- Orion plays Zelda (section F): finished Retro sessions, whole rows (one per session). The table is

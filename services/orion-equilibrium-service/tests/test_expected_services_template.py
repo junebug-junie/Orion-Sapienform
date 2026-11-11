@@ -2,7 +2,8 @@
 
 2026-10-20: gpu-cluster-power, vision-edge, vision-frame-router and whisper-tts were
 added -- each runs always-on on athena and heartbeats on orion:system:health under
-exactly these names. orion-rag is left out on purpose (excluded from athena's
+exactly these names. 2026-11-04: vision-edge (kept, no longer run) replaced by vision-retina-office,
+the office camera's new capture service. orion-rag is left out on purpose (excluded from athena's
 rebuild, running nowhere), so listing it would be a permanent false "down".
 Being expected never triggers a restart: orion-mesh-guardian only acts on
 config/mesh_remediation_roster.yaml, which this change does not touch.
@@ -22,7 +23,7 @@ if str(ROOT) not in sys.path:
 
 from app.settings import Settings  # noqa: E402
 
-ADDED = ("gpu-cluster-power", "vision-edge", "vision-frame-router", "whisper-tts")
+ADDED = ("gpu-cluster-power", "vision-retina-office", "vision-frame-router", "whisper-tts")
 
 
 def _template_value(key: str) -> str:
@@ -43,6 +44,10 @@ def test_always_on_athena_services_are_expected(monkeypatch) -> None:
     for name in ADDED:
         assert name in expected, name
     assert "recall" in expected  # the original entries are still there
+
+
+def test_unused_vision_edge_is_not_expected(monkeypatch) -> None:
+    assert "vision-edge" not in _expected(monkeypatch)
 
 
 def test_rag_is_not_expected(monkeypatch) -> None:

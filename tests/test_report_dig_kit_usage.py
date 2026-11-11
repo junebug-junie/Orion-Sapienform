@@ -54,3 +54,35 @@ def test_report_counts_only_files_inside_the_window(tmp_path):
     assert out["by_kind"]["self_inquiry"]["sessions"] == 1
     assert out["by_kind"]["self_inquiry"]["used_dig"] == 1
     assert out["curiosity_dig_subcommands"] == {"body": 1}
+
+
+def test_hyphenated_subcommands_are_counted_as_themselves():
+    """`body-economy` and `name-organs` are their own commands, not `body` / `name`."""
+    s = mod.summarize_session([
+        _user("Orion harness motor ... WHERE THE RECORDS ARE. ..."),
+        _tool("Bash", command="python -P -m orion.dig body-economy hosts"),
+        _tool("Bash", command="python -P -m orion.dig name-organs"),
+        _tool("Bash", command="python -P -m orion.dig body"),
+    ])
+    assert sorted(s["dig_subcommands"]) == ["body", "body-economy", "name-organs"]
+
+
+def test_dig_run_through_the_batch_tool_counts():
+    """Live 2026-11-03: Orion ran dig via ctx_batch_execute and the report saw nothing."""
+    s = mod.summarize_session([
+        _user("x WHERE THE RECORDS ARE"),
+        _tool("mcp__plugin_context-mode_context-mode__ctx_batch_execute", commands=[
+            {"label": "a", "command": "python -P -m orion.dig body"},
+            {"label": "b", "command": "python -P -m orion.dig inventory now"},
+        ]),
+    ])
+    assert s["used_dig"] is True
+    assert s["dig_subcommands"] == ["body", "inventory"]
+
+
+def test_quoting_dig_in_a_note_is_not_a_dig_call():
+    s = mod.summarize_session([
+        _user("x WHERE THE RECORDS ARE"),
+        _tool("Bash", command='redis-cli GRAPH.QUERY g "SET s.evidence = [\'via orion.dig body\']"'),
+    ])
+    assert s["used_dig"] is False

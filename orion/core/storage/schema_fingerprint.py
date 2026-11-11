@@ -4,7 +4,7 @@ Each idempotent schema file (memory_cards.sql, memory_crystallizations.sql) is
 re-run on every boot. "Idempotent" is not "lock-free": ``ALTER TABLE ... ADD
 COLUMN IF NOT EXISTS`` takes ACCESS EXCLUSIVE and ``CREATE INDEX IF NOT
 EXISTS`` takes SHARE on the table *before* finding there is nothing to do. The
-nightly ``orion-backup-databases`` pg_dump (03:45 UTC, ~55 min) holds ACCESS
+nightly ``orion-backup-databases`` pg_dump (05:00 Mountain since 2026-11-05, was 03:45 UTC; ~55 min) holds ACCESS
 SHARE on every table for its whole transaction, so a hub restart in that
 window hit ``lock_timeout`` on a no-op ALTER -- 3 of the 4 failures 10-12..14
 fell inside it. The failure also skipped the crystallizations file behind it.

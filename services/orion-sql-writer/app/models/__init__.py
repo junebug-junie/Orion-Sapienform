@@ -18,6 +18,7 @@ from .power_intent_settled import PowerIntentSettledSQL
 from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .home_cooling_sample import HomeCoolingSampleSQL
 from .office_env_sample import OfficeEnvSampleSQL
+from .closet_env_sample import ClosetEnvSampleSQL
 from .energy import (
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
@@ -138,6 +139,7 @@ __all__ = [
     "CabinetAmbientSpikeSQL",
     "HomeCoolingSampleSQL",
     "OfficeEnvSampleSQL",
+    "ClosetEnvSampleSQL",
     "EnergyUsageIntervalSQL",
     "EnergyCostAccruedSQL",
     "EnergyRunCostSQL",

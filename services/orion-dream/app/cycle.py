@@ -37,6 +37,7 @@ from app.replay import (
     prior_keys,
     select_replay,
     walkway_candidates,
+    walkway_replay_floor,
     walkway_replay_slots,
 )
 from app.story import story_trigger
@@ -517,12 +518,15 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         # Arcs above an existing item's weight do displace it, within that third.
         arcs = await read_arc_candidates(deps, pressure.since, started)
         arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
-        # Graded walkway predictions: same rule as arcs, capped at a sixth of the replay.
+        # Graded walkway predictions: same rule as arcs, capped at a sixth of the replay,
+        # with one slot reserved for the best one when any exist (replay.walkway_replay_floor:
+        # by weight alone they never won a slot, 0 walkway replay rows through 11-03).
         walkway = await read_walkway_candidates(deps, pressure.since, started)
         walkway_slots = walkway_replay_slots(settings.DREAM_REPLAY_MAX)
         replay = select_replay(
             candidates + arcs + walkway, settings.DREAM_REPLAY_MAX,
             source_caps={"arc": arc_slots, "walkway": walkway_slots},
+            source_floors={"walkway": walkway_replay_floor(settings.DREAM_REPLAY_MAX)},
         )
         # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
         # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream

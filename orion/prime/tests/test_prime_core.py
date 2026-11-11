@@ -24,8 +24,7 @@ REFRACTORY = timedelta(seconds=120)
 
 
 def _snap(**kw) -> PrimeSnapshotV1:
-    base = dict(active_arc_id="arc1", active_arc_label="Bus synaptic prediction error", binding=[],
-                temporal_self_ok=True, body_ok=True)
+    base = dict(binding=[], body_ok=True)
     return PrimeSnapshotV1(**{**base, **kw})
 
 
@@ -40,13 +39,16 @@ def test_first_tick_wakes_and_a_quiet_tick_after_a_thought_does_not():
     assert again.pending_changes == [] and not wants_to_think(again, T0 + timedelta(minutes=5), refractory=REFRACTORY)
 
 
-def test_attention_moving_is_a_change_but_never_evidence_for_a_concern():
+def test_attention_moving_is_not_a_change_and_never_evidence_for_a_concern():
+    """2026-11-03: attention churn woke Prime and its concerns were dropped as "attention has moved"
+    (22 of 38 drops, 10-30..11-03). Attention stays in the frame as background; it wakes nothing."""
     concern = PrimeConcernV1(concern_id="c1", text="the bus keeps surprising me", arc_id="arc2",
                              opened_at=T0, last_evidence_at=T0)
-    state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
-    state = observe(state, _snap(active_arc_id="arc2", active_arc_label="heat"), T0 + timedelta(hours=3))
-    assert state.pending_changes == ["attention moved to 'heat' (arc arc2)"]
+    state = PrimeStateV1(concerns=[concern], seen_binding=[], last_thought_at=T0)
+    state = observe(state, _snap(), T0 + timedelta(hours=3))
+    assert state.pending_changes == []
     assert state.concerns[0].last_evidence_at == T0
+    assert "active_arc_id" not in PrimeSnapshotV1.model_fields
 
 
 def test_an_unknown_read_is_never_a_change():
@@ -202,12 +204,23 @@ def test_a_treated_focus_no_run_took_closes_after_the_focus_ttl():
     assert s.produced is False and "expired" in s.note
 
 
-def test_only_a_change_in_what_binds_is_body_news():
-    state = PrimeStateV1(seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
-    assert observe(state, _snap(binding=[]), T0).pending_changes == []
-    hot = observe(state, _snap(binding=["heat"]), T0)
-    assert hot.pending_changes == ["body: binding constraints now heat"] and hot.seen_binding == ["heat"]
-    assert observe(hot, _snap(binding=None, body_ok=False), T0).pending_changes == hot.pending_changes
+def test_what_binds_is_remembered_but_never_wakes_prime():
+    """Live 11-03: the binding set changed 25x/day; 21 of 26 thoughts it woke did nothing and all 4 drops
+    were "lane X is no longer binding". Shown in the frame, never a change."""
+    state = PrimeStateV1(seen_binding=[], last_thought_at=T0)
+    hot = observe(state, _snap(binding=["heat", "lane:chat"]), T0)
+    assert hot.pending_changes == [] and hot.seen_binding == ["heat", "lane:chat"]
+    assert not wants_to_think(hot, T0 + timedelta(hours=1), refractory=REFRACTORY)
+    assert observe(hot, _snap(binding=None, body_ok=False), T0).seen_binding == ["heat", "lane:chat"]
+
+
+def test_the_wake_note_records_why_and_never_overflows():
+    from orion.prime.thought import WOKE_NOTE_CAP, woke_note
+
+    assert woke_note(["quiet: nothing has woken me for 6 hours"]) == "woke: quiet: nothing has woken me for 6 hours"
+    assert woke_note([]) == "woke: nothing pending"
+    long = woke_note(["x" * 400, "y"])
+    assert len(long) <= len("woke: ") + WOKE_NOTE_CAP and long.endswith("...")
 
 
 def test_a_move_can_cite_the_concern_added_in_the_same_answer():
@@ -227,7 +240,7 @@ def test_only_a_thought_keeping_a_concern_renews_it():
     concern = PrimeConcernV1(concern_id="c1", text="energy", arc_id="arc1", opened_at=T0, last_evidence_at=T0)
     state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
     later = T0 + CONCERN_TTL + timedelta(hours=1)
-    faded = observe(state, _snap(active_arc_id="arc1"), later)
+    faded = observe(state, _snap(), later)
     assert faded.concerns == [] and "not kept" in faded.pending_changes[-1]
     keep = PrimeAnswerV1.model_validate({"concerns": {"keep": ["c1", "ghost"]}})
     applied = apply_answer(state, keep, now=T0 + timedelta(hours=20), arc_ids=[], focus_pending=False)
@@ -379,3 +392,31 @@ def test_the_same_drop_listed_twice_closes_once_and_never_crashes_the_thought():
                                                                  {"concern_id": "c1", "why": "b"}]}})
     applied = apply_answer(state, answer, now=T0, arc_ids=[], focus_pending=False)
     assert applied.state.concerns == [] and len(applied.state.concern_record) == 1 and applied.warnings == []
+
+
+def test_the_move_comes_before_unbounded_drop_reasons_in_the_note():
+    c = [PrimeConcernV1(concern_id=f"c{i}", text=f"t{i}", opened_at=T0, last_evidence_at=T0) for i in range(3)]
+    answer = PrimeAnswerV1.model_validate({
+        "concerns": {"drop": [{"concern_id": f"c{i}", "why": "x" * 120} for i in range(3)]},
+        "move": {"kind": "curiosity_focus", "question": "what heats the cabinet?", "why": "w"}})
+    note = summary_note(apply_answer(PrimeStateV1(concerns=c), answer, now=T0, arc_ids=[], focus_pending=False))
+    assert note.index("move curiosity_focus") < note.index("dropped")
+    assert "move curiosity_focus" in ("woke: " + "q" * 160 + " | " + note)[:500]
+
+
+def test_energy_money_splits_idle_from_activity_and_never_invents_per_organ_cost():
+    import json
+    from pathlib import Path
+    from orion.prime.thought import NO_PER_ORGAN_COST, _energy_lines
+
+    live = json.loads((Path(__file__).resolve().parents[1] / "evals" / "fixtures"
+                       / "energy_report_live_2026-11-04.json").read_text())
+    lines = _energy_lines(FrameInputs(now=T0, energy=live))
+    assert lines[0].startswith("- circe: idling costs about $50 a month")
+    assert not any("floor" in l and "$111" in l for l in lines)   # never recomputed from money.floor_usd
+    assert lines[-1] == NO_PER_ORGAN_COST
+    gap = _energy_lines(FrameInputs(now=T0, energy_error="URLError: refused"))
+    assert gap == ["(unavailable: URLError: refused)"]
+    assert _energy_lines(FrameInputs(now=T0, energy={"money": {}}))[0] == "(no machine figures in the report)"
+    frame = build_frame(PrimeStateV1(pending_changes=["x"]), FrameInputs(now=T0, energy=live))
+    assert "ENERGY MONEY:" in frame and "attention:juniper" not in frame.split("ENERGY MONEY:")[1].split("\n\n")[0]

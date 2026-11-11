@@ -77,8 +77,47 @@ families:
     deferrable_window_s: 1800
     lanes: [chat]
     placement: one_of
+  durable.pr_field_note:
+    # 2026-11-04, PR field notes Patch 2 (docs/superpowers/specs/2026-11-04-pr-field-notes-design.md):
+    # one durable run per merged PR in which Orion writes its field note (act make:durable.pr_field_note,
+    # services/orion-durable-runs/app/run_acts.py). Tier 1 and the 24 h window are JUNIPER'S DECISION 1
+    # ("yes to all 4", 2026-11-04): critical upkeep, she accepts 1-2 h/day of reserved agent-lane time.
+    # Past the window a note is overdue, not dropped (the poller submits a later run inside its 72 h
+    # lookback). Bids are shadow (not a binding family in app/run_bids.py). No receptors.
+    tier: 1
+    deferrable_window_s: 86400
+    lanes: [agent, agent-gpu2]
+    placement: one_of
+  self_regulate.shed:
+    # 2026-11-05, ladder retirement PR 5 (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-
+    # rungs.md "PR 5"): Orion's cooling world act. "The cabinet is warming" (elevated or hot AND rising
+    # >= 0.5 C in 15 min) posts an EVENT want (event_ref cabinet_reading:<node>:<UTC second>, salience = the
+    # 15-minute rise as a strict-below percentile of the cabinet's own warming minutes of the last 30 days)
+    # from services/orion-durable-runs/app/cooling_act.py, only when orion/autonomy/self_shed.py eligibility
+    # and the pool's mirrored caps pass. Its bids BIND from day one (Juniper, 2026-11-05): funded
+    # -> the 0.5 treated/control draw and the shed RPC; deferred -> bid again while the event lasts; no
+    # answer -> no shed (the pool's reflex is the gate that remains). TIER 1 IS A PROPOSAL: Juniper signs off
+    # in PR review. 900: one shed TTL and the 15-minute rise window; past it the warm moment is a new event.
+    # No lanes: a shed holds no GPU slot (it withholds new background grants). No act-ledger actor yet (the
+    # act opens no grammar act), so hunger counts from the want's own opened_at. No receptors: Prime sends no
+    # regulate signal to this family, and a slow charge on the body's own cooling is not wanted without
+    # evidence; declare one when there is a reason.
+    tier: 1
+    deferrable_window_s: 900
+    lanes: []
 
   # --- Tier 2: discretionary, the open market. ---
+  curiosity.replica:
+    # Orion Prime 2C' (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 8): one short
+    # plan per replica-arm investigate run, plus at most 3 answers to Prime a day. Tier 2 (Juniper
+    # 2026-11-04): when it is unfunded the rule order runs and curiosity loses nothing. 90 s: the kickoff
+    # will not wait longer for a plan. Lane chat: the warm lane Prime already uses (route prime). No
+    # receptors: a planner that thinks under 2 times a day has nothing for a charge to bind on. Declared
+    # in patch 2 (contracts); the instance that bids with it is services/orion-mind/app/replica_loop.py (patch 3).
+    tier: 2
+    deferrable_window_s: 90
+    lanes: [chat]
+    placement: one_of
   durable.curiosity_investigate:
     tier: 2
     deferrable_window_s: 21600
@@ -89,9 +128,28 @@ families:
     # 2026-10-30 curiosity's only holds were exactly those ("no hunger yet") with lane prices ~0, so on
     # curiosity a credit could change nothing. Declare quicken when an organ has real price deferrals.
     receptors: [slow]
+  durable.reminiscence:
+    # 2026-11-07, daily reminiscence Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md
+    # section 6): one durable run a Denver day in which Orion writes five hops about one past week and reads
+    # them once together (act make:durable.reminiscence, services/orion-durable-runs/app/run_acts.py). TIER 2
+    # IS THE DESIGN'S DEFAULT (open question 3): discretionary, not critical upkeep like field notes; Juniper
+    # may change it in PR review. Agent lanes only, like durable.self_inquiry: six long tool-using turns that
+    # only the agent models run. Those lanes are contended by day (durable.self_inquiry lost 7/7 bids to "no
+    # room" on agent/agent-gpu2 on 11-05), so the run is overnight: 21600 s is the 03:00-09:00 Denver window
+    # its deadline closes (REMINISCENCE_HOUR_LOCAL / REMINISCENCE_END_HOUR_LOCAL); a week it misses is picked
+    # again the next day, nothing is lost. The run asks for llm.route.agent with agent preferred; the pool may
+    # place it on agent-gpu2 (field-note acts land there too), so both lanes are listed. Bids are shadow (not
+    # a binding family in app/run_bids.py). No receptors: a once-a-day act has nothing for a charge to bind on.
+    tier: 2
+    deferrable_window_s: 21600
+    lanes: [agent, agent-gpu2]
+    placement: one_of
   durable.self_inquiry:
     tier: 2
     deferrable_window_s: 21600
+    # agent lanes only, on purpose: a self-inquiry is a long multi-step tool-using turn, which only the
+    # agent models run. metacog (gpu3, shared with fast) serves small single calls; bidding there would
+    # move the contention, not remove it (Orion's review of #3152, 2026-11-06).
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
   durable.self_sense_eval:
@@ -107,9 +165,17 @@ families:
   hub.world_pulse_read:
     tier: 2
     deferrable_window_s: 10800
-    # Reading runs on the interactive chat rails; its acts record no pool lease (0 of 90 costed
-    # closes carry gpu_slot_s_by_lane). Non-GPU as far as the ledger can see.
-    lanes: []
+    # Reading runs its model calls in durable-run turns on the agent lanes. Measured 2026-11-10 over
+    # 30 days of gpu_pool_events: 1,117 reads, 335 slot-hours over every turn they ran (agent-gpu2
+    # 190, agent 110, chat 30, metacog 4, fast 1; median 692 slot-s a read, p90 2,521). Until
+    # attention patch 3a the act ledger joined leases on the act's correlation_id (the seed's
+    # request_id), which no lease carries, so every read looked free. The fill now sums the read's
+    # turns (orion/grammar/act_cost_ids.py). Chat (9%) is not declared: the spec bids on the agent
+    # lanes, where reading's durable holds wait. Known: one_of charges the act's WHOLE lane time
+    # (chat, metacog and fast included, ~11%) against the agent lanes.
+    # Spec: docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md section 2.
+    lanes: [agent, agent-gpu2]
+    placement: one_of
   thought.painting:
     tier: 2
     deferrable_window_s: 21600
@@ -138,12 +204,39 @@ families:
     tier: 2
     deferrable_window_s: 3600
     lanes: []
+  vision.ask:
+    # 2026-11-04, attention as the want competition patch 2 (docs/superpowers/specs/2026-11-04-attention-as-
+    # want-competition-design.md): an open camera ask (orion_ask: vision_individual, vision_person_confirm,
+    # vision_same_individual) posts an EVENT want (event_ref orion_ask:<ask_id>, salience = how many times the
+    # camera had seen that individual, as a percentile of the last 30 days of camera asks). Producer:
+    # services/orion-sql-writer/app/ask_event_wants.py. Shadow: no caller obeys it; Prime reads the funded ones as
+    # concerns (PRIME_CONCERNS_FROM_EVENT_WANTS). TIER 2 IS A PROPOSAL: Juniper signs off in PR review.
+    # No act-ledger actor yet (asks open no grammar act), so hunger counts from the want's own opened_at.
+    # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost.
+    # 86400: asks are opened in a daily batch; the want's own window ends when the ask expires.
+    tier: 2
+    deferrable_window_s: 86400
+    lanes: []
+  perception.office:
+    # 2026-11-05, office camera design step C (docs/superpowers/specs/2026-11-05-office-camera-attention-and-
+    # reach-out-design.md): an office visit with a story (vision_office_session, >= 4 timeline entries over
+    # >= 3 minutes) posts an EVENT want (event_ref office_session:<session_id>, verb look). Salience = how much
+    # of the visit's activity is new against the office visits of the last 30 days, as a percentile of those
+    # visits (source_salience; nothing is posted under 20 past visits). Producer:
+    # services/orion-hub/scripts/office_reach_out.py. Shadow: no caller obeys it; Prime reads the funded ones
+    # as concerns. The Hub chat reach-out for the visit does NOT wait for funding (Juniper, 2026-11-05).
+    # TIER 2 IS A PROPOSAL: Juniper signs off in PR review. No act-ledger actor (the want opens no act).
+    # 7200: a visit is minutes to an hour; past two hours "what are you up to" is stale.
+    tier: 2
+    deferrable_window_s: 7200
+    lanes: []
   aitown.session:
     # 2026-10-30 (Juniper): an AI Town session Orion chooses (orion-embodiment session controller,
     # act play:aitown.session). New family, tier 2 like the other leisure wants; Juniper signs off on
     # the tier in PR review. The town's NPC dialogue runs on quick_background (pool class fast,
     # circe gpu3) by route, so the calls span `fast` and nothing is placed. Hard cap 2 h per local
-    # day is the controller's, independent of bids.
+    # day is the controller's, independent of bids. Since 2026-11-05 (ladder retirement PR 3) the bid
+    # is placed by embodiment's own timer (app/town_self_start.py) before the caps, not after a dispatch.
     tier: 2
     deferrable_window_s: 7200
     lanes: [fast]
@@ -187,6 +280,9 @@ families:
     tier: 1
     deferrable_window_s: 21600
     # verbs: skills.runtime.builder_prune.v1, skills.runtime.docker_prune_stopped_containers.v1, skills.runtime.image_prune.v1
+    # The name is historical. Since 2026-11-06 (ladder retirement PR 4) dispatch no longer sends these:
+    # orion-hardware-watch's disk rule asks for image_prune; the other two are hand-run. Nothing bids
+    # as this family (0 rows before and after).
     lanes: []
   memory.consolidation:
     tier: 1

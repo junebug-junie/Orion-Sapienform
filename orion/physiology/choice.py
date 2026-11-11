@@ -16,7 +16,9 @@ What is charged in C1, and what is not (said in every decision's warnings, never
   capacity (slots x window). A swap seat unloaded right now (0 slots: diffusion while gpu2 serves
   agent-gpu2) is priced against one nominal slot and warned ``swap_seat_unloaded``: the pool would
   load it, and the eviction cost is placement's (Patch E), not priced here.
-* ``attention:juniper``: messages (``juniper_msgs``) over the daily cap.
+* ``attention:juniper``: messages (``juniper_msgs``) over the daily cap. Under pacing (2026-11-10)
+  the posted price is the per-message threshold x the cap, so the charge is that threshold per
+  message, and a price deferral's ``retry_after_sec`` is when the day's allowance relieves it.
 * ``heat``, ``energy``, ``claude``: per-act heat, watt-hours and Claude limit events are NOT
   measured yet (``wh_by_host``/``claude_limit_events`` are null on every act), so they are listed
   as ``unpriced:<constraint>`` instead of charged at 0. The spinal heat reflex still applies.
@@ -64,6 +66,11 @@ include Prime's part; ``cost_frac`` and ``prices_seen`` do not (it is not a post
 The caller passes only a signal in force for the want's family (the market process checks the family's
 receptors, the arm and the flag); ``decide`` itself applies whatever it is handed.
 
+The organ's refusal (curiosity replica patch 4, ``prime_charge.PrimeChargeRefusalV1``). ``decide(...,
+prime=sig, prime_refusal=r)`` with ``r`` refusing exactly ``sig``: the charge is NOT applied (0, so the
+decision is the one without the signal) and ``why`` says "Prime's slow charge refused by curiosity.replica:
+<reason>" with the amount it would have been. A refusal of another signal is ignored.
+
 Pure apart from the ``ReservationBook`` it is handed (in-memory; durable-runs owns one).
 """
 
@@ -82,10 +89,13 @@ from orion.physiology.appetite import (
     hunger,
     lane_hunger_seed,
     rank_value,
+    want_intensity,
 )
 from orion.physiology.families import FamiliesConfig, FamilyConfig
-from orion.physiology.prime_charge import PrimeRegulationV1
+from orion.physiology.prime_charge import PrimeChargeRefusalV1, PrimeRegulationV1
 from orion.physiology.prime_charge import amount as prime_amount
+from orion.physiology.prime_charge import refusal_for as prime_refusal_for
+from orion.physiology.prime_charge import refused_clause as prime_refused_clause
 from orion.physiology.prime_charge import why_clause as prime_why_clause
 from orion.physiology.weights import FamilyWeight
 from orion.schemas.physiology import (
@@ -284,14 +294,18 @@ def tier1_reserved_share(acts: Sequence[ActRecord], families: FamiliesConfig, la
 
 def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[Any],
                   state: Optional[PhysiologyStateV1], now: datetime, *, lane_window_sec: float = 3600.0,
-                  weights: Optional[Mapping[str, FamilyWeight]] = None) -> MarketContext:
+                  weights: Optional[Mapping[str, FamilyWeight]] = None,
+                  event_history: Optional[Mapping[str, Sequence[float]]] = None) -> MarketContext:
     """Everything a bid reads besides the want, the prices and the book: per-family appetite,
     today's weights and Tier 1's reserved share per lane. (The floor's weekly funded shares live on
-    the ReservationBook: they come from want_ledger, not act history.)"""
+    the ReservationBook: they come from want_ledger, not act history.) ``event_history``: family ->
+    the intensities of its past event wants (want_ledger), an event want's rank reference."""
     from orion.physiology.appetite import build_family_appetite
     from orion.physiology.weights import weights_now
 
-    app = {f: build_family_appetite(c, acts, now) for f, c in families.families.items() if c.bids}
+    ev = event_history or {}
+    app = {f: build_family_appetite(c, acts, now, event_intensities=ev.get(f, ()))
+           for f, c in families.families.items() if c.bids}
     w = dict(weights) if weights is not None else weights_now(families, acts, uses, now)
     t1: dict[str, float] = {}
     t1_use: dict[str, float] = {}
@@ -344,9 +358,11 @@ def unavailable(want: WantV1, now: datetime, *, why: str, state: Optional[Physio
 
 def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
            now: datetime, *, reserve_at_open: bool = False,
-           prime: Optional[PrimeRegulationV1] = None) -> WantDecisionV1:
+           prime: Optional[PrimeRegulationV1] = None,
+           prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
     """One shadow bid. Never raises on market data: every unknown is a named deferral or warning.
-    ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring)."""
+    ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring).
+    ``prime_refusal``: the organ refused ``prime``; the charge is then not applied, and ``why`` says so."""
     cfg: Optional[FamilyConfig] = ctx.families.get(want.family)
     if cfg is None:
         return _decision(want, now, tier=want.tier, outcome="deferred", reason="unknown_family",
@@ -382,8 +398,13 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     lane_details = {k[len(LANE_PREFIX):]: r.detail for k, r in readings.items() if k.startswith(LANE_PREFIX)}
     seed, seed_lane = lane_hunger_seed(lane_details, lanes)
     h = hunger(app, now, opened_at=want.opened_at, seed_sec=seed, seed_lane=seed_lane)
-    inten = want.intensity if want.intensity is not None else h.intensity
-    rank, vbasis, _out = rank_value(app, inten, want.outcome_value)
+    if want.intensity is not None:
+        inten, ibasis = want.intensity, "producer"
+        if want.salience is not None:
+            warnings.append("salience_ignored:producer_intensity")
+    else:
+        inten, ibasis = want_intensity(h.intensity, want.salience)
+    rank, vbasis, _out = rank_value(app, inten, want.outcome_value, event=want.salience is not None)
     if want.value_rank is not None:
         warnings.append("value_rank_ignored:market_fills_it")
     fw = ctx.weights.get(want.family)
@@ -446,6 +467,25 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     base: dict[str, tuple[float, float, Optional[float]]] = {}
     jmsgs = cost.scalars.get("juniper_msgs")
     jr = readings.get(ATTENTION_JUNIPER)
+
+    def juniper_sent_now() -> float:
+        """Messages today as the price must see them: the body's count plus funded messages not yet
+        in it (reservations; a sent message's reservation is kept until it lapses, so the count
+        covers the body tick's lag). Review finding (2026-11-10): two wants in one tick otherwise
+        both buy at the same low price."""
+        level = float(jr.level) if jr is not None and jr.level is not None else 0.0
+        return level + book.total(ATTENTION_JUNIPER, now)
+
+    def pacing_posted(posted: float) -> float:
+        """The attention:juniper price in posted units, re-read at ``juniper_sent_now`` under pacing."""
+        if jr is None or jr.detail.get("pacing_mode") != "on" or not jr.budget:
+            return posted
+        from orion.physiology.attention_pacing import message_price
+
+        allow = float(jr.detail.get("pacing_allowance") or 0.0)
+        if allow <= 0:
+            return posted
+        return max(posted, message_price(juniper_sent_now() / allow) * float(jr.budget))
     if jmsgs and jr is not None and jr.budget:
         base[ATTENTION_JUNIPER] = (jmsgs / jr.budget, jmsgs, jr.budget)
     lane_warn: list[str] = []
@@ -464,6 +504,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
             p = prices_seen.get(k)
             if p is None:
                 continue
+            if k == ATTENTION_JUNIPER:
+                p = pacing_posted(p)
             if tier == 1 and k.startswith(LANE_PREFIX):
                 role = k[len(LANE_PREFIX):]
                 share = ctx.tier1_share.get(role, 0.0)
@@ -554,7 +596,12 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     charge, parts = charge_of(items)
     lane_charge = charge
     prime_part = 0.0
-    if prime is not None:
+    refused = prime_refusal_for(prime, prime_refusal)
+    refused_would_be = 0.0
+    if prime is not None and refused is not None:
+        # Refused by the organ: not applied (no part, no charge); only named in ``why``.
+        refused_would_be = prime_amount(prime, weight, value_rank=rank)
+    elif prime is not None:
         prime_part = prime_amount(prime, weight, value_rank=rank)
         parts[f"prime:{prime.direction}"] = prime_part
         charge += prime_part
@@ -565,9 +612,13 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                   charge=round(charge, 6), net=round(net, 6), lane=chosen, state_tick_id=state.tick_id,
                   state_age_sec=round(age, 1))
     hunger_s = f"hunger {h.unfunded_sec or 0:.0f} s ({h.basis}, tau {app.tau_sec:.0f} s {app.tau_basis})"
+    if ibasis == "salience":
+        hunger_s = f"event salience {inten:.2f} over {hunger_s}"
     head = (f"{want.family}: weight {weight:.2f} ({wbasis}) x rank {rank:.2f} ({vbasis}; intensity {inten:.2f}, "
             f"{hunger_s}) - charge {charge:.3f} = net {net:+.3f}")
-    if prime is not None:
+    if prime is not None and refused is not None:
+        head += "; " + prime_refused_clause(prime, refused, would_be=refused_would_be)
+    elif prime is not None:
         head += "; " + prime_why_clause(prime, value=value, lane_charge=lane_charge, prime=prime_part, net=net)
 
     over = capacity_overflow(items)
@@ -596,9 +647,11 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     # (want_ledger + this process's own), counted only once the ledger was read...
     floor_share = book.funded_share(want.family, tier, now) if book.funded_seeded else None
     # ...and only for a want with some hunger: the floor guarantees a share to families that want,
-    # it does not fund a family whose drive just discharged (intensity 0). Each floor fund raises
-    # the family's share, so the quota limits itself (no per-window rate limit).
-    under_floor = (tier == FLOOR_TIER and book.funded_seeded and inten > 0
+    # it does not fund a family whose drive just discharged (intensity 0). An event's salience is
+    # not hunger: an event on a family that just acted competes on its net, it does not open the
+    # floor. Each floor fund raises the family's share, so the quota limits itself.
+    drive = inten if ibasis == "producer" else h.intensity
+    under_floor = (tier == FLOOR_TIER and book.funded_seeded and drive > 0
                    and (floor_share is None or floor_share < EXPLORATION_FLOOR))
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"
@@ -638,9 +691,10 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     if lane_charge <= 0.0 and prime_part <= 0.0:
         # Nothing to pay and nothing wanted: the family just acted (hunger ~0), so its value is 0.
         book.note_deferred(now, want.want_id, chosen, net)
+        sated_why = ("nothing charged, but the event is no bigger than this family's usual events"
+                     if vbasis.startswith("event:") else "nothing charged, but no hunger to fund (the family's last act just closed)")
         return _decision(want, now, tier=tier, outcome="deferred", reason="sated", binding_constraint=None,
-                         retry_after_sec=None, warnings=warnings, **common,
-                         why=f"{head}; nothing charged, but no hunger to fund (the family's last act just closed)")
+                         retry_after_sec=None, warnings=warnings, **common, why=f"{head}; {sated_why}")
     # Deferred on price: the constraint with the largest price x cost binds.
     k = max(parts, key=lambda x: parts[x]) if parts else None
     retry = None
@@ -653,7 +707,17 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
         # Only a slack price falls. Its guaranteed decay is the slack floor (ceiling / horizon), so
         # this is an upper bound on the wait. binding / exogenous_bind / stuck prices do not fall.
         rate = p.ceiling / p.horizon_sec if p.horizon_sec else None
-        if rate and p.bind_state == "slack":
+        if k == ATTENTION_JUNIPER and r.detail.get("pacing_mode") == "on":
+            # The pacing price (orion/physiology/attention_pacing.py) does not decay: it falls as the
+            # day's allowance grows. Relief = when the allowance makes this want's value beat it.
+            from orion.physiology.attention_pacing import relief_sec
+
+            msgs = items[k][1] or 1.0
+            retry = relief_sec(juniper_sent_now(), (value - rest) / msgs,
+                               allowance_now=float(r.detail.get("pacing_allowance") or 0.0),
+                               rate_per_hour=float(r.detail.get("pacing_rate_per_hour") or 0.0),
+                               budget=int(r.detail.get("pacing_pace_budget") or 0) or None)
+        elif rate and p.bind_state == "slack":
             retry = max(0.0, (p.value - needed) / rate)
     book.note_deferred(now, want.want_id, chosen, net)
     return _decision(want, now, tier=tier, outcome="deferred", reason="price", binding_constraint=k,

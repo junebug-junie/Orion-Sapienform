@@ -1,8 +1,9 @@
 """orion-embodiment's SHADOW bid into the body economy: the ``aitown.session`` want (2026-10-30).
 
 Same contract as services/orion-hub/scripts/physiology_shadow.py (Patch C3b): the bid is placed in
-the background when an AI Town session start is asked for, the controller's OWN gate decides, and
-one line logs both. Nothing here returns a value the controller reads, and every failure is
+the background on each attempt of embodiment's own session timer (app/town_self_start.py, since
+2026-11-05; before that when dispatch's start RPC arrived), BEFORE the controller's OWN gate decides,
+and one line logs both. Nothing here returns a value the controller reads, and every failure is
 swallowed. The market is orion-durable-runs ``POST /physiology/bid`` via
 ``orion.physiology.client``. Patch D (after ~2026-11-03) makes the decision binding.
 

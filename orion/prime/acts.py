@@ -3,10 +3,14 @@
 Three acts, all ``actor = "prime"`` (the body-economy family ``prime``, so Prime's own history
 prices its next bid):
 
-* **thought** -- verb ``infer``. Opens when a funded thought starts, closes when it ends.
-  ``artifact_produced`` = the model returned an answer that parsed (a preempted, shed, timed-out
-  or unparseable thought is 0). Horizon: the LLM timeout plus a margin, because the runtime closes
-  the act itself in the same coroutine.
+* **thought** -- verb ``infer``. Published once the model call came back from the model (stamped
+  with the time the try started), closed at once. ``artifact_produced`` = the model returned an
+  answer that parsed (a preempted, timed-out or unparseable thought is 0). A try that never reached
+  the model (no pool seat, no gateway reply, an upstream 5xx) opens no act at all (2026-11-03): it is
+  not a thought, so it is neither graded 0 nor resets the ``prime`` family's hunger. A pool recall
+  (``gpu_pool_recalled``) counts as no seat even if generation had started: that GPU time is spent with
+  no act recorded (accepted: the pool took the seat back, Prime produced nothing). Horizon: the
+  seat wait plus the LLM timeout plus a margin.
 * **nomination** -- verb ``ask`` (a call to another organ, design section 5). One question for
   curiosity's next regular investigate run. ``test_before = "holdback:<arm>"`` records the draw:
   ``treated`` queues it in Hub's focus slot (orion/curiosity/focus.py); ``control`` is the narrator
@@ -49,7 +53,13 @@ How a nomination closes (both arms on the same rule, so the arms are comparable)
   ``cancelled`` are 0. Measured 2026-10-30 over 30 days of investigate runs (n=195): 89 wrote
   something, 83 wrote nothing, 19 died -- not saturated, so the two arms can differ;
 * a treated question Hub refused to queue closes 0 at once; one no run took before the focus TTL
-  closes 0.
+  closes 0;
+* a treated question curiosity's own planner REFUSED (curiosity replica patch 4,
+  docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9) closes 0 with the note
+  ``refused by curiosity.replica: <reason>``, read from the replica's published replies view
+  (``organ_refusal``). It stays in the treated arm (intention to treat): Prime's comparison then measures
+  Prime's effect including the organ's right to say no. A held-back refusal is never in the view, so that
+  question is shown to its run and graded as usual.
 """
 
 from __future__ import annotations
@@ -71,6 +81,7 @@ from orion.curiosity.run_story import (
 from orion.grammar.acts import build_act
 from orion.physiology import prime_charge as pc
 from orion.prime.state import Arm, PrimeRegulationOpenV1, PrimeStateV1, close_concern, note_change
+from orion.schemas.curiosity_replica import REPLICA_ACTOR, CuriosityReplicaRepliesViewV1, CuriosityReplicaReplyV1
 from orion.schemas.grammar import ActV1
 
 ACTOR = "prime"
@@ -103,8 +114,9 @@ CONCERN_BASIS = (
 )
 THOUGHT_MARGIN_SEC = 120.0
 THOUGHT_BASIS = (
-    "artifact_produced = the model returned a Prime answer that parsed; horizon = the LLM call timeout "
-    "+ 120s, the runtime closes the act in the same coroutine"
+    "artifact_produced = the model returned a Prime answer that parsed; horizon = the pool seat wait + the "
+    "LLM call timeout + 120s, the runtime closes the act in the same coroutine; a try that never reached "
+    "the model opens no act"
 )
 
 REGULATE_COMPONENT = "prime.regulate"
@@ -289,7 +301,10 @@ GONE_READS_TO_SETTLE = 2
 
 def treated_focus_gone(focus_id: str, curiosity: Optional[dict[str, Any]]) -> Optional[bool]:
     """True when Hub's pending slot does not hold this focus AND no listed run took it: replaced by a
-    chat focus, cleared by Juniper, expired, or never written (an RPC with no answer). None = unknown."""
+    chat focus, cleared by Juniper, refused by the organ (curiosity.replica, orion/curiosity/focus.py
+    refuse_focus), expired, or never written (an RPC with no answer). None = unknown. A refusal's reason
+    is not in Hub's runs/schedule read: the runtime checks the replica's replies view first
+    (``organ_refusal``), so a refused question closes with the organ's reason, not as "gone"."""
     if not isinstance(curiosity, dict) or not isinstance(curiosity.get("runs"), list):
         return None
     pending = ((curiosity.get("schedule") or {}).get("pending_focus") or {})
@@ -298,6 +313,22 @@ def treated_focus_gone(focus_id: str, curiosity: Optional[dict[str, Any]]) -> Op
     if ((pending.get("focus") or {}).get("focus_id")) == focus_id:
         return False
     return not any((r.get("focus") or {}).get("focus_id") == focus_id for r in curiosity["runs"])
+
+
+def organ_replies(prime_act_id: str, view: Optional[CuriosityReplicaRepliesViewV1]) -> list[CuriosityReplicaReplyV1]:
+    """The organ's delivered answers to one of Prime's acts (challenges and applied refusals), oldest first."""
+    if view is None:
+        return []
+    return sorted((r for r in view.replies if r.prime_act_id == prime_act_id), key=lambda r: r.at)
+
+
+def organ_refusal(prime_act_id: str, view: Optional[CuriosityReplicaRepliesViewV1]) -> Optional[CuriosityReplicaReplyV1]:
+    return next((r for r in organ_replies(prime_act_id, view) if r.stance == "refuse"), None)
+
+
+def refusal_words(reply: CuriosityReplicaReplyV1) -> str:
+    """The settle note's words for a refusal (the design's exact form)."""
+    return f"refused by {REPLICA_ACTOR}: {reply.reason}"
 
 
 def settle_nomination(

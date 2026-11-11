@@ -82,7 +82,9 @@ def act_faculty(actor: str, verb: str, object_ref: str) -> str:
     return base
 
 
-def _act_outcome(row: Row) -> Optional[str]:
+def act_outcome(row: Row) -> Optional[str]:
+    """One grammar_acts close -> upheld | refuted | failed_to_execute | no_change. Also read by the body
+    economy's weights (source (d), ``orion/physiology/weights.py``), so both organs grade an act alike."""
     source = (row.get("outcome_source") or "").strip()
     note = (row.get("outcome_note") or "").strip()
     value = _float(row.get("outcome_value"))
@@ -100,7 +102,7 @@ def grammar_act(row: Row) -> Optional[SettledBetV1]:
     opened = _aware(row.get("opened_at"))
     if closed is None or opened is None:
         return None
-    outcome = _act_outcome(row)
+    outcome = act_outcome(row)
     source = (row.get("outcome_source") or "").strip()
     # An expired act is a real 0 (the deadline passed with no artifact): the world answered.
     settled_by = "juniper" if source == "resolver" else "world"
@@ -131,9 +133,17 @@ def turn_self_bet(row: Row) -> Optional[SettledBetV1]:
         return None
     status = row.get("status")
     if status == "void":
+        # A turn that errored voids all four guesses at once: the turn failed, not the guess. It is
+        # counted once, under ``turn.run`` (``turn_run``), never as a run of failures on each guess
+        # faculty -- live 2026-11-03 that read turn.self.steps/reply_length as "broken" after stance
+        # stopped stating them (relative bets, #3042) and only the failed turns were left.
+        if (row.get("void_reason") or "") == "failed_to_execute":
+            return None
         outcome = _TURN_VOID.get(row.get("void_reason") or "")
         if outcome is None:
-            return None  # ungradeable_no_stated / bad record: no bet was made
+            # ungradeable_no_stated / bad record: no bet was made. interrupted: the turn was
+            # stopped from outside, so the guess never met its turn.
+            return None
     else:
         outcome = _TURN_STATUS.get(status or "")
         if outcome is None:
@@ -150,6 +160,28 @@ def turn_self_bet(row: Row) -> Optional[SettledBetV1]:
         outcome=outcome,
         settled_by="world",
         evidence_ref=f"prediction_turn_self_bet:{row['bet_id']}",
+    )
+
+
+def turn_run(row: Row) -> Optional[SettledBetV1]:
+    """One row per unified turn (``collect`` groups ``prediction_turn_self_bet`` by correlation_id):
+    did the turn run? ``failed`` = every guess on it was voided ``failed_to_execute``. A turn stopped
+    from outside (void ``interrupted``) never reaches here: ``collect`` drops its rows."""
+    settled = _aware(row.get("settled_at"))
+    corr = row.get("correlation_id")
+    if settled is None or not corr:
+        return None
+    return SettledBetV1(
+        bet_id=f"prediction_turn_self_bet:turn:{corr}",
+        faculty="turn.run",
+        source="prediction_turn_run",  # the SOURCES name: a read error holds this faculty's status
+        made_at=_aware(row["placed_at"]),
+        settled_at=settled,
+        claim_kind="success",
+        stated=None,
+        outcome="failed_to_execute" if row.get("failed") else "upheld",
+        settled_by="world",
+        evidence_ref=f"prediction_turn_self_bet:correlation_id={corr}",
     )
 
 

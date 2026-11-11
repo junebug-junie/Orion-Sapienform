@@ -48,6 +48,8 @@ def test_workflow_strings_match_the_runtime():
     ("curiosity.investigate", "self_inquiry", "durable.self_inquiry", "ask"),
     ("self_sense_eval", "self_sense_eval", "durable.self_sense_eval", "sense"),
     ("journal.compose", None, "durable.journal_compose", "make"),
+    ("pr.field_note", None, "durable.pr_field_note", "make"),   # PR field notes Patch 2
+    ("reminiscence.episode", None, "durable.reminiscence", "make"),   # daily reminiscence Patch 2
 ])
 def test_want_families_map_to_their_fixed_verb(workflow, line, actor, verb):
     family = run_act_family(_state(workflow, line))

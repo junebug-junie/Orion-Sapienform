@@ -30,6 +30,7 @@ from orion.harness.fcc_motor import (
     run_fcc_turn,
     is_progress_frame,
     summarize_harness_step,
+    text_tool_call,
 )
 from orion.harness.grammar_emit import (
     HarnessGrammarCollector,
@@ -45,7 +46,7 @@ from orion.gpu_pool.placement import (
     placement_from_route_default,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
-from orion.harness.cut_short import TurnFindings, build_cut_short_draft, is_cut_short_code
+from orion.harness.cut_short import TEXT_TOOL_CALL_CODE, TurnFindings, build_cut_short_draft, is_cut_short_code
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
 from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
@@ -55,6 +56,7 @@ from orion.harness.reading_receipts import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
+from orion.harness.stop_reason import turn_stop_reason
 from orion.harness.task_anchor import build_focus_anchor, build_task_anchor, compose_task_anchor
 from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -86,6 +88,9 @@ class HarnessMotorResult:
     # the turn's own findings. The governor keeps the cut-short marker on the
     # final text so finalize/repair cannot present it as a finished answer.
     cut_short_reason: str | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): ``cancel:<reason>`` when a
+    # harness cancel killed it, else the motor's error code, else None.
+    stop_reason: str | None = None
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
     # Wall time for the FCC leg ALONE -- the motor loop, not the turn. This is
@@ -484,6 +489,7 @@ class HarnessRunner:
         last_recorded_step_order = 0  # order of the last non-progress frame in the collector
         draft_text = ""
         exit_code: int | None = None
+        stop_reason: str | None = None
         fcc_served_model: str | None = None
         compliance_verdict = "completed"
         grounding_status = "grounded"
@@ -621,6 +627,44 @@ class HarnessRunner:
                 seen_served_model = _served_model_from_metadata(meta)
                 if seen_served_model:
                     fcc_served_model = seen_served_model
+                text_call = (
+                    None if getattr(request, "reading_only", False) else text_tool_call(draft_text)
+                )
+                if text_call:
+                    # The answer is a tool call that never ran (the motor already resumed once).
+                    # Finalize would "repair" raw call syntax into a summary of work that never
+                    # happened -- live 2026-11-03, 4bbaaf2a. Build the draft from what the turn
+                    # actually recorded, marked cut short, so repair is skipped.
+                    logger.warning(
+                        "harness_text_tool_call_final corr=%s tool=%s steps=%s",
+                        request.correlation_id,
+                        text_call,
+                        step_count,
+                    )
+                    # Treated like the error branch's cut-short path: no clean-final side effects
+                    # (last-tool-fetch hint), and the last step is recorded as failed.
+                    error_path_taken = True
+                    turn_findings.drop_trailing_text_call()
+                    cut_short_draft = build_cut_short_draft(
+                        error_code=TEXT_TOOL_CALL_CODE,
+                        step_count=step_count,
+                        findings=turn_findings,
+                    )
+                    compliance_verdict = "partial"
+                    grounding_status = TEXT_TOOL_CALL_CODE
+                    if last_recorded_step_order > 0:
+                        collector.record_step_failed(
+                            order=last_recorded_step_order,
+                            error_kind=short_error_kind(TEXT_TOOL_CALL_CODE),
+                        )
+                    if cut_short_draft:
+                        draft_text = cut_short_draft
+                        cut_short_reason = TEXT_TOOL_CALL_CODE
+                    else:
+                        # Nothing recorded to stand behind a draft: the motor failed.
+                        draft_text = ""
+                        compliance_verdict = "failed"
+                        motor_failed = True
             elif etype == "error":
                 error_path_taken = True
                 partial = str(event.get("llm_response") or "").strip()
@@ -634,6 +678,10 @@ class HarnessRunner:
                 # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
                 if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
                     exit_code = err_meta["exit_code"]
+                stop_reason = turn_stop_reason(
+                    cancel_reason=err_meta.get("cancel_reason") if isinstance(err_meta, dict) else None,
+                    error_code=error_code,
+                )
                 # Not cut short when the CLI already reported the turn complete
                 # (the process only hung on exit -- `partial` IS the answer), nor
                 # on reading-only machine turns: their consumer needs JSON and
@@ -787,6 +835,7 @@ class HarnessRunner:
                 grammar_receipts=receipts,
                 step_count=step_count,
                 exit_code=exit_code,
+                stop_reason=stop_reason,
                 compliance_verdict=compliance_verdict if compliance_verdict != "completed" else "failed",
                 grounding_status=grounding_status if grounding_status != "grounded" else "empty_draft",
                 grammar_collector=collector,
@@ -850,6 +899,7 @@ class HarnessRunner:
             grammar_receipts=receipts,
             step_count=step_count,
             exit_code=exit_code,
+            stop_reason=stop_reason,
             compliance_verdict=compliance_verdict,
             grounding_status=grounding_status,
             cut_short_reason=cut_short_reason,

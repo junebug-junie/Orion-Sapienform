@@ -37,7 +37,7 @@ protected_paths:
   - {glob: "orion/gpu_pool/shed.py", organ: "budget / spinal (shed reasons)"}
   - {glob: "orion/gpu_pool/scheduler.py", organ: budget}
   - {glob: "orion/gpu_pool/shed_backoff.py", organ: budget}
-  - {glob: "orion/autonomy/allocator.py", organ: choice}
+  # orion/autonomy/allocator.py (choice) retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
   - {glob: "orion/grammar/act_ledger.py", organ: learning}
   - {glob: "config/physiology/**", organ: "contract"}
   # "the bid sites in each producer" (design doc) are added here as Patch D lands each bid().
@@ -48,6 +48,10 @@ protected_paths:
   # (orion/physiology/binding.py), so the checker sees them as readers: listed below as `bidder` (a binding bid
   # site obeys the market's decision; it reads no regulation or price state of its own).
   - {glob: "services/orion-dream/app/physiology_bind.py", organ: "choice (Patch D bid site: the dream cycle binds)"}
+  # 2026-11-05, ladder retirement PR 5: the cooling world act binds here (only funded sheds), listed below as bidder.
+  - {glob: "services/orion-durable-runs/app/cooling_act.py", organ: "choice (binding bid site: the cooling world act)"}
+  # 2026-11-07, Patch D for hub.outreach: every Hub door that composes a message binds here, listed below as bidder.
+  - {glob: "services/orion-hub/scripts/outreach_bind.py", organ: "choice (Patch D bid site: Hub outreach binds)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -69,18 +73,12 @@ readers:
     role: bidder
     reason: defers the reverie visual baseline while arousal reads strained (arousal_strained).
     note: pending Patch D
-  - module: services/orion-proposal-runtime/app/worker.py
+  - module: services/orion-thought/app/painting_self_start.py
     role: bidder
-    reason: visual-baseline deferral on strained arousal; cabinet heat in shed-eligibility.
-    note: pending Patch D
-  - module: orion/world_pulse_read/pull.py
-    role: bidder
-    reason: world_pulse_read pull gate refuses on arousal_strained and on thermal_hot.
-    note: pending Patch D
-  - module: services/orion-hub/scripts/world_pulse_read_pipeline.py
-    role: bidder
-    reason: feeds arousal + thermal_state into the pull gate.
-    note: pending Patch D
+    reason: "the waking painting's only trigger -- runs the visual-baseline schedule, whose arousal reader (R3 reader 4) defers a due painting while arousal reads strained; places a SHADOW hunger bid on thought.painting before the run exists, never obeyed."
+    note: 2026-11-05, ladder retirement PR 2 (moved from orion-proposal-runtime's worker); pending Patch D (painting is fourth in the binding order)
+  # The reading pull's gate (orion/world_pulse_read/pull.py, fed by Hub's world_pulse_read_pipeline.py)
+  # retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
   - module: services/orion-hub/scripts/retro_leisure.py
     role: bidder
     reason: retro leisure refuses on cabinet_hot and arousal_strained.
@@ -115,12 +113,20 @@ readers:
     note: 2026-10-30, already the Patch D shape (registered when the rule moved to orion/physiology/binding.py)
   - module: services/orion-hub/scripts/curiosity_investigation.py
     role: bidder
-    reason: curiosity scheduling refuses on arousal_strained; engaged stretches cooldown.
-    note: pending Patch D
+    reason: curiosity pacing reads arousal -- engaged stretches the investigation cooldown; self-inquiry runs only at idle (engaged or strained holds it).
+    note: 2026-11-07, the investigation line's strained veto is deleted (its durable-runs bid binds since #3010). The self-inquiry idle-only hold is pending Patch D (durable.self_inquiry bids do not bind yet)
   - module: services/orion-hub/scripts/endogenous_outreach.py
     role: bidder
     reason: outreach refuses on arousal_strained.
-    note: pending Patch D
+    note: 2026-11-07, its doors obey their binding bid (scripts/outreach_bind.py). The arousal_strained veto stays until that has run on for 7 days with the acceptance checks green; deleting it is the next PR
+  - module: services/orion-hub/scripts/outreach_bind.py
+    role: bidder
+    reason: Hub outreach's BINDING bid (Patch D) -- the background tick and the reading / office doors obey the market's decision (orion.physiology.binding) before composing; held at most to the end of Juniper's waking day (office visits 5 min).
+    note: 2026-11-07, already the Patch D shape
+  - module: services/orion-hub/scripts/endogenous_outreach_decisions.py
+    role: bidder
+    reason: the Hub daily cap (a veto on optional outreach) counts with the shared exempt lists (orion.physiology.attention_pacing CAP_EXEMPT_SOURCES / CAP_EXEMPT_DOOR_POLICIES) -- constants, not price state; one list for the cap and the attention:juniper line.
+    note: 2026-11-10, one attention budget
   - module: services/orion-hub/scripts/main.py
     role: bidder
     reason: constructs the Hub ArousalReader for the curiosity, outreach and pull vetoes.
@@ -143,8 +149,16 @@ readers:
     note: pending Patch B/D -- Juniper to decide spinal vs priced (it is not the 34 C reflex)
   - module: orion/autonomy/self_shed.py
     role: bidder
-    reason: Orion's self-shed act is eligible only while the cabinet is elevated/hot/unknown.
-    note: pending Patch D (eligibility becomes a price)
+    reason: "Orion's self-shed act is eligible only while the cabinet is elevated/hot/unknown (not critical, which is the reflex's) and the reflex is idle."
+    note: "2026-11-05 its one caller is the cooling act's binding bid (services/orion-durable-runs/app/cooling_act.py); the eligibility is the act's own precondition, the market decides whether to spend on it"
+  - module: orion/autonomy/shed_act.py
+    role: bidder
+    reason: "the cooling act's pure rules -- the event is a warming moment (thermal gate elevated/hot and rising >= 0.5 C in 15 min), salience = the rise's percentile among the cabinet's own warming minutes, and the binding rule (only funded sheds; no answer never does). Vetoes nothing the market funded."
+    note: 2026-11-05, ladder retirement PR 5 (docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md)
+  - module: services/orion-durable-runs/app/cooling_act.py
+    role: bidder
+    reason: "the cooling world act's loop and BINDING bid site (family self_regulate.shed). Reads the cabinet for the self_shed eligibility and the event's salience, posts the event want and obeys the decision -- funded sheds (0.5 treated/control), deferred waits, no answer never sheds."
+    note: 2026-11-05, ladder retirement PR 5; replaces execution dispatch as the act's only trigger
 
   # --- display: reads the state, gates nothing. ---
   - module: services/orion-thought/app/visual_chain_health_monitor.py
@@ -152,8 +166,24 @@ readers:
     reason: diagnostic read that explains a baseline deferral; its own comment says it gates nothing.
   - module: services/orion-thought/app/physiology_shadow.py
     role: display
-    reason: SHADOW bids (painting and dream-hop generate step) logged beside the real gate; never obeyed.
+    reason: SHADOW bids (the painting trigger's hunger bid, and the dream-hop generate step) logged beside the real gate; never obeyed.
     note: Patch C3b; becomes the bid site when Patch D cuts each producer over
+  - module: services/orion-hub/scripts/reading_event_wants.py
+    role: display
+    reason: SHADOW event wants (one per finished read, salience = links made) posted to the market; nothing in Hub obeys the decision.
+    note: attention as the want competition, patch 2; Prime reads the funded ones (orion-mind PRIME_CONCERNS_FROM_EVENT_WANTS)
+  - module: services/orion-hub/scripts/office_reach_out.py
+    role: display
+    reason: SHADOW event wants (one per office visit with a story, salience = activity novelty) posted to the market; nothing in Hub obeys the decision. The visit's chat message does not read it (Juniper 2026-11-05).
+    note: office camera design step C; Prime reads the funded ones (orion-mind PRIME_CONCERNS_FROM_EVENT_WANTS)
+  - module: services/orion-sql-writer/app/ask_event_wants.py
+    role: display
+    reason: SHADOW event wants (one per open camera ask, salience = sightings) posted to the market; nothing in sql-writer obeys the decision.
+    note: attention as the want competition, patch 2
+  - module: services/orion-durable-runs/app/event_wants_menu.py
+    role: display
+    reason: read-only menu of the market's funded event wants from want_ledger (GET /physiology/event-wants); gates nothing.
+    note: attention as the want competition, patch 2; Prime's concern source
   - module: services/orion-hub/scripts/temporal_self_routes.py
     role: display
     reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.
@@ -176,12 +206,24 @@ readers:
     reason: act energy cost (2026-10-29; whole machine 2026-10-30); reads the heat fit and the pinned rest (rest_body.yaml) to price an act's wh_by_host / heat_c_by_host in grammar_acts.cost_json and the hourly attribution rows. Records a cost, gates nothing.
   - module: services/orion-mind/app/prime_loop.py
     role: bidder
-    reason: Orion Prime bids (family prime, Tier 1) for each thought and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. No arousal/thermal veto of its own. Step 3 (2026-10-30) also writes regulate signals (a bounded charge on another family's bids) and reads back the market's record; it vetoes nothing.
+    reason: Orion Prime (family prime, Tier 1); since 2026-11-04 its bid and obey run in the loop library (orion/mindloop/runtime.py, below). No arousal/thermal veto of its own. Step 3 (2026-10-30) also writes regulate signals (a bounded charge on another family's bids) and reads back the market's record; it vetoes nothing.
     note: 2026-10-30, Orion Prime 2A; the first binding bid (already the Patch D shape), so nothing left to cut over
+  - module: orion/mindloop/runtime.py
+    role: bidder
+    reason: the loop library every resident loop in orion-mind runs on (Prime is instance #1). Bids once per thought with the instance's family, tier and lane at its cost ceiling, and OBEYS the decision -- funded thinks, deferred or no answer waits, never fails open. Reads no arousal/thermal/price state itself; it vetoes nothing.
+    note: 2026-11-04, moved out of services/orion-mind/app/prime_loop.py unchanged (curiosity replica design section 10)
+  - module: services/orion-mind/app/replica_loop.py
+    role: display
+    reason: the curiosity replica (family curiosity.replica, Tier 2), loop-library instance #2; its bid and obey are orion/mindloop/runtime.py. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) to SHOW it in its frame (arm hidden), to check a signal stance names a live signal, and (patch 4) to answer it -- an applied refusal writes prime_charge.PrimeChargeRefusalV1 next to the signal, so the market stops applying Prime's charge (it lifts a charge Prime added; it can never add one or veto a want). Its answers are acts of actor curiosity.replica.answer, which is never a want family (no bids, no families.yaml entry), so they stay out of curiosity.replica's history. Gates nothing.
+    note: 2026-11-04, curiosity replica patch 3 (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md)
+  - module: services/orion-hub/scripts/curiosity_replica_plan.py
+    role: display
+    reason: Hub's replica plan consumer. Reads Prime's regulate signal on durable.curiosity_investigate (prime_charge) only to check a plan's signal stance names a live signal (validate_plan). Stances are recorded here; the replica itself delivers answers to Prime (patch 4). Gates no work.
+    note: 2026-11-04, curiosity replica patch 3
   - module: services/orion-embodiment/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (aitown.session, an AI Town session start) logged beside the controller's real gate; never obeyed.
-    note: 2026-10-30; becomes the bid site when Patch D cuts each producer over
+    note: 2026-10-30; placed by embodiment's own timer (app/town_self_start.py) since ladder retirement PR 3 (2026-11-05); becomes the bid site when Patch D cuts each producer over
   - module: services/orion-dream/app/physiology_shadow.py
     role: display
     reason: SHADOW bid (a dream check that would sleep) logged beside the real gate; never obeyed.
@@ -205,16 +247,10 @@ readers:
     role: display
     reason: SHADOW bid (in-process journal compose) logged beside the real gate; never obeyed.
     note: Patch C3b; becomes the bid site when Patch D cuts each producer over
-  - module: services/orion-proposal-runtime/app/store.py
+  - module: orion/autonomy/world_settlement_store.py
     role: display
-    reason: loads cabinet temperature points for the proposal worker.
-  - module: services/orion-feedback-runtime/app/worker.py
-    role: display
-    reason: grades heat outcomes (cabinet_heat_pressure before/after) for world settlement.
-  - module: services/orion-feedback-runtime/app/store.py
-    role: display
-    reason: loads cabinet temperature points for outcome grading.
-  - module: orion/feedback/world_settlement.py
+    reason: settle-time pass (hosted by orion-sql-writer since the feedback rung retired 2026-11-04) -- loads cabinet temperature points and grades heat outcomes (cabinet_heat_pressure before/after) for world settlement.
+  - module: orion/autonomy/world_settlement.py
     role: display
     reason: settles a heat-related act by the cabinet_heat_pressure change.
   - module: orion/hardware_watch/shed_effect.py
@@ -238,12 +274,6 @@ readers:
   - module: services/orion-durable-runs/app/dream_carry_graph.py
     role: display
     reason: treats a child's deferred_thermal outcome as retryable; reacts to the outcome, no heat read.
-  - module: orion/feedback/builder.py
-    role: display
-    reason: maps deferred_thermal to a neutral "deferred" feedback outcome.
-  - module: orion/execution_dispatch/visual_settlement.py
-    role: display
-    reason: settles a deferred_thermal visual run as a real answer, not a failure.
   - module: orion/temporal_self/body.py
     role: display
     reason: counts thermal refusals for Orion's body summary.
@@ -276,6 +306,9 @@ readers:
   - module: scripts/analysis/body_economy_binding_replay.py
     role: display
     reason: "read-only Patch D replay: re-bids each real run of a binding family with the live Choice code and app.run_bids.bind_verdict; reports holds and extra delay. Gates nothing"
+  - module: scripts/analysis/outreach_binding_replay.py
+    role: display
+    reason: "read-only Patch D replay for hub.outreach: re-bids each real outreach compose attempt with the live Choice code and orion.physiology.binding.bind_verdict; reports holds per door. Gates nothing"
 
 sources:
   - module: scripts/analysis/sample_body_economy_bids.py

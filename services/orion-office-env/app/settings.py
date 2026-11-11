@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +22,11 @@ class Settings(BaseSettings):
     OFFICE_PUBLISH_INTERVAL_SEC: float = Field(default=30.0)
     OFFICE_STALE_AFTER_SEC: float = Field(default=10.0)
     OFFICE_SENSOR_ID: str = Field(default="sht40-office")
+    # Which room this container's Nano is in. "office" publishes office.env.sample.v1;
+    # "closet" (the server-closet SCD40 Nano) publishes closet.env.sample.v1.
+    ENV_ROOM: Literal["office", "closet"] = Field(default="office")
+    CLOSET_ENV_SAMPLE_CHANNEL: str = Field(default="orion:closet:env:sample")
+    CLOSET_SENSOR_ID: str = Field(default="scd40-closet")
 
 
 @lru_cache

@@ -94,8 +94,8 @@ class Settings(BaseSettings):
 
     # Fresh-capture resolution (P1's "on-demand capture, bypassing window/
     # council" work -- docs/superpowers/specs/2026-08-12-perception-frontier-
-    # design.md). orion-vision-edge writes every captured frame here
-    # (services/orion-vision-edge's own FRAME_STORAGE_DIR default matches);
+    # design.md). Every athena retina writes its captured frames here
+    # (services/orion-vision-retina's own FRAME_STORAGE_DIR default matches);
     # mounted read-only into this container (see docker-compose.yml). A
     # caller opts in per-request via `request.use_latest_frame: true`
     # instead of supplying `image_path` -- see _resolve_latest_frame_path.

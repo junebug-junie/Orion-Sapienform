@@ -101,13 +101,20 @@ def daily_metacog_act(dedupe_key: str, correlation_id: str, *, horizon: float) -
     )
 
 
+def journal_job_key(dedupe_key: str) -> str:
+    """The journal's job identity on the act ledger (``test_before``): every retry of one scheduled
+    job (a walkway night, a daily window, one trigger's content) reuses its dedupe key. The
+    self-monitor gate reads it to admit same-job retries (orion/self_monitor/gate.py)."""
+    return f"journal:{dedupe_key}"
+
+
 def journal_act(dedupe_key: str, correlation_id: str, *, trigger_kind: str, horizon: float) -> ActV1:
     from orion.grammar.acts import build_act
 
     return build_act(
         actor=JOURNAL_ACTOR, verb="make", key=f"{dedupe_key}|{correlation_id}",
         signal_id="artifact_produced", horizon_sec=horizon, basis=_journal_basis(horizon),
-        object_ref=f"journal_trigger:{trigger_kind}", test_before=f"journal:{dedupe_key}",
+        object_ref=f"journal_trigger:{trigger_kind}", test_before=journal_job_key(dedupe_key),
     )
 
 

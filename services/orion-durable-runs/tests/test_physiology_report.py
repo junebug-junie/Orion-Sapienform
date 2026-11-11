@@ -468,6 +468,8 @@ def test_report_sql_on_postgres():
                 assert failed == [], failed
                 assert rep.limits and rep.money.floor_usd == 193.85 and rep.money.daily_kwh
                 assert [f.family for f in rep.wants.families] == ["durable.self_inquiry"]   # probe left out
+                assert [(d.reason, d.binding_constraint, d.count) for d in rep.wants.families[0].deferred_by] == [
+                    ("capacity_reserved", None, 1)]
                 assert rep.waste.failed_lease_s_by_lane == {"agent": 8505.0}   # 8500 + one 5 s expiry
                 assert [t.reason for t in rep.waste.top] == ["attempt_failed", "heartbeat_lost"]
                 assert rep.queue_wait[0].family == "durable.self_inquiry" and rep.queue_wait[0].p50_s == 60.0
@@ -917,3 +919,45 @@ def test_wants_town_is_skipped_when_another_family_is_asked():
     q = pr.parse_query("24h", "wants", "hub.outreach", None, None)
     rep = _build(full_rows(), q=q, town=_town_reader(_town_rows(), _town_config()))
     assert rep.wants.town is None
+
+
+# --- wants.families[].deferred_by: why bids were deferred (2026-11-06) ----------------------------
+
+
+def test_deferred_by_names_each_reason_largest_first_counted_like_deferred():
+    rows = full_rows()
+    rows[pr.WANTS_DEFERRED_BY_SQL] = [
+        {"h": H0, "family": "hub.outreach", "reason": "capacity_reserved", "binding_constraint": "lane:agent", "n": 20},
+        {"h": H0 + timedelta(hours=1), "family": "hub.outreach", "reason": "capacity_reserved",
+         "binding_constraint": "lane:agent", "n": 4},                       # summed over hours, like `deferred`
+        {"h": H0, "family": "hub.outreach", "reason": "price", "binding_constraint": "heat", "n": 6}]
+    rep = _build(rows)
+    fam = {f.family: f for f in rep.wants.families}
+    assert [(d.reason, d.binding_constraint, d.count) for d in fam["hub.outreach"].deferred_by] == [
+        ("capacity_reserved", "lane:agent", 24), ("price", "heat", 6)]
+    assert fam["actions.journal"].deferred_by == []                         # nothing deferred, nothing listed
+
+
+def test_deferred_by_is_empty_without_rows_and_capped_per_family():
+    out, _ = pr.shape_wants(
+        [{"h": H0, "family": "f", "outcome": "deferred", "n": 40, "tier": 2}], None, {}, None,
+        [{"h": H0, "family": "f", "reason": "price", "binding_constraint": f"c{i}", "n": i + 1} for i in range(10)]
+        + [{"h": H0, "family": "ghost", "reason": "sated", "binding_constraint": None, "n": 3}])
+    fams = {f["family"]: f for f in out["families"]}
+    assert set(fams) == {"f"}                                               # reasons never invent a family
+    by = fams["f"]["deferred_by"]
+    # the cut is folded into one "other" pair, so the counts still add up (55 = 10 + ... + 1)
+    assert len(by) == pr.DEFERRED_BY_MAX and [d["count"] for d in by] == [10, 9, 8, 7, 6, 15]
+    assert by[-1] == {"reason": "other", "binding_constraint": None, "count": 15}
+    out, _ = pr.shape_wants([{"h": H0, "family": "f", "outcome": "deferred", "n": 2, "tier": 2}], None, {})
+    assert out["families"][0]["deferred_by"] == []
+
+
+def test_deferred_by_read_failing_keeps_the_counts_and_says_why():
+    rows = full_rows()
+    rep = _build(rows, fail={"outcome = 'deferred'"})                     # only WANTS_DEFERRED_BY_SQL has this
+    fam = {f.family: f for f in rep.wants.families}
+    assert fam["hub.outreach"].deferred == 30 and fam["hub.outreach"].funded == 1
+    assert fam["hub.outreach"].deferred_by == []
+    assert any("why bids were deferred is unavailable" in r for r in _reasons(rep, "wants"))
+    assert not any(m.section == "wants" and m.reason.startswith("read failed") for m in rep.missing)

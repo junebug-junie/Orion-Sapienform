@@ -51,18 +51,104 @@ Rollout is consumer-first: the schema is `extra="forbid"`, so rebuild
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before deploying
 this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 
+## The curiosity replica: loop-library instance #2 (2026-11-04)
+
+A small planner beside Prime. Design: `docs/superpowers/specs/2026-11-04-curiosity-replica-design.md` (patch 3).
+Code: `app/replica_loop.py` (I/O) and `orion/curiosity/replica/` (pure: candidates, plan check, frame, grading).
+Identity: actor and family `curiosity.replica` (tier 2, lane chat), Redis key `orion:curiosity:replica:state`,
+settings `CURIOSITY_REPLICA_*`, logs `curiosity_replica_*`.
+
+- **Woken by Hub.** On a replica-arm curiosity run Hub publishes a plan request on
+  `orion:curiosity:replica:plan:request`. The listener queues it and wakes the loop.
+- **Bids, then thinks once.** The loop bids `curiosity.replica` every tick until funded or until there is no
+  time left for one model call before Hub's deadline (90 s, 5 s margin). Then it answers `unfunded` or
+  `model_failed`, so Hub records the real reason. One call on route `prime` (the warm chat lane), seat wait cut
+  so the answer lands in time.
+- **Reads (its frame):** the candidates from the request; Hub's last investigate runs and their spend-log scores;
+  the stale ids; Prime's published concerns view (`orion:prime:concerns`, which Prime now writes on every save)
+  and any regulate signal on curiosity (arm hidden); the pending focus; the newest chat-history compactor digest
+  (card summary + journal title, with its age; no raw chat); its own last plans (picks tested, nats moved,
+  fallbacks). A failed read is a named gap. Postgres reads use `CURIOSITY_REPLICA_PG_DSN`, read-only.
+- **Answers** on `orion:curiosity:replica:plan:result:<correlation_id>` with 3-5 picks, checked first with the
+  same `validate_plan` Hub runs. A stance on a PRIME focus or signal is an answer to Prime (below), delivered
+  before the plan result so a refused focus has left the slot before Hub takes it.
+- **Its act** (`infer`) opens when the model is reached. A plan that cannot be used closes 0 at once. A used plan
+  stays open and closes on its run's score: 1 when the run moved at least one belief (`realized_nats > 0` on a
+  completed turn), the number the three-arm test scores.
+- **Never reads Prime's state** (a test checks the module has no reference to it).
+- Off: `CURIOSITY_REPLICA_ENABLED=false` (Hub's replica-arm runs then time out to the rule order).
+- Eval: `orion/curiosity/replica/evals/run_replica_frame_eval.py` (live inputs captured 2026-11-04).
+
+### The replica answers Prime (patch 4, design section 9)
+
+- **What it answers:** each of Prime's acts on curiosity, once: a focus question Prime queued (never Juniper's,
+  never one Orion chose in a conversation), or a regulate signal on `durable.curiosity_investigate`. With
+  **support**, **challenge** or **refuse**, always with a one-sentence reason.
+- **When:** inside a plan (its `focus_stance` / `signal_stance`), or between runs: the tick watches the signal
+  hash (every tick) and Hub's pending focus row (every 60 s, read-only Postgres); a new Prime act wakes ONE reply
+  thought (bid, one short call, a stance-only frame) even with no plan request.
+- **Every answer is an act:** actor `curiosity.replica.answer` (its own actor: answers stay out of the
+  `curiosity.replica` family's history; nothing bids as it, so it has no families.yaml entry), verb `ask`, parent = Prime's act, `test_before =
+  holdback:<arm>`, closed at once; the note starts with the stance (`refuse: <reason> | ...`).
+- **What it does:** refuse a focus -> the RPC `orion:curiosity:replica:focus_refusal:request` (Hub runs
+  `refuse_focus`; the focus is not shown to the run). Refuse a signal -> `PrimeChargeRefusalV1` next to the
+  signal in `orion:prime:regulate:durable.curiosity_investigate`; the market stops applying the charge from the
+  next bid. Challenge -> Prime is shown the reason. Delivered challenges and refusals go in Redis
+  `orion:curiosity:replica:replies` (written on every save), which Prime reads for its frame's ORGAN REPLIES
+  section and its settle notes.
+- **Caps:** `CURIOSITY_REPLICA_ANSWERS_PER_DAY` (3) in any 24 h, `CURIOSITY_REPLICA_ANSWER_REFRACTORY_SEC` (1800)
+  apart, never an answer to an answer.
+- **Holdback:** `CURIOSITY_REPLICA_REFUSAL_HOLDBACK_FRACTION` (0.2) of refusals are recorded but not applied;
+  `CURIOSITY_REPLICA_CHALLENGE_HOLDBACK_FRACTION` (0.2) of challenges are never shown to Prime. Deterministic per
+  Prime act. Held-back answers are never in the replies view.
+- **Guard:** its frames show its own refusal rate over its last 20 answers;
+  `scripts/analysis/curiosity_replica_answers_readout.py` reports it daily (above 50% for 14 days: back to Juniper).
+- Off: `CURIOSITY_REPLICA_ANSWERS_ENABLED=false` (stances recorded on the plan row only; Prime shows no section).
+- **Deploy order:** orion-durable-runs (the market must read a signal refusal before one is written; an old market
+  keeps charging while the replica records the refusal as delivered), then orion-hub (the focus refusal
+  listener; without it a refusal fails fast as not delivered), then orion-mind.
+- **Rollback:** switch answering off first (above). Rolling orion-mind code back past this patch makes the older
+  replica refuse its saved state (three new fields, `extra="forbid"`): it starts empty, and its open plan acts
+  expire at the ledger horizon ungraded. The replies view expires on its own after 48 h.
+- A reply thought that is not funded, or that its act gate refuses, waits 5 minutes before it bids again. A plan
+  request that arrives during a reply thought and runs out of time says so in its fallback reason.
+- A focus refusal whose reply is lost is settled from the focus row (read-only): the request carries `not_after`
+  and Hub writes nothing after it.
+
 ## Orion Prime 2A: the resident loop (2026-10-30)
 
 orion-mind keeps thinking between conversations. Design: `docs/superpowers/specs/2026-10-29-orion-prime-design.md`
-(PR #2980), rollout step 2A. Code: `app/prime_loop.py` (I/O) and `orion/prime/` (pure logic).
+(PR #2980), rollout step 2A. Code: `app/prime_loop.py` (Prime's I/O), `orion/prime/` (pure logic) and, since
+2026-11-04, the loop library `orion/mindloop/` (the tick, Juniper-first yield, the bid, the model call with seat
+wait, no-model backoff and starved route, the thought act, act publishing, state in Redis). Prime is the library's
+instance #1 (`PrimeRuntime(MindLoopRuntime)`); the curiosity replica is #2 (below). The move changed no behavior:
+`tests/test_prime_replay.py` replays recorded tick sequences against a golden recorded before the move, and loads
+the live persisted state captured from Redis on 2026-11-04.
 
 **What it does.** Every `PRIME_TICK_SEC` a CPU-only tick reads the body (durable-runs `GET /physiology/state`)
-and attention (`GET /temporal-self/frame`) and records what changed: attention moved to another arc, the set of
-*binding* body constraints changed, one of Prime's own questions settled, a concern faded. If something changed,
-the refractory interval has passed and no Juniper turn is running, Prime bids in the body economy (family `prime`,
-Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits. A thought is one model
-call on route `prime` (circe chat lane 0 at `background` priority, so Juniper's call always starts first). Prime
-answers with how it reads things now, edits to its at most 3 concerns, and at most one move.
+and attention (`GET /temporal-self/frame`) and records what changed: one of Prime's own questions settled, a concern
+faded, first wake, or nothing else woke Prime for 6 hours (the quiet floor). Attention moving (since 2026-11-03) and
+the set of binding body constraints changing (since 2026-11-04) are **not** changes: both are shown in every frame,
+but neither wakes Prime. Both drove concern churn (attention: 22 of 38 drops said "attention has moved"; binding, live
+11-03: 26 thoughts in 12 h, 21 did nothing, all 4 drops said "lane X is no longer binding"). Replayed on live data the
+rate is about 5 thoughts a day. Every thought's act note starts with `woke: <what woke it>`.
+If something changed, the refractory interval has passed and no Juniper turn is running, Prime bids in the body
+economy (family `prime`, Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits.
+A thought is one model call on route `prime` (circe chat lane 0 at pool priority `system`; Juniper's call always
+starts first). Prime answers with how it reads things now, edits to its at most 3 concerns, and at most one move.
+
+**Waiting for the model (2026-11-03).** A try may wait `PRIME_SEAT_WAIT_SEC` (600) for a GPU pool seat, and then
+generate for `PRIME_LLM_TIMEOUT_SEC` (60). The two are separate numbers (llm-gateway option
+`gateway_pool_wait_sec`); the bid is priced at the 60 s of generation only. A try that never reached the model --
+no seat, no gateway reply, or an upstream 5xx after one immediate retry -- is **not a thought**: no act is opened,
+the refractory interval does not start, and the next tick bids again. After 3 such tries in a row each one backs off
+(refractory x 2^n, at most 1 h); a heat-shed answer's own `retry_after_sec` is always waited out. After a no-seat
+try, the next try uses `PRIME_STARVED_LLM_ROUTE` (`prime_starved`, pool priority `starved`: ahead of other system
+work, behind Juniper's turn and Orion's senses, shed by the heat reflex like system work). Log lines:
+`prime_try_no_model kind=... reason=... streak=...`, `prime_upstream_5xx_retry`, and `prime_thought ... route=...`.
+Why: live 10-30..11-03, 96 of 254 thoughts failed, 78 of them because the call spent its whole 60 s queued behind
+system work on the chat class. The thought act is opened only once the model answered, so a queue failure is
+neither a 0 on Prime's record nor a reset of its hunger.
 
 **The one move (2A).** A question for curiosity's next regular investigate run, queued in Hub's existing focus slot
 (`orion/curiosity/focus.py`) with `binding.invocation_context = "prime"`. Hub stores it origin `self` with
@@ -78,6 +164,20 @@ something. Prime is told when a question was held back. Readout: `orion/prime/ev
 **Acts** (`grammar_acts`, `actor = 'prime'`): `infer` per thought (produced = the answer parsed; `preempted` when a
 Juniper turn overlapped the call), `ask` per question (`test_before = holdback:<arm>`, `parent_act_id` = the
 thought, `goal_ref = prime_concern:<id>`), `predict` per concern (below).
+
+**Self-monitor act gate (2026-11-03).** Prime opens its acts itself, so the self-monitor's act gate
+(`orion/self_monitor/gate.py`, PR #3062) sits in the loop too: the thought (`infer`) in `orion/mindloop/runtime.py`,
+concern bets and moves in `app/prime_loop.py`, the gate builder in `orion/mindloop/gate.py`. When the self-monitor (Redis
+`orion:self_monitor:latest`, fresh) holds a Prime faculty `broken` or `unreliable` (today `act.prime.predict`,
+the concern bets, works about 2-6% of the time), the act is not opened (`track_record_failing`), except one
+re-test probe per faculty per `SELF_MONITOR_PROBE_INTERVAL_SEC` (21600). What a refusal means:
+`predict` places no bet, but the concern stays held, fades, settles and counts in the track record exactly as
+before; a refused concern never gets a late bet when it ends. `ask`/`regulate` are refused before the holdback
+arm is drawn, so both arms lose the move alike. `infer` is refused before the bid. Prime is told in its next
+frame ("was not placed" / "my move was not sent" / "I did not start a thought"), as a line that does not wake it.
+Unknown or stale state, or a gate fault, changes nothing. Logs: `prime_act_refused verb=...`,
+`self_monitor_probe_started`, `self_monitor_same_job_retry`. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`.
+Ledger read: `SELF_MONITOR_LEDGER_PG_DSN` (read-only).
 
 **Concerns are graded acts (step 1, 2026-10-30).** Holding a concern is a prediction: "acting on this will
 produce something". Each concern gets one `predict` act (`object_ref = prime_concern:<id>`, act id stable on the
@@ -168,3 +268,13 @@ for slack by design.
 | `PRIME_HUB_URL` | `http://100.92.216.81:8080` | curiosity runs + pending focus |
 | `PRIME_REGULATE_ENABLED` | `true` | offer the regulate move; off = not offered, answers using it refused (open signals still graded) |
 | `PRIME_FAMILIES_PATH` | `/repo/config/physiology/families.yaml` | where Prime reads the receptors (read-only repo mount) |
+
+### Prime's concerns from funded event wants (2026-11-04, patch 2)
+
+`PRIME_CONCERNS_FROM_EVENT_WANTS` (default true): the frame's ATTENTION section (Temporal Self arcs,
+`GET /temporal-self/frame`) is replaced by EVENTS WORTH EFFORT: the event wants the body economy funded
+and that have not expired (durable-runs `GET /physiology/event-wants?hours=PRIME_EVENT_WANTS_HOURS&limit=
+PRIME_EVENT_WANTS_LIMIT`, highest net first). A new concern must name one of those `event_id`s
+(`PrimeConcernV1.event_ref`); a concern without one is not added, and Prime sees why. Log:
+`prime_concern_added concern=... event_ref=...`. An unread menu is a frame gap, never calm. false = the
+arc path, unchanged. Replay: `services/orion-durable-runs/evals/event_wants_replay.py`. Spec: docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md.

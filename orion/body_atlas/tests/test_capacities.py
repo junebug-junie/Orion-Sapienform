@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import typing
 from pathlib import Path
 
 from orion.body_atlas import capacities as K
@@ -11,6 +12,16 @@ from orion.body_atlas.model import (
 )
 
 HEALTH = "orion:system:health"
+
+
+def _ok(*held):
+    """A recheck whose evidence check passes, citing ``held``."""
+    return lambda c: K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=True, held=list(held))
+
+
+def _gone(c):
+    """A recheck whose evidence check fails."""
+    return K.EvidenceCheckV1(part_id=c.part_id, role=c.role, at=c.at, holds=False, failed=["x: gone"])
 
 
 def _atlas(parts: dict[str, tuple[str, str]], sig: list[tuple[str, str, str]], *, organs: dict[str, list[str]],
@@ -131,6 +142,32 @@ def test_printout_is_small_and_names_every_job():
         assert f"\n{job} " in f"\n{text}"
 
 
+def test_printout_says_by_rule_is_not_juniper_confirmed():
+    # turn 1ee0e35d (2026-11-04): Orion reported S1/S2 "BY RULE" as "Confirmed" with 0 confirmations
+    reading = K.read_capacities(_body())
+    assert "BY RULE" in {j.status for j in reading.jobs}
+    legend = next(ln for ln in K.render(reading) if ln.startswith("status: "))
+    assert legend == "status: BY RULE = a rule, not Juniper"
+    assert set(K.STATUS_MEANINGS) <= set(typing.get_args(K.JobLineV1.model_fields["status"].annotation))
+
+
+def test_by_rule_line_names_juniper_confirmation_and_legend_allows_it():
+    # Juniper confirming a rule-held job keeps BY RULE and names her on the line; the legend says
+    # who found the status, so it does not contradict that line
+    vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="pool", role="S2", date="2026-11-04")])
+    lines = K.render(K.read_capacities(_body(), vsm=vsm))
+    s2 = next(ln for ln in lines if ln.startswith("S2 "))
+    assert "BY RULE" in s2 and "confirmed by Juniper: pool" in s2
+    legend = next(ln for ln in lines if ln.startswith("status: "))
+    assert "not confirmed" not in legend
+
+
+def test_no_legend_when_no_status_needs_one():
+    reading = K.read_capacities(_body())
+    reading.jobs = [j.model_copy(update={"status": "NO RULE"}) for j in reading.jobs]
+    assert not any(ln.startswith("status: ") for ln in K.render(reading))
+
+
 _SPEC = importlib.util.spec_from_file_location(
     "run_capacity_roles_eval", Path(__file__).parents[1] / "evals" / "run_capacity_roles_eval.py")
 _EVAL = importlib.util.module_from_spec(_SPEC)
@@ -191,3 +228,28 @@ def test_with_no_census_the_printout_says_none():
     parts = {"a": ("service", "live"), "b": ("service", "live")}
     text = "\n".join(K.render(K.read_capacities(_atlas(parts, [("a", "b", "x:y")], organs={"o": ["a", "b"]}))))
     assert "census: none" in text
+
+
+def test_open_jobs_skip_held_waiting_and_confirmed_jobs():
+    atlas = _body()
+    reading = K.read_capacities(atlas)
+    assert [j for j, _ in K.open_jobs(reading)] == ["S1", "S3", "S3*", "S4", "S5", "algedonic", "metabolism"]
+    assert dict(K.open_jobs(reading))["S3*"] == ["part:watcher"]  # the rule's candidate, offered
+    claim = K.CapacityClaimV1(part_id="part:gateway", role="S4", kind="claim", because="b" * 20, cites=["r0"],
+                              at="2026-11-04T00:00:00+00:00", dig="t")
+    vsm = K.VsmConfirmedV1(confirmed=[K.ConfirmationV1(part="gateway", role="S3", date="2026-11-04")])
+    after = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_ok("r0"))
+    jobs = [j for j, _ in K.open_jobs(after)]
+    assert "S3" not in jobs and "S4" not in jobs  # confirmed by Juniper; Orion's claim holds (evidence checks)
+    assert K.failed_claims(after) == []
+    gone = K.attach_ledgers(K.read_capacities(atlas, vsm=vsm), atlas, vsm, [claim], [], recheck=_gone)
+    assert "S4" not in [j for j, _ in K.open_jobs(gone)]  # its evidence fails: on the fix-or-withdraw list instead
+    assert [(c.part_id, c.role) for c in K.failed_claims(gone)] == [("part:gateway", "S4")]
+
+
+def test_s5_shared_with_juniper_is_never_an_open_job():
+    from orion.body_atlas.capacities import S5SharedV1
+    reading = K.read_capacities(_body())
+    assert "S5" in {j for j, _ in K.open_jobs(reading)}
+    reading.s5_shared_with = S5SharedV1(who="Juniper", signoff_files=[], decided="2026-10-30")
+    assert "S5" not in {j for j, _ in K.open_jobs(reading)}

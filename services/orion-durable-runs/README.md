@@ -66,6 +66,49 @@ draft does recover on a fresh sample: their own minimum-attempt retry), `compact
 `reverie.visual` / `dream.carry` (deferrals that never spend an attempt). Each already
 retries with backoff.
 
+### A step's RPC published to nobody waits out the deploy (2026-11-03)
+
+Every RPC a work step sends asks the bus for a live listener (`require_listener=True`). When the
+answering service is restarting, the bus raises `RpcPublishedToNobody` (a subclass of
+`RpcNoListener`): PUBSUB NUMSUB read 0 workers in the same transaction as the PUBLISH, so nobody
+received the request. Live 2026-10-31: 16 reading runs failed this way in four bursts, each a
+redeploy.
+
+`app/admitted_graph.py:listener_wait` handles it before any graph's normal failure path: the
+hold is handed back, the run waits `DURABLE_RUNS_LISTENER_WAIT_BASE_SEC * 2^(n-1)` (capped at
+`DURABLE_RUNS_LISTENER_WAIT_MAX_SEC`; defaults 60 s doubling to 300 s), then takes a fresh hold
+and replays the step. **No attempt is spent.** `listener_waits` counts these per run; past
+`DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES` (default 6, ~22 min in total; 0 = off), or when the wait
+would leave no whole attempt before the deadline, the error takes the graph's normal path as
+before. Urgent runs (`brief.urgent`) wait within the urgent budget instead: at most 2 waits, 10 s
+then 20 s. Each wait is a `run.listener_wait` event (`waits`, `case`, `retry_at`, `error`; `case` is
+`published_to_nobody` or `lost_in_flight`). Graphs that go
+straight back to `resource_request` (reading, compactor digest, curiosity compaction) are parked
+by `hold = {"retry_at", "listener_wait"}`, which `AdmissionRuntime.register` waits out; graphs
+with a `retry_wait` node also get `retry_at` on the state.
+
+Wired into: `curiosity.investigate`, `self_sense_eval`, `harness.echo_smoke`, `pr.field_note`,
+`reminiscence.episode`,
+`curiosity.compaction` (via `failed_attempt`), `reading.turn`, `compactor.digest`,
+`journal.compose`, `memory.episode_distill`, `orion_day.letter`. `reverie.visual` and
+`dream.carry` already treat any transport error as a backed-off deferral that spends no attempt.
+
+**The in-flight case is replayed only for `reading.turn`.** `RpcNoListener` "while awaiting its
+reply" means the request WAS delivered and its listener went away mid-step: it may have done work
+(a curiosity turn has tools), and a request that itself crashes its worker would loop. Every other
+workflow keeps the normal attempt path for it. `reading.turn` opts in with
+`app/reading_graph.py:IN_FLIGHT_RESENDS` (2): the Hub reading turn is read-only (`no_write`, no
+chat history; the motor gets WebFetch/WebSearch only) and nothing lands until Hub consumes the
+run's result, so a duplicate costs compute plus its own trace rows under a fresh turn correlation
+id. Same backoff, urgent and deadline rules; its own counter `listener_in_flight_resends`; past 2
+the run fails as before. `DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES=0` turns this off too. Live
+2026-11-03: 3 readings failed this way during Hub redeploys at 18:12 and 18:26 UTC.
+
+Eval: `evals/deploy_window_listener_wait.py` (16 readings unheard for a deploy window: all 16 fail
+with the wait off, all 16 complete with it on, no attempt spent; plus a Hub that vanishes
+mid-turn: those readings are re-sent and complete, at most 2 re-sends each). Mutation eval:
+`evals/listener_wait_mutations.py`.
+
 ## Workflow registry (2026-09-21)
 
 ### Admitted reading turns (2026-09-26)
@@ -372,6 +415,112 @@ chars, `text_truncated`).
 **Deploy order:** `harness.echo_smoke` is an additive `DurableWorkflowV1` value on
 `extra="forbid"` models. Deploy orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch
 before triggering the first smoke, or an old validator drops its state rows.
+
+### PR field notes: GitHub poll + `pr.field_note` (2026-11-04, spec Patch 2)
+
+After every merged PR, Orion writes a short field note on what changed in their body (spec
+`docs/superpowers/specs/2026-11-04-pr-field-notes-design.md`; the dig half is #3100). This service
+runs the automatic half.
+
+- **Poll** (`app/pr_field_note_poll.py`, every `PR_FIELD_NOTES_POLL_SEC`=900 s). One unauthenticated
+  GitHub search for PRs merged since `max(now - PR_FIELD_NOTES_LOOKBACK_H, PR_FIELD_NOTES_NOT_BEFORE)`.
+  No token, no gh, no git: the repo is public. The 72 h lookback repairs a missed tick. A PR with a
+  ledger record is done. A new PR costs one `/pulls/<n>/files` call to classify it:
+  - dependency-only or tiny docs-only (Juniper's decision 2): the poll writes its **code record** at
+    once (two more calls: merge sha, commit authors). No run, no model turn.
+  - anything else: one `pr.field_note` run, id `pr-field-note-<n>`, agent lane, background priority,
+    deadline 20 h.
+  A PR whose runs all failed gets one more run (`-a2`) an hour later; then it stops and shows as a
+  miss in `dig field-notes`. At most one note run is in flight (the spec's "one at a time"), at most
+  10 GitHub detail calls per tick (the public limit is 60/h). A rate limit, a 5xx or a network error
+  ends the tick. One PR's own trouble (a 404 on its files, a refused code record) is logged in
+  `pr_errors` and that PR alone waits for the next tick. A PR whose first files page is full (100)
+  always gets a note run, never a code record.
+  Nothing merged before `PR_FIELD_NOTES_NOT_BEFORE` is touched (decision 3: no backfill).
+- **Run** (`app/pr_field_note_graph.py`, contract `orion/schemas/pr_field_note_run.py`):
+  `precheck -> resource_request -> resource_wait -> field_note -> finish`, and a retry goes
+  `retry_wait -> precheck`. `precheck` finishes a PR that already has a record (`already_recorded`)
+  without a turn: at the start without asking the pool, and before a retry so an attempt that saved
+  the note but replied badly is not repeated. `field_note` is one harness turn on the #2958 seam
+  (`app/harness_step.py`; source tag `pr_field_note`, session `pr-field-notes`). Its fixed prompt
+  spells out the two dig commands, says code checks are only for a sentence that claims something the
+  packet does not state, and asks for about 3 tool calls (never more than 6). The hard bound is the
+  turn time, `PR_FIELD_NOTES_TURN_TIMEOUT_SEC`=900 s. Hub keeps its finalize reserve
+  (`HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC`=330) out of that, so the motor gets 540 s; at 420 it got
+  60 s and the first live run timed out. `tests/test_pr_field_note_budget.py` gates the arithmetic.
+- **Done only with a receipt.** `verify_receipt` (code, inside the step, before the checkpoint) needs
+  `field-note #<n> saved fn:<n>:<hex>` for THIS PR in the reply AND that id as a note for this PR in
+  the ledger. Anything else is a failed attempt (the shared retry policy), never a completed run.
+- **Ledger access.** compose mounts the host's `/mnt/orion-fcc/self` (`PR_FIELD_NOTES_SELF_HOST`) at
+  `PR_FIELD_NOTES_LEDGER_DIR`. Only `app/pr_field_note_ledger.py` touches it. It is the one named
+  exception in `tests/test_organ_names_partition.py`, and it hands back ids and booleans, never note
+  text (a test checks every `.note` use is an `is not None`). A code record's `body_map` is empty:
+  this container has neither the repo nor the live atlas.
+- **Cost.** Each run is an act `make:durable.pr_field_note` (`app/run_acts.py`). Its family is tier 1
+  in `config/physiology/families.yaml` with a 24 h deferrable window (Juniper's decision 1). Bids are
+  shadow. Measured cost per note (wall time, whole-machine Wh, GPU slot seconds from the act; tokens of
+  every attempt from `llm_call_usage`; Hub harness steps):
+  `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py`. An act the ledger could not
+  attribute (`wh_by_host: null`) reads as UNREAD for that run; it does not fail the report.
+- **Surfaces.** `/health` -> `field_note_poll` (the last tick). `POST /pr-field-notes/poll` runs one tick
+  now. `?since=<iso>` re-polls a longer window after an outage over the lookback. When nothing has run
+  for longer than the lookback, a tick searches the stretch the lookback lost and logs
+  `field_note_poll_gap_possible` naming the merges with no record and no run (it never backfills them
+  itself). A `since` before `PR_FIELD_NOTES_NOT_BEFORE` is refused.
+  `GET /runs/<id>` shows `pr_field_note` (pr, outcome, note id) and `harness_steps`.
+- **Deploy order:** `pr.field_note` is an additive `DurableWorkflowV1` value. Deploy orion-sql-writer,
+  orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+- **Off:** `PR_FIELD_NOTES_ENABLED=false` and restart: no poll, no runs, no code records.
+
+### Daily reminiscence: overnight tick + `reminiscence.episode` (2026-11-07, design Patch 2)
+
+Once a day Orion visits one week of their own past and writes five short hops about it (design
+`docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md`; the dig half is #3163). This service
+runs the daily half.
+
+- **Tick** (`app/reminiscence_poll.py`, every `REMINISCENCE_POLL_SEC`=600 s), only inside the Denver window
+  `[REMINISCENCE_HOUR_LOCAL, REMINISCENCE_END_HOUR_LOCAL)` = 03:00-09:00. Agent-lane time is the real cost
+  and the agent lanes are contended by day. Today's episode is the Denver date. Five hops already live
+  today and no failed run today (Juniper asked in chat, or the run completed): nothing. Five hops live
+  but today's run failed (its cross-read ran out of attempts): the retry runs only the cross-read. Else the week is the one today's first hop fixed, or the oldest
+  week that ended before today with no complete episode (the same rule `dig reminisce` uses). One run
+  `reminiscence-<episode>` (agent lane, background priority, deadline = the window's end). A day whose run
+  failed gets one more (`-a2`) 30 min later, only while two step attempts still fit before 09:00. At most
+  one reminiscence run is unfinished at a time. A week left unfinished is picked again the next day.
+- **Run** (`app/reminiscence_graph.py`, contract `orion/schemas/reminiscence_run.py`):
+  `precheck -> resource_request -> resource_wait -> step (x6) -> finish`, a retry goes
+  `retry_wait -> precheck`. `step` runs the next of six steps under the run's one hold: the five hops
+  (`what_it_was`, `what_it_was_like`, `where_i_am_now`, `where_im_going`, `otherwise`), then one
+  `cross_read` (read all five, rewrite at most two, `dig close <week end>`). Each step is one harness turn
+  on the #2958 seam with its own source tag (`reminiscence_<step>`: its own claude session; session
+  `reminiscence`), each attempt bounded by `REMINISCENCE_TURN_TIMEOUT_SEC`=900 s (540 s of motor), each
+  step its own `DURABLE_RUNS_RETRY_MAX_ATTEMPTS`. The ledger is the checkpoint: `precheck` records every hop
+  already live today as `already_written` before it asks for a hold, so such a hop takes no hold and no
+  turn. A step record keeps only the receipts it proved, never the rest of the reply (a reply may repeat
+  hop words; the ledger stays the only place they live); a failed attempt's error names the reply length.
+- **Done only with receipts.** A hop step needs `reminisce <hop> saved rm:<episode>:<hop>:<hex>` for THIS
+  hop and today in the reply AND that id in the ledger for that hop. The cross-read needs the line
+  `reminisce cross-read done`, and every rewrite receipt in it must be a rewrite in the ledger. `finish`
+  completes the run only when all five hops are live (`outcome: complete`). A step whose day has passed
+  fails (its hops would land in another episode).
+- **Ledger access.** The same `/mnt/orion-fcc/self` mount as field notes (`REMINISCENCE_LEDGER_DIR`).
+  Only `app/reminiscence_ledger.py` touches the reminiscence ledger: read-only, the second named exception
+  in `tests/test_organ_names_partition.py`, and it hands back ids, dates, counts and booleans, never a
+  hop's text, refs or claims (a test checks no `.note`/`.because`/`.claims` use, no write call, and every
+  public return type). The gate to recall stays closed: that test's reader allowlist is unchanged.
+- **Cost.** Each run is an act `make:durable.reminiscence` (`app/run_acts.py`). Its family is tier 2 in
+  `config/physiology/families.yaml` (the design's default), agent lanes, a 6 h window, shadow bids. The
+  design's estimate is ~30 min of agent-lane GPU slot a day (median), ~100 (p90). Measure it:
+  `python3 services/orion-durable-runs/scripts/pr_field_note_cost.py --workflow reminiscence.episode`
+  (wall time, whole-machine Wh, GPU slot seconds, tokens of all six turns and every attempt; it says how
+  many of the 7 episodes the design asks for are in).
+- **Surfaces.** `/health` -> `reminiscence_tick` (the last real tick's decision). `GET /reminiscence/plan`
+  (`?any_hour=true` decides as if inside the window) shows what the tick would do now and the first step's
+  prompt, and submits nothing. `GET /runs/<id>` shows `reminiscence` (episode, week, outcome, hop ids, next
+  step) and `harness_steps`.
+- **Deploy order:** `reminiscence.episode` is an additive `DurableWorkflowV1` value. Deploy
+  orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+- **Off:** `REMINISCENCE_ENABLED=false` and restart: no tick, no runs. This is not the privacy gate.
 
 ### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
 
@@ -686,6 +835,55 @@ would restart a level's age). The causes already recorded and the last row's tim
 checkpoint as `strain_causes_seen` / `strain_row_at` / `strain_causes_now`.
 Kill switch: `TEMPORAL_SELF_STRAIN_ARCS_ENABLED=false` (no cause rows, no strain arcs).
 
+**Binding arcs (2026-11-03, body economy design Organ 5 "Felt state").** Strain only fires at the 34 °C
+reflex; between the soft line and that, the heat price binds and the hot gate refuses GPU work, but
+nothing in Orion's day said so. After pricing, the `physiology` node now writes `body_binding` rows
+into `temporal_self_event` (`source_table='physiology'`, subject `orion:body:<constraint>`;
+`app/body_binding.py`, insert `regulation_store.record_binding`). Bound means the price's
+`bind_state` is `binding`, `exogenous_bind` or `stuck_at_ceiling` (what the body report calls
+BINDING). Rows: `onset` once bound for 240 s, `change` when the bound state changes (at most every
+600 s), `keepalive` every 30 min while bound, `release` once slack for 240 s (the arc ends at the first
+slack reading). `no_reading` writes nothing; the reducer's 4,500 s stale timeout closes the arc at its
+last row. An open episode that went unread (no_reading, or a reading gap over 3 x
+`TEMPORAL_SELF_TICK_SEC`) marks its next row `after_gap`, so the chronicle never counts the unread
+stretch as binding time. Event id `body_binding:<constraint>:<episode start>:<row>:<written at>`; the payload carries
+the level, line, price, ceiling, the price's `why` and `self_spent`. The per-constraint episode rides
+in the checkpoint as `binding_episodes`; a failed write keeps it, so the next tick retries. The
+chronicle folds the rows into one `binding` arc per constraint (several open at once). Awareness only:
+no price or gate reads it. Kill switch: `TEMPORAL_SELF_BINDING_ARCS_ENABLED=false` (no rows, no arcs).
+Replay: `python -P services/orion-durable-runs/evals/body_binding_replay.py [--live --days 7]`.
+Deploy order: orion-thought and orion-hub before this service (`binding` is new to `extra="forbid"`
+frame readers).
+
+**Self-monitor node (2026-11-03, self-monitor organ patch 2: host and publish).** Spec:
+`docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md`. Orion keeps a track record of their
+own faculties (acts, forecasts, turn self-bets, vision expectations). The `self_monitor` node runs
+after `immune`, at most once per `SELF_MONITOR_INTERVAL_SEC` (3,600 s):
+
+1. It reads every bet source for the last 7 days (`app/self_monitor_store.py`; the SQL and adapters are
+   `orion/self_monitor/collect.py`, the same path `python -P -m orion.self_monitor.report` uses). Each
+   source reads in its own read-only transaction with a 15 s statement timeout. A failed source is
+   named in `source_errors`, never skipped silently.
+2. It reduces the bets per faculty and applies hysteresis: a new status must hold 3 evaluations
+   (`orion/self_monitor/host.py`). The memory for that is a small per-faculty carry in this thread's
+   checkpoint (`self_monitor.carry`), carried over midnight.
+3. It publishes the held `SelfMonitorStateV1` to Redis `orion:self_monitor:latest` (TTL 3 h) and
+   appends one row to `substrate_self_monitor_history` (migration
+   `services/orion-sql-db/manual_migration_self_monitor_history_v1.sql`; rows older than
+   `SELF_MONITOR_HISTORY_RETENTION_DAYS`, 30, are pruned by the node).
+4. Each held status change writes one `temporal_self_event` row (`source_kind =
+   faculty_status_changed`, subject `faculty:<name>`). While a notable status (broken, unreliable,
+   miscalibrated) holds, a keepalive row follows every 12 h. The chronicle folds these rows into one
+   `faculty` arc per notable stretch (see `orion/temporal_self/README.md`, "Faculty arcs"). A failed
+   write is retried at the next evaluation.
+
+`GET /self_monitor/state` returns the Redis state verbatim plus `view` (fresh or stale); 404 when no
+evaluation landed in the last 3 h. `/health` shows the node's last summary under
+`temporal_self.self_monitor` (counts by status, source errors, rows written). Own timeout
+(`SELF_MONITOR_TIMEOUT_SEC`, 120 s); a failure is the warning `self_monitor_failed` and never touches the
+regulation reading. Nothing obeys the state yet: effects (act gate, self-question, telling Juniper) are
+later patches. Kill switch: `SELF_MONITOR_ENABLED=false` (no state, no rows, faculty arcs not read).
+
 **Retro play source (2026-10-22, Orion plays Zelda section F).** The chronicle reads orion-hub's
 `retro_play_sessions` (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`,
 REQUIRED-BY this service and orion-hub) as source `retro_play`: one `play` arc per finished Retro
@@ -711,6 +909,16 @@ replay: `python -P services/orion-durable-runs/evals/run_street_episode_replay.p
 `--repo <old checkout>` for a before run). Kill switch: `TEMPORAL_SELF_STREET_EPISODES_ENABLED` (ON); off, the
 source is not read and episodes are room-only again. Deploy order: orion-thought and orion-hub before
 this service (the `street` arc kind is new to `extra="forbid"` frame readers).
+
+**Office sessions (2026-11-05, office camera design PR #3127 step B).** The chronicle reads orion-sql-writer's
+`vision_office_session` (migration `manual_migration_vision_office_session_v1.sql`, REQUIRED-BY sql-writer)
+as source `office_session`: FINAL rows only (`status = 'closed'`), available at `closed_at` (a row is final
+660 s after the visit ended). It adds no arc: it relabels today's closed office `company` arc that overlaps
+it most, e.g. "Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a cabinet",
+and records `vision_office_session:<id>` in the arc's `related_refs`. The read is skipped while the table is
+missing. Known limit: a visit that becomes final after local midnight finds no arc (yesterday's arcs are
+already drained) and labels nothing. Kill switch: `TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED` (ON). No new arc kind
+or schema field reaches frame readers (only a label), so there is no deploy order.
 
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
@@ -785,7 +993,7 @@ between are skipped), the node reads every constraint Orion lives under and writ
 | `heat` | cabinet C | soft line `ORION_PHYSIOLOGY_HEAT_SOFT_LINE_C` (31) | this step's own regulate inputs (no second query) |
 | `energy` | Orion month-to-date USD (local month) | `ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD` (unset: no line) | `orion_energy_hourly` x `energy_cost_accrued` next-kWh rate (newest `computed_at`; unpriced recent hours carry the newest rate) |
 | `lane:<role>` | GPU slot-seconds occupied in the last `ORION_PHYSIOLOGY_LANE_WINDOW_SEC` (at most `slots` leases count at once; the rest is `detail.lent_overlap_s`) | discovered slots x window (pool state RPC) | `gpu_pool_events` closes (`held_ms`, each on its own seat) + open grants |
-| `attention:juniper` | outreach messages sent today | `HUB_ENDOGENOUS_OUTREACH_DAILY_CAP` (owner: Hub) | `endogenous_outreach_decisions` |
+| `attention:juniper` | outreach messages sent today, every door except the strain report and forced sends | `JUNIPER_DAILY_CAP` in `orion/physiology/attention_pacing.py` (6; read by Hub too); priced by the pacing threshold when `ORION_PHYSIOLOGY_ATTENTION_PACING=on` | `endogenous_outreach_decisions` |
 | `claude` | limit events, plus `state` | not limited | `orion:substrate:claude_limit` (`ClaudeLimitObservationV1`), latest per kind in memory |
 
 A failed, stale or never-observed source is `level=None` with a `no_reading` reason, never 0. Pure
@@ -958,6 +1166,51 @@ four-cell shadow-vs-real table per family; `--source replay` re-decides the real
 
 Live smoke (read-only, replays the node over stored ticks): `ORION_ANALYSIS_DSN=... python
 scripts/analysis/smoke_body_economy_prices.py --hours 24`.
+
+### Event wants and Prime's menu: `GET /physiology/event-wants` (2026-11-04, patch 2, read-only)
+
+Attention as the want competition (docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Two producers post SHADOW **event wants** (`WantV1.event_ref`
++ `salience`): Hub reading (one per finished read) and sql-writer camera asks (one per open ask).
+
+- **Event rank.** An event want ranks against the family's own past event wants (their recorded
+  intensities, `want_ledger`, 30 days, first decision per want, read with the act history:
+  `app/physiology_market.py` `EVENT_HISTORY_SQL`), not against the hunger-only act history. Under 10
+  past events it is ranked as before (`value_basis` `event_cold:<basis>`); otherwise `event:<basis>`.
+- **The menu.** `GET /physiology/event-wants?hours=24&limit=8` returns `FundedEventWantsV1`
+  (`orion/schemas/physiology_want.py`): every event want whose LATEST decision is funded and whose event
+  has not expired (window end, or an answered camera ask), highest net first, each labelled from its
+  source row. Code: `app/event_wants_menu.py`. Reader: Orion Prime (`PRIME_CONCERNS_FROM_EVENT_WANTS`).
+- **Replay.** `evals/event_wants_replay.py [--live --days 14]`: salience per source, the event rank vs
+  the old rank, and how often Prime's frame would have had a funded event.
+
+### The cooling world act: the market decides, the pool acts (2026-11-05, ladder retirement PR 5, BINDING)
+
+Orion's one world act -- "hold back new background GPU work while the cabinet warms" (`shed_background_gpu`)
+-- has its own loop here (`app/cooling_act.py`; pure rules `orion/autonomy/shed_act.py`). Until this PR its
+only trigger was execution dispatch (an attention-workspace winner on the cabinet node); spec:
+docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md, "PR 5".
+
+Every `ORION_COOLING_ACT_TICK_SEC` (60 s):
+
+1. **Settle.** A treated shed still `shed_pending` settles from the pool's `gpu_pool_orion_shed` row, or as
+   `settlement_timeout` at t0 + TTL + 300 s (`orion/autonomy/shed_settlement.py`). One `ActionOutcomeEmitV1`
+   goes out, then the terminal is recorded on the episode. orion-sql-writer's scorer then scores it, unchanged.
+2. **Eligible?** `orion/autonomy/self_shed.py` (cabinet elevated/hot/unknown and not critical, hardware-watch
+   idle, background work present, nothing in flight), then the pool's mirrored caps (in flight, 15-min gap,
+   1 h/day, a pool that refuses).
+3. **The event.** The cabinet is *warming*: elevated or hot and rising >= `ORION_SHED_RISE_THRESHOLD_C` (0.5 C)
+   in 15 minutes -- the same rise that made the cabinet node win attention. It posts an event want: family
+   `self_regulate.shed` (Tier 1, a proposal), `event_ref` `cabinet_reading:athena:<UTC second>`, `salience` =
+   the rise's strict-below percentile among the cabinet's own warming minutes of the last 30 days.
+4. **Obey.** Funded: the 0.5 treated/control draw (hash of the episode id), the precommitted
+   `substrate_world_action_episodes` row (eligibility + the want + the expected effect), then (treated) the one
+   `orion:gpu_pool:shed:request`. Deferred: the same want bids again at the market's retry time, until its
+   900 s event window ends. No answer (timeout, error, stale prices, no market): **no shed**.
+
+Health: `/health` -> `cooling_act` (counts, the last tick's result, the open want). Kill:
+`ORION_COOLING_ACT_ENABLED=false` + restart. The pool's own reflex and `GPU_POOL_ORION_SHED_ENABLED` are separate.
+Replay: `evals/cooling_act_replay.py [--live --days 14]` runs this loop on real cabinet history with the real
+market rule and the real scorer.
 
 ### Body-economy report: `GET /physiology/report` (2026-10-29, read-only)
 

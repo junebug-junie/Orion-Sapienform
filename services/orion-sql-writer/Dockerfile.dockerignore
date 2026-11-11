@@ -1,0 +1,7 @@
+# Build-context excludes for services/orion-sql-writer/Dockerfile only (BuildKit reads
+# <Dockerfile>.dockerignore beside the Dockerfile; the context is the repo root).
+# Personal local files: only the camera priors are needed in this image.
+config/person_model/*.local.yaml
+!config/person_model/camera_priors.local.yaml
+# Bytecode caches (some are root-owned and unreadable, e.g. scripts/backup/__pycache__).
+**/__pycache__

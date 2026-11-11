@@ -287,6 +287,30 @@ class CabinetContextV1(BaseModel):
     sound_vs_usual: Optional[Literal["quieter", "usual", "louder"]] = None
 
 
+class OfficeSoundContextV1(BaseModel):
+    """How loud Juniper's office is, from the office sound meter (DFRobot
+    SEN0232 on pan-1's office Nano; `orion/situational/office_sound_reader.py`).
+
+    A real dBA meter, so the level is decibels, unlike the cabinet mic's
+    dBFS. It is in the office, not in the server cabinet or the closet.
+    `usual_*` are the 10th/50th/90th percentiles of the last 24 h of stored
+    ~30 s readings (None while that history is too thin); `recent_dba` is the
+    median of the last 10 min. `available=False` = no fresh reading.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["office_sound.context.v1"] = "office_sound.context.v1"
+    available: bool = False
+    age_seconds: Optional[float] = None
+    dba: Optional[float] = None
+    recent_dba: Optional[float] = None
+    usual_low_dba: Optional[float] = None
+    usual_dba: Optional[float] = None
+    usual_high_dba: Optional[float] = None
+    vs_usual: Optional[Literal["quieter", "usual", "louder"]] = None
+
+
 class RuntimeContextV1(BaseModel):
     """Which LLM is actually generating this reply, for the situation brief.
 
@@ -375,9 +399,9 @@ class CameraSenseV1(BaseModel):
 
     Built by `orion.situational.camera_eyes`: `name`/`view`/`outside` come
     from config (`ORION_CAMERA_DESCRIPTIONS`), the rest from live state
-    (`vision_scene_inventory` per stream, `vision_individual_sighting` for
+    (`vision_scene_inventory` per stream, today's `vision_rollup` day row for
     the street camera). No frames, boxes, faces or names cross here -- a
-    status, an age, a date and a count.
+    status, an age, a date and a people range.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -397,8 +421,16 @@ class CameraSenseV1(BaseModel):
     # Local date (situation timezone) of this camera's first frame.
     since: Optional[str] = None
     last_frame_age_seconds: Optional[float] = None
-    # Distinct individuals since local midnight; street cameras only, live only.
-    individuals_today: Optional[int] = None
+    # People today as a range (street cameras only, live only), from today's
+    # day rollup (vision_rollup, orion/vision/walkway_rollup.person_count_range):
+    # low = most people in one vision window, high = person clusters. Both or
+    # neither. Never a bare cluster count (spec #2763 decision 5); the old
+    # `individuals_today` (distinct clusters of every kind) was retired
+    # 2026-11-03. `people_today_through`: local HH:MM the range is counted
+    # through (closed hours only).
+    people_today_low: Optional[int] = None
+    people_today_high: Optional[int] = None
+    people_today_through: Optional[str] = None
 
 
 class PerceptionContextV1(BaseModel):
@@ -736,6 +768,9 @@ class SituationBriefV1(BaseModel):
     # sensors` bind mount) -- carries no private-home content, same
     # reasoning as curiosity/reverie above.
     cabinet: CabinetContextV1 = Field(default_factory=CabinetContextV1)
+    # Additive (2026-11-07): defaults to available=False; omitted from the
+    # prompt when unavailable, like cabinet.
+    office_sound: OfficeSoundContextV1 = Field(default_factory=OfficeSoundContextV1)
     # Additive: defaults to available=False, so an unpatched producer or a
     # disabled flag yields "haven't seen anything recently" rather than a
     # missing field.

@@ -1,5 +1,11 @@
 # 🛰 Orion Vision Edge (Athena)
 
+> **Not used since 2026-11-04.** The office camera (cam0) is captured by
+> `orion-vision-retina-office` (services/orion-vision-retina) from its 2560x1920
+> main stream. This service is kept but not run: it is in
+> `mesh-utilities/common/exclude_services.txt`, and a running edge would publish a
+> second cam0 frame stream. The frame router no longer asks it for `/still`.
+
 `orion-vision-edge` is Athena’s always-on **perception node**.
 It captures frames, runs lightweight detectors (YOLO, motion, etc.), and publishes typed artifacts via the **Titanium Bus**.
 

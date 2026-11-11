@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 
 from orion.schemas.state_delta import StateDeltaV1
+from orion.substrate.prediction_error_freshness import PREDICTION_ERROR_MISSING_REASON_KEY
 
 from app.tensor.channels import PRUNED_NODE_IDS
 
@@ -19,7 +20,10 @@ class Perturbation:
     channel: str
     intensity: float
     label: str
-    mode: str = "add"  # "add" accumulates; "replace" sets the channel to exactly intensity
+    # "add" accumulates; "replace" sets the channel to exactly intensity;
+    # "clear" removes the channel (and its updated_at stamp): the producer says
+    # it has no reading, so the field reads unmeasured, never 0.0.
+    mode: str = "add"
 
 
 def _node_key(raw: str) -> str:
@@ -637,9 +641,26 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             )
 
     if delta.target_kind == "prediction_signal":
-        hints = dict((delta.after or {}).get("pressure_hints") or {})
-        node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id))
-        if "prediction_error" in hints:
+        after = delta.after or {}
+        hints = dict(after.get("pressure_hints") or {})
+        node_key = _node_key(str(after.get("node_id") or delta.target_id))
+        # Missing input (2026-11-10, PE suite rebuild spec retire step 8): the
+        # producer has no reading this tick (camera stale, baseline warming,
+        # no new frame) and says why. Drop the channel instead of writing a
+        # value -- the old 0.0 placeholder read as "calm" to every field
+        # consumer. A missing reason wins over any value sent alongside it.
+        missing_reason = str(after.get(PREDICTION_ERROR_MISSING_REASON_KEY) or "").strip()
+        if missing_reason:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="prediction_error",
+                    intensity=0.0,
+                    label=delta.delta_id,
+                    mode="clear",
+                )
+            )
+        elif "prediction_error" in hints:
             out.append(
                 Perturbation(
                     node_id=node_key,

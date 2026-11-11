@@ -99,18 +99,15 @@ services:
       # writes its frames here with a local path only. Served only from
       # directly inside this dir, downscaled (scripts/vision_live_frame.py).
       - ${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:ro
-      # Reuse the operator's existing host-level git/gh auth read-only, same pattern
-      # as the claude-binary mount below -- no credentials are stored
-      # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
-      # needs the SSH key + known_hosts; `gh` (PR creation) needs its own token dir.
-      # Same identity/keys this worktree's own git/gh operations already use.
-      # NOT ${HOME}/.gitconfig -- a read-only bind mount there fully replaces the
-      # file, which shadows the safe.directory/identity config baked into the
-      # image (Dockerfile) and can't be written to at runtime either (confirmed
-      # live: "could not write config file /root/.gitconfig: Device or resource
-      # busy"). Git identity/safe.directory live in the image instead.
-      - ${HOME}/.ssh:/root/.ssh:ro
-      - ${HOME}/.config/gh:/root/.config/gh:ro
+      # Orion does NOT borrow the operator's GitHub login. No ${HOME}/.ssh and no
+      # ${HOME}/.config/gh here: those carried junebug-junie's admin identity into
+      # Orion's shell. Orion authenticates as its own GitHub user through
+      # ORION_GITHUB_TOKEN (classic PAT, Write collaborator) -- see the
+      # GH_TOKEN env below and docs/superpowers/specs/2026-11-05-github-identities-design.md.
+      # tests/test_orion_own_github_identity.py fails if either mount comes back.
+      # Git identity/safe.directory live in the image (Dockerfile), NOT a
+      # ${HOME}/.gitconfig bind mount (it shadows the image config and cannot be
+      # written at runtime).
       - ${HUB_AGENT_GH_BIN_HOST:-${HOME}/.local/bin/gh}:/usr/local/bin/gh:ro
       - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -131,6 +128,9 @@ services:
       # (asyncpg ignores it). Host networking makes the hub look like the Docker
       # gateway (172.18.0.1) by IP; the headroom alarm groups by this name.
       - PGAPPNAME=orion-hub
+      # Orion's own GitHub identity. gh prefers GH_TOKEN over any login file.
+      - ORION_GITHUB_TOKEN=${ORION_GITHUB_TOKEN:-}
+      - GH_TOKEN=${ORION_GITHUB_TOKEN:-}
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-true}
       - HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS=${HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS:-1}
       - HUB_CURIOSITY_DURABLE_RUNS_URL=${HUB_CURIOSITY_DURABLE_RUNS_URL:-http://127.0.0.1:8124}
@@ -244,6 +244,7 @@ services:
       - HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-90}
       - HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT=${HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT:-70}
       - ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS=${ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS:-12000}
+      - HUB_ATTENTION_TRACKER_ENABLED=${HUB_ATTENTION_TRACKER_ENABLED:-true}
       - SUBSTRATE_TELEMETRY_BASE_URL=${SUBSTRATE_TELEMETRY_BASE_URL:-}
       - SUBSTRATE_TELEMETRY_READ_TOKEN=${SUBSTRATE_TELEMETRY_READ_TOKEN:-}
       - SOCIAL_MEMORY_BASE_URL=${SOCIAL_MEMORY_BASE_URL}
@@ -270,7 +271,7 @@ services:
       # would come up recording. For a camera kill switch that is the wrong
       # direction to fail, so the key is left to env_file alone.
       - VISION_FRAME_CACHE_ENABLED=${VISION_FRAME_CACHE_ENABLED:-true}
-      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway,doorbell}
+      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway,doorbell,cam0}
       - VISION_FRAME_CHANNEL=${VISION_FRAME_CHANNEL:-orion:vision:frames}
       - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}
@@ -392,9 +393,6 @@ services:
       - SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED=${SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED:-true}
       - SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED=${SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED:-true}
       - SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD=${SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD:--0.05}
-      - SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED=${SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED:-true}
-      - SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS=${SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS:-72}
-      - SUBSTRATE_PREDICTION_EXPECTATION_INTERVAL_MIN=${SUBSTRATE_PREDICTION_EXPECTATION_INTERVAL_MIN:-60}
       - SUBSTRATE_AUTONOMY_INTERVAL_SEC=${SUBSTRATE_AUTONOMY_INTERVAL_SEC:-30}
       - SUBSTRATE_REVIEW_SCHEDULER_ENABLED=${SUBSTRATE_REVIEW_SCHEDULER_ENABLED:-true}
       - SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC=${SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC:-420}

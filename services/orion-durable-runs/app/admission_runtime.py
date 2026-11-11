@@ -39,6 +39,12 @@ from app.journal_compose_graph import build_journal_compose_graph, finish_detail
 from app.harness_smoke_graph import build_harness_smoke_graph, finish_detail as harness_smoke_finish_detail
 from app.harness_step import harness_step_correlation_id
 from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_WORKFLOW
+from app.pr_field_note_graph import build_pr_field_note_graph, finish_detail as pr_field_note_finish_detail
+from app.pr_field_note_ledger import FieldNoteLedger
+from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_STEP_KEY, PR_FIELD_NOTE_WORKFLOW
+from app.reminiscence_graph import build_reminiscence_graph, finish_detail as reminiscence_finish_detail, pending_step
+from app.reminiscence_ledger import ReminiscenceLedger
+from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
 from app.dream_carry_graph import (
     DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
     DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
@@ -112,7 +118,17 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               DREAM_CARRY_WORKFLOW: {"text_hop"},
               CURIOSITY_COMPACTION_WORKFLOW: {"compact"},
               # One harness turn under the hold (app/harness_step.py); finish needs no GPU.
-              HARNESS_ECHO_SMOKE_WORKFLOW: {"harness_step"}}
+              HARNESS_ECHO_SMOKE_WORKFLOW: {"harness_step"},
+              # One harness turn (plus verify_receipt) under the hold; precheck and finish need none.
+              PR_FIELD_NOTE_WORKFLOW: {"field_note"},
+              # One harness turn per step (five hops, then the cross-read), each under the run's one hold;
+              # precheck and finish need none.
+              REMINISCENCE_WORKFLOW: {"step"}}
+# Workflows whose one step is a harness turn on app/harness_step.py: workflow -> its step key.
+HARNESS_STEP_WORKFLOWS = {HARNESS_ECHO_SMOKE_WORKFLOW: HARNESS_ECHO_SMOKE_STEP_KEY,
+                          PR_FIELD_NOTE_WORKFLOW: PR_FIELD_NOTE_STEP_KEY}
+# Workflows of several harness steps on that seam: workflow -> (state -> the step key not yet done).
+HARNESS_MULTI_STEP_WORKFLOWS = {REMINISCENCE_WORKFLOW: pending_step}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
 # whose loop iterations are not lifecycle facts (no run.<status> / run.resumed event per wake).
 TIMED_WAIT_NODES = frozenset({"retry_wait", "image_wait"})
@@ -167,7 +183,7 @@ def _without_backoff(hold: dict) -> dict:
     return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
 
 
-from app.admitted_graph import HoldLost
+from app.admitted_graph import LISTENER_WAIT_HOLD_KEY, HoldLost
 
 # release() reasons of a pool take-back (HoldLost / HoldPreempted): the node goes straight back to
 # resource_wait, so a hold the pool already re-granted is kept for it.
@@ -202,7 +218,11 @@ class AdmissionRuntime:
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
             guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued,
-            max_takebacks=settings.hold_max_takebacks)
+            max_takebacks=settings.hold_max_takebacks,
+            # getattr: bare test settings predate these keys; the AdmissionDeps defaults match Settings'.
+            listener_wait_max_tries=int(getattr(settings, "listener_wait_max_tries", 6)),
+            listener_wait_base_seconds=float(getattr(settings, "listener_wait_base_sec", 60.0)),
+            listener_wait_max_seconds=float(getattr(settings, "listener_wait_max_sec", 300.0)))
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
         # curiosity graph.
@@ -232,6 +252,14 @@ class AdmissionRuntime:
             # self_sense_eval use (orion:curiosity:turn:request), resolved on the runner per call.
             HARNESS_ECHO_SMOKE_WORKFLOW: build_harness_smoke_graph(
                 lambda request: runner._run_turn(request), admission_deps, runner._checkpointer),
+            # PR field notes Patch 2: the same seam, plus a code receipt check against Orion's ledger.
+            PR_FIELD_NOTE_WORKFLOW: build_pr_field_note_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
+                ledger=FieldNoteLedger(getattr(settings, "field_note_ledger_dir", "/mnt/orion-fcc/self"))),
+            # Daily reminiscence Patch 2: six steps on the same seam, each checked against Orion's ledger.
+            REMINISCENCE_WORKFLOW: build_reminiscence_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
+                ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self"))),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
                 call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
@@ -325,6 +353,10 @@ class AdmissionRuntime:
             return dream_carry_finish_detail(state)
         if workflow == HARNESS_ECHO_SMOKE_WORKFLOW:
             return harness_smoke_finish_detail(state)
+        if workflow == PR_FIELD_NOTE_WORKFLOW:
+            return pr_field_note_finish_detail(state)
+        if workflow == REMINISCENCE_WORKFLOW:
+            return reminiscence_finish_detail(state)
         return finish_detail(state)
 
     async def _load_episode(self, brief) -> dict:
@@ -432,6 +464,11 @@ class AdmissionRuntime:
         admission = row["request"]["admission"]
         hold = dict(state.get("hold") or {})
         seq = int(state.get("hold_seq") or 0)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get("request_id") and hold.get("retry_at") \
+                and self.now() < datetime.fromisoformat(hold["retry_at"]):
+            # Parked by listener_wait (a step's RPC reached nobody): no pool request until
+            # retry_at. resource_wait interrupts; _hold_ready resumes the run once it passes.
+            return {"status": "waiting_resource", "hold": hold, "hold_seq": seq}
         if seq == 0 and not hold.get("request_id"):
             # Never asked the pool yet: a binding family's run asks the body economy first.
             held = await self._economy_gate(state, row["request"])
@@ -670,7 +707,7 @@ class AdmissionRuntime:
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
         elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
-                                       HARNESS_ECHO_SMOKE_WORKFLOW) \
+                                       HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, REMINISCENCE_WORKFLOW) \
                 and state.get("step_correlation_id"):
             # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
             # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
@@ -683,6 +720,10 @@ class AdmissionRuntime:
         deadline = state["admission"].get("deadline_at")
         if deadline:
             timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
+        # The reason the harness cancel carries (orion/harness/stop_reason.py). A lost/recalled hold,
+        # an operator control or a worker shutdown stops the turn from outside; the attempt's own time
+        # budget running out is the turn being too slow, so it gets its own reason and stays a failure.
+        stop_reason = "durable_attempt_stopped"
         try:
             # Timeout starts only after the hold is confirmed. Each heartbeat re-reads the operator
             # control row and asks the pool whether the hold is still ours at this generation.
@@ -708,6 +749,7 @@ class AdmissionRuntime:
                             if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
                             else steady
         except TimeoutError as exc:
+            stop_reason = "durable_attempt_timeout"
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc
             raise
@@ -716,7 +758,7 @@ class AdmissionRuntime:
                 # Cancel Hub before awaiting the local task's cleanup -- self-sense clears
                 # `_inflight_turn_correlation_ids` in its finally, so this must run while those ids
                 # are still stamped on `state`.
-                await self._cancel_harness(state, "durable_attempt_stopped")
+                await self._cancel_harness(state, stop_reason)
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
         # Outside the turn's time budget: a slow preempt check must not replace the work's own error.
@@ -1002,6 +1044,10 @@ class AdmissionRuntime:
         lease_id = hold.get("lease_id")
         retry_at = hold.get("retry_at")
         backing_off = bool(retry_at) and self.now() < datetime.fromisoformat(retry_at)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and backing_off:
+            # Parked by listener_wait: the only pool event for it is its own released hold. Wait.
+            self._hints.discard(run_id)
+            return False
         if run_id in self._hints:
             # The pool only publishes events for a hold it created, so a hint means the pool is
             # answering -- even mid-backoff (e.g. an acquire that timed out but landed and was
@@ -1061,10 +1107,12 @@ class AdmissionRuntime:
             pending = next_unanswered(state)
             if pending is not None:
                 ids.append(question_turn_id(state, pending[0]))
-        if state.get("workflow") == HARNESS_ECHO_SMOKE_WORKFLOW \
-                and HARNESS_ECHO_SMOKE_STEP_KEY not in (state.get("steps") or {}):
+        step_key = HARNESS_STEP_WORKFLOWS.get(state.get("workflow"))
+        if state.get("workflow") in HARNESS_MULTI_STEP_WORKFLOWS:
+            step_key = HARNESS_MULTI_STEP_WORKFLOWS[state["workflow"]](state)
+        if step_key and step_key not in (state.get("steps") or {}):
             # The step turn a dead worker left running: its id derives from the checkpoint.
-            ids.append(harness_step_correlation_id(state, HARNESS_ECHO_SMOKE_STEP_KEY))
+            ids.append(harness_step_correlation_id(state, step_key))
         seen: set[str] = set()
         for correlation_id in ids:
             if not correlation_id or correlation_id in seen:
@@ -1558,7 +1606,14 @@ class AdmissionRuntime:
                 **({"harness_steps": dict(values.get("steps") or {}), "error": values.get("last_error"),
                     "attempt": int(values.get("attempt") or 0), "retry_at": values.get("retry_at"),
                     "harness_turn_meta": values.get("harness_turn_meta")}
-                   if workflow == HARNESS_ECHO_SMOKE_WORKFLOW else {}),
+                   if workflow in HARNESS_STEP_WORKFLOWS or workflow in HARNESS_MULTI_STEP_WORKFLOWS else {}),
+                **({"pr_field_note": {"pr_number": (values.get("brief") or {}).get("pr_number"),
+                                      "outcome": values.get("outcome"), "note_id": values.get("note_id")}}
+                   if workflow == PR_FIELD_NOTE_WORKFLOW else {}),
+                **({"reminiscence": {k: (values.get("brief") or {}).get(k) for k in ("episode", "period_start", "period_end")}
+                    | {"outcome": values.get("outcome"), "hop_ids": values.get("hop_ids"),
+                       "next_step": pending_step(values)}}
+                   if workflow == REMINISCENCE_WORKFLOW else {}),
                 **({"orion_day": {
                     "letter_date": (values.get("brief") or {}).get("letter_date"),
                     "note_ready": bool(values.get("note_md")),

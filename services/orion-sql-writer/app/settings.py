@@ -35,6 +35,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "cabinet.ambient.spike.v1": "CabinetAmbientSpikeSQL",
     "home.cooling.sample.v1": "HomeCoolingSampleSQL",
     "office.env.sample.v1": "OfficeEnvSampleSQL",
+    "closet.env.sample.v1": "ClosetEnvSampleSQL",
     "energy.usage.observed.v1": "EnergyUsageIntervalSQL",
     "energy.cost.accrued.v1": "EnergyCostAccruedSQL",
     "energy.run_cost.estimated.v1": "EnergyRunCostSQL",
@@ -180,6 +181,7 @@ class Settings(BaseSettings):
             "orion:cabinet:ambient:spike",
             "orion:home:cooling:sample",
             "orion:office:env:sample",
+            "orion:closet:env:sample",
             "orion:energy:usage:observed",
             "orion:energy:cost:accrued",
             "orion:energy:run_cost:estimated",
@@ -379,28 +381,8 @@ class Settings(BaseSettings):
     # re-creates the mismatch in one direction or the other.
     grammar_traces_retention_days: int = Field(3, alias="GRAMMAR_TRACES_RETENTION_DAYS")
 
-    # substrate_proposal_frames had NO bound at all until 2026-08-20: 474,230 rows / 1,758 MB,
-    # growing ~27k rows and ~105 MB a day.
-    #
-    # 10 days, not 7, and the reason is consumer windows rather than disk. Two live readers
-    # reach back further than a week:
-    #   * orion/autonomy/evals/run_attention_bound_proposal_eval.py:39 WINDOW_DAYS = 7
-    #   * scripts/analysis/measure_proposal_feedback_correlation.py:100
-    #     DEFAULT_WINDOW_HOURS = 200.0, i.e. 8.33 days
-    # A 7-day window ties exactly to the first and sits INSIDE the second, so retention would
-    # be racing both at their oldest edge, and both degrade to "insufficient data" rather than
-    # failing loudly. 10 days clears the longer of the two with a ~1.7-day margin.
-    #
-    # Correctness does not depend on this number at all -- that is held by
-    # _substrate_chain_floor, which refuses to delete any proposal a later pipeline stage still
-    # owes work on regardless of age. This is purely how much history stays inspectable.
-    #
-    # Measured live 2026-08-20 (474,861 rows): 10 days keeps 202,276 rows, 7 days would have
-    # kept 113,060. Costs roughly 105 MB per extra day. NOTE that ~84% of this table's bytes
-    # are TOAST (1,471 MB of 1,760 MB), so pruning frees TOAST chunks, not heap pages.
-    substrate_proposal_frames_retention_days: int = Field(
-        10, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
-    )
+    # SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS retired 2026-11-07 with the proposal rung (ladder
+    # retirement PR 6): nothing writes substrate_proposal_frames, and its drop migration follows.
 
     # Fleet power history for orion_biometrics_cluster. ~2,880 rows/day at the ~30s
     # publish cadence, so 30 days is ~86k small rows. Bounded from the table's first
@@ -516,6 +498,12 @@ class Settings(BaseSettings):
     # groups them into sightings, scores attention, opens asks, applies
     # Juniper's answers, writes patio presence, prunes.
     vision_individuals_interval_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_INTERVAL_SEC")
+    # Attention as the want competition, patch 2 (app/ask_event_wants.py): each OPEN camera ask posts an
+    # event want (family vision.ask, event_ref orion_ask:<id>, salience = sightings of its individual as a
+    # percentile of 30 days of camera asks) to the body economy. Shadow. 0 disables. An open ask older than
+    # the lookback is not posted.
+    ask_event_wants_interval_sec: float = Field(300.0, alias="ASK_EVENT_WANTS_INTERVAL_SEC")
+    ask_event_wants_lookback_hours: float = Field(24.0, alias="ASK_EVENT_WANTS_LOOKBACK_HOURS")
     # Re-identification line: body cosine to the nearest same-kind centroid
     # (any time, anywhere) needed to count as the same individual. 0.90 since
     # 2026-10-16 (docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md):
@@ -546,6 +534,10 @@ class Settings(BaseSettings):
     vision_stationary_min_sec: float = Field(1800.0, alias="VISION_STATIONARY_MIN_SEC")
     vision_stationary_iou: float = Field(0.5, alias="VISION_STATIONARY_IOU")
     vision_stationary_max_gap_sec: float = Field(300.0, alias="VISION_STATIONARY_MAX_GAP_SEC")
+    # Streams whose individuals can become stationary props (2026-11-04). The
+    # office camera (cam0) stays out: a person at a desk sits still for hours.
+    # Same rule as orion-vision-window's WINDOW_STATIONARY_STREAMS. Empty = none.
+    vision_stationary_streams: str = Field("walkway,doorbell", alias="VISION_STATIONARY_STREAMS")
     # Two observations of one individual this close together are one sighting.
     vision_individuals_merge_gap_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_MERGE_GAP_SEC")
     # Rows read per stream per tick; the cursor carries the rest to the next tick.
@@ -573,6 +565,15 @@ class Settings(BaseSettings):
     vision_person_top_k: int = Field(3, alias="VISION_PERSON_TOP_K")
     # Channel used when a cluster or person has no face vectors (body | osnet).
     vision_person_fallback_channel: str = Field("body", alias="VISION_PERSON_FALLBACK_CHANNEL")
+    # Face bars are fitted on unnamed clusters seen this many days back (faces
+    # are rare; an accept bar needs about people / alpha face clusters). Guesses
+    # stay on the VISION_INDIVIDUALS_CANDIDATE_DAYS street. <= that = old rule.
+    # Unnamed clusters are pruned after VISION_SIGHTING_RETENTION_DAYS (90).
+    vision_person_face_candidate_days: float = Field(90.0, alias="VISION_PERSON_FACE_CANDIDATE_DAYS")
+    # Split the false-accept alpha only across labels that are one real person
+    # (person rows marked not_a_person in the Hub do not count and never get an
+    # accept bar). False = every label, as before.
+    vision_person_alpha_split_people_only: bool = Field(True, alias="VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY")
     # The person model runs inside the individuals tick at most this often.
     vision_person_model_interval_sec: float = Field(600.0, alias="VISION_PERSON_MODEL_INTERVAL_SEC")
     # Comma list of crop labels the retention prune never deletes (labelled
@@ -619,6 +620,9 @@ class Settings(BaseSettings):
     # Daily cap for "Is this <name>?" asks (vision_person_confirm), since local
     # midnight. Separate from ORION_ASK_DAILY_CAP, which the slow rule uses up first.
     vision_person_confirm_ask_daily_cap: int = Field(6, alias="VISION_PERSON_CONFIRM_ASK_DAILY_CAP")
+    # Own daily slots for "Is this <name>?" on camera-prior guesses (the office camera):
+    # the shared cap above goes to walkway guesses first. 0 = office guesses never asked.
+    vision_person_confirm_prior_ask_daily_cap: int = Field(2, alias="VISION_PERSON_CONFIRM_PRIOR_ASK_DAILY_CAP")
     # Splitting individuals from Juniper's picture answers (2026-10-16,
     # docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md).
     # A picture she marks "someone else" moves out of the asked individual into
@@ -640,6 +644,22 @@ class Settings(BaseSettings):
     vision_individuals_cannot_link_margin: float = Field(0.10, alias="VISION_INDIVIDUALS_CANNOT_LINK_MARGIN")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
+
+    # Office sessions (app/vision_office_sessions.py, app/vision_office_sessions_loop.py; office camera
+    # design PR #3127 step B). One row per visit to a room camera: span, who (probably), activity
+    # timeline. The Temporal Self labels the office company arc from it; an unknown person opens the
+    # "Who is this?" card right away. false = the reducer does not run.
+    vision_office_sessions_enabled: bool = Field(True, alias="VISION_OFFICE_SESSIONS_ENABLED")
+    vision_office_sessions_interval_sec: float = Field(60.0, ge=0.0, alias="VISION_OFFICE_SESSIONS_INTERVAL_SEC")
+    # Room streams that get sessions (comma-separated presence ids).
+    vision_office_sessions_streams: str = Field("cam0", alias="VISION_OFFICE_SESSIONS_STREAMS")
+    # A visit becomes final this long after it ended: longer than VISION_PERSON_MODEL_INTERVAL_SEC,
+    # so the person model has guessed every record before "who" is fixed.
+    vision_office_sessions_settle_sec: float = Field(660.0, ge=0.0, alias="VISION_OFFICE_SESSIONS_SETTLE_SEC")
+    vision_office_sessions_lookback_hours: float = Field(24.0, gt=0.0, alias="VISION_OFFICE_SESSIONS_LOOKBACK_HOURS")
+    # "Who is this?" asks opened by office sessions per local day (one per session at most). 0 = none.
+    # Separate from ORION_ASK_DAILY_CAP (the street rule), which does not count them.
+    vision_office_ask_daily_cap: int = Field(4, ge=0, alias="VISION_OFFICE_ASK_DAILY_CAP")
 
     # Walkway motion stories (app/vision_motion.py, app/vision_motion_loop.py;
     # docs/superpowers/specs/2026-10-16-walkway-motion-stories-proposal.md).
@@ -692,7 +712,7 @@ class Settings(BaseSettings):
     # false = the reducer does not run (readers then see no new rows).
     vision_rollup_enabled: bool = Field(True, alias="VISION_ROLLUP_ENABLED")
     vision_rollup_interval_sec: float = Field(300.0, alias="VISION_ROLLUP_INTERVAL_SEC")
-    vision_rollup_streams: str = Field("walkway", alias="VISION_ROLLUP_STREAMS")
+    vision_rollup_streams: str = Field("walkway,cam0", alias="VISION_ROLLUP_STREAMS")
     # A vehicle individual seen in this many different clock hours of the
     # trailing 24 h is a parked car the stationary rule missed: not a passing.
     vision_rollup_parked_min_hours: int = Field(4, ge=1, alias="VISION_ROLLUP_PARKED_MIN_HOURS")
@@ -730,7 +750,7 @@ class Settings(BaseSettings):
     # Whole days older than this are deleted. 0 = keep forever.
     vision_hourly_frames_retention_days: float = Field(14.0, ge=0.0, alias="VISION_HOURLY_FRAMES_RETENTION_DAYS")
     vision_hourly_frames_streams: str = Field(
-        "walkway,cam0=frame,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
+        "walkway,cam0,doorbell", alias="VISION_HOURLY_FRAMES_STREAMS")
 
     # Rhythm learner: fits when things usually happen, emits expectations,
     # grades them met / missed / unscorable.
@@ -866,6 +886,10 @@ class Settings(BaseSettings):
     # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
+    # Settle-time scoring of world-action episodes (attend-to-act loop; app/world_settlement_loop.py),
+    # moved here from orion-feedback-runtime 2026-11-04. Record-only. 0 disables (episodes then stay
+    # unscored and the world action learns nothing).
+    sql_writer_world_settlement_interval_sec: float = Field(30.0, alias="SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC")
     # Hourly kWh per Orion power source (app/orion_energy_rollup.py), kept after raw watts are
     # pruned. 0 disables, and months of Orion energy history are then lost after 30 days.
     orion_energy_rollup_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ROLLUP_INTERVAL_SEC")
@@ -937,6 +961,8 @@ class Settings(BaseSettings):
             channels.append("orion:home:cooling:sample")
         if "orion:office:env:sample" not in channels:
             channels.append("orion:office:env:sample")
+        if "orion:closet:env:sample" not in channels:
+            channels.append("orion:closet:env:sample")
         # Same guarantee as cooling: SQL_WRITER_SUBSCRIBE_CHANNELS replaces rather
         # than merges, so a pre-energy operator .env would leave these routes inert.
         for energy_channel in (

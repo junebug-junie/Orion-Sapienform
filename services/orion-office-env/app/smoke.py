@@ -18,9 +18,16 @@ def run_smoke(
     port: str,
     baud: int,
     seconds: float,
+    room: str = "office",
     open_port: Optional[Callable[..., Any]] = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
+    """Exit codes: 0 PASS, 1 no valid frame, 2 port, then one per missing sensor:
+    office 3 SHT40, 4 CCS811, 5 PMSA003I, 6 TSL2591; closet 7 SCD40.
+
+    A sensor counts as reading if ANY frame in the window carried it. The PMSA003I is
+    sent only 30 s after it starts, so run the smoke at least 40 s after a Nano reset.
+    """
     if open_port is None:
         import serial
 
@@ -32,6 +39,7 @@ def run_smoke(
         return 2
     ok = rejected = 0
     last = None
+    seen: dict[str, Any] = {}
     deadline = clock() + seconds
     try:
         while clock() < deadline:
@@ -41,33 +49,44 @@ def run_smoke(
             frame = parse_line(raw)
             if frame is None:
                 rejected += 1
-            else:
-                ok += 1
-                last = frame
+                continue
+            ok += 1
+            last = frame
+            env = frame.environment
+            if env is not None and (env.temp_c is not None or env.humidity_pct is not None):
+                seen["sht40"] = env
+            if frame.air is not None and frame.air.eco2_ppm is not None:
+                seen["ccs811"] = frame.air
+            if frame.particulate is not None and frame.particulate.pm25_ug_m3 is not None:
+                seen["pmsa003i"] = frame.particulate
+            if frame.light is not None and (frame.light.lux is not None or frame.light.saturated):
+                seen["tsl2591"] = frame.light
+            if frame.co2 is not None and frame.co2.co2_ppm is not None:
+                seen["scd40"] = frame.co2
     finally:
         ser.close()
-    print(f"frames_ok={ok} lines_rejected={rejected}")
+    print(f"frames_ok={ok} lines_rejected={rejected} room={room}")
     if last is None:
         print("FAIL no valid orion.office_env_frame.v1 frame seen")
         return 1
-    env = last.environment
-    if env is None or (env.temp_c is None and env.humidity_pct is None):
-        print(f"WARN frames arrive (seq={last.seq}) but carry no environment: SHT40 not reading")
-        return 3
-    air = last.air
-    if air is None or air.eco2_ppm is None:
-        print(f"WARN seq={last.seq} temp_c={env.temp_c} but no air reading: CCS811 not reading")
-        return 4
-    print(
-        f"PASS seq={last.seq} temp_c={env.temp_c} humidity_pct={env.humidity_pct} "
-        f"eco2_ppm={air.eco2_ppm} tvoc_ppb={air.tvoc_ppb} air_since_init_ms={air.since_init_ms}"
+    expected = (("scd40", 7),) if room == "closet" else (
+        ("sht40", 3), ("ccs811", 4), ("pmsa003i", 5), ("tsl2591", 6)
     )
+    for name, code in expected:
+        if name not in seen:
+            print(f"WARN frames arrive (seq={last.seq}) but no {name.upper()} reading")
+            return code
+    print("PASS seq=%s %s" % (last.seq, " ".join(
+        f"{k}={v.model_dump(exclude_none=True)}" for k, v in seen.items()
+    )))
     return 0
 
 
 def main() -> None:
     s = get_settings()
-    sys.exit(run_smoke(port=s.OFFICE_SERIAL_PORT, baud=s.OFFICE_SERIAL_BAUD, seconds=10.0))
+    sys.exit(
+        run_smoke(port=s.OFFICE_SERIAL_PORT, baud=s.OFFICE_SERIAL_BAUD, seconds=10.0, room=s.ENV_ROOM)
+    )
 
 
 if __name__ == "__main__":

@@ -178,7 +178,7 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
 - **Nothing calls durable-runs `/capacity` any more** (gate:
   `orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py`). Deleted in 5.6.
 - **`visual_baseline` swap guard deleted**, with `GPU_POOL_VISUAL_ACTIVITY_URL` and the image's
-  copy of `config/proposals/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
+  copy of `config/reverie/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
   overdue image baseline reclaims gpu2 through the queue (a diffusion hold, owner reclaim).
 - Eval: `run_pool_day_eval.py` now fails on any second where a world and a diffusion lease are
   granted together (`world_diffusion_grant_overlap_sec`), or if `serialize_with` never came up.
@@ -284,7 +284,8 @@ would pause a real background run, so it waits for Juniper's approval.
 
 One more named reason on the U4 shed lever, below the reflex: `orion_self_shed`, precedence 1,
 blocks NEW `background` grants only (never system, interactive, urgent; running work finishes;
-nothing recalled). Set by execution-dispatch's `shed_background_gpu` action over
+nothing recalled). Set by the cooling world act (`shed_background_gpu`; orion-durable-runs
+`app/cooling_act.py`, decided by the want market since 2026-11-05; execution dispatch before) over
 `orion:gpu_pool:shed:request` (`GpuPoolShedReasonRequestV1`, set/clear/status; the schema refuses
 `cooling_incident`). Code: `orion/gpu_pool/orion_shed.py`; ledger `public.gpu_pool_orion_shed`
 (`app/orion_shed_store.py`, migration `services/orion-sql-db/manual_migration_gpu_pool_orion_shed_v1.sql`).
@@ -412,6 +413,16 @@ slot-seconds pass `GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR` (3360 = 2x the 1
 every `GPU_POOL_PERCEPTION_REALERT_SEC` while high, info when back under. Memory only. Log:
 `gpu_pool_perception_load state=...`. A config without `perception` in `priorities:` still loads
 (the validator inserts it below `interactive`), which is how the code shipped ahead of the YAML.
+
+**Starved priority (2026-11-03, Orion Prime reliability).** Order is now
+`urgent > interactive > perception > starved > system > background`. `starved` is Orion's own work whose previous
+try lost its whole seat wait to the queue; today only Orion Prime's `prime_starved` route uses it (Prime's normal
+route `prime` is `system`). It goes ahead of other system work by priority instead of by arrival, never ahead of
+Juniper's turn or Orion's senses, and every shed reason that blocks `system` blocks `starved` too (the 34 C reflex
+`cabinet_hot` included; pinned in `orion/gpu_pool/tests/test_starved_priority.py`). A config without `starved` in
+`priorities:` still loads (the validator inserts it just above `system`). An OLD image reading a NEW YAML does
+not load it (the `prime_starved` route names an unknown priority): rebuild the pool, the gateway, the lane
+controller (circe) and mesh-guardian together with this change.
 - The pool keeps retrying at the cooldown: the first retry the rebuilt controller accepts clears it.
 - Fix: rebuild the controller on circe (`services/orion-gpu-lane-controller`); confirm with
   `python3 scripts/gpu_pool_actuator_probe.py`.

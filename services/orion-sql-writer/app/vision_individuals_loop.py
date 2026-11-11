@@ -63,10 +63,12 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         stationary_min_sec=float(settings.vision_stationary_min_sec),
         stationary_iou=float(settings.vision_stationary_iou),
         stationary_max_gap_sec=float(settings.vision_stationary_max_gap_sec),
+        stationary_streams=tuple(s.strip() for s in str(settings.vision_stationary_streams or "").split(",") if s.strip()),
         ask_face_min_faces=int(settings.vision_ask_face_min_faces),
         same_ask_min_face_cosine=float(settings.vision_same_ask_min_face_cosine),
         confirm_ask_daily_cap=int(settings.vision_confirm_ask_daily_cap),
         person_confirm_ask_daily_cap=int(settings.vision_person_confirm_ask_daily_cap),
+        person_confirm_prior_ask_daily_cap=int(settings.vision_person_confirm_prior_ask_daily_cap),
         split_on_verdict_enabled=bool(settings.vision_split_on_verdict_enabled),
         split_follow_min_face_cosine=float(settings.vision_split_follow_min_face_cosine),
         split_follow_margin=float(settings.vision_split_follow_margin),
@@ -97,6 +99,8 @@ def person_model_config(settings: Settings) -> Optional[PersonModelConfig]:
         fallback_channel=str(settings.vision_person_fallback_channel),
         candidate_days=float(settings.vision_individuals_candidate_days),
         local_tz=str(settings.vision_local_tz),
+        face_candidate_days=float(settings.vision_person_face_candidate_days),
+        alpha_split_people_only=bool(settings.vision_person_alpha_split_people_only),
     )
 
 

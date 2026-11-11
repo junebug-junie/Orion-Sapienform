@@ -64,3 +64,9 @@ orion-kev
 # sweep. circe needs no entry: its positive allowlist (include_services_circe.txt) already
 # omits it. pan-1 has no rebuild hook.
 orion-office-env
+
+# orion-vision-edge: kept in the repo but not run (2026-11-04, Juniper: "dont use it").
+# The office camera (cam0) is captured by orion-vision-retina-office from the main
+# stream. A running edge would publish a second cam0 frame stream (640x480 substream)
+# on orion:vision:frames, so the rebuild and bring-up sweeps must not start it.
+orion-vision-edge

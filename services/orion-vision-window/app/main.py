@@ -176,6 +176,7 @@ class WindowService:
             stationary_min_sec=settings.VISION_STATIONARY_MIN_SEC,
             stationary_iou=settings.VISION_STATIONARY_IOU,
             stationary_max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
+            stationary_streams=settings.WINDOW_STATIONARY_STREAMS,
         )
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,

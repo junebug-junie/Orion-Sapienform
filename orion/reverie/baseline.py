@@ -26,12 +26,10 @@ class VisualBaselinePolicy(BaseModel):
     interval_sec: float = Field(default=5400, gt=0)
     retry_sec: float = Field(default=DEFAULT_RETRY_SEC, gt=0)
     freshness_sec: float = Field(default=60, gt=0)
-    timeout_sec: float = Field(default=2, gt=0, le=10)
     target_id: str = "host:circe_gpu"
-    thought_url: str = "http://orion-athena-thought:7155"
 
 def load_baseline_policy() -> VisualBaselinePolicy:
-    path = Path(__file__).resolve().parents[2] / "config/proposals/visual_baseline.v1.yaml"
+    path = Path(__file__).resolve().parents[2] / "config/reverie/visual_baseline.v1.yaml"
     return VisualBaselinePolicy.model_validate(yaml.safe_load(path.read_text()) if path.exists() else {})
 
 def validate_eligibility(value, *, now=None, policy=None, target_id=None, template=None, proposal_kind=None):

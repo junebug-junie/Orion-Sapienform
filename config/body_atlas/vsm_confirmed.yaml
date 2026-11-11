@@ -3,9 +3,13 @@
 # Read by orion/body_atlas/claims.py (load_confirmed); `python -P -m orion.dig capacities` prints it.
 #
 # Orion claims a job for a part with `python -P -m orion.dig capacity claim <part> <job> because ...`.
-# A claim is not a role. Juniper confirms or rejects one here, by PR; the PR is the review.
-# A confirmed role holds the job like a rule result: a capacity sentence may cite it, and it
-# covers the "no part is shown doing this" gap line of that job. Only Juniper edits this file.
+# Since 2026-11-04 (PR #3107, tightened the same day) a claim holds its job while code's evidence
+# check passes on each read: every id it cites is on a live flow of the part and the wiring fits
+# the job. It prints EVIDENCE-CHECKED (code, not Juniper); no review is needed. S5 claims are never
+# code-checked and wait for her. `rejected` is Juniper's veto: a rejected claim holds nothing. A
+# confirmed role holds the job like a rule result and outranks a claim: a capacity sentence may
+# cite it, and it covers the "no part is shown doing this" gap line of that job. Only Juniper
+# edits this file.
 #
 # part: the part name as `dig capacities` / `dig body <organ>` print it (no "part:" prefix).
 # role: S1, S2, S3, S3*, S4, S5, algedonic or metabolism.  date: YYYY-MM-DD.  note: optional.

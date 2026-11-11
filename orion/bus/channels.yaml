@@ -187,12 +187,14 @@ channels:
     stability: "experimental"
     since: "2026-05-13"
 
-  # render_scene args preserve dispatch/proposal/decision/correlation IDs and
-  # optional visual_baseline eligibility; the thought endpoint rechecks history.
+  # orion-execution-dispatch-runtime (render_scene, prunes, summarize/inspect) left the
+  # producer list on 2026-11-07 (ladder retirement PR 6).
+  # 2026-11-06 (ladder retirement PR 4): orion-hardware-watch's disk rule asks for
+  # skills.runtime.image_prune.v1 here (services/orion-hardware-watch/app/image_prune.py).
   - name: "orion:cortex:exec:request:background"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
-    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor", "orion-execution-dispatch-runtime"]
+    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor", "orion-hardware-watch"]
     consumer_services: ["orion-cortex-exec"]
     single_consumer: true
     stability: "experimental"
@@ -372,6 +374,7 @@ channels:
       - orion-harness-governor
       - orion-thought
       - orion-hub
+      - orion-hardware-watch
       - "*"
     stability: "experimental"
     since: "2026-01-08"
@@ -2157,7 +2160,17 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-10-27"
-    description: "Read-only office temperature/humidity (SHT40 on a pan-1 Nano ESP32). Absent is not zero; stale samples carry no measurements."
+    description: "Read-only office temperature/humidity (SHT40), eCO2/TVOC (CCS811), particulates (PMSA003I) and windowsill light (TSL2591) on a pan-1 Nano ESP32. Absent is not zero; stale samples carry no measurements."
+
+  - name: "orion:closet:env:sample"
+    kind: "telemetry"
+    schema_id: "ClosetEnvSampleV1"
+    message_kind: "closet.env.sample.v1"
+    producer_services: ["orion-closet-env"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Read-only server-closet CO2/temperature/humidity (SCD40 on the second pan-1 Nano ESP32, above the server cabinet). Published by the orion-office-env image's closet container. Absent is not zero; stale samples carry no measurements."
 
   # House-level electricity (docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md).
   # Whole-house Green Button intervals, priced by a versioned tariff, joined to settled
@@ -2602,7 +2615,7 @@ channels:
     kind: "event"
     schema_id: "ActionOutcomeEmitV1"
     message_kind: "action.outcome.emit.v1"
-    producer_services: ["orion-spark-concept-induction", "orion-execution-dispatch-runtime"]
+    producer_services: ["orion-spark-concept-induction", "orion-durable-runs"]
     consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-07-06"
@@ -3215,15 +3228,6 @@ channels:
     stability: "experimental"
     since: "2026-07-16"
 
-  - name: "orion:feedback:frame"
-    kind: "event"
-    schema_id: "FeedbackFrameV1"
-    message_kind: "feedback.frame.v1"
-    producer_services: ["orion-feedback-runtime"]
-    consumer_services: ["orion-spark-concept-induction"]
-    stability: "experimental"
-    since: "2026-06-26"
-
   # --- Unified turn (orion-thought + orion-harness-governor) ---
   - name: "orion:thought:request"
     kind: "request"
@@ -3486,81 +3490,34 @@ channels:
     kind: "request"
     schema_id: "GpuPoolShedReasonRequestV1"
     message_kind: "gpu_pool.shed.request.v1"
-    producer_services: ["orion-execution-dispatch-runtime"]
+    producer_services: ["orion-durable-runs"]
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-10-01"
-    description: "Orion's learned shed action (attend-to-act loop A1): set / clear / status of the lower-precedence orion_self_shed reason on the pool's U4 shed lever (no NEW background grants; running work finishes; never system/interactive/urgent). The schema's reason Literal refuses cooling_incident. Caps (TTL, per-day, gap) are enforced by the pool. Off unless GPU_POOL_ORION_SHED_ENABLED. Reply GpuPoolShedResultV1 on orion:gpu_pool:shed:reply:*."
+    description: "Orion's learned shed action (attend-to-act loop A1; since 2026-11-05 the cooling world act in orion-durable-runs app/cooling_act.py, decided by the want market, family self_regulate.shed -- execution dispatch no longer sends it): set / clear / status of the lower-precedence orion_self_shed reason on the pool's U4 shed lever (no NEW background grants; running work finishes; never system/interactive/urgent). The schema's reason Literal refuses cooling_incident. Caps (TTL, per-day, gap) are enforced by the pool. Off unless GPU_POOL_ORION_SHED_ENABLED. Reply GpuPoolShedResultV1 on orion:gpu_pool:shed:reply:*."
 
   - name: "orion:gpu_pool:shed:reply:*"
     kind: "result"
     schema_id: "GpuPoolShedResultV1"
     message_kind: "gpu_pool.shed.result.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-durable-runs"]
     stability: "experimental"
     since: "2026-10-01"
     description: "Per-request reply to orion:gpu_pool:shed:request (orion.schemas.gpu_pool.GPU_POOL_SHED_REPLY_PREFIX): the shed record (state active|expired|cancelled|preempted_by_reflex|refused, refusal, TTL, drained_at, grants_withheld, delayed_grant_sec)."
 
-  - name: "orion:world_pulse_read:pull:request"
-    kind: "request"
-    schema_id: "WorldPulseReadPullRequestV1"
-    message_kind: "world_pulse_read.pull.request.v1"
-    producer_services: ["orion-execution-dispatch-runtime"]
-    consumer_services: ["orion-hub"]
-    stability: "experimental"
-    since: "2026-10-21"
-    description: "Thinking rung 3 follow-up: the motor allocator's reading pull (route read_world_pulse). op=check runs Hub's gates (HUB_WORLD_PULSE_READ_PULL_ENABLED, daily cap, arousal strained, thermal hot, the reading pipeline's own window/refund backoff) and picks the next seed in the queue's own claim order, with no side effect; op=act re-runs them, then arm=treated starts that read as one extra in-flight read and arm=control only marks the seed as the decision's control. Reply WorldPulseReadPullResultV1 on orion:world_pulse_read:pull:reply:*."
+  # "orion:world_pulse_read:pull:request" / "orion:world_pulse_read:pull:reply:*" (WorldPulseReadPullRequestV1 /
+  # WorldPulseReadPullResultV1) removed 2026-11-07, ladder retirement PR 6: the dispatch runtime was the only
+  # sender, and Juniper ended the reading-pull experiment; Hub's own lane does every read.
 
-  - name: "orion:world_pulse_read:pull:reply:*"
-    kind: "result"
-    schema_id: "WorldPulseReadPullResultV1"
-    message_kind: "world_pulse_read.pull.result.v1"
-    producer_services: ["orion-hub"]
-    consumer_services: ["orion-execution-dispatch-runtime"]
-    stability: "experimental"
-    since: "2026-10-21"
-    description: "Per-request reply to orion:world_pulse_read:pull:request (orion.schemas.world_pulse_read_pull.WORLD_PULSE_READ_PULL_REPLY_PREFIX): state ready|started|control_recorded|refused, the seed and its act-ledger key (read_seed:<seed_id>), refusal and retry_after_sec, pulls today and the cap."
+  # "orion:retro_leisure:start:request" / "orion:retro_leisure:start:reply:*" (RetroLeisureStartRequestV1 /
+  # RetroLeisureStartResultV1) removed 2026-11-05, ladder retirement PR 1: the dispatch runtime was the only
+  # sender, and Hub now starts leisure on its own timer (services/orion-hub/scripts/retro_leisure_self_start.py).
 
-  - name: "orion:retro_leisure:start:request"
-    kind: "request"
-    schema_id: "RetroLeisureStartRequestV1"
-    message_kind: "retro_leisure.start.request.v1"
-    producer_services: ["orion-execution-dispatch-runtime"]
-    consumer_services: ["orion-hub"]
-    stability: "experimental"
-    since: "2026-10-22"
-    description: "Orion plays Zelda, section E: the motor allocator admitted a solo leisure session (route retro_leisure_session, act play:hub.retro_leisure:artifact_produced). Hub asks the leisure runner's own should_start() gate (arousal strained, cabinet_hot, human present or recent, session/daily caps, RETRO_LEISURE_ENABLED); when it passes Hub starts the session and opens the play act keyed retro_leisure_dispatch:<dispatch_id>. Reply RetroLeisureStartResultV1 on orion:retro_leisure:start:reply:*."
-
-  - name: "orion:retro_leisure:start:reply:*"
-    kind: "result"
-    schema_id: "RetroLeisureStartResultV1"
-    message_kind: "retro_leisure.start.result.v1"
-    producer_services: ["orion-hub"]
-    consumer_services: ["orion-execution-dispatch-runtime"]
-    stability: "experimental"
-    since: "2026-10-22"
-    description: "Per-request reply to orion:retro_leisure:start:request (orion.schemas.retro_leisure.RETRO_LEISURE_START_REPLY_PREFIX): state started|refused, the session id and its act-ledger key, the runner's named refusal and retry_after_sec."
-
-  - name: "orion:aitown_session:start:request"
-    kind: "request"
-    schema_id: "AITownSessionStartRequestV1"
-    message_kind: "aitown_session.start.request.v1"
-    producer_services: ["orion-execution-dispatch-runtime"]
-    consumer_services: ["orion-embodiment"]
-    stability: "experimental"
-    since: "2026-10-30"
-    description: "AI Town sessions (Juniper 2026-10-30): the motor allocator admitted one AI Town session (route aitown_session, act play:aitown.session:artifact_produced). orion-embodiment's session controller runs its own gate (EMBODIMENT_TOWN_SESSIONS_ENABLED, 2 h per America/Denver day, 1 h gap, one session at a time, no manual session open); when it passes it unpauses the town (testing:resume) and opens the play act keyed aitown_session_dispatch:<dispatch_id>. Reply AITownSessionStartResultV1 on orion:aitown_session:start:reply:*."
-
-  - name: "orion:aitown_session:start:reply:*"
-    kind: "result"
-    schema_id: "AITownSessionStartResultV1"
-    message_kind: "aitown_session.start.result.v1"
-    producer_services: ["orion-embodiment"]
-    consumer_services: ["orion-execution-dispatch-runtime"]
-    stability: "experimental"
-    since: "2026-10-30"
-    description: "Per-request reply to orion:aitown_session:start:request (orion.schemas.aitown_session.AITOWN_SESSION_START_REPLY_PREFIX): state started|refused, the session id and its act-ledger key, the controller's named refusal and retry_after_sec (the next local midnight for daily_cap)."
+  # "orion:aitown_session:start:request" / "orion:aitown_session:start:reply:*" (AITownSessionStartRequestV1 /
+  # AITownSessionStartResultV1) removed 2026-11-05, ladder retirement PR 3: the dispatch runtime was the only
+  # sender, and orion-embodiment now starts Orion's town sessions on its own timer
+  # (services/orion-embodiment/app/town_self_start.py).
 
   - name: "orion:gpu_pool:actuate:request"
     kind: "request"
@@ -3984,6 +3941,54 @@ channels:
     stability: "experimental"
     since: "2026-10-16"
     description: "orion-introspect queue_curiosity_focus tool RPC. From a chat turn (unified_chat) or from Prime's resident loop (prime: origin self only, and never replaces a pending focus), Orion queues one question (and why) for its next regular investigate curiosity run. Hub writes one curiosity_focus_request row: one pending slot, a new focus replaces the pending one (named in the reply), except Orion's own choice (origin self) never replaces a focus Juniper asked for (origin juniper). Starts nothing; the run still waits for every gate, cooldown and cap, is shown the focus, and records a disposition (explored / set_aside:<reason>). Off when HUB_CURIOSITY_FOCUS_ENABLED=false. Reply on orion:introspect:result:<correlation_id>."
+
+  # Curiosity replica (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md). Contract in patch 2;
+  # producer (services/orion-hub/scripts/curiosity_replica_plan.py) and consumer
+  # (services/orion-mind/app/replica_loop.py) in patch 3.
+  - name: "orion:curiosity:replica:plan:request"
+    kind: "request"
+    schema_id: "CuriosityOfferPlanRequestV1"
+    message_kind: "curiosity.replica.plan.request.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-mind"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica plan RPC. On a replica-arm investigate run only, Hub sends the fresh live priors it could offer (at most 60 candidates, stale ids, the pending focus) and waits at most 90 s. orion-mind's curiosity.replica instance bids (tier 2, lane chat), makes one short model call and answers with 3-5 prior ids in order plus an optional support/challenge/refuse stance on Prime's focus or regulate signal. Hub validates the plan against the same worldview read; a bad, late or missing plan means the uncertainty order. The replica's reasons stay on curiosity_offer_plans and never reach Orion's prompt. Reply on orion:curiosity:replica:plan:result:<correlation_id>."
+
+  - name: "orion:curiosity:replica:plan:result:*"
+    kind: "result"
+    schema_id: "CuriosityOfferPlanResultV1"
+    message_kind: "curiosity.replica.plan.result.v1"
+    producer_services: ["orion-mind"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica plan reply, one per request, keyed by the request's correlation_id. status ok (picks) | abstain | unfunded | model_failed | unparseable; Hub adds timeout and invalid:<reason> on its own plan row. Every replica-arm run counts as replica whatever the status (intention to treat)."
+
+  # Curiosity replica patch 4 (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 9): the replica
+  # refuses a focus Prime queued. Producer services/orion-mind/app/replica_loop.py, consumer
+  # services/orion-hub/scripts/curiosity_focus_refusal_listener.py.
+  - name: "orion:curiosity:replica:focus_refusal:request"
+    kind: "request"
+    schema_id: "CuriosityFocusRefusalRequestV1"
+    message_kind: "curiosity.replica.focus_refusal.request.v1"
+    producer_services: ["orion-mind"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica focus refusal RPC. orion-mind's curiosity.replica refuses a pending focus PRIME queued, with a one-sentence reason and its answer act id. Hub applies orion/curiosity/focus.py refuse_focus: the row leaves the slot as refused_by_organ, so no run is shown it. A focus Juniper asked for, or one Orion chose in a conversation, is never refused (code, SQL guard, table CHECK). Only applied refusals are sent; held-back ones stay on the replica's act. Reply on orion:curiosity:replica:focus_refusal:result:<correlation_id>."
+
+  - name: "orion:curiosity:replica:focus_refusal:result:*"
+    kind: "result"
+    schema_id: "CuriosityFocusRefusalResultV1"
+    message_kind: "curiosity.replica.focus_refusal.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-mind"]
+    stability: "experimental"
+    since: "2026-11-04"
+    description: "Curiosity replica focus refusal reply, one per request, keyed by the request's correlation_id. ok true: the focus was refused (refused_at). ok false: nothing was written; error says why (Juniper's focus, not Prime's, no longer pending, table unreadable)."
 
   - name: "orion:introspect:node_history:request"
     kind: "request"

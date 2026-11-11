@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, TypedDict
 
 from app.admitted_graph import (
-    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, listener_wait, replay_if_requeued,
     resource_nodes, taken_back,
 )
 from orion.memory.episode.distill import (
@@ -58,6 +58,7 @@ class EpisodeDistillState(TypedDict, total=False):
     requested_at: str
     attempt: int
     hold_takebacks: int
+    listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict[str, Any] | None
     hold: dict[str, Any] | None
     hold_seq: int
@@ -166,6 +167,11 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
             return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
                                     {"status": "waiting_resource"})
         except Exception as exc:  # noqa: BLE001 -- a real distill attempt failed: bounded re-try
+            # The answering service restarting: the call reached nobody. Wait it out, replay, no attempt.
+            parked = await listener_wait(admission, dict(state), exc,
+                                         waiting={"status": "retrying", "retry_node": None})
+            if parked is not None:
+                return parked
             replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
             if replay is not None:
                 return replay

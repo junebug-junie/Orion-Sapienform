@@ -922,7 +922,7 @@ once per tick; each loop decides what a level means for its own dial:
 
 | Dial | strained | engaged | idle | unknown / off |
 |---|---|---|---|---|
-| Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
+| Curiosity investigation line | as today (strain veto retired 2026-11-07; the run's body-economy bid in durable-runs decides) | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
 | Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
 | Background outreach | refused, `arousal_strained` (one strain report per long episode may pass, see below) | as today | as today | as today |
 | Scheduled self-modification proposals (R3 reader 6) | no new proposal; pressure kept, traced `mutation_proposal_held` | as today | as today | as today |
@@ -1187,17 +1187,47 @@ the outcome row keeps before/after for every prior a run changed.
 Measured from Hub's own snapshots because Orion writes a revision only when a
 confidence *moves*: 21 revisions across 94 journaled runs by 2026-09-14.
 
-`HUB_CURIOSITY_VALUE_ORDER_ENABLED` (default off) offers priors by *expected
+`HUB_CURIOSITY_VALUE_ORDER_ENABLED` (on since 2026-11-04) offers priors by *expected
 belief change* instead of raw uncertainty. Expected value is entropy times the
 prior's measured learning yield: net, straightness-discounted belief change
 per unit of uncertainty over its last `HUB_CURIOSITY_YIELD_WINDOW` tests --
 counting only progress a test made and that stuck -- shrunk toward the pool
 average by `HUB_CURIOSITY_YIELD_PSEUDO_TESTS`. Orion still chooses; only the
-order changes, and the prompt describes the order in the same words on both
-arms ("where the code estimates a test could change your mind the most,
-starting from how unsure you are"). Each run draws its arm from a
-deterministic per-run coin with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`,
-so the two orders can be compared on real outcomes. With no scored history the
+order changes, and the prompt describes the order in the same words on every
+arm (`ORDER_SENTENCE` in `orion/curiosity/kickoff_prompt.py`: "a presentation
+choice made before this run, not a recommendation" -- it names no rule, so it
+stays true when the curiosity replica's plan sets the order). Each run draws its
+arm from a deterministic per-run draw (`draw_offer_arm`, `orion/curiosity/value.py`)
+with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`, so the orders can be
+compared on real outcomes. The draw has a third band for the curiosity replica
+(`replica_order`, docs/superpowers/specs/2026-11-04-curiosity-replica-design.md),
+with P(replica) = `HUB_CURIOSITY_REPLICA_ARM_PROPENSITY`. Since patch 3 all three
+arms get one third (value 0.3333, replica 0.3333, uncertainty the rest).
+
+On a replica-arm run, right after the worldview read and before the offer row,
+Hub asks orion-mind's curiosity replica for a plan
+(`scripts/curiosity_replica_plan.py`): it sends up to 60 fresh candidates on
+`orion:curiosity:replica:plan:request` and waits at most
+`HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC` (90 s). A plan that passes
+`validate_plan` (`orion/curiosity/replica/plan.py`: 3-5 distinct candidate ids,
+still fresh, a 1-200 character reason each; rejected whole on any failure) fills
+the top of the offer; the rest of the layout (6 ordered, 2 coverage, the stale
+bucket) is unchanged. Anything else -- no answer in time, abstain, unfunded,
+model failed, a rejected plan -- keeps the uncertainty order. Either way the run
+gets one `curiosity_offer_plans` row with its status and fallback reason, and one
+log line (`curiosity_replica_plan_used` or `curiosity_replica_fallback run=<id>
+reason=<reason>`). The run counts as a replica-arm run whatever happened
+(intention to treat). The replica's reasons stay on the plan row: the kickoff
+prompt shows only the order. Its stances are recorded on the row; a stance on a
+PRIME focus or signal is also an answer to Prime, delivered by the replica
+itself (patch 4): a refused Prime focus reaches Hub on
+`orion:curiosity:replica:focus_refusal:request`
+(`scripts/curiosity_focus_refusal_listener.py`, which runs
+`orion/curiosity/focus.py refuse_focus`; Juniper's focus is never refused) before
+the plan answer, so the run is not shown it. Rollback:
+`HUB_CURIOSITY_REPLICA_ARM_ENABLED=false`. The offer
+row records the whole draw in `arm_propensities` (all three arms; needs
+`services/orion-sql-db/manual_migration_curiosity_replica_plan_v1.sql`). With no scored history the
 two orders are identical, prior for prior (checked on 2000 random populations
 in `tests/test_curiosity_worldview.py`); among priors all worth zero, the
 uncertainty order still decides.
@@ -1271,6 +1301,23 @@ or a `:LivedAnswer` (lived) to their own graph. Hub mirrors evidenced rows into
 `produced_by="curiosity_self_inquiry"`. Chat reads both through the shared
 identity inject: lived lines (`In my own words (lived / …):`) prepend the
 anatomy definition line ("In my own words, ...") and the operator-authored card.
+
+**Answers are kept whole; the 1200-character budget is a reading budget.**
+The prompt tells Orion the budget (`SELF_DEFINITION_TEXT_CAP`,
+`orion/curiosity/self_inquiry.py`). When an answer runs over, the same turn
+gives the same model one more hop (`curiosity_self_fit`, no tools, under the
+run's GPU hold): "rewrite this to fit". Its reply is stored in Redis
+(`orion:curiosity:self_fit:<run_id>`) and becomes the mirrored row's
+`content`. The graph node always keeps the full answer. A refused or failed hop
+mirrors the full text, and every reader (self-inquiry read-back, chat identity
+inject) cuts at a sentence with `orion/text_fit.py`, never mid-word. Until
+2026-11-03 every durable path cut `text[:1200]`; the cut rows are restored
+from the graph by `scripts/backfill_self_answer_full_text.py` (dry-run by
+default; `--apply` is a guarded direct UPDATE, since sql-writer treats this
+table as insert-only). Deploy `orion-durable-runs` with Hub: its finish detail
+is built by the same module. Check it live:
+`python services/orion-hub/evals/run_self_answer_fit_eval.py --since <date>`
+(exit 1 on any row cut mid-word at exactly 1200).
 
 **Self priors stay on the self line.** Priors with `line = "self"` are shown
 only on self-inquiry kickoff. They are **excluded** from situation world-priors
@@ -1632,6 +1679,19 @@ section degrades to `null` independently (missing table, unset
 - Hub records chat-turn timestamps and mirrors a liveness snapshot to
   `substrate_hub_presence` (`HUB_PRESENCE_WRITER_ENABLED`, default on;
   apply `services/orion-sql-db/manual_migration_hub_presence_v1.sql`).
+- **Hub attention minutes** (`HUB_ATTENTION_TRACKER_ENABLED`, default on):
+  records that Juniper is actually looking at the Hub. The top-level page loads
+  `static/js/hub-attention-tracker.js`, which sends one heartbeat per minute to
+  `POST /api/hub-attention/heartbeat` only while the page is visible, the
+  window has focus, and there was real input (pointer, key, wheel, scroll,
+  touch) in the last 120 s. Input inside same-origin tab iframes counts;
+  cross-origin iframes and sub-pages opened outside the Hub shell do not. The
+  route upserts one row per (server minute, `desktop`|`mobile`) into
+  `hub_attention_minute` (apply
+  `services/orion-sql-db/manual_migration_hub_attention_minute_v1.sql`; without
+  it each beat is dropped with a rate-limited warning, never a 500). No reader
+  and no bus event yet: the prediction service's reachable forecast will read
+  this table after ~2 weeks of live rows pass the metric gate.
 
 ### 5.4 Drives Analytics panel — REMOVED 2026-08-13
 
@@ -2721,7 +2781,7 @@ The answer is only logged, next to what Hub really did. Nothing changes what Hub
 | producer | family | where it bids | want_id (= the act's correlation id) | real outcome logged |
 |---|---|---|---|---|
 | endogenous outreach | `hub.outreach` | at compose (before `_generate`), and on a tick held by strain alone | the compose correlation id (fresh id on a strain-held tick, no act) | `ran` (sent) or `blocked:<reason>` (orion_passed, `*_after_generation`, arousal_strained, ...) |
-| retro leisure | `hub.retro_leisure` | `RetroLeisureListener.start` | the dispatch id | `ran` (started) or `blocked:<refusal>` |
+| retro leisure | `hub.retro_leisure` | `RetroLeisureSelfStart.tick`, before the gate (every 300 s; not while a session runs or the switch is off) | the act id `retro_self_start:<uuid>` | `ran` (started) or `blocked:<refusal>` |
 | retro co-play | `hub.retro_coplay` | the session-start sink | `coplay_turn_id(row key)`, a stable UUID; every planner call of the handoff carries it, so the act is charged its metacog leases (before 2026-10-29: the row key, never charged) | `ran` (co-play has no gate) |
 
 One log line per bid: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none
@@ -2731,6 +2791,37 @@ durable-runs into `want_ledger`. A funded shadow decision whose act was blocked 
 reservation. Code: `scripts/physiology_shadow.py`. Switch: `HUB_PHYSIOLOGY_SHADOW_BID_ENABLED`
 (default true). Hub runs on the host network, so `ORION_PHYSIOLOGY_BID_URL` points at durable-runs'
 host port `http://127.0.0.1:8124/physiology/bid`.
+
+**Outreach obeys its bid** (Patch D for `hub.outreach`, 2026-11-07, `scripts/outreach_bind.py`). With
+`ORION_PHYSIOLOGY_BID_HUB_OUTREACH=on` (shipped) the outreach row above is no longer shadow: every Hub door
+that composes a message asks the market just before it composes, and obeys the answer with the shared rule
+(`orion.physiology.binding.bind_verdict`, the same one curiosity investigate and the dream cycle obey).
+
+| door | bids? | why |
+|---|---|---|
+| background tick | yes, cap-counted (1 message on `attention:juniper`) | the want the strained veto was standing in for |
+| reading findings, office visits | yes, cap-counted since 2026-11-10 (one attention budget) | they compose a message; office visits hold at most 5 min (`OFFICE_WINDOW_S`) |
+| curiosity Door-A | no | composed inside the curiosity run, which already obeys its own bid (#3010); a blocked Door-A has no retry, so a hold would drop it |
+| strain report | no | it exists to speak when strain holds everything else; its strain-held shadow bid is unchanged |
+| forced (`POST /api/debug/endogenous-outreach/trigger`) | no | the operator's call: never held |
+
+Funded, or a full lane that is still worth its price: compose. Price, no hunger yet (`sated`), or net <= 0:
+hold, keep the item pending, bid again at the market's retry time (clamped 2 min .. 1 h), and compose
+anyway at the end of the 1 h window. No answer (market down, stale body state, 5 s timeout): compose, as
+before. Every verdict logs `physiology_bind family=hub.outreach door=... verdict=... obeyed=true`, and the
+decision row carries it in `result_json.economy` (reason `economy_held`: once per held item at a door; on every tick that reaches its compose point inside a hold). A hold nobody re-checks for 15 min after its retry time lapses, and the next check bids afresh.
+The `arousal_strained` veto stays until this has run `on` for 7 days with its checks green; while it stays,
+the binding bid never decides during strain. Rollback: set `shadow` and restart Hub. Replay:
+`scripts/analysis/outreach_binding_replay.py`; eval: `evals/run_outreach_binding_replay.py [--live]`.
+
+**Reading event wants** (2026-11-04, attention as the want competition patch 2, docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md). Each finished
+read (`world_pulse_read_seed`, `stage2_status = 'done'`) posts one SHADOW event want: family
+`hub.world_pulse_read`, verb `look`, `event_ref` `world_pulse_read_seed:<seed_id>`, salience = the links
+the read made (accepted relationship claims) as a strict-below percentile of the previous 30 days of
+reads (a read with no link reads 0). Deterministic want id; a read already in `want_ledger` is not
+reposted. Log: `reading_event_want seed=... links=... salience=... outcome=...`. Code:
+`scripts/reading_event_wants.py`. Switches: `HUB_READING_EVENT_WANTS_ENABLED` (default true),
+`HUB_READING_EVENT_WANTS_TICK_SEC` (300), `HUB_READING_EVENT_WANTS_LOOKBACK_SEC` (10800 = the family window).
 
 Known gaps, on purpose:
 
@@ -2955,6 +3046,45 @@ from `OFFICE_ENV_NODE` (default `pan-1`); `OFFICE_ENV_STALE_AFTER_SEC` (default 
 "stale"/gaps, never 0. Frontend: `static/js/office-env.js` (own script; polls every 30 s only
 while `#cabinet` is visible). Tests: `tests/test_office_env_routes.py`,
 `tests/test_office_env_panel.py`, `static/js/office-env.test.js` (`node --test`).
+
+The office strip also shows particulates (PM1 / PM2.5 / PM10, µg/m³, PMSA003I) and windowsill
+light (lux, TSL2591). Light reads "too bright to measure" when the sensor saturates in direct sun
+(`state.light_saturated`; lux is then absent, not 0). Deploy-order safety: these four readings and
+`light_saturated` are read from `payload_json` (`->'measurements'` / `->'state'`), not from their own
+columns, so Hub works before sql-writer has added those columns; rows from before the sensors
+existed show "—".
+The office strip also shows sound level (dBA, DFRobot SEN0232 on the office Nano's A0 pin),
+read from `payload_json->'measurements'->>'office_sound_dba'` like PM and lux: no column.
+
+**Server-closet strip** (same subview, below the office strip): CO2 (measured, SCD40), temperature
+and humidity from the closet Nano above the server cabinet, read from Postgres
+`closet_env_sample` (`orion:closet:env:sample`). Routes: `GET /api/closet/env/latest` and
+`GET /api/closet/env/history?window=24h|3d|7d` (`scripts/closet_env_routes.py`, reusing the office
+helpers). Same pan-1 publisher and cadence, so it uses the same `OFFICE_ENV_NODE` /
+`OFFICE_ENV_STALE_AFTER_SEC` / `OFFICE_ENV_HISTORY_MAX_POINTS`. If `closet_env_sample` does not exist
+yet (Hub deployed first), the routes answer "no samples yet" (`sample: null`, `points: []`), not an
+error. Same script (`static/js/office-env.js`). Tests: `tests/test_closet_env_routes.py`.
+
+The closet temperature (not CO2) also draws on the **Climate and power — overlay** chart as
+`closet_temp_c` (`GET /api/cabinet/climate/overlay`, `scripts/cabinet_climate_routes.py`), next to the
+office, cabinet and outdoor lines. A missing `closet_env_sample` table reads as no closet line, not an
+error. The Athena Nano tiles further down sit under a **Cabinet sensors — Athena Nanos** heading; a
+sensor not wired to those Nanos (the PMSA003I now lives on the office pan-1 array) shows `absent`.
+
+After deploying sql-writer and Hub on Athena, prove the live path rather than only the
+container state:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+python3 scripts/smoke_office_air_live.py
+```
+
+The read-only smoke requires a fresh non-stale Hub sample, the rendered Office DOM and
+its CCS811 frontend asset link, the asset itself, the three materialized air columns,
+a fresh destination row, and zero
+`office.env.sample.v1` fallback rows in the last 24 hours. It never reads or prints
+fallback payloads. During the sensor's 20-minute post-restart conditioning window,
+`--allow-warming` accepts an explicit warming state without pretending air values exist.
 
 **Sensor history** (below live tiles on the Cabinet tab) charts temperature, humidity, lidar,
 ALS, and climate/proximity/UV activity from `orion_biometrics_summary` at ~30s grain. Requires
@@ -3342,9 +3472,9 @@ The check uses `POSTGRES_URI` and a read-only transaction, resolves the latest U
 
 **Reads in flight (2026-10-14).** Each Stage 1 and Stage 2 tick makes up to `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT` claims (default 3; 1 = one read at a time). The claim order puts seeds with a submitted durable turn first, so in-flight reads are polled before a new one starts, and a new one only starts while fewer than that many are in flight. Before this, a tick claimed one seed, so a running read was re-claimed every tick and no second read was ever submitted: the GPU pool never saw two agent holds to spread over gpu1/gpu2. Priority order and Stage 1 before Stage 2 per seed are unchanged. Log line: `world_pulse_read_tick_claims n=<k>`.
 
-**Reading pull (2026-10-21, thinking rung 3 follow-up).** The motor allocator may ask for ONE extra Stage 1 read now (`orion:world_pulse_read:pull:request`, `scripts/world_pulse_read_pull_listener.py`, `WorldPulseReadPipeline.pull`). Hub picks the seed the lane would claim next (`CLAIM_SQL` order: priority, then age; not one already in flight or already pulled) and runs every gate first, in this order: kill switch `HUB_WORLD_PULSE_READ_PULL_ENABLED` (ON); the lane's own Wallet A gate (window, refund backoff); `HUB_WORLD_PULSE_READ_PULL_DAILY_CAP` started pulls per UTC day (default 8: the lane's median reading day over 30 days, `orion/world_pulse_read/pull.py`); arousal `strained` (`HUB_WORLD_PULSE_READ_PULL_AROUSAL_ENABLED`, same rule as the baseline painting); thermal `hot` on Hub's own cabinet sensor (`orion/autonomy/thermal_gate.py` defaults and hysteresis). `op=check` has no side effect. `op=act` marks the seed (`pull_dispatch_id`, `pull_arm`, `pulled_at`; migration `manual_migration_reading_pull_v1.sql`, also added lazily): a treated pull claims it and starts it under the lane lock, then the lane polls it like any other read; a control pull only marks it, and the lane may still read it. The lane itself is unchanged. Log lines: `reading_pull op=...`, `reading_pull_started`.
+**Reading pull (2026-10-21 .. 2026-11-07, retired).** The dispatch rung's motor allocator could ask Hub for ONE extra Stage 1 read (`orion:world_pulse_read:pull:request`), with a treated/control holdback. It retired with the proposal, policy and dispatch rungs (ladder retirement PR 6, `docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md`); Juniper ended the experiment. Hub's own lane does every read. The `pull_dispatch_id`, `pull_arm` and `pulled_at` columns on `world_pulse_read_seed` keep their history; nothing writes them.
 
-**Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F).** The motor allocator may ask for ONE solo Zelda session (`orion:retro_leisure:start:request`, `scripts/retro_leisure_listener.py`). The listener asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and passes a refusal through by name; with no runner it refuses `runner_unavailable` (300 s hold), never a fake session. A passed gate starts `run_leisure_session(settings, act_id=<dispatch_id>)`; a refusal from its own re-check within 5 s is still answered as a refusal. Otherwise the listener opens one `play` act (`hub.retro_leisure`, key = dispatch id, `test_before=retro_leisure_dispatch:<dispatch_id>`, horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the listener passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play handoffs reach the same export through `app.state.retro_session_end_sink`): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
+**Retro leisure start and memory export (2026-10-22, Orion plays Zelda sections E and F; trigger moved into Hub 2026-11-05, ladder retirement PR 1).** Hub's own leisure timer (`scripts/retro_leisure_self_start.py`, every `RETRO_LEISURE_SELF_START_TICK_SEC`=300 s, kill switch `RETRO_LEISURE_SELF_START_ENABLED`, ON) is the only trigger; the allocator's `retro_leisure_session` route and the `orion:retro_leisure:start:*` RPC are gone. Each tick mints an act id (`retro_self_start:<uuid>`), places the shadow `hub.retro_leisure` bid, then asks the leisure runner (`scripts/retro_leisure.py`) for its own `should_start(settings)` verdict and records a refusal by name. A tick does nothing while its own session runs, while `RETRO_LEISURE_ENABLED` is false, or with no runner (never a fake session). An error retries after 60 s. `GET /health` -> `retro_leisure_self_start` shows the last tick, the last start and refusal counts. A passed gate starts `run_leisure_session(settings, act_id=<act id>)`; a refusal from its own re-check within 5 s is still a refusal. Otherwise the timer opens one `play` act (`hub.retro_leisure`, key = act id, `test_before=retro_leisure_dispatch:<act id>` (prefix kept from the dispatch era), horizon 2400 s = 1800 s session cap + 600 s save/export, `scripts/act_emit.py`). When the leisure session ends the timer passes its `RetroSessionEnded` to `scripts/retro_memory_export.py:export_leisure_outcome` (co-play handoffs reach the same export through `app.state.retro_session_end_sink`): it builds one deterministic summary (facts and counts only; "played together" when a human drove more than half of the frames), writes one `retro_play_sessions` row (migration `services/orion-sql-db/manual_migration_retro_play_sessions_v1.sql`, also created lazily), one active `memory_cards` row with provenance and trust_source `retro_play`, links them, and closes the leisure `play` act (1 only with at least one real planner decision). Kill switch: `HUB_RETRO_MEMORY_EXPORT_ENABLED` (ON). Log lines: `retro_leisure_started`, `retro_leisure_refused`, `retro_memory_export`.
 
 **Co-play play act (2026-10-23, body-economy A5).** A co-play handoff (Juniper hands her controller to Orion's goal motor on `/retro`) is an act too. `scripts/retro_routes.py` `watch_coplay` opens a `play` act (actor `hub.retro_coplay`, key and correlation id = the session row key `<retro session id>:<handoff start epoch>`, `test_before=retro_play_sessions:<key>`, stamped at the handoff start, horizon 2400 s) when it first sees a Zelda cognition policy, through `app.state.retro_session_start_sink`. The export closes it (1 with at least one real planner decision). Both the Hub and the Retro gateway register the opener; the gateway opens its own bus client (`ORION_BUS_URL`) in the background for it. Before this, co-play opened no act and the gateway had no bus, so `grammar_acts` held 0 retro acts while every played session ran through co-play. Log lines: `retro_gateway_act_bus_ready`, `coplay_act_open_failed`, `coplay_act_close_failed`.
 
@@ -3501,6 +3631,18 @@ change of the same read (a belief moved days after the link) is a new message.
   `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
   old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
   (3 composition failures before a change is dropped), `_MIN_SPACING_SEC` (6750; 0 = off).
+
+### Self-monitor self-questions (rung 6 E2, 2026-11-03)
+
+`scripts/self_monitor_questions.py` polls the self-monitor state (Redis `orion:self_monitor:latest`)
+every `SELF_MONITOR_QUESTIONS_TICK_SEC` (900). A faculty newly held `broken` or `unreliable` gets ONE
+question in `curiosity_self_questions` (`minted_by='orion'`, family `lived`, id
+`lived.self_monitor.<faculty>.<status>.<status_since>`), e.g. "My faculty
+act.actions.journal.make.walkway_grade didn't run 22 of its last 28 tries in the last 7 days. Why?".
+Once per status episode: last-seen statuses persist in Redis `orion:self_monitor:questions:seen`, and
+the insert is ON CONFLICT DO NOTHING. Stale or absent state mints nothing. Not routed through
+endogenous curiosity and never written as a node prediction_error. Kill switch:
+`SELF_MONITOR_QUESTIONS_ENABLED=false`.
 - **What it cannot see yet.** A belief counts only when the curiosity run that moved it
   names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
   Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so
@@ -3511,6 +3653,86 @@ change of the same read (a belief moved days after the link) is a new message.
 - **Logs.** `reading_finding_outreach_result seed=<id> reason=<sent|orion_passed|...>`,
   `reading_finding_outreach_blocked seed=<id> reason=<gate>`,
   `reading_finding_beliefs_unchecked reason=<...>`.
+
+### Office visits get attention and one curious message (`scripts/office_reach_out.py`)
+
+**What it does.** When Juniper (probably) spends a few minutes in the office, Orion asks her in Hub
+chat what she is up to. Orion writes the message through the real unified turn. Under it, the camera's
+own notes are delivered as recorded: the times, what it saw, and who it probably was ("probably you.
+That is a guess"). One message per visit, every visit (Juniper, 2026-11-05). Office camera design
+step C (`docs/superpowers/specs/2026-11-05-office-camera-attention-and-reach-out-design.md`).
+
+- **Source.** `vision_office_session` (orion-sql-writer, step B). A visit qualifies when its timeline has
+  `HUB_OFFICE_REACH_OUT_MIN_ENTRIES` (4) entries over `HUB_OFFICE_REACH_OUT_MIN_MINUTES` (3).
+- **Gates.** No daily cap or cooldown (`skip_rate_gates`). Turn-in-flight, recent-chat, quiet hours and
+  arousal strained hold it; it retries next tick. Orion answering PASS, or a message with no question,
+  is retried up to `HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS` (3) times, then dropped.
+- **Once only.** `vision_office_session.reached_out_at` is claimed just before delivery and released if
+  delivery is refused (migration `manual_migration_vision_office_session_reach_out_v1.sql`; without it
+  nothing is sent).
+- **Attention.** The same visit posts one event want (family `perception.office`, event_ref
+  `office_session:<id>`). Salience = how new the visit's activities are against the visits of the last
+  30 days, as a percentile of those visits. Under 20 past visits nothing is posted. Shadow: Prime reads
+  funded ones as concerns. The message does not wait for funding.
+- **Evidence.** Each decision row (`endogenous_outreach_decisions`, `source='office_reach_out'`) carries
+  `office_session_id`, `timeline_times`, `timeline_event_ids`, `who_basis`.
+- **Env.** `HUB_OFFICE_REACH_OUT_ENABLED` (on), `HUB_OFFICE_EVENT_WANTS_ENABLED` (on), `_TICK_SEC` (60),
+  `_LOOKBACK_HOURS` (12), `_MIN_ENTRIES`, `_MIN_MINUTES`, `_MAX_ATTEMPTS`.
+- **Checks.** `tests/test_office_reach_out.py`, `tests/test_office_reach_out_pg.py` (real Postgres);
+  dry run (read-only, live): `evals/run_office_reach_out_dry_run.py --dsn <dsn>`.
+- **Logs.** `office_reach_out_result session=<id> reason=<sent|...>`, `office_reach_out_blocked`,
+  `office_event_want`, `office_event_want_skipped reason=no_history`.
+
+### One attention budget (`orion/physiology/attention_pacing.py`, 2026-11-10)
+
+**What it does.** Every door that messages Juniper spends from one daily budget. The tick, curiosity
+Door-A, readings and office visits all count on the one daily cap (6, `JUNIPER_DAILY_CAP`, read by this
+Hub gate and by the body's `attention:juniper` line). Not counted: the strain report and forced sends.
+
+- **The price grows with the day's pace.** `attention:juniper`'s price is the online-knapsack threshold
+  (Zhou, Chakrabarty and Lukose 2008): psi(z) = (L/e)(Ue/L)^z with z = messages sent today over what
+  Juniper's waking day (the quiet hours' complement) has budgeted by now, paced to the cap less one.
+  The first message of the day costs 0.11; a day running ahead costs up to 0.65 (the most a message
+  can be worth). A typical message (~0.38) waits when the day is ahead.
+- **Holds.** A held message re-bids when the day's allowance lets it through (the market computes the
+  time), at most until the waking day ends. Office visits hold at most 5 min, then go anyway.
+- **Flag.** `ORION_PHYSIOLOGY_ATTENTION_PACING` on orion-durable-runs: `on` (shipped) or `shadow` (the
+  old dual-ascent price; the pacing price rides in the reading's `detail`).
+- **Checks.** `orion/physiology/tests/test_attention_pacing.py`; replay (read-only, live DB):
+  `evals/run_outreach_attention_budget_replay.py`.
+
+### Door policy: what reaches Juniper (`scripts/outreach_door_policy.py`, 2026-11-10)
+
+**What it does.** Juniper got about 17 messages a day and most read as plumbing. One deterministic
+rule now decides, for every door, whether a composed message may reach her. Nothing reads the
+message text with a word list.
+
+- **Self findings: retired.** The self-monitor's "a faculty broke / recovered" messages
+  (`self_finding_outreach.py`) are gone, code and env keys included. The self-monitor record, its
+  Hub page and the cue Orion reads are unchanged. The old Redis cursor
+  `orion:hub:self_finding_outreach:state` is no longer read or written.
+- **Curiosity.** A run's `line` decides. `self_inquiry` results reach her. Any other line
+  (`investigate`, ...) reaches her only when she asked for that run: the run took a curiosity focus
+  with `origin='juniper'` and her chat turn on it (`chat_correlation_id`). Otherwise the decision
+  row says `not_for_juniper` (`result_json.door_policy`), before any compose turn. The run's
+  journal, graph writes and run story are unchanged.
+- **Background tick.** No longer reads non-self worldview priors or substrate curiosity candidates
+  (both are the investigate line's material). Its recent turns leave out Orion's own unsolicited
+  messages. It speaks from the daydream, the tension trigger, the personality cue and the real
+  conversation. A daydream a sent tick already used is not used again (`grounding.daydream_id`,
+  7-day ledger).
+- **No repeats.** A curiosity run's message carries `finding_key=curiosity_run:<run_id>`; a second
+  send for the same key is recorded `already_told`. Readings keep their per-finding dedupe.
+- **Why Juniper.** The tick, curiosity and reading prompts end by asking for one last line
+  `Why Juniper: <reason>`. It is taken off the delivered text and stored as
+  `result_json.why_juniper`. Missing or empty: not sent, `reason=no_why_juniper`. Office visits,
+  Juniper-triggered sends and the strain report do not ask for it.
+- **Readings.** The prompt (`orion/world_pulse_read/finding_prompt.py`) asks what Orion read and
+  why it caught their interest, and states each change as the idea and the line behind it, not
+  as links, graphs or quote checks. The provenance chain is unchanged.
+- **Checks.** `tests/test_outreach_door_policy.py`; replay (read-only, live DB):
+  `evals/run_outreach_door_policy_replay.py`; readings old vs new:
+  `evals/run_reading_message_rewrite_eval.py`.
 
 ### Introspect responder: `curiosity`
 
@@ -3884,7 +4106,16 @@ Design:
   Juniper can always Clear it or queue her own.
 - **Reading it back.** `curiosity` with `kind=focus` lists recent focuses with
   a one-line story: queued -> taken by run X -> disposition, or expired /
-  replaced / cleared / failed. Run items that took a focus carry `extra.focus`.
+  replaced / cleared / refused_by_organ / failed. Run items that took a focus carry `extra.focus`.
+- **Refused by the organ.** Curiosity's own planner (the curiosity replica) may
+  refuse a focus *Prime* queued, before a run takes it, with a one-sentence
+  reason (`refuse_focus` in `orion/curiosity/focus.py`). The row leaves the slot
+  and reads `refused_by_organ`; no run is shown it. It is stored as `cleared`
+  plus `refused_by` / `refused_reason` / `refused_act_id` (the status CHECK
+  cannot gain a value additively). A focus Juniper asked for, or one Orion chose
+  in a conversation, can never be refused: the code, the UPDATE's own guard and
+  a table CHECK each refuse it. Needs
+  `services/orion-sql-db/manual_migration_curiosity_focus_request_refused_v1.sql`.
 - **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
   with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
   and a run chip that took a focus says so.
@@ -4298,6 +4529,17 @@ settled, and the memory card gets up to 3 fact lines read back from the bets. Pr
 unreachable: no menu, no bet, log line `action_quote_unavailable`. Kill switch
 `HUB_ACTION_BETS_ENABLED` (ON); off restores the #2870 planner exactly. Offline eval:
 `evals/zelda_experience_replay.py`. Spec: `docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md`.
+
+**Dungeon room memory (2026-11-06, `scripts/retro_planner.py` `RoomMemory`).** Inside a dungeon
+Retro reports `level: 'unknown'` (the dungeon number in RAM is not settled yet), so its atlas
+records nothing there and shows no neighbouring rooms. Every side then looked never visited, both
+sides of a corridor scored the same, the menu took the first one in N-S-E-W order, and Link walked
+between two rooms for a whole 30 min session. The Hub now remembers, for the current session and
+dungeon only, which rooms Link arrived in and which sides the last goal walked through. It fills
+the atlas view with that (neighbours, visits, crossed sides), so a visited room is worth less and
+an exit predicts `reach_room <id>`. It is cleared when the level is known again, never written
+anywhere, and does nothing while Retro knows the level. Leisure counts every decision Retro
+offers; co-play counts only the decisions it plans. Eval: `evals/zelda_dungeon_bounce_replay.py`.
 
 ### Cabinet sonification (live instrument)
 

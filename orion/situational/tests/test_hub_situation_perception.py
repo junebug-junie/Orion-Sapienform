@@ -104,7 +104,7 @@ def test_hub_perception_defaults_on_with_cortex_exec_stream_defaults() -> None:
     assert cfg.perception_max_age_seconds == 900
     # Same room cameras and street camera cortex-exec reads by default.
     assert cfg.perception_stream_ids == ["carbon", "cam0"]
-    assert cfg.street_stream_ids == ["doorbell", "walkway"]
+    assert cfg.street_stream_ids == ["doorbell", "walkway", "cam0"]
 
 
 def test_hub_flag_false_is_the_kill_switch() -> None:
@@ -284,8 +284,10 @@ def test_worst_case_perception_fits_the_live_7200_cap_with_every_caution(monkeyp
     # budget); the real 2026-10-07 case added 77 (Street quiet, no ask).
     # 2026-10-17: 1708 with both street cameras (walkway + doorbell) speaking
     # at once, each with its own framing; the 7200 cap below still holds.
+    # 2026-11-04: 2250 with the office camera (cam0) as a third framed part;
+    # the hard 7200 cap is what protects the prompt, and still holds.
     added = len(on_text) - len(off_text)
-    assert 0 < added < 2000, added
+    assert 0 < added < 2600, added
     assert len(on_text) <= 7200
 
 
@@ -309,7 +311,7 @@ def test_tight_cap_shortens_facts_but_never_slices_a_caution(monkeypatch) -> Non
 # --- event loop ---------------------------------------------------------------
 
 
-def test_room_read_runs_off_the_event_loop_thread(monkeypatch) -> None:
+def test_office_read_runs_off_the_event_loop_thread(monkeypatch) -> None:
     seen: dict[str, int] = {}
 
     def _reader(**_k):

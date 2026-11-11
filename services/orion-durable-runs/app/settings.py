@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import Field, field_validator
@@ -80,6 +81,13 @@ class Settings(BaseSettings):
     # attempt; this bounds how often one run may be taken back and replayed. 0 = unbounded.
     hold_max_takebacks: int = Field(12, ge=0, le=1000, alias="DURABLE_RUNS_HOLD_MAX_TAKEBACKS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
+    # A step's RPC published to nobody (the answering service restarting in a deploy): the run
+    # hands its hold back, waits BASE * 2^(n-1) s (capped at MAX) and replays the step -- no
+    # attempt spent -- at most MAX_TRIES times per run, then fails as any transport error does.
+    # Defaults wait 60+120+240+300+300+300 s (~22 min). 0 tries = off.
+    listener_wait_max_tries: int = Field(6, ge=0, le=100, alias="DURABLE_RUNS_LISTENER_WAIT_MAX_TRIES")
+    listener_wait_base_sec: float = Field(60.0, gt=0.0, alias="DURABLE_RUNS_LISTENER_WAIT_BASE_SEC")
+    listener_wait_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_LISTENER_WAIT_MAX_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
     # Admitted runs: a run is failed terminally once it has at least
     # RESUME_MAX_FAILURES resume failures since its last real node progress
@@ -174,6 +182,22 @@ class Settings(BaseSettings):
     # arousal_transition rows into one `strain` arc per episode (chat stance cue, Day letter,
     # reverie). Off: no cause rows, no strain arcs; level rows and arousal are unchanged.
     temporal_self_strain_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_STRAIN_ARCS_ENABLED")
+    # Felt state (body economy design Organ 5, "Where Orion sees it"): the physiology node writes a
+    # body_binding row when a constraint's price starts, changes, keeps or stops binding, and the
+    # chronicle folds them into one `binding` arc per constraint episode (chat stance cue, Day
+    # letter, recent arcs). Awareness only: no price or gate reads it. Off: no rows, no arcs.
+    temporal_self_binding_arcs_enabled: bool = Field(True, alias="TEMPORAL_SELF_BINDING_ARCS_ENABLED")
+    # Self-monitor organ patch 2 (docs/superpowers/specs/2026-10-20-self-monitor-organ-design.md): the
+    # `self_monitor` node of the temporal_self.update thread reads Orion's settled bets (7 days) at most
+    # once per SELF_MONITOR_INTERVAL_SEC, publishes the held SelfMonitorStateV1 to Redis
+    # orion:self_monitor:latest (TTL 3 h) and GET /self_monitor/state, appends one row to
+    # substrate_self_monitor_history (pruned past SELF_MONITOR_HISTORY_RETENTION_DAYS), and writes a
+    # faculty_status_changed row per held status change, which the chronicle folds into `faculty` arcs.
+    # Off: no state, nothing published, no rows, faculty arcs not read (readers see absent = unknown).
+    self_monitor_enabled: bool = Field(True, alias="SELF_MONITOR_ENABLED")
+    self_monitor_interval_sec: float = Field(3600.0, ge=60.0, alias="SELF_MONITOR_INTERVAL_SEC")
+    self_monitor_timeout_sec: float = Field(120.0, gt=0.0, alias="SELF_MONITOR_TIMEOUT_SEC")
+    self_monitor_history_retention_days: int = Field(30, ge=1, alias="SELF_MONITOR_HISTORY_RETENTION_DAYS")
     # Orion plays Zelda (docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md section F): the
     # chronicle reads orion-hub's retro_play_sessions as source `retro_play`, one `play` arc per
     # finished Retro session (chat stance cue, recent arcs, Day letter count). Off: not read.
@@ -184,6 +208,10 @@ class Settings(BaseSettings):
     # episodes are room-only again. The cap bounds street arcs per local day (first come first kept).
     temporal_self_street_episodes_enabled: bool = Field(True, alias="TEMPORAL_SELF_STREET_EPISODES_ENABLED")
     temporal_self_street_episodes_per_day: int = Field(12, ge=0, le=200, alias="TEMPORAL_SELF_STREET_EPISODES_PER_DAY")
+    # Office sessions (office camera design PR #3127 step B): the final vision_office_session row of a
+    # visit labels the office company arc with who probably was there and what they did. Off: the
+    # source is not read and the arc keeps its old label (a confirmed identity only).
+    temporal_self_office_sessions_enabled: bool = Field(True, alias="TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED")
     # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
     temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
     # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).
@@ -227,9 +255,15 @@ class Settings(BaseSettings):
     # Missing, malformed, or a host entry older than 30 days -> the heat price is no_reading.
     physiology_heat_sensitivity_path: str = Field(
         "/app/config/physiology/heat_sensitivity.yaml", alias="ORION_PHYSIOLOGY_HEAT_SENSITIVITY_PATH")
-    # The attention:juniper line is the Hub's own outreach daily cap (owner services/orion-hub/
-    # .env_example; scripts/check_env_key_single_source.py fails if this copy drifts).
-    hub_endogenous_outreach_daily_cap: int = Field(4, ge=0, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP")
+    # One attention budget (2026-11-10). The attention:juniper line is JUNIPER_DAILY_CAP in
+    # orion/physiology/attention_pacing.py (module-owned: no env copy). "on": its price is the pacing
+    # threshold; "shadow" (or anything else): the old dual-ascent price (the pacing one rides in the
+    # reading's detail).
+    physiology_attention_pacing: str = Field("on", alias="ORION_PHYSIOLOGY_ATTENTION_PACING")
+    # Juniper's waking day for that pacing: the Hub's quiet hours' complement (owner services/orion-hub/
+    # .env_example; scripts/check_env_key_single_source.py fails if these copies drift).
+    hub_endogenous_outreach_quiet_start_hour: int = Field(23, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR")
+    hub_endogenous_outreach_quiet_end_hour: int = Field(8, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR")
     # The claude constraint listens here (producer orion-cocreation-signals).
     claude_limit_channel: str = Field("orion:substrate:claude_limit", alias="CHANNEL_CLAUDE_LIMIT")
     # Body economy Patch C1 (Organ 3 Appetite + Organ 4 Choice), SHADOW: POST /physiology/bid takes a
@@ -263,6 +297,31 @@ class Settings(BaseSettings):
     # config/physiology/families.yaml (today only durable.curiosity_investigate). false -> the market never
     # reads them; bids are exactly as before (instant rollback).
     physiology_prime_regulation: bool = Field(True, alias="ORION_PHYSIOLOGY_PRIME_REGULATION")
+    # The cooling world act (2026-11-05, ladder retirement PR 5; app/cooling_act.py). Every tick: when the
+    # cabinet is warm and orion.autonomy.self_shed eligibility passes, post an event want (family
+    # self_regulate.shed) and OBEY the market: funded -> the 0.5 treated/control draw, the precommitted
+    # episode row, the shed RPC (orion:gpu_pool:shed:request); deferred -> wait and bid again while the
+    # event lasts; no answer -> no shed. Needs the market (ORION_PHYSIOLOGY_BID_ENABLED) and the bus.
+    # Kill: false + restart (the pool's own GPU_POOL_ORION_SHED_ENABLED and thermal reflex are separate).
+    cooling_act_enabled: bool = Field(True, alias="ORION_COOLING_ACT_ENABLED")
+    cooling_act_tick_sec: float = Field(60.0, ge=10.0, le=600.0, alias="ORION_COOLING_ACT_TICK_SEC")
+    # The randomized control arm, drawn only among funded, eligible, admitted decisions (hash of the id).
+    cooling_act_holdback_fraction: float = Field(0.5, ge=0.0, le=1.0, alias="ORION_COOLING_ACT_HOLDBACK_FRACTION")
+    # hardware-watch /health (compose service key). Unreachable/stale/disabled = reflex not known idle =
+    # not eligible. Moved from orion-proposal-runtime with the act.
+    hardware_watch_health_url: str = Field(
+        "http://hardware-watch:8131/health", alias="ORION_HARDWARE_WATCH_HEALTH_URL")
+    # "Warming": the event needs a rise >= this (C in 15 min) while elevated or hot (orion.autonomy.shed_act.is_warming).
+    shed_rise_threshold_c: float = Field(0.5, gt=0.0, le=5.0, alias="ORION_SHED_RISE_THRESHOLD_C")
+    # The shed RPC and the TTL it asks for (the pool caps it anyway). Moved from execution dispatch.
+    gpu_pool_shed_rpc_timeout_sec: float = Field(5.0, gt=0.0, le=60.0, alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC")
+    shed_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="ORION_SHED_TTL_SEC")
+    # Mirrors of the pool's caps (GPU_POOL_ORION_SHED_MIN_GAP_SEC / _MAX_SEC_PER_DAY), applied BEFORE the
+    # randomized draw so both arms come from the same population. The pool still enforces its own values.
+    shed_min_gap_sec: float = Field(900.0, ge=0, alias="ORION_SHED_MIN_GAP_SEC")
+    shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="ORION_SHED_MAX_SEC_PER_DAY")
+    # A settled shed's outcome line (ActionOutcomeEmitV1 -> sql-writer -> action_outcomes; chat narrates it).
+    action_outcome_channel: str = Field("orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT")
     # Body-economy report (2026-10-29): GET /physiology/report, read-only (PhysiologyReportV1). Readers:
     # the Hub #body-economy page and skills.physiology.state.v1 (Orion's own body read). false -> 503.
     physiology_report_enabled: bool = Field(True, alias="ORION_PHYSIOLOGY_REPORT_ENABLED")
@@ -273,6 +332,20 @@ class Settings(BaseSettings):
     # Card -> roles map for the vram section; baked into the image (same file the pool hold reads).
     physiology_report_gpu_pool_path: str = Field(
         "/app/config/gpu_pool.yaml", alias="ORION_PHYSIOLOGY_REPORT_GPU_POOL_PATH")
+
+    @field_validator("reminiscence_end_hour_local")
+    @classmethod
+    def _window_has_room(cls, v: int, info):
+        start = info.data.get("reminiscence_hour_local", 3)
+        if v <= start:
+            raise ValueError("REMINISCENCE_END_HOUR_LOCAL must be after REMINISCENCE_HOUR_LOCAL (same Denver day)")
+        return v
+
+    @field_validator("field_note_not_before")
+    @classmethod
+    def _not_before_is_utc(cls, v: datetime) -> datetime:
+        # An env value with no offset means UTC; every comparison with it is then aware (review 2026-11-04).
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
 
     @field_validator("physiology_energy_monthly_envelope_usd", mode="before")
     @classmethod
@@ -293,6 +366,45 @@ class Settings(BaseSettings):
     # vector-host /embedding (bge-large, compute only). durable-runs and vector-host share app-net.
     personality_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
                                        alias="PERSONALITY_EMBED_URL")
+    # PR field notes, Patch 2 (docs/superpowers/specs/2026-11-04-pr-field-notes-design.md): every
+    # PR_FIELD_NOTES_POLL_SEC this process asks GitHub's PUBLIC API (no token) for PRs merged in the last
+    # PR_FIELD_NOTES_LOOKBACK_H hours, writes the code record of a dependency-only / tiny docs-only PR, and
+    # submits one pr.field_note run (one harness turn) for any other PR with no record yet. Needs admission
+    # (DURABLE_RUNS_ADMISSION_ENABLED). false -> no poll, no runs (rollback: set false, restart).
+    field_note_poll_enabled: bool = Field(True, alias="PR_FIELD_NOTES_ENABLED")
+    field_note_poll_sec: float = Field(900.0, ge=60.0, alias="PR_FIELD_NOTES_POLL_SEC")
+    field_note_lookback_hours: float = Field(72.0, gt=0.0, le=720.0, alias="PR_FIELD_NOTES_LOOKBACK_H")
+    field_note_github_repo: str = Field("junebug-junie/Orion-Sapienform", alias="PR_FIELD_NOTES_GITHUB_REPO")
+    # Juniper's decision 3 (2026-11-04): new merges only, no backfill. A PR merged before this instant
+    # never gets a run or a code record, whatever the lookback says.
+    field_note_not_before: datetime = Field(datetime(2026, 11, 4, 6, 0, tzinfo=timezone.utc),
+                                            alias="PR_FIELD_NOTES_NOT_BEFORE")
+    # The directory holding Orion's field-notes ledger, inside this container (compose mounts the
+    # host's dig self dir, PR_FIELD_NOTES_SELF_HOST, here; the harness governor's dig writes the same files).
+    field_note_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="PR_FIELD_NOTES_LEDGER_DIR")
+    # One note turn's hard time bound (Hub's turn limit is this minus a 30 s reply grace). Hub gives the
+    # harness motor only (turn limit - HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC=330), so 420 left the
+    # motor 60 s and the first live run timed out (pr-field-note-3104, 2026-11-04). 900 -> 540 s of motor.
+    # A cap, not a cost: a typical note ends long before it. tests/test_pr_field_note_budget.py gates it.
+    field_note_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="PR_FIELD_NOTES_TURN_TIMEOUT_SEC")
+    # Daily reminiscence, Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md, section 6):
+    # every REMINISCENCE_POLL_SEC, inside the Denver window [REMINISCENCE_HOUR_LOCAL, REMINISCENCE_END_HOUR_LOCAL),
+    # submit one reminiscence.episode run for today (five hop turns and one cross-read turn on the agent
+    # lane) unless today's five hops are already written. The window end is the run's admission deadline:
+    # a week left unfinished is picked again the next day. Needs admission (DURABLE_RUNS_ADMISSION_ENABLED).
+    # false -> no tick, no runs (rollback: set false, restart). Not the privacy gate: the ledger stays
+    # partitioned from recall by the repo-wide partition test whatever this says.
+    reminiscence_enabled: bool = Field(True, alias="REMINISCENCE_ENABLED")
+    reminiscence_poll_sec: float = Field(600.0, ge=60.0, alias="REMINISCENCE_POLL_SEC")
+    reminiscence_hour_local: int = Field(3, ge=0, le=23, alias="REMINISCENCE_HOUR_LOCAL")
+    # At most 23: a step after midnight would write into the next day's episode (the graph fails it).
+    reminiscence_end_hour_local: int = Field(9, ge=1, le=23, alias="REMINISCENCE_END_HOUR_LOCAL")
+    # The reminiscence ledger's directory inside this container: the same /mnt/orion-fcc/self bind mount the
+    # field-notes poller uses (docker-compose.yml mounts PR_FIELD_NOTES_SELF_HOST at PR_FIELD_NOTES_LEDGER_DIR).
+    reminiscence_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="REMINISCENCE_LEDGER_DIR")
+    # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
+    # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
+    reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

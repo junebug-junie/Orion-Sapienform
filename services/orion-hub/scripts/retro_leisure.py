@@ -2,10 +2,11 @@
 
 Spec: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md.
 
-There is no scheduler here. The allocator admits a ``play`` act (Lane C), the
-``retro_leisure_session`` dispatch consumer calls ``should_start(config)`` and, when that
-returns None, ``run_leisure_session(config, act_id=...)``. The runner re-checks the gate
-itself (time passes between the two calls).
+There is no scheduler here. Hub's leisure timer (``scripts/retro_leisure_self_start.py``, every
+300 s; ladder retirement PR 1 replaced the allocator's ``retro_leisure_session`` dispatch) calls
+``should_start(config)`` and, when that returns None, ``run_leisure_session(config, act_id=...)``.
+The runner re-checks the gate itself (time passes between the two calls). Every age here is taken at
+its own read time, never against the caller's earlier clock.
 
 Doer-side gates (``leisure_block_reason``), checked at start and every RECHECK_SEC:
   disabled / retro_disabled / game_not_allowed     RETRO_LEISURE_ENABLED, HUB_RETRO_ENABLED, allowlist
@@ -14,9 +15,20 @@ Doer-side gates (``leisure_block_reason``), checked at start and every RECHECK_S
   presence_unknown / browser_connected / human_recent   (start) no relay socket open and no
                                                    human Retro action for HUMAN_QUIET_SEC
   human_present                                    (running) a human acted after we started
-  retro_session_active / retro_unavailable         (start) never replaces anyone's game
+  retro_session_active / retro_unavailable         (start) never replaces anyone's game. One
+                                                   exception: Orion's own orphan (below).
   ledger_unknown / cooldown / daily_cap / session_cap   one start per MIN_GAP_SEC, DAILY_MAX_SEC
                                                    per rolling 24 h, SESSION_MAX_SEC per session
+An orphan is a game an earlier leisure run of Orion's started and left paused (Retro paused it
+for no_controller after its policy was dropped). Its ledger row says the run ended because the
+policy was gone (ORPHAN_END_REASONS), or the row is still open long after the lock TTL with no
+runner holding the lock (Hub was killed mid-run). It is paused with no script, and Retro's
+port-0 frame counts show no human or browser-script frame in it. A run that ended because a
+human acted (human_present: e.g. Juniper pressed Pause, which needs no lease) is never an orphan.
+Nobody else ever drove it, so it does not block a start: the runner re-checks presence, saves it
+if its run had placed goals, stops it, then starts fresh from the newest save (live
+2026-10-30..11-05: one such game refused every start for 6 days).
+
 A browser that only WATCHES (media socket) does not end a running session: opening the page
 shows it live. A human acquire or takeover is preempted by Retro's arbiter (Lane A); the
 runner sees its policy gone and ends ``human_preempted`` without stopping the human's game.
@@ -57,6 +69,16 @@ FAILURE_RETRY_SEC = 5.0
 DAY_SEC = 86400.0
 START_TIMEOUT_SEC = 10.0
 ACTIVE_STATES = ('starting', 'running', 'paused')
+# Retro's GET /sessions/{sid} serves a snapshot the worker refreshes about every 0.1 s
+# (services/orion-retro/app/worker.py status, app/session.py monitor), but the scripted-start
+# reply comes back at once. A poll right after the grant can still read scripted=[]. A missing
+# policy only counts as gone when it stays missing this long (live: all 4 leisure runs of
+# 10-23..10-30 ended policy_ended_by_retro 60-90 ms after the grant, while Retro kept the
+# policy for 60 s more). Retro itself waits 60 s before it drops an idle leisure policy.
+POLICY_GONE_GRACE_SEC = 2.0
+# Ledger end reasons after which the game is left paused with nobody in it (see own_orphan).
+ORPHAN_END_REASONS = ('policy_ended_by_retro', 'shed_wait_policy_lost')
+LOCK_GRACE_SEC = 300.0   # the lock TTL is session_max_sec + this
 ZELDA_PORT = 0   # Retro's Zelda reader and motor use controller 1 only (navigate.py accept()).
 
 
@@ -79,6 +101,7 @@ class LeisureGateInputs:
     seconds_since_human: Optional[float] = None   # None with read_ok: no human action in a day
     browsers_connected: Optional[int] = None
     retro_session_state: Optional[str] = 'unreadable'   # None: no session; 'unreadable': failed
+    orphan_session_id: Optional[str] = None   # the active session is Orion's own orphan (see top)
     ledger: Optional[list] = None
     human_quiet_sec: float = HUMAN_QUIET_SEC
     # Set while a session runs:
@@ -132,7 +155,7 @@ def leisure_block_reason(inputs: LeisureGateInputs) -> Optional[str]:
             return 'human_recent'
         if inputs.retro_session_state == 'unreadable':
             return 'retro_unavailable'
-        if inputs.retro_session_state in ACTIVE_STATES:
+        if inputs.retro_session_state in ACTIVE_STATES and not inputs.orphan_session_id:
             return 'retro_session_active'
     if inputs.ledger is None:
         return 'ledger_unknown'
@@ -234,6 +257,40 @@ def _settings(config) -> dict:
                 port=ZELDA_PORT)
 
 
+def _orphan_row(session_id: str, ledger: list, *, now: Optional[float], stale_after: Optional[float],
+                lock_free: Optional[bool]) -> Optional[dict]:
+    for r in ledger:
+        if not isinstance(r, dict) or r.get('session_id') != session_id:
+            continue
+        if r.get('ended_at') is not None:
+            if r.get('mode') == POLICY_GONE and r.get('end_reason') in ORPHAN_END_REASONS:
+                return r
+        elif (lock_free is True and now is not None and stale_after is not None
+                and now - float(r.get('started_at') or now) > stale_after):
+            return r   # a runner killed mid-run (Hub restart): it never closed its row
+    return None
+
+
+def own_orphan(session: Any, ledger: Optional[list], *, now: Optional[float] = None,
+               stale_after: Optional[float] = None, lock_free: Optional[bool] = None) -> Optional[str]:
+    """The session id when Retro's active session is a game Orion's leisure left behind, else None.
+    Every test must pass; anything unreadable means 'not an orphan' (the start stays refused).
+    Retro's frame counts cover port 0 only (Zelda's one controller)."""
+    if not isinstance(session, dict) or session.get('state') != 'paused' or session.get('scripted'):
+        return None
+    sid = session.get('session_id')
+    if not sid or not isinstance(ledger, list):
+        return None
+    if _orphan_row(sid, ledger, now=now, stale_after=stale_after, lock_free=lock_free) is None:
+        return None   # not left by a policy-gone leisure run, or its runner may still be alive
+    frames = atlas_session_fields(session)['controller_frames']
+    if human_held_frames(frames) is not False or frames.get('script', 0) != 0:
+        return None   # a human, or a browser co-play handoff, drove it at some point
+    if not frames.get('leisure', 0) or set(frames) - {'human', 'script', 'leisure', 'none'}:
+        return None
+    return sid
+
+
 async def gather_gate_inputs(config, deps: LeisureDeps, *, own_leisure_id=None, elapsed_sec=0.0) -> LeisureGateInputs:
     s = _settings(config)
     base = LeisureGateInputs(now=deps.clock(), enabled=s['enabled'], retro_enabled=s['retro_enabled'],
@@ -248,21 +305,29 @@ async def gather_gate_inputs(config, deps: LeisureDeps, *, own_leisure_id=None, 
     browsers = await deps.store.browsers_connected()
     ledger = await deps.store.ledger()
     state: Optional[str] = 'unreadable'
+    orphan: Optional[str] = None
     if own_leisure_id is None:
+        try:   # unreadable (or a store without the read): not an orphan, the start stays refused
+            lock_free = await deps.store.lock_free()
+        except Exception:  # noqa: BLE001
+            lock_free = None
         try:
             status, ready = await deps.retro.call('GET', 'health/ready')
             if status == 200 and isinstance(ready, dict):
                 session = ready.get('session')
                 state = session.get('state') if isinstance(session, dict) else None
+                orphan = own_orphan(session, ledger, now=deps.clock(), lock_free=lock_free,
+                                    stale_after=s['session_max_sec'] + LOCK_GRACE_SEC)
         except Exception:  # noqa: BLE001
-            state = 'unreadable'
+            state, orphan = 'unreadable', None
     return replace(base, arousal_level=level, arousal_reason=reason, cabinet_reflex=reflex,
                    presence_read_ok=read_ok, seconds_since_human=since_human,
-                   browsers_connected=browsers, retro_session_state=state, ledger=ledger)
+                   browsers_connected=browsers, retro_session_state=state, ledger=ledger,
+                   orphan_session_id=orphan)
 
 
 async def should_start(config, deps: Optional[LeisureDeps] = None) -> Optional[str]:
-    """Lane C's dispatch consumer calls this before ``run_leisure_session``. None = may start."""
+    """Hub's leisure timer calls this before ``run_leisure_session``. None = may start."""
     s = _settings(config)
     if not s['enabled']:
         return 'disabled'
@@ -293,6 +358,7 @@ class _Run:
     started_at: float
     session_max_sec: float = 1800.0
     session_id: Optional[str] = None
+    orphan_session_id: Optional[str] = None     # Orion's own paused leftover, stopped before start
     generation: Optional[str] = None
     epoch: Optional[int] = None
     lineage_id: Optional[str] = None
@@ -310,6 +376,8 @@ class _Run:
     history: list = field(default_factory=list)
     last_decision: Optional[dict] = None        # Retro's newest offered decision (action-bet settle)
     plan_inputs: Optional[tuple] = None         # (decision, atlas, menu) of the plan in flight
+    # Rooms walked inside a dungeon Retro's atlas cannot record (retro_planner.RoomMemory).
+    rooms: retro_planner.RoomMemory = field(default_factory=retro_planner.RoomMemory)
 
 
 _running_here = False
@@ -377,7 +445,8 @@ async def run_leisure_session(config, *, act_id: Optional[str] = None,
         await _status(deps, None, 'refused', reason=reason, act_id=act_id)
         return LeisureOutcome(started=False, refusal=reason)
     run = _Run(leisure_id=str(uuid.uuid4()), act_id=act_id, game_id=s['game_id'], port=s['port'],
-               started_at=deps.clock(), session_max_sec=s['session_max_sec'])
+               started_at=deps.clock(), session_max_sec=s['session_max_sec'],
+               orphan_session_id=inputs.orphan_session_id)
     lock_ttl = int(s['session_max_sec'] + 300)
     try:
         locked = await deps.store.acquire_lock(run.leisure_id, lock_ttl)
@@ -400,6 +469,10 @@ async def run_leisure_session(config, *, act_id: Optional[str] = None,
 async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
     """Load the newest compatible save (the lineage carries over) or start fresh. Returns a
     refusal reason or None."""
+    if run.orphan_session_id:
+        refusal = await _stop_orphan(deps, run)
+        if refusal:
+            return refusal
     status, saves = await deps.retro.call('GET', f'games/{run.game_id}/saves')
     if status == 200 and isinstance(saves, list):
         compatible = [x for x in saves if isinstance(x, dict) and x.get('compatible')]
@@ -450,6 +523,49 @@ async def _start_game(deps: LeisureDeps, run: _Run) -> Optional[str]:
         return 'leisure_grant_not_visible'
     run.epoch = policy['epoch']
     await _atlas(deps, run)
+    return None
+
+
+async def _stop_orphan(deps: LeisureDeps, run: _Run) -> Optional[str]:
+    """Close Orion's own orphan game (see the module doc). Re-reads it first: the gate read is a
+    moment old. Returns a refusal, or None once it is stopped."""
+    sid = run.orphan_session_id
+    browsers = await deps.store.browsers_connected()
+    ok, since = await deps.store.seconds_since_human()
+    if browsers is None or not ok:
+        return 'presence_unknown'
+    if browsers > 0:
+        return 'browser_connected'
+    if since is not None and since < HUMAN_QUIET_SEC:
+        return 'human_recent'
+    status, session = await deps.retro.call('GET', f'sessions/{sid}')
+    ledger = await deps.store.ledger()
+    # This runner holds the lock now, so no other runner can own an open row.
+    stale_after = run.session_max_sec + LOCK_GRACE_SEC
+    if status != 200 or own_orphan(session, ledger, now=deps.clock(), lock_free=True,
+                                   stale_after=stale_after) != sid:
+        return 'retro_session_active'
+    row = _orphan_row(sid, ledger, now=deps.clock(), stale_after=stale_after, lock_free=True) or {}
+    frames = (atlas_session_fields(session)['controller_frames'] or {})
+    # Keep what that run played: save first when it placed goals (a run with none may sit on a
+    # title screen, which must not become the newest save; see _finish).
+    save_id = save_error = None
+    if row.get('decisions'):
+        s_status, saved = await deps.retro.call('POST', f'sessions/{sid}/save', {})
+        if s_status == 200 and isinstance(saved, dict):
+            save_id = (saved.get('saved') or {}).get('save_id')
+        else:
+            save_error = str(saved.get('detail') if isinstance(saved, dict) else s_status)
+    else:
+        save_error = 'skipped:no_goal_played'
+    status, stopped = await deps.retro.call('POST', f'sessions/{sid}/stop', {})
+    state = stopped.get('state') if isinstance(stopped, dict) else None
+    await _journal(deps, 'orphan_stopped', orphan_session_id=sid, leisure_id=run.leisure_id,
+                   act_id=run.act_id, status=status, state=state, frame=session.get('frame'),
+                   frames_by_controller=frames, orphan_end_reason=row.get('end_reason'),
+                   save_id=save_id, save_error=save_error)
+    if status != 200 or state not in ('stopped', 'failed'):
+        return f'orphan_stop_failed:{state or status}'
     return None
 
 
@@ -520,6 +636,7 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
     plan_decision: Optional[str] = None
     next_check = run.started_at + RECHECK_SEC
     transport_failures = 0
+    policy_missing_since: Optional[float] = None
     try:
         while True:
             # Python 3.11's asyncio.wait_for (used by every store call) can swallow a cancel that
@@ -561,9 +678,16 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                 human = since is not None and since <= deps.clock() - run.started_at
                 if human:
                     return 'human_preempted', POLICY_GONE
+                # No human: maybe only a snapshot older than the grant. Wait it out.
+                if policy_missing_since is None:
+                    policy_missing_since = now
+                if now - policy_missing_since < POLICY_GONE_GRACE_SEC:
+                    await deps.sleep(POLL_SEC)
+                    continue
                 # Retro drops a leisure policy after 60 s with no goal (scripted.py
                 # leisure_sponsor_lost): during a heat shed that comes before the third shed.
                 return ('shed_wait_policy_lost' if run.waiting else 'policy_ended_by_retro'), POLICY_GONE
+            policy_missing_since = None
             cognition = policy.get('cognition') or {}
             if not retro_planner.is_zelda_cognition(cognition):
                 return 'not_a_zelda_session', NORMAL
@@ -589,6 +713,7 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
                     return ended, NORMAL
             decision = cognition.get('attempt')
             decision_id = decision.get('decision_id') if isinstance(decision, dict) else None
+            run.rooms.observe(run.session_id, decision)   # every offer counts, planned or not
             if (plan_task is None and decision_id and decision_id != run.planned_decision
                     and deps.clock() >= run.next_plan_at):
                 plan_task = asyncio.ensure_future(_plan(deps, run, decision, await _atlas(deps, run)))
@@ -605,6 +730,8 @@ async def _loop(config, deps: LeisureDeps, s: dict, run: _Run, lock_ttl: int,
 async def _plan(deps: LeisureDeps, run: _Run, decision: dict, atlas: Optional[dict]) -> dict:
     """Action bets first (settle the previous bet, quote, menu), then the planner. The menu is
     None when bets are off or the prediction service is unreachable: the plain prompt, no bet."""
+    # Inside a dungeon Retro's atlas is empty: without this every side looks new (live 2026-11-06).
+    atlas = run.rooms.atlas_for(run.session_id, decision, atlas)
     menu = await deps.experience.prepare(run.session_id, decision, atlas) if deps.experience else None
     run.plan_inputs = (decision, atlas, menu)
     history = run.history[-retro_planner.HISTORY_LIMIT:]
@@ -747,7 +874,8 @@ async def _finish(deps: LeisureDeps, run: _Run, reason: str, *, mode: str,
             logger.warning('retro_leisure_action_bets_end_failed', exc_info=True)
     ended_at = deps.clock()
     if ledger is not None:
-        rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1))
+        rows = [dict(r, ended_at=ended_at, seconds=round(ended_at - run.started_at, 1),
+                     end_reason=reason, mode=mode, decisions=run.planned)
                 if r.get('leisure_id') == run.leisure_id else r for r in ledger]
         try:
             await deps.store.write_ledger(rows)

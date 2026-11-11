@@ -110,6 +110,11 @@ HOW MY BODY IS DOING (measured, each signal scored 0-10 against its own last 7 d
 {{ self_readings }}
 - Real state, not an id to cite: it may color the interpretation when it bears on what you attend to,
   never replaces a grounded evidence_ref. Use the numbers exactly as shown or not at all.
+{% endif %}{% if self_track_record %}
+MY TRACK RECORD (measured from my own settled bets over the last 7 days; only what is failing or off is listed)
+{{ self_track_record }}
+- Real record, not an id to cite: it may color the thought only where it connects to what you attend to.
+  Use the numbers exactly as shown or not at all.
 {% endif %}
 {% if recent_arcs %}
 EARLIER TODAY (your own day record, closed arcs, from stored history — background only):

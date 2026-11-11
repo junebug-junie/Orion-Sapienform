@@ -3,8 +3,9 @@
 Pins:
 - outside an Orion session the controller never keeps the town awake; a running town with no Orion
   session is Juniper's manual session (logged, not counted, never paused here);
-- a start RPC that passes the gate unpauses the town, writes the ledger row, sets the NPC
-  correlation id and opens the play act; a refused one changes nothing;
+- a start that passes the gate unpauses the town, writes the ledger row, sets the NPC
+  correlation id and opens the play act; a refused one changes nothing (the start comes from
+  app/town_self_start.py since 2026-11-05; tests/test_town_self_start.py covers the timer);
 - the session cap and the daily cap pause the town and close the act, crossing local midnight right;
 - a restart closes the session it left open at its last tick and pauses the town;
 - a ledger that cannot be read never starts an uncounted session.
@@ -19,14 +20,8 @@ import pytest
 
 from app import physiology_shadow
 from app.town_sessions import TownConfig, TownSessionController, session_id_for
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.embodiment import town_sessions as ts
-from orion.schemas.aitown_session import (
-    AITOWN_SESSION_START_REPLY_PREFIX,
-    AITOWN_SESSION_START_REQUEST_KIND,
-    AITownSessionRowV1,
-    AITownSessionStartRequestV1,
-)
+from orion.schemas.aitown_session import AITownSessionRowV1
 
 DEN = ZoneInfo("America/Denver")
 
@@ -121,8 +116,8 @@ def rows(redis) -> list[AITownSessionRowV1]:
     return asyncio.run(ts.load_rows(redis))
 
 
-def req(d="dispatch:proposal:aitown_session:t1"):
-    return AITownSessionStartRequestV1(dispatch_id=d)
+def req(d="aitown_self_start:t1"):
+    return d
 
 
 def test_paused_by_default_no_heartbeat_and_no_session() -> None:
@@ -180,16 +175,17 @@ def test_a_town_running_without_orion_is_a_manual_session_never_paused() -> None
 def test_start_unpauses_the_town_and_opens_the_act() -> None:
     c, redis, town, clock, acts = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    out = asyncio.run(c.start(req()))
-    assert out.state == "started" and out.session_id == session_id_for(req().dispatch_id)
+    out = asyncio.run(c.start_session(req()))
+    assert out.state == "started" and out.session_id == session_id_for(req())
     assert town.calls == ["resume"] and town.correlation == out.session_id
     (r,) = rows(redis)
-    assert (r.kind, r.start_reason, r.dispatch_id) == ("orion", "want_funded", req().dispatch_id)
+    assert (r.kind, r.start_reason, r.dispatch_id) == ("orion", "want_funded", req())
     assert [e.event_kind for e in acts] == ["act_opened"]
     assert acts[0].act.actor == "aitown.session" and acts[0].act.verb == "play"
     assert acts[0].correlation_id == out.session_id
-    # A replayed dispatch answers with the same session, no second resume.
-    assert asyncio.run(c.start(req())).session_id == out.session_id and town.calls == ["resume"]
+    # A second attempt while the session is open is refused, with no second resume.
+    again = asyncio.run(c.start_session(req("aitown_self_start:t2")))
+    assert (again.state, again.refusal) == ("refused", "session_open") and town.calls == ["resume"]
     # The session heartbeats the town while open.
     clock.t += 10
     asyncio.run(c.tick())
@@ -199,7 +195,7 @@ def test_start_unpauses_the_town_and_opens_the_act() -> None:
 def test_session_cap_pauses_the_town_and_closes_the_act() -> None:
     c, redis, town, clock, acts = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     c.note_utterance()
     clock.t += 1799
     asyncio.run(c.tick())
@@ -220,7 +216,7 @@ def test_session_cap_pauses_the_town_and_closes_the_act() -> None:
 def test_a_silent_session_closes_as_not_produced() -> None:
     c, _, _, clock, acts = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     clock.t += 1800
     asyncio.run(c.tick())
     assert acts[-1].act.outcome.value == 0.0
@@ -234,20 +230,20 @@ def test_daily_cap_pauses_mid_session_and_refuses_until_local_midnight() -> None
         session_id="earlier", kind="orion", started_at=at(2026, 10, 30, 9), last_seen_at=at(2026, 10, 30, 10, 50),
         ended_at=at(2026, 10, 30, 10, 50), start_reason="want_funded", stop_reason="session_cap")))
     asyncio.run(c.tick())
-    assert asyncio.run(c.start(req())).state == "started"
+    assert asyncio.run(c.start_session(req())).state == "started"
     clock.t += 599
     asyncio.run(c.tick())
     assert town.running
     clock.t += 1
     asyncio.run(c.tick())
     assert not town.running
-    assert {r.session_id: r.stop_reason for r in rows(redis)}[session_id_for(req().dispatch_id)] == "daily_cap"
-    refused = asyncio.run(c.start(req("d:2")))
+    assert {r.session_id: r.stop_reason for r in rows(redis)}[session_id_for(req())] == "daily_cap"
+    refused = asyncio.run(c.start_session(req("d:2")))
     assert refused.state == "refused" and refused.refusal == "daily_cap"
     assert refused.retry_after_sec == pytest.approx(ts.next_local_midnight(clock.t) - clock.t)
     # After local midnight the new day's cap is open again.
     clock.t = at(2026, 10, 31, 0, 0, 5)
-    assert asyncio.run(c.start(req("d:3"))).state == "started"
+    assert asyncio.run(c.start_session(req("d:3"))).state == "started"
 
 
 def test_a_session_crossing_midnight_is_not_cut_by_yesterdays_total() -> None:
@@ -257,7 +253,7 @@ def test_a_session_crossing_midnight_is_not_cut_by_yesterdays_total() -> None:
         session_id="earlier", kind="orion", started_at=at(2026, 10, 30, 9), last_seen_at=at(2026, 10, 30, 10, 40),
         ended_at=at(2026, 10, 30, 10, 40), start_reason="want_funded", stop_reason="session_cap")))
     asyncio.run(c.tick())
-    assert asyncio.run(c.start(req())).state == "started"   # 1 h 40 min used: 20 min left today
+    assert asyncio.run(c.start_session(req())).state == "started"   # 1 h 40 min used: 20 min left today
     for _ in range(9):                                       # to 00:05 on the 31st, 10 s ticks every 100 s
         clock.t += 100
         asyncio.run(c.tick())
@@ -268,7 +264,7 @@ def test_a_session_crossing_midnight_is_not_cut_by_yesterdays_total() -> None:
 def test_juniper_freezing_an_orion_session_closes_it_town_paused() -> None:
     c, redis, town, clock, acts = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     town.running = False
     clock.t += 60
     asyncio.run(c.tick())
@@ -282,26 +278,26 @@ def test_refusals_change_nothing() -> None:
     asyncio.run(c.tick())
     town.running = True                                     # Juniper is in town
     asyncio.run(c.tick())
-    out = asyncio.run(c.start(req()))
+    out = asyncio.run(c.start_session(req()))
     assert (out.state, out.refusal) == ("refused", "manual_session_open")
     assert "resume" not in town.calls and acts == []
     off, _, town2, _, _ = make(at(2026, 10, 30, 9), cfg=TownConfig(enabled=False))
     asyncio.run(off.tick())
-    assert asyncio.run(off.start(req())).refusal == "disabled" and town2.calls == []
+    assert asyncio.run(off.start_session(req())).refusal == "disabled" and town2.calls == []
 
 
 def test_an_unreadable_ledger_never_starts_an_uncounted_session() -> None:
     c, redis, town, clock, _ = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
     redis.fail = True
-    out = asyncio.run(c.start(req()))
+    out = asyncio.run(c.start_session(req()))
     assert (out.state, out.refusal) == ("refused", "ledger_unknown") and town.calls == []
 
 
 def test_turning_the_switch_off_closes_an_open_session() -> None:
     c, redis, town, clock, _ = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     c.cfg.enabled = False
     clock.t += 10
     asyncio.run(c.tick())
@@ -312,10 +308,10 @@ def test_turning_the_switch_off_closes_an_open_session() -> None:
 def test_restart_closes_the_open_session_at_its_last_tick_and_pauses() -> None:
     c, redis, town, clock, acts = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     clock.t += 100
     asyncio.run(c.tick())                                   # last_seen written (first write after start)
-    last = {r.session_id: r for r in rows(redis)}[session_id_for(req().dispatch_id)].last_seen_at
+    last = {r.session_id: r for r in rows(redis)}[session_id_for(req())].last_seen_at
     # A new process on the same ledger, the town still running.
     c2 = TownSessionController(TownConfig(), redis_getter=lambda: redis, world_id_getter=lambda: "w1",
                                town=town, act_publisher=c._publish_act, clock=Clock(clock.t + 600))
@@ -324,24 +320,6 @@ def test_restart_closes_the_open_session_at_its_last_tick_and_pauses() -> None:
     assert (r.stop_reason, r.ended_at) == ("embodiment_restart", last)
     assert town.calls[-1] == "stop" and not town.running
     assert acts[-1].event_kind == "act_closed"
-
-
-def test_rpc_handle_answers_only_on_the_reply_prefix() -> None:
-    c, _, _, _, _ = make(at(2026, 10, 30, 9))
-    asyncio.run(c.tick())
-    sent = []
-
-    async def publish(ch, env):
-        sent.append((ch, env))
-
-    src = ServiceRef(name="orion-embodiment")
-    bad = BaseEnvelope(kind=AITOWN_SESSION_START_REQUEST_KIND, source=src, reply_to="orion:elsewhere",
-                       payload=req().model_dump(mode="json"))
-    asyncio.run(c.handle(bad, publish=publish, source_ref=src))
-    assert sent == []
-    good = bad.model_copy(update={"reply_to": f"{AITOWN_SESSION_START_REPLY_PREFIX}abc"})
-    asyncio.run(c.handle(good, publish=publish, source_ref=src))
-    assert sent[0][0].endswith("abc") and sent[0][1].payload["state"] == "started"
 
 
 class FlakyTown(FakeTown):
@@ -378,7 +356,7 @@ def make_flaky(t0, cfg=None):
 def test_the_cap_is_enforced_even_when_engine_reads_fail() -> None:
     c, redis, town, clock, _ = make_flaky(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     town.read_fails = True
     clock.t += 1800
     asyncio.run(c.tick())
@@ -388,7 +366,7 @@ def test_the_cap_is_enforced_even_when_engine_reads_fail() -> None:
 def test_a_failed_stop_keeps_the_session_open_and_counting_until_it_lands() -> None:
     c, redis, town, clock, _ = make_flaky(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     town.stop_fails = True
     clock.t += 1800
     asyncio.run(c.tick())
@@ -405,21 +383,21 @@ def test_a_start_never_absorbs_a_town_juniper_just_opened() -> None:
     c, redis, town, clock, acts = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
     town.running = True                     # Unfreeze lands before the next tick
-    out = asyncio.run(c.start(req()))
+    out = asyncio.run(c.start_session(req()))
     assert (out.state, out.refusal) == ("refused", "manual_session_open")
     assert rows(redis) == [] and acts == [] and "resume" not in town.calls
 
 
-def test_a_replayed_dispatch_after_a_restart_never_rewrites_its_row() -> None:
+def test_a_reused_act_id_after_a_restart_never_rewrites_its_row() -> None:
     c, redis, town, clock, _ = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     clock.t += 1800
     asyncio.run(c.tick())
     c2 = TownSessionController(TownConfig(), redis_getter=lambda: redis, world_id_getter=lambda: "w1",
                                town=town, act_publisher=c._publish_act, clock=Clock(clock.t + 7200))
     asyncio.run(c2.tick())
-    out = asyncio.run(c2.start(req()))
+    out = asyncio.run(c2.start_session(req()))
     assert (out.state, out.refusal) == ("refused", "already_ran")
     (r,) = rows(redis)
     assert r.stop_reason == "session_cap"
@@ -428,9 +406,9 @@ def test_a_replayed_dispatch_after_a_restart_never_rewrites_its_row() -> None:
 def test_session_open_refusal_holds_for_the_rest_of_the_session() -> None:
     c, _, _, clock, _ = make(at(2026, 10, 30, 9))
     asyncio.run(c.tick())
-    asyncio.run(c.start(req()))
+    asyncio.run(c.start_session(req()))
     clock.t += 600
-    out = asyncio.run(c.start(req("d:2")))
+    out = asyncio.run(c.start_session(req("d:2")))
     assert out.refusal == "session_open" and out.retry_after_sec == 1200.0
 
 

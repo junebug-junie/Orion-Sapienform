@@ -112,12 +112,28 @@ from orion.schemas.self_monitor import (
     SETTLED_BET_KIND,
     FacultyRecordV1,
     SelfMonitorStateV1,
+    SelfTrackRecordCueV1,
     SettledBetV1,
 )
 from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
 from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
 from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
 from orion.schemas.physiology_report import PHYSIOLOGY_REPORT_KIND, PhysiologyReportV1
+from orion.schemas.curiosity_replica import (
+    FOCUS_REFUSAL_REQUEST_KIND as CURIOSITY_REPLICA_FOCUS_REFUSAL_REQUEST_KIND,
+    FOCUS_REFUSAL_RESULT_KIND as CURIOSITY_REPLICA_FOCUS_REFUSAL_RESULT_KIND,
+    PLAN_REQUEST_KIND as CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
+    PLAN_RESULT_KIND as CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    REPLIES_VIEW_KIND as CURIOSITY_REPLICA_REPLIES_VIEW_KIND,
+    CuriosityFocusRefusalRequestV1,
+    CuriosityFocusRefusalResultV1,
+    CuriosityOfferPlanAnswerV1,
+    CuriosityOfferPlanRequestV1,
+    CuriosityOfferPlanResultV1,
+    CuriosityReplicaRepliesViewV1,
+)
+from orion.physiology.prime_charge import PrimeChargeRefusalV1
+from orion.prime.state import PrimeConcernsViewV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
     ChoiceOptionV1,
@@ -462,6 +478,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
 from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
+from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -673,9 +690,6 @@ from orion.schemas.durable_run import (
     DurableRunReceiptV1,
 )
 from orion.schemas.resource_admission import ResourceEventV1
-from orion.schemas.world_pulse_read_pull import WorldPulseReadPullRequestV1, WorldPulseReadPullResultV1
-from orion.schemas.retro_leisure import RetroLeisureStartRequestV1, RetroLeisureStartResultV1
-from orion.schemas.aitown_session import AITownSessionStartRequestV1, AITownSessionStartResultV1
 from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
@@ -729,6 +743,7 @@ from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.field_dominance_run import FieldDominanceRunV1
 from orion.schemas.temporal_self import (
     ArcAttentionSummaryV1,
+    ArcBindingV1,
     ArcBodySummaryV1,
     ArcSummaryV1,
     DayCitationCheckV1,
@@ -750,18 +765,6 @@ from orion.schemas.causal_geometry import (
     CausalGeometryEdgeV1,
     CausalGeometrySnapshotV1,
 )
-from orion.schemas.execution_dispatch_frame import (
-    ExecutionDispatchCandidateV1,
-    ExecutionDispatchFrameV1,
-)
-from orion.schemas.consolidation_frame import (
-    ConsolidationFrameV1,
-    ExpectationV1,
-    MotifObservationV1,
-    SchemaCandidateV1,
-    SparseTensorSliceV1,
-)
-from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.brain_frame import (
     BrainEdgeSampleV1,
     BrainNodeSampleV1,
@@ -769,8 +772,6 @@ from orion.schemas.brain_frame import (
     BrainSpotlightV1,
     SubstrateBrainFrameV1,
 )
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
-from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
     EvidenceQueryV1,
@@ -804,6 +805,8 @@ from orion.schemas.workflow_execution import (
 from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.harness_step_run import HarnessEchoSmokeBriefV1
+from orion.schemas.pr_field_note_run import PrFieldNoteBriefV1
+from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.orion_day import (
     OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
@@ -1046,6 +1049,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DurableRunRequestV1": DurableRunRequestV1,
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "HarnessEchoSmokeBriefV1": HarnessEchoSmokeBriefV1,
+    "PrFieldNoteBriefV1": PrFieldNoteBriefV1,
+    "ReminiscenceRunBriefV1": ReminiscenceRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
     "CompactorDigestResultV1": CompactorDigestResultV1,
@@ -1059,12 +1064,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
     "GpuPoolShedReasonRequestV1": GpuPoolShedReasonRequestV1,
     "GpuPoolShedResultV1": GpuPoolShedResultV1,
-    "WorldPulseReadPullRequestV1": WorldPulseReadPullRequestV1,
-    "WorldPulseReadPullResultV1": WorldPulseReadPullResultV1,
-    "RetroLeisureStartRequestV1": RetroLeisureStartRequestV1,
-    "RetroLeisureStartResultV1": RetroLeisureStartResultV1,
-    "AITownSessionStartRequestV1": AITownSessionStartRequestV1,
-    "AITownSessionStartResultV1": AITownSessionStartResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -1357,6 +1356,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CabinetAmbientSpikeV1": CabinetAmbientSpikeV1,
     "HomeCoolingSampleV1": HomeCoolingSampleV1,
     "OfficeEnvSampleV1": OfficeEnvSampleV1,
+    "ClosetEnvSampleV1": ClosetEnvSampleV1,
     "EnergyUsageIntervalV1": EnergyUsageIntervalV1,
     "EnergyCostAccruedV1": EnergyCostAccruedV1,
     "EnergyRunCostEstimatedV1": EnergyRunCostEstimatedV1,
@@ -1453,6 +1453,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ArcSummaryV1": ArcSummaryV1,
     "ArcAttentionSummaryV1": ArcAttentionSummaryV1,
     "ArcBodySummaryV1": ArcBodySummaryV1,
+    "ArcBindingV1": ArcBindingV1,
     "OpenThreadV1": OpenThreadV1,
     "ExpectationRefV1": ExpectationRefV1,
     # Patch 4 (Orion uses its own day): the two readers' rendered views and the citation gate's
@@ -1463,19 +1464,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfReadingsBlockV1": SelfReadingsBlockV1,
     "TemporalSelfDayBlockV1": TemporalSelfDayBlockV1,
     "DayCitationCheckV1": DayCitationCheckV1,
-    "PolicyDecisionV1": PolicyDecisionV1,
-    "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
-    "ProposalCandidateV1": ProposalCandidateV1,
-    "ProposalFrameV1": ProposalFrameV1,
-    "ExecutionDispatchCandidateV1": ExecutionDispatchCandidateV1,
-    "ExecutionDispatchFrameV1": ExecutionDispatchFrameV1,
-    "ConsolidationFrameV1": ConsolidationFrameV1,
-    "MotifObservationV1": MotifObservationV1,
-    "ExpectationV1": ExpectationV1,
-    "SparseTensorSliceV1": SparseTensorSliceV1,
-    "SchemaCandidateV1": SchemaCandidateV1,
-    "FeedbackFrameV1": FeedbackFrameV1,
-    "OutcomeObservationV1": OutcomeObservationV1,
     "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
     "CausalGeometryEdgeV1": CausalGeometryEdgeV1,
     "CausalGeometryDivergenceEntryV1": CausalGeometryDivergenceEntryV1,
@@ -1570,6 +1558,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SettledBetV1": SettledBetV1,
     "FacultyRecordV1": FacultyRecordV1,
     "SelfMonitorStateV1": SelfMonitorStateV1,
+    # Self-monitor stance/reverie cue (spec step 3): local to orion-thought, rides in plan context.
+    "SelfTrackRecordCueV1": SelfTrackRecordCueV1,
     # Body economy Patch A3 (2026-10-23): Organ 1 Body. Bus orion:physiology:state (durable-runs ->
     # sql-writer physiology_state) and Redis orion:physiology:latest. Also in SCHEMA_REGISTRY.
     "PhysiologyStateV1": PhysiologyStateV1,
@@ -1591,6 +1581,16 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Personality graph loop (rev 2): the frame crosses HTTP (durable-runs -> thought, hub), so it
     # is also in SCHEMA_REGISTRY; the nested node/style models and the local cue live here only.
     "PersonalityFrameV1": PersonalityFrameV1,
+    # Curiosity replica contracts (2026-11-04 design, patch 2). Also in SCHEMA_REGISTRY below.
+    "CuriosityOfferPlanRequestV1": CuriosityOfferPlanRequestV1,
+    "CuriosityOfferPlanResultV1": CuriosityOfferPlanResultV1,
+    "CuriosityOfferPlanAnswerV1": CuriosityOfferPlanAnswerV1,
+    "PrimeConcernsViewV1": PrimeConcernsViewV1,
+    # Curiosity replica patch 4 (answers to Prime). Also in SCHEMA_REGISTRY below.
+    "CuriosityFocusRefusalRequestV1": CuriosityFocusRefusalRequestV1,
+    "CuriosityFocusRefusalResultV1": CuriosityFocusRefusalResultV1,
+    "CuriosityReplicaRepliesViewV1": CuriosityReplicaRepliesViewV1,
+    "PrimeChargeRefusalV1": PrimeChargeRefusalV1,
     "DispositionV1": DispositionV1,
     "ChoiceStyleV1": ChoiceStyleV1,
     "PersonalityCueV1": PersonalityCueV1,
@@ -1685,6 +1685,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "OfficeEnvSampleV1": SchemaRegistration(
         model=OfficeEnvSampleV1,
         kind="office.env.sample.v1",
+    ),
+    "ClosetEnvSampleV1": SchemaRegistration(
+        model=ClosetEnvSampleV1,
+        kind="closet.env.sample.v1",
     ),
     "EnergyUsageIntervalV1": SchemaRegistration(
         model=EnergyUsageIntervalV1,
@@ -2045,15 +2049,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
     "GpuPoolShedReasonRequestV1": SchemaRegistration(model=GpuPoolShedReasonRequestV1, kind="gpu_pool.shed.request.v1"),
     "GpuPoolShedResultV1": SchemaRegistration(model=GpuPoolShedResultV1, kind="gpu_pool.shed.result.v1"),
-    # Thinking rung 3 follow-up: the allocator's reading pull (orion/schemas/world_pulse_read_pull.py).
-    "WorldPulseReadPullRequestV1": SchemaRegistration(model=WorldPulseReadPullRequestV1, kind="world_pulse_read.pull.request.v1"),
-    "WorldPulseReadPullResultV1": SchemaRegistration(model=WorldPulseReadPullResultV1, kind="world_pulse_read.pull.result.v1"),
-    # Orion plays Zelda (section E): the allocator's retro leisure start (orion/schemas/retro_leisure.py).
-    "RetroLeisureStartRequestV1": SchemaRegistration(model=RetroLeisureStartRequestV1, kind="retro_leisure.start.request.v1"),
-    "RetroLeisureStartResultV1": SchemaRegistration(model=RetroLeisureStartResultV1, kind="retro_leisure.start.result.v1"),
-    # AI Town sessions (2026-10-30): the allocator's town session start (orion/schemas/aitown_session.py).
-    "AITownSessionStartRequestV1": SchemaRegistration(model=AITownSessionStartRequestV1, kind="aitown_session.start.request.v1"),
-    "AITownSessionStartResultV1": SchemaRegistration(model=AITownSessionStartResultV1, kind="aitown_session.start.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
@@ -2169,6 +2164,43 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PersonalityFrameV1": SchemaRegistration(
         model=PersonalityFrameV1,
         kind="personality.frame.v1",
+    ),
+    # Curiosity replica (2026-11-04 design, patch 2): the plan RPC, the model's answer, and Prime's
+    # published concerns view (Redis orion:prime:concerns). Also in `_REGISTRY` above.
+    "CuriosityOfferPlanRequestV1": SchemaRegistration(
+        model=CuriosityOfferPlanRequestV1,
+        kind=CURIOSITY_REPLICA_PLAN_REQUEST_KIND,
+    ),
+    "CuriosityOfferPlanResultV1": SchemaRegistration(
+        model=CuriosityOfferPlanResultV1,
+        kind=CURIOSITY_REPLICA_PLAN_RESULT_KIND,
+    ),
+    "CuriosityOfferPlanAnswerV1": SchemaRegistration(
+        model=CuriosityOfferPlanAnswerV1,
+        kind="curiosity.replica.plan.answer.v1",
+    ),
+    "PrimeConcernsViewV1": SchemaRegistration(
+        model=PrimeConcernsViewV1,
+        kind="prime.concerns.view.v1",
+    ),
+    # Curiosity replica patch 4: the focus refusal RPC (orion-mind -> Hub), the replica's replies view (Redis
+    # orion:curiosity:replica:replies, read by Prime) and the refusal written next to a regulate signal (Redis
+    # orion:prime:regulate:<family> field refusal, read by the market). Also in `_REGISTRY` above.
+    "CuriosityFocusRefusalRequestV1": SchemaRegistration(
+        model=CuriosityFocusRefusalRequestV1,
+        kind=CURIOSITY_REPLICA_FOCUS_REFUSAL_REQUEST_KIND,
+    ),
+    "CuriosityFocusRefusalResultV1": SchemaRegistration(
+        model=CuriosityFocusRefusalResultV1,
+        kind=CURIOSITY_REPLICA_FOCUS_REFUSAL_RESULT_KIND,
+    ),
+    "CuriosityReplicaRepliesViewV1": SchemaRegistration(
+        model=CuriosityReplicaRepliesViewV1,
+        kind=CURIOSITY_REPLICA_REPLIES_VIEW_KIND,
+    ),
+    "PrimeChargeRefusalV1": SchemaRegistration(
+        model=PrimeChargeRefusalV1,
+        kind="prime.regulation.refusal.v1",
     ),
     "DispositionNamingV1": SchemaRegistration(
         model=DispositionNamingV1,

@@ -104,7 +104,7 @@ def test_prompt_lists_orions_eyes_when_read_and_nothing_when_not() -> None:
     """2026-10-15: what Orion can perceive is part of what Orion is made of;
     v54 named fifteen tables and no eye."""
     eyes = [
-        "your room camera (cam0, since 2026-08-21; looks at the room where Juniper works): receiving frames (newest within the last 15 min)",
+        "your office camera (cam0, since 2026-08-21; looks at the office where Juniper works): receiving frames (newest within the last 15 min)",
         "your outdoor camera (walkway, since 2026-10-14; looks at the community walkway, the street and our patio"
         " -- outside and public, not your room): receiving frames (newest within the last 15 min), 3 individuals counted today (fixtures excluded)",
     ]

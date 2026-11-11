@@ -7,15 +7,32 @@ normal tick and costs nothing.
 
 What counts as a change (each one is a fact Prime can be shown, never a score):
 
-* attention moved: Temporal Self's ``active_arc`` is a different arc than last tick;
-* the set of BINDING body constraints changed (``prices[*].bind_state == "binding"`` from GET
-  /physiology/state: the body's own label; slack and "out of my hands" (exogenous) are not news);
 * one of Prime's own acts settled (written by the runtime when a nomination closes);
 * a concern faded: Prime has not kept it for ``CONCERN_TTL`` (a thought keeps a concern by naming it
   under ``concerns.keep``; nothing outside a thought renews it -- 2026-10-30, Juniper: an arc the model
   tied a concern to is not evidence for it; the first live concern, about energy, was tied to a
   conversation arc and was being renewed by that conversation);
-* first wake: Prime has never thought.
+* first wake: Prime has never thought;
+* quiet: nothing else woke Prime for ``QUIET_FLOOR`` (a quarter of ``CONCERN_TTL``), so a held concern
+  gets several chances to be kept or dropped before it fades for lack of any thought at all.
+
+Which body constraints bind is NOT a change either (2026-11-04). Live 11-03 09:43..21:29, after
+attention was removed, Prime thought 26 times, almost every one at the 5-minute floor: 21 did nothing,
+4 dropped a concern "because lane X is no longer the binding constraint", 1 asked a question. Over 3
+days the binding set changed 25 times a day (median spell 12 min, 29 of 75 under 5 min): the market
+moving its prices, not news for a mind. It stays visible in every frame's BODY section, read live from the body.
+
+Attention moving is NOT a change (2026-11-03). Live 10-30..11-03 Prime's concerns churned with it:
+22 of the 38 concern drops gave "attention has moved ..." as the reason, and 1 of 37 graded concern
+acts settled. Attention is still in every frame, as background
+(orion/prime/thought.py ``_attention_lines``); it just does not wake Prime on its own.
+
+Tries that never reached the model (2026-11-03; the code is orion/mindloop/backoff.py since 2026-11-04): a try that got no pool seat, no gateway reply, or an
+upstream 5xx (after one immediate retry) is not a thought. ``note_no_model`` records it without
+starting the refractory interval, and the next tick re-bids (that is the retry). ``NO_MODEL_FREE_TRIES``
+in a row are free; after that each one backs off (refractory x 2^n, capped at ``NO_MODEL_BACKOFF_CAP``),
+and a gateway shed answer's own ``retry_after_sec`` is always honoured. A no-seat try also sends the
+next one on the ``starved`` pool priority (``wants_starved_route``).
 
 Concerns are graded acts (Prime step 1, 2026-10-30; orion/prime/acts.py ``concern_act``). Every concern
 Prime holds has one act; when the act closes, one ``PrimeConcernRecordV1`` is appended here: settled,
@@ -31,10 +48,26 @@ answers "is there anything to think about at all".
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, Field, GetJsonSchemaHandler, SerializerFunctionWrapHandler,
+                      model_serializer)
+
+# Tries that never reached the model: the loop library's, re-exported here so Prime's callers and tests keep
+# their imports (moved to orion/mindloop/backoff.py on 2026-11-04, unchanged).
+from orion.mindloop.backoff import (  # noqa: F401 -- re-exports
+    GATEWAY_NO_SEAT_ERRORS,
+    GATEWAY_UPSTREAM_5XX,
+    NO_MODEL_BACKOFF_CAP,
+    NO_MODEL_FREE_TRIES,
+    TryKind,
+    classify_try,
+    no_model_backoff,
+    note_model_reached,
+    note_no_model,
+    wants_starved_route,
+)
 
 MAX_CONCERNS = 3
 MAX_PENDING_CHANGES = 20
@@ -49,6 +82,9 @@ CONCERN_TEXT_CAP = 300
 # A concern Prime has not kept for a day fades. One day, because Temporal Self's arcs are per day
 # (``/temporal-self/frame`` day_id): an arc not seen for a whole day is no longer part of today.
 CONCERN_TTL = timedelta(hours=24)
+# The quiet floor. Live 10-30..11-03, with attention moves removed, the longest stretch with no other
+# trigger was 12.3 h (p90 1.6 h): without a floor a concern could fade with no thought in between.
+QUIET_FLOOR = CONCERN_TTL / 4
 
 Arm = Literal["treated", "control"]
 
@@ -60,6 +96,9 @@ class PrimeConcernV1(BaseModel):
     text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
     # The Temporal Self arc the model said this concern is about. A reference only, never evidence.
     arc_id: Optional[str] = None
+    # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS, attention as the want competition patch 2): the funded
+    # event want (its event_ref) this concern came from. Left out of the saved state when None.
+    event_ref: Optional[str] = Field(default=None, max_length=500)
     opened_at: AwareDatetime
     # When a thought last kept it (or opened it). Name kept for the persisted state's schema.
     last_evidence_at: AwareDatetime
@@ -68,6 +107,20 @@ class PrimeConcernV1(BaseModel):
     # still holds it ("settled" or "lapsed"; None = still open). Defaults keep old persisted state loading.
     act_opened_at: Optional[AwareDatetime] = None
     graded: Optional[Literal["settled", "lapsed"]] = None
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A concern with no event saves byte-for-byte as before (a rollback still loads the state).
+        out = handler(self)
+        if out.get("event_ref", 0) is None:
+            del out["event_ref"]
+        return out
 
 
 ConcernEnd = Literal["settled", "dropped", "faded", "lapsed"]
@@ -149,9 +202,15 @@ class PrimeStateV1(BaseModel):
     last_thought_at: Optional[AwareDatetime] = None
     last_reading: str = ""
     thoughts_total: int = 0
-    # Cursors: what the last tick saw, so the next one can tell what moved.
+    # Retired 2026-11-03 (attention moves no longer wake Prime); kept so older persisted state loads.
     seen_active_arc_id: Optional[str] = None
+    # Cursor: what the last tick saw, so the next one can tell what moved.
     seen_binding: Optional[list[str]] = None
+    # Tries that never reached the model (2026-11-03, ``note_no_model``). Defaults keep old state loading.
+    no_model_streak: int = 0
+    no_model_tries_total: int = 0
+    last_try_kind: Optional[TryKind] = None
+    retry_not_before: Optional[AwareDatetime] = None
 
 
 class PrimeSnapshotV1(BaseModel):
@@ -159,12 +218,55 @@ class PrimeSnapshotV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    active_arc_id: Optional[str] = None
-    active_arc_label: Optional[str] = None
     # Body constraints whose bind_state is "binding", sorted. None when the body was not read.
     binding: Optional[list[str]] = None
-    temporal_self_ok: bool = False
     body_ok: bool = False
+
+
+# Prime's first published call (curiosity replica design 2026-11-04, section 2): a read-only view of its
+# open concerns, so another loop instance (the curiosity replica) can read what Prime is concerned about
+# without touching Prime's private state. Written to this Redis key as JSON; the writer lands with the
+# replica that reads it (patch 3): PrimeRuntime.save (services/orion-mind/app/prime_loop.py) writes it after every
+# state save, and the replica (services/orion-mind/app/replica_loop.py) reads it.
+PRIME_CONCERNS_KEY = "orion:prime:concerns"
+
+
+class PrimeConcernViewV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    concern_id: str
+    text: str = Field(min_length=1, max_length=CONCERN_TEXT_CAP)
+    # Hours since Prime opened it.
+    age_h: float = Field(ge=0.0)
+    arc_id: Optional[str] = None
+
+
+class PrimeConcernsViewV1(BaseModel):
+    """What Prime publishes about its open concerns: ids, words, age and arc. No bets, no outcomes, no
+    track record -- those stay Prime's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["prime.concerns.view.v1"] = "prime.concerns.view.v1"
+    as_of: AwareDatetime
+    concerns: list[PrimeConcernViewV1] = Field(default_factory=list, max_length=MAX_CONCERNS)
+
+
+def concerns_view(state: PrimeStateV1, *, now: datetime) -> PrimeConcernsViewV1:
+    """The published view of ``state``'s open concerns (a concern already graded is closed, so left out)."""
+    return PrimeConcernsViewV1(
+        as_of=now,
+        concerns=[
+            PrimeConcernViewV1(
+                concern_id=c.concern_id,
+                text=c.text,
+                age_h=max(0.0, (now - c.opened_at).total_seconds() / 3600.0),
+                arc_id=c.arc_id,
+            )
+            for c in state.concerns
+            if c.graded is None
+        ][:MAX_CONCERNS],
+    )
 
 
 def _push(items: list[str], text: str, cap: int) -> list[str]:
@@ -222,14 +324,14 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
     if state.last_thought_at is None and not state.pending_changes:
         state = note_change(state, "first wake: I have not thought yet")
 
-    if snap.temporal_self_ok and snap.active_arc_id and snap.active_arc_id != state.seen_active_arc_id:
-        label = snap.active_arc_label or snap.active_arc_id
-        state = note_change(state, f"attention moved to {label!r} (arc {snap.active_arc_id})")
-        state = state.model_copy(update={"seen_active_arc_id": snap.active_arc_id})
+    if (state.last_thought_at is not None and not state.pending_changes
+            and now - state.last_thought_at >= QUIET_FLOOR):
+        hours = (now - state.last_thought_at).total_seconds() / 3600.0
+        state = note_change(state, f"quiet: nothing has woken me for {hours:.0f} hours")
 
     if snap.body_ok and snap.binding is not None and snap.binding != state.seen_binding:
-        now_binding = ", ".join(snap.binding) or "nothing"
-        state = note_change(state, f"body: binding constraints now {now_binding}")
+        # Kept only as a record of the last binding set Prime saw (persisted state field). The frame's BODY
+        # section reads the live body, not this; it is never a wake (module docstring, 2026-11-04).
         state = state.model_copy(update={"seen_binding": snap.binding})
 
     kept: list[PrimeConcernV1] = []
@@ -243,9 +345,11 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
 
 
 def wants_to_think(state: PrimeStateV1, now: datetime, *, refractory: timedelta) -> bool:
-    """True when there is something to think about and the refractory interval has passed.
-    Price, heat and lane contention are not decided here: the bid decides those."""
+    """True when there is something to think about, the refractory interval has passed and no
+    no-model backoff is running. Price, heat and lane contention are not decided here: the bid does."""
     if not state.pending_changes:
+        return False
+    if state.retry_not_before is not None and now < state.retry_not_before:
         return False
     return state.last_thought_at is None or now - state.last_thought_at >= refractory
 
@@ -257,16 +361,28 @@ def new_id() -> str:
 __all__ = [
     "Arm",
     "CONCERN_TTL",
+    "NO_MODEL_FREE_TRIES",
+    "QUIET_FLOOR",
+    "TryKind",
+    "classify_try",
+    "no_model_backoff",
+    "note_model_reached",
+    "note_no_model",
+    "wants_starved_route",
     "MAX_CONCERNS",
     "ConcernEnd",
     "MAX_CONCERN_RECORD",
+    "PRIME_CONCERNS_KEY",
     "PrimeConcernRecordV1",
     "PrimeConcernV1",
+    "PrimeConcernViewV1",
+    "PrimeConcernsViewV1",
     "PrimeNominationV1",
     "PrimeRegulationOpenV1",
     "PrimeSnapshotV1",
     "PrimeStateV1",
     "close_concern",
+    "concerns_view",
     "new_id",
     "note_change",
     "note_outcome",

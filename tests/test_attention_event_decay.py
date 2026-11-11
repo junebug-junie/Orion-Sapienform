@@ -66,13 +66,13 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
         "node:substrate.chat": True,        # designed_sparse, "only written when chat turns were touched"
         "node:substrate.codebase": True,    # designed_sparse, "only written on a codebase delta event"
         "node:substrate.route": True,       # designed_sparse, "only written when routing runs were touched"
-        "node:substrate.harness_closure": True,  # event_gated (a placeholder: never eligible anyway)
         # designed_sparse, "only written as 1.0 at a strain news event, then carried unwritten"
         # for the orienting window: the 1.0's age is the event's age.
         "node:substrate.strain": True,
         "node:substrate.cabinet": False,    # designed_sparse but rewritten every 30 s tick
         "node:substrate.perception": False,  # "written as 0.0 every tick"
         "node:substrate.perception_walkway": False,  # walkway camera, same "written as 0.0 every tick"
+        "node:substrate.street": False,  # designed_sparse, "written every tick while measurable"
         "node:substrate.biometrics": False,  # per_tick
         "node:substrate.bus_synaptic": False,  # per_tick
     }

@@ -189,16 +189,28 @@ def test_polarity_and_value_kind_come_from_the_semantic_layer() -> None:
     assert node_prediction_error_semantics("node:substrate.biometrics") == ("level", "higher_is_worse")
     # A trigger has no polarity in the semantic layer; firing is the event.
     assert node_prediction_error_semantics("node:substrate.cabinet") == ("trigger", None)
-    assert node_prediction_error_semantics("node:substrate.harness_closure")[0] == "placeholder"
+    # harness_closure was retired 2026-11-11: no glossary entry, so no value_kind.
+    assert node_prediction_error_semantics("node:substrate.harness_closure")[0] is None
 
 
 def test_trigger_fires_into_eligibility() -> None:
     assert judge_candidate(body("node:substrate.cabinet", 0.97)).eligible
 
 
-def test_placeholder_is_never_a_measurement() -> None:
-    v = judge_candidate(body("node:substrate.harness_closure", 1.0))
-    assert not v.eligible and "placeholder" in v.reason
+@pytest.mark.parametrize("kind", ["placeholder", "bucket"])
+def test_placeholder_is_never_a_measurement(kind) -> None:
+    c = body("node:substrate.biometrics", 1.0).model_copy(update={"value_kind": kind})
+    v = judge_candidate(c)
+    assert not v.eligible and kind in v.reason
+
+
+def test_lingering_retired_harness_closure_node_cannot_win() -> None:
+    """The retired node may keep its last stored 0.65 until it is deleted. Its
+    age only grows (nothing writes it), so the internal stale rule keeps it out."""
+    from orion.attention.world_first import INTERNAL_MAX_AGE_SEC
+
+    v = judge_candidate(body("node:substrate.harness_closure", 1.0, age=INTERNAL_MAX_AGE_SEC + 1))
+    assert not v.eligible and v.reason.startswith("stale")
 
 
 def test_higher_is_better_inverts_the_bad_direction() -> None:

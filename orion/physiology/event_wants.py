@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
+from orion.schemas.grammar import ActCostV2
 from orion.schemas.physiology_want import WantV1, WantWindowV1
 
 SOURCE_HISTORY = timedelta(days=30)
@@ -57,14 +58,16 @@ def event_want_id(source: str, key: str) -> str:
 
 def event_want(*, source: str, key: str, family: str, producer: str, verb: str, tier: int, event_ref: str,
                salience: float, opened_at: datetime, latest: Optional[datetime] = None,
-               object_ref: Optional[str] = None) -> WantV1:
-    """The event want a source posts. ``latest``: when the event expires (the want's window end)."""
+               object_ref: Optional[str] = None, cost: Optional[ActCostV2] = None) -> WantV1:
+    """The event want a source posts. ``latest``: when the event expires (the want's window end).
+    ``cost``: what the act this want would run costs, when the source knows it better than the
+    family's history (patch 2: an event want carries "the act it would run ... and cost")."""
     want_id = event_want_id(source, key)
     return WantV1(
         want_id=want_id, family=family, producer=producer, verb=verb, tier=tier,  # type: ignore[arg-type]
         object_ref=(object_ref or None) and object_ref[:500], opened_at=opened_at,
         window=WantWindowV1(latest=latest), correlation_id=want_id, event_ref=event_ref[:500],
-        salience=min(1.0, max(0.0, float(salience))),
+        salience=min(1.0, max(0.0, float(salience))), cost=cost,
     )
 
 

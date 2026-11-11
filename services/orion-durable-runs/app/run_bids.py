@@ -31,6 +31,14 @@ Joins. ``want_id`` = the run id (also the act's ``object_ref`` ``durable_run:<ru
 ``correlation_id`` = the run's correlation id, which is the act's ``correlation_id`` in
 ``grammar_acts`` (live 10-27: run ids and correlation ids differ, so the run id alone does not join).
 
+Attention patch 3b (docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md,
+section 1): the GPU pool serves its background queue by value. So every decision here, shadow or
+binding, is remembered per run (``value_for``) and its net rides on the run's hold request. Reading
+(``reading.turn``, which opens no act here: Hub opens it) gets a VALUE-ONLY bid at stage 1's submit:
+the decision is logged and its net is carried, but it reserves nothing and nothing obeys it (binding
+reading is patch 3c). Stage 2 never bids: it carries its stage 1's net (one job, one bid). A run whose
+bid has not landed, or a process that restarted, carries no net: the pool keeps it in arrival order.
+
 Gated by ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED (and needs the market: ORION_PHYSIOLOGY_BID_ENABLED).
 Best-effort: never raises into admission.
 """
@@ -40,6 +48,7 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
@@ -55,6 +64,7 @@ from orion.physiology.binding import (  # noqa: F401 -- re-exported: tests, repl
     decision_detail,
 )
 from orion.schemas.physiology_want import WantV1, WantWindowV1
+from orion.schemas.reading_turn import READING_WORKFLOW
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +72,12 @@ PRODUCER = "orion-durable-runs.admission"
 # Binding bids carry their own producer, so want_ledger (whose ``shadow`` is always true) still tells
 # an obeyed decision from a shadow one.
 BINDING_PRODUCER = "orion-durable-runs.admission.binding"
+# Patch 3b: reading's value-only bids, under their own producer so a reader of want_ledger can tell
+# them from Hub's after-the-read looks (same family) and from shadow bids that model a real gate.
+VALUE_PRODUCER = "orion-durable-runs.admission.value"
+# How long a run's first hold request waits for its shadow bid to land (patch 3b). Short: a cold
+# history read can take far longer, and the hold then goes out without a net (arrival order).
+VALUE_WAIT_SEC = 1.0
 BID_TIMEOUT_SEC = 30.0          # shadow: a cold history read is a 30-day scan; the run never waits on it
 # Binding: the run DOES wait on this bid (it holds a driver slot), so it is short; a timeout asks the
 # pool as before.
@@ -79,6 +95,9 @@ SEEN_MAX = 5000
 BINDING_FAMILIES = frozenset({"durable.curiosity_investigate"})
 HOLD_DEADLINE_MARGIN_SEC = 1800.0   # a run with its own deadline is released this long before it
 HOLD_EVENT = "run.economy_held"
+# Patch 3b: reading's value-only bid (stage 1). The act is Hub's ``hub.world_pulse_read look``.
+READING_FAMILY = "hub.world_pulse_read"
+READING_VERB = "look"
 RELEASE_EVENT = "run.economy_admitted"
 
 
@@ -110,6 +129,36 @@ def want_for_run(request: dict[str, Any], tier: int, *, producer: str = PRODUCER
         object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
         window=WantWindowV1(latest=_aware(admission.get("deadline_at"))),
         correlation_id=str(corr) if corr else None)
+
+
+@dataclass(frozen=True)
+class RunValue:
+    """What a run's hold request carries to the pool (patch 3b): the market decision's want, net and
+    family. The pool orders its background class by ``net``."""
+    want_id: str
+    net: float
+    family: str
+
+
+def reading_stage(request: dict[str, Any]) -> tuple[Optional[str], Optional[int]]:
+    """(seed_id, stage) of a reading run, else (None, None)."""
+    if request.get("workflow") != READING_WORKFLOW:
+        return None, None
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    seed, stage = brief.get("seed_id"), brief.get("stage")
+    return (str(seed), int(stage)) if seed and stage in (1, 2) else (None, None)
+
+
+def reading_want(request: dict[str, Any], tier: int) -> Optional[WantV1]:
+    """Stage 1's value-only want (patch 3b), or None (not reading, stage 2, or no run id)."""
+    seed, stage = reading_stage(request)
+    run_id = str(request.get("run_id") or "")
+    if seed is None or stage != 1 or not run_id or tier not in (1, 2):
+        return None
+    corr = request.get("correlation_id")
+    return WantV1(want_id=run_id, family=READING_FAMILY, producer=VALUE_PRODUCER, verb=READING_VERB,
+                  object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
+                  correlation_id=str(corr) if corr else None)
 
 
 def hold_end(want: WantV1, deferrable_window_s: float) -> Optional[datetime]:
@@ -157,7 +206,11 @@ class RunBidder:
         # or the terminal. Applied when the bid lands, so a fast run never leaks a reservation.
         self._inflight: dict[str, dict[str, Any]] = {}
         self.counts = {"bid": 0, "skipped": 0, "failed": 0, "opened": 0, "released": 0,
-                       "bind_admitted": 0, "bind_held": 0, "bind_no_answer": 0}
+                       "bind_admitted": 0, "bind_held": 0, "bind_no_answer": 0, "value_bid": 0}
+        # Patch 3b: run_id -> the net its hold carries; reading seed -> stage 1's (stage 2 reuses it).
+        self._values: OrderedDict[str, RunValue] = OrderedDict()
+        self._seed_values: OrderedDict[str, RunValue] = OrderedDict()
+        self._task_of: dict[str, asyncio.Task] = {}
 
     def _market_or_none(self) -> Any:
         if not (self.enabled or self.binding_enabled):
@@ -181,29 +234,41 @@ class RunBidder:
             if not run_id or run_id in self._seen:
                 return None          # a duplicate submit of the same run bids once
             family = run_act_family(request)
+            value_only = False
             if family is None:
-                return None
-            cfg = market.families.get(family.actor)
-            want = want_for_run(request, cfg.tier if cfg is not None else 0)
+                if reading_stage(request)[1] != 1:
+                    return None
+                cfg = market.families.get(READING_FAMILY)
+                want = reading_want(request, cfg.tier if cfg is not None else 0)
+                value_only = True
+                if want is None:
+                    return None
+            else:
+                cfg = market.families.get(family.actor)
+                want = want_for_run(request, cfg.tier if cfg is not None else 0)
             if want is None:
                 self.counts["skipped"] += 1
-                logger.info("physiology_shadow_bid_skipped run=%s family=%s reason=%s", run_id, family.actor,
+                logger.info("physiology_shadow_bid_skipped run=%s family=%s reason=%s", run_id,
+                            family.actor if family is not None else READING_FAMILY,
                             "not_in_families_yaml" if cfg is None else f"tier_{cfg.tier}")
                 return None
             self._seen[run_id] = None
             while len(self._seen) > SEEN_MAX:
                 self._seen.popitem(last=False)
             self._inflight[run_id] = {}
-            task = asyncio.get_running_loop().create_task(self._bid(market, want))
+            task = asyncio.get_running_loop().create_task(self._bid(market, want, request, value_only=value_only))
             self._tasks.add(task)
+            self._task_of[run_id] = task
             task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(lambda _t, r=run_id: self._task_of.pop(r, None))
             return task
         except Exception:  # noqa: BLE001 -- never block admission on the economy
             self.counts["failed"] += 1
             logger.warning("physiology_shadow_bid_schedule_failed run=%s", request.get("run_id"), exc_info=True)
             return None
 
-    async def _bid(self, market: Any, want: WantV1) -> Any:
+    async def _bid(self, market: Any, want: WantV1, request: Optional[dict[str, Any]] = None, *,
+                   value_only: bool = False) -> Any:
         try:
             decision = await asyncio.wait_for(market.bid(want, reserve_at_open=True), self._timeout)
         except Exception:  # noqa: BLE001 -- incl. timeout: the run proceeds exactly as before
@@ -214,15 +279,56 @@ class RunBidder:
             self._safe(market.release, want.want_id)
             return None
         self.counts["bid"] += 1
+        self._remember(request or {}, want, decision)
         seen = self._inflight.pop(want.want_id, {})
-        if seen.get("ended"):
+        if value_only:
+            # Reading's bid only sets its queue value (patch 3b): it reserves nothing. Binding reading,
+            # with its reservations, is patch 3c.
+            self.counts["value_bid"] += 1
+            self._safe(market.release, want.want_id)
+        elif seen.get("ended"):
             self.counts["released"] += self._safe(market.release, want.want_id)
         elif seen.get("opened_at") is not None:
             self.counts["opened"] += self._safe(market.mark_opened, want.want_id, seen["opened_at"])
         logger.info("physiology_shadow_bid run=%s corr=%s family=%s decision_id=%s outcome=%s reason=%s "
-                    "binding=%s shadow=true obeyed=false", want.want_id, want.correlation_id, want.family,
-                    decision.decision_id, decision.outcome, decision.reason, decision.binding_constraint)
+                    "binding=%s net=%s value_only=%s shadow=true obeyed=false", want.want_id, want.correlation_id,
+                    want.family, decision.decision_id, decision.outcome, decision.reason, decision.binding_constraint,
+                    getattr(decision, "net", None), value_only)
         return decision
+
+    def _remember(self, request: dict[str, Any], want: WantV1, decision: Any) -> None:
+        """Keep the decision's net for the run's hold request (and, for reading stage 1, its seed)."""
+        net = getattr(decision, "net", None)
+        if net is None:
+            return
+        v = RunValue(want.want_id, float(net), want.family)
+        self._values[v.want_id] = v
+        seed, _stage = reading_stage(request)
+        if seed is not None:
+            self._seed_values[seed] = v
+        for m in (self._values, self._seed_values):
+            while len(m) > SEEN_MAX:
+                m.popitem(last=False)
+
+    async def value_for(self, request: dict[str, Any], wait_sec: float = VALUE_WAIT_SEC) -> Optional[RunValue]:
+        """The net this run's hold request carries (patch 3b), or None (no bid: arrival order). Waits up
+        to ``wait_sec`` for a shadow bid still in flight, so the first hold request carries it. A
+        reading stage 2 carries its stage 1's net. Never raises."""
+        try:
+            run_id = str(request.get("run_id") or "")
+            task = self._task_of.get(run_id)
+            if task is not None and not task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), wait_sec)
+                except Exception:  # noqa: BLE001 -- incl. timeout: ask the pool without a net
+                    pass
+            if run_id in self._values:
+                return self._values[run_id]
+            seed, stage = reading_stage(request)
+            return self._seed_values.get(seed) if seed is not None and stage == 2 else None
+        except Exception:  # noqa: BLE001
+            logger.warning("physiology_run_value_failed run=%s", request.get("run_id"), exc_info=True)
+            return None
 
     @staticmethod
     def _safe(fn: Callable[..., Any], *args: Any) -> int:
@@ -270,6 +376,7 @@ class RunBidder:
             self._safe(market.release, want.want_id)
         if decision is not None:
             self.counts["bid"] += 1
+            self._remember(request, want, decision)
         key = "bind_held" if not verdict.admit else (
             "bind_no_answer" if verdict.why.startswith("no_answer") else "bind_admitted")
         self.counts[key] += 1
@@ -318,5 +425,6 @@ class RunBidder:
 
 
 __all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "NO_ANSWER_REASONS", "PRODUCER",
-           "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC", "RELEASE_EVENT", "RunBidder", "bind_verdict",
-           "binding_family", "decision_detail", "hold_end", "want_for_run"]
+           "READING_FAMILY", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC", "RELEASE_EVENT", "RunBidder",
+           "RunValue", "VALUE_PRODUCER", "VALUE_WAIT_SEC", "bind_verdict", "binding_family", "decision_detail", "hold_end", "reading_stage",
+           "reading_want", "want_for_run"]

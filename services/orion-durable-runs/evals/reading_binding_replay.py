@@ -14,15 +14,16 @@ Two lanes:
 * ``--live --days 14``: every real read start in the window bids at its act's real ``opened_at``
   against the ``physiology_state`` row in force, the real act history (reading's acts carrying the
   lane cost the 3a fill computes: ``orion.grammar.act_ledger.late_read_cost``) and one reservation
-  book seeded with the real funded wants. A held read re-bids at ``bind_verdict``'s ``retry_at``
+  book whose exploration floor counts acts started, as the live market does since patch 3b (other
+  families at their real opens, reading at its replayed admissions). A held read re-bids at ``bind_verdict``'s ``retry_at``
   until admitted or its hold end: min(family window, 2,900 s) (decided default 6). Pessimistic: the
   lane levels include reading's own real use.
 
 Gate (acceptance check 5): reads held > 1 h <= 5%, reads held to the 2,900 s hold end (admitted only
 by ``window_end``) <= 5% (a hold cannot pass 1 h here, so this is the gate that can fail), and
 reading's share of Tier 2 ACTS STARTED over the last 7 days >= 5%, with reading's starts taken at the
-replayed admission time and the other families' at their real starts. Also printed: verdicts, delays, reading's replayed net, and its share of Tier 2
-funded wants (the old floor's count). Writes nothing (psql in a read-only transaction; SQLAlchemy
+replayed admission time and the other families' at their real starts. Also printed: verdicts, delays, reading's replayed net, and the floor's share for
+reading as the book counts it. Writes nothing (psql in a read-only transaction; SQLAlchemy
 connection with SET TRANSACTION READ ONLY).
 
     PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/reading_binding_replay.py [--live --days 14]
@@ -44,7 +45,7 @@ sys.path[:0] = [str(ROOT), str(SVC), str(ROOT / "scripts" / "analysis")]
 
 from orion.physiology.appetite import ActRecord, build_family_appetite  # noqa: E402
 from orion.physiology.binding import bind_verdict  # noqa: E402
-from orion.physiology.choice import FundedWant, ReservationBook, build_context, decide  # noqa: E402
+from orion.physiology.choice import FundedWant, ReservationBook, acts_started, build_context, decide  # noqa: E402
 from orion.physiology.families import load_families  # noqa: E402
 from orion.schemas.physiology import PhysiologyStateV1  # noqa: E402
 from orion.schemas.physiology_want import WantV1, WantWindowV1  # noqa: E402
@@ -206,9 +207,9 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
                       link_status=str(u["link_status"]), used=u.get("used"), window_closed=bool(u.get("window_closed")))
             for u in ex["uses"]]
     states = sorted((PhysiologyStateV1.model_validate(s) for s in ex["states"]), key=lambda s: s.generated_at)
-    funded = [FundedWant(str(r["decision_id"]), _ts(r["decided_at"]), str(r["family"]), int(r["tier"]))
-              for r in list(ex.get("ledger_funded_before") or []) + [x for x in ex["ledger"] if x["outcome"] == "funded"]
-              if r["family"] != FAMILY]
+    # The floor counts acts started (patch 3b, as the live market does): other families' real opens,
+    # and reading's starts at the times this replay admitted them.
+    others = [a for a in acts if a.family != FAMILY]
     cfg = fams.get(FAMILY)
     hold = timedelta(seconds=min(float(cfg.deferrable_window_s), HOLD_END_SEC))
     import bisect
@@ -233,7 +234,8 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
                 hist = [a for a in acts if (a.closed_at or a.opened_at) is not None and (a.closed_at or a.opened_at) < t]
                 ctx = build_context(fams, hist, [u for u in uses if u.started_at and u.started_at < t], state_at(t), t)
                 ctx_key = key
-            book.seed_funded([f for f in funded if f.at <= t], t)
+            book.seed_started(acts_started(others, fams, t)
+                              + [FundedWant(f"replay:{i}", at, FAMILY, 2) for i, at in enumerate(admitted_at)], t)
             w = _want(n, act_id, corr, t_open, stop)
             d = decide(w, state_at(t), ctx, book, t)
             if n == 1 and d.net is not None:
@@ -246,7 +248,7 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
                 delays.append((t - t_open).total_seconds() / 3600.0)
                 admitted_at.append(t)
                 if d.outcome == "funded":
-                    book.note_funded(d.decision_id, FAMILY, 2, t)
+                    book.note_funded(d.decision_id, FAMILY, 2, t, floor=d.reason == "exploration_floor")
                 book.release(w.want_id)
                 break
             t = v.retry_at
@@ -264,7 +266,7 @@ def run_live(ex: dict, fams, costs: dict[str, dict]) -> dict:
         "held_to_end": verdicts.get("window_end", 0),
         "delay_h_p50": _q(delays, 0.5), "delay_h_p90": _q(delays, 0.9),
         "net_p10": _q(nets, 0.1), "net_p50": statistics.median(nets) if nets else None, "net_p90": _q(nets, 0.9),
-        "funded_share_7d": book.funded_share(FAMILY, 2, end),
+        "floor_share_7d": book.funded_share(FAMILY, 2, end),
         "acts_started_share_7d": (started[FAMILY] / sum(started.values())) if started else None,
         "acts_started_7d": dict(started.most_common()),
         "net_by_act": net_by_act,
@@ -288,7 +290,7 @@ def live(days: float) -> list[str]:
           f"held > 1 h={r['held_over_1h']} ({held_share:.1%}); delay p50={fmt(r['delay_h_p50'])} h "
           f"p90={fmt(r['delay_h_p90'])} h")
     print(f"  reading net p10={fmt(r['net_p10'])} p50={fmt(r['net_p50'])} p90={fmt(r['net_p90'])}")
-    print(f"  reading share of Tier 2 funded wants (7 d)={fmt(r['funded_share_7d'])}; "
+    print(f"  floor's share for reading (acts started, 7 d)={fmt(r['floor_share_7d'])}; "
           f"of Tier 2 acts started (7 d)={fmt(r['acts_started_share_7d'])}")
     print(f"  Tier 2 acts started (7 d): {r['acts_started_7d']}")
     fails = []

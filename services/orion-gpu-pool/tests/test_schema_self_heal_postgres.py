@@ -18,7 +18,9 @@ import pytest
 URI = os.environ.get("GPU_POOL_TEST_POSTGRES_URI")
 pytestmark = pytest.mark.skipif(not URI, reason="GPU_POOL_TEST_POSTGRES_URI not set")
 SQL_DB = Path(__file__).resolve().parents[3] / "services/orion-sql-db"
-V1, V2, V3 = (SQL_DB / f"manual_migration_gpu_pool_{n}.sql" for n in ("v1", "v2_holds", "v3_actuation_pause"))
+V1, V2, V3, V4 = (SQL_DB / f"manual_migration_gpu_pool_{n}.sql"
+                  for n in ("v1", "v2_holds", "v3_actuation_pause", "v4_value_order"))
+LEASE_BOOT_COLUMNS = {"hold_lease_id", "want_id", "want_net", "want_family"}
 CARD_BOOT_COLUMNS = {"swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at", "seen_ctx",
                      "actuation_paused_at", "actuation_paused_by"}
 
@@ -86,9 +88,9 @@ def test_boot_on_a_db_missing_v2_and_v3_self_heals_to_the_operator_migration_sha
         store = PostgresStore(pool, conninfo=URI)
         try:
             await store.leader()                           # single writer first, as main.py does
-            assert len(await store.check_schema()) == 9    # hold_lease_id + 8 card columns
+            assert len(await store.check_schema()) == 12   # 4 lease columns + 8 card columns
             status = await store.heal_schema()
-            assert status["state"] == "ok" and status["missing"] == [] and len(status["applied"]) == 9
+            assert status["state"] == "ok" and status["missing"] == [] and len(status["applied"]) == 12
             assert not store.schema_degraded
             again = await store.heal_schema()              # idempotent: nothing left to apply
             assert again["state"] == "ok" and again["applied"] == status["applied"]
@@ -105,11 +107,13 @@ def test_boot_on_a_db_missing_v2_and_v3_self_heals_to_the_operator_migration_sha
         async with await _connect() as conn:
             await _apply(conn, V2)
             await _apply(conn, V3)
+            await _apply(conn, V4)
         assert (await _columns("gpu_pool_leases"), await _columns("gpu_pool_cards")) == healed
         await _v1_only()
         async with await _connect() as conn:
             await _apply(conn, V2)
             await _apply(conn, V3)
+            await _apply(conn, V4)
         assert (await _columns("gpu_pool_leases"), await _columns("gpu_pool_cards")) == healed
     asyncio.run(go())
 
@@ -193,7 +197,7 @@ def test_lock_contention_serves_degraded_loudly_then_heals_and_writes_through():
             assert time.monotonic() - t < 10
             assert status["state"] == "degraded" and status["degraded_since"]
             assert set(status["missing"]) == {f"gpu_pool_cards.{c}" for c in CARD_BOOT_COLUMNS} | \
-                {"gpu_pool_leases.hold_lease_id"}
+                {f"gpu_pool_leases.{c}" for c in LEASE_BOOT_COLUMNS}
             assert status["applied"] == []
             assert "lock timeout" in status["last_error"]
             assert store.schema_degraded

@@ -2,7 +2,8 @@
 """Eval (Replay D): the GPU pool's background agent hold queue served by value instead of arrival. READ-ONLY.
 
 Attention patch 3, docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md
-("Replay D", acceptance check 3). Patch 3a commits it; patch 3b builds the queue order it measures.
+("Replay D", acceptance check 3). Patch 3a committed it. Patch 3b builds the queue order it measures,
+and this replay imports the pool's own rule (orion/gpu_pool/value_order.py `pick`).
 
 The rule (decided 2026-11-10, defaults 2 and 5): inside the background class a waiting hold is scored
 ``net + aging x hours waited``; a later hold is served before an earlier one only when its score is
@@ -40,8 +41,12 @@ from typing import Optional, Sequence
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(ROOT / "services" / "orion-durable-runs" / "evals"), str(ROOT / "scripts" / "analysis")]
 
-MARGIN = 0.10
-DEFAULT_AGING = 0.10
+from orion.gpu_pool.value_order import DEFAULT_AGING_PER_H as DEFAULT_AGING  # noqa: E402
+from orion.gpu_pool.value_order import DEFAULT_MARGIN as MARGIN  # noqa: E402
+from orion.gpu_pool.value_order import family_key  # noqa: E402
+from orion.gpu_pool.value_order import pick as _pick  # noqa: E402
+from orion.gpu_pool.value_order import score as _score  # noqa: E402
+
 DEFAULT_URI = "postgresql://postgres:postgres@localhost:55432/conjourney"
 
 
@@ -56,31 +61,19 @@ class Hold:
 
 
 def _base(family: str) -> str:
-    return family.split("(")[0]    # reading stage 1 and stage 2 are one family
+    return family_key(family) or family    # reading stage 1 and stage 2 are one family
 
 
 def score(h: Hold, now: datetime, aging: float) -> float:
-    return float(h.net) + aging * max(0.0, (now - h.queued_at).total_seconds()) / 3600.0
+    return _score(float(h.net), h.queued_at, now, aging)
 
 
 def pick(waiting: Sequence[Hold], now: datetime, *, aging: float = DEFAULT_AGING, margin: float = MARGIN) -> Hold:
-    """The hold the value-ordered queue serves at ``now`` (spec section 1 rule).
-
-    Only each family's EARLIEST waiting hold competes (same family: arrival order), and nothing that
-    arrived after an upkeep hold (no bid) may jump it."""
-    order = sorted(waiting, key=lambda h: h.queued_at)
-    heads, seen = [], set()
-    for o in order:
-        if _base(o.family) not in seen:
-            seen.add(_base(o.family))
-            heads.append(o)
-    best = heads[0]
-    for o in heads[1:]:
-        if best.net is None or o.net is None:
-            break                      # upkeep keeps its place: nothing after it may jump it
-        if score(o, now, aging) >= score(best, now, aging) + margin:
-            best = o
-    return best
+    """The hold the value-ordered queue serves at ``now``: the pool's own rule
+    (orion/gpu_pool/value_order.py ``pick``, which the scheduler uses since patch 3b), so this replay
+    measures exactly what runs live."""
+    return _pick(waiting, now, net=lambda h: h.net, family=lambda h: h.family, arrived=lambda h: h.queued_at,
+                 aging_per_h=aging, margin=margin)
 
 
 # --- fixture ------------------------------------------------------------------------------------

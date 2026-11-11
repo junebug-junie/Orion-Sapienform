@@ -17,6 +17,8 @@ on:
       - "scripts/analysis/tests/test_outreach_binding_replay.py"
       - "services/orion-hub/evals/run_outreach_binding_replay.py"
       - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/reading_event_wants.py"   # attention 3b: LOOK_COST (orion/physiology/tests/test_no_slot_wants.py)
+      - "orion/schemas/gpu_pool.py"   # attention 3b: the hold request carries the run's net
       - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
       - "orion/personality/**"
       - "orion/schemas/personality.py"
@@ -125,6 +127,8 @@ on:
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/outreach_binding_replay.py"
       - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/reading_event_wants.py"   # attention 3b: LOOK_COST (orion/physiology/tests/test_no_slot_wants.py)
+      - "orion/schemas/gpu_pool.py"   # attention 3b: the hold request carries the run's net
       - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
       - "orion/schemas/physiology_report.py"
       - "orion/autonomy/cabinet_heat.py"

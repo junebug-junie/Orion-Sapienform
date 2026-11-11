@@ -19,6 +19,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter, Rabbit
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
+from orion.gpu_pool.value_order import ValueOrderConfig
 from orion.gpu_pool.config import SWAP_GUARDS, PoolConfig, load_pool_config, ready_body_ok
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
@@ -328,6 +329,8 @@ async def lifespan(app: FastAPI):
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
         replay_payload_max_bytes=_settings.replay_payload_max_bytes,
+        value_order=ValueOrderConfig(enabled=_settings.value_order_enabled, margin=_settings.value_margin,
+                                     aging_per_h=_settings.value_aging_per_h),
         shed_enabled=_settings.shed_enabled, orion_shed_enabled=_settings.orion_shed_enabled,
         orion_shed_caps=OrionShedCaps(max_ttl_sec=_settings.orion_shed_max_ttl_sec,
                                       max_sec_per_day=_settings.orion_shed_max_sec_per_day,

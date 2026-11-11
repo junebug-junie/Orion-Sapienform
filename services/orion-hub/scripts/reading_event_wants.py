@@ -14,6 +14,12 @@ Stage 2 completion. Its window is the family's (3 h from the read). One want per
 deterministic, and a read whose want is already in ``want_ledger`` is not posted again (a restart
 re-reads the ledger).
 
+Cost (attention patch 3b): the want states that its act holds no GPU slot
+(``orion.physiology.appetite.no_slot_cost``: an empty ``gpu_slot_s_by_lane`` plus its basis). The look's model time is Prime's, and Prime bids for that itself on its own
+lane; the read's model time is already spent and charged to the read's act. Without this the market
+charged each look a whole read (the family's p90, ~0.7 of the agent lane's hour) and deferred 37 of
+40 on lane capacity the day after patch 3a declared reading's lanes, so Prime lost those concerns.
+
 SHADOW: the decision is logged and nothing in Hub obeys it. Prime reads the funded ones as its concerns
 (orion-mind ``PRIME_CONCERNS_FROM_EVENT_WANTS``). Belief moves (a curiosity run that later cites the
 read) are not counted: they land days after the read, past this want's window.
@@ -27,7 +33,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 
+from orion.physiology.appetite import no_slot_cost
 from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
+from orion.schemas.grammar import ActCostV2
 
 logger = logging.getLogger("orion-hub.reading_event_wants")
 
@@ -36,6 +44,8 @@ FAMILY = "hub.world_pulse_read"
 VERB = "look"
 TIER = 2
 PRODUCER = "orion-hub.reading_events"
+# The look holds no GPU slot of its own (module docstring, "Cost").
+LOOK_COST = ActCostV2(**no_slot_cost())
 EVENT_PREFIX = "world_pulse_read_seed"
 UNAVAILABLE = "physiology_unavailable"
 
@@ -143,7 +153,7 @@ class ReadingEventWants:
                 continue
             want = event_want(source=SOURCE, key=p["seed_id"], family=FAMILY, producer=PRODUCER, verb=VERB,
                               tier=TIER, event_ref=f"{EVENT_PREFIX}:{p['seed_id']}", salience=p["salience"],
-                              opened_at=p["at"], object_ref=p["url"] or None)
+                              opened_at=p["at"], object_ref=p["url"] or None, cost=LOOK_COST)
             decision = await self._abid(want)
             if decision is None or decision.reason == UNAVAILABLE:
                 # No answer, or the market could not price it (no fresh body, history unread): not a

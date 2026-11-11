@@ -335,3 +335,32 @@ def test_the_tension_trigger_is_framed_as_not_a_topic():
                           daydream=(60.0, "A lighthouse at dusk over a calm harbour, gulls on the rail."))
     prompt = build_outreach_prompt(ctx)
     assert "not what to talk about" in prompt and "Do not report it." in prompt
+
+
+def test_held_back_run_offers_one_consult_with_claude(monkeypatch):
+    """Not for Juniper yet: the finding goes to a consult first (scripts/consult_loop.py), and the
+    decision row names the consult."""
+    outreach = _Outreach()
+    loop = _loop(monkeypatch, outreach, focus=SimpleNamespace(origin="self", chat_correlation_id="prime:x"))
+    offers = []
+
+    class _Consults:
+        async def offer(self, **kw):
+            offers.append(kw)
+            return "c1"
+
+    consults = _Consults()
+    loop.consult_provider = lambda: consults
+    assert _reach(loop, "investigate") == NOT_FOR_JUNIPER_REASON
+    assert offers == [{"source_kind": "curiosity_run", "source_ref": "curiosity_run:r1",
+                       "question": "finding", "detail": "investigate line, run r1"}]
+    assert outreach.recorded[0][1]["consult_id"] == "c1" and outreach.offered == []
+
+
+def test_offered_run_never_offers_a_consult(monkeypatch):
+    outreach = _Outreach()
+    loop = _loop(monkeypatch, outreach, focus=SimpleNamespace(origin="self", chat_correlation_id="prime:x"))
+    offers = []
+    loop.consult_provider = lambda: SimpleNamespace(offer=lambda **kw: offers.append(kw))
+    _reach(loop, "self_inquiry")
+    assert offers == []

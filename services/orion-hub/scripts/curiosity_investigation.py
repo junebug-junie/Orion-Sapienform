@@ -1096,8 +1096,6 @@ class CuriosityInvestigation:
         # the manual trigger rather than before it.
         self._run_lock = asyncio.Lock()
         self._pool_provider = pool_provider
-        # Consults (scripts/consult_loop.py), set by main after both exist. None: no consults.
-        self.consult_provider: Callable[[], Any] = lambda: None
         self._source_ref = source_ref
 
         self.graph_host = graph_host
@@ -1612,10 +1610,18 @@ class CuriosityInvestigation:
             return None
         return await take_carry_forward(self._pool_provider(), run_id=run_id)
 
+    # Consults (scripts/consult_loop.py): main sets this to ``lambda: consult_loop`` after both
+    # exist. Class-level so a loop built without __init__ (tests) has no consults, not an error.
+    consult_provider: Optional[Callable[[], Any]] = None
+
+    def _consult_loop(self) -> Any:
+        provider = self.consult_provider
+        return provider() if provider is not None else None
+
     async def _offer_consult(self, *, run_id: str, line: str, finding_text: str) -> Optional[str]:
         """A plumbing finding Orion wanted to tell Juniper goes to a consult with Claude first.
         One consult per run, ever. Never raises into the investigation."""
-        loop = self.consult_provider()
+        loop = self._consult_loop()
         if loop is None or not run_id or not (finding_text or "").strip():
             return None
         try:
@@ -1630,7 +1636,7 @@ class CuriosityInvestigation:
     async def _take_consult_outcomes(self, view: WorldviewSnapshot, run_id: str) -> tuple:
         """Claim consult outcomes Orion has not seen: answered consults and Juniper's answers to
         briefs. Only when Orion can write the belief it belongs on (same rule as corrections)."""
-        if self.consult_provider() is None or not run_id:
+        if self._consult_loop() is None or not run_id:
             return ()
         if not self.graph_enabled or view.is_unavailable:
             return ()

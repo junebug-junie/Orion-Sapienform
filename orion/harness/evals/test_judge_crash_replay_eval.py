@@ -25,6 +25,7 @@ def test_classify_follows_the_harness_parse_path():
     assert classify("We need answer user's request. Need output strict JSON")["failure"].startswith("unparseable")
     assert classify("")["failure"] == "unparseable:empty"
     assert classify(None, error="http 502")["failure"] == "engine:http 502"
+    assert classify('[Error: llamacpp timed out after waiting]')["failure"] == "error_text"
 
 
 def test_new_request_matches_what_the_gateway_sends_per_backend():
@@ -55,12 +56,18 @@ def test_summary_counts_failures_and_control_agreement():
     assert s["failed"]["old"]["failures"] == 1 and s["failed"]["new"]["failures"] == 0
     assert s["control"]["old"]["agrees_with_stored_verdict"] == 1
     assert s["control"]["new"]["agrees_with_stored_verdict"] == 0
+    perception = [{"bucket": "perception", "lane": "agent", "stored_verdict": "misaligned",
+                   "new": {"ok": True, "verdict": "misaligned", "notes": ["unsupported claim: x; notes say: nothing"]}},
+                  {"bucket": "perception", "lane": "agent", "stored_verdict": "misaligned",
+                   "new": {"ok": True, "verdict": "aligned", "notes": []}}]
+    p = summarize(perception, ("new",))["perception"]["new"]
+    assert (p["still_flags_unsupported_claim"], p["not_aligned"]) == (1, 1)
 
 
 def test_fixture_holds_ids_and_labels_only():
     fixture = json.loads(FIXTURE.read_text())
     uuid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     allowed = {"correlation_id", "failed_at", "judged_at", "lane", "lane_known", "failure_class", "family"}
-    for case in fixture["failed"] + fixture["control"]:
+    for case in fixture["failed"] + fixture["control"] + fixture["perception"]:
         assert uuid.match(case["correlation_id"])
         assert set(case) <= allowed

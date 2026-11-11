@@ -119,7 +119,10 @@ def test_rendered_prompt_quotes_the_draft_and_request_as_data() -> None:
 
 @pytest.mark.asyncio
 async def test_motor_shape_copy_is_a_labelled_failure_never_a_verdict() -> None:
-    """The 2026-11-05 shape: a reading draft in, the draft's own keys back out."""
+    """The 2026-11-05 shape: a reading draft in, the draft's own keys back out.
+
+    Regression guard for the failure path (it passes on main too): whatever the request
+    shape, a judge that writes the draft's keys must be a labelled failure, never a verdict."""
     async def _copies_the_draft(_req: object) -> dict[str, object]:
         return {"final_text": MOTOR_SHAPE_COPY}
 

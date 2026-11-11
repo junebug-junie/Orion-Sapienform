@@ -41,6 +41,7 @@ import httpx
 from jinja2 import Environment
 from sqlalchemy import create_engine, text
 
+from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.llm_json import parse_json_object
 from orion.harness.evals.judge_obedience_replay_eval import TEMPLATE_REL, receipt_from_atom
 from orion.harness.finalize import (
@@ -91,6 +92,8 @@ def classify(raw: str | None, error: str | None = None) -> dict:
     """The harness's parse path (finalize.run_finalize_reflection) on one answer."""
     if error is not None:
         return {"ok": False, "failure": f"engine:{error[:120]}"}
+    if raw and looks_like_error_text(raw):  # extract_finalize_reflection_payload refuses these
+        return {"ok": False, "failure": "error_text"}
     try:
         payload = parse_json_object(raw or "")
     except Exception:
@@ -105,12 +108,12 @@ def classify(raw: str | None, error: str | None = None) -> dict:
         reflection = FinalizeReflectionV1.model_validate(payload)
     except Exception:
         return {"ok": False, "failure": "validation", "keys": keys[:8]}
-    return {"ok": True, "verdict": reflection.alignment_verdict, "notes": reflection.alignment_notes[:3]}
+    return {"ok": True, "verdict": reflection.alignment_verdict, "notes": reflection.alignment_notes[:8]}
 
 
 def summarize(rows: list[dict], sides: tuple[str, ...]) -> dict:
     out: dict = {}
-    for bucket in ("failed", "control"):
+    for bucket in ("failed", "control", "perception"):
         rs = [r for r in rows if r["bucket"] == bucket]
         out[bucket] = {"n": len(rs)}
         for side in sides:
@@ -121,6 +124,12 @@ def summarize(rows: list[dict], sides: tuple[str, ...]) -> dict:
             if bucket == "control":
                 agree = [r for r in rs if side in r and r[side]["ok"] and r[side]["verdict"] == r["stored_verdict"]]
                 entry["agrees_with_stored_verdict"] = len(agree)
+            if bucket == "perception":
+                # The stored judge caught an unsupported perception claim; does this side still?
+                caught = [r for r in rs if side in r and r[side]["ok"] and r[side]["verdict"] != "aligned"
+                          and any("unsupported claim" in str(n).lower() for n in r[side].get("notes") or [])]
+                entry["still_flags_unsupported_claim"] = len(caught)
+                entry["not_aligned"] = sum(1 for r in rs if side in r and r[side]["ok"] and r[side]["verdict"] != "aligned")
             entry["by_lane"] = {lane: {"replayed": sum(1 for r in rs if side in r and r["lane"] == lane),
                                        "failures": sum(1 for r in rs if side in r and r["lane"] == lane
                                                        and not r[side]["ok"])}
@@ -224,7 +233,7 @@ def main() -> int:
     ap.add_argument("--dsn", default="postgresql+psycopg2://postgres:postgres@localhost:55432/conjourney")
     ap.add_argument("--old-ref", default="origin/main", help="git ref of the old prompt")
     ap.add_argument("--sides", default="old,new")
-    ap.add_argument("--buckets", default="failed,control")
+    ap.add_argument("--buckets", default="failed,control,perception")
     ap.add_argument("--lanes", default="chat,agent,agent-gpu2")
     ap.add_argument("--max-per-lane", type=int, default=0, help="per bucket and lane; 0 = all")
     ap.add_argument("--resume", type=Path, help="a partial report: its turns are kept, not re-run")
@@ -240,6 +249,7 @@ def main() -> int:
     fixture = json.loads(FIXTURE.read_text())
     cases = [("failed", c) for c in fixture["failed"] if c["family"] != "transport"]
     cases += [("control", c) for c in fixture["control"]]
+    cases += [("perception", c) for c in fixture.get("perception", [])]
     cases = [(b, c) for b, c in cases if b in buckets and c["lane"] in lanes]
     if args.max_per_lane:
         seen: Counter = Counter()

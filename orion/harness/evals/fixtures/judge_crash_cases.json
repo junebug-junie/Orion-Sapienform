@@ -1,6 +1,6 @@
 {
  "source": "harness_turn_trace reflect_llm_failed + cognition_traces harness_finalize_reflect, 2026-11-03..11 (pulled 2026-11-11)",
- "note": "Correlation ids and labels only; turn text is read live by the eval, never stored here.",
+ "note": "Correlation ids and labels only; turn text is read live by the eval, never stored here. perception: turns where the stored judge wrote an 'unsupported claim:' note (thinking-off check).",
  "failed": [
   {
    "correlation_id": "cff47ac7-4929-5c17-93e3-bd176a109882",
@@ -700,6 +700,88 @@
    "correlation_id": "e9ab1e28-295e-5940-ab97-66acfd96a531",
    "judged_at": "2026-11-07T02:13:50",
    "lane": "agent-gpu2"
+  }
+ ],
+ "perception": [
+  {
+   "correlation_id": "d9ff4a0d-f71d-5aa7-a255-0c4d702fe0ef",
+   "judged_at": "2026-11-09T22:33:21",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "e0e26e80-61c6-5b7e-ae6f-ae8f0015dbe9",
+   "judged_at": "2026-11-10T13:45:02",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "61bbc1ed-3cf5-5fe6-8ed6-3af3a73687ca",
+   "judged_at": "2026-11-09T00:21:30",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "6c802cfc-bfee-585e-9ab7-ecf2feb754ff",
+   "judged_at": "2026-11-05T23:05:31",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "bff489c4-f3f8-5dd4-85e6-efb787b7586b",
+   "judged_at": "2026-11-07T19:45:17",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "731ec95e-3141-565d-ad20-90ad53836282",
+   "judged_at": "2026-11-06T07:49:34",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "2cc19854-606a-51ae-966e-cc7f6d1df0e7",
+   "judged_at": "2026-11-10T13:32:18",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "2aa487db-6236-544b-a0f3-1312518cf3e3",
+   "judged_at": "2026-11-07T18:35:00",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "b0ee16c0-8d99-5045-b9e8-f1afc497a3c5",
+   "judged_at": "2026-11-06T22:46:26",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "e54db8b4-1385-5d2d-9274-e162f0de0d3d",
+   "judged_at": "2026-11-08T22:40:47",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "cb7671eb-236c-529d-b7f1-a308df4269b2",
+   "judged_at": "2026-11-08T15:13:57",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "53464550-04fa-5b91-8b6c-ef8b67f24e77",
+   "judged_at": "2026-11-08T17:03:07",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "4a70ec91-b13c-5eca-ad99-61e8a4704475",
+   "judged_at": "2026-11-08T20:43:59",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "c4249c6a-48c9-5353-b7ad-61cbd326c207",
+   "judged_at": "2026-11-08T15:49:51",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "89e2709a-60b9-5d05-ab1f-4a41e88546ed",
+   "judged_at": "2026-11-04T11:37:34",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "d62873a8-861c-4f00-95f7-8d090176a8e5",
+   "judged_at": "2026-11-05T00:12:55",
+   "lane": "chat"
   }
  ]
 }

@@ -249,6 +249,7 @@ DEFER_REASON_WORDS = {
     "physiology_unavailable": "body reading unavailable",
     "unknown_family": "unknown family",
     "family_never_bids": "family never bids",
+    "consent": "not allowed without consent",
     "other": "other reasons",
 }
 

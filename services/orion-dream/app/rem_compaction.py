@@ -16,12 +16,19 @@ Discipline (§0A / hard constraints):
   - staged: only downscale/prune the applier would ever run; Phase F emits
     consolidate previews (and passes through any request-hinted ops) but performs
     zero canonical writes.
+
+Consent ask (attention patch 3d). After a delta is staged, the pass awaits an injected
+`consent_asker(delta)`. This module never imports the applier (Phase F stays out of every mutation
+path); the callers in app.main inject `app.compaction_consent.ask_consent_without_store`, which asks the
+want market's consent gate through the applier with NO memory store. So every real delta leaves a
+verdict (want_ledger, and `compaction_apply not_approved ... rule=...` while Juniper's standing consent
+is missing), and nothing can be written. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false` skips the ask.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from orion.schemas.compaction import (
@@ -124,6 +131,7 @@ async def run_rem_compaction_once(
     delta_persister: Callable[[MemoryCompactionDeltaV1], bool] | None = None,
     narrator: Narrator | None = None,
     dream_id: str | None = None,
+    consent_asker: Callable[[MemoryCompactionDeltaV1], Awaitable[Any]] | None = None,
 ) -> MemoryCompactionDeltaV1 | None:
     """One REM compaction pass. Returns the staged delta, or None. Never raises.
 
@@ -180,4 +188,9 @@ async def run_rem_compaction_once(
         delta.delta_id,
         delta.metrics.cards_out,
     )
+    if consent_asker is not None and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
+        try:
+            await consent_asker(delta)
+        except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the staged delta stands
+            logger.warning("rem compaction consent ask failed id=%s err=%s", delta.delta_id, exc)
     return delta

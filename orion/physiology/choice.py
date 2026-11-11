@@ -71,6 +71,11 @@ prime=sig, prime_refusal=r)`` with ``r`` refusing exactly ``sig``: the charge is
 decision is the one without the signal) and ``why`` says "Prime's slow charge refused by curiosity.replica:
 <reason>" with the amount it would have been. A refusal of another signal is ignored.
 
+The consent gate (attention patch 3d, orion/physiology/consent.py). ``decide(..., consent_rules=...)`` asks
+it FIRST for a want that carries a ``consent_request`` (``consent_gate``). ``refuse`` or ``needs_consent``:
+deferred, reason ``consent``, nothing priced or reserved. ``allow``: decided as any want, with the verdict
+stored on the decision. A want without a request never reaches the gate, so its decision is unchanged.
+
 Pure apart from the ``ReservationBook`` it is handed (in-memory; durable-runs owns one).
 """
 
@@ -91,6 +96,7 @@ from orion.physiology.appetite import (
     rank_value,
     want_intensity,
 )
+from orion.physiology.consent import ConsentRules, consent_verdict
 from orion.physiology.families import FamiliesConfig, FamilyConfig
 from orion.physiology.prime_charge import PrimeChargeRefusalV1, PrimeRegulationV1
 from orion.physiology.prime_charge import amount as prime_amount
@@ -107,7 +113,7 @@ from orion.schemas.physiology import (
     PhysiologyConstraintReadingV1,
     PhysiologyStateV1,
 )
-from orion.schemas.physiology_want import WantDecisionV1, WantV1
+from orion.schemas.physiology_want import ConsentVerdictV1, WantDecisionV1, WantV1
 
 STALE_AFTER_SEC = 360.0              # design: the price is stale after 3 ticks
 UNAVAILABLE_RETRY_SEC = 120.0        # one physiology tick
@@ -356,13 +362,55 @@ def unavailable(want: WantV1, now: datetime, *, why: str, state: Optional[Physio
                      why=f"the market could not be read: {why}; the caller keeps its own gate")
 
 
+def consent_gate(want: WantV1, rules: Optional[ConsentRules], now: datetime, *,
+                 families: Optional[FamiliesConfig] = None) -> tuple[Optional[ConsentVerdictV1], Optional[WantDecisionV1]]:
+    """The consent gate (attention patch 3d, orion/physiology/consent.py), before anything is priced.
+
+    (None, None): the want carries no consent request (decided exactly as before). (verdict, None): allowed;
+    the caller attaches the verdict to its decision. (verdict, deferral): refused or missing consent; the
+    deferral is the decision (reason ``consent``, never admitted by ``bind_verdict``). It runs FIRST, before
+    the family lookup and the body state, so an unknown family or a stale body (both "no answer", which a
+    binding producer admits) can never let a non-consented act through."""
+    req = want.consent_request
+    if req is None:
+        return None, None
+    verdict = consent_verdict(want, req, rules, now)
+    if verdict.verdict == "allow":
+        return verdict, None
+    cfg = families.get(want.family) if families is not None else None
+    what = "refused" if verdict.verdict == "refuse" else "needs a standing consent"
+    return verdict, _decision(want, now, tier=cfg.tier if cfg is not None else want.tier, outcome="deferred",
+                              reason="consent", binding_constraint="consent", consent=verdict,
+                              why=f"consent gate: {want.family}/{want.verb} {what} "
+                                  f"(rule {verdict.rule_id or 'none'}: {verdict.reason}); never admitted")
+
+
+def with_consent(decision: WantDecisionV1, verdict: Optional[ConsentVerdictV1]) -> WantDecisionV1:
+    """The decision with the gate's (allow) verdict stored on it; unchanged when there was no request."""
+    return decision if verdict is None else decision.model_copy(update={"consent": verdict})
+
+
 def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
            now: datetime, *, reserve_at_open: bool = False,
            prime: Optional[PrimeRegulationV1] = None,
-           prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
+           prime_refusal: Optional[PrimeChargeRefusalV1] = None,
+           consent_rules: Optional[ConsentRules] = None) -> WantDecisionV1:
     """One shadow bid. Never raises on market data: every unknown is a named deferral or warning.
     ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring).
-    ``prime_refusal``: the organ refused ``prime``; the charge is then not applied, and ``why`` says so."""
+    ``prime_refusal``: the organ refused ``prime``; the charge is then not applied, and ``why`` says so.
+    ``consent_rules``: config/physiology/consent.yaml, asked only for a want with a ``consent_request``
+    (``consent_gate``); a want without one is decided exactly as before."""
+    verdict, deferral = consent_gate(want, consent_rules, now, families=ctx.families)
+    if deferral is not None:
+        return deferral
+    return with_consent(_decide(want, state, ctx, book, now, reserve_at_open=reserve_at_open, prime=prime,
+                                prime_refusal=prime_refusal), verdict)
+
+
+def _decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
+            now: datetime, *, reserve_at_open: bool = False,
+            prime: Optional[PrimeRegulationV1] = None,
+            prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
     cfg: Optional[FamilyConfig] = ctx.families.get(want.family)
     if cfg is None:
         return _decision(want, now, tier=want.tier, outcome="deferred", reason="unknown_family",
@@ -745,6 +793,8 @@ def _window_warn(want: WantV1, cfg: FamilyConfig, now: datetime, retry: Optional
 
 
 __all__ = [
+    "consent_gate",
+    "with_consent",
     "EXPLORATION_FLOOR",
     "FLOOR_TIER",
     "FLOOR_WINDOW",

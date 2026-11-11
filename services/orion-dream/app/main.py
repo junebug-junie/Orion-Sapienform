@@ -156,11 +156,14 @@ def build_cycle_deps():
             bus = await _cycle_bus()
         except Exception:
             bus = None
+        from app.compaction_consent import ask_consent_without_store
+
         delta = await run_rem_compaction_once(
             bus,
             request_loader=lambda _n: requests,
             delta_persister=lambda d: staged.append(d) or True,
             dream_id=cycle_id,
+            consent_asker=ask_consent_without_store,
         )
         for d in staged:
             await asyncio.to_thread(rem_store.persist_compaction_delta, d)
@@ -448,7 +451,9 @@ async def rem_preview_endpoint():
     try:
         if bus is not None:
             await bus.connect()
-        delta = await run_rem_compaction_once(bus)
+        from app.compaction_consent import ask_consent_without_store
+
+        delta = await run_rem_compaction_once(bus, consent_asker=ask_consent_without_store)
     finally:
         if bus is not None:
             await bus.close()

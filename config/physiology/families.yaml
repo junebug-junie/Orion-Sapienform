@@ -204,6 +204,17 @@ families:
     tier: 2
     deferrable_window_s: 3600
     lanes: []
+  dream.compaction:
+    # 2026-11-11, attention patch 3d (docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-
+    # design.md section 3): dream compaction APPLY, the first consumer of the market's consent gate
+    # (config/physiology/consent.yaml). Each staged REM delta asks the gate once (services/orion-dream/app/
+    # compaction_consent.py); the decision is held to consent, not to price (the applier is one-shot and
+    # has no hold loop). Tier 2, no lanes (applying a delta is a few DB writes, no GPU), no receptors (the
+    # spec). No act-ledger actor yet: hunger counts from the want's own opened_at (the delta's creation).
+    # 86400: REM stages about 2 deltas a day; a delta older than a day is superseded by the next sleep's.
+    tier: 2
+    deferrable_window_s: 86400
+    lanes: []
   vision.ask:
     # 2026-11-04, attention as the want competition patch 2 (docs/superpowers/specs/2026-11-04-attention-as-
     # want-competition-design.md): an open camera ask (orion_ask: vision_individual, vision_person_confirm,

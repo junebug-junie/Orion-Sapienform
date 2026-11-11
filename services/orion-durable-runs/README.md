@@ -1115,6 +1115,25 @@ Reads: Redis `orion:physiology:latest`, and `grammar_acts` + `act_downstream_use
 `physiology_market`. Off: `ORION_PHYSIOLOGY_BID_ENABLED=false` (the route answers 503). Read-only
 sample against live prices: `scripts/analysis/sample_body_economy_bids.py`.
 
+**The consent gate (2026-11-11, attention patch 3d).** Some acts change things that are hard to put back.
+A want for such an act carries a consent request (`WantV1.consent_request`: family, verb, the act's
+reversibility class, a payload digest, and the preconditions the producer attests). The market answers it
+FIRST, before it reads the body state or the act history, with one pure function
+(`orion/physiology/consent.py`) over `config/physiology/consent.yaml` (`ORION_PHYSIOLOGY_CONSENT_PATH`):
+
+- `allow`: the want is priced as any want, and the verdict rides on the decision (`WantDecisionV1.consent`);
+- `refuse` (irreversible, unknown and not reversible, a missing attest, no rules read) or `needs_consent`
+  (the rule needs a standing consent Juniper has not merged): deferred, reason `consent`. The binding rule
+  never admits it, not even at the window's end.
+
+Standing consents are entries in `consent.yaml` that Juniper merges by PR (git history is the record). It
+replaces only the retired policy rung's consent check; heat, arousal, caps, quiet hours, the Juniper-first
+yield and the self-monitor gate stay where they are. A want with no consent request never reaches the gate.
+Every verdict logs `physiology_consent verdict=... rule=... want=...`; `/health` -> `physiology_market`
+shows `consent_rules`, `consent_standing`, `consent_error` and per-verdict counts. First consumer: dream
+compaction apply (orion-dream `app/compaction_consent.py`). Eval: `evals/consent_gate_fixture.py`
+(`--live` compares staged REM deltas to consent asks in `want_ledger`).
+
 **Exploration floor, weekly quota (Patch C3a).** Funded wants are counted from `want_ledger` (rolling 7
 days, re-read with the history) plus this process's own funded decisions, deduplicated by
 `decision_id`. A Tier 2 family under 5% of Tier 2's funded wants is funded when only the price said

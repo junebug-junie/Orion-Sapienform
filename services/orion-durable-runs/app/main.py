@@ -490,6 +490,15 @@ def _build_market():
     families, err = load_families(s.physiology_families_path)
     if err:
         logger.warning("physiology_families_unavailable reason=%s", err)
+    from orion.physiology.consent import load_consent
+
+    consent_rules, consent_err = load_consent(s.physiology_consent_path)
+    if consent_err:
+        logger.warning("physiology_consent_unavailable reason=%s (every want with a consent request is refused)",
+                       consent_err)
+    else:
+        logger.info("physiology_consent_loaded rules=%d standing=%d", len(consent_rules.rules),
+                    len(consent_rules.standing))
     source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
 
     async def publish(decision) -> None:
@@ -503,7 +512,8 @@ def _build_market():
                   redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
                   history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
                   stale_after_sec=s.physiology_bid_stale_after_sec,
-                  prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)))
+                  prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)),
+                  consent_rules=consent_rules, consent_error=consent_err)
 
 
 def _build_chronicle():

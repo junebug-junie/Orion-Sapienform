@@ -6,6 +6,8 @@ Pure. Shared by every producer whose bid binds, so they all obey the same rule:
   GPU pool for a hold;
 * orion-dream (``app.physiology_bind``: the dream cycle), before a sleep opens its act;
 * orion-hub outreach (``scripts.outreach_bind``: hub.outreach), before a door composes a message;
+* orion-dream's compaction applier (``app.compaction_consent``, attention patch 3d), with the hold ending now:
+  it is one-shot, so only consent decides; a consent block is never admitted;
 * orion-durable-runs' cooling world act (``app.cooling_act``, via ``orion.autonomy.shed_act.shed_verdict``),
   which is stricter: only ``funded`` sheds, and "no answer" or the window's end never does.
 
@@ -59,13 +61,37 @@ def decision_detail(decision: Any) -> dict:
         v = getattr(decision, k, None)
         if v is not None:
             out[k] = v
+    consent = getattr(decision, "consent", None)
+    if consent is not None:
+        out["consent_verdict"] = getattr(consent, "verdict", None)
+        out["consent_rule"] = getattr(consent, "rule_id", None)
     return out
+
+
+def consent_block(decision: Any) -> Optional[str]:
+    """Why a decision may not run on consent grounds (attention patch 3d), or None.
+
+    Blocked: reason ``consent`` (the gate said refuse or needs_consent), a verdict other than ``allow``, or a
+    want that asked for consent but came back with no verdict (a market that dropped the gate). Fails closed."""
+    verdict = getattr(decision, "consent", None)
+    if str(getattr(decision, "reason", "") or "") == "consent":
+        return str(getattr(verdict, "verdict", None) or "refuse")
+    if verdict is not None:
+        v = str(getattr(verdict, "verdict", "") or "")
+        return None if v == "allow" else (v or "refuse")
+    want = getattr(decision, "want", None)
+    if want is not None and getattr(want, "consent_request", None) is not None:
+        return "no_verdict"
+    return None
 
 
 def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
                  capacity_queues_at_pool: bool = True) -> BindVerdict:
     """Pure: a binding family's decision -> admit now, or hold until the next bid.
 
+    * a consent block (``consent_block``: reason ``consent``, a non-allow verdict, or a consent request with
+      no verdict) -> HOLD, always: never admitted, even at ``end`` or with no ``end`` (attention patch 3d).
+      The next bid is REBID_MAX_SEC on;
     * no decision, or a NO_ANSWER reason -> admit (today's path; no other gate is removed);
     * funded -> admit;
     * ``capacity_reserved`` with a POSITIVE net -> admit (``queued_at_pool``). The lane is full, but
@@ -85,6 +111,12 @@ def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
     if decision is None:
         return BindVerdict(True, "no_answer:no_decision", detail=detail)
     reason = str(getattr(decision, "reason", "") or "")
+    blocked = consent_block(decision)
+    if blocked is not None:
+        # Never admitted: not at the window's end, not with no end. Waiting does not grant consent; the
+        # next bid (an hour on) only helps once a standing consent is merged.
+        return BindVerdict(False, f"deferred:consent:{blocked}", retry_at=now + timedelta(seconds=REBID_MAX_SEC),
+                           detail=detail)
     if getattr(decision, "outcome", None) == "funded":
         return BindVerdict(True, "funded", detail=detail)
     if reason in NO_ANSWER_REASONS:
@@ -103,5 +135,5 @@ def bind_verdict(decision: Any, now: datetime, end: Optional[datetime], *,
     return BindVerdict(False, f"deferred:{reason}", retry_at=min(end, now + timedelta(seconds=wait)), detail=detail)
 
 
-__all__ = ["BINDING_PRODUCERS", "BindVerdict", "NO_ANSWER_REASONS", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC",
+__all__ = ["BINDING_PRODUCERS", "BindVerdict", "consent_block", "NO_ANSWER_REASONS", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC",
            "bind_verdict", "decision_detail"]

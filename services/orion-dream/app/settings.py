@@ -40,15 +40,20 @@ class Settings(BaseSettings):
 
     # --- Compaction APPLIER (Phase G — the hot gate, hard-off) ---
     # THIS MUTATES MEMORY. It stays off pending explicit proposal-mode sign-off +
-    # a live §14 backfill verification. Even when on it applies ONLY deltas whose
-    # proposal was policy-approved for execution (reverie proposals carry
-    # operator_review, so they require a human). Snapshot precedes every apply.
+    # a live §14 backfill verification. Even when on it applies ONLY deltas the
+    # want market's consent gate allows (config/physiology/consent.yaml: downscale
+    # needs Juniper's standing consent; prune is always refused). Snapshot precedes every apply.
     ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=False)
     # Safer subset first: apply downscale-renormalize only; prune stays gated
     # behind this flag being flipped false (never prune before downscale is trusted).
     ORION_DREAM_COMPACTION_DOWNSCALE_ONLY: bool = Field(default=True)
     # §14 snapshot destination (before/after + rollback artifact).
     DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/tmp/dream-compaction-apply")
+    # Attention patch 3d: after REM stages a delta, ask the want market's consent gate about it
+    # (app/compaction_consent.py) through the applier with NO memory store, so every real delta leaves a
+    # verdict (want_ledger, producer orion-dream.compaction_applier.consent) and nothing is written.
+    # false -> no ask (the gate is still asked by any real apply).
+    DREAM_COMPACTION_CONSENT_ASK_ENABLED: bool = Field(default=True)
 
     # --- Dream cycle v2 (sleep pressure -> replay -> REM recombination) ---
     # Default off. When on, a background loop checks sleep pressure every

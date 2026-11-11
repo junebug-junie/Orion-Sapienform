@@ -25,6 +25,8 @@ COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml
 # Body economy Patch C1: want families (tier, prior weight, deferrable window, lanes) for /physiology/bid.
 COPY config/physiology/families.yaml /app/config/physiology/families.yaml
+# Attention patch 3d: the market's consent gate (acts that are hard to put back, and who agreed).
+COPY config/physiology/consent.yaml /app/config/physiology/consent.yaml
 # Pinned per-host rest watts: GET /physiology/report hosts/unit_costs measure above this (PR #2992).
 COPY config/physiology/rest_body.yaml /app/config/physiology/rest_body.yaml
 COPY services/orion-durable-runs /app

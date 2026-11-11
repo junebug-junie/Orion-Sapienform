@@ -277,6 +277,10 @@ class Settings(BaseSettings):
     # Want families (tier, prior weight, deferrable window, lanes); baked into the image.
     physiology_families_path: str = Field(
         "/app/config/physiology/families.yaml", alias="ORION_PHYSIOLOGY_FAMILIES_PATH")
+    # The market's consent gate (attention patch 3d): which acts that are hard to put back may run, and who
+    # agreed. Baked into the image. Missing/malformed -> every want WITH a consent request is refused.
+    physiology_consent_path: str = Field(
+        "/app/config/physiology/consent.yaml", alias="ORION_PHYSIOLOGY_CONSENT_PATH")
     # The act history (grammar_acts, act_downstream_use) is re-read at most this often.
     physiology_bid_history_ttl_sec: float = Field(300.0, gt=0.0, alias="ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC")
     # A body state older than this is stale: the bid answers physiology_unavailable (never funded).

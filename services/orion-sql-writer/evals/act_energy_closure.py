@@ -14,7 +14,8 @@ This replays both read-only for every hour of the day and reports per host:
   and COVERAGE = metered / (above_rest - sponsored), the figure the allowance's coverage gate reads;
 * CLOSURE: above_rest == sponsored + metered + unattributed, and unattributed never below 0;
 * AGREEMENT: the sum of the per-act fill over every act whose lease ended that day vs the hourly
-  ``metered_wh``. They differ only at day boundaries (an act's lease is counted whole on the day
+  ``metered_wh``. A read act is charged over all of its turns (orion/grammar/act_cost_ids.py), and
+  the hourly side counts those same turns as metered (attention patch 3e), so reads are on both sides. They differ only at day boundaries (an act's lease is counted whole on the day
   it ends; the hourly rows clip at midnight) and where an act's lease falls outside its own
   open..close window.
 
@@ -35,21 +36,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
+from orion.grammar import act_cost_ids as ids  # noqa: E402
 from orion.grammar import act_energy_fill as fill  # noqa: E402
 
 DEFAULT_URI = "postgresql://postgres:postgres@localhost:55432/conjourney"
 AGREEMENT_TOLERANCE = 0.10
 NEGATIVE_TOLERANCE_WH = 0.01
 
-_ACT_CORRS_SQL = text(
+_LEASE_TURNS_SQL = text(
     """
     SELECT DISTINCT g.turn_correlation_id
       FROM gpu_pool_events g
      WHERE g.generated_at >= :since AND g.generated_at < :until
        AND g.event IN ('released', 'expired', 'aborted') AND g.held_ms IS NOT NULL
-       AND EXISTS (SELECT 1 FROM grammar_acts a WHERE a.correlation_id = g.turn_correlation_id)
+       AND g.turn_correlation_id IS NOT NULL
     """
 )
+
+
+def charged_groups(conn, day_start: datetime, day_end: datetime) -> list[list[str]]:
+    """The day's lease turns grouped by the act charged for them: one id per ordinary act (its own
+    correlation_id), and every turn of one read in one group (the read act, patch 3e)."""
+    turns = [str(r[0]) for r in conn.execute(_LEASE_TURNS_SQL, {"since": day_start, "until": day_end}).fetchall()]
+    own = ids.turns_with_own_act(conn, turns)
+    reads: dict[str, list[str]] = {}
+    for tid, rid in ids.reading_turn_owners(conn, [t for t in turns if t not in own],
+                                            since=day_start - fill.OTHER_LEASE_LOOKBACK - fill.MAX_HOLD,
+                                            until=day_end).items():
+        reads.setdefault(rid, []).append(tid)
+    return [[c] for c in sorted(own)] + [sorted(v) for _, v in sorted(reads.items())]
 
 
 def closure(conn, day_start: datetime, day_end: datetime, hosts: list[str]) -> dict:
@@ -87,8 +102,8 @@ def closure(conn, day_start: datetime, day_end: datetime, hosts: list[str]) -> d
     acts_gpu = {h: 0.0 for h in hosts}
     n_acts = 0
     unmeasured: dict[str, int] = {}
-    for (corr,) in conn.execute(_ACT_CORRS_SQL, {"since": day_start, "until": day_end}).fetchall():
-        got = fill.act_energy_cost(conn, correlation_id=str(corr), since=day_start, until=day_end, now=day_end)
+    for group in charged_groups(conn, day_start, day_end):
+        got = fill.act_energy_cost(conn, correlation_ids=group, since=day_start, until=day_end, now=day_end)
         if "wh_by_host" not in got:
             reason = (got.get("basis") or {}).get("wh", "no lease in the window")
             unmeasured[reason] = unmeasured.get(reason, 0) + 1

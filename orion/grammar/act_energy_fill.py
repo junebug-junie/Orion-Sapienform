@@ -15,6 +15,10 @@ Known limits, said here rather than hidden:
 * GPU work that takes no pool lease still draws on the card; it lands on whoever holds a lease then
   on that card, and in the host's unmetered energy otherwise.
 * A durable hold and the child call it wraps are two leases on one card: each pays half.
+* A read act (hub.world_pulse_read) is charged over all of its turns' leases (``correlation_ids``,
+  orion/grammar/act_cost_ids.py), filled late by act_ledger.py ``refill_late_costs``; the hourly
+  attribution counts those same turns as metered (``turns_charged_to_acts``), so a read's Wh is
+  counted once (attention patch 3e).
 * Acts sharing one correlation_id would each be charged the turn's whole lease energy (same exposure
   as ``gpu_slot_s_by_lane``; live 2026-10-29: 1103 acts, 1103 distinct correlation ids).
 * A lease's cards are taken from one terminal row.
@@ -37,10 +41,11 @@ import logging
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import text
 
+from orion.grammar.act_cost_ids import turns_charged_to_acts, turns_with_own_act
 from orion.energy.act_energy import (
     IDLE_MIN_SAMPLES,
     IDLE_QUANTILE,
@@ -72,7 +77,7 @@ _ACT_LEASES_SQL = text(
     f"""
     SELECT DISTINCT ON (lease_id) lease_id, cards::text, held_ms, generated_at
       FROM gpu_pool_events
-     WHERE turn_correlation_id = :corr
+     WHERE turn_correlation_id = ANY(:corrs)
        AND generated_at >= :since AND generated_at <= :until
        AND event IN {_TERMINAL}
        AND held_ms IS NOT NULL AND cards IS NOT NULL
@@ -108,9 +113,6 @@ _CARD_LEASES_SQL = text(
     """
 )
 
-# Which of these turns have an act (the act fill charges a lease to the act whose correlation_id is
-# the lease's turn_correlation_id).
-_TURNS_WITH_ACT_SQL = text("SELECT DISTINCT correlation_id FROM grammar_acts WHERE correlation_id = ANY(:corrs)")
 
 # orion_biometrics_summary.timestamp is a VARCHAR ("2026-10-29 16:41:23.287434+00") indexed with
 # node: filtered as a string on that prefix, parsed as timestamptz (same as cabinet_heat.py).
@@ -331,9 +333,15 @@ def _other_leases(conn: Any, card: str, ws: datetime, we: datetime, now: datetim
 
 
 def attribute_host_hour(conn: Any, host: str, start: datetime, end: datetime, *,
-                        now: Optional[datetime] = None) -> tuple[Optional[Any], Optional[float], str]:
+                        now: Optional[datetime] = None,
+                        charge_reads: bool = True) -> tuple[Optional[Any], Optional[float], str]:
     """(HostAttribution, rest_w, rest_source) for ``host`` over [start, end]; (None, None, reason)
-    when the host has no pinned rest. The same split, readers and floors as the act fill."""
+    when the host has no pinned rest. The same split, readers and floors as the act fill.
+
+    A lease is metered when some act is charged for its turn (act_cost_ids.turns_charged_to_acts):
+    its own correlation_id, or one of a read's turns (the read act's late fill charges those, patch
+    3e). ``charge_reads=False`` is the pre-3e rule (a read's turns counted as leased-without-act),
+    kept only so the backfill and the closure eval can show the before and after side by side."""
     from orion.energy.act_energy import LeaseSpan, attribute_host_window
 
     now = _aware(now or datetime.now(timezone.utc))
@@ -361,20 +369,33 @@ def attribute_host_hour(conn: Any, host: str, start: datetime, end: datetime, *,
         raw[index] = [(s, e, c) for s, e, c in _card_leases(conn, card, start, end, now).values()
                       if s < end and e > start]
     corrs = sorted({c for spans in raw.values() for _, _, c in spans if c})
-    with_act = {str(r[0]) for r in conn.execute(_TURNS_WITH_ACT_SQL, {"corrs": corrs}).fetchall()} if corrs else set()
+    if charge_reads:
+        # A read's calls run inside its run's pool hold, granted at most one longest hold before
+        # any lease that overlaps the hour starts.
+        with_act = turns_charged_to_acts(conn, corrs, since=start - OTHER_LEASE_LOOKBACK - MAX_HOLD, until=end)
+    else:
+        with_act = turns_with_own_act(conn, corrs)
     leases = {i: [LeaseSpan(s, e, c in with_act) for s, e, c in spans] for i, spans in raw.items()}
     return attribute_host_window(series, floors, leases, start=start, end=end, rest_w=rest), rest, source
 
 
-def act_energy_cost(conn: Any, *, correlation_id: str, since: datetime, until: datetime,
-                    now: Optional[datetime] = None) -> dict[str, Any]:
+def act_energy_cost(conn: Any, *, correlation_id: Optional[str] = None, since: datetime, until: datetime,
+                    now: Optional[datetime] = None, correlation_ids: Optional[Sequence[str]] = None,
+                    priced_at: Optional[datetime] = None) -> dict[str, Any]:
     """ActCostV2 field updates for one act, or {} when the act held no GPU lease.
 
-    ``since``/``until``: the window the act's leases are looked up in (the same lookback and close
-    grace as ``gpu_slot_s_by_lane``). Every field that cannot be measured stays absent, and
-    ``basis`` says why."""
+    ``correlation_id``: the act's one turn id (every actor but reading). ``correlation_ids``: every
+    turn the act is charged for (reading: orion/grammar/act_cost_ids.py ``reading_cost_ids``); each
+    lease is counted once. ``since``/``until``: the window the act's leases are looked up in (the
+    same lookback and close grace as ``gpu_slot_s_by_lane``). ``priced_at``: the moment the money
+    rate and the heat fit are read at (default ``now``; a late or back fill passes the act's end).
+    Every field that cannot be measured stays absent, and ``basis`` says why."""
     now = _aware(now or datetime.now(timezone.utc))
-    leases = conn.execute(_ACT_LEASES_SQL, {"corr": correlation_id, "since": since, "until": until}).fetchall()
+    priced_at = _aware(priced_at) if priced_at is not None else now
+    corrs = sorted({str(c) for c in (correlation_ids or ()) if c} | ({str(correlation_id)} if correlation_id else set()))
+    if not corrs:
+        return {}
+    leases = conn.execute(_ACT_LEASES_SQL, {"corrs": corrs, "since": since, "until": until}).fetchall()
     if not leases:
         return {}
     basis: dict[str, str] = {"cpu": CPU_BASIS}
@@ -472,7 +493,7 @@ def act_energy_cost(conn: Any, *, correlation_id: str, since: datetime, until: d
                            "wh_gpu_by_host": {h: round(v, 6) for h, v in wh_gpu_by_host.items()}}
     total_wh = sum(wh_by_host.values())
 
-    rate = conn.execute(_RATE_SQL, {"at": now, "since": now - RATE_MAX_AGE}).first()
+    rate = conn.execute(_RATE_SQL, {"at": priced_at, "since": priced_at - RATE_MAX_AGE}).first()
     if rate is not None and rate[0] is not None:
         out["usd"] = round(usd(total_wh, float(rate[0])), 8)
         basis["usd"] = (f"marginal {float(rate[0]):.4f} $/kWh, energy_cost_accrued interval "
@@ -488,7 +509,7 @@ def act_energy_cost(conn: Any, *, correlation_id: str, since: datetime, until: d
     # The heat fit's regressor is COMPUTE watts (fit_heat_sensitivity.py), so its slope already
     # carries the fans and PSU loss that follow compute: priced on the GPU part, not the chassis part.
     for host, wh in wh_gpu_by_host.items():
-        entry, sens, reason = host_sensitivity(heat_cfg, host, now)
+        entry, sens, reason = host_sensitivity(heat_cfg, host, priced_at)
         if sens is None:
             heat_notes.append(f"{host} unpriced ({reason or heat_err})")
             continue

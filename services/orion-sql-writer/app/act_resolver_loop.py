@@ -5,7 +5,7 @@ painting was never reported as produced" can only be observed by a clock, so
 they cannot ride the grammar stream. Every SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC
 this loop closes due acts and logs one summary line ([ACT_RESOLVER]).
 
-The same tick fills the GPU cost of acts that close before their work ends (a read's act closes
+The same tick fills the GPU and energy cost of acts that close before their work ends (a read's act closes
 at stage 1; its stage 2 runs after): orion/grammar/act_ledger.py ``refill_late_costs``, one
 [ACT_COST_LATE] line when it examined anything.
 """

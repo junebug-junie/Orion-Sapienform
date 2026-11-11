@@ -9,7 +9,9 @@ that opened after their leases ran.
 Closure, per row: above_rest = sponsored + metered + unattributed. Unattributed is stored as
 computed; a negative value is over-attribution and is logged as a warning, never clipped.
 
-``metered_wh`` is what is ATTRIBUTABLE to acts: the share of leases whose turn has an act. What acts
+``metered_wh`` is what is ATTRIBUTABLE to acts: the share of leases whose turn some act is charged for
+(orion/grammar/act_cost_ids.py ``turns_charged_to_acts``: an act's own correlation_id, or one of a
+read's turns when the read has an act; attention patch 3e). What acts
 were actually CHARGED is the sum of ``grammar_acts.cost_json.wh_by_host``; the physiology report
 compares the two per day (double counting shows there, e.g. two acts on one correlation_id).
 """

@@ -67,7 +67,6 @@ from app.models import (
     RecipientProfileDB,
     NotificationPreferenceDB,
     JournalEntrySQL,
-    SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
     CuriosityHopReadingSQL,
@@ -126,7 +125,6 @@ from app.harness_turn_trace_persist import upsert_harness_turn_trace
 from app.cockpit_turn_sighting_persist import append_cockpit_hop
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
-from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import PeerBriefV1
 from orion.schemas.curiosity_supervisor import HopReadingV1
@@ -284,7 +282,6 @@ INSERT_ONLY_MODELS = {
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
     DurableRunStateSQL,
-    SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
     CuriosityHopReadingSQL,
@@ -560,7 +557,6 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "RecipientProfileDB": (RecipientProfileDB, None),
     "NotificationPreferenceDB": (NotificationPreferenceDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
-    "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "AttentionSchemaSQL": (AttentionSchemaSQL, AttentionSchemaV1),
     "CuriosityPeerBriefSQL": (CuriosityPeerBriefSQL, PeerBriefV1),
     "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),

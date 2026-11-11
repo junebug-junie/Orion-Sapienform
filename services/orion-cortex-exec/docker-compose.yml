@@ -56,7 +56,7 @@ services:
       # docker.sock bind above -- would otherwise construct its build context from that stale snapshot, not live
       # host code. This mount fixes that. MUST stay `:ro` -- do NOT change to a write mount under any framing
       # (env sync, log writes, etc.); Juniper does not want this container able to write into the host repo /
-      # main branch. Mounted at the SAME absolute path on both sides so ORION_REPO_ROOT / self_study's
+      # main branch. Mounted at the SAME absolute path on both sides so ORION_REPO_ROOT / orch_paths'
       # `_resolve_repo_root()` and any script-relative paths resolve identically inside and outside the
       # container. Override ORION_HOST_REPO_ROOT if this node's checkout lives elsewhere.
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:ro

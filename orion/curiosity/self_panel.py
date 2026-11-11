@@ -38,9 +38,7 @@ _HISTORY_LIMIT = 50
 def _coerce_evidence_refs(raw: Any) -> list[str]:
     """`evidence_refs` is a generic JSON column, not JSONB -- asyncpg and
     psycopg2 usually deserialize it to a list already, but tolerate it coming
-    back as a JSON string too (same tolerance as
-    `self_atlas_cluster_history._coerce_evidence_refs`, kept local here so
-    this Postgres-reader module has no import into a Hub script)."""
+    back as a JSON string too."""
     if isinstance(raw, list):
         return [str(v) for v in raw]
     if isinstance(raw, str):

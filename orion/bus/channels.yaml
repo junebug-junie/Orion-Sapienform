@@ -2382,16 +2382,6 @@ channels:
     since: "2026-03-21"
     description: "2026-07-13: added optional trigger_kind field (JournalTriggerKind | None, default None) so the originating JournalTriggerV1.trigger_kind survives onto the persisted/bus payload -- backward compatible, existing producers omitting it are unaffected."
 
-  - name: "orion:self_study:items:write"
-    kind: "event"
-    schema_id: "SelfKnowledgeItemLogV1"
-    message_kind: "self_study.items.write.v1"
-    producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-sql-writer"]
-    stability: "experimental"
-    since: "2026-09-05"
-    description: "Durable, multi-run history of self_study.py's Layer-1 SelfKnowledgeItemV1 items -- previously only summarized into a one-off journal entry, never stored as a growing queryable table. Prerequisite for topic-foundry's Self Atlas (Layer 2 rebuild, self-model rebuild arc)."
-
   - name: "orion:chat_stance:belief:write"
     kind: "event"
     schema_id: "ChatStanceBeliefLogV1"
@@ -2400,7 +2390,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-05"
-    description: "Durable per-turn log of chat_stance.py's real belief computation (anchors/shift-kind/lineage), previously discarded after every turn. Feeds self_study Layer 1 _behavioral_items() (services/orion-cortex-exec/app/self_study.py) -- part of the self-model rebuild arc."
+    description: "Durable per-turn log of chat_stance.py's real belief computation (anchors/shift-kind/lineage), previously discarded after every turn. Read by curiosity self-inquiry (orion/curiosity/self_inquiry.py SELF_INQUIRY_PG_TABLES, read-only). The self_study Layer 1 scan that copied it into Self Atlas was retired 2026-11 -- part of the self-model rebuild arc."
 
   - name: "orion:self_concept:history:write"
     kind: "event"
@@ -2410,7 +2400,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-05"
-    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by two live producers (a third, Layer 3 self-study reflection from orion-cortex-exec, was retired 2026-10-30; its layer3_reflect rows stay as history): Self Atlas's per-cluster LLM-written descriptions (orion-hub, services/orion-hub/scripts/self_atlas_cluster_history.py), and -- since 2026-09-08 -- Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
+    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by one live producer (two retired, their rows stay as history: Layer 3 self-study reflection from orion-cortex-exec, layer3_reflect, retired 2026-10-30; Self Atlas per-cluster descriptions from orion-hub, self_atlas_cluster, retired 2026-11): since 2026-09-08, Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
 
   - name: "orion:personality:naming"
     kind: "event"

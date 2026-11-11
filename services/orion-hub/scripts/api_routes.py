@@ -370,34 +370,10 @@ def _build_aitown_substrate_store_from_env() -> Any:
 SUBSTRATE_SEMANTIC_STORE_AITOWN = _substrate_store_holder("aitown", _build_aitown_substrate_store_from_env)
 
 
-def _build_self_substrate_store_from_env() -> Any:
-    """Third, independently-named concept graph -- the Self Atlas
-    (self-model rebuild arc, Patch 3, 2026-09-05). Same shape, same
-    falkor-only scoping, same degrade-to-in-memory-and-warn behavior as
-    ``_build_aitown_substrate_store_from_env`` above."""
-    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
-    if backend in {"falkor", "falkordb"}:
-        from orion.substrate.falkor_store import build_self_falkor_substrate_store_from_env
-
-        return build_self_falkor_substrate_store_from_env()
-    from orion.substrate.store import InMemorySubstrateGraphStore
-
-    if backend and backend not in {"in_memory", "memory", "mem", "local"}:
-        logger.warning(
-            "self_substrate_store_backend_unsupported backend=%s -- falling back to in-memory "
-            "(the Self Atlas graph is falkor-only today; every write is lost on restart)",
-            backend,
-        )
-    return InMemorySubstrateGraphStore()
-
-
-SUBSTRATE_SEMANTIC_STORE_SELF = _substrate_store_holder("self", _build_self_substrate_store_from_env)
-
-# Orion's own graph first (cognition reads it), then the Self Atlas, then AI
-# Town (largest scan, interpretability-only). Never awaited by import/startup.
-start_background_warm(
-    (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_SELF, SUBSTRATE_SEMANTIC_STORE_AITOWN)
-)
+# Orion's own graph first (cognition reads it), then AI Town (largest scan,
+# interpretability-only). The Self Atlas graph was retired 2026-11.
+# Never awaited by import/startup.
+start_background_warm((SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_AITOWN))
 
 
 def _semantic_store_ready() -> bool:
@@ -413,10 +389,10 @@ def _require_semantic_store_ready() -> None:
 
 
 def substrate_store_warm_status() -> list[dict[str, Any]]:
-    """Per-store warm-up state for the three concept graph holders above."""
+    """Per-store warm-up state for the two concept graph holders above."""
     return [
         holder.warm_status()
-        for holder in (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_SELF, SUBSTRATE_SEMANTIC_STORE_AITOWN)
+        for holder in (SUBSTRATE_SEMANTIC_STORE, SUBSTRATE_SEMANTIC_STORE_AITOWN)
         if isinstance(holder, WarmingSubstrateStore)
     ]
 

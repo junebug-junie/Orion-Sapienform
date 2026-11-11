@@ -1,27 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 784,
+  "metric_count": 783,
   "_last_change": {
-    "change_count": 17,
-    "high_severity_count": 17,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1 (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#brier_skill (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'], prompt_sites: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'], prompt_sites: \u2026_record_cue', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026_record_cue'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'], prompt_sites: ['services.orion-hub.scripts.self_finding_outreach:record_f\u2026 -> -)",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'], prompt_sites: \u2026_record_cue', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026_record_cue'])",
-      "high   routing_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#weight_graded (declared_consumers: \u2026estion_text', 'services.orion-hub.scripts.self_finding_outr\u2026 -> \u2026estion_text'])",
-      "high   semantics_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability (absent_means: \u2026ed (the cue and E3 skip the sentenc\u2026 -> \u2026ed (the cue skips the sentenc\u2026, rest: \u2026able faculty, and by E3 for a told finding with graded bets. -> \u2026able faculty.)",
-      "high   semantics_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi (absent_means: None = no graded bet: no unreliable line, no E3 band. -> None = no graded bet: no unreliable line., rest: \u2026hen < 0.5). E3 prints it as the band. Saturates at\u2026 -> \u2026hen < 0.5). Saturates at\u2026)",
-      "high   semantics_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_lo (absent_means: None = no graded bet: E3 prints no band. -> None = no graded bet., rest: \u2026eliability. Printed only by E3, as the band. -> \u2026eliability. Not printed: its only reader, the E3 self-findi\u2026)",
-      "high   semantics_changed metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean (rest: \u2026ated faculty, and by E3 for interval and event claims. -> \u2026ated faculty.)"
+      "high   removed metric://bus_channel/orion-cortex-exec/orion:self_study:items:write"
     ]
   },
   "definitions": {
@@ -983,17 +967,6 @@
         "orion-substrate-runtime"
       ],
       "notes": "kind=telemetry stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-cortex-exec/orion:self_study:items:write": {
-      "schema_id": "SelfKnowledgeItemLogV1",
-      "all_producers": [
-        "orion-cortex-exec"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-exec/orion:spark:introspect:candidate": {

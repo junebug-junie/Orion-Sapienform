@@ -150,8 +150,7 @@ def read_lived_answers(engine) -> list[dict[str, Any]]:
 # --- publish -------------------------------------------------------------------
 
 def publish_rows(rows: list[SelfSenseEvalV1], *, bus_url: str, node: str | None) -> tuple[int, int]:
-    """One short-lived bus connection for the batch (the
-    self_atlas_cluster_history.py idiom). Returns (published, failed)."""
+    """One short-lived bus connection for the batch. Returns (published, failed)."""
     import anyio
 
     from orion.core.bus.async_service import OrionBusAsync

@@ -53,6 +53,11 @@ SOURCES: tuple[tuple[str, str, Adapter], ...] = (
      "SELECT expectation_id, emitted_at, scored_at, status, confidence FROM vision_percept_expectation "
      "WHERE scored_at >= :since",
      adapters.percept_expectation),
+    ("orion_ask",
+     "SELECT ask_id, source_kind, status, answer, answer_detail, evidence_refs, created_at, answered_at "
+     "FROM orion_ask WHERE answered_at >= :since AND status = 'answered' "
+     "AND source_kind IN ('vision_person_confirm', 'vision_same_individual')",
+     adapters.camera_ask),
 )
 
 # The host keeps a missing faculty's held status only when one of its sources erred (it cannot tell

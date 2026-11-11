@@ -33,9 +33,26 @@ UNGRADEABLE: tuple[Ungradeable, ...] = (
         "Orion makes no bet before asking Juniper to confirm a memory; add a confirm-chance bet "
         "(orion-prediction) when the card opens",
     ),
+    # Corrected 2026-11-11: #3046 fixed the cosine copy (15/15 verdicts since 11-03 carry it), and
+    # the grade reads the ask itself (``adapters.camera_ask``), so this shows the hit rate whenever
+    # an answer lands in the window. What still blocks a status is that neither camera guess states a
+    # confidence: face_cosine is a similarity (it barely ranks Juniper's "same" over "different",
+    # AUC 0.59 on 37 answers), and the attribution score is rewritten every cycle. These entries
+    # show only in a window with no answered ask.
     Ungradeable(
-        "vision.same_person", "vision_individual_pair_verdict", "ungradeable:source_bug",
-        "verdict copies the ask's face_cosine in only 10/16 rows; copy it from orion_ask.evidence_refs",
+        "vision.same_person", "orion_ask", "ungradeable:no_stated_confidence",
+        "face_cosine is a similarity, not a probability; record a P(same) bet when the ask opens "
+        "(orion-prediction)",
+    ),
+    Ungradeable(
+        "vision.person_confirm", "orion_ask", "ungradeable:no_stated_confidence",
+        "the attribution score is a cosine the person model rewrites every cycle; record a P(yes) bet "
+        "when the \"Is this <name>?\" ask opens (orion-prediction)",
+    ),
+    Ungradeable(
+        "vision.person_confirm.camera_prior", "orion_ask", "ungradeable:no_stated_confidence",
+        "the office camera's prior (config/person_model/camera_priors) chose the name, but the ask "
+        "does not record it; store the prior p on the ask when it opens",
     ),
     Ungradeable(
         "body.gpu_power", "power_intent_settled", "ungradeable:source_bug",

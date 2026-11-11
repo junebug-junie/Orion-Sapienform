@@ -27,11 +27,24 @@ Vocabulary found live (2026-11-03, 7 days), kept here so a reader can check the 
 * ``prediction_forecast``: champion rows; ``in_80`` is the outcome of the stated 80% range.
 * ``vision_percept_expectation`` (``services/orion-sql-writer/app/vision_rhythm.py``): ``status``
   ``met``/``missed``/``open``/``unscorable``; ``confidence`` stored at emit time.
+* ``orion_ask`` camera guesses (``services/orion-sql-writer/app/vision_individuals.py``,
+  ``_open_person_confirm_asks`` and ``_open_face_asks``): only two of the camera ask kinds carry a
+  guess of Orion's. ``vision_person_confirm`` asks "Is this <name>?" (``source_ref`` =
+  ``<individual>|<name>``; ``rule:camera_prior`` in ``evidence_refs`` when the office camera's prior
+  chose the name). ``vision_same_individual`` asks "Are these the same person?" for a pair whose face
+  cosine is at least ``same_ask_min_face_cosine``; the street handoff loop
+  (``vision_handoff_loop.py``, ``rule:handoff``) opens the same kind for two STORIES' crops, a
+  different guess, so it is its own faculty ``vision.same_person.handoff``. Juniper settles both: ``answer`` yes/no, and on a
+  confirm card optionally ``answer_detail.pictures[].verdict`` (same/different/unsure). Neither ask
+  records a confidence: the attribution ``score`` is a median top-k cosine that the person model
+  rewrites every cycle, and ``face_cosine`` is a similarity, not a probability. So ``stated`` is None
+  and these faculties show their hit rate but stay ``ungradeable:no_stated_confidence``.
 """
 
 from __future__ import annotations
 
 import re
+import json
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
@@ -239,4 +252,79 @@ def percept_expectation(row: Row) -> Optional[SettledBetV1]:
         outcome="upheld" if status == "met" else "refuted",
         settled_by="world",
         evidence_ref=f"vision_percept_expectation:{row['expectation_id']}",
+    )
+
+
+# Camera asks that state a guess of Orion's (see the module docstring). "Who is this?" asks, walkway
+# story names and person facts carry no guess, so they are not bets.
+CAMERA_ASK_FACULTIES = {"vision_person_confirm": "vision.person_confirm", "vision_same_individual": "vision.same_person"}
+CAMERA_PRIOR_REF = "rule:camera_prior"
+HANDOFF_RULE_REF = "rule:handoff"
+# Juniper's yes/no. Twin of ``_YES``/``_NO`` in services/orion-sql-writer/app/vision_individuals.py
+# (the applier's parse_yes_no; an app module, so it cannot be imported here): change both together.
+_ASK_YES = frozenset({"yes", "y", "same", "same person", "yes same person", "yes, same person"})
+_ASK_NO = frozenset({"no", "n", "different", "different people", "not the same", "no different people",
+                     "no, different people"})
+
+
+def _json(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def camera_ask_outcome(row: Row) -> Optional[str]:
+    """Juniper's answer to a camera guess -> upheld | refuted | no_change, or None (no usable answer).
+
+    The applier's own order (``_apply_person_confirm``): an answer that is not yes/no applies
+    nothing, so it grades nothing (a card closed by a name typed elsewhere stores ``answer`` NULL).
+    Then per-picture answers win (only pictures with an ``image_ref``, as ``confirm_picture_verdicts``
+    reads them): all "same" -> upheld, all "different" -> refuted, any other mix (the cluster holds
+    more than one person, or she was unsure of some) -> no_change: the guess was about the cluster,
+    and she said neither."""
+    answer = " ".join(str(row.get("answer") or "").lower().replace(".", " ").replace("!", " ").split())
+    if answer in _ASK_YES:
+        said = "upheld"
+    elif answer in _ASK_NO:
+        said = "refuted"
+    else:
+        return None
+    detail = _json(row.get("answer_detail")) or {}
+    pictures = detail.get("pictures") if isinstance(detail, dict) else None
+    verdicts = {p.get("verdict") for p in (pictures or []) if isinstance(p, dict) and p.get("image_ref")}
+    verdicts &= {"same", "different", "unsure"}
+    if not verdicts:
+        return said
+    if verdicts == {"same"}:
+        return "upheld"
+    if verdicts == {"different"}:
+        return "refuted"
+    return "no_change"
+
+
+def camera_ask(row: Row) -> Optional[SettledBetV1]:
+    """One answered camera guess. ``stated`` is None: no confidence is recorded before the ask."""
+    faculty = CAMERA_ASK_FACULTIES.get(row.get("source_kind") or "")
+    answered = _aware(row.get("answered_at"))
+    if faculty is None or answered is None or row.get("status") != "answered":
+        return None
+    outcome = camera_ask_outcome(row)
+    if outcome is None:
+        return None
+    refs = _json(row.get("evidence_refs")) or []
+    if faculty == "vision.person_confirm" and CAMERA_PRIOR_REF in refs:
+        # The office camera's prior chose the name, not the album scores: another mechanism.
+        faculty = "vision.person_confirm.camera_prior"
+    elif faculty == "vision.same_person" and HANDOFF_RULE_REF in refs:
+        # Two stories' crops matched across cameras, not two face centroids: another guess.
+        faculty = "vision.same_person.handoff"
+    return SettledBetV1(
+        bet_id=f"orion_ask:{row['ask_id']}",
+        faculty=faculty,
+        source="orion_ask",
+        made_at=_aware(row["created_at"]),
+        settled_at=answered,
+        claim_kind="event",
+        stated=None,
+        outcome=outcome,
+        settled_by="juniper",
+        evidence_ref=f"orion_ask:{row['ask_id']}",
     )

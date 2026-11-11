@@ -23,7 +23,7 @@ from orion.self_monitor.host import FACULTY_EVENT_KIND, FACULTY_EVENT_TABLE
 
 logger = logging.getLogger("orion-durable-runs.self_monitor_store")
 
-# 5 sources x 15 s = 75 s, under the node's 120 s ceiling, so a slow source fails alone and is named
+# 7 sources x 15 s = 105 s (orion_ask added 2026-11-11; it reads in ~ms), under the node's 120 s ceiling, so a slow source fails alone and is named
 # (review finding: at 45 s two slow sources timed out the whole evaluation).
 STATEMENT_TIMEOUT = "15s"
 WRITE_TIMEOUTS = ("SET LOCAL statement_timeout = '15s'", "SET LOCAL lock_timeout = '5s'")

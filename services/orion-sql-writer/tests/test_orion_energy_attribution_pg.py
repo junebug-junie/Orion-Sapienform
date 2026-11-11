@@ -42,14 +42,19 @@ def pg(monkeypatch):
     engine = create_engine(PG)
     with engine.begin() as conn:
         for table in ("orion_biometrics_summary", "gpu_pool_events", "grammar_acts",
-                      "orion_energy_attribution_hourly"):
+                      "orion_energy_attribution_hourly", "world_pulse_read_seed", "reading_durable_turn"):
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
         conn.execute(text('CREATE TABLE orion_biometrics_summary (id VARCHAR PRIMARY KEY, "timestamp" VARCHAR NOT NULL, '
                           "node VARCHAR, measurements JSONB)"))
         conn.execute(text("CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL, "
                           "event VARCHAR NOT NULL, lease_id VARCHAR, cards JSON, turn_correlation_id VARCHAR, "
-                          "held_ms DOUBLE PRECISION)"))
-        conn.execute(text("CREATE TABLE grammar_acts (act_id VARCHAR PRIMARY KEY, correlation_id VARCHAR)"))
+                          "held_ms DOUBLE PRECISION, holder VARCHAR, detail JSON)"))
+        conn.execute(text("CREATE TABLE grammar_acts (act_id VARCHAR PRIMARY KEY, correlation_id VARCHAR, actor VARCHAR)"))
+        # Reading's turns (attention patch 3e): the hourly rule reads them to meter a read's leases.
+        conn.execute(text("CREATE TABLE world_pulse_read_seed (seed_id TEXT PRIMARY KEY, trace_id TEXT, "
+                          "stage2_trace_id TEXT, request_id UUID)"))
+        conn.execute(text("CREATE TABLE reading_durable_turn (seed_id TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE, "
+                          "request_json JSONB NOT NULL)"))
     OrionEnergyAttributionHourlySQL.__table__.create(engine)
     rest = parse_rest_body({"version": 1, "hosts": {"circe": {"rest_w": 600, "approved_rest_w": 600},
                                                     "athena": {"rest_w": 300, "approved_rest_w": 300}},
@@ -71,7 +76,8 @@ def _summary(conn, node, at, m):
 def _lease(conn, lease, card, start, end, corr):
     from sqlalchemy import text
 
-    conn.execute(text("INSERT INTO gpu_pool_events VALUES (:e, :g, 'released', :l, CAST(:c AS json), :corr, :h)"),
+    conn.execute(text("INSERT INTO gpu_pool_events (event_id, generated_at, event, lease_id, cards, "
+                      "turn_correlation_id, held_ms) VALUES (:e, :g, 'released', :l, CAST(:c AS json), :corr, :h)"),
                  {"e": uuid.uuid4().hex, "g": end, "l": lease, "c": json.dumps([card]), "corr": corr,
                   "h": (end - start).total_seconds() * 1000.0})
 
@@ -97,7 +103,7 @@ def _seed(engine):
         # gpu2: an act's lease for the first half hour, a turn with no act for the second.
         _lease(conn, "L1", "gpu2", H0, H0 + timedelta(minutes=30), "corr-act")
         _lease(conn, "L2", "gpu2", H0 + timedelta(minutes=30), H0 + timedelta(hours=1), "corr-noact")
-        conn.execute(text("INSERT INTO grammar_acts VALUES ('a1', 'corr-act')"))
+        conn.execute(text("INSERT INTO grammar_acts (act_id, correlation_id) VALUES ('a1', 'corr-act')"))
 
 
 def test_hour_rows_close_on_the_measured_chassis_energy(pg):

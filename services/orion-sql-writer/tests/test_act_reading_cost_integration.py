@@ -83,8 +83,16 @@ S2_TRACE = "a92fef07-c5fa-5e0a-ab9a-a10223fdaf8f"   # the seed's stage2_trace_id
 
 
 @pytest.fixture
-def session():
+def session(monkeypatch):
     import os
+
+    import orion.grammar.act_ledger as ledger
+
+    # These tests are about GPU slot-seconds; reading's energy (patch 3e) has its own tests with
+    # host readings (test_reading_energy_closure_integration.py). With no readings table the energy
+    # fill would raise and be retried every tick.
+    ledger.configure_act_energy_cost(False)
+    monkeypatch.setattr(ledger, "_LATE_COST_FAILURES", {})
 
     uri = os.environ["ORION_SQL_WRITER_TEST_DATABASE_URI"]
     schema = f"act_rc_{uuid.uuid4().hex[:10]}"
@@ -108,6 +116,7 @@ def session():
         with admin.begin() as conn:
             conn.execute(text(f"DROP SCHEMA {schema} CASCADE"))
         admin.dispose()
+        ledger.configure_act_energy_cost(True)
 
 
 def _ev(sess, *, at, event, lease, corr, held_ms=None, role=None, holder="http:anthropic", detail=None):

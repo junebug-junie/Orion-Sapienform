@@ -1218,9 +1218,19 @@ leaves reading's GPU cost unset, and the resolver tick fills it once the read ha
 (`refill_late_costs`, one `[ACT_COST_LATE]` log line per tick that examined acts): slot-seconds over
 the seed's `trace_id`/`stage2_trace_id` plus every turn re-derived from the read's runs and their
 pool holds (`orion/grammar/act_cost_ids.py`). `basis["gpu"]` starts `late fill` and marks the act
-done. Energy (`wh_by_host`) is not filled for reading: the hourly attribution counts its leases as
-unmetered, and charging the act too would count them twice. Back-fill:
-`scripts/backfill_reading_act_cost.py` (dry run by default; `--apply`; `--restore`).
+done. Back-fill: `scripts/backfill_reading_act_cost.py` (dry run by default; `--apply`; `--restore`).
+
+**Reading's energy, counted once (attention patch 3e, 2026-11-11).** The same late fill also writes
+the read's `wh_by_host`, `wh_gpu_by_host`, `usd` and `heat_c_by_host` over the same turn ids
+(`act_energy_cost(correlation_ids=...)`), priced at the read's end; `basis["wh"]` says `late fill`
+(or `no lease found`, or `unmeasured: <why>`). Both sides move together: the hourly attribution
+counts a lease as metered when ANY act is charged for its turn (`act_cost_ids.turns_charged_to_acts`:
+an act's own correlation_id, or one of a read's turns when the read has an act), so a read's Wh moves
+from `leased_unmetered_wh` to `metered_wh` instead of being counted twice. A read GPU-filled before 3e
+(no `basis["wh"]`) is picked up again by the live tick for its energy. Back-fill of both sides:
+`scripts/backfill_reading_act_energy.py` (dry run by default; `--apply`; `--restore`). Proof:
+`tests/test_reading_energy_closure_integration.py` sums the energy both ways (acts + the hour's
+remainder == above-rest) before 3e, after 3e, and for the double count 3e prevents.
 
 **Energy, money and heat filled on close (2026-10-29).** Same leases, same window, own savepoint
 (`orion/grammar/act_energy_fill.py`, arithmetic in `orion/energy/act_energy.py`). Fields the
@@ -1248,7 +1258,8 @@ physiology report reads from `grammar_acts.cost_json`:
 `orion_energy_attribution_hourly` (one row per UTC hour per host in `rest_body.yaml`, recomputing the
 last 3 hours every `ORION_ENERGY_ATTRIBUTION_INTERVAL_SEC`, backfilling up to 48 h): `rest_wh`,
 `above_rest_wh`, `sponsored_wh` (Juniper's sponsored containers, e.g. `zelda-dojo-live-*`, their CPU
-share of the overhead), `metered_wh` (leases whose turn has an act: what acts are charged),
+share of the overhead), `metered_wh` (leases whose turn some act is charged for: its own
+correlation_id, or a read's turn, patch 3e),
 `leased_unmetered_wh` (leases whose turn has no act), `unattributed_wh` = above - sponsored - metered,
 stored unclipped (a negative value logs `orion_energy_attribution_negative`). Daily coverage =
 sum(metered) / (sum(above_rest) - sum(sponsored)). `GET /physiology/report` shows it per host per day in

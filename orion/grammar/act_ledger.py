@@ -51,7 +51,13 @@ from orion.autonomy.prediction import (
 )
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
 from orion.schemas.grammar import ActCostV2, ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
-from orion.grammar.act_cost_ids import LATE_COST_ACTORS, cost_correlation_ids, late_cost_actor
+from orion.grammar.act_cost_ids import (
+    LATE_COST_ACTORS,
+    READING_ACTOR,
+    cost_correlation_ids,
+    late_cost_actor,
+    reading_hold_ids,
+)
 from orion.grammar.act_energy_fill import act_energy_cost
 
 logger = logging.getLogger("orion.grammar.act_ledger")
@@ -889,19 +895,25 @@ def resolve_due_acts(
 # The cost is the slot-seconds over every turn the read ran (orion/grammar/act_cost_ids.py), and
 # basis["gpu"] says so; a final "late fill at" line marks the act done, so it is filled once.
 # An act whose fill raises is skipped for the rest of the process after LATE_COST_MAX_FAILURES ticks.
-# Energy is NOT filled for reading here: the hourly attribution (attribute_host_hour) counts a lease as
-# metered only when an act's correlation_id is its turn id, so reading's Wh would be counted twice.
+# Energy (attention patch 3e): the same pass fills reading's wh_by_host / wh_gpu_by_host / usd /
+# heat_c_by_host over the same turn ids (act_energy_fill.act_energy_cost ``correlation_ids``), priced
+# at the read's end. The hourly attribution counts those turns as metered (act_cost_ids
+# ``turns_charged_to_acts``), not as leased-without-act, so each Wh is counted once. basis["wh"] is
+# always written by this pass ("no lease found" when there is none), and a read already GPU-filled
+# before 3e with no basis["wh"] is picked up again for its energy (the third arm below).
 LATE_COST_WINDOW_SEC = 96 * 3600.0
 LATE_COST_FINAL_AFTER_SEC = 12 * 3600.0
 LATE_COST_BASIS_PREFIX = "late fill"
 LATE_COST_PROVISIONAL_PREFIX = "late fill provisional"
 LATE_COST_MAX_FAILURES = 3
+_ENERGY_FIELDS = ("wh_by_host", "wh_gpu_by_host", "usd", "heat_c_by_host")
 _LATE_COST_FAILURES: dict[str, int] = {}
 # Not filled yet, or filled provisionally and the read has ended since.
 _LATE_COST_OPEN = """
        ((COALESCE({c}->'basis'->>'gpu', '') NOT LIKE :prefix
          AND ({c} IS NULL OR jsonb_typeof({c}->'gpu_slot_s_by_lane') IS DISTINCT FROM 'object'))
-        OR ({c}->'basis'->>'gpu' LIKE :provisional AND {ended}))"""
+        OR ({c}->'basis'->>'gpu' LIKE :provisional AND {ended})
+        OR (:energy AND {c}->'basis'->>'gpu' LIKE :prefix AND NOT ({c}->'basis' ? 'wh')))"""
 _READ_ENDED = ("(s.stage2_completed_at IS NOT NULL "
                "OR (s.status IN ('failed', 'skipped') AND s.completed_at IS NOT NULL))")
 _LATE_COST_TARGETS_SQL = text(
@@ -925,7 +937,8 @@ _LATE_COST_UPDATE_SQL = text(
     UPDATE grammar_acts SET cost_json = CAST(:cost_json AS jsonb), updated_at = :now
      WHERE act_id = :act_id AND closed_at IS NOT NULL
        AND (COALESCE(cost_json->'basis'->>'gpu', '') NOT LIKE :prefix
-            OR cost_json->'basis'->>'gpu' LIKE :provisional)
+            OR cost_json->'basis'->>'gpu' LIKE :provisional
+            OR (:energy AND NOT (cost_json->'basis' ? 'wh')))
     """
 )
 
@@ -937,6 +950,7 @@ class LateCost:
     lanes: dict[str, float] | None
     turn_ids: int
     read_end: str                  # why the read counts as ended
+    wh_by_host: dict[str, float] | None = None  # the energy filled (None: none, or energy off)
 
 
 @dataclass(frozen=True)
@@ -946,6 +960,7 @@ class LateCostSummary:
     no_lease: int
     failed: int
     slot_s: float
+    wh: float = 0.0                # energy filled this tick, all hosts
 
 
 def late_cost_targets(conn: Any, *, now: datetime, since: datetime, limit: int = 200) -> list[dict[str, Any]]:
@@ -954,6 +969,7 @@ def late_cost_targets(conn: Any, *, now: datetime, since: datetime, limit: int =
         "actors": sorted(LATE_COST_ACTORS), "since": since, "opened_since": since - timedelta(days=1),
         "prefix": LATE_COST_BASIS_PREFIX + "%", "provisional": LATE_COST_PROVISIONAL_PREFIX + "%",
         "final_before": now - timedelta(seconds=LATE_COST_FINAL_AFTER_SEC), "limit": int(limit),
+        "energy": bool(_ENERGY_COST_ENABLED),
         "skip": sorted(a for a, n in _LATE_COST_FAILURES.items() if n >= LATE_COST_MAX_FAILURES)}).mappings().all()
     return [dict(r) for r in rows]
 
@@ -980,27 +996,62 @@ def late_read_cost(conn: Any, target: dict[str, Any], *, now: datetime) -> LateC
                     f"pool lease slot-seconds over {len(ids)} turn id(s) of the read (the seed's trace ids and "
                     f"every durable turn, orion/grammar/act_cost_ids.py); read ended: {why}"
                     + ("" if lanes else "; no lease found"))
-    merged["basis"] = basis
     merged["gpu_slot_s_by_lane"] = lanes  # a final fill replaces a provisional one, even with less
+    wh: dict[str, float] | None = None
+    if _ENERGY_COST_ENABLED:
+        # Replaced whole on every late fill (a final fill replaces a provisional one): reading's
+        # producer measures none of these.
+        for field in _ENERGY_FIELDS:
+            merged.pop(field, None)
+        for key in ("wh", "usd", "heat"):
+            basis.pop(key, None)
+        act_id = str(target["act_id"])
+        energy_ids = list(dict.fromkeys(ids + (reading_hold_ids(conn, str(target["correlation_id"]))
+                                               if target.get("actor") == READING_ACTOR else [])))
+        energy = _isolated(conn, "late_energy", act_id, lambda: act_energy_cost(
+            conn, correlation_ids=energy_ids, since=since, until=until, now=now, priced_at=end),
+            log_prefix="act_cost")
+        if energy is None:
+            # A raise is retried (no basis["wh"], so the energy arm selects the act again) until
+            # LATE_COST_MAX_FAILURES; only then is it written off as unmeasured.
+            _LATE_COST_FAILURES[act_id] = _LATE_COST_FAILURES.get(act_id, 0) + 1
+            if _LATE_COST_FAILURES[act_id] >= LATE_COST_MAX_FAILURES:
+                basis["wh"] = (f"unmeasured: the energy fill raised {LATE_COST_MAX_FAILURES} times "
+                               "(sql-writer log act_cost_late_energy_failed)")
+        elif not energy:
+            basis["wh"] = f"{head} at {now.astimezone(timezone.utc).isoformat(timespec='seconds')}: no lease found"
+        else:
+            e_basis = energy.pop("basis", {}) or {}
+            merged.update(energy)
+            basis.update(e_basis)
+            stamp = (f"{head} at {now.astimezone(timezone.utc).isoformat(timespec='seconds')}, over the read's "
+                     f"{len(ids)} turn id(s) and {len(energy_ids) - len(ids)} pool hold(s)")
+            if str(basis.get("wh", "")).startswith("unmeasured"):
+                basis["wh"] = f"{basis['wh']} ({stamp})"  # "unmeasured: <why>" first, as at close
+            elif "wh" in basis:
+                basis["wh"] = f"{stamp}, priced at the read's end: {basis['wh']}"
+            wh = energy.get("wh_by_host")
+    merged["basis"] = basis
     cost = ActCostV2(**merged).model_dump(mode="json")
-    return LateCost(str(target["act_id"]), cost, lanes, len(ids), why)
+    return LateCost(str(target["act_id"]), cost, lanes, len(ids), why, wh)
 
 
 def apply_late_cost(conn: Any, late: LateCost, *, now: datetime) -> bool:
     """Store one late cost. False when the act was filled meanwhile (the guard is in the UPDATE)."""
     res = conn.execute(_LATE_COST_UPDATE_SQL, {"cost_json": json.dumps(late.cost), "now": now,
                                                "act_id": late.act_id, "prefix": LATE_COST_BASIS_PREFIX + "%",
-                                               "provisional": LATE_COST_PROVISIONAL_PREFIX + "%"})
+                                               "provisional": LATE_COST_PROVISIONAL_PREFIX + "%",
+                                               "energy": bool(_ENERGY_COST_ENABLED)})
     return bool(getattr(res, "rowcount", 0))
 
 
 def refill_late_costs(conn: Any, *, now: datetime | None = None, limit: int = 200,
                       commit: Any = None) -> LateCostSummary:
-    """Fill the GPU cost of every late-cost act whose work has ended (one commit per act)."""
+    """Fill the GPU and energy cost of every late-cost act whose work has ended (one commit per act)."""
     now = _aware(now or _utc_now())
     targets = late_cost_targets(conn, now=now, since=now - timedelta(seconds=LATE_COST_WINDOW_SEC), limit=limit)
     filled = no_lease = failed = 0
-    slot_s = 0.0
+    slot_s = wh = 0.0
     for target in targets:
         late = _isolated(conn, "late_gpu", str(target["act_id"]), lambda: _apply_one(conn, target, now),
                          log_prefix="act_cost")
@@ -1013,12 +1064,13 @@ def refill_late_costs(conn: Any, *, now: datetime | None = None, limit: int = 20
             continue
         if commit is not None:
             commit()
+        wh += sum((late.wh_by_host or {}).values())
         if late.lanes:
             filled += 1
             slot_s += sum(late.lanes.values())
         else:
             no_lease += 1
-    return LateCostSummary(len(targets), filled, no_lease, failed, round(slot_s, 3))
+    return LateCostSummary(len(targets), filled, no_lease, failed, round(slot_s, 3), round(wh, 4))
 
 
 def _apply_one(conn: Any, target: dict[str, Any], now: datetime) -> LateCost:

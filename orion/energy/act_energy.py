@@ -261,7 +261,7 @@ def machine_energy(series: HostSeries, floors_by_day: Mapping[date, HostFloors],
 class LeaseSpan:
     start: datetime
     end: datetime
-    metered: bool  # the lease's turn has an act (the act fill charges it)
+    metered: bool  # some act is charged for the lease's turn (act_cost_ids.turns_charged_to_acts)
 
 
 @dataclass(frozen=True)

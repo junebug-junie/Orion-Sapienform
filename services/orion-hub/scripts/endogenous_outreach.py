@@ -3243,7 +3243,7 @@ class EndogenousOutreach:
             "agent_lane_error=%s agent_lane_timeout_sec=%s",
             correlation_id,
             agent_lane_error,
-            self.agent_lane_timeout_sec,
+            timeout_sec or self.agent_lane_timeout_sec,
         )
         if agent_lane_error == "timeout":
             # Only a literal timeout means the attempt could plausibly still

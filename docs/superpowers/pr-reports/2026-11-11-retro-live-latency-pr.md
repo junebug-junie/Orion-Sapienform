@@ -54,11 +54,22 @@ python3 -m pytest services/orion-hub/tests/retro -q
 239 passed, 2 optional skips
 node --test services/orion-hub/tests/retro/transport_client.cjs
 19 scenarios pass; the added PCM scenario fails on v15 with "picture waited for audio".
+python3 scripts/check_metric_lineage.py --gate
+PASS
+JavaScript syntax and git diff --check: PASS
 ```
 
 ## Evals run
 
-Native/browser, delayed-ACK, and play-panel eval results are recorded before handoff.
+```text
+retro_browser.py --output /tmp/retro-immediate-native-browser-isolated: PASS (Chromium)
+retro_browser.py --ack-delay-ms 350 --output /tmp/retro-immediate-native-delayed: PASS
+retro_browser.py --output /tmp/retro-immediate-firefox-snap: PASS (Firefox)
+retro_play_panel.py --output /tmp/retro-immediate-panel-isolated: PASS
+```
+
+The native browser runs include the late-short-timer presentation scenario, real
+PCM/pixels, save/load, fullscreen, input, takeover, disconnect and reconnect.
 The first native run exposed real gamepad input contaminating its scripted key masks;
 the harness now substitutes empty gamepads except in its deliberate gamepad scenarios.
 
@@ -104,4 +115,4 @@ Never copy a worktree asset into the running service or deploy from a feature br
 
 ## PR link
 
-Pending creation.
+https://github.com/junebug-junie/Orion-Sapienform/pull/3198

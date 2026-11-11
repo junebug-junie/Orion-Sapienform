@@ -117,16 +117,17 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     # +1 2026-10-15: node:substrate.perception_walkway (curiosity reads it).
     # +1 2026-10-20: node:substrate.strain (strain news, a trigger).
     # +1 2026-10-20: node:substrate.street (street events -> attention).
-    assert len(ranges) == 13
+    # -2 2026-11: node:substrate.bus_synaptic and node:substrate.route retired.
+    assert len(ranges) == 11
     assert ranges[("node:substrate.street", "prediction_error")] == ("trigger", (0.0, 0.0))
     assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():
         assert isinstance(rng, tuple), key
         assert rest_range_problem(rng, kind) is None, key
-    assert ranges[("node:substrate.bus_synaptic", "prediction_error")][1] == (0.0, 0.03)
+    assert ranges[("node:substrate.biometrics", "prediction_error")][1] == (0.0, 0.03)
+    assert ("node:substrate.bus_synaptic", "prediction_error") not in ranges
+    assert ("node:substrate.route", "prediction_error") not in ranges
     # The documented failure states must sit OUTSIDE the calm band.
-    lo, hi = ranges[("node:substrate.bus_synaptic", "prediction_error")][1]
-    assert not lo <= 0.27 <= hi  # historic permanent ~0.27 floor
     lo, hi = ranges[(None, "vision_frame_staleness")][1]
     assert not lo <= 1.0 <= hi  # camera dead / router silent
 
@@ -140,7 +141,7 @@ def test_placeholder_in_real_glossary_has_no_rest_range():
 
 def test_rest_range_projects_onto_lineage_and_lock_in_order():
     nodes = {n.name: n for n in resolve_field_channels()}
-    node = nodes["node:substrate.bus_synaptic.prediction_error"]
+    node = nodes["node:substrate.biometrics.prediction_error"]
     assert node.rest_range == (0.0, 0.03)
     assert fingerprint(node)["rest_range"] == [0.0, 0.03]
     # Ordered, never sorted: a malformed hi<lo must not lock as valid-looking.

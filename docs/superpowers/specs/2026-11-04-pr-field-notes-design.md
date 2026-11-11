@@ -430,3 +430,40 @@ Report: `docs/superpowers/pr-reports/2026-11-06-pr-field-notes-truth-eval-and-co
   run id, so `field-note write` cannot fill them. Nothing reads them today: the cost script joins runs to
   acts by run id, not through the note. Filling them needs the harness step to pass the run id into the
   turn's environment.
+
+## Acceptance check 5 result (2026-11-11)
+
+**PASS.** Window: PRs merged 2026-11-04 .. 2026-11-10 (Denver days, the window `dig field-notes 7`
+reads on 11-11). All reads were read-only.
+
+- **Coverage: 69 of 69 owed PRs have a record. 67 are notes by Orion (97%). 2 are code records by
+  design** (#3146 and #3155: tiny docs-only PRs, decision 2, no turn). 0 PRs have neither. The
+  ≥95% bar passes even if code records count as misses.
+- **Independent cross-check.** `gh pr list --state merged --search "merged:>=2026-11-03"` lists the same
+  69 PRs for the window and no others. There were no merges between 11-07 08:00Z and 11-10 05:56Z, so the
+  gap in the ledger is real quiet, not a stalled poller. The PRs merged on 11-04 between 06:00Z and
+  07:00Z (#3104-#3111) also have notes. They fall on 11-03 in Denver time, so this window does not count
+  them.
+- **Stacked PRs count as owed.** One stacked PR merged into a branch, not into main: #3150 into
+  `feat/self-portrait`. The poller finds PRs by their merge, not by their base branch, so it wrote a
+  note at the stacked merge. That branch reached main through #3148 on 11-07, and the #3150 merge commit
+  is an ancestor of `origin/main`. Rule: a stacked PR is owed its own note when it merges, because its
+  text and files differ from the parent's.
+- **Misses: none.**
+- **Truth eval** (`run_field_note_truth_eval.py --live`, 75 notes in the whole ledger): PASS. `pr_text`
+  refs 138/138, `code_then` refs 16/16, organs 75/75, read 75/75. The numbers check (printed, not
+  gated) finds 186/188. #3178 "15.8" is the PR's 15.79 rounded, so it is true. #3162 "roughly 22 GB" is a
+  sum Orion made of the PR's table sizes (11 + 7.6 + 2.3 GB + 514 MB = about 21.4 GB). That is a small
+  overstatement, not an invented fact.
+- **Merge to record latency** (69 owed PRs): median 93 min, p90 5.6 h, worst 11.0 h (#3134). All are
+  inside the 24 h bar. The slow tail is the 11-05 03:23-05:43Z burst of 14 merges. The runs go one at a
+  time, so the queue takes about 13 h to drain.
+- **Failures:** 76 `pr.field_note` runs ended, and 74 completed. The 2 failed runs are #3104 and #3105
+  on 11-04 (the 60 s turn budget fixed in #3114). Their `-a2` reruns wrote the notes. The container log
+  starts at the last restart (11 h back): 0 errors, 1 `published_to_nobody` wait for #3177 that
+  recovered on retry. Older log lines are lost to the restart, so the run table is the source here.
+- **Cost now** (`pr_field_note_cost.py`, 74 completed runs): median 331 s wall, 268 s GPU slot, 4.6 Wh,
+  162k prompt tokens (109k cached), 4.8k completion tokens. This is close to the 11-06 table.
+- **Still open:** `run_id` and `correlation_id` are empty in all 77 records (see "Found, not fixed"
+  above). This is not trivial. The write happens inside Orion's turn, so a fix needs the harness step to
+  pass the run id into the turn's environment. Nothing reads these fields, so the fix is not made here.

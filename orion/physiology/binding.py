@@ -33,6 +33,7 @@ REBID_DEFAULT_SEC = 600.0       # the market named no relief time (a stuck price
 # grading Prime on it would credit Prime with holds that never happened (a rollback to shadow, a forced run).
 BINDING_PRODUCERS = frozenset({
     "orion-durable-runs.admission.binding",     # curiosity investigate (#3010), services/orion-durable-runs/app/run_bids.py
+    "orion-durable-runs.admission.reading.binding",   # reading stage 1 (attention 3c), same file, flag ORION_PHYSIOLOGY_BID_READING
     "orion-dream.dream_cycle.binding",          # the dream cycle, services/orion-dream/app/physiology_bind.py
     "orion-durable-runs.cooling_act.binding",   # the cooling world act, services/orion-durable-runs/app/cooling_act.py
     "orion-hub.outreach.binding",               # Hub outreach (hub.outreach), services/orion-hub/scripts/outreach_bind.py

@@ -4681,3 +4681,11 @@ audibility, explicit wider-policy audibility in native Web Audio, pause, seek,
 replay, history hide/reopen, mode separation, failed requests, and exactly one
 existing history fetch per changed window. It mocks 3d/7d with partial data to test
 alignment and missingness; it does not claim a live historical headphone audition.
+
+## Retro SNES support
+
+Retro lists NES and SNES games together, with ` (SNES)` appended to SNES titles.
+The 8BitDo Pro 2 uses Nintendo face-button positions and L1/R1 for SNES shoulders;
+keyboard A/S/Q/W adds Y/X/L/R. Select+L2/R2 still saves/loads. The running session's
+system selects the controls. See [Retro browser runbook](../../docs/runbooks/retro-browser.md)
+and [native service setup](../orion-retro/README.md) for catalog import and verification.

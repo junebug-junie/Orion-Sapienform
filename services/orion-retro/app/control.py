@@ -1,8 +1,9 @@
-"""Frame-authoritative NES leases, also exercised with a deterministic clock."""
+"""Frame-authoritative NES/SNES leases, exercised with a deterministic clock."""
 import secrets
 
-# libretro B, select, start, up/down/left/right, A. No SNES-only buttons.
+# libretro B, select, start, up/down/left/right, A; SNES adds Y, X, L, R.
 NES_MASK = sum(1 << bit for bit in (0, 2, 3, 4, 5, 6, 7, 8))
+SNES_MASK = NES_MASK | sum(1 << bit for bit in (1, 9, 10, 11))
 # How long a lease survives without input. Browsers throttle page timers to about
 # 1 Hz in some states (live 2026-10-20), so the heartbeat cannot be trusted at 50 ms.
 # Button changes still arrive at once; socket close or blur releases immediately.
@@ -10,8 +11,9 @@ LEASE_TTL = 2.0
 
 
 class Arbiter:
-    def __init__(self, ports):
+    def __init__(self, ports, system='nes'):
         self.ports = ports
+        self.button_mask = {'nes': NES_MASK, 'snes': SNES_MASK}[system]
         self.leases = {}
         self.epochs = {p: 0 for p in ports}
         self.neutral = set()
@@ -66,7 +68,7 @@ class Arbiter:
             raise ValueError('invalid_or_expired_lease')
         if data['seq'] <= item['seq']:
             raise ValueError('stale_sequence')
-        if data['mask'] & ~NES_MASK:
+        if data['mask'] & ~self.button_mask:
             raise ValueError('unsupported_buttons')
         if data['mask'] & 48 == 48 or data['mask'] & 192 == 192:
             raise ValueError('opposing_directions')

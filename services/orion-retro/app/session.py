@@ -14,7 +14,7 @@ from .saves import SaveStore, available
 from orion.retro.probe import digest
 
 
-# Startup hashes every ROM once; NES ROMs are small, so 64 stays well under a second.
+# Startup hashes every ROM once; bound catalog size and each ROM's size.
 MAX_GAMES = 64
 
 
@@ -38,13 +38,18 @@ class Sessions:
         if not isinstance(catalog, list) or not 1 <= len(catalog) <= MAX_GAMES:
             raise ValueError(f'catalog must contain 1..{MAX_GAMES} games')
         for item in catalog:
-            if set(item) != {'game_id','title','file','rom_sha256','ports','provenance'}:
+            if set(item) - {'system'} != {'game_id','title','file','rom_sha256','ports','provenance'}:
                 raise ValueError('invalid catalog fields')
+            system = item.get('system', 'nes')  # existing operator catalogs remain NES
+            extensions = {'nes': {'.nes'}, 'snes': {'.sfc', '.smc'}}
+            if system not in extensions: raise ValueError('unsupported system')
             from .contracts import Start
             Start(game_id=item['game_id'], idempotency_key='catalog')
             path = (settings.catalog.parent/item['file']).resolve(strict=True)
-            if not path.is_relative_to(settings.catalog.parent.resolve()) or path.suffix != '.nes':
+            if not path.is_relative_to(settings.catalog.parent.resolve()):
                 raise ValueError('ROM must be inside mounted catalog')
+            if path.suffix.lower() not in extensions[system]:
+                raise ValueError('ROM extension does not match system')
             if not 0 < path.stat().st_size <= 32*1024*1024:
                 raise ValueError('invalid ROM size')
             if hashlib.sha256(path.read_bytes()).hexdigest() != item['rom_sha256']:
@@ -53,17 +58,21 @@ class Sessions:
                 raise ValueError('invalid ports or duplicate game')
             if not isinstance(item['title'], str) or len(item['title']) > 128:
                 raise ValueError('invalid title')
-            self.catalog[item['game_id']] = dict(item, path=path)
-        if not settings.core.is_file(): raise ValueError('core missing')
+            self.catalog[item['game_id']] = dict(item, path=path, system=system)
         # Read the file only; the native core is loaded solely in the worker child.
-        self.core_sha256 = digest(settings.core)
+        self.core_hashes = {}
+        for system in {v['system'] for v in self.catalog.values()}:
+            core = settings.core_for(system)
+            if not core.is_file(): raise ValueError(f'{system} core missing')
+            self.core_hashes[system] = digest(core)
         self.saves = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
 
     def save_enabled(self):
         return available(self.settings.saves)
 
     def identity(self, game_id):
-        return dict(rom_sha256=self.catalog[game_id]['rom_sha256'], core_sha256=self.core_sha256)
+        game = self.catalog[game_id]
+        return dict(rom_sha256=game['rom_sha256'], core_sha256=self.core_hashes[game['system']])
 
     def list_saves(self, game_id):
         if game_id not in self.catalog: raise ValueError('unknown_game')
@@ -74,7 +83,7 @@ class Sessions:
                 for m in self.saves.list(game_id)]
 
     def games(self):
-        return [dict(game_id=v['game_id'], title=v['title'], ports=v['ports'],
+        return [dict(game_id=v['game_id'], title=v['title'], system=v['system'], ports=v['ports'],
                      rom_sha256=v['rom_sha256'], save_enabled=self.save_enabled())
                 for v in self.catalog.values()]
 
@@ -101,7 +110,8 @@ class Sessions:
         self.ready = asyncio.Event()
         sid = str(uuid.uuid4())
         self.session = dict(session_id=sid, generation=self.generation, state='starting',
-                            game_id=game_id, frame=0, owner=owner, save_enabled=self.save_enabled(),
+                            game_id=game_id, system=self.catalog[game_id]['system'],
+                            frame=0, owner=owner, save_enabled=self.save_enabled(),
                             loaded_save=None, scripted=[], game_profile=None)
         self.starting_save = save_id
         self.persist(); self.history.clear()

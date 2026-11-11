@@ -20,9 +20,10 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
     def send(row):
         replies.put_nowait(row)  # backpressure is fatal, never unbounded
     try:
-        core = (MediaProbe if media is not None else CoreProbe)(settings.core, game['path'])
+        system = game.get('system', 'nes')
+        core = (MediaProbe if media is not None else CoreProbe)(settings.core_for(system), game['path'])
         evidence = Evidence(settings.artifacts, session, settings.session_bytes, settings.total_bytes)
-        authority = Arbiter(game['ports'])
+        authority = Arbiter(game['ports'], system)
         def record(kind, **fields):
             evidence.write(dict(kind=kind, session_id=session, generation=generation, frame=frame, **fields))
         store = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
@@ -39,7 +40,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         observer = Observer(core)
         sources = sorted(Path(__file__).parent.rglob('*.py')) + [Path(__file__).parents[1]/'settings.py']
         runtime_sha = hashlib.sha256(b''.join(p.name.encode()+b'\0'+p.read_bytes() for p in sources)).hexdigest()
-        record('start', game_id=game['game_id'], identity=core.identity, runtime_sha256=runtime_sha,
+        record('start', game_id=game['game_id'], system=system, identity=core.identity, runtime_sha256=runtime_sha,
                game_profile=ZELDA_PROFILE if zelda else None)
         # played_frames survives save/load; frame stays this session's monotonic clock.
         played = dict(base=0, at=0)

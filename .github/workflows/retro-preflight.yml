@@ -114,6 +114,15 @@ jobs:
           p.write_text(s)
           PY
           scripts/safe_docker_build.sh orion-retro build
+      - name: Real SNES core, all buttons on both ports, save and restore
+        run: |
+          mkdir -p /tmp/retro-snes-ci
+          python -m orion.retro.snes_pad_lab /tmp/retro-snes-ci/pad-lab.sfc
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+            --memory 512m --cpus 2 -v /tmp/retro-snes-ci:/out \
+            --entrypoint python orion-retro-retro -m orion.retro.snes_pad_eval \
+            --core /opt/retro/snes9x.so --rom /out/pad-lab.sfc --output /out/result.json
       - name: Real service API, lifecycle failures and offline boundary
         run: PYTHONPATH=. python services/orion-retro/evals/container_smoke.py --output /tmp/retro-service-ci
       - uses: actions/setup-node@v4
@@ -138,3 +147,4 @@ jobs:
             /tmp/retro-browser-lag-ci/browser.json
             /tmp/retro-play-panel-ci/play-panel.json
             /tmp/retro-play-panel-ci/server.log
+            /tmp/retro-snes-ci/result.json

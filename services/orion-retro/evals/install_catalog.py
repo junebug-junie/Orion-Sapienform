@@ -13,7 +13,8 @@ def install(kit, root, env):
     (root/'evidence').mkdir(exist_ok=True,mode=0o700)
     (root/'ipc').mkdir(exist_ok=True,mode=0o700)
     (root/'saves').mkdir(exist_ok=True,mode=0o700)
-    rows=[]
+    catalog_path=catalog/'catalog.json'
+    rows=json.loads(catalog_path.read_text()) if catalog_path.exists() else []
     for game,title,path,ports in [('pad-lab','Pad Lab',kit,[0,1]),
         ('nova','Nova the Squirrel',kit/'games/nova-the-squirrel-v1.0.6a',[0]),
         ('spacegulls','Spacegulls',kit/'games/spacegulls-1.1',[0,1])]:
@@ -25,9 +26,16 @@ def install(kit, root, env):
         dest=catalog/(game+'.nes')
         if dest.exists() and dest.read_bytes()!=data:raise ValueError('refusing different ROM')
         dest.write_bytes(data)
-        rows.append(dict(game_id=game,title=title,file=dest.name,rom_sha256=sha,ports=ports,
-                         provenance=m.get('game',{'source':'original authored diagnostic'})))
-    (catalog/'catalog.json').write_text(json.dumps(rows,indent=2)+'\n')
+        old=next((row for row in rows if row['game_id']==game),None)
+        if old is not None:
+            if old['rom_sha256']!=sha or old['file']!=dest.name:
+                raise ValueError('refusing different catalog game')
+        else:
+            if len(rows) >= 64: raise ValueError('catalog cannot exceed 64 games')
+            rows.append(dict(game_id=game,title=title,file=dest.name,rom_sha256=sha,ports=ports,
+                             provenance=m.get('game',{'source':'original authored diagnostic'})))
+    tmp=catalog_path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(rows,indent=2)+'\n');tmp.replace(catalog_path)
     token=root/'operator.token'
     if not token.exists():
         fd=os.open(token,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)

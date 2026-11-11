@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=16'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=17'):
         assert marker in html, marker
 
 
@@ -38,7 +38,7 @@ def test_policy_poll_is_fast_while_orion_holds_the_controller():
     assert "finally{pollingPolicy=false;}},250);" in js
 
 
-def test_gamepad_uses_the_nes_layout_and_skips_empty_or_nonstandard_pads():
+def test_gamepad_uses_nintendo_layout_and_skips_empty_or_nonstandard_pads():
     # 8BitDo Pro 2 (and the standard mapping) is positional: right face button = NES A,
     # bottom = NES B. The old mapping had them swapped (Xbox layout).
     import json, re, shutil, subprocess
@@ -56,6 +56,8 @@ const pad=(pressed,axes=[0,0])=>({{id:'8BitDo Pro 2',connected:true,mapping:'sta
   buttons:Array.from({{length:16}},(_,i)=>({{pressed:pressed.includes(i)}}))}});
 const el=()=>({{value:'0'}});
 const out={{A:padMask(pad([1])),B:padMask(pad([0])),start:padMask(pad([9])),select:padMask(pad([8])),
+  X:padMask(pad([3])),Y:padMask(pad([2])),L:padMask(pad([4])),R:padMask(pad([5])),
+  triggers:padMask(pad([6,7])),
   stickLeftUp:padMask(pad([],[-1,-1])),dpadRight:padMask(pad([15]))}};
 Object.defineProperty(globalThis,'navigator',{{configurable:true,
   value:{{getGamepads:()=>[null,{{...pad([]),mapping:''}},pad([1])]}}}});   // Node 21+ has a read-only navigator
@@ -64,7 +66,29 @@ console.log(JSON.stringify(out));'''
     run = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     got = json.loads(run.stdout)
-    assert got == dict(A=256, B=1, start=8, select=4, stickLeftUp=64 | 16, dpadRight=128, picked=256)
+    assert got == dict(A=256, B=1, X=512, Y=2, L=1024, R=2048, triggers=0,
+                       start=8, select=4, stickLeftUp=64 | 16, dpadRight=128, picked=256)
+
+
+def test_snes_keyboard_and_pad_buttons_are_filtered_only_for_nes_sessions():
+    import json, re, shutil, subprocess
+    import pytest
+    if not shutil.which('node'): pytest.skip('node not installed')
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    functions = '\n'.join(re.search(pattern, js, re.S).group(0) for pattern in (
+        r'const bits = .*?;', r'function mask\(\) \{.*?\n  \}',
+        r'function padMask\(pad\) \{.*?\n  \}'))
+    probe = functions + '''
+let activeSystem='snes', pad=null;
+const screen={}, stage={}, document={activeElement:screen}, keys=new Set(['KeyA','KeyS','KeyQ','KeyW']);
+const gamepad=()=>pad, chord={}, resetChord=()=>{}, selectChord=(_st,_pad,m)=>m;
+const keyboard=mask(); keys.clear();
+pad={buttons:Array.from({length:16},(_,i)=>({pressed:[2,3,4,5].includes(i)}))};
+const gamepadSnes=mask(); activeSystem='nes'; const gamepadNes=mask();
+keys.add('KeyZ'); const nesA=mask();
+console.log(JSON.stringify({keyboard,gamepadSnes,gamepadNes,nesA}));'''
+    run = subprocess.run(['node', '-e', probe], capture_output=True, text=True, check=True)
+    assert json.loads(run.stdout) == dict(keyboard=3586, gamepadSnes=3586, gamepadNes=0, nesA=256)
 
 
 def test_select_chords_save_and_load_and_never_leak_select_into_the_game():

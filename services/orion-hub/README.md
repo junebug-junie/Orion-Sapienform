@@ -4525,6 +4525,20 @@ conditional resumes require the native service's advertised capability and canno
 override a newer explicit Pause. Relay closes log session/channel/reason through
 Uvicorn; credentials and input payloads are excluded. See the runbook's rollout order.
 
+The gateway additionally advertises `capabilities.retro_media_ack_v1` on proxied
+`health/ready`. Negotiated media (`?flow=ack-v1`) permits at most three sent frames
+awaiting browser presentation; while credits are exhausted only the latest native
+packet is retained. This also bounds data accepted by socket/proxy buffers, which
+the original one-packet application queue could not bound. A cumulative `{ack: N}`
+on the media socket confirms presentation and is consumed only by the gateway.
+Older pages/gateways retain the legacy media path. Reload the page when rolling
+back a gateway that advertised this capability.
+
+An in-flight controller acquisition now suppresses redundant click/focus reconnects
+until it settles. It has a five-second abort deadline and checks its own request
+identity before accepting a response; a late old grant cannot replace a newer
+takeover. Pause/Stop still release pending acquisition immediately.
+
 **Action bets (2026-10-23, `scripts/retro_experience.py`).** Before each Zelda goal, the Hub
 lists the moves Orion could make (each open side, fight, collect, enter a known cave, retreat,
 wait). It asks orion-prediction (`HUB_PREDICTION_URL`, default `http://127.0.0.1:8132`) how often

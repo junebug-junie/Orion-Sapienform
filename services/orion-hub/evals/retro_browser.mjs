@@ -10,6 +10,12 @@ let page;
 try{
   page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   await page.evaluateOnNewDocument(delay=>{
+    const NativeMediaSocket=window.WebSocket;
+    window.__creditMediaSockets=0;window.__presentationAcks=0;
+    window.WebSocket=class extends NativeMediaSocket {
+      constructor(...args){super(...args);if(String(args[0]).includes('/media?flow=ack-v1'))window.__creditMediaSockets++;}
+      send(data){if(this.url.includes('/media?flow=ack-v1') && typeof JSON.parse(data).ack==='number')window.__presentationAcks++;return super.send(data);}
+    };
     if(delay){
       const NativeSocket=window.WebSocket;
       window.WebSocket=class extends NativeSocket {
@@ -34,6 +40,28 @@ try{
   if(await page.$('#code')) throw new Error('Unexpected access-code prompt');
   await page.select('#game',process.env.RETRO_EVAL_GAME);await page.click('#new');
   await page.waitForFunction(()=>Number(document.querySelector('#screen').dataset.appliedFrame)>10,{timeout:10000});
+  // A slow control response must not let repeated clicks start another connect
+  // and invalidate the successful grant. The 350 ms ack test doesn't cover this.
+  await page.click('#pause');
+  await page.evaluate(()=>{
+    const original=window.fetch;window.__controlPending=false;window.__controlRequests=0;
+    window.__restoreControlFetch=()=>{window.fetch=original;};
+    window.fetch=async(...args)=>{
+      const response=await original(...args);
+      if(String(args[0]).endsWith('/control')){
+        window.__controlRequests++;window.__controlPending=true;
+        await new Promise(resolve=>setTimeout(resolve,650));window.__controlPending=false;
+      }
+      return response;
+    };
+  });
+  const beforeDelayedGrant=await page.$eval('#screen',c=>Number(c.dataset.appliedFrame));
+  await page.click('#screen');await page.waitForFunction(()=>window.__controlPending);
+  await page.click('#screen');await page.click('#screen');
+  await page.waitForFunction(b=>Number(document.querySelector('#screen').dataset.appliedFrame)>b+5,
+                            {timeout:6000},beforeDelayedGrant);
+  assert.equal(await page.evaluate(()=>window.__controlRequests),1,'click invalidated a pending control grant');
+  await page.evaluate(()=>window.__restoreControlFetch());
   await page.click('#start');await pause(600);await page.click('#screen');
   await page.keyboard.down('ArrowRight');await page.keyboard.down('z');
   await pause(Number(process.env.RETRO_EVAL_SECONDS)*1000);
@@ -44,6 +72,8 @@ try{
     return {frame:Number(c.dataset.frame),applied:Number(c.dataset.appliedFrame),audioFrames:Number(c.dataset.audioFrames),audioPeak:window.__audioPeak,colors:colors.size};
   });
   assert(observed.frame>60 && observed.applied>60 && observed.audioFrames>48000 && observed.audioPeak>0 && observed.colors>=2,JSON.stringify(observed));
+  assert(await page.evaluate(()=>window.__creditMediaSockets>0 && window.__presentationAcks>3),
+         'browser eval fell back to legacy media instead of exercising presentation credits');
   await page.screenshot({path:out+'/browser.png',fullPage:true});
   // Save state: the whole game is written on the server and listed newest first.
   await page.waitForSelector('#saveBar:not([hidden])');
@@ -257,5 +287,5 @@ try{
   await pause(150);assert.equal(await tab.evaluate(async()=> (await (await fetch('/api/retro/health/ready')).json()).session.state),'stopped');
   await tab.close();
   assert.deepEqual(errors,[]);
-  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,saveLoadInPlace:true,loadFreshSession:true,scrollKeysInert:true,fullscreen:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
+  fs.writeFileSync(out+'/browser.json',JSON.stringify({status:'PASS',mediaPresentationCredits:true,delayedControlResponseMs:650,repeatedClicksDuringAcquisition:true,ackDelayMs:Number(process.env.RETRO_ACK_DELAY_MS || 0),game:process.env.RETRO_EVAL_GAME,observed,cognitiveFixtureHandoff:true,scriptedHandoff:true,scriptedTakeover:true,scriptedDisconnect:true,hubTab:true,tabExitPaused:true,saveLoadInPlace:true,loadFreshSession:true,scrollKeysInert:true,fullscreen:true,keyboard:true,syntheticStandardGamepad:true,blurPaused:true,reconnect:true,selfHeal:Boolean(Number(process.env.RETRO_ACK_DELAY_MS || 0)),unverified:['physical gamepad','user-device audio output','input-to-photon latency','30-minute actual-client A/V drift','cognition/learning']},null,2));
 } catch(error) { if(page){console.error(await page.$eval('#status',e=>e.textContent));await page.screenshot({path:out+'/failure.png'});}throw error; } finally {await browser.close();}

@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=14'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=15'):
         assert marker in html, marker
 
 

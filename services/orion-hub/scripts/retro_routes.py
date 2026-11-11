@@ -333,6 +333,8 @@ def create_router(config, presence=None, experience=None):
             async with client() as c:
                 async with c.request(request.method,'http://retro/'+path,headers=credentials(),data=raw) as r:
                     result=await r.json()
+                    if request.method=='GET' and path=='health/ready' and r.status==200:
+                        result['capabilities'] = dict(result.get('capabilities') or {}, retro_media_ack_v1=True)
                     if request.method=='POST' and r.status==200 and path.endswith('/scripted'):
                         handoff(request.app, path.split('/')[1], raw, result)
                     return JSONResponse(result,status_code=r.status,headers={'Cache-Control':'no-store'})
@@ -361,7 +363,8 @@ def create_router(config, presence=None, experience=None):
                                 except Exception: pass
                             await asyncio.sleep(5)
                     beating=asyncio.create_task(beat())
-                    try: await relay_messages(ws, upstream, channel, sid)
+                    try: await relay_messages(ws, upstream, channel, sid,
+                                              media_ack=channel=='media' and ws.query_params.get('flow')=='ack-v1')
                     finally:
                         beating.cancel();await asyncio.gather(beating,return_exceptions=True)
         except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError) as exc:

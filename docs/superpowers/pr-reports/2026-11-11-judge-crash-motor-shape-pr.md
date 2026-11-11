@@ -10,7 +10,10 @@
 
 Failure mode: `reflect_llm_failed` on the 5b judge.
 
-REPLAY_RESULTS_PLACEHOLDER
+Replay (`orion/harness/evals/judge_crash_replay_eval.py`, live lanes, PARTIAL at time of writing):
+- new request on the real failed turns: 0 failures of 34 replayed (all 3 lanes; Bonsai, chat and agent).
+- old request (with its stored recall digest) on the Strata failed turns: 3 failures of 9 (motor-shape copies reproduced).
+- Control (verdict agreement with stored) and perception-claim buckets: still running; UNVERIFIED in this report.
 
 ## Current architecture
 
@@ -78,11 +81,16 @@ Callers of the traced failures: reading 9, curiosity digest items 10, other turn
 
 ## Tests run
 
-TESTS_PLACEHOLDER
+```text
+orion/harness/tests + orion/cognition/prompts/tests + orion/harness/evals: 774 passed
+cortex-exec relevant suites (38 files): 354 passed, 3 failed (same 3 fail on main: route mapping, memory_graph budget, story_weave)
+new: test_finalize_reflect_judge_contract.py 6 passed; test_finalize_reflect_request_shape.py 3 passed; test_judge_crash_replay_eval.py 4 passed
+orion-static-gates.yml steps run locally: all pass
+```
 
 ## Evals run
 
-EVALS_PLACEHOLDER
+See "Outcome moved". Rerun: `python -m orion.harness.evals.judge_crash_replay_eval` (opt-in, live lanes).
 
 ## Docker/build/smoke checks
 
@@ -93,7 +101,11 @@ orion-harness-governor (it builds the plan with build_plan_for_verb). Live effec
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+- Finding: eval skipped the harness error-text check. Fix: classify() applies looks_like_error_text. Evidence: test added.
+- Finding: thinking off may weaken the perception-claim check. Fix: new "perception" fixture bucket (16 stored catches) and a still-flags metric. Evidence: replay running, UNVERIFIED.
+- Finding: motor-shape test also passes on main. Fix: documented as a failure-path regression guard; the context/seam tests fail on main.
+- Declined: maxLength caps in the schema. Strata validates strictly, so caps would turn long-but-valid answers into 502 refusals.
+- Not done: router-level "no RecallService RPC" test (metadata test only).
 
 ## Restart required
 
@@ -145,7 +157,9 @@ Run with `docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "<qu
 
 ## Risks / concerns
 
-RISKS_PLACEHOLDER
+- Severity: medium. Concern: thinking off may lower judge quality, mainly the perception-claim check (65 of 86 recent catches came from the thinking-on agent lane). Mitigation: perception bucket in the replay; post-deploy verdict-drift SQL.
+- Severity: low. Concern: Strata does not constrain decoding; a non-schema answer becomes a 502 (still a labelled failure). Mitigation: framing + grade turn; watch strata_refused in the re-measure.
+- Severity: low. Concern: transport failures (28 of 74) untouched.
 
 ## PR link
 

@@ -19,6 +19,7 @@ LEASE_COLUMNS = (
     "attempt", "generation", "operator", "min_ctx_tokens", "needs_vision", "retryable", "created_at",
     "queued_since", "granted_at", "recall_by", "not_before", "deadline_at", "expires_at",
     "turn_correlation_id", "parent_lease_id", "hold_lease_id", "reason", "updated_at",
+    "want_id", "want_net", "want_family",
 )
 CARD_COLUMNS = ("card", "lent", "swapped_in", "swap_state", "cooldown_until", "last_active_at",
                 "swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at",
@@ -47,6 +48,7 @@ class AdditiveColumn:
 # a transaction, and a plain one blocks writes for the whole build).
 _V2 = "manual_migration_gpu_pool_v2_holds.sql"             # stage 4.3
 _V3 = "manual_migration_gpu_pool_v3_actuation_pause.sql"   # stage 5.7: the emergency stop
+_V4 = "manual_migration_gpu_pool_v4_value_order.sql"       # attention patch 3b: the queue by value
 BOOT_ADDITIVE_COLUMNS = (
     AdditiveColumn("gpu_pool_leases", "hold_lease_id", "text", None, _V2),
     AdditiveColumn("gpu_pool_cards", "swap_role", "text", None, _V2),
@@ -57,6 +59,9 @@ BOOT_ADDITIVE_COLUMNS = (
     AdditiveColumn("gpu_pool_cards", "seen_ctx", "jsonb", None, _V2),
     AdditiveColumn("gpu_pool_cards", "actuation_paused_at", "timestamptz", None, _V3),
     AdditiveColumn("gpu_pool_cards", "actuation_paused_by", "text", None, _V3),
+    AdditiveColumn("gpu_pool_leases", "want_id", "text", None, _V4),
+    AdditiveColumn("gpu_pool_leases", "want_net", "double precision", None, _V4),
+    AdditiveColumn("gpu_pool_leases", "want_family", "text", None, _V4),
 )
 _BOOT_BY_KEY = {(c.table, c.column): c for c in BOOT_ADDITIVE_COLUMNS}
 # Boot: nothing is serving yet, so a few seconds of queueing behind the ALTER costs no RPC. While

@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # (aligned 2026-10-10, scripts/check_settings_defaults.py --example-drift). false = the pool still
     # receives and shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing.
     shed_enabled: bool = Field(True, alias="GPU_POOL_SHED_ENABLED")
+    # Attention patch 3b (docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md,
+    # section 1, decided 2026-11-10): the background class is served by the body-economy net its lease
+    # request carries, not arrival time. A later want goes first only when its net + aging beats the
+    # earlier one's by MARGIN; the same family and upkeep (no net) keep arrival order. ON by default;
+    # false = arrival order exactly as before. Only background is reordered, never started work.
+    value_order_enabled: bool = Field(True, alias="GPU_POOL_VALUE_ORDER_ENABLED")
+    value_margin: float = Field(0.10, ge=0.0, alias="GPU_POOL_VALUE_MARGIN")
+    value_aging_per_h: float = Field(0.10, ge=0.0, alias="GPU_POOL_VALUE_AGING_PER_H")
     # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
     # ON in code, .env_example and production (Juniper turned it on; code default aligned 2026-10-10).
     # false refuses every set and settles any active Orion shed ``cancelled`` at boot; it never

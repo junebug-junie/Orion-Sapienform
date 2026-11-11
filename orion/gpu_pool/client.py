@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,8 @@ from orion.schemas.gpu_pool import (
     GpuLeaseRefV1, GpuLeaseReplyV1, GpuLeaseRequestV1,
 )
 from orion.gpu_pool.shed_backoff import ShedBackoff, is_shed_reason
+
+logger = logging.getLogger(__name__)
 
 REPLY_PREFIX = GPU_POOL_LEASE_REPLY_PREFIX
 # One lease RPC never waits longer than this (and never longer than the caller's own deadline):
@@ -103,12 +106,25 @@ class Lease:
     release_detail: str | None = None
 
 
+# Attention patch 3b's optional request fields: omitted from the wire when unset, so a pool built
+# before them (GpuLeaseRequestV1 is extra="forbid") keeps accepting every request that carries none.
+VALUE_FIELDS = ("want_id", "want_net", "want_family")
+
+
+def request_payload(req: GpuLeaseRequestV1) -> dict[str, Any]:
+    payload = req.model_dump(mode="json")
+    for k in VALUE_FIELDS:
+        if payload.get(k) is None:
+            payload.pop(k, None)
+    return payload
+
+
 async def lease_rpc(bus: Any, req: GpuLeaseRequestV1, *, source: str, timeout_sec: float = 10.0) -> GpuLeaseReplyV1:
     reply_channel = f"{REPLY_PREFIX}{uuid.uuid4().hex}"
     # rpc_request only listens on reply_channel; the responder (Rabbit) replies to env.reply_to and
     # stays silent without it. Both must name the same channel.
     env = BaseEnvelope(kind=GPU_LEASE_REQUEST_KIND, source=ServiceRef(name=source), correlation_id=uuid.uuid4(),
-                       reply_to=reply_channel, payload=req.model_dump(mode="json"))
+                       reply_to=reply_channel, payload=request_payload(req))
     raw = await bus.rpc_request(GPU_POOL_LEASE_REQUEST_CHANNEL, env, reply_channel=reply_channel,
                                 timeout_sec=timeout_sec, health_label=RPC_HEALTH_LABEL)
     decoded = bus.codec.decode(raw["data"])  # rpc_request returns the raw pubsub message
@@ -345,15 +361,28 @@ async def acquire_hold(
     bus: Any, *, holder: str, work_class: str, request_id: str, priority: str = "background",
     deadline_at: datetime | None = None, min_ctx_tokens: int = 0, turn_correlation_id: str | None = None,
     source: str | None = None, timeout_sec: float = LEASE_RPC_TIMEOUT_SEC,
+    want_id: str | None = None, want_net: float | None = None, want_family: str | None = None,
 ) -> GpuLeaseReplyV1:
     """Ask for a durable run's hold; answers at once (granted / queued / backlogged / unavailable).
     Idempotent on ``request_id`` (``<run_id>:<attempt>``): re-asking after a lost reply returns the
     same lease. Always retryable: an expired or aborted hold re-queues with the same lease_id (and a
-    new generation -- refs to the old one are refused by attach and by validate_hold_ref)."""
+    new generation -- refs to the old one are refused by attach and by validate_hold_ref).
+
+    ``want_*`` (attention patch 3b): the run's body-economy decision; the pool orders its background
+    class by ``want_net``. A pool older than these fields refuses them (``invalid:``, extra forbidden):
+    the hold is then asked again without them, so the run is queued in arrival order, never refused."""
+    value = {"want_id": want_id, "want_net": want_net, "want_family": want_family} \
+        if want_net is not None and want_family else {}
     req = GpuLeaseRequestV1(verb="acquire", request_id=request_id, holder=holder, work_class=work_class,
                             priority=priority, kind="hold", min_ctx_tokens=min_ctx_tokens, deadline_at=deadline_at,
-                            turn_correlation_id=turn_correlation_id, retryable=True)
-    return await lease_rpc(bus, req, source=source or holder, timeout_sec=timeout_sec)
+                            turn_correlation_id=turn_correlation_id, retryable=True, **value)
+    reply = await lease_rpc(bus, req, source=source or holder, timeout_sec=timeout_sec)
+    if value and reply.status == "unavailable" and not reply.lease_id and "want_" in (reply.reason or "") \
+            and (reply.reason or "").startswith("invalid:"):
+        logger.info("gpu_pool_hold_value_fields_refused request_id=%s: asking again without them", request_id)
+        req = req.model_copy(update={k: None for k in value})
+        reply = await lease_rpc(bus, req, source=source or holder, timeout_sec=timeout_sec)
+    return reply
 
 
 async def heartbeat_lease(bus: Any, lease_id: str, *, source: str,

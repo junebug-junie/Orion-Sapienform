@@ -35,8 +35,9 @@ from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, schedule,
+    Reordered, Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, queue_position, schedule,
 )
+from orion.gpu_pool.value_order import ValueOrderConfig
 from orion.gpu_pool.orion_shed import (
     SHED_DECISION_REASON as ORION_SHED_DECISION_REASON, MemoryOrionShedLedger, OrionShedCaps,
     OrionShedController, OrionShedLedger,
@@ -164,12 +165,15 @@ class PoolRuntime:
                  fault_alert_after_sec: float = 1800.0, fault_realert_sec: float = 21600.0,
                  perception_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
                  perception_alert_held_sec_per_hour: float = 3360.0,
-                 perception_realert_sec: float = 21600.0):
+                 perception_realert_sec: float = 21600.0,
+                 value_order: ValueOrderConfig | None = None):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
+        # Attention patch 3b: the background class is served by value (None: arrival order).
+        self.value_order = value_order
         self.service_name = service_name
         self.announce_stale_sec, self.probe_interval_sec = announce_stale_sec, probe_interval_sec
         self.state_publish_sec, self.replay_payload_max_bytes = state_publish_sec, replay_payload_max_bytes
@@ -641,7 +645,8 @@ class PoolRuntime:
         t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
                              seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked,
-                             frozen=(self.actuated if self.paused is not None else frozenset()) | set(self._reconciling))
+                             frozen=(self.actuated if self.paused is not None else frozenset()) | set(self._reconciling),
+                             value=self.value_order)
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
@@ -653,6 +658,9 @@ class PoolRuntime:
                 if isinstance(d, Shed):
                     shed_now.add((d.lease_id, d.reason))
                     await self._report_shed(d, by_id.get(d.lease_id), shed)
+                    continue
+                if isinstance(d, Reordered):
+                    await self._report_reordered(d, by_id.get(d.lease_id))
                     continue
                 if isinstance(d, Serialized):
                     serialized.add((d.lease_id, d.reason))
@@ -782,6 +790,23 @@ class PoolRuntime:
             attempt=row.get("attempt"), reason=d.reason,
             detail={"shed": True, "shed_reason": name, "sources": [s["source_id"] for s in sources]}))
         self._shed_reported.add(key)   # only once sent: a failed publish is retried next tick
+
+    async def _report_reordered(self, d: Reordered, row: dict | None) -> None:
+        """Attention patch 3b: one ``pool_queue_reordered`` event per grant the value order decided
+        (emitted on the grant's tick only, so never repeated). Both lease ids, both nets and families,
+        and the margin, so every reorder can be inspected in gpu_pool_events."""
+        if row is None:
+            return
+        vo = self.value_order
+        detail = {"jumped_lease_id": d.jumped_lease_id, "net": d.net, "jumped_net": d.jumped_net,
+                  "family": d.family, "jumped_family": d.jumped_family, "want_id": row.get("want_id"),
+                  "margin": vo.margin if vo else None, "aging_per_h": vo.aging_per_h if vo else None}
+        logger.info("gpu_pool_queue_reordered lease=%s family=%s net=%.3f jumped=%s jumped_family=%s jumped_net=%s role=%s",
+                    d.lease_id, d.family, d.net, d.jumped_lease_id, d.jumped_family, d.jumped_net, d.role)
+        await self._emit(GpuPoolEventV1(
+            event="pool_queue_reordered", lease_id=d.lease_id, holder=row["holder"], work_class=row["work_class"],
+            priority=row["priority"], role=d.role, cards=list(self.cfg.roles[d.role].cards),
+            turn_correlation_id=row.get("turn_correlation_id"), reason="value_order", detail=detail))
 
     async def _report_serialized(self, d: Serialized, row: dict | None) -> None:
         """serialize_with (stage 5 Z1): a ``queued`` event naming the blocking role, once per lease
@@ -1614,6 +1639,8 @@ class PoolRuntime:
             "parent_lease_id": parent_lease_id or request.get("parent_lease_id"),
             "hold_lease_id": request.get("hold_lease_id"),
             "reason": values.get("reason"), "updated_at": self.now(),
+            "want_id": request.get("want_id"), "want_net": request.get("want_net"),
+            "want_family": request.get("want_family"),
         }
 
     @staticmethod
@@ -1627,7 +1654,7 @@ class PoolRuntime:
             granted_at=row.get("granted_at"), expires_at=row.get("expires_at"),
             operator=bool(row.get("operator")), retryable=bool(row.get("retryable")),
             kind=row.get("kind") or "request", hold_lease_id=row.get("hold_lease_id"),
-            reason=row.get("reason"),
+            reason=row.get("reason"), want_net=row.get("want_net"), want_family=row.get("want_family"),
         )
 
     # --- replies ------------------------------------------------------------------------
@@ -1662,11 +1689,11 @@ class PoolRuntime:
         return GpuLeaseReplyV1(status="unavailable", lease_id=row["lease_id"], reason=row.get("reason") or status)
 
     async def _position(self, row: dict) -> int:
-        rank = self.cfg.priority_rank
-        mine = (rank(row["priority"]), row["created_at"])
-        return 1 + sum(1 for r in await self.store.live_leases()
-                       if r["status"] == "queued" and r["work_class"] == row["work_class"]
-                       and (rank(r["priority"]), r["created_at"]) < mine)
+        """Place among the queued leases of the row's class, in the grant pass's own order (by value
+        inside the background class when ``value_order`` is on)."""
+        peers = [self._view(r) for r in await self.store.live_leases()
+                 if r["status"] == "queued" and r["work_class"] == row["work_class"] and r["lease_id"] != row["lease_id"]]
+        return queue_position(self.cfg, peers + [self._view(row)], row["lease_id"], self.now(), self.value_order) or 1
 
     # --- state + events ---------------------------------------------------------------
     async def snapshot(self, include_leases: bool = True, include_config: bool = False,

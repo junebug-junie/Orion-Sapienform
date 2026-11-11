@@ -8,7 +8,8 @@ Rules implemented (numbers match docs/superpowers/specs/2026-09-24-gpu-pool-desi
   4  borrowing only along the YAML's class -> roles lists
   5  owners win on their own role: borrowers are never granted while an owner waits, and are
      recalled (grace, then abort) when an owner is starved
-  6  queue order: priority, then oldest
+  6  queue order: priority, then oldest; inside the background class, by value when ``value`` is
+     given (attention patch 3b, orion/gpu_pool/value_order.py)
   7  swap seats: load only when the evicted residents are idle; reclaimed by the residents'
      owners; cooldown; idle unload
   8  operator-only multi-card seats drain everything they evict
@@ -100,6 +101,7 @@ from datetime import datetime, timedelta
 from typing import Collection, Iterable, Mapping, Union
 
 from orion.gpu_pool.config import PoolConfig, RoleSpec
+from orion.gpu_pool.value_order import VALUE_PRIORITY, ValueOrderConfig, family_key, sequence
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
@@ -164,6 +166,10 @@ class LeaseView:
     kind: str = "request"     # request | hold
     hold_lease_id: str | None = None   # set on a child: the hold whose slot it runs in
     reason: str | None = None          # the row's last transition reason (the recall reason while recalling)
+    # Attention patch 3b: the body-economy decision this lease serves (None: no bid, i.e. upkeep).
+    # Read only to order the background class (orion/gpu_pool/value_order.py).
+    want_net: float | None = None
+    want_family: str | None = None
 
 
 @dataclass(frozen=True)
@@ -254,8 +260,23 @@ class Shed:
     reason: str
 
 
+@dataclass(frozen=True)
+class Reordered:
+    """Attention patch 3b: ``lease_id`` (a later background lease with a bid) was granted ``role`` this
+    tick while ``jumped_lease_id`` -- earlier, another family, able to use that role -- still waits,
+    because the value order served the higher-valued want first. Reported as one
+    ``pool_queue_reordered`` event; never a lease transition (nothing is cancelled or refused)."""
+    lease_id: str
+    jumped_lease_id: str
+    role: str
+    net: float
+    jumped_net: float | None
+    family: str | None
+    jumped_family: str | None
+
+
 Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload,
-                 SwapBlocked, Serialized, Shed]
+                 SwapBlocked, Serialized, Shed, Reordered]
 
 
 def _one_shot(cfg: PoolConfig, lease: LeaseView) -> bool:
@@ -460,8 +481,29 @@ class _Ctx:
         return self.usable(role) and self.fits(lease, role) and self.serialized_by(role) is None
 
 
-def _order(cfg: PoolConfig, leases: Iterable[LeaseView]) -> list[LeaseView]:
-    return sorted(leases, key=lambda l: (cfg.priority_rank(l.priority), l.created_at, l.lease_id))
+def _order(cfg: PoolConfig, leases: Iterable[LeaseView], now: datetime | None = None,
+           value: ValueOrderConfig | None = None) -> list[LeaseView]:
+    """Queue order: priority, then oldest. With ``value`` enabled, the background block alone is
+    re-sequenced by ``value_order.sequence`` (every other class keeps arrival order)."""
+    base = sorted(leases, key=lambda l: (cfg.priority_rank(l.priority), l.created_at, l.lease_id))
+    if value is None or not value.enabled or now is None:
+        return base
+    bg = [l for l in base if l.priority == VALUE_PRIORITY]
+    if len(bg) < 2:
+        return base
+    seq = iter(sequence(bg, now, net=lambda l: l.want_net, family=lambda l: l.want_family,
+                        arrived=lambda l: l.created_at, aging_per_h=value.aging_per_h, margin=value.margin))
+    return [next(seq) if l.priority == VALUE_PRIORITY else l for l in base]
+
+
+def queue_position(cfg: PoolConfig, leases: Iterable[LeaseView], lease_id: str, now: datetime,
+                   value: ValueOrderConfig | None = None) -> int:
+    """1-based place of ``lease_id`` among ``leases`` (the queued leases of its class), in the same
+    order the grant pass uses. 0 when it is not among them."""
+    for i, l in enumerate(_order(cfg, leases, now, value), start=1):
+        if l.lease_id == lease_id:
+            return i
+    return 0
 
 
 def schedule(
@@ -474,6 +516,7 @@ def schedule(
     guards: dict[str, str | None] | None = None,
     shed: Mapping[str, str] | None = None,
     frozen: Collection[str] | None = None,
+    value: ValueOrderConfig | None = None,
 ) -> list[Decision]:
     """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
     the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
@@ -490,7 +533,11 @@ def schedule(
     seat is never drained -- not for an owner reclaim, not at max_hold_sec, and an operator lease on
     it never drains its residents -- because a drain only exists to empty a card for a swap, and a
     swap that cannot happen would leave the card serving nobody. Swap decisions are still returned,
-    so the caller can report them."""
+    so the caller can report them.
+
+    ``value``: attention patch 3b. Enabled: the background class is granted by value
+    (orion/gpu_pool/value_order.py), and each grant that served a later want before an earlier one is
+    reported as ``Reordered``. None or disabled: arrival order, exactly as before."""
     d = cfg.defaults
     out: list[Decision] = []
     # U4, on the ORIGINAL priority (before the urgent rollback below rewrites urgent to background).
@@ -622,7 +669,7 @@ def schedule(
     backlogged = [l for l in backlogged if l.lease_id not in shed_of]
 
     # --- 3. grants: a run's own calls first, then owners on their own roles, then the rest
-    order = _order(cfg, queued)
+    order = _order(cfg, queued, now, value)
     granted: set[str] = set()
     granted_role: dict[str, str] = {}
     urgent_n = [sum(1 for l in active_now if l.hold_lease_id is None and l.priority == URGENT)]
@@ -740,6 +787,27 @@ def schedule(
             if blocker is not None:
                 out.append(Serialized(lease.lease_id, role, f"serialized:{blocker}"))
                 break
+
+    # Attention patch 3b: name each grant the value order decided -- a later background lease with a
+    # bid took a role while an earlier lease of another family, which that role could serve, waits.
+    # One event per grant (the earliest such lease), so the trace shows both nets and the margin.
+    if value is not None and value.enabled:
+        place = {l.lease_id: i for i, l in enumerate(order)}
+        waiting_bg = [q for q in queued if q.priority == VALUE_PRIORITY and q.lease_id not in granted
+                      and q.want_net is not None]
+        for lease in order:
+            role = granted_role.get(lease.lease_id)
+            if role is None or lease.priority != VALUE_PRIORITY or lease.want_net is None:
+                continue
+            # Jumped = arrived earlier yet placed later by the value order, same kind, could use the role.
+            jumped = min((q for q in waiting_bg if q.created_at < lease.created_at
+                          and place[q.lease_id] > place[lease.lease_id] and q.kind == lease.kind
+                          and family_key(q.want_family) != family_key(lease.want_family)
+                          and role in cfg.classes[q.work_class].roles and ctx.fits(q, role)),
+                         key=lambda q: (q.created_at, q.lease_id), default=None)
+            if jumped is not None:
+                out.append(Reordered(lease.lease_id, jumped.lease_id, role, lease.want_net, jumped.want_net,
+                                     lease.want_family, jumped.want_family))
 
     # --- 4. recalls ------------------------------------------------------------------
     recalled: set[str] = set()

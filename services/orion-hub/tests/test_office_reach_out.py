@@ -598,3 +598,32 @@ def test_an_office_hold_composes_anyway_after_its_short_window(monkeypatch):
     w.first_bid_at -= timedelta(seconds=ob.OFFICE_WINDOW_S + 1)
     w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
+
+
+def test_compose_timeout_override_reaches_both_lanes(monkeypatch) -> None:
+    """Consults (2026-11-11): Orion runs digs, so the caller's budget replaces 210 s / 300 s on BOTH
+    attempts. Default callers are unchanged."""
+    from scripts import endogenous_outreach as eo
+
+    calls: list[dict] = []
+
+    async def attempt(self, **kw):
+        calls.append(kw)
+        return ("", {"error": "boom"}) if len(calls) == 1 else ("ok", {})
+
+    async def _no_cancel(self, corr):
+        return None
+
+    monkeypatch.setattr(eo.EndogenousOutreach, "_attempt_unified_turn", attempt)
+    monkeypatch.setattr(eo.EndogenousOutreach, "_cancel_abandoned_attempt", _no_cancel)
+    outreach = eo.EndogenousOutreach(enabled=True, tick_interval_sec=300.0, min_cooldown_sec=0.0, daily_cap=0,
+                                     quiet_start_hour=-1, quiet_end_hour=-1, timeout_sec=300.0,
+                                     agent_lane_timeout_sec=210.0, notify_channel="orion:notify:in_app",
+                                     fallback_session_id="orion_outreach", trigger_evaluator=lambda: None,
+                                     timezone_name="UTC")
+    outreach._bus = object()
+    asyncio.run(outreach.compose("p", "c", timeout_sec=600.0))
+    assert [c["timeout_sec"] for c in calls] == [600.0, 600.0]
+    calls.clear()
+    asyncio.run(outreach.compose("p", "c"))
+    assert [c["timeout_sec"] for c in calls] == [210.0, 300.0]

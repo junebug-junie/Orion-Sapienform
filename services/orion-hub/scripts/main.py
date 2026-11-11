@@ -1095,6 +1095,7 @@ async def startup_event():
                     max_turns=settings.HUB_CONSULT_MAX_TURNS,
                     weekly_brief_cap=settings.HUB_CONSULT_WEEKLY_BRIEF_CAP,
                     claude_timeout_sec=settings.HUB_CONSULT_CLAUDE_TIMEOUT_SEC,
+                    orion_timeout_sec=settings.HUB_CONSULT_ORION_TIMEOUT_SEC,
                     source_max_age_hours=settings.HUB_CONSULT_SOURCE_MAX_AGE_HOURS,
                     source_service=settings.SERVICE_NAME,
                 )

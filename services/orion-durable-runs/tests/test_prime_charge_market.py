@@ -67,16 +67,21 @@ class Redis:
         self.ttl[key] = sec
 
 
-# Curiosity holds half of Tier 2's funded wants this week: well above the 5% exploration floor.
-FUNDED = [{"decision_id": f"{f}{i}@t", "family": f, "tier": 2, "decided_at": NOW - timedelta(days=1)}
-          for f in (C, "durable.self_inquiry") for i in range(20)]
+def _other_acts(n, family="durable.self_inquiry"):
+    """``n`` acts of another Tier 2 family started yesterday (the floor counts acts started, patch 3b)."""
+    at = NOW - timedelta(days=1)
+    return [{"act_id": f"o{i}", "actor": family, "opened_at": at, "closed_at": at + timedelta(minutes=5),
+             "outcome_value": 1.0, "outcome_source": "producer", "signal_id": None,
+             "cost_json": json.dumps({"seconds": 300.0})} for i in range(n)]
 
 
-def market(redis, *, on=True, funded=FUNDED):
+# By default curiosity's own acts are all of Tier 2's acts started this week: well above the 5% floor.
+def market(redis, *, on=True, extra_acts=()):
     async def publish(d):
         return None
 
-    return Market(families=FAMS, families_error=None, pool_getter=lambda: _Pool(acts=_curiosity_acts(), funded=funded),
+    return Market(families=FAMS, families_error=None,
+                  pool_getter=lambda: _Pool(acts=_curiosity_acts() + list(extra_acts)),
                   redis_getter=lambda: redis, publish=publish, prime_regulation=on)
 
 
@@ -133,12 +138,10 @@ def test_a_control_signal_is_never_applied_but_records_what_it_would_have_done()
 @pytest.mark.parametrize("arm", ["treated", "control"])
 def test_both_arms_class_an_exploration_floor_fund_the_same_way(arm):
     """Review finding: control once read the floor off the UNcharged decision and called this 'held'."""
-    starved = [{"decision_id": f"s{i}@t", "family": "durable.self_inquiry", "tier": 2,
-                "decided_at": NOW - timedelta(days=1)} for i in range(99)]
-    starved.append({"decision_id": "c@t", "family": C, "tier": 2, "decided_at": NOW - timedelta(days=1)})
+    # Curiosity's 12 acts against 300 of another family: 3.8% of Tier 2's acts started, under the floor.
     r = Redis(_state().model_dump_json())
     put(r, signal(arm=arm))
-    asyncio.run(market(r, funded=starved).bid(cwant(), NOW))
+    asyncio.run(market(r, extra_acts=_other_acts(300)).bid(cwant(), NOW))
     assert effects(r)["run0"].effect == "floor"
 
 

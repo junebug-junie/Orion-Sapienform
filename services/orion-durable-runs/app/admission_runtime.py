@@ -476,10 +476,18 @@ class AdmissionRuntime:
                 return held
         if not hold.get("request_id"):
             seq += 1
+        # Attention patch 3b: the run's market net rides on its hold request (the pool serves its
+        # background queue by value). Only a new request carries it: re-asking is idempotent.
+        value_kw = {}
+        if not hold.get("request_id") and (bids := getattr(self, "bids", None)) is not None:
+            value = await bids.value_for(row["request"])
+            if value is not None:
+                value_kw = {"value": value}
         for _ in range(HOLD_SEQ_SKIP_MAX):
             request_id = hold.get("request_id") or f"{run_id}:{seq}"
             try:
-                reply = await self.holds.acquire(run_id, request_id, admission, correlation_id=state.get("correlation_id"))
+                reply = await self.holds.acquire(run_id, request_id, admission, correlation_id=state.get("correlation_id"),
+                                                 **value_kw)
             except UnknownRoute as exc:
                 return {"status": "failed", "last_error": f"gpu_pool_{exc}", "hold": None, "hold_seq": seq}
             except Exception as exc:  # noqa: BLE001 -- unreachable pool (RPC timeout, bus down): transient

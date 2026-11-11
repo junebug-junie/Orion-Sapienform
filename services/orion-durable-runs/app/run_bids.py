@@ -42,8 +42,10 @@ bid has not landed, or a process that restarted, carries no net: the pool keeps 
 Attention patch 3c (same spec, section 4): with ORION_PHYSIOLOGY_BID_READING=on, reading's stage 1
 BINDS like curiosity investigate: it bids at its first resource request (producer
 ``READING_BINDING_PRODUCER``) and obeys. Funded or queued at the pool: it asks the pool. Deferred on
-price / sated / consent: it is held and re-bids, at most ``READING_HOLD_END_SEC`` (2,900 s, under Hub's
-3,500 s claim reclaim) after its request, then asks the pool anyway. Stage 2 never bids (the second half
+price or sated: it is held and re-bids, at most ``READING_HOLD_END_SEC`` (2,900 s) after its request,
+then asks the pool anyway. A held read stays in flight for Hub (it counts toward
+HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT=3, the spec's back-pressure), so the cap bounds how long held
+reads can pause all reading. Reading carries no consent request, so the consent gate never holds it. Stage 2 never bids (the second half
 of a funded read). ``shadow`` (the default until the live week starts) keeps patch 3b's value-only bid.
 
 Gated by ORION_PHYSIOLOGY_SHADOW_BIDS_ENABLED (and needs the market: ORION_PHYSIOLOGY_BID_ENABLED).
@@ -84,8 +86,11 @@ BINDING_PRODUCER = "orion-durable-runs.admission.binding"
 VALUE_PRODUCER = "orion-durable-runs.admission.value"
 # Patch 3c: reading's OBEYED bids (orion/physiology/binding.py BINDING_PRODUCERS lists it).
 READING_BINDING_PRODUCER = "orion-durable-runs.admission.reading.binding"
-# Decided default 6 (2026-11-10): Hub reclaims a reading claim after HUB_WORLD_PULSE_READ_TIMEOUT_SEC=3500,
-# so a held read asks the pool anyway 600 s before that.
+# Decided default 6 (2026-11-10). The spec derived it from Hub's 3,500 s claim reclaim, but that reclaim
+# never fires on a held read: Hub releases its claim each tick while the run waits (ReadingPending ->
+# release_claim), so claimed_at restarts every tick (review 2026-11-11). What the cap really bounds:
+# held reads occupy Hub's 3 in-flight slots, so one held read can pause new reads for at most ~48 min
+# (vs the family's 3 h window). Kept at the decided value pending Juniper's re-decision.
 READING_HOLD_END_SEC = 2900.0
 # How long a run's first hold request waits for its shadow bid to land (patch 3b). Short: a cold
 # history read can take far longer, and the hold then goes out without a net (arrival order).

@@ -1,7 +1,7 @@
 """Attention patch 3c: reading stage 1 binds (spec 2026-11-07 section 4; flag ORION_PHYSIOLOGY_BID_READING).
 
 on: stage 1 bids at its first resource request and obeys; a price / sated deferral holds it at most
-2,900 s after its request (under Hub's 3,500 s reclaim), then it asks the pool anyway; a capacity
+2,900 s after its request (a held read occupies one of Hub's 3 in-flight slots), then it asks the pool anyway; a capacity
 deferral worth its price queues at the pool. Stage 2 never bids. shadow: patch 3b's value-only bid."""
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def test_on_a_price_deferral_holds_the_read_and_it_rebids():
     asyncio.run(go())
 
 
-def test_a_held_read_asks_the_pool_anyway_at_2900_s_before_hubs_reclaim():
+def test_a_held_read_asks_the_pool_anyway_at_its_2900_s_hold_end():
     async def go():
         m = _Market(outcome="deferred", reason="sated", net=0.0, retry=3600.0)
         b = _bidder(m)
@@ -107,7 +107,6 @@ def test_a_held_read_asks_the_pool_anyway_at_2900_s_before_hubs_reclaim():
         assert early.admit is False and early.retry_at == T0 + timedelta(seconds=READING_HOLD_END_SEC)
         late = await b.bind(_reading(1, "s1"), T0 + timedelta(seconds=READING_HOLD_END_SEC))
         assert late.admit is True and late.why == "window_end"
-        assert READING_HOLD_END_SEC < 3500
     asyncio.run(go())
 
 
@@ -142,3 +141,64 @@ def test_funded_read_keeps_its_reservation_until_the_terminal():
         b.on_terminal("s1")
         assert m.opened == ["s1"] and m.released == ["s1"]
     asyncio.run(go())
+
+
+# --- the runtime path (review finding 3) -----------------------------------------------------------
+
+def test_the_settings_flag_reaches_the_bidder():
+    from app.admission_runtime import make_bidder
+    from app.settings import Settings
+
+    assert "physiology_bid_reading" in Settings.model_fields                  # a rename fails here
+    assert Settings.model_fields["physiology_bid_reading"].default == "shadow"
+    for mode, expect in (("on", True), ("shadow", False), ("typo", False)):
+        s = Settings.model_construct(physiology_bid_reading=mode)
+        assert make_bidder(s).reading_binding_enabled is expect
+
+
+class _Store:
+    def __init__(self, request):
+        self.request, self.events = request, []
+
+    async def get_run(self, run_id):
+        return {"request": self.request}
+
+    async def record_event(self, run_id, kind, payload, event_id=None):
+        self.events.append(kind)
+
+
+class _Holds:
+    def __init__(self):
+        self.calls = []
+
+    def placement(self, admission):
+        return "agent", "background", 0
+
+    async def acquire(self, run_id, request_id, admission, *, correlation_id, **kw):
+        from orion.schemas.gpu_pool import GpuLeaseReplyV1
+        self.calls.append(kw)
+        return GpuLeaseReplyV1(status="queued", lease_id="L1", position=1)
+
+
+def test_a_held_read_rebids_on_wake_with_the_same_hold_end_then_asks_the_pool_with_its_net():
+    from app.admission_runtime import AdmissionRuntime
+
+    m = _Market(outcome="deferred", reason="price", net=-0.2, retry=600.0)
+    rt = object.__new__(AdmissionRuntime)
+    rt.store, rt.holds, rt.bids = _Store(_reading(1, "s1")), _Holds(), _bidder(m)
+    t = [T0 + timedelta(seconds=60)]
+    rt.now = lambda: t[0]
+    state = {"run_id": "s1", "correlation_id": "corr-s1"}
+    held = asyncio.run(rt.register(state))
+    assert held["status"] == "waiting_resource" and held["hold_seq"] == 0 and held["hold"]["economy"] == "deferred:price"
+    assert rt.holds.calls == [] and "run.economy_held" in rt.store.events          # no pool request while held
+    # Woken at retry_at: it bids again; the market now funds it with a capacity deferral worth its price.
+    t[0] = datetime.fromisoformat(held["hold"]["retry_at"])
+    m.answer = ("deferred", "capacity_reserved", 0.7, None)
+    out = asyncio.run(rt.register({**state, **held}))
+    assert out["status"] == "waiting_resource" and len(m.bids) == 2
+    assert rt.holds.calls == [{"value": RunValue("s1", 0.7, READING_FAMILY)}]
+    # The hold end is fixed by the stored request (requested_at), not by when it re-bids.
+    m.answer = ("deferred", "price", -0.2, 600.0)
+    v = asyncio.run(rt.bids.bind(_reading(1, "s1"), T0 + timedelta(seconds=READING_HOLD_END_SEC)))
+    assert v.admit is True and v.why == "window_end"

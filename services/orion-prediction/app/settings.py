@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     shadow_enabled: bool = Field(True, alias="PREDICTION_SHADOW_ENABLED")
     # Champion ranges from recent live scores, scaled by the last hour's miss size (app/adaptive.py).
     adaptive_intervals_enabled: bool = Field(True, alias="PREDICTION_ADAPTIVE_INTERVALS_ENABLED")
+    # Publish prediction.surprise.v1 on orion:prediction:surprise for each scored row that passes the
+    # issue-time gate (app/surprise.py event_gate). Kill switch for Orion's node:prediction.room/.body
+    # (substrate-runtime folds these events into them). Needs PREDICTION_PUBLISH_ENABLED too.
+    surprise_events_enabled: bool = Field(True, alias="PREDICTION_SURPRISE_EVENTS_ENABLED")
 
     # World-model shadow for action bets: the exported TransitionModel weights (written by
     # services/orion-world-model/scripts/train_transition.py --publish). Scored, stored, graded; never served.

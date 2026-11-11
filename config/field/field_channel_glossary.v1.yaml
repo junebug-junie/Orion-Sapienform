@@ -351,44 +351,11 @@ channels:
     category: self_monitoring
     meaning: "How much a recent prediction (from the prediction/surprise subsystem) missed reality."
 
-  # Node-qualified prediction_error entry (added 2026-09-03, version 2). The
-  # bare entry above is genuinely ambiguous across node:substrate.* domains
-  # -- node:substrate.bus_synaptic's prediction_error is the fraction of the
-  # bus mesh running anomalous; node:substrate.vision's is camera staleness
-  # (see orion/autonomy/contrast.py's live-confirmed root-cause note on
-  # exactly this collision). Only bus_synaptic is added here, not vision:
-  # this patch's resolver (services/orion-mind/app/recall_signal_resolver.py)
-  # is the real consumer for the former; nothing in this patch consumes a
-  # vision-qualified entry yet, and CLAUDE.md 0A's metric gate (and this
-  # repo's own orphan-ratchet CI check) both refuse a registered metric with
-  # no consumer. Add node:substrate.vision's qualified entry in the same
-  # patch as whatever first reads it. A qualified entry is looked up first
-  # by (node, channel); absent one, callers fall back to the bare channel
-  # entry above, so every pre-existing consumer of the bare entry is
-  # unaffected. `trend_source` names where this node's history actually
-  # lives, for a caller that wants more than the latest value (e.g.
-  # orion.field.channel_glossary.classify_channel_series()).
-  - node: "node:substrate.bus_synaptic"
-    channel: prediction_error
-    level: [node]
-    category: infra_transport
-    meaning: "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal."
-    trend_source: "substrate_field_state.field_json -> node_vectors -> 'node:substrate.bus_synaptic' -> prediction_error"
-    # Semantics (2026-10-10): orion/substrate/prediction_error.py:826
-    # bus_synaptic_prediction_error() = anomalous / len(edges), 0.0 for an
-    # empty edge list; clock tick in services/orion-substrate-runtime/app/
-    # worker.py::_bus_synaptic_tick. Live 3 days to 2026-10-10: 0% exact
-    # zeros, median 0.033 (substrate_node_prediction_error_history).
-    semantics:
-      value_kind: level
-      rest: "about 0.01-0.03: a few edges are always over |z| 3. 0.0 means no edge anomalous OR no live edges at all (an empty mesh reads calm)."
-      # rest_range live 2026-10-13: p05 0.0099, p50 0.0299, p95 0.0725, max 0.18, 0.18% exact 0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); kept at the prose 0.03 top, not widened to p95; the historic ~0.27 floor is outside
-      rest_range: [0.0, 0.03]
-      sparsity: per_tick
-      absent_means: "carried forward in node_vectors (prediction_error is not a decayed or expiring channel, services/orion-field-digester/app/digestion/decay.py); the self-model drops the domain after 1800 s without a fresh observed_at (orion/substrate/prediction_error_freshness.py:26)."
-      prompt_sites:
-        - "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line"
-        - "orion.attention.self_readings:render_self_readings"
+  # The first node-qualified prediction_error entry (node:substrate.bus_synaptic,
+  # added 2026-09-03, version 2) was removed 2026-11 with the node itself (PE
+  # suite rebuild step 5: a lull-ending detector, not a forecast). A qualified
+  # entry is looked up first by (node, channel); absent one, callers fall back
+  # to the bare channel entry above.
 
   # ---------------------------------------------------------------------
   # Node-qualified prediction_error entries, added 2026-10-10 (spec
@@ -400,9 +367,7 @@ channels:
   # substrate_node_prediction_error_history over the 3 days to 2026-10-10.
   #
   # `producer:` is orion-substrate-runtime, which computes every one of
-  # these (orion-field-digester only ingests the receipt). The older
-  # bus_synaptic entry above keeps its digester URN; renaming it is a
-  # separate definition change.
+  # these (orion-field-digester only ingests the receipt).
   #
   # One of these never reaches FieldStateV1 node_vectors at all
   # (cabinet): it lives only on the FalkorDB substrate
@@ -495,6 +460,74 @@ channels:
       rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "only written as 1.0 at a strain news event, then carried unwritten for attention's 300 s orienting window; every other tick with a known regulation reading writes 0.0. An unknown, stale or missing regulation reading writes nothing and the node keeps its last value."
+      prompt_sites:
+        - "orion.attention.self_readings:render_self_readings"
+
+  # Forecast surprise (2026-11-11, PE suite rebuild spec build item 3,
+  # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md).
+  # orion-prediction scores each office.temp_c forecast and publishes the gated
+  # outcome as prediction.surprise.v1 (services/orion-prediction/app/surprise.py
+  # event_gate: champion, issued by a non-baseline model, adaptive range, real
+  # actual). services/orion-substrate-runtime/app/worker.py
+  # _process_prediction_surprise folds it with orion/substrate/prediction_surprise.py:
+  # summed excess over the last 30 min of independent origins, divided by its
+  # calm spread (theory: Var = 2 - 2P(1 + ln 1/P) - (1-P)^2, P = 0.05), stored
+  # as clip(z / 3, 0, 1). FalkorDB node only; not a FieldStateV1 node vector, so
+  # the field digester's decay/expiry never touches it.
+  - node: "node:prediction.room"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "How much the office's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (office.temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.room'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
+    semantics:
+      value_kind: surprise_excess
+      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
+      # rest_range: calm z within +-1.65 sigma -> stored value in [0, 0.55]. Live replay
+      # 2026-11-11 (72 h, calm-check-passing day, one outcome per target bucket): room p50 0.0
+      # p90 0.516, body p50 0.0 p90 0.520; consecutive 5-min misses correlate ~0.12, so the live
+      # z sd is 1.0-1.2 and 0.55 is crossed on 8-10 % of writes, not 5 %.
+      rest_range: [0.0, 0.55]
+      sparsity: per_tick
+      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm."
+      prompt_sites:
+        - "orion.attention.self_readings:render_self_readings"
+
+  # Forecast surprise (2026-11-11, PE suite rebuild spec build item 3,
+  # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md).
+  # orion-prediction scores each athena.cabinet_temp_c forecast and publishes the gated
+  # outcome as prediction.surprise.v1 (services/orion-prediction/app/surprise.py
+  # event_gate: champion, issued by a non-baseline model, adaptive range, real
+  # actual). services/orion-substrate-runtime/app/worker.py
+  # _process_prediction_surprise folds it with orion/substrate/prediction_surprise.py:
+  # summed excess over the last 30 min of independent origins, divided by its
+  # calm spread (theory: Var = 2 - 2P(1 + ln 1/P) - (1-P)^2, P = 0.05), stored
+  # as clip(z / 3, 0, 1). FalkorDB node only; not a FieldStateV1 node vector, so
+  # the field digester's decay/expiry never touches it.
+  - node: "node:prediction.body"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "How much the cabinet's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (athena.cabinet_temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.body'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
+    semantics:
+      value_kind: surprise_excess
+      rest: "0.0 = the forecast's misses are no bigger than a calibrated forecaster's (z <= 0). Reachable by theory (calm z ~ N(0, 1): exact 0 half the time) and live: 56-58% exact 0.0 in a replay of 72 h of real outcomes (2026-11-11, evals/run_surprise_node_replay_eval.py)."
+      # rest_range: calm z within +-1.65 sigma -> stored value in [0, 0.55]. Live replay
+      # 2026-11-11 (72 h, calm-check-passing day, one outcome per target bucket): room p50 0.0
+      # p90 0.516, body p50 0.0 p90 0.520; consecutive 5-min misses correlate ~0.12, so the live
+      # z sd is 1.0-1.2 and 0.55 is crossed on 8-10 % of writes, not 5 %.
+      rest_range: [0.0, 0.55]
+      sparsity: per_tick
+      absent_means: "written once per gated forecast outcome (about every 5 min). Nothing is written when no outcome passes the gate (prediction service down, PREDICTION_SURPRISE_EVENTS_ENABLED or SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED off, range not adaptive, issued by a baseline, missing bucket): the node keeps its last value (current for up to 1800 s, longer than its 30 min window), then every reader treats it as stale, never as calm."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
@@ -635,31 +668,9 @@ channels:
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
-  # orion/substrate/prediction_error.py:717 route_prediction_error(): per
-  # touched decided run, the share of 4 decision fields (lane, lane_reason,
-  # output_mode, mind_requested, :805) that changed versus the previous
-  # decided run -> {0, .25, .5, .75, 1}; mean over runs in the batch (:823),
-  # so a multi-run batch can land between steps. Live: 87% zeros, 4
-  # distinct values, max 0.75.
-  - node: "node:substrate.route"
-    producer: orion-substrate-runtime
-    channel: prediction_error
-    level: [node]
-    category: task_execution
-    meaning: "COUNT: how many of the 4 routing decisions (lane, lane reason, output mode, mind requested) changed versus the previous decided run, as a share (0, 0.25, 0.5, 0.75, 1); averaged when a batch holds several runs."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.route'"
-    consumers:
-      - "orion.attention.field_attention.selectors:select_node_targets"
-      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-    semantics:
-      value_kind: count
-      rest: "0.0 = routing made the same decision as last time (or no decided run this batch). Mostly zero by design (87% live)."
-      # rest_range live 2026-10-13: 67.6% exact 0.0 (76% in substrate_node_prediction_error_history), 3 distinct values, p95 0.5, max 0.5 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors)
-      rest_range: [0.0, 0.0]
-      sparsity: designed_sparse
-      absent_means: "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s."
-      prompt_sites:
-        - "orion.attention.self_readings:render_self_readings"
+  # node:substrate.route's entry removed 2026-11: route_prediction_error() and
+  # the node were retired (PE suite rebuild step 5); the route reducer and
+  # projection stay.
 
   # orion/substrate/prediction_error.py:567-604 biometrics: min(1, mean
   # |delta pressure_hints| / 0.30) over the union of keys -- a FIXED
@@ -690,7 +701,7 @@ channels:
   - channel: pressure
     level: [capability]
     category: synthesized_rollup
-    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Where an edge feeds it: absent (key and provenance dropped) on a tick when no edge source measured it, never written as a calm 0.0."
+    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Absent (key and provenance dropped) on a tick when no edge source measured it, or when no edge feeds it at all (capability:transport since 2026-11), never written as a calm 0.0."
     self_state_dimension: resource_pressure
 
   - channel: confidence

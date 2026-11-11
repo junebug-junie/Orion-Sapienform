@@ -8,8 +8,9 @@
   let mediaRetry, mediaHeals=0, mediaWindow=0, lastPictureAt=0, pictureReady=false;
   let conditionalResume=false; // older native services ignore resume bodies: fail closed
   let mediaFlowControl=false; // negotiate with the gateway; old pages keep legacy media
+  let activeSystem='nes'; // follows the running session, never an unstarted dropdown choice
   const keys = new Set(), sources = new Set();
-  const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, Enter:8, ShiftLeft:4, ShiftRight:4};
+  const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, KeyA:2, KeyS:512, KeyQ:1024, KeyW:2048, Enter:8, ShiftLeft:4, ShiftRight:4};
   // #status sits outside the fullscreen stage, so mirror each message into a toast
   // shown only in fullscreen; otherwise F7/F10 results would be invisible there.
   let toastTimer=null;
@@ -103,6 +104,7 @@
     if (pad && (document.activeElement===screen || document.fullscreenElement===stage))
       m |= selectChord(chord, pad, padMask(pad), performance.now(), code=>runHotkey(code));
     else resetChord(chord);
+    if(activeSystem!=='snes')m&=509; // retain the NES authority's eight-button contract
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
   }
   // Pad Select + L2 saves, Select + R2 loads the newest save (the F7 / F10 hotkeys). Select is a
@@ -132,11 +134,12 @@
     const std=pads.filter(p=>p && p.connected!==false && p.mapping==='standard');
     return std[Number(el('port').value)] || std[0] || null;
   }
-  // Standard mapping is by position. NES layout: the right face button is A, the bottom one B
-  // (8BitDo Pro 2: its A and B labels match). Left stick or D-pad move; Select/Start in the middle.
+  // Standard mapping is positional: A right, B bottom, X top, Y left (8BitDo labels).
+  // SNES uses L1/R1; L2/R2 remain save/load chords. mask() removes SNES-only bits for NES.
   function padMask(pad) {
     const b=pad.buttons, a=pad.axes||[]; let m=0;
     if(b[1]?.pressed)m|=256;if(b[0]?.pressed)m|=1;if(b[8]?.pressed)m|=4;if(b[9]?.pressed)m|=8;
+    if(b[3]?.pressed)m|=512;if(b[2]?.pressed)m|=2;if(b[4]?.pressed)m|=1024;if(b[5]?.pressed)m|=2048;
     if(b[12]?.pressed||a[1]<-.5)m|=16;if(b[13]?.pressed||a[1]>.5)m|=32;
     if(b[14]?.pressed||a[0]<-.5)m|=64;if(b[15]?.pressed||a[0]>.5)m|=128;
     return m;
@@ -215,7 +218,7 @@
     }
     closeConnections(); const epoch=transportEpoch; await sound();
     if(epoch!==transportEpoch || document.hidden)return;
-    if(!sid) { const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true; }
+    if(!sid) { const state=await api('health/ready');sid=state.session?.session_id;activeSystem=state.session?.system||'nes';conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true; }
     if(epoch!==transportEpoch || document.hidden)return;
     if(!sid)throw Error('Start a new game first.');
     if(!recovering)await api(`sessions/${sid}/resume`,{});
@@ -287,7 +290,7 @@
     lastPictureAt=performance.now();pictureReady=true;
     if(flow && socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({ack:sequence}));
   }
-  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true;
+  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title+(g.system==='snes'?' (SNES)':'');o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;activeSystem=state.session?.system||'nes';conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true;
     el('player').hidden=false;
     if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}
     else if(state.session?.reason==='service_restart'){el('game').value=state.session.game_id;report('The game service restarted. Choose a save and press Load to continue.');}
@@ -313,7 +316,7 @@
     const epoch=transportEpoch;await sound();if(epoch!==transportEpoch || document.hidden)return false;
     const body={game_id:el('game').value,idempotency_key:Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")};
     if(save_id)body.save_id=save_id;
-    const s=await api('sessions',body);sid=s.session_id;if(epoch!==transportEpoch || document.hidden)return false;
+    const s=await api('sessions',body);sid=s.session_id;activeSystem=s.system||'nes';if(epoch!==transportEpoch || document.hidden)return false;
     await connect();return true;}
   action('new',()=>newGame());
   action('save',async()=>{
@@ -529,7 +532,7 @@
         ? `${waitingText(l.waiting?.reason)} (retry in ${Math.round(l.waiting?.retry_after_sec||0)} s). Solo play, ${mins} min in.`
         : `Orion is playing alone (solo leisure), ${mins} min in, ${l.decisions||0} goals so far. Click the game or Take this controller to play; that ends Orion's session.`;
       if(l.session_id && l.session_id!==sid && !lease && !connecting && !healPending && !scriptedMode){
-        ++intent;closeConnections();sid=l.session_id;
+        ++intent;closeConnections();sid=l.session_id;activeSystem='nes'; // leisure currently supports NES Zelda only
       }
       if(l.session_id===sid && !lease && !input)watch();
       if(l.last_goal && !lastZelda){el('zgoal').textContent=`Goal: ${goalText(l.last_goal.goal)}. Why: ${l.last_goal.rationale}`;

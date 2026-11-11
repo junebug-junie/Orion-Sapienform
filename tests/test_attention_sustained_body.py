@@ -36,7 +36,9 @@ fx = importlib.util.module_from_spec(_fx_spec)
 _fx_spec.loader.exec_module(fx)  # type: ignore[union-attr]
 
 NOW = fx.NOW
-BUS = "node:substrate.bus_synaptic"
+# The continuous (per_tick) body node under test. Was node:substrate.bus_synaptic until
+# its retirement (2026-11, PE suite rebuild step 5); biometrics is the remaining one.
+BUS = fx.CONTINUOUS_BODY
 BIO = "node:substrate.biometrics"
 EXE = "node:substrate.execution"
 PER = "node:substrate.perception"
@@ -59,7 +61,7 @@ def _candidate(rows, node, *, now=NOW, sustain=True, with_history=True):
 
 
 def _sustained_bus_rows(hot_since_sec: float, *, gap: tuple[float, float] | None = None, now=NOW):
-    """Calm week; bus_synaptic at its live 60 s cadence for the last 30 minutes, at its week's top
+    """Calm week; the continuous body node at a 60 s cadence for the last 30 minutes, at its week's top
     from ``hot_since_sec`` ago to now, except inside ``gap`` (seconds ago, calm)."""
     cut = now - timedelta(minutes=30)
     rows = [r for r in fx.calm_rows(now) if not (r[0] == BUS and r[1] > cut)]
@@ -114,11 +116,11 @@ def test_continuous_set_comes_from_glossary_semantics() -> None:
     got = {n for n in nodes if wf.node_prediction_error_continuous(n)}
     # per_tick body nodes only: perception is the world, event-written and trigger nodes have
     # their own rules, a placeholder is never a measurement.
-    assert got == {BIO, BUS}
+    assert got == {BIO}  # bus_synaptic left with its 2026-11 retirement
 
 
 def test_a_one_reading_spike_does_not_win() -> None:
-    cand = _candidate(fx.bus_spike_rows(), BUS)
+    cand = _candidate(fx.body_spike_rows(), BUS)
     assert cand.sustain_window_sec == SUSTAIN_WINDOW_SEC
     assert cand.hot_dwell_sec is not None and cand.hot_dwell_sec < 60
     v = wf.judge_candidate(cand)
@@ -171,13 +173,13 @@ def test_perception_and_event_driven_sources_are_unaffected(node) -> None:
 
 
 def test_missing_history_is_todays_verdict_not_silence() -> None:
-    cand = _candidate(fx.bus_spike_rows(), BUS, with_history=False)
+    cand = _candidate(fx.body_spike_rows(), BUS, with_history=False)
     assert cand.sustain_window_sec is None and cand.hot_dwell_sec is None
     assert wf.judge_candidate(cand).eligible  # the old one-reading verdict
 
 
 def test_kill_switch_restores_todays_verdict() -> None:
-    off = _candidate(fx.bus_spike_rows(), BUS, sustain=False)
+    off = _candidate(fx.body_spike_rows(), BUS, sustain=False)
     assert off.sustain_window_sec is None and off.hot_dwell_sec is None
     v = wf.judge_candidate(off)
     assert v.eligible and v.sustained is None
@@ -189,7 +191,7 @@ def test_dwell_failure_degrades_to_todays_verdict(monkeypatch) -> None:
         raise RuntimeError("bad history")
 
     monkeypatch.setattr(wf, "sustained_hot_dwell", boom)
-    cand = _candidate(fx.bus_spike_rows(), BUS)
+    cand = _candidate(fx.body_spike_rows(), BUS)
     assert cand.sustain_window_sec is None and wf.judge_candidate(cand).eligible
 
 
@@ -205,7 +207,7 @@ def _bus_node(observed_at):
 def test_broadcast_threads_history_and_the_kill_switch() -> None:
     import orion.substrate.attention_broadcast as ab
 
-    rows = fx.bus_spike_rows()
+    rows = fx.body_spike_rows()
     cand = _candidate(rows, BUS)
     kw = dict(
         nodes=[_bus_node(cand.observed_at)], now=NOW,
@@ -282,7 +284,7 @@ def test_contest_self_readings_and_episode_gate_agree_on_the_same_history(sustai
 def test_episode_counts_a_not_yet_sustained_reading_as_a_hot_poll() -> None:
     """The pending episode starts at the onset, not at confirmation: a not-sustained high
     reading is a hot poll for the gate (only the contest drops it)."""
-    v = wf.judge_candidate(_candidate(fx.bus_spike_rows(), BUS))
+    v = wf.judge_candidate(_candidate(fx.body_spike_rows(), BUS))
     obs = sse.observation_from_verdict(v, now=NOW.timestamp())
     assert obs.kind == "hot" and obs.hot_dwell_sec == v.hot_dwell_sec
     episode, event = sse.step_signal(None, obs)
@@ -359,7 +361,7 @@ def test_substrate_runtime_deque_history_wires_through_the_broadcast() -> None:
 
     import orion.substrate.attention_broadcast as ab
 
-    rows = fx.bus_spike_rows()
+    rows = fx.body_spike_rows()
     cand = _candidate(rows, BUS)
     frame = ab.build_substrate_attention_frame(
         nodes=[_bus_node(cand.observed_at)], now=NOW,
@@ -379,7 +381,7 @@ def test_operator_dwell_setting_does_not_split_continuous_episodes_from_the_cont
     obs = sse.observation_from_verdict(v, now=NOW.timestamp())
     ep, _ = sse.step_signal(None, obs, open_dwell_sec=open_dwell)
     assert ep.confirmed
-    spike = sse.observation_from_verdict(wf.judge_candidate(_candidate(fx.bus_spike_rows(), BUS)), now=NOW.timestamp())
+    spike = sse.observation_from_verdict(wf.judge_candidate(_candidate(fx.body_spike_rows(), BUS)), now=NOW.timestamp())
     ep2, _ = sse.step_signal(None, spike, open_dwell_sec=open_dwell)
     assert not ep2.confirmed
 

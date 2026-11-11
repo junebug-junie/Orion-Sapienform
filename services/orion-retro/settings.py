@@ -11,6 +11,7 @@ class Settings:
     catalog: Path = Path('/catalog/catalog.json')
     artifacts: Path = Path('/evidence')
     core: Path = Path('/opt/retro/core.so')
+    snes_core: Path = Path('/opt/retro/snes9x.so')
     token_file: Path = Path('/run/secrets/retro_operator')
     hub_token_file: Path = Path('/run/secrets/retro_hub')
     session_bytes: int = 268435456
@@ -31,3 +32,8 @@ class Settings:
         if len(value) < 32:
             raise ValueError('operator credential must contain at least 32 characters')
         return value
+
+    def core_for(self, system):
+        if system == 'nes': return self.core
+        if system == 'snes': return self.snes_core
+        raise ValueError('unsupported system')

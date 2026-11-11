@@ -55,9 +55,14 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     123,099 of 123,099 ticks): 51 -> 50 entries, 50 -> 49 names.
     + 8 node-qualified prediction_error entries added 2026-10-10 (rest
     semantics, R6: harness_closure, cabinet, perception, execution, chat,
-    codebase, route, biometrics): 50 -> 58 entries, names unchanged at 49."""
+    codebase, route, biometrics): 50 -> 58 entries, names unchanged at 49.
+    - (main read 61 entries by 2026-11-11 while this still said 58.)
+    - node:substrate.bus_synaptic and node:substrate.route node-qualified
+    prediction_error entries removed 2026-11 with the nodes (PE suite rebuild
+    step 5); harness_closure removed 2026-11-11 (#3184): 61 -> 58 entries."""
     glossary = load_glossary()
     entries = glossary["entries"]
+    # + node:prediction.room / node:prediction.body (forecast surprise, 2026-11-11): 58 -> 60.
     assert len(entries) == 60
     assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}
@@ -117,13 +122,13 @@ def test_load_glossary_categories_cover_all_seven_semantic_groups():
 
 
 def test_resolve_channel_entry_prefers_node_qualified_over_bare():
-    """The whole point of version 2: bus_synaptic's qualified entry must
-    describe the fraction, not the generic bare "recent prediction missed
-    reality" meaning."""
-    bus = resolve_channel_entry("prediction_error", "node:substrate.bus_synaptic")
+    """The whole point of version 2: a node's qualified entry must describe
+    that node, not the generic bare "recent prediction missed reality"
+    meaning. (Pinned on bus_synaptic until its 2026-11 retirement.)"""
+    bus = resolve_channel_entry("prediction_error", "node:substrate.execution")
     bare = resolve_channel_entry("prediction_error")
     assert bus is not None and bare is not None
-    assert bus.node == "node:substrate.bus_synaptic"
+    assert bus.node == "node:substrate.execution"
     assert bare.node is None
     assert bus.meaning != bare.meaning
     assert bus.trend_source
@@ -140,7 +145,12 @@ def test_resolve_channel_entry_falls_back_to_bare_entry():
     # bare, does not raise or return None. node:substrate.vision is retired
     # and node:substrate.vision_organ deliberately has no prediction_error
     # entry (it carries no such channel) -- real, current cases.
-    for node in ("node:substrate.vision_organ", "node:substrate.vision"):
+    for node in (
+        "node:substrate.vision_organ",
+        "node:substrate.vision",
+        "node:substrate.bus_synaptic",  # retired 2026-11
+        "node:substrate.route",  # retired 2026-11
+    ):
         entry = resolve_channel_entry("prediction_error", node)
         assert entry is not None
         assert entry.node is None

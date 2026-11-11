@@ -18,11 +18,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
-from orion.field.transport_thresholds import (
-    RUNGS as _THRESHOLD_RUNGS,
-    fetch_effective_thresholds,
-)
-
 from .service_logs import resolve_repo_root_details
 
 router = APIRouter(prefix="/api/substrate-lattice", tags=["substrate-lattice"])
@@ -410,10 +405,10 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
 #   {layer: m3, field: <TransportBusStateV1 field>}
 #     -> max of that field over M3's fresh per-bus rows (M3's top level has no
 #        pressure fields, which is why the old simulator always saw 0.0)
-# The row id (e.g. `bus_synaptic_pressure`) is a lane-local label and the key
-# of the shared EWMA threshold state; the `source` is the metric. There used to
+# The row id (e.g. `transport_reliability_pressure`) is a lane-local label;
+# the `source` is the metric. There used to
 # be a hand-kept `_CHANNEL_VALUE_SOURCES` table here mapping
-# bus_synaptic_pressure -> M4 `pressure`: a second place the two names could
+# a row id -> M4 channel: a second place the two names could
 # drift. tests/test_transport_lattice_policy_sources.py pins every `source` to
 # the field topology and the projection schema.
 _M4_VECTOR = "capability:transport"
@@ -433,26 +428,6 @@ def _policy_channels() -> dict[str, dict[str, Any]]:
     """The transport lane's channel definitions, straight from the policy YAML."""
     channels = _load_yaml("transport_lattice_policy.v1.yaml").get("channels") or {}
     return {str(k): dict(v or {}) for k, v in channels.items()}
-
-
-def _effective_channels(channels: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Policy channels with watch/summarize/propose replaced by the effective
-    (EWMA-derived, static-floor-bounded) values, plus `threshold_provenance`.
-
-    Same shared function the mind recall resolver calls, so both readers see
-    the same numbers. TRANSPORT_THRESHOLDS_DERIVED_ENABLED=false (or any Redis
-    failure) returns exactly the static YAML values.
-    """
-    redis_url = os.getenv("ORION_BUS_URL", "").strip()
-    out: dict[str, dict[str, Any]] = {}
-    for ch_id, ch_def in channels.items():
-        eff = fetch_effective_thresholds(ch_id, ch_def, redis_url)
-        merged = dict(ch_def)
-        for rung in _THRESHOLD_RUNGS:
-            merged[rung] = eff[rung]["value"]
-        merged["threshold_provenance"] = eff
-        out[ch_id] = merged
-    return out
 
 
 def _channel_source(ch_def: dict[str, Any] | None) -> tuple[str, str] | None:
@@ -548,7 +523,6 @@ def _lattice_channel_rows(chain: dict[str, Any], channels: dict[str, dict[str, A
             "watch_at": watch_at,
             "summarize_at": ch_def.get("summarize_at"),
             "propose_at": ch_def.get("propose_at"),
-            "threshold_provenance": ch_def.get("threshold_provenance"),
             "action_ceiling": ch_def.get("action_ceiling"),
             "value": value,
             "value_source": source,
@@ -685,8 +659,7 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     # --- pressure gate ---
-    # Two independent halves, each read from its own policy row's M4 source:
-    # bus_synaptic_pressure (capability:transport.pressure) and
+    # Each half is read from its own policy row's M4 source:
     # transport_reliability_pressure (capability:transport.reliability_pressure,
     # RPC delivery since observer_failure_pressure was retired 2026-10-07).
     # The digester drops a capability channel nothing measured this tick
@@ -697,9 +670,11 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     # unmeasured (before, any absent half blanked the whole gate -- review
     # finding, 2026-10-07). With nothing active, any unmeasured half keeps the
     # gate "unknown": absent is never read as quiet.
-    channels = _effective_channels(lattice_policy.get("channels", {}))
+    channels = {str(k): dict(v or {}) for k, v in (lattice_policy.get("channels") or {}).items()}
+    # The bus_synaptic_pressure half (capability:transport.pressure) was
+    # retired 2026-11 with node:substrate.bus_synaptic (PE suite rebuild step
+    # 5): a lull-ending detector, not a forecast. Reliability is the only half.
     halves = (
-        ("bus_synaptic_pressure", "transport"),
         ("transport_reliability_pressure", "reliability"),
     )
     if m4_status in ("stale", "missing"):
@@ -807,7 +782,7 @@ async def transport_latest() -> dict[str, Any]:
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     try:
-        chain["lattice_channels"] = _lattice_channel_rows(chain, _effective_channels(_policy_channels()))
+        chain["lattice_channels"] = _lattice_channel_rows(chain, _policy_channels())
     except Exception as exc:  # a bad policy file must not hide the proof chain
         chain["lattice_channels"] = []
         chain["lattice_policy_error"] = f"{type(exc).__name__}: {exc}"
@@ -841,7 +816,7 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 
     try:
-        channels = _effective_channels(_policy_channels())
+        channels = _policy_channels()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"transport_lattice_policy_invalid: {type(exc).__name__}") from exc
     if not channels:

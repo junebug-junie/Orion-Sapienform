@@ -269,7 +269,7 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
 
     fake_store = MagicMock()
     fake_store.snapshot.side_effect = [
-        _fake_store(_pe_node("node:substrate.route", error)).snapshot.return_value
+        _fake_store(_pe_node("node:substrate.chat", error)).snapshot.return_value
         for error in (0.1, 0.2, 0.3, 0.4, 0.5)
     ]
     with patch(
@@ -281,9 +281,9 @@ def test_trend_buffer_respects_configured_maxlen(monkeypatch):
 
     assert len(worker._attention_self_model_trend_buffer) == 3
     assert list(worker._attention_self_model_trend_buffer) == [
-        {"route": 0.3},
-        {"route": 0.4},
-        {"route": 0.5},
+        {"chat": 0.3},
+        {"chat": 0.4},
+        {"chat": 0.5},
     ]
 
 

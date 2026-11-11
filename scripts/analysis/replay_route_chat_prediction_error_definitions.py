@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
-"""Replay route/chat prediction error, old definition vs new, over the live projections.
+"""Replay chat prediction error, old definition vs new, over the live projection.
 
-    docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \\
-        "select projection_json from substrate_route_arbitration_projection" > route.json
+The route half (``--route-json``) was removed 2026-11: route_prediction_error()
+was retired in PE suite rebuild step 5, so there is no live v2 to compare
+against. Git history keeps it.
+
     docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \\
         "select projection_json from substrate_chat_session_projection" > chat.json
     python scripts/analysis/replay_route_chat_prediction_error_definitions.py \\
-        --route-json route.json --chat-json chat.json
+        --chat-json chat.json
 
-Why the projections are enough: both reducers stamp the tick's clock as
-``last_updated_at`` on every run/turn they write, and live runs/turns are
-single-shot creates. Sorting by ``last_updated_at`` and grouping equal stamps
-therefore recovers the tick sequence, and each tick's ``prev``/``curr`` pair is
-"everything before this stamp" / "that plus this stamp's group". Route evicts
-runs older than 24h (``ROUTE_ARBITRATION_MAX_AGE_SEC``); the replay applies the
-same window to ``prev``, but runs evicted before the dump are gone, so the
-first 24h of the route history has a smaller denominator than live did. That
-only flatters v1 (smaller denominator = larger number), never v2.
+Why the projection is enough: the reducer stamps the tick's clock as
+``last_updated_at`` on every turn it writes, and live turns are single-shot
+creates. Sorting by ``last_updated_at`` and grouping equal stamps therefore
+recovers the tick sequence, and each tick's ``prev``/``curr`` pair is
+"everything before this stamp" / "that plus this stamp's group".
 
-v1 is a frozen copy of the pre-2026-09-25 functions, kept here so the
-comparison survives the live code moving on. Route v2 is imported from the live
-module. Chat v2 (2026-09-25: two hints, every stored turn in the mean, variance
+v1 is a frozen copy of the pre-2026-09-25 function, kept here so the
+comparison survives the live code moving on. Chat v2 (2026-09-25: two hints, every stored turn in the mean, variance
 floor 5e-8) is frozen here too since 2026-09-29; chat v3 is the live
 ``chat_prediction_error`` (touched turns only, re-derived floor), run through the
 projection's own EWMA fields exactly as the substrate runtime does.
@@ -34,7 +31,7 @@ import argparse
 import json
 import statistics
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -42,14 +39,8 @@ sys.path.insert(0, str(REPO))
 
 from orion.bus.ewma import compute_ewma_update  # noqa: E402
 from orion.schemas.chat_projection import ChatSessionProjectionV1, ChatTurnStateV1  # noqa: E402
-from orion.schemas.route_projection import (  # noqa: E402
-    RouteArbitrationProjectionV1,
-    RouteArbitrationRunStateV1,
-)
 from orion.substrate import prediction_error as pe  # noqa: E402
 
-ROUTE_FIELDS = ("lane", "lane_reason", "output_mode", "mind_requested")
-ROUTE_MAX_AGE = timedelta(seconds=86400)
 # Candidate A's node-target EWMA (orion/attention/field_attention/candidate_precision_weighted.py).
 try:
     from orion.attention.field_attention.candidate_precision_weighted import (  # noqa: E402
@@ -61,20 +52,6 @@ except Exception:  # pragma: no cover - analysis fallback
 
 
 # --- frozen v1 -----------------------------------------------------------------
-
-
-def route_v1(prev: RouteArbitrationProjectionV1, curr: RouteArbitrationProjectionV1) -> float:
-    scores: list[float] = []
-    fallback = pe._latest_run(prev.runs)
-    for trace_id, curr_run in curr.runs.items():
-        prev_run = prev.runs.get(trace_id) or fallback
-        if prev_run is None:
-            continue
-        scores.append(
-            sum(1.0 if getattr(prev_run, f) != getattr(curr_run, f) else 0.0 for f in ROUTE_FIELDS)
-            / len(ROUTE_FIELDS)
-        )
-    return sum(scores) / len(scores) if scores else 0.0
 
 
 def _chat_hints_v1(turn: ChatTurnStateV1) -> dict[str, float]:
@@ -128,26 +105,6 @@ def _ticks(items: dict, stamp) -> list[tuple[datetime, list[str]]]:
     for key, obj in items.items():
         groups.setdefault(stamp(obj), []).append(key)
     return sorted(groups.items())
-
-
-def replay_route(raw: dict) -> dict[str, list[float]]:
-    runs = {k: RouteArbitrationRunStateV1.model_validate(v) for k, v in raw["runs"].items()}
-    ordered = sorted(runs.items(), key=lambda kv: kv[1].last_updated_at)
-    out = {"v1": [], "v2": []}
-    for stamp, keys in _ticks(runs, lambda r: r.last_updated_at):
-        prev_runs = {
-            k: r for k, r in ordered
-            if r.last_updated_at < stamp and r.last_updated_at >= stamp - ROUTE_MAX_AGE
-        }
-        curr_runs = dict(prev_runs)
-        curr_runs.update({k: runs[k] for k in keys})
-        mk = lambda rs: RouteArbitrationProjectionV1(  # noqa: E731
-            projection_id="replay", generated_at=stamp, runs=rs
-        )
-        prev, curr = mk(prev_runs), mk(curr_runs)
-        out["v1"].append(route_v1(prev, curr))
-        out["v2"].append(pe.route_prediction_error(prev, curr))
-    return out
 
 
 def replay_chat(raw: dict) -> dict[str, list[float]]:
@@ -247,19 +204,10 @@ def node_baseline(values: list[float]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--route-json", type=Path)
     ap.add_argument("--chat-json", type=Path)
     ap.add_argument("--attention-level", type=float, default=0.1,
                     help="report the fraction of ticks at or above this value")
     args = ap.parse_args()
-    if args.route_json:
-        r = replay_route(json.loads(args.route_json.read_text()))
-        print("## route_prediction_error")
-        for name in ("v1", "v2"):
-            print(f"{name}: {summarize(r[name], args.attention_level)}")
-            print(f"{name}: {node_baseline(r[name])}")
-        nz = [(i, v) for i, v in enumerate(r["v2"]) if v > 0]
-        print(f"v2 nonzero ticks: {len(nz)} values={sorted({v for _, v in nz})}")
     if args.chat_json:
         c = replay_chat(json.loads(args.chat_json.read_text()))
         print("## chat_prediction_error")

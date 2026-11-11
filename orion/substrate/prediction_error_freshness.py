@@ -53,6 +53,26 @@ STATUS_MISSING_INPUT = "missing_input"
 # a real reading.
 PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
 
+# Prediction-error nodes whose producers were retired (2026-11, PE suite
+# rebuild step 5; docs/superpowers/specs/2026-11-08-prediction-error-suite-
+# rebuild-design.md). Neither was a forecast: node:substrate.bus_synaptic was a
+# lull-ending detector (fraction of bus edges with |z| >= 3), and
+# node:substrate.route a categorical decision-mismatch rate. Killing the
+# producer is not enough on its own: the FalkorDB node keeps its last
+# prediction_error and can be resurrected by cortex-exec's materializer
+# (services/orion-substrate-runtime/README.md, "materializer" section), and
+# substrate_node_prediction_error_history rows linger for their 7-day
+# retention. Every generic prediction-error reader skips these ids so a stored
+# value is never read as a current reading (CLAUDE.md 0A: kill means kill).
+RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
+    {"node:substrate.bus_synaptic", "node:substrate.route"}
+)
+
+
+def is_retired_prediction_error_node(node_id: Any) -> bool:
+    """True when ``node_id`` names a retired prediction-error node."""
+    return str(node_id or "") in RETIRED_PREDICTION_ERROR_NODE_IDS
+
 
 def missing_input_reason(node: Any) -> str | None:
     """The producer's own "this value is a placeholder" reason, or None."""

@@ -226,11 +226,12 @@ def test_no_declared_polarity_cannot_interrupt() -> None:
 
 def test_rank_is_by_own_percentile_borda_only_breaks_ties() -> None:
     a = body("node:substrate.execution", 0.95)
-    b = body("node:substrate.route", 0.95)
+    # route retired 2026-11 (#3201); biometrics is a live level measurement
+    b = body("node:substrate.biometrics", 0.95)
     c = body("node:substrate.chat", 0.97)
-    r = rank_candidates([a, b, c], tie_break={"node:substrate.route": 0.9, "node:substrate.execution": 0.1})
+    r = rank_candidates([a, b, c], tie_break={"node:substrate.biometrics": 0.9, "node:substrate.execution": 0.1})
     assert [v.candidate.source_id for v in r.eligible] == [
-        "node:substrate.chat", "node:substrate.route", "node:substrate.execution",
+        "node:substrate.chat", "node:substrate.biometrics", "node:substrate.execution",
     ]
 
 
@@ -287,9 +288,12 @@ def test_ceiling_ties_rank_by_mid_rank_not_strict_below() -> None:
 def test_all_zero_history_with_current_zero_is_still_rest() -> None:
     assert midrank_percentile(0.0, [0.0] * 50) == 0.5  # why mid-rank never gates
     m = PredictionErrorMagnitudeV1(value=0.0, age_sec=1, percentile_now=0.0, n_readings_7d=500, band="quiet")
-    c = node_candidate(node_id="node:substrate.route", label="r", magnitude=m, observed_at=NOW, now=NOW,
+    # a live measurement (route, the original case, was retired 2026-11): refused for being at rest,
+    # not for being an unknown kind
+    c = node_candidate(node_id="node:substrate.biometrics", label="r", magnitude=m, observed_at=NOW, now=NOW,
                        history_values=[0.0] * 500)
-    assert not judge_candidate(c).eligible
+    v = judge_candidate(c)
+    assert not v.eligible and "not a measurement" not in v.reason
 
 
 def test_glossary_failure_is_not_cached(monkeypatch) -> None:
@@ -309,7 +313,7 @@ def test_glossary_failure_is_not_cached(monkeypatch) -> None:
 
 
 def test_trace_lists_absent_sources_so_failure_is_not_calm() -> None:
-    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.route", 0.1)])
+    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.biometrics", 0.1)])
     assert r.no_winner and r.trace()["absent_sources"] == [WORLD_CHAT_SOURCE_ID]
 
 
@@ -369,3 +373,40 @@ def test_walkway_trace_names_the_floor_it_met() -> None:
         magnitude=mag(0.987, value=1.0), observed_at=NOW, now=NOW, history_values=history,
     )
     assert "mid-rank unusual meets its unusual floor" in judge_candidate(cand).reason
+
+
+# --- forecast surprise (node:prediction.*, value_kind surprise_excess, 2026-11-11) -------------------
+
+
+def test_surprise_excess_is_a_measurement_kind_read_from_the_real_glossary() -> None:
+    from orion.attention.self_readings import node_prediction_error_is_measurement
+    from orion.attention.world_first import (
+        MEASUREMENT_VALUE_KINDS,
+        PREDICTION_ERROR_NODE_PREFIXES,
+        node_prediction_error_semantics,
+        source_kind_for_node,
+    )
+
+    assert "surprise_excess" in MEASUREMENT_VALUE_KINDS
+    for node_id in ("node:prediction.room", "node:prediction.body"):
+        assert node_prediction_error_semantics(node_id) == ("surprise_excess", "higher_is_worse")
+        assert node_prediction_error_is_measurement(node_id)
+        assert source_kind_for_node(node_id) == "internal"   # Juniper 2026-11-11: body signals
+        assert node_id.startswith(PREDICTION_ERROR_NODE_PREFIXES)
+
+
+def test_a_high_forecast_surprise_competes_and_a_calm_one_does_not() -> None:
+    hot = judge_candidate(body("node:prediction.room", 0.97))
+    assert hot.eligible and hot.candidate.value_kind == "surprise_excess"
+    calm = judge_candidate(body("node:prediction.room", 0.40))
+    assert not calm.eligible
+
+
+def test_a_stale_forecast_surprise_is_stale_not_calm() -> None:
+    from orion.attention.world_first import INTERNAL_MAX_AGE_SEC
+
+    age = INTERNAL_MAX_AGE_SEC + 60
+    c = node_candidate(node_id="node:prediction.body", label="x", magnitude=mag(0.99, age=age),
+                       observed_at=NOW - timedelta(seconds=age), now=NOW)
+    v = judge_candidate(c)
+    assert not v.eligible and v.reason.startswith("stale")

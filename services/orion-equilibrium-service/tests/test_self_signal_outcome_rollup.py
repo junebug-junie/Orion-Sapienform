@@ -132,7 +132,7 @@ def test_restart_does_not_recompute_persisted_hours() -> None:
 
 def _assoc(clause: str, verdict: str = "tends_more") -> SelfSignalOutcomeAssociationV1:
     return SelfSignalOutcomeAssociationV1(
-        association_id="ssa-0123456789", computed_at=NOW, signal_id="node:substrate.bus_synaptic",
+        association_id="ssa-0123456789", computed_at=NOW, signal_id=BUS,
         outcome="turn_failed", n_high=30, events_high=18, n_normal=60, events_normal=6,
         rate_high=0.6, rate_normal=0.1, ratio=6.0, ci_low=2.7, ci_high=13.5, min_hours=24,
         verdict=verdict, clause=clause,  # type: ignore[arg-type]
@@ -150,7 +150,7 @@ def test_renderable_only_holds_clauses() -> None:
     r.latest = [_assoc(CLAUSE), quiet]
     assert dict(r.renderable(NOW)) == {}  # nothing published yet: an open row must not cite it
     r.published_ids = {"ssa-0123456789", "ssa-9999999999"}
-    assert list(r.renderable(NOW)) == ["node:substrate.bus_synaptic"]
+    assert list(r.renderable(NOW)) == [BUS]
 
 
 def _hourly(n: int, *, verdict: str = "tends_more", end: datetime = NOW) -> list[SelfSignalOutcomeAssociationV1]:
@@ -234,7 +234,7 @@ def test_a_restart_seeds_the_run_from_persisted_rows_and_cycles_extend_it() -> N
 # --- the episode open row ------------------------------------------------------------------------
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
-BUS = "node:substrate.bus_synaptic"
+BUS = "node:substrate.biometrics"  # any live PE node; bus_synaptic retired 2026-11
 HOT = PredictionErrorMagnitudeV1(value=0.12, age_sec=5.0, percentile_now=0.97, n_readings_7d=5000,
                                  band="high", p50_7d=0.03, p90_7d=0.06)
 

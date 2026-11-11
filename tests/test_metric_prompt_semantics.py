@@ -173,7 +173,6 @@ def test_cli_prompt_semantics_gate_passes():
     "node_id,kind",
     [
         ("node:substrate.cabinet", "trigger"),
-        ("node:substrate.route", "count"),
         ("node:substrate.execution", "level"),
     ],
 )

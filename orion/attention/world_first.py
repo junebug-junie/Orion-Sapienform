@@ -110,6 +110,10 @@ SOURCE_KIND_REF_PREFIX = "source_kind:"
 SOURCE_KIND_KEY = "source_kind"
 
 SUBSTRATE_NODE_PREFIX = "node:substrate."
+# Forecast surprise nodes (orion/substrate/prediction_surprise.py, 2026-11-11): one per family x
+# domain, e.g. node:prediction.room / node:prediction.body. Body readings like node:substrate.*.
+PREDICTION_NODE_PREFIX = "node:prediction."
+PREDICTION_ERROR_NODE_PREFIXES: tuple[str, ...] = (SUBSTRATE_NODE_PREFIX, PREDICTION_NODE_PREFIX)
 
 # Internal readings older than this are not current: the same 1800 s horizon
 # the self-model and endogenous curiosity use
@@ -167,7 +171,12 @@ EXTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
 # source with any other kind -- placeholder, bucket, or no glossary entry (None)
 # -- is never a measurement (allow-list since 2026-11-11, retire step 3: a deny
 # list let a retired node with no entry be judged as a level while fresh).
-MEASUREMENT_VALUE_KINDS = frozenset({"level", "count", "trigger", "binary"})
+# surprise_excess (2026-11-11, node:prediction.*): mean excess surprise of scored forecasts. A
+# real measurement: its calm check passed on live data (mean excess within the null band around
+# its theoretical rest point 0, every horizon, 2026-11-11). Ranked like a level against its own
+# week. Not in _CONTINUOUS_VALUE_KINDS: the value is already a 30-min mean of outcomes, written
+# once per outcome (~5 min), so a dwell rule over ~2 readings would only delay it.
+MEASUREMENT_VALUE_KINDS = frozenset({"level", "count", "trigger", "binary", "surprise_excess"})
 
 
 class AttentionCandidateSource(Protocol):

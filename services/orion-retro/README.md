@@ -1,6 +1,6 @@
 # Retro headless authority (P1)
 
-A persistent, operator-only NES service. One spawned child owns the libretro core;
+A persistent NES/SNES service with a private operator API. One spawned child owns the libretro core;
 HTTP/WebSocket handling never calls the native core. Browser access is provided by the separate Hub adapter below. The native service has no bus connection or global event schemas. Optional
 Hub goal planning runs outside the native process; see the bounded goal experiment below.
 
@@ -31,6 +31,65 @@ compiles in a Docker build stage pinned to FCEUmm
 `ac0d00a7fc01166f84c7bac01d1084ebfd2b865e`. GPL license is retained in the image;
 matching source is https://github.com/libretro/libretro-fceumm/tree/ac0d00a7fc01166f84c7bac01d1084ebfd2b865e.
 
+SNES uses Snes9x pinned to `1bcc369e89f08243e0a462882fb1f3e42e51de3a`, built in a
+separate stage at `/opt/retro/snes9x.so`. Its license is retained as
+`/opt/retro/Snes9x-LICENSE.txt`; matching source is
+https://github.com/snes9xgit/snes9x/tree/1bcc369e89f08243e0a462882fb1f3e42e51de3a.
+The existing NES core path, pin and save identities are unchanged.
+
+### Adding operator-owned SNES ROMs
+
+Extract an operator-owned `.sfc` or `.smc` locally, then append it to the private
+catalog with the importer. It preserves every existing entry, refuses replacing
+a different ROM or game, and publishes complete catalog JSON atomically. Repeating
+the same import is a no-op. Run catalog installation/import one process at a time.
+The base kit installer also preserves operator-added entries.
+
+```sh
+PYTHONPATH=.:services/orion-retro python3 services/orion-retro/evals/import_rom.py \
+  --catalog ~/.local/share/orion/retro/service/catalog/catalog.json \
+  --rom '/path/to/Super Mario Kart (USA).sfc' \
+  --game-id super-mario-kart --title 'Super Mario Kart' --players 2
+```
+
+After the catalog is ready, restart `orion-retro` from clean synchronized primary
+main via `scripts/safe_docker_build.sh orion-retro up -d --build --force-recreate`.
+Catalogs are read at startup. Save any active game before restarting. Neither ROMs
+nor save states belong in git. Only the server's Save/Load system is persistent;
+an in-game save alone does not promise persistence across service restarts.
+
+Catalog contract: the existing six fields (`game_id`, `title`, `file`,
+`rom_sha256`, `ports`, `provenance`) plus optional `system: "nes" | "snes"`.
+Omitting `system` preserves legacy NES behavior. NES accepts `.nes`; SNES accepts
+`.sfc`/`.smc` (case-insensitive), inside the catalog mount, at most 32 MiB per ROM
+and 64 games total. A missing required core or a mismatched extension fails startup.
+`GET /games` and session responses add `system`; games retain raw titles, and Hub
+adds ` (SNES)` in its single dropdown. Save compatibility uses that game's exact
+ROM and selected core hashes, both in the API and worker.
+
+SNES accepts libretro bits 0–11 (B/Y/Select/Start/directions/A/X/L/R). NES keeps
+its original mask; triggers and stick clicks are not SNES buttons. Lease, neutral,
+opposing-direction and expiry rules remain the same. SNES does not gain a game
+observer, goal model, atlas or leisure eligibility from being playable.
+
+Real-core CI generates an original SNES controller diagnostic, verifies every
+button on both ports through emulated joypad registers, and checks restored input
+and video. No commercial ROM is required by CI:
+
+```sh
+python3 -m orion.retro.snes_pad_lab /tmp/pad-lab.sfc
+python3 -m orion.retro.snes_pad_eval --core /opt/retro/snes9x.so \
+  --rom /tmp/pad-lab.sfc --output /tmp/snes-pad-eval.json
+```
+
+For the actual operator catalog, the isolated browser eval exercises titles,
+video, nonzero audio, keyboard/gamepad buttons, saves and reconnects:
+
+```sh
+PYTHONPATH=. python3 services/orion-hub/evals/retro_browser.py \
+  --catalog /path/to/catalog --game super-mario-kart --output /tmp/retro-snes-browser
+```
+
 The operator client uses the private Unix socket at `service/ipc/retro.sock`
 (override `--socket` for isolated tests) and needs the service requirements (install in a venv). Run:
 
@@ -53,7 +112,7 @@ request fields cannot select identities. No Hub authentication is claimed.
 
 - GET `/health/live`: API process responds. Disabled service can still be live.
 - GET `/health/ready`: catalog/core ready, plus current session/frame status.
-- GET `/games`: hashes, supported ports, save capability; no filesystem paths.
+- GET `/games`: title, system, hashes, supported ports, save capability; no filesystem paths.
 - POST `/sessions`: `game_id`, `idempotency_key`; one active session, conflicts
   rejected. At most 256 keys per process; retrying a key returns its original ID.
 - GET `/sessions/{id}`: lifecycle, actual frame, callback counts, core identity.

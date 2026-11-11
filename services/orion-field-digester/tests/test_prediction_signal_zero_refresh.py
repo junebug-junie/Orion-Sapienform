@@ -6,6 +6,8 @@ prediction-error receipt on every tick, including exact 0.0. This pins that
 the digester actually lands that zero instead of dropping it -- otherwise the
 producer fix would be a no-op and node:substrate.route's field value would
 stay frozen at its last non-zero reading (live: 0.0003, 12h+ stale).
+node:substrate.route was retired 2026-11 (PE suite rebuild step 5); the same
+contract is pinned here on node:substrate.chat, a live domain.
 """
 
 from __future__ import annotations
@@ -23,24 +25,24 @@ T1 = T0 + timedelta(hours=12)
 
 def _delta(value: float, at: datetime) -> StateDeltaV1:
     return StateDeltaV1(
-        delta_id=f"prediction_error:route_arbitration:{at.isoformat()}",
-        target_projection="substrate.route_arbitration.projection",
+        delta_id=f"prediction_error:chat_session:{at.isoformat()}",
+        target_projection="substrate.chat_session.projection",
         target_kind="prediction_signal",
-        target_id="node:substrate.route",
+        target_id="node:substrate.chat",
         operation="update",
         after={
-            "node_id": "node:substrate.route",
+            "node_id": "node:substrate.chat",
             "pressure_hints": {"prediction_error": value},
         },
         caused_by_event_ids=[],
-        reducer_id="substrate.route_arbitration",
+        reducer_id="substrate.chat_session",
     )
 
 
 def test_zero_prediction_error_replaces_stale_nonzero_and_restamps() -> None:
     state = FieldStateV1(generated_at=T0, tick_id="t0", node_vectors={}, edges=[])
     state = apply_perturbations(state, delta_to_perturbations(_delta(0.0003, T0)), now=T0)
-    assert state.node_vectors["node:substrate.route"]["prediction_error"] == 0.0003
+    assert state.node_vectors["node:substrate.chat"]["prediction_error"] == 0.0003
 
     perturbations = delta_to_perturbations(_delta(0.0, T1))
     assert [(p.channel, p.intensity, p.mode) for p in perturbations] == [
@@ -48,5 +50,5 @@ def test_zero_prediction_error_replaces_stale_nonzero_and_restamps() -> None:
     ]
     state = apply_perturbations(state, perturbations, now=T1)
 
-    assert state.node_vectors["node:substrate.route"]["prediction_error"] == 0.0
-    assert state.node_vector_updated_at["node:substrate.route"]["prediction_error"] == T1
+    assert state.node_vectors["node:substrate.chat"]["prediction_error"] == 0.0
+    assert state.node_vector_updated_at["node:substrate.chat"]["prediction_error"] == T1

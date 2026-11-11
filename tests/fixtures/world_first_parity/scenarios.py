@@ -66,12 +66,12 @@ def _field_scenarios():
         "node:substrate.biometrics": base(calm + [0.03], NOW - timedelta(seconds=20)),
         "node:substrate.execution": base(calm + [0.6], NOW - timedelta(seconds=40)),
         "node:substrate.chat": base([0.0] * 25 + [0.4], NOW - timedelta(hours=3)),
-        "node:substrate.route": base([0.0, 0.25] * 12, NOW - timedelta(minutes=5)),
-        "node:substrate.bus_synaptic": base([0.03, 0.04] * 15, NOW - timedelta(seconds=30)),
+        # node:substrate.route / node:substrate.bus_synaptic baselines removed
+        # 2026-11: both nodes retired (PE suite rebuild step 5). The "field"
+        # golden was regenerated from the tree at that point (see the test).
     }
     yield "all_calm", field.model_copy(update={"tick_id": "tick_parity_2"}), {
         "node:substrate.biometrics": base(calm, NOW),
-        "node:substrate.bus_synaptic": base([0.03, 0.031] * 15, NOW),
     }
 
 

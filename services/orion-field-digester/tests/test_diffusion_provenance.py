@@ -244,12 +244,17 @@ def test_confidence_and_available_capacity_derived_from_final_pressure() -> None
     assert tgt["confidence"] == 0.80
 
 
-def test_capability_with_no_pressure_target_keeps_reconciled_baseline() -> None:
+def test_capability_with_no_pressure_target_reads_unmeasured_not_perfect() -> None:
     # A capability whose only diffusion target is NOT "pressure" (e.g. only
-    # receives reliability_pressure) must not have its pre-existing
-    # confidence/available_capacity baseline (set by the caller's lattice
-    # reconciliation before apply_diffusion ever runs) clobbered or dropped --
-    # only channels apply_diffusion actually recomputes should change.
+    # receives reliability_pressure) has nothing measuring its pressure, so
+    # reconcile's seeded pressure 0.0 and confidence/available_capacity 1.0
+    # are dropped as unmeasured instead of reading as a perfect capability.
+    # Until 2026-11 this test pinned the opposite (the seeded 1.0 baseline was
+    # kept); it changed when capability:transport lost its only pressure
+    # source (node:substrate.bus_synaptic, retired in PE suite rebuild step 5)
+    # and would otherwise have read pressure 0.0 / confidence 1.0 with no
+    # measurement behind either -- the fix/field-capability-unmeasured-fallback
+    # failure (tests/test_capability_unmeasured_is_absent.py).
     edge = FieldEdgeV1(
         source_id="node:athena",
         target_id="capability:orchestration",
@@ -261,7 +266,9 @@ def test_capability_with_no_pressure_target_keeps_reconciled_baseline() -> None:
         generated_at=NOW,
         tick_id="tick_no_pressure_target",
         node_vectors={"node:athena": {"execution_friction": 0.5}},
-        capability_vectors={"capability:orchestration": {"confidence": 1.0, "available_capacity": 1.0}},
+        capability_vectors={
+            "capability:orchestration": {"pressure": 0.0, "confidence": 1.0, "available_capacity": 1.0}
+        },
         edges=[edge],
     )
 
@@ -269,10 +276,36 @@ def test_capability_with_no_pressure_target_keeps_reconciled_baseline() -> None:
 
     tgt = state.capability_vectors["capability:orchestration"]
     assert tgt["reliability_pressure"] == 0.45
-    # Untouched -- "pressure" was never a target for this capability in this
-    # test, so the derived-formula block never ran.
-    assert tgt["confidence"] == 1.0
-    assert tgt["available_capacity"] == 1.0
+    for ch in ("pressure", "confidence", "available_capacity"):
+        assert ch not in tgt, ch
+        assert ch not in state.capability_provenance.get("capability:orchestration", {}), ch
+
+
+def test_live_capability_transport_pressure_is_unmeasured_after_bus_synaptic_retirement() -> None:
+    """Real topology: nothing writes capability:transport.pressure any more, so
+    a full reconcile + diffusion pass leaves pressure and the derived
+    confidence/available_capacity absent (unmeasured), never 0.0/1.0."""
+    from pathlib import Path
+
+    from app.graph.lattice import load_lattice
+    from app.tensor.field_state import empty_field_state
+    from app.tensor.reconcile import reconcile_field_state_with_lattice
+
+    lattice = load_lattice(
+        Path(__file__).resolve().parents[3] / "config" / "field" / "orion_field_topology.v1.yaml"
+    )
+    assert not [
+        e for e in lattice.edges
+        if e.target_id == "capability:transport" and "pressure" in e.channel_map.values()
+    ]
+    state = reconcile_field_state_with_lattice(
+        empty_field_state(lattice=lattice, now=NOW, tick_id="t"), lattice=lattice
+    )
+    assert state.capability_vectors["capability:transport"]["pressure"] == 0.0  # reconcile seed
+    apply_diffusion(state, diffusion_rate=1.0)
+    cap = state.capability_vectors["capability:transport"]
+    for ch in ("pressure", "confidence", "available_capacity"):
+        assert ch not in cap, ch
 
 
 def test_direct_confidence_and_capacity_diffusion_beats_pressure_derived_formula() -> None:

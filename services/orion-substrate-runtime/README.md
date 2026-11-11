@@ -391,6 +391,30 @@ behavior thresholds. See
 `docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
 promotion gate and failure model.
 
+## Forecast surprise nodes (2026-11-11, default on)
+
+`node:prediction.room` (office temperature) and `node:prediction.body` (cabinet temperature): how
+much the world is surprising Orion's own forecasts. Spec
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md` (build item 3).
+
+- Listens on `orion:prediction:surprise` (`prediction.surprise.v1` from orion-prediction: one per
+  scored 5/15-min forecast that passed the producer's issue-time gate).
+- Folds each node's last 30 min of independent outcomes (`orion/substrate/prediction_surprise.py`):
+  one outcome per target bucket (shortest horizon), summed excess surprise over its calm spread
+  (a z-score, the spread set by theory), stored as `clip(z / 3, 0, 1)` through
+  `_write_prediction_error_node`. Rest point 0 (exact 0 56-58 % of writes in a 72 h live replay).
+- Not read (on purpose, for now) by equilibrium's self-signal episode gate / outcome rollup or
+  Hub's attention-organ history route: those still list `node:substrate.*` only. Widen them once
+  a week of live rows shows the nodes behave.
+- Written only on an accepted outcome. No outcomes = no writes: the node ages and every reader
+  (attention, self-readings, curiosity staleness decay) treats it as stale, never calm. FalkorDB
+  node only (no field receipt), so the field digester's decay never touches it.
+- Recorded in `substrate_node_prediction_error_history` (the history recorder covers
+  `node:prediction.*` as well as `node:substrate.*`); glossary `value_kind: surprise_excess`, a
+  measurement kind for attention, curiosity and self-readings.
+- `/health` `prediction_surprise`: per-node window (mean excess, value, n) and verdict counters.
+- Kill switch `SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED` (producer: `PREDICTION_SURPRISE_EVENTS_ENABLED`).
+
 ## Prediction-error magnitude history (2026-10-02, default on)
 
 Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).
@@ -595,6 +619,18 @@ Post-turn closure logs `post_turn_closure received …` on ingest. When
 reverie). It writes no prediction error: `node:substrate.harness_closure` (a fixed 0.65) was
 retired 2026-11-11 (retire step 3,
 `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`).
+
+**Retired 2026-11 (PE suite rebuild step 5): `node:substrate.bus_synaptic` and
+`node:substrate.route`'s prediction error.** Neither was a forecast: bus_synaptic counted the
+fraction of bus edges with `|z| >= 3` (a lull-ending detector), route scored a categorical
+decision-mismatch rate. `_bus_synaptic_tick`, `bus_synaptic_prediction_error()`,
+`route_prediction_error()` and the route PE receipt/node write are deleted; `_route_tick` still
+runs the route reducer and projection. The `SUBSTRATE_BUS_SYNAPTIC_*`, `FALKORDB_BUS_GRAPH` and
+`TRANSPORT_THRESHOLDS_*` env keys are gone from this service. Lingering stored values (the
+FalkorDB nodes, 7-day history rows) are skipped by every generic reader via
+`orion/substrate/prediction_error_freshness.py::RETIRED_PREDICTION_ERROR_NODE_IDS`, and the field
+digester prunes both node ids. `ACTIVE_INFERENCE_DOMAINS` is now execution/biometrics/chat. The
+history notes below describe these domains as they were.
 
 `_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
 lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.biometrics`,
@@ -1321,7 +1357,7 @@ must be flagged in `payload.meta`, not hidden):
 
 | Group | Status | Source |
 |---|---|---|
-| `execution_context` | **Real** | Four of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick`/`_route_tick`/`_bus_synaptic_tick` methods. Fixed slot order: `[execution, chat, route, bus_synaptic]`, remaining slots up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16) are 0.0. |
+| `execution_context` | **Real** | Two of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick` methods. Fixed slot order: `[execution, chat]`; slots 2-3 held route/bus_synaptic until their 2026-11 retirement and are now 0.0 like every remaining slot up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16, unchanged). |
 | `temporal` | **Real** | Pure function over wall-clock time (`world_model_features.temporal_features`): hour-of-day/day-of-week/minute-of-hour sin/cos pairs + tanh-squashed session-elapsed time. |
 | `vision_embedding` | **Real when available and correctly dimensioned; zero-filled + flagged otherwise** | See "Unresolved vision-embedding dim" below. |
 | `biometrics` | **Always zero-filled** | The real biometrics numeric vector lives in `orion-field-digester`, not cheaply reachable from this process per CLAUDE.md section 5's service-boundary rule. This is a different signal from `node:substrate.biometrics`'s own prediction-error *scalar* (which this worker does compute) -- that scalar is deliberately not folded into `execution_context` either; see `world_model_features.py`'s module docstring. |

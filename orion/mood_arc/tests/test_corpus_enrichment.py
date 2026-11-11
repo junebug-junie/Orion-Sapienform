@@ -246,7 +246,6 @@ def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
         "prediction_error_execution": 0.6,
         "prediction_error_chat": 0.7,
         "prediction_error_biometrics": 0.8,
-        "prediction_error_bus_synaptic": 0.9,
     }
 
 
@@ -292,7 +291,6 @@ def test_resolve_live_enrichment_covers_all_five_live_channels() -> None:
         "prediction_error_execution",
         "prediction_error_chat",
         "prediction_error_biometrics",
-        "prediction_error_bus_synaptic",
     }
 
 
@@ -322,7 +320,6 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
         "prediction_error_execution",
         "prediction_error_chat",
         "prediction_error_biometrics",
-        "prediction_error_bus_synaptic",
     }
     joined_queries = " ".join(conn.queries).lower()
     for forbidden_table in (

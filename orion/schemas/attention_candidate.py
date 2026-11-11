@@ -98,7 +98,14 @@ _WORLD_NODE_IDS: frozenset[str] = frozenset(
 
 def world_first_fenced(node_id: str) -> bool:
     """True when the world-first contests must not build a candidate for
-    ``node_id``: fenced from attention and not admitted under a band floor."""
+    ``node_id``: fenced from attention and not admitted under a band floor, or
+    a retired prediction-error node (its stored value is not a reading)."""
+    # Lazy: orion.substrate's package init is heavy, and every caller of this
+    # function (attention broadcast, attention-runtime) already loaded it.
+    from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+
+    if is_retired_prediction_error_node(node_id):
+        return True
     return node_id in NO_ATTENTION_CONSUMER_NODE_IDS and node_id not in ATTENTION_MIN_BAND_BY_NODE_ID
 
 
@@ -149,7 +156,7 @@ class AttentionCandidateV1(BaseModel):
     # value is unchanged. None = a level read every tick, or decay disabled.
     event_window_sec: float | None = Field(default=None, gt=0.0)
     # Set for an INTERNAL source the semantic layer marks as read every tick
-    # (biometrics, bus_synaptic: orion.attention.world_first.
+    # (biometrics: orion.attention.world_first.
     # node_prediction_error_continuous). Such a source is high for itself ~10%
     # of the time by construction, so it competes only when it has been hot for
     # more than orion.attention.sustained.SUSTAIN_DWELL_SEC of the trailing

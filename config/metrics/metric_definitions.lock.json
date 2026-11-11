@@ -1,11 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 782,
+  "metric_count": 780,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 3,
+    "high_severity_count": 3,
     "changes": [
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.harness_closure.prediction_error"
+      "high   removed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error",
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error",
+      "high   semantics_changed metric://field_channel/orion-field-digester/pressure (meaning: \u2026t, vision). Where an edge feeds it: absent (key and provena\u2026\u2026 -> \u2026t, vision). Absent (key and provenance dropped) on a tick w\u2026\u2026)"
     ]
   },
   "definitions": {
@@ -4443,24 +4445,6 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error": {
-      "meaning": "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal.",
-      "value_kind": "level",
-      "rest": "about 0.01-0.03: a few edges are always over |z| 3. 0.0 means no edge anomalous OR no live edges at all (an empty mesh reads calm).",
-      "rest_range": [
-        0.0,
-        0.03
-      ],
-      "sparsity": "per_tick",
-      "absent_means": "carried forward in node_vectors (prediction_error is not a decayed or expiring channel, services/orion-field-digester/app/digestion/decay.py); the self-model drops the domain after 1800 s without a fresh observed_at (orion/substrate/prediction_error_freshness.py:26).",
-      "polarity": "higher_is_worse",
-      "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings",
-        "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line"
-      ],
-      "notes": "category=infra_transport level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
     "metric://field_channel/orion-field-digester/power_pressure": {
       "meaning": "Node power-draw pressure. Real chassis-wide wattage (iLO/BMC RedFish) when that node has BMC credentials configured; falls back to a GPU-power-only estimate otherwise. 0.0 on a node with neither.",
       "feeds_dimensions": [
@@ -4476,7 +4460,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/pressure": {
-      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Where an edge feeds it: absent (key and provenance dropped) on a tick when no edge source measured it, never written as a calm 0.0.",
+      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Absent (key and provenance dropped) on a tick when no edge source measured it, or when no edge feeds it at all (capability:transport since 2026-11), never written as a calm 0.0.",
       "polarity": "higher_is_worse",
       "feeds_dimensions": [
         "resource_pressure"
@@ -4734,27 +4718,6 @@
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
       "notes": "category=self_monitoring level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error": {
-      "meaning": "COUNT: how many of the 4 routing decisions (lane, lane reason, output mode, mind requested) changed versus the previous decided run, as a share (0, 0.25, 0.5, 0.75, 1); averaged when a batch holds several runs.",
-      "value_kind": "count",
-      "rest": "0.0 = routing made the same decision as last time (or no decided run this batch). Mostly zero by design (87% live).",
-      "rest_range": [
-        0.0,
-        0.0
-      ],
-      "sparsity": "designed_sparse",
-      "absent_means": "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s.",
-      "polarity": "higher_is_worse",
-      "declared_consumers": [
-        "orion.attention.field_attention.selectors:select_node_targets",
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-      ],
-      "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
-      ],
-      "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error": {

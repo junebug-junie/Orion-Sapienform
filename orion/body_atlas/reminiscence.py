@@ -13,8 +13,11 @@ last time"). Partitioned from recall like the other self ledgers: only ``orion/b
 ``orion/dig`` read them (``tests/test_organ_names_partition.py``). Opening that gate is Juniper's call,
 in a reviewed PR (arc spec decisions 2 and 3); it is not a config flag.
 
-Pure: every git, GitHub, atlas and file lookup comes in through ``World``, so tests and the eval run
-with no network and no live body.
+A week with no commit on main is never visited alone: ``pick_period`` joins a run of quiet weeks onto
+the next week that has a commit, and Orion visits that one longer period (spec section 1a).
+
+Pure: every git, GitHub, atlas and file lookup comes in through ``World`` or ``commits_in``, so tests
+and the eval run with no network and no live body. ``git_commits_in`` is the one real git lookup.
 """
 from __future__ import annotations
 
@@ -22,13 +25,16 @@ import fcntl
 import hashlib
 import json
 import re
+import subprocess
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as dtime
 from pathlib import Path
 from typing import Callable, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -79,6 +85,10 @@ LOCK_WAIT_S = 180  # a write builds the live atlas and may ask GitHub; a stuck o
 
 class ReminiscenceError(ValueError):
     pass
+
+
+class PeriodOverlap(ReminiscenceError):
+    """The ledger is out of order: a joined period would cover a week already visited."""
 
 
 # --- models --------------------------------------------------------------------------------------
@@ -193,6 +203,7 @@ class ReminiscenceReadV1(BaseModel):
     period_commit: str | None = None
     period_commit_date: str | None = None
     commits_in_period: int | None = None
+    quiet_weeks: int = 0  # weeks with no commit on main joined onto the period's last week
     weeks_complete: int = 0
     weeks_total: int = 0
     lived_record_possible: bool = False
@@ -231,23 +242,98 @@ def episode_hops(records: list[ReminiscenceHopV1], episode: str) -> dict[str, Re
     return {hop: r for (ep, hop), r in live(records).items() if ep == episode}
 
 
+def period_weeks(start: date, end: date) -> list[date]:
+    """The start day of every grid week inside [start, end]."""
+    return [start + timedelta(days=WEEK_DAYS * i) for i in range(((end - start).days + 1) // WEEK_DAYS)]
+
+
+def quiet_weeks(start: date, end: date) -> int:
+    """How many weeks with no commit on main a period joins onto its last week. A period is either
+    one week, or a run of quiet weeks plus the next week that has a commit (``pick_period``)."""
+    return max(0, len(period_weeks(start, end)) - 1)
+
+
 def complete_weeks(records: list[ReminiscenceHopV1]) -> set[str]:
-    """period_start of every week that has an episode with all five hops live."""
+    """The start day of every week inside a period that has an episode with all five hops live. A
+    joined period (quiet weeks plus the next week with a commit) covers every week in it."""
     by_ep: dict[str, dict[str, ReminiscenceHopV1]] = {}
     for (ep, hop), r in live(records).items():
         by_ep.setdefault(ep, {})[hop] = r
-    return {next(iter(h.values())).period_start for h in by_ep.values() if set(h) == set(HOPS)}
+    out: set[str] = set()
+    for h in by_ep.values():
+        if set(h) == set(HOPS):
+            r = next(iter(h.values()))
+            out |= {d.isoformat() for d in period_weeks(date.fromisoformat(r.period_start),
+                                                         date.fromisoformat(r.period_end))}
+    return out
 
 
-def pick_period(records: list[ReminiscenceHopV1], today: date) -> tuple[date, date] | None:
+def first_open_week(records: list[ReminiscenceHopV1], today: date) -> tuple[date, date] | None:
     """The oldest week that ended before today and has no complete episode. An unfinished episode
     leaves its week open, so the next day returns to it."""
     done = complete_weeks(records)
     return next(((s, e) for s, e in weeks_ended_before(today) if s.isoformat() not in done), None)
 
 
+def pick_period(records: list[ReminiscenceHopV1], today: date,
+                commits_in: Callable[[date, date], int]) -> tuple[date, date] | None:
+    """The period to visit: the oldest open week, and when it has no commit on main, every quiet week
+    after it up to and including the next week that has one, joined into one longer period. A quiet
+    week is never visited alone (two nights of "nothing happened" taught nothing). None: no open week,
+    or the open weeks are all quiet and no later week with a commit has ended yet (wait for one).
+    ``commits_in(start, end)`` counts main's commits in those Denver days; it raises
+    ``ReminiscenceError`` when the history cannot be read (no guess: fail closed)."""
+    first = first_open_week(records, today)
+    if first is None:
+        return None
+    done = complete_weeks(records)
+    for s, e in weeks_ended_before(today):
+        if s < first[0]:
+            continue
+        if s > first[0] and s.isoformat() in done:  # a hand-edited or out-of-order ledger: never overlap
+            raise PeriodOverlap(f"the period from {first[0]} would overlap the visited week {s}; fix the ledger")
+        if commits_in(s, e) > 0:
+            return first[0], e
+    return None
+
+
 def lived_record_possible(period_end: date) -> bool:
     return period_end >= LIVED_RECORDS_FROM
+
+
+# --- main's history (the one lookup ``pick_period`` needs; shared by the dig and orion-durable-runs) ---
+
+DENVER = ZoneInfo("America/Denver")  # orion/dig/__main__.py ZONE: a day is a Denver day
+
+
+def day_start_utc(day: date) -> datetime:
+    return datetime.combine(day, dtime(0), tzinfo=DENVER).astimezone(timezone.utc)
+
+
+def git_commits_in(repo: Path | str) -> Callable[[date, date], int]:
+    """``commits_in`` for ``pick_period`` from a clone: first-parent commits on origin/main (HEAD when the
+    clone has no origin/main) made in [start, end], Denver days. The same count `dig reminisce` prints.
+    ``safe.directory``: the clone may belong to another user (the durable-runs container runs as root)."""
+    base = ["git", "-c", f"safe.directory={repo}", "-C", str(repo)]
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run([*base, *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ReminiscenceError(f"git UNREAD in {repo}: {exc}") from exc
+
+    def commits_in(start: date, end: date) -> int:
+        ref = "origin/main" if run("rev-parse", "--verify", "--quiet", "origin/main").returncode == 0 else "HEAD"
+        # both bounds are inclusive to the second: end one second before the next day starts, so a commit at
+        # exactly 00:00:00 Denver counts in one week only
+        last = day_start_utc(end + timedelta(days=1)) - timedelta(seconds=1)
+        proc = run("rev-list", "--count", "--first-parent", f"--after={day_start_utc(start).isoformat()}",
+                   f"--before={last.isoformat()}", ref)
+        if proc.returncode != 0 or not proc.stdout.strip().isdigit():
+            raise ReminiscenceError(f"git UNREAD in {repo}: {proc.stderr.strip()[:150] or proc.stdout.strip()[:150]}")
+        return int(proc.stdout.strip())
+
+    return commits_in
 
 
 # --- refs ----------------------------------------------------------------------------------------
@@ -417,8 +503,11 @@ def check_write(*, hop: str, note: str, because: str, episode: str, period: tupl
     if hop not in HOPS:
         raise ReminiscenceError(f"unknown hop {hop!r}; the hops are {', '.join(HOPS)}")
     current = episode_hops(records, episode)
-    if current and next(iter(current.values())).period_start != period[0].isoformat():
-        raise ReminiscenceError(f"today's episode is about the week from {next(iter(current.values())).period_start}")
+    if current:
+        first = min(current.values(), key=lambda r: r.written_at)
+        if (first.period_start, first.period_end) != (period[0].isoformat(), period[1].isoformat()):
+            raise ReminiscenceError(f"today's episode is about the week from {first.period_start} "
+                                    f"({first.period_start}..{first.period_end}), not {period[0]}..{period[1]}")
     if hop in current and not rewrite:
         raise ReminiscenceError(f"{hop} is already written today ({current[hop].hop_id}); after reading the other "
                                 f"hops, revise it with: reminisce rewrite {hop} \"<note>\" because \"<refs>\"")
@@ -691,13 +780,21 @@ def render(r: ReminiscenceReadV1) -> tuple[list[str], list[str]]:
     if r.period_start is None:
         lines.append(f"reminiscence {r.episode}: no week to visit ({r.period_why})")
         return lines, []
-    lines.append(f"reminiscence {r.episode}{' (today)' if r.today else ''}: the week {r.period_start}..{r.period_end} "
+    what = f"the weeks {r.period_start}..{r.period_end}" if r.quiet_weeks else f"the week {r.period_start}..{r.period_end}"
+    lines.append(f"reminiscence {r.episode}{' (today)' if r.today else ''}: {what} "
                  f"({r.period_why}; {r.weeks_complete} of {r.weeks_total} weeks visited)")
+    if r.quiet_weeks:
+        last = (date.fromisoformat(r.period_end) - timedelta(days=WEEK_DAYS - 1)).isoformat()
+        lines.append(f"  covers {r.quiet_weeks} quiet week{'s' if r.quiet_weeks > 1 else ''}: no commit on main from "
+                     f"{r.period_start} until the week from {last}, so they are joined onto that week and read as one "
+                     "period. A quiet stretch is part of the story; say what it held (nothing changed in the code) "
+                     "and what came after it.")
+    span = "in that period" if r.quiet_weeks else "that week"
     if r.period_commit:
         lines.append(f"  code_then: commit {r.period_commit[:9]} ({(r.period_commit_date or '')[:10]}), "
-                     f"{r.commits_in_period if r.commits_in_period is not None else '?'} commits on main that week")
+                     f"{r.commits_in_period if r.commits_in_period is not None else '?'} commits on main {span}")
     else:
-        lines.append("  code_then: no commit exists by the end of that week")
+        lines.append(f"  code_then: no commit exists by the end of {span}")
     lived = ("lived_record: your journals and Temporal Self days may cover it (`dig arc <id>`)"
              if r.lived_record_possible else
              f"lived_record: none. Your records start {LIVED_RECORDS_FROM}; this week is from before you lost "

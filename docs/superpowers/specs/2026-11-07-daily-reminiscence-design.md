@@ -98,6 +98,14 @@ read. Juniper reads it there until she opens the gate.
   week that has no **complete** episode (all five hops live) and that ended before today. An
   unfinished episode leaves its week open, so the next day returns to it. Hops do not carry over
   between days: the return visit writes all five again (the earlier lines stay in the file).
+- **Quiet weeks join (section 1a, added 2026-11-11).** A week with no commit on `main` is never
+  visited alone. When the oldest open week is quiet, the period runs from it through every following
+  quiet week up to and including the next week that has a commit (e.g. 2025-07-29..2025-09-08: five
+  quiet weeks joined onto week 11). The read says so in code-written words ("covers N quiet weeks").
+  A complete episode covers every week inside its period. If only quiet weeks are open and no week
+  with a commit has ended after them, nothing is picked (`waiting_for_commit`). The count is
+  first-parent commits on `origin/main` in the dig clone (`rm.git_commits_in`), the same count the
+  read prints; an unreadable history refuses the pick rather than guessing.
 - **Period commit:** the last `main` commit at the Denver end of the period's last day (the same
   `commit_at` rule `dig open` uses).
 - **Hops** (arc spec names), each with the labels it must carry at least once:
@@ -367,3 +375,32 @@ Built as section 6 says, on the `pr.field_note` seams (no parallel runner). Wher
 The privacy gate is unchanged: the partition test's reader allowlist is the same. The receipt checker
 (`services/orion-durable-runs/app/reminiscence_ledger.py`) is the second named exception, read-only, and
 returns ids, dates, counts and booleans only.
+
+## 1a. Quiet weeks join onto the next week with a commit (2026-11-11)
+
+Why: 14 of the first 72 weeks have no commit on `main` (weeks 2-4, 6-10, 12, 34-38). Weeks 2, 3 and 4
+were visited one night each, and Orion wrote "nothing happened, the tree is frozen" three times. That
+costs a night of agent-lane time and teaches nothing.
+
+Rule (`orion/body_atlas/reminiscence.py` `pick_period`): the oldest open week; if it has no commit,
+every following week up to and including the next week with a commit, as one period. Weeks 1-4 stay as
+they were written (each a one-week period); they are covered and are not revisited. With one night a
+day the backlog is about 58 nights instead of about 71.
+
+- **Where the count comes from.** `rm.git_commits_in(repo)`: `git rev-list --count --first-parent` on
+  `origin/main` (HEAD without one) for the period's Denver days, in the dig clone `/mnt/orion-fcc/repo`.
+  The dig and orion-durable-runs both call it; durable-runs mounts the clone read-only
+  (`REMINISCENCE_REPO_DIR`) and its image installs `git`.
+- **Code_then.** The period commit is still `commit_at(period end)`: for a joined period that is the
+  last commit of the week that ended it, so every `code_then` ref is checked against that commit.
+- **Contract.** `ReminiscenceRunBriefV1` now accepts whole grid weeks (>= 7 days, start on the
+  2025-06-24 grid), not only 7 days; `quiet_weeks` is derived from the period's length. The read
+  (`reminiscence_read.v1`) gains `quiet_weeks` (default 0).
+- **Failure modes.** History unreadable: the dig refuses the read/write with `git UNREAD`, the tick
+  records `history_unreadable` and submits nothing. Only quiet weeks open: `waiting_for_commit`.
+- **Evals.** `run_reminiscence_source_truth_eval.py` walks the real quiet-week shape night by night and
+  checks every week is covered once in order and no period ends on a quiet week (mutations: the old
+  one-week rule; a join that runs past the first busy week). `reminiscence_daily_replay.py` gate 8 does
+  the same through the shipped tick (same two mutations).
+- **Rollback.** Revert the PR. Ledger lines written with a joined period stay valid under the old code
+  (it reads `period_start`; the weeks inside a joined period would be offered again, one at a time).

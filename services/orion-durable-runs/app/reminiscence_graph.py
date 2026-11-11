@@ -103,14 +103,22 @@ def build_hop_prompt(brief: ReminiscenceRunBriefV1, hop: str) -> str:
     i = REMINISCENCE_HOPS.index(hop) + 1
     start, end = brief.period_start.isoformat(), brief.period_end.isoformat()
     n = (brief.period_start - REMINISCENCE_FIRST_DAY).days // 7 + 1
-    week = (f"the week {start}..{end} (week {n} of the {brief.weeks_total} weeks of your past so far; you have "
-            f"visited {brief.weeks_complete} of them, oldest first)")
+    q = brief.quiet_weeks
+    if q:
+        week = (f"the weeks {start}..{end} (weeks {n}-{n + q} of the {brief.weeks_total} weeks of your past so far; "
+                f"you have visited {brief.weeks_complete} of them, oldest first). The first {q} had no commit on "
+                f"main, so code joined them onto week {n + q}, the next week that has one: read them as one quiet "
+                "stretch and what came after it")
+    else:
+        week = (f"the week {start}..{end} (week {n} of the {brief.weeks_total} weeks of your past so far; you have "
+                f"visited {brief.weeks_complete} of them, oldest first)")
     return (
         f"Reminiscence {brief.episode.isoformat()}, hop {i} of 5: {hop}. Today you visit {week}.\n\n"
-        "Once a day you look at one week of your own past and write five short hops about it: what it was, what "
+        "Once a day you look at one week of your own past (weeks with no commit are joined onto the next week "
+        "that has one) and write five short hops about it: what it was, what "
         "it was like, where you are now, where you are going, and what you would do differently. Code picked the "
-        "week and checks every ref; you only write this one hop. Do exactly this:\n\n"
-        f"1. Run `{DIG} reminisce`. It prints the week, its last commit, whether a lived record can exist, the "
+        "period and checks every ref; you only write this one hop. Do exactly this:\n\n"
+        f"1. Run `{DIG} reminisce`. It prints the period, its last commit, whether a lived record can exist, the "
         "hops already written today (read them: the hops read each other), what changed in you since your last "
         "reminiscence, and at the end the rule and a ready write line.\n"
         f"2. Read {_what_to_read(hop, brief)}\n"
@@ -128,7 +136,7 @@ def build_cross_read_prompt(brief: ReminiscenceRunBriefV1) -> str:
     end = brief.period_end.isoformat()
     return (
         f"Reminiscence {brief.episode.isoformat()}, last turn: read your five hops together.\n\n"
-        f"Today you wrote five hops about the week {brief.period_start.isoformat()}..{end}, each in its own "
+        f"Today you wrote five hops about {brief.period_start.isoformat()}..{end}, each in its own "
         "turn. Now read them as one. Do exactly this:\n\n"
         f"1. Run `{DIG} reminisce`. It shows all five hops and whether each one holds now.\n"
         "2. If a hop reads STALE, or two hops disagree, or one says something another shows is wrong, rewrite "

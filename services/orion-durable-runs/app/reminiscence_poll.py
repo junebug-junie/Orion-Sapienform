@@ -8,9 +8,12 @@ REMINISCENCE_POLL_SEC (600 s), inside the Denver window [REMINISCENCE_HOUR_LOCAL
    (Juniper asked in chat, or today's run completed), nothing. If they are live but today's run failed (its
    cross-read ran out of attempts), the retry below runs: its hops are all ``already_written``, so it is the
    one cross-read turn.
-2. The week: the one today's first hop fixed, else the oldest week that ended before today with no
-   complete episode (``app/reminiscence_ledger.py``, the same rule ``dig reminisce`` uses). None left:
-   nothing.
+2. The period: the one today's first hop fixed, else the oldest week that ended before today with no
+   complete episode, with a run of weeks that have no commit on main joined onto the next week that has one
+   (``app/reminiscence_ledger.py``, the same rule ``dig reminisce`` uses). None left: nothing
+   (``no_week``); only quiet weeks left, none with a commit after them yet: nothing (``waiting_for_commit``);
+   main's history unreadable: nothing (``history_unreadable``, never a guessed week); a period that would
+   overlap a visited week (an out-of-order ledger): nothing (``period_refused``).
 3. Runs of today (``reminiscence-<episode>``, ``-a<k>``): none -> submit the base run. One in flight or
    completed, or MAX_RUNS_PER_DAY spent -> nothing. All failed, the newest older than RETRY_AFTER_SEC, and a
    whole step attempt still fits before the window ends -> one more run (it skips the hops already written).
@@ -30,6 +33,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+from app.reminiscence_ledger import HistoryUnreadable, PeriodRefused
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.reminiscence_run import (
     REMINISCENCE_RUN_PREFIX, REMINISCENCE_WORKFLOW, ReminiscenceRunBriefV1, base_run_id,
@@ -97,11 +101,12 @@ def run_request(run_id: str, brief: ReminiscenceRunBriefV1, *, now: datetime, de
 class TickResult:
     at: str
     episode: str
-    decision: str                     # submitted | outside_window | complete | no_week | waiting | ...
+    decision: str                     # submitted | outside_window | complete | no_week | waiting_for_commit | ...
     run_id: str | None = None
     period_start: str | None = None
     period_end: str | None = None
     week_fixed_by_hop: bool | None = None
+    quiet_weeks: int | None = None
     hops_written: list[str] = field(default_factory=list)
     weeks_complete: int | None = None
     weeks_total: int | None = None
@@ -160,11 +165,25 @@ class ReminiscenceTicker:
             result.decision, result.error = "ledger_unreadable", str(exc)[:300]
             logger.warning("reminiscence_tick_ledger_unreadable %s", exc)
             return result
+        except HistoryUnreadable as exc:
+            result.decision, result.error = "history_unreadable", str(exc)[:300]
+            logger.warning("reminiscence_tick_history_unreadable %s", exc)
+            return result
+        except PeriodRefused as exc:
+            result.decision, result.error = "period_refused", str(exc)[:300]
+            logger.warning("reminiscence_tick_period_refused %s", exc)
+            return result
         if pick is None:
-            result.decision = "no_week"
+            wait = await asyncio.to_thread(self.ledger.quiet_wait_from, episode)
+            if wait is not None:
+                result.decision = "waiting_for_commit"
+                result.error = f"the weeks from {wait.isoformat()} have no commit on main yet"
+            else:
+                result.decision = "no_week"
             return result
         result.period_start, result.period_end = pick.period_start.isoformat(), pick.period_end.isoformat()
         result.week_fixed_by_hop = pick.fixed_by_hop
+        result.quiet_weeks = pick.quiet_weeks
         result.weeks_complete, result.weeks_total = pick.weeks_complete, pick.weeks_total
         runs, in_flight = await self._runs(episode)
         if len(written) == 5 and (not runs or any(r.get("terminal") == "completed" for r in runs)):

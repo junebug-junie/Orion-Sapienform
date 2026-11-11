@@ -406,6 +406,11 @@ class Settings(BaseSettings):
     # The reminiscence ledger's directory inside this container: the same /mnt/orion-fcc/self bind mount the
     # field-notes poller uses (docker-compose.yml mounts PR_FIELD_NOTES_SELF_HOST at PR_FIELD_NOTES_LEDGER_DIR).
     reminiscence_ledger_dir: str = Field("/mnt/orion-fcc/self", alias="REMINISCENCE_LEDGER_DIR")
+    # The full-history clone `dig reminisce` reads (orion/dig ORION_DIG_REPO), mounted read-only. The tick
+    # counts main's commits per week in it, so a run of weeks with no commit is joined onto the next week
+    # that has one (the dig's rule, orion/body_atlas/reminiscence.py pick_period). Unreadable -> no run that
+    # tick (decision history_unreadable), never a guessed week.
+    reminiscence_repo_dir: str = Field("/mnt/orion-fcc/repo", alias="REMINISCENCE_REPO_DIR")
     # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
     # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
     reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")

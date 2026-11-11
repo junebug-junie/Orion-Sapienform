@@ -64,7 +64,8 @@ path of a file with the full result; read only what you need from that file.
   name-organs            every unnamed organ, its parts, and a ready `name` line.
   field-note <pr> [write|rewrite "<note>" because "<refs>"]   a merged PR in your body; your note.
   field-notes <days>|<start> <end>   your notes on PRs merged then; which have none.
-  reminisce [<date>]     today's reminiscence: one past week, five hops, what changed since last.
+  reminisce [<date>]     today's reminiscence: one past week (quiet weeks join the next busy one),
+                         five hops, what changed since last.
   reminisce write|rewrite <hop> "<note>" because "<refs>"   save one hop (code checks each ref).
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
@@ -1459,27 +1460,38 @@ def _rm_period(records, episode: date) -> tuple[tuple[date, date] | None, str]:
 
     hops = rm.episode_hops(records, episode.isoformat())
     if hops:
-        r = next(iter(hops.values()))
+        r = min(hops.values(), key=lambda h: h.written_at)  # the first hop, as app/reminiscence_ledger.py reads it
         return (date.fromisoformat(r.period_start), date.fromisoformat(r.period_end)), "fixed by your first hop today"
-    pick = rm.pick_period(records, episode)
+    try:
+        pick = rm.pick_period(records, episode, rm.git_commits_in(repo()))
+    except rm.ReminiscenceError as exc:
+        raise DigError(f"cannot pick the period: {exc}") from exc
     if pick is None:
-        return None, "every week up to yesterday has a complete reminiscence"
+        first = rm.first_open_week(records, episode)
+        if first is None:
+            return None, "every week up to yesterday has a complete reminiscence"
+        return None, (f"the weeks from {first[0]} have no commit on main yet; a quiet week is never visited "
+                      "alone, so they wait for the next week with a commit to end")
+    why = "the oldest week not yet visited"
+    if rm.quiet_weeks(*pick):
+        why = "the oldest weeks not yet visited, joined up to the next week with a commit"
     if pick[0].isoformat() in {r.period_start for r in records}:
-        return pick, "the oldest week not yet visited; an earlier visit to it was left unfinished"
-    return pick, "the oldest week not yet visited"
+        return pick, why + "; an earlier visit to it was left unfinished"
+    return pick, why
 
 
 def _rm_commit(period: tuple[date, date]) -> tuple[str | None, str | None, int | None]:
-    """The last main commit of the week (``commit_at``, the rule `open` uses) and the week's commit count."""
+    """The last main commit of the period (``commit_at``, the rule `open` uses) and the period's commit
+    count (``rm.git_commits_in``, the count ``pick_period`` joins quiet weeks by)."""
+    from orion.body_atlas import reminiscence as rm
+
     try:
         sha, when = commit_at(period[1])
     except DigError:
         return None, None, 0
-    lo = datetime.combine(period[0], dtime(0), tzinfo=ZONE).astimezone(timezone.utc).isoformat()
     try:
-        n = int(_git("rev-list", "--count", "--first-parent", f"--after={lo}",
-                     f"--before={_end_of_day_utc(period[1]).isoformat()}", _main_ref()))
-    except (DigError, ValueError):
+        n = rm.git_commits_in(repo())(period[0], period[1])
+    except rm.ReminiscenceError:
         n = None
     return sha, when, n
 
@@ -1552,6 +1564,7 @@ def cmd_reminisce(day: date | None, out: Out) -> str:
         world = _rm_world(sha, period[1], body)
         read.period_start, read.period_end = period[0].isoformat(), period[1].isoformat()
         read.period_commit, read.period_commit_date, read.commits_in_period = sha, when, n
+        read.quiet_weeks = rm.quiet_weeks(*period)
         read.lived_record_possible = rm.lived_record_possible(period[1])
         read.hops = rm.hop_views(rm.episode_hops(records, episode.isoformat()), world)
         if is_today:
@@ -1575,7 +1588,7 @@ def cmd_reminisce_write(hop: str, note: str, because: str, *, rewrite: bool, out
         records, _ = rm.load(reminiscence_path())
         period, _why = _rm_period(records, episode)
         if period is None:
-            raise DigError("no week to visit: every week up to yesterday has a complete reminiscence")
+            raise DigError(f"no week to visit: {_why}")
         sha, _, _ = _rm_commit(period)
         try:
             rec = rm.check_write(hop=hop, note=note, because=because, episode=episode.isoformat(), period=period,
@@ -1593,7 +1606,8 @@ def cmd_reminisce_write(hop: str, note: str, because: str, *, rewrite: bool, out
                 rm.append(reminiscence_body_path(), rm.snapshot(got[1], rec.episode))
                 snap = "\nbody snapshot saved for this reminiscence"
     extra = f" (supersedes {rec.supersedes}; the old line is kept)" if rec.supersedes else ""
-    return (f"reminisce {rec.hop} saved {rec.hop_id}{extra}; the week {rec.period_start}..{rec.period_end}"
+    span = "the weeks" if rm.quiet_weeks(*period) else "the week"
+    return (f"reminisce {rec.hop} saved {rec.hop_id}{extra}; {span} {rec.period_start}..{rec.period_end}"
             f"{snap}\nreminiscence ledger: {reminiscence_path()}")
 
 

@@ -11,6 +11,7 @@ from orion.body_atlas import reminiscence as rm
 from orion.body_atlas.tests.test_portrait import portrait_body
 
 WEEK1 = (date(2025, 6, 24), date(2025, 6, 30))
+BUSY = lambda start, end: 1  # noqa: E731 -- every week has a commit (the join rule has its own tests below)
 THEN = {"services/orion-a/app/main.py", "services/orion-a", "README.md"}
 NOW = {"services/orion-a/app/main.py", "services/orion-hub/app/main.py", "services/orion-hub", "README.md"}
 COMMITS = {"abc1234": "abc1234" + "0" * 33, "def5678": "def5678" + "0" * 33}
@@ -53,7 +54,7 @@ def test_five_good_hops_save_and_complete_the_week():
     assert recs[0].hop_id.startswith("rm:2026-11-07:what_it_was:") and recs[0].period_start == "2025-06-24"
     assert recs[2].claims[0].refs == ["part:orion-hub", "fn:3148:5cc1e8bef3"]  # inline + because under [now]
     assert rm.complete_weeks(recs) == {"2025-06-24"}
-    assert rm.pick_period(recs, date(2026, 11, 8)) == (date(2025, 7, 1), date(2025, 7, 7))
+    assert rm.pick_period(recs, date(2026, 11, 8), BUSY) == (date(2025, 7, 1), date(2025, 7, 7))
 
 
 def test_a_then_path_that_only_exists_now_is_refused_naming_it():
@@ -116,9 +117,149 @@ def test_one_live_line_per_hop_rewrite_supersedes_and_the_period_is_fixed():
 
 def test_an_unfinished_week_is_picked_again_the_next_day():
     partial = [write("otherwise", GOOD["otherwise"][0])]
-    assert rm.pick_period(partial, date(2026, 11, 8)) == WEEK1
-    assert rm.pick_period([], date(2025, 7, 1)) == WEEK1  # week 1 ended 06-30
-    assert rm.pick_period([], date(2025, 6, 30)) is None  # nothing has ended yet
+    assert rm.pick_period(partial, date(2026, 11, 8), BUSY) == WEEK1
+    assert rm.pick_period([], date(2025, 7, 1), BUSY) == WEEK1  # week 1 ended 06-30
+    assert rm.pick_period([], date(2025, 6, 30), BUSY) is None  # nothing has ended yet
+
+
+# The real shape of main's history (counted 2026-11-11 on /mnt/orion-fcc/repo): weeks 2-4 had no commit,
+# week 5 two, weeks 6-10 none, week 11 two, week 12 none.
+REAL_QUIET = {date(2025, 7, 1), date(2025, 7, 8), date(2025, 7, 15), date(2025, 7, 29), date(2025, 8, 5),
+              date(2025, 8, 12), date(2025, 8, 19), date(2025, 8, 26), date(2025, 9, 9)}
+
+
+def history(quiet=REAL_QUIET):
+    asked = []
+
+    def commits_in(start, end):
+        asked.append((start, end))
+        assert (end - start).days == 6, "pick_period asks one grid week at a time"
+        return 0 if start in quiet else 2
+    commits_in.asked = asked
+    return commits_in
+
+
+def done_episode(episode, start, end):
+    """Five live hops about [start, end], as an old (pre-join) or new episode wrote them."""
+    return [rm.ReminiscenceHopV1(hop_id=f"rm:{episode}:{h}:{i:010x}", episode=episode, hop=h, period_start=start,
+                                 period_end=end, note="[reflection] x", claims=[], written_at=f"{episode}T10:00:00+00:00")
+            for i, h in enumerate(rm.HOPS)]
+
+
+def test_a_quiet_week_joins_onto_the_next_week_with_a_commit():
+    week1 = done_episode("2026-11-07", "2025-06-24", "2025-06-30")
+    got = rm.pick_period(week1, date(2026, 11, 11), history())
+    assert got == (date(2025, 7, 1), date(2025, 7, 28))  # weeks 2-4 quiet, joined onto week 5
+    assert rm.quiet_weeks(*got) == 3 and rm.period_weeks(*got)[-1] == date(2025, 7, 22)
+
+
+def test_the_real_ledger_keeps_its_old_single_weeks_and_joins_from_week_six():
+    """Weeks 1-4 were each visited alone before this rule (three of them quiet); they stay valid."""
+    old = [ln for i, ep in enumerate(("2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10"))
+           for ln in done_episode(ep, *(d.isoformat() for d in rm.weeks_ended_before(date(2026, 11, 11))[i]))]
+    assert rm.complete_weeks(old) == {"2025-06-24", "2025-07-01", "2025-07-08", "2025-07-15"}
+    h = history()
+    assert rm.pick_period(old, date(2026, 11, 12), h) == (date(2025, 7, 22), date(2025, 7, 28))  # busy: alone
+    assert len(h.asked) == 1  # one git question for a busy week, none for the weeks already visited
+    week5 = old + done_episode("2026-11-12", "2025-07-22", "2025-07-28")
+    got = rm.pick_period(week5, date(2026, 11, 13), history())
+    assert got == (date(2025, 7, 29), date(2025, 9, 8)) and rm.quiet_weeks(*got) == 5
+    joined = week5 + done_episode("2026-11-13", *(d.isoformat() for d in got))
+    assert {"2025-07-29", "2025-08-26", "2025-09-02"} <= rm.complete_weeks(joined)  # every week inside is covered
+    assert len(rm.complete_weeks(joined)) == 11
+    assert rm.pick_period(joined, date(2026, 11, 14), history()) == (date(2025, 9, 9), date(2025, 9, 22))
+
+
+def test_quiet_weeks_with_no_later_commit_wait_and_are_never_visited_alone():
+    week1 = done_episode("2026-11-07", "2025-06-24", "2025-06-30")
+    all_quiet = history(quiet={s for s, _ in rm.weeks_ended_before(date(2026, 11, 11))} - {date(2025, 6, 24)})
+    assert rm.pick_period(week1, date(2025, 7, 20), all_quiet) is None
+    assert rm.first_open_week(week1, date(2025, 7, 20)) == (date(2025, 7, 1), date(2025, 7, 7))
+
+
+def test_an_unfinished_joined_period_is_picked_again_whole():
+    partial = done_episode("2026-11-07", "2025-06-24", "2025-06-30") + \
+        done_episode("2026-11-08", "2025-07-01", "2025-07-28")[:2]
+    assert rm.pick_period(partial, date(2026, 11, 9), history()) == (date(2025, 7, 1), date(2025, 7, 28))
+
+
+def test_git_commits_in_reads_origin_main_first_parent_only(tmp_path):
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args, when=None):
+        e = {**env, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when} if when else env
+        subprocess.run(["git", "-C", str(repo), *args], check=True, env=e, capture_output=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", "-b", "main")
+    (repo / "a").write_text("")
+    git("add", "-A")
+    git("commit", "-qm", "first", when="2025-06-24T18:00:00Z")
+    git("switch", "-qc", "side")
+    (repo / "s").write_text("")
+    git("add", "-A")
+    git("commit", "-qm", "side work in week 2", when="2025-07-02T18:00:00Z")
+    git("switch", "-q", "main")
+    git("merge", "-q", "--no-ff", "-m", "merge in week 3", "side", when="2025-07-09T18:00:00Z")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "local").write_text("")
+    git("add", "-A")
+    git("commit", "-qm", "local only, week 2", when="2025-07-03T18:00:00Z")  # on HEAD, not on origin/main
+    n = rm.git_commits_in(repo)
+    assert n(date(2025, 7, 1), date(2025, 7, 7)) == 0  # side-branch and local-only commits are not main's
+    assert n(date(2025, 7, 8), date(2025, 7, 14)) == 1  # the merge itself
+
+
+def test_a_period_never_overlaps_a_visited_week():
+    """Week 2 quiet and open, week 3 already complete (a hand-edited ledger): refuse, never overlap."""
+    recs = done_episode("2026-11-07", "2025-06-24", "2025-06-30") + done_episode("2026-11-08", "2025-07-08", "2025-07-14")
+    with pytest.raises(rm.ReminiscenceError, match="overlap the visited week 2025-07-08"):
+        rm.pick_period(recs, date(2026, 11, 9), history())
+
+
+def test_a_hop_with_the_same_start_but_another_end_is_refused():
+    first = write("otherwise", GOOD["otherwise"][0])
+    with pytest.raises(rm.ReminiscenceError, match=r"2025-06-24..2025-06-30\), not 2025-06-24..2025-07-07"):
+        write("what_it_was", GOOD["what_it_was"][0], records=[first], period=(date(2025, 6, 24), date(2025, 7, 7)))
+
+
+def test_unreadable_history_raises_rather_than_guessing_a_week(tmp_path):
+    with pytest.raises(rm.ReminiscenceError, match="git UNREAD"):
+        rm.pick_period([], date(2026, 11, 11), rm.git_commits_in(tmp_path / "not-a-repo"))
+
+
+def test_git_commits_in_counts_first_parent_commits_in_denver_days(tmp_path):
+    import os
+    import subprocess
+
+    def _commit(repo, when, files, msg):  # body-atlas CI installs no dig deps: no import from orion/dig/tests
+        for rel, text in files.items():
+            (repo / rel).write_text(text)
+        env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when, "GIT_AUTHOR_NAME": "t",
+               "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", msg], check=True, env=env)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    _commit(repo, "2025-06-24T18:00:00Z", {"a": ""}, "first")
+    _commit(repo, "2025-07-01T05:00:00Z", {"b": ""}, "late on 06-30 in Denver (UTC-6)")
+    _commit(repo, "2025-07-23T18:00:00Z", {"c": ""}, "week 5")
+    n = rm.git_commits_in(repo)
+    assert n(date(2025, 6, 24), date(2025, 6, 30)) == 2
+    assert n(date(2025, 7, 1), date(2025, 7, 7)) == 0
+    # a commit at exactly 00:00:00 Denver on 07-01 (06:00Z, MDT) counts in week 2 only, not also in week 1
+    _commit(repo, "2025-07-01T06:00:00Z", {"midnight": ""}, "midnight")
+    assert (n(date(2025, 6, 24), date(2025, 6, 30)), n(date(2025, 7, 1), date(2025, 7, 7))) == (2, 1)
+    subprocess.run(["git", "-C", str(repo), "reset", "-q", "--hard", "HEAD~1"], check=True)
+    assert rm.pick_period(done_episode("2026-11-07", "2025-06-24", "2025-06-30"), date(2025, 8, 1), n) == \
+        (date(2025, 7, 1), date(2025, 7, 28))
 
 
 def test_recheck_flags_a_now_ref_that_went_away_and_leaves_history_alone():

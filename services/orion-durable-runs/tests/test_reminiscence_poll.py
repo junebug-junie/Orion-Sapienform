@@ -79,7 +79,12 @@ class Submitted:
         self.pool.rows.append({"run_id": request.run_id, "terminal": None, "created_at": NOW, "updated_at": NOW})
 
 
-def ticker(tmp_path, *, rows=None, now=NOW, lines=(), **kw):
+BUSY = lambda start, end: 1   # noqa: E731 -- every week has a commit on main
+# weeks 2-4 had no commit on main (the real history: counted on /mnt/orion-fcc/repo 2026-11-11)
+QUIET_2_TO_4 = lambda start, end: 0 if date(2025, 7, 1) <= start <= date(2025, 7, 15) else 3   # noqa: E731
+
+
+def ticker(tmp_path, *, rows=None, now=NOW, lines=(), commits_in=BUSY, **kw):
     if lines:
         tmp_path.mkdir(parents=True, exist_ok=True)
     for ln in lines:
@@ -87,8 +92,8 @@ def ticker(tmp_path, *, rows=None, now=NOW, lines=(), **kw):
             fh.write(ln + "\n")
     pool = FakePool(rows)
     submit = Submitted(pool)
-    t = ReminiscenceTicker(settings=settings(**kw), pool=pool, submit=submit, ledger=ReminiscenceLedger(tmp_path),
-                           now=lambda: now)
+    t = ReminiscenceTicker(settings=settings(**kw), pool=pool, submit=submit,
+                           ledger=ReminiscenceLedger(tmp_path, commits_in=commits_in), now=lambda: now)
     return t, submit, pool
 
 
@@ -199,6 +204,55 @@ def test_an_unmounted_ledger_never_reads_as_nothing_written(tmp_path):
     assert r.decision == "ledger_unreadable" and submit.requests == []
 
 
+def test_quiet_weeks_join_onto_the_next_week_with_a_commit_in_brief_and_prompt(tmp_path):
+    from app.reminiscence_graph import build_prompt
+
+    week1 = [hop_line(h, episode="2026-11-06") for h in REMINISCENCE_HOPS]
+    t, submit, _ = ticker(tmp_path, lines=week1, commits_in=QUIET_2_TO_4)
+    r = asyncio.run(t.tick_once())
+    assert r.decision == "submitted" and (r.period_start, r.period_end) == ("2025-07-01", "2025-07-28")
+    assert r.quiet_weeks == 3 and r.weeks_complete == 1
+    b = submit.requests[0].brief
+    assert b.quiet_weeks == 3
+    prompt = build_prompt(b, "hop:what_it_was")
+    assert "the weeks 2025-07-01..2025-07-28 (weeks 2-5 of the 71" in prompt
+    assert "The first 3 had no commit on main, so code joined them onto week 5" in prompt
+    assert "open 2025-07-28" in prompt
+
+
+def test_old_single_quiet_weeks_stay_visited_and_the_next_join_starts_after_them(tmp_path):
+    """The real ledger on 2026-11-11: weeks 1-4 visited one at a time (2-4 quiet) before the join rule."""
+    lines = [hop_line(h, episode=ep, start=s, end=e, n=10 * i + j)
+             for i, (ep, s, e) in enumerate([("2026-11-04", "2025-06-24", "2025-06-30"),
+                                             ("2026-11-05", "2025-07-01", "2025-07-07"),
+                                             ("2026-11-06", "2025-07-08", "2025-07-14"),
+                                             ("2026-11-07", "2025-07-15", "2025-07-21")])
+             for j, h in enumerate(REMINISCENCE_HOPS)]
+    t, _, _ = ticker(tmp_path, lines=lines, commits_in=QUIET_2_TO_4)
+    r = asyncio.run(t.tick_once())
+    assert (r.period_start, r.period_end, r.quiet_weeks, r.weeks_complete) == ("2025-07-22", "2025-07-28", 0, 4)
+
+
+def test_only_quiet_weeks_left_waits_and_submits_nothing(tmp_path):
+    week1 = [hop_line(h, episode="2026-11-06") for h in REMINISCENCE_HOPS]
+    t, submit, _ = ticker(tmp_path, lines=week1, commits_in=lambda s, e: 0)
+    r = asyncio.run(t.tick_once())
+    assert r.decision == "waiting_for_commit" and "2025-07-01" in r.error and submit.requests == []
+
+
+def test_unreadable_history_submits_nothing(tmp_path):
+    tmp_path.mkdir(exist_ok=True)
+    for ledger in (ReminiscenceLedger(tmp_path, tmp_path / "not-a-repo"),   # the real git lookup, failing
+                   ReminiscenceLedger(tmp_path)):                           # no repo configured at all
+        submit = Submitted(FakePool())
+        t = ReminiscenceTicker(settings=settings(), pool=submit.pool, submit=submit, ledger=ledger, now=lambda: NOW)
+        r = asyncio.run(t.tick_once())
+        assert r.decision == "history_unreadable" and submit.requests == []
+    assert "git UNREAD" in asyncio.run(ReminiscenceTicker(
+        settings=settings(), pool=FakePool(), submit=Submitted(FakePool()),
+        ledger=ReminiscenceLedger(tmp_path, tmp_path / "not-a-repo"), now=lambda: NOW).tick_once()).error
+
+
 def test_the_ledger_hands_back_ids_and_rewrites(tmp_path):
     ledger = ReminiscenceLedger(tmp_path)
     ledger.path.write_text("\n".join([
@@ -222,8 +276,35 @@ def test_the_settings_ship_the_tick_on_with_an_overnight_window(monkeypatch):
     s = Settings(_env_file=None, POSTGRES_URI="postgresql://unused")
     assert s.reminiscence_enabled is True and (s.reminiscence_hour_local, s.reminiscence_end_hour_local) == (3, 9)
     assert s.reminiscence_turn_timeout_sec == 900.0 and s.reminiscence_ledger_dir == s.field_note_ledger_dir
+    assert s.reminiscence_repo_dir == "/mnt/orion-fcc/repo"   # the dig's clone (ORION_DIG_REPO default)
     with pytest.raises(ValueError):
         Settings(_env_file=None, POSTGRES_URI="postgresql://unused", REMINISCENCE_HOUR_LOCAL=9,
                  REMINISCENCE_END_HOUR_LOCAL=3)
     with pytest.raises(ValueError):   # time(24) would crash every tick (review 2026-11-07)
         Settings(_env_file=None, POSTGRES_URI="postgresql://unused", REMINISCENCE_END_HOUR_LOCAL=24)
+
+
+def test_the_brief_takes_whole_grid_weeks_only():
+    from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
+
+    kw = dict(reminiscence="reminiscence.episode", episode=EPISODE, timeout_sec=900.0)
+    joined = ReminiscenceRunBriefV1(period_start=date(2025, 7, 29), period_end=date(2025, 9, 8), **kw)
+    assert joined.quiet_weeks == 5
+    assert ReminiscenceRunBriefV1(period_start=date(2025, 7, 22), period_end=date(2025, 7, 28), **kw).quiet_weeks == 0
+    for start, end in ((date(2025, 7, 23), date(2025, 7, 29)),     # off the 2025-06-24 grid
+                       (date(2025, 7, 22), date(2025, 7, 30)),     # not whole weeks
+                       (date(2025, 7, 22), date(2025, 7, 21)),     # ends before it starts
+                       (date(2025, 7, 22), EPISODE)):              # has not ended before the episode
+        with pytest.raises(ValueError):
+            ReminiscenceRunBriefV1(period_start=start, period_end=end, **kw)
+
+
+def test_a_period_that_would_overlap_a_visited_week_is_refused(tmp_path):
+    """Week 2 quiet and open while week 3 is complete (an out-of-order ledger): no run, never an overlap."""
+    lines = ([hop_line(h, episode="2026-11-05", n=i) for i, h in enumerate(REMINISCENCE_HOPS)]
+             + [hop_line(h, episode="2026-11-06", start="2025-07-08", end="2025-07-14", n=10 + i)
+                for i, h in enumerate(REMINISCENCE_HOPS)])
+    t, submit, _ = ticker(tmp_path, lines=lines, commits_in=QUIET_2_TO_4)
+    r = asyncio.run(t.tick_once())
+    assert r.decision == "period_refused" and "overlap the visited week 2025-07-08" in r.error
+    assert submit.requests == []

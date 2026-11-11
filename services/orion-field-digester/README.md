@@ -809,7 +809,13 @@ happen in diffusion, the last writer before the tick is saved. A measured zero s
 with provenance (`measured_zero_source`), so for a channel an edge feeds, "absent" means "nobody
 measured it". Channels no edge ever feeds (e.g. graph/memory `reliability_pressure`, vision
 `contract_pressure`) still carry reconcile's seeded 0.0 with no provenance -- not a measurement;
-left for a follow-up. A capability->capability edge counts its source as measured only when the
+left for a follow-up. Exception (2026-11): `pressure` itself, and the derived `confidence` /
+`available_capacity`, are dropped for any capability that has edges but none into `pressure`.
+That became live when `capability:transport` lost its only pressure source
+(`node:substrate.bus_synaptic`, retired in PE suite rebuild step 5); without it transport would
+have read pressure 0.0 / confidence 1.0 with nothing measured. `node:substrate.bus_synaptic` and
+`node:substrate.route` are also on `RETIRED_PSEUDO_NODES` (pruned on reconcile, perturbations
+refused, tension baselines dropped). A capability->capability edge counts its source as measured only when the
 source channel has provenance (reconcile re-seeds the key itself). A derived confidence /
 available_capacity no longer keeps a direct edge's stale provenance: live, `capability:transport`
 confidence named `node:athena` on 123,095 / 123,095 ticks (72 h), left over from the direct
@@ -852,8 +858,9 @@ observer cannot publish, so 0.0 could never arrive). `RETIRED_NODE_CHANNELS` /
 `RETIRED_CAPABILITY_CHANNELS` in `app/tensor/channels.py` prune the names from every persisted vector
 on the next reconcile, including the stale capability-level `transport_pressure` left over from the
 2026-07-24 rename. The `capability:transport -> capability:orchestration` edge (whose source channel
-was never written) is deleted. Transport health lives on `capability:transport.pressure`
-(`node:substrate.bus_synaptic`), `catalog_drift_pressure`, `observer_failure_pressure` and RPC health.
+was never written) is deleted. Transport health lives on `catalog_drift_pressure` and RPC health
+(`observer_failure_pressure` retired 2026-10-07; `capability:transport.pressure` and its source
+`node:substrate.bus_synaptic` retired 2026-11).
 Historical sections below still name these channels; they describe the past.
 See `docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md`.
 

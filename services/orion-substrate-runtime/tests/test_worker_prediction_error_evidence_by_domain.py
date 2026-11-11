@@ -85,7 +85,7 @@ def test_tolerates_malformed_evidence_value() -> None:
     worker = _make_worker()
     nodes = [
         _node(
-            "node:substrate.route",
+            "node:substrate.chat",
             {"prediction_error": 0.1, "prediction_error_evidence_event_ids": "not-a-list"},
         ),
     ]
@@ -114,14 +114,16 @@ class TestCombinedSinglePassHelper:
                     "prediction_error_evidence_event_ids": ["gev_1", "gev_2"],
                 },
             ),
-            _node("node:substrate.route", {"prediction_error": 0.0}),
+            _node("node:substrate.chat", {"prediction_error": 0.0}),
+            # Retired 2026-11 (PE step 5): never read as a domain.
+            _node("node:substrate.route", {"prediction_error": 0.9}),
         ]
 
         pe_by_domain, evidence_by_domain = (
             worker._brain_frame_prediction_error_and_evidence_by_domain(nodes)
         )
 
-        assert pe_by_domain == {"biometrics": 0.4, "route": 0.0}
+        assert pe_by_domain == {"biometrics": 0.4, "chat": 0.0}
         assert evidence_by_domain == {"biometrics": ["gev_1", "gev_2"]}
 
     def test_individual_methods_delegate_to_the_same_single_pass(self) -> None:

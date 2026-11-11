@@ -79,11 +79,10 @@ def test_live_field_shape_prunes_both_phantoms_and_keeps_real_nodes() -> None:
         },
     )
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    for gone in ("node:rpc_timeout", "node:substrate.transport"):
+    for gone in ("node:rpc_timeout", "node:substrate.transport", "node:substrate.bus_synaptic"):
         assert gone not in out.node_vectors
         assert gone not in out.node_vector_updated_at
-    # Live pseudo-nodes (incl. the transport successor) are untouched.
-    assert out.node_vectors["node:substrate.bus_synaptic"]["prediction_error"] == 0.2
+    # Live pseudo-nodes are untouched.
     assert out.node_vectors["node:substrate.chat"]["prediction_error"] == 0.1
     assert out.node_vectors["node:athena"]["cpu_pressure"] == 0.3
 
@@ -102,5 +101,55 @@ def test_real_bus_delta_still_perturbs_athena() -> None:
 def test_pruned_set_is_the_union_and_never_a_live_lattice_node() -> None:
     assert PRUNED_NODE_IDS == frozenset(RETIRED_LATTICE_NODES) | frozenset(RETIRED_PSEUDO_NODES)
     assert not (PRUNED_NODE_IDS & set(_lattice().nodes))
-    # The successor of node:substrate.transport must never be caught by this.
-    assert "node:substrate.bus_synaptic" not in PRUNED_NODE_IDS
+    # Live prediction-error nodes must never be caught by this.
+    for live in ("node:substrate.chat", "node:substrate.execution", "node:substrate.biometrics"):
+        assert live not in PRUNED_NODE_IDS
+
+
+def test_pe_step5_retired_nodes_agree_with_the_shared_deny_list() -> None:
+    """2026-11 (PE suite rebuild step 5): the field prunes exactly the
+    prediction-error nodes every generic reader skips."""
+    from orion.substrate.prediction_error_freshness import RETIRED_PREDICTION_ERROR_NODE_IDS
+
+    assert RETIRED_PREDICTION_ERROR_NODE_IDS <= set(RETIRED_PSEUDO_NODES)
+    for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
+        assert "retired 2026-11" in RETIRED_PSEUDO_NODES[node_id]
+
+
+def _pe_delta(node_id: str) -> StateDeltaV1:
+    return StateDeltaV1(
+        delta_id=f"prediction_error:{node_id}",
+        target_projection="substrate.prediction_error",
+        target_kind="prediction_signal",
+        target_id=node_id,
+        operation="update",
+        after={"node_id": node_id, "pressure_hints": {"prediction_error": 0.7}},
+        caused_by_event_ids=[],
+        reducer_id="substrate.x",
+    )
+
+
+def test_pe_step5_retired_nodes_refuse_perturbation_and_drop_tension_baselines() -> None:
+    from orion.substrate.prediction_error_freshness import RETIRED_PREDICTION_ERROR_NODE_IDS
+
+    sep = "\x1f"
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t",
+        node_vectors={nid: {"prediction_error": 0.4} for nid in RETIRED_PREDICTION_ERROR_NODE_IDS}
+        | {"node:substrate.chat": {"prediction_error": 0.1}},
+        tension_baseline_mu={f"{nid}{sep}prediction_error": 0.3 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS}
+        | {f"node:substrate.chat{sep}prediction_error": 0.1},
+        tension_baseline_var={f"{nid}{sep}prediction_error": 0.01 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS},
+        tension_baseline_n={f"{nid}{sep}prediction_error": 40 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS},
+    )
+    for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
+        assert delta_to_perturbations(_pe_delta(node_id)) == []
+    assert delta_to_perturbations(_pe_delta("node:substrate.chat"))
+
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
+        assert node_id not in out.node_vectors
+        for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
+            assert f"{node_id}{sep}prediction_error" not in store
+    assert out.tension_baseline_mu == {f"node:substrate.chat{sep}prediction_error": 0.1}

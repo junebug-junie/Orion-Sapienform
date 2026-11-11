@@ -24,7 +24,10 @@ from app.worker import BiometricsSubstrateWorker
 from orion.substrate.attention_self_model import reduce_attention_self_model
 
 NOW = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
-DOMAINS = ["execution", "biometrics", "chat", "route", "bus_synaptic"]
+DOMAINS = ["execution", "biometrics", "chat"]
+# Retired 2026-11 (PE suite rebuild step 5): present in the inputs below to
+# prove the reader ignores them, never counted as a domain.
+RETIRED = ["route", "bus_synaptic"]
 
 
 def _node(domain, value, age_sec, *, with_temporal=True):
@@ -52,20 +55,20 @@ def _conf(pe, omitted=None):
     )
 
 
-def test_stale_chat_omitted_and_mean_is_four_domain_mean():
+def test_stale_chat_omitted_and_mean_is_two_domain_mean():
     pe, ev, omitted = _worker()._fresh_prediction_error_and_evidence_by_domain(_nodes(), now=NOW)
-    assert "chat" not in pe and set(pe) == {"execution", "biometrics", "route", "bus_synaptic"}
+    assert "chat" not in pe and set(pe) == {"execution", "biometrics"}
     assert omitted == {"chat": pytest.approx(7200)}
     m = _conf(pe, omitted)
-    assert m.prediction_error_confidence == pytest.approx(1 - (0.1 + 0.2 + 0.0 + 0.3) / 4, abs=1e-4)
-    assert "from 4 of 5 domains" in m.prediction_error_confidence_basis
+    assert m.prediction_error_confidence == pytest.approx(1 - (0.1 + 0.2) / 2, abs=1e-4)
+    assert "from 2 of 3 domains" in m.prediction_error_confidence_basis
     assert "chat(7200s)" in m.prediction_error_confidence_basis
     assert "chat" not in m.prediction_error_by_domain
 
 
 def test_fresh_domains_unchanged():
     pe, _, omitted = _worker()._fresh_prediction_error_and_evidence_by_domain(_nodes(chat_age=10), now=NOW)
-    assert omitted == {} and pe["chat"] == 0.834 and len(pe) == 5
+    assert omitted == {} and pe["chat"] == 0.834 and set(pe) == set(DOMAINS)
     m = _conf(pe)
     assert "from" not in m.prediction_error_confidence_basis
 
@@ -78,13 +81,13 @@ def test_age_at_horizon_is_fresh_just_past_is_stale():
 
 
 def test_all_omitted_is_unknown_not_zero_or_one():
-    nodes = [_node(d, 0.5, 9999) for d in DOMAINS]
+    nodes = [_node(d, 0.5, 9999) for d in DOMAINS + RETIRED]
     pe, _, omitted = _worker()._fresh_prediction_error_and_evidence_by_domain(nodes, now=NOW)
-    assert pe == {} and len(omitted) == 5
+    assert pe == {} and len(omitted) == 3
     m = _conf(pe, omitted)
     assert m.prediction_error_confidence is None
     assert m.prediction_error_confidence_basis.startswith("no current reading")
-    assert "omitted 5 of 5" in m.prediction_error_confidence_basis
+    assert "omitted 3 of 3" in m.prediction_error_confidence_basis
 
 
 def test_missing_observed_at_omitted_and_traced_as_unknown_age():

@@ -78,7 +78,7 @@ def fetch_channels(
     Uses psycopg2 (already a dependency of several services; no new dependency
     added when called from a service that already has it, e.g. orion-hub,
     orion-field-digester). Each row's jsonb column is flattened into one
-    channel per key (`biometrics:<key>`, `bus_synaptic:<key>`); `attention_salience_trace.salience` has no
+    channel per key (`biometrics:<key>`); `attention_salience_trace.salience` has no
     sub-keys and becomes the single scalar channel `attention:salience`.
 
     Returns `(channels, table_row_counts)`. `table_row_counts` maps each source
@@ -137,20 +137,9 @@ def fetch_channels(
             # SelfStateV1 burn, so it contributed no channel to any snapshot
             # (live snapshots: 19 channels, every one from the other sources).
 
-            cur.execute(
-                """
-                SELECT generated_at AS ts, field_json->'node_vectors'->'node:substrate.bus_synaptic' AS channels
-                FROM substrate_field_state
-                WHERE generated_at >= %s
-                ORDER BY ts
-                """,
-                (window_start,),
-            )
-            rows = cur.fetchall()
-            table_row_counts["substrate_field_state"] = len(rows)
-            for ts, bus_synaptic_channels in rows:
-                for key, value in (bus_synaptic_channels or {}).items():
-                    _append(f"bus_synaptic:{key}", ts, value)
+            # substrate_field_state's node:substrate.bus_synaptic source removed
+            # 2026-11: the node was retired (PE suite rebuild step 5) and the
+            # field digester prunes it, so it contributed no channel any more.
     finally:
         conn.close()
 

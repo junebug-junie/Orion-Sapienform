@@ -2776,16 +2776,19 @@ class EndogenousOutreach:
 
     async def compose(
         self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None,
-        lane: str = "agent_first",
+        lane: str = "agent_first", session_id: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Orion writes a message through this module's real unified turn (``_generate``),
         for a caller that brings its own prompt (reading findings). ("", debug) on failure.
 
         ``lane="chat"``: one attempt on the chat lane with the full ``timeout_sec``, no
         agent-lane first try (2026-11-07, office visits: the agent lane timed out at 210 s
-        and the message reached Juniper 5 minutes into her visit). Default unchanged."""
+        and the message reached Juniper 5 minutes into her visit). Default unchanged.
+
+        ``session_id``: run the turn on this session instead of Juniper's active one. Consults
+        (scripts/consult_loop.py) pass their own, so none of her chat history is in the turn."""
         return await self._generate(
-            prompt, self._active_session_id(), correlation_id,
+            prompt, session_id or self._active_session_id(), correlation_id,
             **({"retrieval_query": retrieval_query} if retrieval_query else {}),
             lane=lane,
         )

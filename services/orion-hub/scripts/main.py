@@ -22,6 +22,7 @@ from scripts.memory_routes import router as memory_router
 from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.ask_routes import router as ask_router
+from scripts.consult_routes import router as consult_router
 from scripts.motion_story_routes import router as motion_story_router
 from scripts.people_routes import router as people_router
 from scripts.walkway_rollup_routes import router as walkway_rollup_router
@@ -96,6 +97,7 @@ from scripts.endogenous_outreach import EndogenousOutreach
 from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
+from scripts.consult_loop import ConsultLoop, make_priors_reader, make_self_monitor_reader
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
 from scripts.cognition_trace_cache import CognitionTraceCache
@@ -375,6 +377,7 @@ reading_event_wants: Optional[ReadingEventWants] = None
 self_monitor_question_minter: Optional[SelfMonitorQuestionMinter] = None
 orion_day_letter: Optional[OrionDayLetterLoop] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
+consult_loop: Optional[ConsultLoop] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -478,7 +481,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -1070,6 +1073,38 @@ async def startup_event():
                 enabled=settings.HUB_ROOM_CLAUDE_ENABLED,
             )
             await room_claude_relay.start(bus)
+
+            # Consults: Orion takes plumbing questions to Claude before Juniper
+            # (scripts/consult_loop.py). Claude's turns ride the room relay above.
+            try:
+                consult_loop = ConsultLoop(
+                    enabled=settings.HUB_CONSULT_ENABLED and settings.HUB_ROOM_CLAUDE_ENABLED,
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    outreach_provider=lambda: endogenous_outreach,
+                    relay_provider=lambda: room_claude_relay,
+                    notify_client=NotifyClient(
+                        settings.NOTIFY_BASE_URL,
+                        settings.NOTIFY_API_TOKEN or None,
+                        timeout=settings.HUB_CONSULT_NOTIFY_TIMEOUT_SEC,
+                    ) if settings.NOTIFY_BASE_URL else None,
+                    connections_provider=room_claude_relay.connections,
+                    self_monitor_reader=make_self_monitor_reader(lambda: bus.redis if bus is not None else None),
+                    priors_reader=make_priors_reader(lambda: getattr(curiosity_investigation, "_reader", None)),
+                    claude_limit_channel=settings.CHANNEL_CLAUDE_LIMIT,
+                    tick_sec=settings.HUB_CONSULT_TICK_SEC,
+                    max_turns=settings.HUB_CONSULT_MAX_TURNS,
+                    weekly_brief_cap=settings.HUB_CONSULT_WEEKLY_BRIEF_CAP,
+                    claude_timeout_sec=settings.HUB_CONSULT_CLAUDE_TIMEOUT_SEC,
+                    source_max_age_hours=settings.HUB_CONSULT_SOURCE_MAX_AGE_HOURS,
+                    source_service=settings.SERVICE_NAME,
+                )
+                if consult_loop.enabled:
+                    room_claude_relay.consult_handler = consult_loop.on_claude_utterance
+                    if curiosity_investigation is not None:
+                        curiosity_investigation.consult_provider = lambda: consult_loop
+                await consult_loop.start(bus)
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("consult_loop_start_failed")
 
             harness_step_relay = HarnessStepRelay(
                 channel=settings.CHANNEL_HARNESS_RUN_STEP,
@@ -1700,7 +1735,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1854,6 +1889,12 @@ async def shutdown_event() -> None:
         except Exception:
             pass
         endogenous_outreach = None
+    if consult_loop is not None:
+        try:
+            await consult_loop.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("consult_loop_stop_failed", exc_info=True)
+        consult_loop = None
     if room_claude_relay is not None:
         try:
             await room_claude_relay.stop()
@@ -1911,6 +1952,7 @@ app.include_router(memory_router)
 app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(ask_router)
+app.include_router(consult_router)
 app.include_router(motion_story_router)
 app.include_router(people_router)
 app.include_router(walkway_rollup_router)

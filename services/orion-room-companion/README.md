@@ -210,6 +210,26 @@ and re-copying the credential into `CLAUDE_CONFIG_DIR` before each turn (still
 needs a directory mount as its source, so it inherits the same exposure).
 Neither was needed once the credential itself stopped being a file.
 
+## Consult rooms (2026-11-11)
+
+A room id that starts with `consult:` is a consult from Hub's consult loop
+(`services/orion-hub/scripts/consult_loop.py`): Orion brings a plumbing question to Claude before
+Juniper. Such a turn is different in five ways:
+
+- **It reads code.** `--tools Read,Grep,Glob` with the working directory at `/consult-repo`. That is
+  Orion's FCC sandbox clone, mounted read-only. The clone is reset to `origin/main` after every
+  deploy and holds no `.env` files. The primary checkout is never mounted.
+- **It never bypasses permissions.** It uses `--permission-mode default` with deny rules for `/proc`,
+  `/root`, `/data`, `/etc`, `/app` and `.env` files (`claude_session.consult_argv`). In `-p` mode a
+  read that needs a permission is denied. Verified live in this container on 2026-11-11: a read
+  inside the working directory worked. `/proc/self/environ`, `/etc/hostname`, `/usr/lib/os-release`,
+  a Grep of `/proc/self/environ` and a Glob of `/root` were all refused.
+- **It thinks harder.** `ROOM_COMPANION_CONSULT_MODEL` (claude-sonnet-5-5), `_EFFORT` (high), and
+  `_TIMEOUT_SEC` (900).
+- **Hub writes the whole prompt.** The companion passes it through and adds the consult framing
+  (`orion.consult.core.CLAUDE_CONSULT_SYSTEM`).
+- **It never passes.** Orion asked a question, so `[pass]` is kept as text.
+
 ## Session continuity
 
 One room is one durable Claude session. The first turn mints a uuid and passes

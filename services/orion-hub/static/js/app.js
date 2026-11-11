@@ -11719,6 +11719,13 @@ let chatTurnTimer = null;
             activeConnectionId = d.connection_id || null;
             return;
           }
+          if (d.kind === 'consult_turn' || d.kind === 'consult_brief') {
+            // A consult between Orion and Claude (static/js/consult.js). Not an
+            // Orion turn: returns before the generic branch so it cannot
+            // overwrite the recall/debug panels of the last real turn.
+            if (window.OrionConsult) window.OrionConsult.onFrame(d);
+            return;
+          }
           if (d.kind === 'room_claude_utterance') {
             // Claude's turn in the room. Handled before the generic assistant
             // branch and returns early for the same reason orion_outreach does:

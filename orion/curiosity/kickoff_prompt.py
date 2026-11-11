@@ -1307,8 +1307,12 @@ def build_kickoff_prompt(
     today_fact: Optional[str] = None,
     personality_cue: Optional[str] = None,
     focus=None,
+    consult_outcomes: Sequence = (),
 ) -> str:
     """Assemble the whole invitation.
+
+    ``consult_outcomes``: rows from ``orion_consult`` (Hub claims them for this run): consults with
+    Claude that ended since the last run, and Juniper's answers to their briefs. Writable graph only.
 
     ``focus`` (orion.curiosity.focus.FocusRow): the one question Orion queued from a chat with
     Juniper for this run. Shown first, on a writable graph only (the caller takes it only then),
@@ -1369,6 +1373,10 @@ def build_kickoff_prompt(
         lines += _personality_section(personality_cue)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
+        if writable:
+            from orion.consult.core import consult_outcomes_section
+
+            lines += consult_outcomes_section(consult_outcomes)
         # Only offered when Orion can write the prior that would adopt one --
         # the caller claims (stamps offered) only on a writable graph too.
         if writable:

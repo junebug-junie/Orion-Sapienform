@@ -1096,6 +1096,8 @@ class CuriosityInvestigation:
         # the manual trigger rather than before it.
         self._run_lock = asyncio.Lock()
         self._pool_provider = pool_provider
+        # Consults (scripts/consult_loop.py), set by main after both exist. None: no consults.
+        self.consult_provider: Callable[[], Any] = lambda: None
         self._source_ref = source_ref
 
         self.graph_host = graph_host
@@ -1609,6 +1611,36 @@ class CuriosityInvestigation:
         if not self.carry_forward_enabled or not run_id:
             return None
         return await take_carry_forward(self._pool_provider(), run_id=run_id)
+
+    async def _offer_consult(self, *, run_id: str, line: str, finding_text: str) -> Optional[str]:
+        """A plumbing finding Orion wanted to tell Juniper goes to a consult with Claude first.
+        One consult per run, ever. Never raises into the investigation."""
+        loop = self.consult_provider()
+        if loop is None or not run_id or not (finding_text or "").strip():
+            return None
+        try:
+            return await loop.offer(
+                source_kind="curiosity_run", source_ref=f"curiosity_run:{run_id}",
+                question=finding_text, detail=f"{line} line, run {run_id}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_consult_offer_failed run=%s err=%s", run_id, exc)
+            return None
+
+    async def _take_consult_outcomes(self, view: WorldviewSnapshot, run_id: str) -> tuple:
+        """Claim consult outcomes Orion has not seen: answered consults and Juniper's answers to
+        briefs. Only when Orion can write the belief it belongs on (same rule as corrections)."""
+        if self.consult_provider() is None or not run_id:
+            return ()
+        if not self.graph_enabled or view.is_unavailable:
+            return ()
+        try:
+            from scripts.consult_loop import take_outcomes
+
+            return tuple(await take_outcomes(self._pool_provider(), run_id=run_id))
+        except Exception as exc:  # noqa: BLE001 -- the run goes on without them
+            logger.warning("curiosity_consult_outcomes_failed run=%s err=%s", run_id, exc)
+            return ()
 
     async def _take_corrections(self, view: WorldviewSnapshot, run_id: str) -> tuple:
         """Claim this run's Orion's Day corrections, with each named prior as the graph holds
@@ -2576,6 +2608,7 @@ class CuriosityInvestigation:
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         carry_forward = await self._take_carry_forward(run_id)
         corrections = await self._take_corrections(view, run_id)
+        consult_outcomes = await self._take_consult_outcomes(view, run_id)
         focus = await self._take_focus(view, run_id)
         # Typed copy for the governor's task anchor (survives CLI compaction).
         focus_anchor = self._focus_anchor(focus, run_id)
@@ -2608,6 +2641,7 @@ class CuriosityInvestigation:
             today_fact=today_fact,
             personality_cue=personality_cue.text or None,
             focus=focus,
+            consult_outcomes=consult_outcomes,
         )
         logger.info("curiosity_personality_cue run=%s %s", run_id, cue_status(personality_cue))
         if today_fact:
@@ -5093,9 +5127,12 @@ class CuriosityInvestigation:
         verdict, door_why = await self._curiosity_door(run_id, line)
         if not verdict:
             logger.info("curiosity_outreach_not_for_juniper run=%s line=%s why=%s", run_id, line, door_why)
+            # Not for Juniper yet: Orion takes it to Claude first (scripts/consult_loop.py). The
+            # consult decides whether it reaches her, as one brief.
+            consult_id = await self._offer_consult(run_id=run_id, line=line, finding_text=finding_text)
             self._record_outreach_skip(
                 outreach, NOT_FOR_JUNIPER_REASON, correlation_id=correlation_id, run_id=run_id,
-                line=line, door_policy=door_why,
+                line=line, door_policy=door_why, consult_id=consult_id,
             )
             return NOT_FOR_JUNIPER_REASON
         finding_key = curiosity_finding_key(run_id)

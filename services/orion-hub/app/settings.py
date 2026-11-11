@@ -199,6 +199,24 @@ class Settings(BaseSettings):
     CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
     CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
 
+    # ── Consults (scripts/consult_loop.py) ────────────────────────────
+    # Orion takes plumbing questions to Claude before Juniper; only proposals
+    # and disagreements reach her, as one brief (chat + email). Needs
+    # HUB_ROOM_CLAUDE_ENABLED: Claude's turns ride the room relay.
+    # Design: docs/superpowers/specs/2026-11-11-consult-claude-before-juniper-design.md.
+    HUB_CONSULT_ENABLED: bool = Field(default=True)
+    HUB_CONSULT_TICK_SEC: float = Field(default=120.0)
+    # 3 turns from Orion, 3 from Claude.
+    HUB_CONSULT_MAX_TURNS: int = Field(default=6)
+    HUB_CONSULT_WEEKLY_BRIEF_CAP: int = Field(default=3)
+    # A sent Claude turn with no reply after this long ends the consult (failed).
+    HUB_CONSULT_CLAUDE_TIMEOUT_SEC: float = Field(default=1200.0)
+    # A source not started within this window expires (never started).
+    HUB_CONSULT_SOURCE_MAX_AGE_HOURS: float = Field(default=72.0)
+    HUB_CONSULT_NOTIFY_TIMEOUT_SEC: float = Field(default=20.0)
+    # The Claude usage meter (orion-cocreation-signals). The budget gate reads it.
+    CHANNEL_CLAUDE_LIMIT: str = Field(default="orion:substrate:claude_limit")
+
     HUB_AGENT_CLAUDE_ENABLED: bool = Field(
         default=True,
         alias="HUB_AGENT_CLAUDE_ENABLED",

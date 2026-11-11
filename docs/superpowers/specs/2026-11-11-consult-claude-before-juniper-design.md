@@ -1,6 +1,21 @@
 # Consult Claude before Juniper: a second pair of eyes for Orion's plumbing questions
 
-Status: design (proposal mode). Approved in chat by Juniper on 2026-11-11 ("fantastic on all the above"). No shadow mode: Juniper said it is not needed.
+Status: Patch 1 built (PR on `feat/consult-claude-patch1`). Approved in chat by Juniper on 2026-11-11 ("fantastic on all the above"). No shadow mode: Juniper said it is not needed.
+
+**Changed during the build (2026-11-11), and why:**
+
+- **Claude runs in `orion-room-companion`, not `orion-curiosity-peer`.** The companion already holds
+  the subscription token, already runs Claude session by session, and its replies already reach Hub
+  chat through the room relay. A consult is a room whose id starts with `consult:`. No new channel.
+  The peer container's repo mount is the primary checkout, which holds `.env` secrets. The companion
+  instead mounts Orion's FCC sandbox clone read-only, and that clone has no secrets.
+- **Live data: Orion runs the digs.** Orion's turns go through Orion's real unified turn, which has
+  the dig kit. Claude asks; Orion fetches.
+- **No 80% line.** The meter reports only "a limit was hit" or "clear". It has no percentage. The
+  gate fails closed instead. It needs a fresh weekly reading that says `clear`, and a session reading
+  that is not `limited` (`orion/consult/core.py` `budget_refusal`).
+- **Hub does not write `:Prior` nodes.** Orion alone writes beliefs. Hub shows Orion each outcome
+  once, at the next curiosity run, and Orion records it.
 
 ## Arsonist summary
 

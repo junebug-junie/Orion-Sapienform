@@ -109,9 +109,12 @@ stereo s16le audio. Header: version, native frame, width, height, libretro forma
 (0=1555, 1=XRGB8888, 2=565), video_bytes, sample_rate, cumulative sample_end,
 audio_frames. Maximum geometry 512×512; maximum PCM chunk 65536 bytes. Current NES
 core yields 256×240, ~60.10 emulated FPS, ~30.05 delivered frames/s. Browser keeps
-one decode in flight plus one latest packet. Audio gaps discard queued sources;
-playout scheduling stays within 120 ms. Associated video is presented at the
-packet's audio start. This is a bounded scheduling policy, not measured A/V drift.
+one decode in flight plus one latest packet. Audio gaps discard queued sources.
+Video is drawn immediately after decode; returning presentation credit never
+waits for the audio clock or a browser timer. PCM starts at least 25 ms ahead of
+the audio clock; a queued start more than 50 ms ahead resets audio to the current
+packet. This bounds scheduled start delay, not sound heard at speakers. Bursty
+delivery can discard audio; actual A/V drift still needs an output-device check.
 
 The separate input socket preserves one upstream connection per browser. Each
 valid input is acknowledged after its native frame. Hub never multiplexes owners.

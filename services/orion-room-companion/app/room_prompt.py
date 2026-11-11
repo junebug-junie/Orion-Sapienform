@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Sequence
 
+from orion.consult.core import CLAUDE_CONSULT_SYSTEM
 from orion.schemas.room_claude import RoomTranscriptEntryV1
 
 SYSTEM_PROMPT = (
@@ -98,9 +99,12 @@ def is_pass(text: str) -> bool:
     return text.strip().strip("`").casefold() == PASS_SENTINEL
 
 
-def append_system_prompt_for(*, trigger: str, prompt: str) -> str:
-    """System framing for one room turn, including contractor-peer mode."""
+def append_system_prompt_for(*, trigger: str, prompt: str, consult: bool = False) -> str:
+    """System framing for one room turn, including contractor-peer and consult mode."""
     parts = [SYSTEM_PROMPT]
+    if consult:
+        # A consult is never a social chat and never passes: Orion asked a question.
+        return "".join(parts + [CLAUDE_CONSULT_SYSTEM])
     if CONTRACTOR_PEER_MARKER in (prompt or ""):
         parts.append(CONTRACTOR_PEER_CLAUSE)
     if trigger == "auto":

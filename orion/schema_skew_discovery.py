@@ -163,6 +163,7 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     "orion/core/schemas/drives.py": (None, "orion:memory:drives:state has had no producer since the 2026-07-30 drive-pressure deletion"),
     "orion/schemas/actions/daily.py": (None, "LLM output parsed by orion-actions"),
     "orion/schemas/world_pulse_read.py": (None, "LLM output and the hub's own DB round trip"),
+    "orion/schemas/consult.py": (None, "Claude's consult reply (LLM output) the hub parses, and the hub's own DB round trip"),
     "orion/schemas/telemetry/mood_arc.py": (None, "manifest file written by the offline fit script"),
     "orion/schemas/telemetry/phi_encoder.py": (None, "manifest file written by the offline fit script"),
     "orion/schemas/evidence_index.py": (

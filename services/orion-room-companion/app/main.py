@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.consult.core import consult_id_from_room
 from orion.core.bus.resilience import run_subscription
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
@@ -141,8 +142,11 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     ensure_runtime_dirs(settings)
     key = room_key(request)
     session_id, resume = peek_or_mint_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    # A consult room (Hub's consult loop, orion.consult.core): Hub writes the whole user-role
+    # text itself, Claude reads the code read-only, thinks harder and gets more time.
+    consult = consult_id_from_room(request.room_id) is not None
 
-    prompt = build_turn_prompt(
+    prompt = request.prompt if consult else build_turn_prompt(
         prompt=request.prompt,
         invited_by_name=request.invited_by,
         transcript=request.transcript,
@@ -156,12 +160,12 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     result = run_room_turn(
         prompt,
         claude_bin=settings.ROOM_COMPANION_CLAUDE_BIN,
-        model=settings.ROOM_COMPANION_MODEL,
-        effort=settings.ROOM_COMPANION_EFFORT,
+        model=settings.ROOM_COMPANION_CONSULT_MODEL if consult else settings.ROOM_COMPANION_MODEL,
+        effort=settings.ROOM_COMPANION_CONSULT_EFFORT if consult else settings.ROOM_COMPANION_EFFORT,
         setting_sources_env_key=settings.ROOM_COMPANION_SETTING_SOURCES_ENV_KEY,
         session_id=session_id,
         resume=resume,
-        timeout_sec=settings.ROOM_COMPANION_TIMEOUT_SEC,
+        timeout_sec=settings.ROOM_COMPANION_CONSULT_TIMEOUT_SEC if consult else settings.ROOM_COMPANION_TIMEOUT_SEC,
         # EVERY turn, not just the first. An earlier version passed this only
         # when minting a session, on the assumption that `--resume` carried the
         # framing forward. It does not: verified live in this container with a
@@ -181,9 +185,12 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         append_system_prompt=append_system_prompt_for(
             trigger=request.trigger,
             prompt=request.prompt,
+            consult=consult,
         ),
         env=build_subprocess_env(settings),
-        cwd=settings.ROOM_COMPANION_WORKSPACE,
+        cwd=settings.ROOM_COMPANION_CONSULT_REPO if consult else settings.ROOM_COMPANION_WORKSPACE,
+        tools=settings.ROOM_COMPANION_CONSULT_TOOLS if consult else "",
+        consult=consult,
     )
 
     # A resume against a session the CLI no longer holds fails identically on
@@ -227,7 +234,7 @@ def _to_utterance(
     # It keeps ok=True and its true cost_usd -- suppressing the event would
     # hide that spend from the meter, and deciding not to speak costs the same
     # tokens as speaking.
-    passed = bool(result.ok and is_pass(result.text))
+    passed = bool(result.ok and is_pass(result.text) and consult_id_from_room(request.room_id) is None)
     return RoomClaudeUtteranceV1(
         request_id=request.request_id,
         correlation_id=request.correlation_id,

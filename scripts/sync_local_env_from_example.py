@@ -130,6 +130,10 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Consults (2026-11-11): Hub's loop (scripts/consult_loop.py) and the room companion's consult
+    # mode. Neither prefix matched before, so the default run added none of their keys.
+    "HUB_CONSULT_",
+    "ROOM_COMPANION_CONSULT_",
     # Self-monitor effects (rung 6, 2026-11-03): E1 act gate in orion-thought (was dispatch-runtime) + orion-actions
     # (SELF_MONITOR_ACT_GATE_ENABLED, SELF_MONITOR_PROBE_INTERVAL_SEC) and E2 in Hub
     # (SELF_MONITOR_QUESTIONS_*). Without this the default run visited all three and added nothing.
@@ -568,6 +572,8 @@ SYNC_EXACT = frozenset(
 )
 
 DEFAULT_SERVICES = (
+    # Consult mode keys (ROOM_COMPANION_CONSULT_*, 2026-11-11). Not visited before.
+    "orion-room-companion",
     "orion-memory-crystallizer",
     "orion-memory-consolidation",
     "orion-recall",

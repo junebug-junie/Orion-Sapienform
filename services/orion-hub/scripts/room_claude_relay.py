@@ -41,9 +41,10 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
+from orion.consult.core import consult_id_from_room
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.room_claude import (
     RoomClaudeRequestV1,
@@ -90,6 +91,14 @@ class RoomClaudeRelay:
         # request_id -> the session that asked, so a reply lands back in the
         # conversation it belongs to rather than being broadcast blindly.
         self._pending: Dict[str, Dict[str, Any]] = {}
+        # Consult rooms (room_id "consult:<id>") belong to the consult loop, not a
+        # chat session: their replies go to this handler instead (scripts/consult_loop.py).
+        self.consult_handler: Optional[Callable[[RoomClaudeUtteranceV1], Awaitable[None]]] = None
+        self._consult_tasks: Set[asyncio.Task] = set()
+
+    def connections(self) -> Dict[str, Dict[str, Any]]:
+        """Live chat sockets (connection_id -> {"queue", "session_id"}), for a broadcast."""
+        return self._connections
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -118,6 +127,8 @@ class RoomClaudeRelay:
         )
 
     async def stop(self) -> None:
+        for task in list(self._consult_tasks):
+            task.cancel()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -217,6 +228,15 @@ class RoomClaudeRelay:
             return
 
         pending = self._pending.pop(utterance.request_id, None)
+        if consult_id_from_room(utterance.room_id) is not None:
+            # Never blocks this loop: an Orion consult turn after it can take minutes.
+            if self.consult_handler is not None:
+                task = asyncio.create_task(self.consult_handler(utterance))
+                self._consult_tasks.add(task)
+                task.add_done_callback(self._consult_tasks.discard)
+            else:
+                logger.warning("room_claude_relay_consult_unhandled room=%s", utterance.room_id)
+            return
         session_id = utterance.session_id or (pending or {}).get("session_id")
         target_connection_id = (pending or {}).get("connection_id")
 

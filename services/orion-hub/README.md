@@ -332,6 +332,52 @@ The panel calls:
 - `GET /api/notify/recipients/{recipient_group}/preferences`
 - `PUT /api/notify/recipients/{recipient_group}/preferences`
 
+### 4.0 Consults — Orion asks Claude before Juniper (`scripts/consult_loop.py`)
+
+Plumbing questions (why something works the way it does, something that looks wrong, a fix Orion
+wants) go to Claude first. They talk for up to 6 turns in Hub chat. Only a proposal or a disagreement
+reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consult-claude-before-juniper-design.md`.
+
+- **Sources.** A curiosity run the door policy kept from Juniper (`not_for_juniper`), a faculty the
+  self-monitor holds `broken`, and the stuck-belief trigger (`orion/autonomy/ask_claude_trigger.py`).
+  One source starts at most one consult, ever (`orion_consult.source_ref` is unique).
+- **Orion's turns** run through Orion's real unified turn (`EndogenousOutreach.compose`) on the
+  session `consult-<id>`, so none of Juniper's chats are in them. Orion can run digs.
+- **Claude's turns** go to `orion-room-companion` on the room channels (room id `consult:<id>`).
+  Claude reads a read-only `git archive` export of the deployed code (Read/Grep/Glob, no `.git`;
+  `scripts/export_consult_source.py`, refreshed by the post-pull rebuild) and is the skeptic.
+- **Budget.** Before each Claude turn, the loop reads the Claude usage meter
+  (`orion:substrate:claude_limit`). It needs a fresh weekly reading that says `clear` and a session
+  reading that is not `limited`. Otherwise it waits (`budget:<reason>`) and fails closed. The meter
+  knows only "a limit was hit" or "clear". It has no percentage. The readings are pub/sub only and the
+  weekly one is published hourly, so after a Hub restart consults wait up to an hour
+  (`weekly_meter_missing`). The meter reads the athena host's Claude Code transcripts. Consult usage
+  in the companion does not move it.
+- **What Claude sees.** Hub sends the question, its source and Orion's words, nothing else. Orion's
+  turns run on a consult-only session, so no chat continuity is in them. Recall searches the consult
+  question. The unified turn has no switch to turn recall off, and Orion's tools can read Orion's
+  history, so whether Orion quotes a chat is Orion's choice. The prompt asks them not to.
+- **Reliability.** Each Claude send has its own correlation id. A reply that does not match is
+  ignored. A lost reply (Hub down while Claude worked) is re-sent once after
+  `HUB_CONSULT_CLAUDE_TIMEOUT_SEC`. A budget wait keeps the exact pending prompt.
+- **Endings.** `answered`: nothing goes to Juniper. `agreed_proposal` / `disagree`: the brief goes to
+  Hub chat (tagging her, with Yes / No / No-because buttons, `static/js/consult.js`) and to her
+  email (orion-notify). A brief missing any part (`orion/schemas/consult.py`) is never sent. Claude
+  gets one chance to resend it complete.
+- **Volume.** One consult at a time. At most `HUB_CONSULT_WEEKLY_BRIEF_CAP` (3) briefs in any 7 days.
+  A source that is not started within `HUB_CONSULT_SOURCE_MAX_AGE_HOURS` (72) expires.
+- **Learning.** Juniper's answer and an `answered` ending are shown once to Orion's next curiosity
+  run (`take_outcomes`). Orion records them on a belief. Hub never writes `:Prior` nodes.
+- **Storage.** `orion_consult`, `orion_consult_turn` (`services/orion-sql-db/manual_migration_orion_consult_v1.sql`).
+  Turns are NOT written to `chat_history_log`. Only the brief is, as unsolicited (out of turn recall).
+- **API.** `GET /api/consults` (briefs awaiting an answer), `GET /api/consults/{id}` (with turns),
+  `POST /api/consults/{id}/decision`, `GET /api/debug/consult` (last tick + meter).
+- **Env.** `HUB_CONSULT_ENABLED` (on; needs `HUB_ROOM_CLAUDE_ENABLED=true`), `HUB_CONSULT_TICK_SEC`,
+  `HUB_CONSULT_MAX_TURNS`, `HUB_CONSULT_WEEKLY_BRIEF_CAP`, `HUB_CONSULT_CLAUDE_TIMEOUT_SEC`,
+  `HUB_CONSULT_SOURCE_MAX_AGE_HOURS`, `HUB_CONSULT_NOTIFY_TIMEOUT_SEC`, `CHANNEL_CLAUDE_LIMIT`.
+- **Checks.** `tests/test_consult_loop.py` (lifecycle), `tests/test_consult_js.py` (buttons),
+  `orion/consult/tests/test_core.py` (gates), eval `evals/run_consult_source_replay.py` (read-only, live DB).
+
 ### 4.1 Endogenous outreach — Orion speaks first
 
 `scripts/endogenous_outreach.py`. The only path by which Hub emits chat text

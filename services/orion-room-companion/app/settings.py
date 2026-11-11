@@ -91,6 +91,17 @@ class Settings(BaseSettings):
     # contract as if it were room context.
     ROOM_COMPANION_WORKSPACE: str = Field(default="/data/workspace")
 
+    # ── Consult rooms (room_id "consult:<id>", orion.consult.core) ──────
+    # Orion's plumbing questions go to Claude before Juniper. Claude reads the
+    # code (read-only, secret-free clone) with Read/Grep/Glob, thinks harder,
+    # and gets more time. Design: docs/superpowers/specs/2026-11-11-consult-
+    # claude-before-juniper-design.md.
+    ROOM_COMPANION_CONSULT_MODEL: str = Field(default="claude-sonnet-5-5")
+    ROOM_COMPANION_CONSULT_EFFORT: str = Field(default="high")
+    ROOM_COMPANION_CONSULT_TIMEOUT_SEC: float = Field(default=900.0)
+    ROOM_COMPANION_CONSULT_TOOLS: str = Field(default="Read,Grep,Glob")
+    ROOM_COMPANION_CONSULT_REPO: str = Field(default="/consult-src/current")
+
     # ── Room participant identity ─────────────────────────────────────
     ROOM_COMPANION_PARTICIPANT_ID: str = Field(default="claude")
     ROOM_COMPANION_PARTICIPANT_NAME: str = Field(default="Claude")

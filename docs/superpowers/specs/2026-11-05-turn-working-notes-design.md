@@ -1,6 +1,23 @@
 # Turn working notes: carry what Orion did from one message to the next
 
-Status: proposal (cognition/memory change: proposal mode per CLAUDE.md 0A).
+Status: Patches 1 and 2 implemented (branch `feat/turn-working-notes`). Patch 3 and the
+quarantined reader stay proposals.
+
+Implementation notes (deviations from the text below, and why):
+
+- The notes file is per *turn* (`<dir>/<session>/<correlation>.md`), not one per chat. A turn starts
+  with an empty file, so text a tainted turn wrote can never ride along with a later clean turn. The
+  per-chat history lives in the carry (Redis, 24 h per turn batch, newest 3,000 chars).
+- The path reaches Orion through the prompt block, not `CLAUDE_ENV_FILE`: the block must name the
+  path and the line shape anyway, and the warm pool's env file is per slot, not per turn.
+- The governor never sees Hub's own `motor_boot` record (Hub records its pre-dispatch copy of the
+  prompt). The `working_notes` stage stores `carried_in`, the exact block the turn received.
+- `Task`/`Agent` count as outside content: a subagent's own tool calls never reach the turn's step
+  stream, so the harness cannot tell what it read.
+- Baseline (acceptance 1), live 2026-11-11, last 14 days: 50 tool-using chat turns, 44 consecutive
+  pairs, 6 pairs redo a step of the turn before (29 repeated steps, 0 of them repeats of a failure).
+  The taint rule would hold back 9 of 50 turns (18%: `gh pr view` 7, `gh api` 4, GitHub PR read 4).
+  Re-run after 7 days: `python -m orion.harness.evals.turn_repeat_baseline --days 7`.
 Date: 2026-11-05.
 
 ## Arsonist summary

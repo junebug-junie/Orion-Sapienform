@@ -11,6 +11,13 @@ on:
       - "orion/schemas/reminiscence_run.py"   # test_reminisce_cmd.py pins the daily run's receipt contract
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
+      - "orion/harness/working_notes.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/evals/turn_repeat_baseline.py"
+      - "orion/harness/tests/test_working_notes.py"
+      - "orion/cockpit/**"
+      - "orion/hub/cockpit_emit.py"
+      - "orion/hub/tests/test_cockpit_working_notes_hop.py"
       - "orion/physiology/report_text.py"
       - "orion/physiology/evals/**"
       - "orion/schemas/physiology_report.py"
@@ -29,6 +36,13 @@ on:
       - "orion/schemas/reminiscence_run.py"   # test_reminisce_cmd.py pins the daily run's receipt contract
       - "orion/harness/prefix.py"
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
+      - "orion/harness/working_notes.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/evals/turn_repeat_baseline.py"
+      - "orion/harness/tests/test_working_notes.py"
+      - "orion/cockpit/**"
+      - "orion/hub/cockpit_emit.py"
+      - "orion/hub/tests/test_cockpit_working_notes_hop.py"
       - "orion/physiology/report_text.py"
       - "orion/physiology/evals/**"
       - "orion/schemas/physiology_report.py"
@@ -59,6 +73,10 @@ jobs:
         run: |
           PYTHONPATH=. python -m pytest -q -p no:cacheprovider \
             orion/harness/tests/test_stance_scope_hierarchy.py orion/harness/tests/test_harness_prefix.py
+      - name: Turn working notes (carry, taint, shape; runner end to end; cockpit stage)
+        run: |
+          PYTHONPATH=. python -m pytest -q -p no:cacheprovider \
+            orion/harness/tests/test_working_notes.py orion/hub/tests/test_cockpit_working_notes_hop.py
       - name: Body-economy skill text + eval on fixture data (dig body-economy end to end)
         run: |
           PYTHONPATH=. python -m pytest -q -p no:cacheprovider orion/physiology/tests/test_report_text.py

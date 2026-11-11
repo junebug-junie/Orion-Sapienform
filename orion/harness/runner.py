@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER, COCKPIT_WORKING_NOTES_MARKER
+from orion.harness import working_notes
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     is_context_overflow_text,
@@ -230,6 +231,7 @@ def build_harness_prompt(
     situation_prompt_fragment: str | None = None,
     reading_binding: Any = None,
     reading_only: bool = False,
+    working_notes_block: str | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -243,6 +245,7 @@ def build_harness_prompt(
         situation_prompt_fragment=situation_prompt_fragment,
         reading_binding=reading_binding,
         reading_only=reading_only,
+        working_notes_block=working_notes_block,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -353,6 +356,61 @@ class HarnessRunner:
     async def _read_pool_state(self) -> dict[str, Any] | None:
         return await fetch_pool_state(self.bus, source="orion-harness-governor", include_config=True)
 
+    async def _settle_working_notes(
+        self,
+        *,
+        correlation_id: str,
+        session_id: str,
+        notes_file: Any,
+        carry: dict[str, Any] | None,
+        carried_in: str,
+        outside_content: list[str],
+        step_index: int,
+    ) -> None:
+        """End of a chat turn, success or failure: harvest the notes file, update the
+        carry for the next turn, and record a working_notes cockpit stage. Never raises."""
+        notes = None
+        try:
+            if notes_file is not None:
+                notes = working_notes.finish_turn(notes_file, tainted_by=outside_content)
+                if not notes.raw_text.strip():
+                    logger.info("fcc_working_notes_empty corr=%s read_error=%s", correlation_id, notes.read_error)
+                if notes.tainted_by:
+                    logger.warning("fcc_working_notes_tainted corr=%s tools=%s", correlation_id,
+                                   ",".join(notes.tainted_by))
+                if notes.dropped:
+                    logger.info("fcc_working_notes_dropped corr=%s dropped=%s kept=%s", correlation_id,
+                                notes.dropped, len(notes.kept))
+                if notes.suspicious:
+                    logger.warning("fcc_working_notes_suspicious corr=%s lines=%s", correlation_id,
+                                   notes.suspicious)
+                if notes.carried:
+                    logger.info("fcc_working_notes_carried corr=%s kept=%s", correlation_id, len(notes.kept))
+                if notes.raw_text.strip():
+                    await working_notes.write_carry(
+                        self.bus,
+                        session_id=session_id,
+                        carry=working_notes.fold_batch(carry, notes, correlation_id=correlation_id),
+                    )
+        except Exception:
+            logger.warning("fcc_working_notes_settle_failed corr=%s", correlation_id, exc_info=True)
+        try:
+            await publish_harness_run_step(
+                self.bus,
+                correlation_id=correlation_id,
+                step_index=step_index,
+                step={
+                    "_cockpit": COCKPIT_WORKING_NOTES_MARKER,
+                    **working_notes.cockpit_payload(
+                        carried_in=carried_in, notes=notes, enabled_this_turn=notes_file is not None
+                    ),
+                },
+                channel=self.step_channel,
+            )
+        except Exception:
+            logger.warning("harness working_notes cockpit step publish failed corr=%s", correlation_id,
+                           exc_info=True)
+
     async def run(
         self,
         request: HarnessRunRequestV1,
@@ -431,11 +489,33 @@ class HarnessRunner:
         # Independent reads (bus lookup, pool/gateway probe) -- run concurrently
         # rather than serially so a slow/unreachable probe (its own timeout,
         # default 2s) doesn't add to the bus round-trip on top of its own latency.
-        prior_tool_fetch, serving_placement = await asyncio.gather(
+        # Turn working notes (orion/harness/working_notes.py): Hub chat replies only.
+        # Reading-only turns handle web content and get no notes file.
+        notes_session = (
+            thought.session_id
+            if is_chat_reply_request(request) and not getattr(request, "reading_only", False)
+            else None
+        )
+        notes_on = bool(notes_session) and working_notes.enabled()
+
+        async def _no_carry() -> None:
+            return None
+
+        prior_tool_fetch, serving_placement, notes_carry = await asyncio.gather(
             read_last_tool_fetch(self.bus, session_id=thought.session_id),
             _probe_serving_placement(),
+            working_notes.read_carry(self.bus, session_id=notes_session) if notes_on else _no_carry(),
         )
         prior_tool_fetch_names = (prior_tool_fetch or {}).get("tool_names")
+        notes_file = working_notes.notes_path(notes_session, request.correlation_id) if notes_on else None
+        if notes_file is not None and not working_notes.begin_turn(notes_file):
+            notes_file = None
+        working_notes_block = (
+            working_notes.render_block(notes_carry, notes_file=notes_file, session_id=notes_session)
+            if notes_session
+            else None
+        )
+        outside_content: set[str] = set()
 
         prompt = build_harness_prompt(
             thought=thought,
@@ -450,6 +530,7 @@ class HarnessRunner:
             situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
             reading_binding=getattr(request, "reading_binding", None),
             reading_only=getattr(request, "reading_only", False),
+            working_notes_block=working_notes_block,
         )
 
         try:
@@ -556,6 +637,8 @@ class HarnessRunner:
                 if not isinstance(step, dict):
                     continue
                 reading_tracker.observe(step)
+                if notes_file is not None:
+                    outside_content.update(working_notes.outside_content_reasons([step]))
                 # Heartbeat frames stay in the live stream, receipts and step_count (unchanged)
                 # but are not grammar-recorded work: kept out of the collector atoms AND out
                 # of step_char_sum/max so avg_step_chars (= sum / completed atoms) keeps a
@@ -743,6 +826,17 @@ class HarnessRunner:
                     event.get("error"),
                 )
                 break
+
+        if notes_on:
+            await self._settle_working_notes(
+                correlation_id=request.correlation_id,
+                session_id=notes_session,
+                notes_file=notes_file,
+                carry=notes_carry,
+                carried_in=working_notes_block or "",
+                outside_content=sorted(outside_content),
+                step_index=step_count,
+            )
 
         reading_receipts = reading_tracker.outcomes()
         grounded_draft = enforce_reading_receipt_grounding(draft_text, reading_receipts)

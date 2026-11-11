@@ -150,6 +150,15 @@ def _turn(conn, corr: str) -> dict | None:
             if rec is not None:
                 receipts.append(rec)
     receipts.sort(key=lambda x: x.step_index)
+    # The recall digest the live call carried (cortex-exec appended it to the prompt);
+    # the old side gets it back, the new side runs with recall off as the verb now does.
+    digest = ""
+    steps = conn.execute(text("SELECT steps FROM cognition_traces WHERE correlation_id = :c "
+                              "AND verb = 'harness_finalize_reflect' ORDER BY timestamp DESC LIMIT 1"),
+                         {"c": corr}).scalar()
+    for step in steps or []:
+        recall = ((step or {}).get("result") or {}).get("RecallService") or {}
+        digest = str(recall.get("memory_digest") or digest)
     return {
         "user_message": user,
         "draft_text": art.get("draft_text") or "",
@@ -158,6 +167,7 @@ def _turn(conn, corr: str) -> dict | None:
         "notes": (rows.get("situation") or {}).get("compact_text"),
         "receipts": receipts,
         "stored_verdict": (art.get("reflection") or {}).get("alignment_verdict"),
+        "memory_digest": digest.strip(),
     }
 
 
@@ -168,9 +178,23 @@ def _context(turn: dict) -> dict:
         user_message=turn["user_message"], grammar_receipts=turn["receipts"], situation_notes=turn["notes"])
 
 
+def append_memory_digest(prompt: str, digest: str) -> str:
+    """cortex-exec executor._append_memory_digest, as the live judge call got it before recall was off."""
+    if not digest:
+        return prompt
+    return (f"{prompt}\n\n"
+            "# RELEVANT MEMORY (retrieved; supplemental only — prioritize the latest user question; "
+            "ignore unrelated older banter unless the user clearly continues that thread; "
+            "do not repeat past assistant replies quoted inside this block)\n"
+            f"{digest}\n")
+
+
 def build_request(side: str, template: str, turn: dict, backend: str) -> dict:
     ctx = _context(turn)
-    system = Environment(autoescape=False).from_string(template).render(**ctx).strip() + "\n\n" + HOP_GUARDRAIL
+    system = Environment(autoescape=False).from_string(template).render(**ctx)
+    if side == "old":
+        system = append_memory_digest(system, turn.get("memory_digest") or "")
+    system = system.strip() + "\n\n" + HOP_GUARDRAIL
     body: dict = {"messages": [{"role": "system", "content": system}], "max_tokens": OLD_MAX_TOKENS,
                   "temperature": TEMPERATURE, "stream": False}
     if side == "new":
@@ -203,6 +227,7 @@ def main() -> int:
     ap.add_argument("--buckets", default="failed,control")
     ap.add_argument("--lanes", default="chat,agent,agent-gpu2")
     ap.add_argument("--max-per-lane", type=int, default=0, help="per bucket and lane; 0 = all")
+    ap.add_argument("--resume", type=Path, help="a partial report: its turns are kept, not re-run")
     ap.add_argument("--out", type=Path, default=Path("/tmp/judge-crash-replay/report.json"))
     args = ap.parse_args()
     sides = tuple(s for s in args.sides.split(",") if s)
@@ -227,6 +252,10 @@ def main() -> int:
     transport = Counter(c["failure_class"].split(":")[0] for c in fixture["failed"] if c["family"] == "transport")
 
     rows, skipped = [], []
+    if args.resume and args.resume.exists():
+        rows = [r for r in json.loads(args.resume.read_text()).get("turns", []) if all(s in r for s in sides)]
+    done = {(r["bucket"], r["correlation_id"]) for r in rows}
+    cases = [(b, c) for b, c in cases if (b, c["correlation_id"]) not in done]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(args.dsn)
     with engine.connect() as conn:

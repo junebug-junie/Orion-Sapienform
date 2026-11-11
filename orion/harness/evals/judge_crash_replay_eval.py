@@ -125,10 +125,9 @@ def summarize(rows: list[dict], sides: tuple[str, ...]) -> dict:
                 agree = [r for r in rs if side in r and r[side]["ok"] and r[side]["verdict"] == r["stored_verdict"]]
                 entry["agrees_with_stored_verdict"] = len(agree)
             if bucket == "perception":
-                # The stored judge caught an unsupported perception claim; does this side still?
-                caught = [r for r in rs if side in r and r[side]["ok"] and r[side]["verdict"] != "aligned"
-                          and any("unsupported claim" in str(n).lower() for n in r[side].get("notes") or [])]
-                entry["still_flags_unsupported_claim"] = len(caught)
+                # The stored judge caught an unsupported perception claim; does this side still rule
+                # against the draft? Note wording varies ("not grounded", "unsupported claim: ..."),
+                # so the catch is the verdict; a disagreeing case needs its inputs read by hand.
                 entry["not_aligned"] = sum(1 for r in rs if side in r and r[side]["ok"] and r[side]["verdict"] != "aligned")
             entry["by_lane"] = {lane: {"replayed": sum(1 for r in rs if side in r and r["lane"] == lane),
                                        "failures": sum(1 for r in rs if side in r and r["lane"] == lane

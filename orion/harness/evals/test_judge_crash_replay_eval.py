@@ -61,7 +61,7 @@ def test_summary_counts_failures_and_control_agreement():
                   {"bucket": "perception", "lane": "agent", "stored_verdict": "misaligned",
                    "new": {"ok": True, "verdict": "aligned", "notes": []}}]
     p = summarize(perception, ("new",))["perception"]["new"]
-    assert (p["still_flags_unsupported_claim"], p["not_aligned"]) == (1, 1)
+    assert p["not_aligned"] == 1
 
 
 def test_fixture_holds_ids_and_labels_only():

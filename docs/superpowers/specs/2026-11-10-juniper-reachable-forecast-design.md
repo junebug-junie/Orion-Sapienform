@@ -18,13 +18,13 @@ refuses a channel with no consumer, so the event ships with its consumer.
 - **State (Markov):** hours since Juniper's last message, 5 buckets: <1 h, 1-3, 3-12, 12-48, >48.
 - **Juniper's own rules of thumb (2026-11-10), checked against her history before use:**
 
-  | rule | hours | messages | used |
+  | rule | hours | messages | in the model |
   |---|---|---|---|
   | asleep 03:00-08:00 Denver | 510 | 0 | yes |
   | weekends, no coding before noon | 361 | 0 | yes |
   | Mondays out of Claude tokens until reset | 360 | 4 (0.4x) | yes |
   | evenings 18:00-03:00 | 926 | 38 (3.3x) | yes |
-  | weekday kid pickup 15:00-16:30, driving | 144 | 4 (1.2x) | **no: not seen in the data** |
+  | weekday kid pickup 15:00-16:30, driving | 144 | 4 (1.2x) | yes, as her prior; the data may pull it back |
 
 - **Activity (cocreation signals):** `juniper_affective_state_log.message_count`, Juniper's own typed
   Claude Code messages in ~15 min windows (orion-cocreation-signals, since 2026-08-14). Typed in the
@@ -40,9 +40,7 @@ refuses a channel with no consumer, so the event ships with its consumer.
 |---|---|---|
 | `reachable_base_rate` | baseline | weighted rate over all past hours, prior 2 % (0.5 in 25 h) |
 | `reachable_state` | contender | state-bucket rate, backed off to base (K = 8) |
-| `reachable_activity_logit` | contender | ridge logistic (lambda 1): state + clock rules + Claude typing |
-
-Served = whichever of the three has the lowest mean log loss over the last 60 days.
+| `reachable_activity_logit` | **served** | logistic, Juniper's rules as priors: state + clock rules + Claude typing |
 
 Lambda 1 and half-life 60 d were picked from a 4-point grid (lambda {0.1, 1} x half-life {14, 60})
 on the same replay, for the best cold-hour result. That choice is a forking path; the live record is
@@ -62,30 +60,46 @@ and a calibration table. A Wilcoxon / sign test on daily differences is banned h
 the model dozens of hair-thin wins, and the sign test called a cold-hour model "significant"
 (p < 0.001) whose mean loss was worse.
 
-## Replay (evals/run_reachable_replay_eval.py, live data, read-only)
+## Juniper's rules are starting beliefs, not features the data may veto (2026-11-11)
 
-Typing-log coverage (review 2026-11-10): the log starts 2026-08-14 and had outages (one of 23 h). An
-hour whose prior 6 h the log covered < 90 % does not know whether she typed. Those hours are left out
-of training, and an uncovered origin serves the state model's p. 423 of 2,457 replay origins were
-uncovered. The fair test of the typing features is the covered origins (2026-08-14..11-10):
+Juniper: "I gave you a shit ton of heuristics... Why are you going for perfection? We will only get
+more and more datapoints." An earlier draft let the data drop her pickup rule and let a lowest-loss
+contest serve the plain state model, which sidelined every rule she gave. Now each rule is a prior on
+its coefficient (`PRIORS` in app/reachable.py: mean in log-odds, strength). A rule with no data stays
+at her value; data moves a rule only as far as the evidence pushes it. The rules model is always
+served; state and base are graded beside it.
 
-| subset | hours | with message | activity LL | state LL | base LL | activity vs base: gap/day (se), prob_better |
-|---|---|---|---|---|---|---|
-| all | 2034 | 56 | 0.0930 | 0.0898 | 0.1258 | -0.031 (0.019), 0.94 |
-| cold | 1926 | 21 | 0.0567 | 0.0566 | 0.0553 | +0.002 (0.003), 0.25 |
+| rule (her words) | prior log-odds | strength |
+|---|---|---|
+| asleep by 3am (03-08) | -3.0 | 4 |
+| weekends, never coding before noon | -3.0 | 4 |
+| evenings | +1.0 | 4 |
+| Mondays out of tokens until reset | -1.0 | 4 |
+| weekday kid pickup 15:00-16:30 (15:00 and 16:00 hours) | -1.5 | 4 |
+| typed to Claude in the last hour / 1-3 h / not for 6 h | +1.0 / +0.5 / -0.5 | 1 |
 
-- **The state model is the best forecast overall.** Activity vs state: prob_better 0.18 overall,
-  0.45 in cold hours. Typing to Claude has a 4x lift on its own, but it overlaps the state and the
-  clock (she codes with Claude while chatting with Orion, in the evening).
-- **Cold hours: no forecast beats the base rate.** 21 come-back hours in ~1,900 quiet ones is too
-  few, and none of today's inputs separates them. The Hub attention sensor (#3179, live 2026-11-11)
-  is the next candidate input.
-- Served = lowest mean loss among activity, state and base over the last 60 days. On this replay that
-  is the state model.
-- **Calibration: under-confident everywhere** (all origins): stated 0.03 -> 0.047 observed; 0.077 ->
-  0.14; 0.28 -> 0.47. Not refit on this replay (that would tune on the test).
-- Honest reading: a usable "she is mid-conversation" signal, no "she will come back" signal.
-  Outreach timing must not consume it until it states its own bar on cold `prob_better`.
+Next inputs (not yet in the DB this service reads): git pulls, PR merges, the Claude limit reset time
+(bus only), the Hub attention minutes (live 2026-11-11, ~2 weeks of data first).
+
+## Replay (evals/run_reachable_replay_eval.py, live data, read-only, 07-31..11-10)
+
+Typing-log coverage: the log starts 2026-08-14 and had outages (one of 23 h). An hour whose prior 6 h
+the log covered < 90 % is left out of training, and an uncovered origin serves the state model's p
+(423 of 2,457 origins).
+
+| origins | subset | rules model LL | state LL | base LL | vs base | P(beats base) | P(beats state) |
+|---|---|---|---|---|---|---|---|
+| all | all hours | 0.0786 | 0.0774 | 0.1066 | +26 % | 0.95 | 0.40 |
+| all | cold | 0.0497 | 0.0500 | 0.0484 | -3 % | 0.25 | 0.46 |
+| typing-covered | all hours | 0.0906 | 0.0892 | 0.1250 | +28 % | 0.95 | 0.33 |
+| typing-covered | cold | 0.0560 | 0.0563 | 0.0550 | -2 % | 0.22 | 0.35 |
+
+- The rules model ties the state model overall and in cold hours: the rules cost nothing, and they
+  steer the forecast where the data is thin.
+- Cold hours (her coming back after 3+ quiet hours): about level with the base rate. 21 come-back
+  hours in ~1,900 quiet ones; the Hub attention minutes are the next candidate clue.
+- Calibration (all origins): stated 0.030 -> 0.063 observed; 0.091 -> 0.108; 0.244 -> 0.40;
+  0.471 -> 0.588. Better in the middle than the ridge-at-zero draft (0.077 -> 0.14); still timid at the top.
 
 ## Metric quality gate
 

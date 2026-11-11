@@ -15,12 +15,15 @@ are the past hours; weight = 0.5 ** (age / 60 days).
     reachable_base_rate       baseline. Weighted rate over every past hour, smoothed toward 2 %.
     reachable_state           Markov state only: hours since her last message, 5 buckets, backed off
                               to the base rate.
-    reachable_activity_logit  contender. L2 logistic regression (lambda 1) on:
+    reachable_activity_logit  SERVED. Logistic regression on the inputs below, each coefficient
+                              starting from Juniper's own rule (PRIORS) and moved by the data:
         state buckets          <1 h, 1-3, 3-12, 12-48 (reference: >48 h or never)
         asleep                 03:00-08:00 Denver (her word: asleep by 3; 0 messages in 510 h)
         weekend_morning        Sat/Sun before noon (0 in 361 h)
         evening                18:00-03:00 Denver
         monday                 out of Claude tokens until the reset (0.4x)
+        pickup                 weekdays 15:00-17:00 Denver, driving the kids (her word; the data has
+                               seen 4 messages there, so the data may pull this one back)
         claude_1h / claude_1_3h / no_claude_6h
                                Juniper typed to Claude Code in the last hour / 1-3 h ago / not for
                                6 h: juniper_affective_state_log.message_count, her own typed words
@@ -40,10 +43,11 @@ A Wilcoxon / sign test on daily differences is the wrong test here: most days ha
 model wins each of them by a hair, and the sign test calls that significant even where the mean loss
 is worse (seen in the replay). The paired test is on the mean.
 
-Served: whichever of the three had the lowest mean log loss over the last 60 days (see ``verdict``).
-Replay on typing-covered hours (2026-08-14..11-10): the state model wins overall, and none of the three
-beats the base rate in cold hours. Typing to Claude carries 3-4x lift on its own, but it overlaps the
-state and the clock (she codes with Claude while chatting with Orion, in the evening).
+Served: always the model with Juniper's rules. State and base are graded beside it, never instead of
+it. More data moves each rule; nothing waits for a significance line.
+Next inputs, not yet in the DB this service reads: git pulls (~/.orion/post_pull_rebuild.log), PR
+merges, the Claude limit reset time (orion:substrate:claude_limit, bus only), and the Hub attention
+minutes (hub_attention_minute, live 2026-11-11, needs ~2 weeks first).
 """
 from __future__ import annotations
 
@@ -76,7 +80,27 @@ COLD_BUCKET = 2                              # bucket >= 2: no message in the 3 
 P_CLIP = 1e-4
 MIN_DAYS = 20                                # settled local days before a verdict is read
 FEATURES = ("state_lt1h", "state_1_3h", "state_3_12h", "state_12_48h", "asleep", "weekend_morning", "evening",
-            "monday", "claude_1h", "claude_1_3h", "no_claude_6h")
+            "monday", "pickup", "claude_1h", "claude_1_3h", "no_claude_6h")
+# Juniper's own rules (2026-11-10) as STARTING BELIEFS, not features the data may veto: each coefficient
+# is pulled toward its prior mean (log-odds) with the given strength (ridge precision 2 x strength; at a
+# ~2 % rate, strength 1 is worth ~50 hours of data, strength 4 ~200). Data moves a rule only as far as
+# the evidence pushes it. Her words:
+#   asleep          "usually asleep by 3am most nights"                         -> 03:00-08:00 Denver
+#   weekend_morning "weekends, I'm never coding before noon"
+#   evening         "only periodic late chats" / evenings are when she builds   -> 18:00-03:00
+#   monday          "mondays I'm usually out of tokens till Claude resets"
+#   pickup          "always picking up kids between 3-4:30 during the week, driving" -> weekday 15:00-17:00
+#                   origins (the 16:00 hour is half pickup). The replay saw 4 messages there in 144 h;
+#                   the prior holds her word, the data will move it if that keeps happening.
+#   claude_*        "correlate my Claude tokens ... and me reaching out"
+# The state buckets start neutral: there is plenty of data on them.
+PRIORS = {
+    "state_lt1h": (0.0, 1.0), "state_1_3h": (0.0, 1.0), "state_3_12h": (0.0, 1.0), "state_12_48h": (0.0, 1.0),
+    "asleep": (-3.0, 4.0), "weekend_morning": (-3.0, 4.0), "evening": (1.0, 4.0), "monday": (-1.0, 4.0),
+    "pickup": (-1.5, 4.0), "claude_1h": (1.0, 1.0), "claude_1_3h": (0.5, 1.0), "no_claude_6h": (-0.5, 1.0),
+}
+_PRIOR_MEAN = np.array([PRIORS[f][0] for f in FEATURES])
+_PRIOR_STRENGTH = np.array([PRIORS[f][1] for f in FEATURES])
 COVERED_FRAC = 0.9                           # share of the prior 6 h the typing log must cover
 CALIBRATION_BINS = (0.0, 0.02, 0.05, 0.15, 0.4, 1.0)
 _HOUR_NS = 3_600_000_000_000
@@ -123,23 +147,30 @@ def features(hours: np.ndarray, msg_ns: np.ndarray, typed_ns: np.ndarray,
     c13 = _count_before(typed_ns, typed_n, hours, 3.0, 1.0) > 0
     c6 = _count_before(typed_ns, typed_n, hours, 6.0) > 0
     cols = [b == 0, b == 1, b == 2, b == 3, (hr >= 3) & (hr < 8), (wd >= 5) & (hr < 12),
-            (hr >= 18) | (hr < 3), wd == 0, c1, c13 & ~c1, ~c6]
+            (hr >= 18) | (hr < 3), wd == 0, (wd < 5) & ((hr == 15) | (hr == 16)), c1, c13 & ~c1, ~c6]
     return np.column_stack(cols).astype(float), b
 
 
-def fit_logit(X: np.ndarray, y: np.ndarray, w: np.ndarray, l2: float = L2) -> np.ndarray | None:
-    """Weighted ridge logistic regression; [bias, *coefs], or None when the optimiser fails."""
+def fit_logit(X: np.ndarray, y: np.ndarray, w: np.ndarray, prior_mean: np.ndarray | None = None,
+              strength: np.ndarray | None = None) -> np.ndarray | None:
+    """Weighted logistic regression with a Gaussian prior on each coefficient (MAP): penalty
+    strength_j * (beta_j - prior_mean_j)^2, bias unpenalized. Defaults: Juniper's PRIORS.
+    [bias, *coefs], or None when the optimiser fails."""
+    mu = _PRIOR_MEAN if prior_mean is None else prior_mean
+    lam = L2 * (_PRIOR_STRENGTH if strength is None else strength)
     Xb = np.column_stack([np.ones(len(X)), X])
 
     def f(beta):
         z = Xb @ beta
+        dev = beta[1:] - mu
         # log(1 + e^z) - y z: exact log loss, no overflow, no clip
-        loss = (w * (np.logaddexp(0.0, z) - y * z)).sum() + l2 * (beta[1:] @ beta[1:])
+        loss = (w * (np.logaddexp(0.0, z) - y * z)).sum() + float(lam @ (dev * dev))
         g = Xb.T @ (w * (expit(z) - y))
-        g[1:] += 2 * l2 * beta[1:]
+        g[1:] += 2 * lam * dev
         return loss, g
 
-    res = minimize(f, np.zeros(Xb.shape[1]), jac=True, method="L-BFGS-B")
+    start = np.concatenate([[np.log(max(y @ w, 0.5) / max(w.sum(), 1.0))], mu])
+    res = minimize(f, start, jac=True, method="L-BFGS-B")
     if not res.success:
         logger.warning("reachable_logit_fit_failed %s", res.message)
         return None
@@ -297,17 +328,15 @@ def verdict(rows: Iterable[dict]) -> dict:
     """``rows``: settled forecasts {origin, p, p_state, p_baseline, state_bucket, happened}.
 
     Reports how much better the model is and how sure that is; it draws no pass/fail line (any alpha
-    would be a convention, not a cost). Served: whichever had the lowest mean log
-    loss over the window among model, state and baseline, once MIN_DAYS days exist (the minimum for
-    the variance estimate); before that, the model. A consumer that acts on the forecast sets its own bar on ``prob_better`` from the
+    would be a convention, not a cost). Served: always the model with Juniper's rules; the
+    state model and the base rate are reported for comparison. A consumer that acts on the forecast sets its own bar on ``prob_better`` from the
     cost of acting wrongly."""
     rows = [r for r in rows if r.get("happened") is not None]
     out = {"all": _subset_verdict(rows), "cold": _subset_verdict([r for r in rows if r["state_bucket"] >= COLD_BUCKET])}
     out["calibration"] = calibration(rows)
+    # Always the model that carries Juniper's rules (2026-11-10: "why are you going for perfection?").
+    # State and base stay as reported comparisons; they do not veto it.
     out["served"] = MODEL
-    if out["all"]["n_days"] >= MIN_DAYS and out["all"]["n_hours_with_message"]:
-        ll = out["all"]["log_loss"]
-        out["served"] = min(((ll["model"], MODEL), (ll["state"], STATE_MODEL), (ll["baseline"], BASELINE)))[1]
     return out
 
 

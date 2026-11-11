@@ -1,7 +1,7 @@
 ## Summary
 
 - New hourly forecast in orion-prediction: "will Juniper send Orion a message in the next hour?" (prediction-error suite rebuild, family B, item 1).
-- Three contenders are scored every hour: base rate, state (hours since her last message), and an activity model (state + her clock rules + whether she typed to Claude Code recently). The one with the lowest mean loss over 60 days is served.
+- Served model: logistic regression where each of Juniper's rules (asleep 3-8, weekend mornings, evenings, Mondays, kid pickup, typing to Claude) is a starting belief that the data moves only as far as the evidence pushes it. The state model and the base rate are graded beside it, never instead of it.
 - Each forecast is settled an hour later against `chat_message` and graded per local day: loss gap, standard error, and the chance the model is really better. There is no 0.05 line; Juniper: "0.05 is arbitrary".
 - It ships failing at the hard case, by Juniper's call ("we can be honest that it fails and still roll w it"). It forecasts mid-conversation well. It cannot yet forecast her coming back after a quiet stretch.
 - No consumer and no bus event. Outreach timing comes later and must state its own bar first.
@@ -10,10 +10,9 @@
 
 Orion gets a scored forecast of Juniper's reachability, with an honest live grade. The replay on typing-covered hours (08-14..11-10) found:
 
-- The state model has ~29 % lower loss than the base rate overall.
-- In cold hours (no message in the prior 3 h), no forecast beats the base rate.
-- Typing to Claude carries a 4x lift on its own, but it adds nothing over the state model and the clock.
-- Every contender is under-confident.
+- The rules model has 26 % lower loss than the base rate overall (P(really better) 0.95), tied with the state model.
+- In cold hours (no message in the prior 3 h), it is about level with the base rate (P 0.25).
+- It is somewhat timid at the top: stated 0.24 -> 0.40 observed.
 
 ## Current architecture
 
@@ -60,7 +59,7 @@ orion-prediction forecast only physical series (cabinet, office), plus action be
 ## Tests run
 
 ```text
-orion-prediction suite in its image: 332 passed (earlier run); test_reachable.py 18 passed after the served-rule change
+orion-prediction suite in its image: 332 passed (earlier run); test_reachable.py 19 passed after the priors change
 scripts/check_metric_lineage.py --gate: PASS
 scripts/check_migration_required_by.py: OK
 scripts/check_service_env_compose_parity.py orion-prediction: OK (35 keys)
@@ -72,10 +71,11 @@ git diff --check: clean
 
 ```text
 evals/run_reachable_replay_eval.py (live DB, read-only, 07-31..11-10, 2,457 hourly origins)
-typing-covered origins (2,034): all  activity 0.0930 / state 0.0898 / base 0.1258 log loss; activity vs base prob_better 0.94
-                                cold activity 0.0567 / state 0.0566 / base 0.0553; activity vs base prob_better 0.25
-activity vs state: prob_better 0.18 (all), 0.45 (cold)
-calibration: stated 0.03 -> 0.047 observed; 0.077 -> 0.14; 0.28 -> 0.47
+all origins:    all  rules 0.0786 / state 0.0774 / base 0.1066 log loss; P(beats base) 0.95, P(beats state) 0.40
+                cold rules 0.0497 / state 0.0500 / base 0.0484;           P(beats base) 0.25, P(beats state) 0.46
+typing-covered: all  rules 0.0906 / state 0.0892 / base 0.1250;           P(beats base) 0.95
+                cold rules 0.0560 / state 0.0563 / base 0.0550;           P(beats base) 0.22
+calibration: stated 0.030 -> 0.063 observed; 0.091 -> 0.108; 0.244 -> 0.40; 0.471 -> 0.588
 ```
 
 ## Docker/build/smoke checks
@@ -117,7 +117,8 @@ Automatic: Juniper's `git pull` on main runs the post-pull rebuild, which applie
 
 - Severity: medium. Concern: no cold-hour skill. Mitigation: no consumer. The grade reports cold `prob_better` live; outreach must set its bar on it first.
 - Severity: low. Concern: under-confident probabilities. Mitigation: documented; revisit with live rows rather than refitting on the replay.
-- Severity: low. Concern: lambda and half-life were picked from a 4-point grid on the same replay. Mitigation: the live record is the clean test.
+- Severity: low. Concern: prior strengths and the 60-day half-life are judgment calls, not fit. Mitigation: they are Juniper's rules made explicit; the live grade shows if any rule is wrong, and data moves each one.
+- Feedback addressed (Juniper 2026-11-11): an earlier draft dropped the pickup rule and served the plain state model on a lowest-loss contest, sidelining her rules. Rules are now priors and always served.
 - Severity: low. Concern: the Juniper-message filter assumes every non-`orion_*` user turn is hers. Mitigation: checked against `chat_history_log` (1 mismatch in 121).
 
 ## PR link

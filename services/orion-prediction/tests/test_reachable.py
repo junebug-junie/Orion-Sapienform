@@ -184,22 +184,32 @@ def test_random_messages_are_not_better_than_base_rate():
     assert v["all"]["vs_baseline"]["prob_better"] < 0.9, v["all"]
 
 
-def test_served_is_the_lower_loss_forecast():
+def test_served_is_always_the_rules_model_and_comparisons_are_only_reported():
     msgs = _bursty(40, seed=2)
     rows = _replay(msgs, 40)
     bad = [{**r, "p": 0.9 if not r["happened"] else 0.01} for r in rows]   # confidently wrong
     v = R.verdict(bad)
     assert v["all"]["vs_baseline"]["gap_per_day"] > 0 and v["all"]["vs_baseline"]["prob_better"] < 0.01
-    ll = v["all"]["log_loss"]
-    want = R.STATE_MODEL if ll["state"] < ll["baseline"] else R.BASELINE
-    assert v["served"] == want
-    key = {R.STATE_MODEL: "p_state", R.BASELINE: "p_baseline"}[want]
-    assert R.served_p(bad[0], v["served"]) == bad[0][key]
-    # with the state model also broken, the baseline is served
-    worse = [{**r, "p_state": r["p"]} for r in bad]
-    v2 = R.verdict(worse)
-    assert v2["served"] == R.BASELINE and R.served_p(worse[0], v2["served"]) == worse[0]["p_baseline"]
+    assert v["served"] == R.MODEL
+    assert R.served_p(bad[0], v["served"]) == bad[0]["p"]
 
+
+def test_rules_hold_where_there_is_no_data_and_bend_where_data_disagrees():
+    rng = np.random.default_rng(0)
+    n = 3000
+    X = np.zeros((n, len(R.FEATURES)))
+    y = (rng.random(n) < 0.03).astype(float)
+    w = np.ones(n)
+    # 'pickup' never on in the data: its coefficient stays at Juniper's prior
+    beta = R.fit_logit(X, y, w)
+    k = R.FEATURES.index("pickup")
+    assert abs(beta[1 + k] - R.PRIORS["pickup"][0]) < 1e-3
+    # 'pickup' on in 600 hours where she messaged MORE than usual: the data pulls it up from -1.5
+    X[:600, k] = 1
+    y2 = y.copy()
+    y2[:600] = (rng.random(600) < 0.15).astype(float)
+    beta2 = R.fit_logit(X, y2, w)
+    assert beta2[1 + k] > R.PRIORS["pickup"][0] + 1.0
 
 def test_calibration_bins_cover_every_row():
     rows = _replay(_bursty(30), 30)

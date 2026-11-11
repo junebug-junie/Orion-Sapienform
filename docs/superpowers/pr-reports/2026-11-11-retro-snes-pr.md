@@ -75,7 +75,7 @@ The native process boundary, media protocol, leases and cognition gates remain i
 
 ```text
 PYTHONPATH=/tmp/retro-pytest-deps:. python3 -m pytest tests/retro services/orion-retro/tests -q
-182 passed
+182 passed; follow-up SNES regression suite after review: 16 passed
 PYTHONPATH=/tmp/retro-pytest-deps:. python3 -m pytest services/orion-hub/tests/retro -q
 240 passed, 2 skipped (existing optional local coverage)
 node --check services/orion-hub/static/js/retro-panel.js
@@ -123,7 +123,7 @@ Snes9x source pin: `1bcc369e89f08243e0a462882fb1f3e42e51de3a`.
   - Fix: refuse adding a kit when the catalog is full, before publishing JSON.
   - Evidence: regression test seeds 64 entries and confirms a refused 65th leaves
     the existing catalog bytes intact.
-- Review-agent found no other actionable defects in the complete patch.
+- Review-agent verified the fix and returned no findings on the final patch.
 
 ## Restart required
 
@@ -134,12 +134,19 @@ Save/stop any active game first. Example after merge and source sync on Athena:
 
 ```bash
 cd /mnt/scripts/Orion-Sapienform
-# Extracted files staged under /tmp/orion-retro-snes-import; run once per game:
+# After staging the extracted files under /tmp/orion-retro-snes-import:
 PYTHONPATH=.:services/orion-retro python3 services/orion-retro/evals/import_rom.py \
   --catalog /home/athena/.local/share/orion/retro/service/catalog/catalog.json \
   --rom '/tmp/orion-retro-snes-import/Super Mario Kart (USA).sfc' \
   --game-id super-mario-kart --title 'Super Mario Kart' --players 2
-# Same importer for a-link-to-the-past (one player) and super-mario-world (two).
+PYTHONPATH=.:services/orion-retro python3 services/orion-retro/evals/import_rom.py \
+  --catalog /home/athena/.local/share/orion/retro/service/catalog/catalog.json \
+  --rom '/tmp/orion-retro-snes-import/Legend of Zelda, The - A Link to the Past (USA).sfc' \
+  --game-id a-link-to-the-past --title 'The Legend of Zelda: A Link to the Past' --players 1
+PYTHONPATH=.:services/orion-retro python3 services/orion-retro/evals/import_rom.py \
+  --catalog /home/athena/.local/share/orion/retro/service/catalog/catalog.json \
+  --rom '/tmp/orion-retro-snes-import/Super Mario World (USA).sfc' \
+  --game-id super-mario-world --title 'Super Mario World' --players 2
 scripts/safe_docker_build.sh orion-retro up -d --build --force-recreate
 scripts/safe_docker_build.sh orion-hub up -d --build
 ```
@@ -159,4 +166,4 @@ code; retain all ROMs/saves. Never feed SNES entries to the old NES-only service
 
 ## PR link
 
-Pending creation.
+https://github.com/junebug-junie/Orion-Sapienform/pull/3203

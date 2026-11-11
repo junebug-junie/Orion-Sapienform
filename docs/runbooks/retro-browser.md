@@ -242,6 +242,68 @@ A paused game's inputs now answer `session_paused:<why>`, so the page reconnects
 after a lapsed lease, a dropped controller or an overload pause (at most 3 times in
 10 s). It honors an explicit Pause, including one pressed on an already auto-paused game.
 
+## Transport recovery and rollout (2026-11-11)
+
+The relay (`scripts/retro_transport.py`, shared by Hub and the dedicated gateway)
+retains one latest **complete** media packet, including its PCM. Sends have a
+750 ms deadline. A timed-out send closes that socket; it never retries a partially
+sent WebSocket message. Input acknowledgments remain ordered and are never dropped.
+The private native input write keeps its existing 250 ms deadline. HTTP deadlines,
+origin checks, ingress/message/socket caps, and native lease expiry are unchanged.
+
+The page reconnects only media for a media disconnect (300 ms retry, three retries
+per ten seconds). Missing/stale pictures send neutral human input after at most
+one second; a missing picture for three seconds closes the input controller or
+co-play sponsor. Co-play is not automatically reacquired: sponsor loss still ends
+the grant, and existing session export follows it. Dropped PCM causes the existing
+sample-discontinuity audio flush. Hidden tabs, page close, Pause and Stop release
+control; Pause/Stop do so before awaiting HTTP. Old session/intent/socket callbacks
+cannot restore a lease or picture. Another human's `port_owned` remains a conflict.
+
+Automatic Resume is permitted only with `capabilities.conditional_resume=true`
+from native `/health/ready`. The request echoes the automatic pause reason; the
+worker checks it atomically against its current reason. A newer explicit Pause
+wins. Against an older native service the page can reconnect media, but an
+auto-paused controller may need an explicit click to resume. The capability is
+cached for the page lifetime: **refresh/roll back the page before downgrading a
+native service** that advertised the capability.
+
+After merge, deployment from clean synchronized primary main on Athena:
+
+```sh
+scripts/safe_docker_build.sh orion-retro up -d --build retro
+scripts/safe_docker_build.sh orion-hub up -d --build hub-retro-gateway hub-app
+```
+
+Recreating Retro ends the current session; save first and reload afterward. Hub's
+static directory is bind-mounted and the asset version is bumped, so a pull can
+expose the new page before image rebuilds; capability negotiation keeps that
+mixed-version interval conservative. The Hub command restarts chat as well as the
+gateway because both import the shared router. No deploy was performed for this
+patch. Runtime acceptance on Athena remains UNVERIFIED until deployment and play.
+
+Inspect `docker logs orion-athena-hub-retro-gateway` for
+`retro_relay_closed sid=... channel=input|media reason=...`. Reasons include
+`browser_disconnected`, `upstream_closed`, `send_timeout`, `transport_error`, and
+`invalid_browser_message`; `retro_relay_connect_failed` records handshake failures.
+No token or raw input/media payload is logged. These are diagnostic logs, not
+cognition signals.
+
+Regression gates and isolated browser eval (never targets a production game):
+
+```sh
+python3 -m pytest services/orion-hub/tests/retro -q
+python3 -m pytest services/orion-retro/tests tests/retro -q
+PYTHONPATH=. python3 services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-panel-recovery
+PYTHONPATH=. python3 services/orion-retro/evals/container_smoke.py --output /tmp/retro-native-recovery
+```
+
+The browser eval injects a dropped media socket and a silent stream, then checks
+co-play handoff/renewal/take-back. The native smoke rejects a delayed conditional
+resume after an explicit Pause. Unit tests cover slow/stuck writes, bounded media,
+cleanup, origin isolation, unrelated HTTP routes, stale session callbacks, another
+owner, old native capability, and hung Pause/Stop requests.
+
 ## Play harness (`evals/retro_play.mjs`)
 
 Plays like a person: real Chromium, real Hub tab, scripted Mario input. It records

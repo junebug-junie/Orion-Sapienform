@@ -8,7 +8,7 @@ import uuid
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from settings import Settings
-from .contracts import (Start, Control, Input, ScriptControl, Goal, LoadSave, GoalV2,
+from .contracts import (Start, Control, Input, ScriptControl, Goal, LoadSave, GoalV2, Resume,
                         LeisureControl, LeisureScriptControl)
 from .session import Sessions
 from .zelda.observe import PROFILE as ZELDA_PROFILE
@@ -69,7 +69,8 @@ def create_app(settings=None):
     @app.get('/health/ready')
     async def ready(request: Request):
         m = manager()
-        return {'status':'ready', 'session':m.session if not m.session or m.session['owner']==auth(request.headers) else None}
+        return {'status':'ready', 'capabilities': {'conditional_resume': True},
+                'session':m.session if not m.session or m.session['owner']==auth(request.headers) else None}
 
     @app.get('/games')
     async def games(): return manager().games()
@@ -159,7 +160,11 @@ def create_app(settings=None):
             if body.connection_id not in m.connections: raise ValueError('connection_not_live')
             return await m.command('control', body.connection_id,
                                    dict(port=body.port, action=body.action))
-        if operation in ('pause','resume'): return await m.command(operation)
+        if operation == 'pause': return await m.command(operation)
+        if operation == 'resume':
+            try: body = Resume.model_validate_json((await request.body()) or b'{}')
+            except ValidationError: raise HTTPException(422, 'invalid_resume')
+            return await m.command(operation, data=body.model_dump(exclude_none=True))
         if operation in ('save', 'load'):
             if not m.save_enabled(): raise ValueError('saves_unavailable')
             if operation == 'save': return await m.command('save')

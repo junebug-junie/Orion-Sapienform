@@ -132,6 +132,20 @@ def test_explicit_pause_on_an_auto_paused_game_sticks(monkeypatch,tmp_path):
     assert next(r for r in rows if r.get('id')=='late')['error']=='session_paused:pause'
 
 
+def test_conditional_recovery_cannot_override_a_newer_operator_pause(monkeypatch, tmp_path):
+    def scenario(row, send):
+        if row.get('id') == 'grant2':
+            send('disconnect', 'bye1', 'one'); send('disconnect', 'bye2', 'two')
+            send('resume', 'auto', data={'expected_pause_reason': 'disconnect'})
+            send('pause', 'explicit')
+            send('resume', 'stale', data={'expected_pause_reason': 'disconnect'})
+            send('resume', 'user')  # old clients / explicit Resume remain compatible
+    rows, _ = exercise(monkeypatch, tmp_path, scenario)
+    assert next(r for r in rows if r.get('id') == 'auto')['result']['state'] == 'running'
+    assert next(r for r in rows if r.get('id') == 'stale')['error'] == 'session_paused:pause'
+    assert next(r for r in rows if r.get('id') == 'user')['result']['state'] == 'running'
+
+
 def test_scripted_actions_are_attributed_and_disconnect_stops_them(monkeypatch,tmp_path):
     def scenario(row,send):
         if row.get('id')=='grant2':

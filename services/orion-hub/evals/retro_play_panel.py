@@ -65,7 +65,10 @@ async def fake_retro(path, log):
     from aiohttp import web, WSMsgType
     app = web.Application()
     session = zelda_session()
-    async def ready(_): return web.json_response({'status': 'ready', 'session': session})
+    media_clients = set()
+    media_fault = {'silent': False}
+    async def ready(_): return web.json_response({'status': 'ready', 'session': session,
+                                                 'capabilities': {'conditional_resume': True}})
     async def games(_): return web.json_response([dict(game_id='the-legend-of-zelda', title='The Legend of Zelda', ports=[0, 1], save_enabled=False)])
     finished = iter(range(1, 7))
     async def status(_):
@@ -90,10 +93,34 @@ async def fake_retro(path, log):
     async def ws(request):
         sock = web.WebSocketResponse(); await sock.prepare(request)
         log.append(dict(op='ws', channel=request.match_info['channel']))
+        async def pictures():
+            import struct
+            import zlib
+            frame = 0
+            while True:
+                frame += 1
+                header = json.dumps(dict(version=1, frame=frame, width=1, height=1,
+                                         format=1, video_bytes=4, audio_frames=0)).encode()
+                if not media_fault['silent']:
+                    await sock.send_bytes(zlib.compress(struct.pack('!I', len(header)) + header + bytes(4)))
+                await asyncio.sleep(.1)
+        publisher = None
         if request.match_info['channel'] == 'input':
             await sock.send_json({'connection_id': 'c0c0c0c0-0000-4000-8000-000000000003', 'generation': GEN})
-        async for msg in sock:
-            if msg.type != WSMsgType.TEXT: break
+        else:
+            media_clients.add(sock)
+            publisher = asyncio.create_task(pictures())
+        try:
+            async for msg in sock:
+                if msg.type != WSMsgType.TEXT: break
+                data = json.loads(msg.data)
+                log.append(dict(op='input', mask=data['mask']))
+                await sock.send_json({'applied': {k: data[k] for k in ('epoch', 'port', 'seq')} | {'frame': 4000}})
+        finally:
+            if publisher:
+                media_clients.discard(sock)
+                publisher.cancel()
+                await asyncio.gather(publisher, return_exceptions=True)
         log.append(dict(op='ws_closed', channel=request.match_info['channel']))
         return sock
     app.add_routes([web.get('/health/ready', ready), web.get('/games', games), web.get(f'/sessions/{SID}', status),
@@ -101,7 +128,7 @@ async def fake_retro(path, log):
                     web.get(f'/sessions/{SID}/{{channel}}', ws)])
     runner = web.AppRunner(app); await runner.setup()
     await web.UnixSite(runner, path).start()
-    return session
+    return session, media_clients, media_fault
 
 
 class MemoryStore:
@@ -121,7 +148,7 @@ async def serve(output: Path, port: int, sock: str):
     spec = importlib.util.spec_from_file_location('retro_play_routes', HUB / 'scripts/retro_routes.py')
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     log = []
-    session = await fake_retro(sock, log)
+    session, media_clients, media_fault = await fake_retro(sock, log)
     store = MemoryStore()
     store.value = dict(state='playing', session_id=SID, game_id='the-legend-of-zelda', started_at=__import__('time').time() - 300,
                        decisions=6, waiting=None, last_goal=zelda_session()['scripted'][0]['cognition']['goal'])
@@ -133,6 +160,14 @@ async def serve(output: Path, port: int, sock: str):
     @app.post('/__fixture/waiting')
     async def waiting():
         store.value = dict(store.value, state='waiting', waiting=dict(reason='shed:cabinet_hot', retry_after_sec=60))
+        return {}
+    @app.post('/__fixture/media_drop')
+    async def media_drop():
+        for client in tuple(media_clients): await client.close()
+        return {}
+    @app.post('/__fixture/media_silent')
+    async def media_silent(silent: bool = True):
+        media_fault['silent'] = silent
         return {}
     @app.post('/__fixture/end_grant')
     async def end_grant(expired: int = 0):

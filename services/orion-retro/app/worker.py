@@ -141,6 +141,9 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
                         deadline = time.monotonic()
                         result = {'loaded': meta}
                     elif op in ('pause', 'resume', 'disconnect'):
+                        if (op == 'resume' and data.get('expected_pause_reason') is not None
+                                and state == 'paused' and paused_by != data['expected_pause_reason']):
+                            raise ValueError(not_running())
                         if op == 'disconnect':
                             scripted.cancel('sponsor_disconnected', cmd['connection'])
                             released = authority.disconnect(cmd['connection'])

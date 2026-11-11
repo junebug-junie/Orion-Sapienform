@@ -65,6 +65,13 @@ request fields cannot select identities. No Hub authentication is claimed.
   If a reply is lost during timeout/shutdown, the result is `unknown`; inspect
   the retained evidence rather than assuming the action never happened.
 - POST pause/resume/stop endpoints: explicit lifecycle; resume requires new leases.
+- `/health/ready` advertises `capabilities.conditional_resume=true`. A recovery
+  `POST /sessions/{id}/resume` can supply `expected_pause_reason` (`disconnect`,
+  `no_controller`, or `deadline_overrun`). The worker compares that reason at the
+  moment it resumes; a newer explicit Pause returns `409 session_paused:pause`.
+  Empty bodies and `{}` preserve explicit Resume behavior. Other fields/reasons
+  are rejected with `422 invalid_resume`. Older services do not advertise this
+  capability; clients must not send automatic conditional resumes to them.
 - POST `/sessions/{id}/save`: worker serializes the core and writes a save state.
 - POST `/sessions/{id}/load` `{save_id}`: worker restores it in place (running or paused).
 - GET `/games/{game_id}/saves`: saves newest first, with frame, played frames,

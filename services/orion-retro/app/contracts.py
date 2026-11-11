@@ -17,6 +17,11 @@ class LoadSave(Strict):
     save_id: str = Field(pattern=r'^[0-9a-f]{32}$')
 
 
+class Resume(Strict):
+    # Compared inside the worker, atomically with resume. A newer explicit Pause wins.
+    expected_pause_reason: Literal['disconnect', 'no_controller', 'deadline_overrun'] | None = None
+
+
 class Control(Strict):
     connection_id: str = Field(min_length=36, max_length=36)
     port: int = Field(ge=0, le=1)

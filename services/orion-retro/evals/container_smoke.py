@@ -63,6 +63,12 @@ async def faults(socket, token, name, evidence):
             await ws.send(json.dumps(data));assert 'applied' in json.loads(await ws.recv())
             await asyncio.sleep(LEASE_TTL+.15)
             assert call(current)['state']=='paused','expired lease kept running'
+            # Recovery must compare at the worker, not trust a stale HTTP read.
+            call(current+'/pause',{})
+            stale = client.post(current+'/resume', json={'expected_pause_reason': 'no_controller'})
+            assert stale.status_code == 409 and stale.json()['detail'] == 'session_paused:pause'
+            assert call(current)['state'] == 'paused'
+            call(current+'/resume',{})
         call(current+'/stop',{})
         current,s=await start()
         # Kill only this disposable container's spawned emulator child.
@@ -101,7 +107,7 @@ os.kill(pids[0],signal.SIGKILL)
             quota.unlink()
         assert client.get('/health/live',headers={'Authorization':'invalid'}).status_code==401
         assert client.get('/health/live',headers=dict(h,Origin='https://example.invalid')).status_code==403
-    return {'pause_resume_reacquire':'PASS','cross_session_disconnect':'PASS','duplicate_resume':'PASS','malformed_token':'PASS',
+    return {'conditional_resume_pause_race':'PASS','pause_resume_reacquire':'PASS','cross_session_disconnect':'PASS','duplicate_resume':'PASS','malformed_token':'PASS',
             'lease_expiry':'PASS','worker_kill':'PASS','initial_grace':'PASS','authorization':'PASS','live_storage_quota':'PASS'}
 
 

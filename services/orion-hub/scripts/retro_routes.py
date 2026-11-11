@@ -341,34 +341,16 @@ def create_router(config, presence=None, experience=None):
     @router.websocket('/api/retro/sessions/{sid}/{channel}')
     async def relay(ws: WebSocket, sid: str, channel: str):
         import re
+        from scripts.retro_transport import relay_messages, logger as transport_logger
         if (not config.HUB_RETRO_ENABLED or not origin(ws.headers)
                 or channel not in ('input','media') or not re.fullmatch(r'[0-9a-f-]{36}',sid) or len(sockets)>=8):
             await ws.close(code=1008);return
         sockets.add(ws)
-        tasks=[]
         socket_id=str(uuid.uuid4())
         try:
             async with client() as c:
                 async with c.ws_connect('http://retro/sessions/'+sid+'/'+channel,headers=credentials(),max_msg_size=1200000) as upstream:
                     await ws.accept()
-                    async def receive():
-                        count=0;start=time.monotonic()
-                        while True:
-                            try: msg=await asyncio.wait_for(ws.receive_text(),.5)
-                            except asyncio.TimeoutError: continue
-                            if time.monotonic()-start>=1: start=time.monotonic();count=0
-                            count+=1
-                            if channel=='media' or len(msg.encode())>4096 or count>120: return
-                            await asyncio.wait_for(upstream.send_str(msg),.25)
-                    async def send():
-                        while True:
-                            try: msg=await asyncio.wait_for(upstream.receive(),.5)
-                            except asyncio.TimeoutError: continue
-                            if msg.type==aiohttp.WSMsgType.BINARY:
-                                await asyncio.wait_for(ws.send_bytes(msg.data),.25)
-                            elif msg.type==aiohttp.WSMsgType.TEXT:
-                                await asyncio.wait_for(ws.send_text(msg.data),.25)
-                            else: return
                     if channel=='input': soon('mark_human')
                     async def beat():
                         # Presence heartbeat for the leisure gate; never ends the relay.
@@ -378,17 +360,16 @@ def create_router(config, presence=None, experience=None):
                                 try: await s.beat_browser(socket_id)
                                 except Exception: pass
                             await asyncio.sleep(5)
-                    tasks=[asyncio.create_task(receive()),asyncio.create_task(send())]
                     beating=asyncio.create_task(beat())
-                    try: await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+                    try: await relay_messages(ws, upstream, channel, sid)
                     finally:
                         beating.cancel();await asyncio.gather(beating,return_exceptions=True)
-        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError): pass
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError) as exc:
+            transport_logger.info(
+                'retro_relay_connect_failed sid=%s channel=%s error=%s', sid, channel, type(exc).__name__)
         finally:
             sockets.discard(ws)
             soon('drop_browser',socket_id)
-            for task in tasks: task.cancel()
-            if tasks: await asyncio.gather(*tasks,return_exceptions=True)
             try: await ws.close()
             except RuntimeError: pass
     return router

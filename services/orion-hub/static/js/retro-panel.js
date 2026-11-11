@@ -229,8 +229,13 @@
   }
   async function drain() {
     if(decoding)return;decoding=true;
-    try {while(pendingPacket){const packet=pendingPacket;pendingPacket=null;await draw(packet);}}
-    catch(err){report('Media error: '+err.message);neutral();}
+    try {while(pendingPacket){
+      const packet=pendingPacket;pendingPacket=null;
+      try{await draw(packet);}
+      catch(err){
+        if(packet.epoch===transportEpoch && packet.socket===media){report('Media error: '+err.message);neutral();}
+      }
+    }}
     finally{decoding=false;}
   }
   async function draw({data,epoch,socket}) {
@@ -574,7 +579,10 @@
   window.addEventListener('gamepadconnected',padStatus);
   document.addEventListener('visibilitychange',()=>{if(document.hidden){away=true;neutral();}else{away=false;heal();}});
   window.addEventListener('focus',()=>{away=false;heal();});
-  screen.addEventListener('pointerdown',()=>{away=false;if(takeBack())return;if(scriptedMode)return;if(sid)wanted=true;heals=0;heal();});
+  screen.addEventListener('pointerdown',()=>{
+    away=false;if(takeBack())return;if(scriptedMode)return;
+    if(sid){wanted=true;heals=0;if(!connecting && !lease)void connect().catch(err=>report(err.message));}
+  });
   padStatus();
   void load().catch(err=>{el('player').hidden=false;report(err.message);});
 })();

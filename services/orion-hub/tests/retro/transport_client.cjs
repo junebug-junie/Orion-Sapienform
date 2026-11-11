@@ -6,7 +6,7 @@ function page(){
   let now=100, next=0;const timers=new Map(), elements=new Map(), sockets=[], requests=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'0',checked:false,hidden:false,disabled:false,dataset:{},
-      textContent:'',setAttribute(){},getContext:()=>({}),addEventListener(){},focus(){},
+      textContent:'',events:{},setAttribute(){},getContext:()=>({}),addEventListener(name,fn){this.events[name]=fn;},focus(){},
       classList:{toggle(){}},selectedOptions:[{dataset:{}}]});
     return elements.get(id);
   };
@@ -122,10 +122,32 @@ test('automatic reconnect does not resume before the authoritative acquire respo
   assert.equal(h.sockets.filter(s=>s.url.endsWith('/input')).length,1);
 });
 
+test('deliberate game click resumes after an explicit Pause',async()=>{
+  const h=page();h.respond(()=>[200,{state:'running'}]);
+  await h.elements.get('pause').onclick();
+  h.elements.get('screen').events.pointerdown();await h.tick(0);
+  assert.equal(h.requests.filter(r=>r.url.endsWith('/resume')).length,1);
+  assert.equal(h.sockets.filter(s=>s.url.endsWith('/input')).length,1);
+});
+
 test('old native service cannot receive an unsafe automatic resume',async()=>{
   const h=page();h.run('conditionalResume=false');h.respond(()=>[409,{detail:'session_paused:disconnect'}]);
   await assert.rejects(h.run('grant()'),/session_paused:disconnect/);
   assert.equal(h.requests.some(r=>r.url.endsWith('/resume')),false);
+});
+
+test('old asynchronous decoder failure cannot close a replacement transport or abandon its packet',async()=>{
+  const h=page();
+  h.run(`media=new WebSocket('old-media');
+    globalThis.failDecode=null;globalThis.draws=0;
+    draw=async()=>{if(++globalThis.draws===1)await new Promise((_,reject)=>globalThis.failDecode=reject);};
+    pendingPacket={epoch:transportEpoch,socket:media};void drain();
+    neutral();input=new WebSocket('new-input');media=new WebSocket('new-media');
+    pendingPacket={epoch:transportEpoch,socket:media};globalThis.failDecode(Error('old decode failed'));`);
+  await h.tick(0);
+  assert.equal(h.sockets.find(s=>s.url==='new-input').closed,false);
+  assert.equal(h.run('globalThis.draws'),2);
+  assert.equal(h.run('decoding'),false);
 });
 
 test('replaced session or paused intent discards delayed acquisition',async()=>{

@@ -125,7 +125,14 @@ def test_shared_router_keeps_other_http_routes_responsive(tmp_path, monkeypatch)
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from scripts import retro_routes
-    native = Native(); native.frame('input-ready', aiohttp.WSMsgType.TEXT)
+    from starlette.websockets import WebSocket
+    import threading
+    blocked = threading.Event()
+    async def blocked_send(self, data):
+        blocked.set()
+        await asyncio.Future()  # genuinely blocked viewer write, cancelled on close
+    monkeypatch.setattr(WebSocket, 'send_bytes', blocked_send)
+    native = Native(); native.frame(b'picture')
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
@@ -141,8 +148,8 @@ def test_shared_router_keeps_other_http_routes_responsive(tmp_path, monkeypatch)
     @app.post('/unrelated/chat')
     async def chat(): return {'reply': 'fixture'}
     with TestClient(app) as client:
-        with client.websocket_connect('/api/retro/sessions/'+'a'*36+'/input',
+        with client.websocket_connect('/api/retro/sessions/'+'a'*36+'/media',
                                       headers={'Origin': 'http://testserver'}) as ws:
-            assert ws.receive_text() == 'input-ready'
+            assert blocked.wait(1), 'media write never entered the blocked state'
             assert client.get('/unrelated/status').json() == {'ok': True}
             assert client.post('/unrelated/chat').json() == {'reply': 'fixture'}

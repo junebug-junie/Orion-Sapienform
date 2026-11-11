@@ -23,7 +23,7 @@ from orion.metacog.evidence_map import map_trigger  # noqa: E402
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E402
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
-BUS = "node:substrate.bus_synaptic"
+BUS = "node:substrate.execution"  # any live PE node; bus_synaptic retired 2026-11
 BIO = "node:substrate.biometrics"
 
 

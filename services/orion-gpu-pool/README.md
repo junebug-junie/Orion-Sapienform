@@ -280,6 +280,31 @@ urgent work: it validates pool events against the priority list.
 Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
 would pause a real background run, so it waits for Juniper's approval.
 
+## The background queue by value (attention patch 3b)
+
+When two of Orion's own discretionary jobs wait for the same kind of seat, the pool serves the one the
+body-economy market valued higher, not the one that came first. Spec:
+`docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md`, section 1 (decided
+2026-11-10).
+
+- Durable runs put their market decision on the hold request: `want_id`, `want_net`, `want_family`
+  (`GpuLeaseRequestV1`, stored on `gpu_pool_leases`). Reading's stage 1 gets a value-only bid; stage 2
+  carries stage 1's net.
+- Only the `background` class is reordered. Urgent, interactive, perception, starved and system work
+  keep arrival order, and a granted lease is never taken back.
+- The rule (`orion/gpu_pool/value_order.py`): a waiting lease scores `net + aging x hours waited`. A
+  later lease goes first only when it scores at least `GPU_POOL_VALUE_MARGIN` (0.10) higher. Two leases
+  of the same family keep arrival order. A lease with no net (upkeep, one-shot callers) keeps its place:
+  nothing that came after it may jump it. Aging (`GPU_POOL_VALUE_AGING_PER_H`, 0.10/h) closes a 0.3 gap
+  in 3 h, so nothing waits forever.
+- The grant pass and the queue position a caller sees use the same order.
+- Each grant the value order decided emits one `pool_queue_reordered` event (`gpu_pool_events`): both
+  lease ids, both nets and families, the margin and aging.
+- Off switch: `GPU_POOL_VALUE_ORDER_ENABLED=false` restores arrival order exactly.
+- Version skew: the client omits the new fields when unset, and re-asks without them if a pool older
+  than 3b refuses them, so no hold is ever refused for carrying a net.
+- Replay D (`evals/value_queue_replay.py`) replays the same `pick` over 14 days of real holds.
+
 ## Orion's learned shed (`orion_self_shed`, attend-to-act loop A1)
 
 One more named reason on the U4 shed lever, below the reflex: `orion_self_shed`, precedence 1,

@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1])]
 
 import app.reminiscence_poll as poll  # noqa: E402
-from app.reminiscence_ledger import ReminiscenceLedger, WeekPick  # noqa: E402
+from app.reminiscence_ledger import PeriodRefused, ReminiscenceLedger, WeekPick  # noqa: E402
 from orion.schemas.reminiscence_run import REMINISCENCE_HOPS  # noqa: E402
 
 START = date(2026, 10, 25)          # 21 days, across the 2026-11-01 DST change
@@ -186,8 +186,12 @@ def simulate(mutation: str | None = None) -> dict:
             clock["now"] = t
             local = t.astimezone(poll.ZONE)
             if (local.date() - START).days == CHAT_DAY and local.hour == 1 and local.minute == 0:
-                pick = ledger.week_for(local.date())
-                write(REMINISCENCE_HOPS, local.date().isoformat(), (pick.period_start.isoformat(), pick.period_end.isoformat()))
+                try:
+                    pick = ledger.week_for(local.date())
+                except PeriodRefused:   # a mutation broke the ledger's order: the gates report it
+                    pick = None
+                if pick is not None:
+                    write(REMINISCENCE_HOPS, local.date().isoformat(), (pick.period_start.isoformat(), pick.period_end.isoformat()))
             for r in reg.rows:
                 if r["terminal"] is None and t >= r["_ends"]:
                     r["terminal"], r["updated_at"] = r["_terminal"], t

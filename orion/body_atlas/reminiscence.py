@@ -87,6 +87,10 @@ class ReminiscenceError(ValueError):
     pass
 
 
+class PeriodOverlap(ReminiscenceError):
+    """The ledger is out of order: a joined period would cover a week already visited."""
+
+
 # --- models --------------------------------------------------------------------------------------
 
 class HopClaimV1(BaseModel):
@@ -282,8 +286,13 @@ def pick_period(records: list[ReminiscenceHopV1], today: date,
     first = first_open_week(records, today)
     if first is None:
         return None
+    done = complete_weeks(records)
     for s, e in weeks_ended_before(today):
-        if s >= first[0] and commits_in(s, e) > 0:
+        if s < first[0]:
+            continue
+        if s > first[0] and s.isoformat() in done:  # a hand-edited or out-of-order ledger: never overlap
+            raise PeriodOverlap(f"the period from {first[0]} would overlap the visited week {s}; fix the ledger")
+        if commits_in(s, e) > 0:
             return first[0], e
     return None
 
@@ -315,8 +324,11 @@ def git_commits_in(repo: Path | str) -> Callable[[date, date], int]:
 
     def commits_in(start: date, end: date) -> int:
         ref = "origin/main" if run("rev-parse", "--verify", "--quiet", "origin/main").returncode == 0 else "HEAD"
+        # both bounds are inclusive to the second: end one second before the next day starts, so a commit at
+        # exactly 00:00:00 Denver counts in one week only
+        last = day_start_utc(end + timedelta(days=1)) - timedelta(seconds=1)
         proc = run("rev-list", "--count", "--first-parent", f"--after={day_start_utc(start).isoformat()}",
-                   f"--before={day_start_utc(end + timedelta(days=1)).isoformat()}", ref)
+                   f"--before={last.isoformat()}", ref)
         if proc.returncode != 0 or not proc.stdout.strip().isdigit():
             raise ReminiscenceError(f"git UNREAD in {repo}: {proc.stderr.strip()[:150] or proc.stdout.strip()[:150]}")
         return int(proc.stdout.strip())
@@ -491,8 +503,11 @@ def check_write(*, hop: str, note: str, because: str, episode: str, period: tupl
     if hop not in HOPS:
         raise ReminiscenceError(f"unknown hop {hop!r}; the hops are {', '.join(HOPS)}")
     current = episode_hops(records, episode)
-    if current and next(iter(current.values())).period_start != period[0].isoformat():
-        raise ReminiscenceError(f"today's episode is about the week from {next(iter(current.values())).period_start}")
+    if current:
+        first = min(current.values(), key=lambda r: r.written_at)
+        if (first.period_start, first.period_end) != (period[0].isoformat(), period[1].isoformat()):
+            raise ReminiscenceError(f"today's episode is about the week from {first.period_start} "
+                                    f"({first.period_start}..{first.period_end}), not {period[0]}..{period[1]}")
     if hop in current and not rewrite:
         raise ReminiscenceError(f"{hop} is already written today ({current[hop].hop_id}); after reading the other "
                                 f"hops, revise it with: reminisce rewrite {hop} \"<note>\" because \"<refs>\"")

@@ -12,7 +12,8 @@ REMINISCENCE_POLL_SEC (600 s), inside the Denver window [REMINISCENCE_HOUR_LOCAL
    complete episode, with a run of weeks that have no commit on main joined onto the next week that has one
    (``app/reminiscence_ledger.py``, the same rule ``dig reminisce`` uses). None left: nothing
    (``no_week``); only quiet weeks left, none with a commit after them yet: nothing (``waiting_for_commit``);
-   main's history unreadable: nothing (``history_unreadable``, never a guessed week).
+   main's history unreadable: nothing (``history_unreadable``, never a guessed week); a period that would
+   overlap a visited week (an out-of-order ledger): nothing (``period_refused``).
 3. Runs of today (``reminiscence-<episode>``, ``-a<k>``): none -> submit the base run. One in flight or
    completed, or MAX_RUNS_PER_DAY spent -> nothing. All failed, the newest older than RETRY_AFTER_SEC, and a
    whole step attempt still fits before the window ends -> one more run (it skips the hops already written).
@@ -32,7 +33,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from app.reminiscence_ledger import HistoryUnreadable
+from app.reminiscence_ledger import HistoryUnreadable, PeriodRefused
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.reminiscence_run import (
     REMINISCENCE_RUN_PREFIX, REMINISCENCE_WORKFLOW, ReminiscenceRunBriefV1, base_run_id,
@@ -167,6 +168,10 @@ class ReminiscenceTicker:
         except HistoryUnreadable as exc:
             result.decision, result.error = "history_unreadable", str(exc)[:300]
             logger.warning("reminiscence_tick_history_unreadable %s", exc)
+            return result
+        except PeriodRefused as exc:
+            result.decision, result.error = "period_refused", str(exc)[:300]
+            logger.warning("reminiscence_tick_period_refused %s", exc)
             return result
         if pick is None:
             wait = await asyncio.to_thread(self.ledger.quiet_wait_from, episode)

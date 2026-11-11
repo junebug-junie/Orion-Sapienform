@@ -1460,7 +1460,7 @@ def _rm_period(records, episode: date) -> tuple[tuple[date, date] | None, str]:
 
     hops = rm.episode_hops(records, episode.isoformat())
     if hops:
-        r = next(iter(hops.values()))
+        r = min(hops.values(), key=lambda h: h.written_at)  # the first hop, as app/reminiscence_ledger.py reads it
         return (date.fromisoformat(r.period_start), date.fromisoformat(r.period_end)), "fixed by your first hop today"
     try:
         pick = rm.pick_period(records, episode, rm.git_commits_in(repo()))

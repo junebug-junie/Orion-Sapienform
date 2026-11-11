@@ -282,3 +282,29 @@ def test_the_settings_ship_the_tick_on_with_an_overnight_window(monkeypatch):
                  REMINISCENCE_END_HOUR_LOCAL=3)
     with pytest.raises(ValueError):   # time(24) would crash every tick (review 2026-11-07)
         Settings(_env_file=None, POSTGRES_URI="postgresql://unused", REMINISCENCE_END_HOUR_LOCAL=24)
+
+
+def test_the_brief_takes_whole_grid_weeks_only():
+    from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
+
+    kw = dict(reminiscence="reminiscence.episode", episode=EPISODE, timeout_sec=900.0)
+    joined = ReminiscenceRunBriefV1(period_start=date(2025, 7, 29), period_end=date(2025, 9, 8), **kw)
+    assert joined.quiet_weeks == 5
+    assert ReminiscenceRunBriefV1(period_start=date(2025, 7, 22), period_end=date(2025, 7, 28), **kw).quiet_weeks == 0
+    for start, end in ((date(2025, 7, 23), date(2025, 7, 29)),     # off the 2025-06-24 grid
+                       (date(2025, 7, 22), date(2025, 7, 30)),     # not whole weeks
+                       (date(2025, 7, 22), date(2025, 7, 21)),     # ends before it starts
+                       (date(2025, 7, 22), EPISODE)):              # has not ended before the episode
+        with pytest.raises(ValueError):
+            ReminiscenceRunBriefV1(period_start=start, period_end=end, **kw)
+
+
+def test_a_period_that_would_overlap_a_visited_week_is_refused(tmp_path):
+    """Week 2 quiet and open while week 3 is complete (an out-of-order ledger): no run, never an overlap."""
+    lines = ([hop_line(h, episode="2026-11-05", n=i) for i, h in enumerate(REMINISCENCE_HOPS)]
+             + [hop_line(h, episode="2026-11-06", start="2025-07-08", end="2025-07-14", n=10 + i)
+                for i, h in enumerate(REMINISCENCE_HOPS)])
+    t, submit, _ = ticker(tmp_path, lines=lines, commits_in=QUIET_2_TO_4)
+    r = asyncio.run(t.tick_once())
+    assert r.decision == "period_refused" and "overlap the visited week 2025-07-08" in r.error
+    assert submit.requests == []

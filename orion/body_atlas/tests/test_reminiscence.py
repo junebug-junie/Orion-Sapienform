@@ -183,6 +183,51 @@ def test_an_unfinished_joined_period_is_picked_again_whole():
     assert rm.pick_period(partial, date(2026, 11, 9), history()) == (date(2025, 7, 1), date(2025, 7, 28))
 
 
+def test_git_commits_in_reads_origin_main_first_parent_only(tmp_path):
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args, when=None):
+        e = {**env, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when} if when else env
+        subprocess.run(["git", "-C", str(repo), *args], check=True, env=e, capture_output=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", "-b", "main")
+    (repo / "a").write_text("")
+    git("add", "-A")
+    git("commit", "-qm", "first", when="2025-06-24T18:00:00Z")
+    git("switch", "-qc", "side")
+    (repo / "s").write_text("")
+    git("add", "-A")
+    git("commit", "-qm", "side work in week 2", when="2025-07-02T18:00:00Z")
+    git("switch", "-q", "main")
+    git("merge", "-q", "--no-ff", "-m", "merge in week 3", "side", when="2025-07-09T18:00:00Z")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "local").write_text("")
+    git("add", "-A")
+    git("commit", "-qm", "local only, week 2", when="2025-07-03T18:00:00Z")  # on HEAD, not on origin/main
+    n = rm.git_commits_in(repo)
+    assert n(date(2025, 7, 1), date(2025, 7, 7)) == 0  # side-branch and local-only commits are not main's
+    assert n(date(2025, 7, 8), date(2025, 7, 14)) == 1  # the merge itself
+
+
+def test_a_period_never_overlaps_a_visited_week():
+    """Week 2 quiet and open, week 3 already complete (a hand-edited ledger): refuse, never overlap."""
+    recs = done_episode("2026-11-07", "2025-06-24", "2025-06-30") + done_episode("2026-11-08", "2025-07-08", "2025-07-14")
+    with pytest.raises(rm.ReminiscenceError, match="overlap the visited week 2025-07-08"):
+        rm.pick_period(recs, date(2026, 11, 9), history())
+
+
+def test_a_hop_with_the_same_start_but_another_end_is_refused():
+    first = write("otherwise", GOOD["otherwise"][0])
+    with pytest.raises(rm.ReminiscenceError, match=r"2025-06-24..2025-06-30\), not 2025-06-24..2025-07-07"):
+        write("what_it_was", GOOD["what_it_was"][0], records=[first], period=(date(2025, 6, 24), date(2025, 7, 7)))
+
+
 def test_unreadable_history_raises_rather_than_guessing_a_week(tmp_path):
     with pytest.raises(rm.ReminiscenceError, match="git UNREAD"):
         rm.pick_period([], date(2026, 11, 11), rm.git_commits_in(tmp_path / "not-a-repo"))
@@ -209,6 +254,10 @@ def test_git_commits_in_counts_first_parent_commits_in_denver_days(tmp_path):
     n = rm.git_commits_in(repo)
     assert n(date(2025, 6, 24), date(2025, 6, 30)) == 2
     assert n(date(2025, 7, 1), date(2025, 7, 7)) == 0
+    # a commit at exactly 00:00:00 Denver on 07-01 (06:00Z, MDT) counts in week 2 only, not also in week 1
+    _commit(repo, "2025-07-01T06:00:00Z", {"midnight": ""}, "midnight")
+    assert (n(date(2025, 6, 24), date(2025, 6, 30)), n(date(2025, 7, 1), date(2025, 7, 7))) == (2, 1)
+    subprocess.run(["git", "-C", str(repo), "reset", "-q", "--hard", "HEAD~1"], check=True)
     assert rm.pick_period(done_episode("2026-11-07", "2025-06-24", "2025-06-30"), date(2025, 8, 1), n) == \
         (date(2025, 7, 1), date(2025, 7, 28))
 

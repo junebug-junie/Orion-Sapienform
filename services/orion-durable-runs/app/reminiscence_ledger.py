@@ -35,6 +35,10 @@ class HistoryUnreadable(RuntimeError):
     """Main's history could not be read, so the period cannot be picked (no guessed week)."""
 
 
+class PeriodRefused(RuntimeError):
+    """The ledger is out of order: the next period would overlap a visited week (no overlapping visit)."""
+
+
 @dataclass(frozen=True)
 class WeekPick:
     """The period an episode is (or would be) about, without any hop text: one week, or a run of quiet
@@ -83,6 +87,8 @@ class ReminiscenceLedger:
             return WeekPick(start, end, True, done, total, rm.quiet_weeks(start, end))
         try:
             pick = rm.pick_period(records, episode, self.commits_in)
+        except rm.PeriodOverlap as exc:
+            raise PeriodRefused(str(exc)) from exc
         except rm.ReminiscenceError as exc:
             raise HistoryUnreadable(str(exc)) from exc
         if pick is None:

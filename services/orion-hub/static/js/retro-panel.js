@@ -5,6 +5,8 @@
   let sid, generation, connection, lease, input, media, seq = 0, timer;
   const outstanding = new Map();
   let audio, gain, audioEnd = 0, lastSample = null, decoding = false, pendingPacket = null, transportEpoch = 0;
+  let mediaRetry, mediaHeals=0, mediaWindow=0, lastPictureAt=0, pictureReady=false;
+  let conditionalResume=false; // older native services ignore resume bodies: fail closed
   const keys = new Set(), sources = new Set();
   const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, Enter:8, ShiftLeft:4, ShiftRight:4};
   // #status sits outside the fullscreen stage, so mirror each message into a toast
@@ -33,9 +35,10 @@
     if (!wanted || away || !sid || connecting || lease || healPending || document.hidden || !document.hasFocus()) return;
     const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
     if (++heals > 3) { wanted = false; report('Could not get the controller back. Click the game or press New game.'); return; }
-    const mine = intent; healPending = true;
+    const mine = intent, session=sid, epoch=transportEpoch; healPending = true;
     setTimeout(() => { healPending = false;
-      if (mine === intent && wanted && !away && !lease && !connecting && !document.hidden) connect().catch(err => report(err.message)); }, 300);
+      if (mine === intent && session===sid && epoch===transportEpoch && wanted && !away && !lease && !connecting && !document.hidden && document.hasFocus())
+        connect(true).catch(err => {report(err.message);heal();}); }, 300);
   }
   // Transport loss, a lapsed lease and an overload pause heal (bounded by heal()'s
   // 3-per-10 s budget); an explicit Pause from any window or the CLI is respected.
@@ -59,11 +62,38 @@
   }
   function closeConnections() {
     scriptedMode=false;cognitivePort=null;handoffGrant=null;watching=false;
-    transportEpoch++; clearInterval(timer); keys.clear(); lease=null; outstanding.clear();
+    transportEpoch++; clearInterval(timer); clearTimeout(mediaRetry); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio(); resetChord(chord);
   }
   function neutral() { setOrion(false); closeConnections(); report('Paused. Click the game to keep playing.'); }
+  function openMedia(epoch) {
+    const session=sid, socket=new WebSocket(wsURL(`sessions/${sid}/media`));
+    media=socket;socket.binaryType='arraybuffer';
+    socket.onclose=()=>{
+      if(epoch!==transportEpoch || session!==sid || media!==socket)return;
+      media=null;pictureReady=false;pendingPacket=null;flushAudio();
+      if(lease)send();  // release held buttons while the picture is unavailable
+      const now=performance.now();
+      if(now-mediaWindow>10000){mediaHeals=0;mediaWindow=now;}
+      if(++mediaHeals>3){transportLost('media_stalled');return;}
+      mediaRetry=setTimeout(()=>{
+        if(epoch===transportEpoch && session===sid && !document.hidden && (input || watching))openMedia(epoch);
+      },300);
+    };
+    socket.onmessage=e=>{if(epoch===transportEpoch && session===sid && media===socket){pendingPacket={data:e.data,epoch,socket};void drain();}};
+  }
+  function transportLost(reason) {
+    const handoff=scriptedMode;
+    neutral();
+    if(handoff){wanted=false;report('Orion stopped: connection lost. Use Take this controller to return.');return;}
+    lost(reason);
+  }
+  // A connected socket is not proof of a usable picture. Refresh only neutral input
+  // after 1 s without a presented frame; close the sponsor/controller after 3 s.
+  setInterval(()=>{
+    if(input && (lease || scriptedMode) && performance.now()-lastPictureAt>3000)transportLost('media_stalled');
+  },100);
   function mask() {
     let m=0; for(const code of keys) m |= bits[code] || 0;
     const pad = gamepad();
@@ -119,26 +149,39 @@
     if(!lease || input?.readyState!==WebSocket.OPEN)return;
     if(outstanding.size>=24 || input.bufferedAmount>4096 ||
         (outstanding.size && performance.now()-outstanding.values().next().value>1000)){
-      neutral();lost('stall');return;
+      transportLost('stall');return;
     }
-    outstanding.set(seq+1,performance.now());input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:mask()}));
+    const currentMask=pictureReady && performance.now()-lastPictureAt<=1000?mask():0;
+    outstanding.set(seq+1,performance.now());input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:currentMask}));
   }
   async function grant(action='acquire') {
-    const epoch=transportEpoch;
-    const result=await api(`sessions/${sid}/control`,{connection_id:connection,port:Number(el('port').value),action});
-    if(epoch!==transportEpoch || document.hidden)return;
+    const epoch=transportEpoch, mine=intent;
+    const session=sid, owner=connection, port=Number(el('port').value);
+    let result;
+    for(let attempt=0;attempt<2;attempt++){
+      try{result=await api(`sessions/${session}/control`,{connection_id:owner,port,action});break;}
+      catch(err){
+        if(epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
+        // The old socket's disconnect may pause between resume and acquire. Only
+        // recover automatic pauses, never an explicit Pause or another owner's grant.
+        if(attempt || !conditionalResume || !['session_paused:disconnect','session_paused:no_controller','session_paused:deadline_overrun'].includes(err.message))throw err;
+        await api(`sessions/${session}/resume`,{expected_pause_reason:err.message.slice('session_paused:'.length)});
+        if(epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
+      }
+    }
+    if(epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
     lease=result;
     scriptedMode=false;cognitivePort=null;handoffGrant=null;
     seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
-  async function connect() {
+  async function connect(recovering=false) {
     scriptedMode=false;cognitivePort=null;handoffGrant=null;
     const mine = ++intent; connecting = mine; away = false;
-    try { await connectNow(); if (mine === intent) wanted = true; }
+    try { await connectNow(recovering); if (mine === intent) wanted = true; }
     finally { if (connecting === mine) connecting = 0; }
   }
-  async function connectNow() {
+  async function connectNow(recovering=false) {
     // An open input socket can be resumed directly. Replacing it races its old
     // disconnect against the resume and can interrupt another controller.
     if(input?.readyState===WebSocket.OPEN && connection){
@@ -147,25 +190,31 @@
       const status=await api(`sessions/${sid}`);
       if(epoch!==transportEpoch || document.hidden)return;
       if(status.state!=='running'){lease=null;outstanding.clear();clearInterval(timer);}
-      await api(`sessions/${sid}/resume`,{});
+      if(!recovering)await api(`sessions/${sid}/resume`,{});
       if(epoch!==transportEpoch || document.hidden)return;
       if(!lease)await grant();else screen.focus();
       report('Playing.');return;
     }
     closeConnections(); const epoch=transportEpoch; await sound();
     if(epoch!==transportEpoch || document.hidden)return;
-    if(!sid) { const state=await api('health/ready');sid=state.session?.session_id; }
+    if(!sid) { const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true; }
     if(epoch!==transportEpoch || document.hidden)return;
     if(!sid)throw Error('Start a new game first.');
-    await api(`sessions/${sid}/resume`,{});
+    if(!recovering)await api(`sessions/${sid}/resume`,{});
     if(epoch!==transportEpoch || document.hidden)return;
     input=new WebSocket(wsURL(`sessions/${sid}/input`));
-    input.onclose=()=>{if(epoch===transportEpoch){neutral();lost('closed');}};
+    lastPictureAt=performance.now();pictureReady=false;mediaHeals=0;mediaWindow=lastPictureAt;
+    input.onclose=()=>{if(epoch===transportEpoch)transportLost('closed');};
     input.onmessage=async e=>{
       if(epoch!==transportEpoch)return;
       const msg=JSON.parse(e.data);
       if(msg.connection_id) { connection=msg.connection_id;generation=msg.generation;
-        try { await grant(); } catch(err) {report(err.message==='port_owned'?'Another window has this player. Open More to pick Player 2 or take this controller.':err.message);}
+        try { await grant(); } catch(err) {
+          if(epoch!==transportEpoch)return;
+          neutral();
+          if(err.message==='port_owned' || SERVER_PAUSE.has(err.message)){wanted=false;report(err.message==='port_owned'?'Another window has this player. Open More to pick Player 2 or take this controller.':'Paused. Click the game to keep playing.');}
+          else lost(err.message);
+        }
       } else if(msg.applied){
         if(!lease || msg.applied.epoch!==lease.epoch || msg.applied.port!==lease.port)return;
         outstanding.delete(msg.applied.seq);screen.dataset.appliedFrame=msg.applied.frame;
@@ -175,9 +224,7 @@
         lease=null;outstanding.clear();clearInterval(timer);lost(msg.rejected||msg.unknown);}
 
     };
-    media=new WebSocket(wsURL(`sessions/${sid}/media`)); media.binaryType='arraybuffer';
-    media.onclose=()=>{if(epoch===transportEpoch){neutral();lost('closed');}};
-    media.onmessage=e=>{pendingPacket={data:e.data,epoch};void drain();};
+    openMedia(epoch);
     report('Playing. Press Enter to start.');
   }
   async function drain() {
@@ -186,10 +233,10 @@
     catch(err){report('Media error: '+err.message);neutral();}
     finally{decoding=false;}
   }
-  async function draw({data,epoch}) {
+  async function draw({data,epoch,socket}) {
     const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate'));
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-    if(epoch!==transportEpoch)return;
+    if(epoch!==transportEpoch || socket!==media)return;
     const view=new DataView(bytes.buffer), n=view.getUint32(0), h=JSON.parse(new TextDecoder().decode(bytes.subarray(4,4+n)));
     if(h.version!==1 || h.width>512 || h.height>512 || h.audio_frames>16384)throw Error('Invalid packet');
     let offset=4+n;const image=ctx.createImageData(h.width,h.height), out=image.data;
@@ -210,12 +257,13 @@
       screen.dataset.audioFrames=String((Number(screen.dataset.audioFrames)||0)+h.audio_frames);
       // Present the associated frame when this packet's PCM starts, with bounded pending work.
       await new Promise(resolve=>setTimeout(resolve,Math.max(0,(at-audio.currentTime)*1000)));
-      if(epoch!==transportEpoch)return;
+      if(epoch!==transportEpoch || socket!==media)return;
     }
     if(screen.width!==h.width || screen.height!==h.height){screen.width=h.width;screen.height=h.height;}
     ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
+    lastPictureAt=performance.now();pictureReady=true;
   }
-  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;
+  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true;
     el('player').hidden=false;
     if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}
     else if(state.session?.reason==='service_restart'){el('game').value=state.session.game_id;report('The game service restarted. Choose a save and press Load to continue.');}
@@ -266,8 +314,8 @@
     else if(await newGame(save_id)) report('Save loaded. Playing.');
   });
   action('join',connect);
-  action('pause',async()=>{++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/pause`,{});}finally{neutral();}report('Paused. Click the game to keep playing.');});
-  action('stop',async()=>{setOrion(false);++intent;wanted=false;try{if(sid)await api(`sessions/${sid}/stop`,{});}finally{neutral();}sid=null;report('Game stopped.');});
+  action('pause',async()=>{const session=sid;++intent;wanted=false;neutral();if(session)await api(`sessions/${session}/pause`,{});report('Paused. Click the game to keep playing.');});
+  action('stop',async()=>{const session=sid;++intent;wanted=false;neutral();sid=null;if(session)await api(`sessions/${session}/stop`,{});report('Game stopped.');});
   action('takeover',async()=>{
     setOrion(false);
     if(input?.readyState!==WebSocket.OPEN){await connect();return;}
@@ -442,9 +490,8 @@
     // Never race a human's own connect: it would bump the transport epoch under it.
     if(watching || input || media || !sid || document.hidden || connecting || wanted || healPending)return;
     watching=true;const epoch=++transportEpoch;
-    media=new WebSocket(wsURL(`sessions/${sid}/media`));media.binaryType='arraybuffer';
-    media.onclose=()=>{if(epoch===transportEpoch){media=null;watching=false;}};
-    media.onmessage=e=>{pendingPacket={data:e.data,epoch};void drain();};
+    lastPictureAt=performance.now();pictureReady=false;mediaHeals=0;mediaWindow=lastPictureAt;
+    openMedia(epoch);
   }
   let atlasAt=0, pollingPlay=false;
   async function pollPlay(){
@@ -457,7 +504,9 @@
       el('leisure').textContent=l.state==='waiting'
         ? `${waitingText(l.waiting?.reason)} (retry in ${Math.round(l.waiting?.retry_after_sec||0)} s). Solo play, ${mins} min in.`
         : `Orion is playing alone (solo leisure), ${mins} min in, ${l.decisions||0} goals so far. Click the game or Take this controller to play; that ends Orion's session.`;
-      if(l.session_id && l.session_id!==sid && !lease){sid=l.session_id;}
+      if(l.session_id && l.session_id!==sid && !lease && !connecting && !healPending && !scriptedMode){
+        ++intent;closeConnections();sid=l.session_id;
+      }
       if(l.session_id===sid && !lease && !input)watch();
       if(l.last_goal && !lastZelda){el('zgoal').textContent=`Goal: ${goalText(l.last_goal.goal)}. Why: ${l.last_goal.rationale}`;
         el('zprediction').textContent=`Prediction: ${predictionText(l.last_goal.prediction)}`;}

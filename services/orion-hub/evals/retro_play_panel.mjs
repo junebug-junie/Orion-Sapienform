@@ -12,7 +12,7 @@ try{
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=13') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=14') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});
@@ -58,6 +58,27 @@ try{
   // because Retro ends a grant whose sponsor disconnects.
   const closed=l=>l.retro.filter(r=>r.op==='ws_closed' && r.channel==='input').length;
   const before=closed(log);
+  // A media-only drop must recover without closing/reacquiring the input sponsor.
+  await page.waitForFunction(()=>Number(document.querySelector('#screen').dataset.frame)>0);
+  const mediaBefore=log.retro.filter(r=>r.op==='ws' && r.channel==='media').length;
+  const controlsBefore=log.retro.filter(r=>r.op==='control').length;
+  await fetch(url+'/__fixture/media_drop',{method:'POST'});
+  for(let i=0;i<30;i++){
+    log=await fixture();
+    if(log.retro.filter(r=>r.op==='ws' && r.channel==='media').length>mediaBefore)break;
+    await new Promise(r=>setTimeout(r,100));
+  }
+  assert(log.retro.filter(r=>r.op==='ws' && r.channel==='media').length>mediaBefore,'media did not reconnect');
+  assert.equal(closed(log),before,'media failure closed input');
+  assert.equal(log.retro.filter(r=>r.op==='control').length,controlsBefore,'media recovery reacquired control');
+  // A socket that stays open without pictures is also a failure: held input goes neutral.
+  await page.keyboard.down('ArrowRight');
+  await fetch(url+'/__fixture/media_silent',{method:'POST'});
+  await new Promise(r=>setTimeout(r,1400));log=await fixture();
+  assert.equal(log.retro.filter(r=>r.op==='input').at(-1)?.mask,0,'frozen picture kept held input');
+  await page.keyboard.up('ArrowRight');
+  await fetch(url+'/__fixture/media_silent?silent=false',{method:'POST'});
+  await new Promise(r=>setTimeout(r,300));
   await page.click('#cognitive');
   for(let i=0;i<50;i++){log=await fixture();if(log.retro.some(r=>r.op==='scripted'))break;await new Promise(r=>setTimeout(r,100));}
   assert(log.retro.some(r=>r.op==='scripted' && r.body.cognition===true),JSON.stringify(log.retro));

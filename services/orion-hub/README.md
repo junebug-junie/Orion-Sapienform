@@ -4515,6 +4515,16 @@ private Unix socket. Disabled by default. See [setup and acceptance](../../docs/
 for exact-origin configuration, credentials, browser checks and known limits, and for
 Zelda play (planner v2, the play panel and solo leisure, `scripts/retro_leisure.py`).
 
+Retro media recovery is independent of the controller: `scripts/retro_transport.py`
+keeps one latest complete video/PCM packet per viewer and bounds sends at 750 ms.
+The page reconnects media at most three times in ten seconds, sends neutral human
+input after one second without a presented picture, and closes the controller or
+co-play sponsor after three seconds. Pause/Stop release local controls before HTTP
+completes. Automatic controller recovery uses ordinary acquisition, never takeover;
+conditional resumes require the native service's advertised capability and cannot
+override a newer explicit Pause. Relay closes log session/channel/reason through
+Uvicorn; credentials and input payloads are excluded. See the runbook's rollout order.
+
 **Action bets (2026-10-23, `scripts/retro_experience.py`).** Before each Zelda goal, the Hub
 lists the moves Orion could make (each open side, fight, collect, enter a known cave, retreat,
 wait). It asks orion-prediction (`HUB_PREDICTION_URL`, default `http://127.0.0.1:8132`) how often

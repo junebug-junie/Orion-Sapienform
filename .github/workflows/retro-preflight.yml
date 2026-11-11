@@ -6,6 +6,7 @@ on:
       - 'tests/retro/**'
       - 'services/orion-retro/**'
       - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/scripts/retro_transport.py'
       - 'services/orion-hub/scripts/retro_gateway.py'
       - 'services/orion-hub/scripts/retro_planner.py'
       - 'services/orion-hub/scripts/retro_leisure.py'
@@ -27,6 +28,7 @@ on:
       - 'tests/retro/**'
       - 'services/orion-retro/**'
       - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/scripts/retro_transport.py'
       - 'services/orion-hub/scripts/retro_gateway.py'
       - 'services/orion-hub/scripts/retro_planner.py'
       - 'services/orion-hub/scripts/retro_leisure.py'
@@ -52,6 +54,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - run: python -m pip install pytest==9.1.1 PyYAML==6.0.2 httpx==0.28.1 aiohttp==3.12.15 pydantic-settings==2.5.2 -r services/orion-retro/requirements.txt
       - run: python -m pytest tests/retro services/orion-retro/tests -q
       - run: python -m pytest services/orion-hub/tests/retro -q
@@ -115,6 +120,8 @@ jobs:
         with:
           node-version: '20'
       - run: npm ci --prefix services/orion-hub
+      - name: Browser media recovery, silent-picture safety and co-play
+        run: PYTHONPATH=. python services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-play-panel-ci
       - name: Browser controls, real native media, blur and reconnect
         run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --output /tmp/retro-browser-ci
       - name: Browser input remains live with delayed acknowledgments
@@ -129,3 +136,5 @@ jobs:
             /tmp/retro-browser-ci/browser.json
             /tmp/retro-browser-ci/browser.png
             /tmp/retro-browser-lag-ci/browser.json
+            /tmp/retro-play-panel-ci/play-panel.json
+            /tmp/retro-play-panel-ci/server.log

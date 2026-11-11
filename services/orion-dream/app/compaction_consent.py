@@ -80,7 +80,8 @@ def plan(delta: MemoryCompactionDeltaV1, downscale_only: bool) -> tuple[str, str
 
 def consent_want(delta: MemoryCompactionDeltaV1, downscale_only: bool, *, writable: bool) -> WantV1:
     verb, rev, only = plan(delta, downscale_only)
-    want_id = f"{FAMILY}:{delta.delta_id}"[:200]
+    # The verb is in the id: a compact verdict can never stand in for a prune ask of the same delta.
+    want_id = f"{FAMILY}:{verb}:{delta.delta_id}"[:200]
     attests = (["snapshot_dir_writable"] if writable else []) + (["downscale_only"] if only else [])
     created = delta.created_at if delta.created_at.tzinfo else delta.created_at.replace(tzinfo=timezone.utc)
     return WantV1(want_id=want_id, family=FAMILY, producer=PRODUCER, verb=verb, object_ref=delta.delta_id[:500],
@@ -101,7 +102,8 @@ def judge(want: WantV1, decision: Optional[WantDecisionV1], now: datetime) -> Co
         return ConsentAnswer(False, reason="no_verdict: the decision carries no consent verdict", decision_id=did)
     sent = want.consent_request
     got = decision.want.consent_request
-    if decision.want_id != want.want_id or got is None or sent is None or got.payload_digest != sent.payload_digest:
+    if (decision.want_id != want.want_id or got is None or sent is None
+            or (got.payload_digest, got.verb, got.reversibility) != (sent.payload_digest, sent.verb, sent.reversibility)):
         return ConsentAnswer(False, v.verdict, v.rule_id, "verdict_mismatch: not for this delta", did)
     if v.verdict != "allow":
         return ConsentAnswer(False, v.verdict, v.rule_id, v.reason, did)

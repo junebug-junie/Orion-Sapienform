@@ -6,7 +6,7 @@
 2. the act history: ``grammar_acts`` for the last 30 days plus each actor's newest close, and
    ``act_downstream_use`` for the same window -- cached for ``ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC``
    (default 300 s; weights move at most 0.1 per day, appetite by minutes);
-3. the pure decision (``orion.physiology.choice.decide``) against the in-memory reservation book;
+3. the pure decision (``orion.physiology.choice.decide_priced``, after the consent gate) against the in-memory reservation book;
 4. the decision published on ``orion:physiology:want:decision`` (sql-writer -> ``want_ledger``).
 
 The exploration floor's weekly quota (Patch C3a) counts funded wants from ``want_ledger`` over the
@@ -66,7 +66,7 @@ from orion.physiology.choice import (
     SYNTHETIC_PRODUCERS,
     build_context,
     consent_gate,
-    decide,
+    decide_priced,
     unavailable,
     with_consent,
 )
@@ -284,15 +284,17 @@ class Market:
                 # The same bid decided the other way, on a throwaway copy of the book (it must not reserve or
                 # count anything): what the charge changed is read from two real decisions, both arms alike.
                 # Refused: the "other way" is the charge as Prime sent it (what the refusal took away).
-                other = decide(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
-                               prime=None if applied is not None else sig, consent_rules=self.consent_rules)
+                other = decide_priced(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
+                                      prime=None if applied is not None else sig)
             if refusal is not None and sig.arm == "treated":
                 # Not applied, and the decision says why (the refusal names the charge it removed).
-                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
-                                  prime_refusal=refusal, consent_rules=self.consent_rules)
+                decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
+                                         prime_refusal=refusal)
             else:
-                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied,
-                                  consent_rules=self.consent_rules)
+                decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open,
+                                         prime=applied)
+            # The gate ran once, above, before any read: attach its (allow) verdict, if any.
+            decision = with_consent(decision, verdict)
             if sig is not None and other is not None:
                 await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None,
                                                 refusal=refusal)

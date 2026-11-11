@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal, Optional, Protocol, Union
@@ -136,7 +137,7 @@ def ask_consent(delta: MemoryCompactionDeltaV1, consent: CompactionConsent | Non
     except Exception as exc:  # noqa: BLE001
         return ConsentAnswer(False, reason=f"consent raised {type(exc).__name__}")
     if isinstance(ans, ConsentAnswer):
-        return ans if ans.approved is True else ConsentAnswer(False, ans.verdict, ans.rule_id, ans.reason, ans.decision_id)
+        return ans if ans.approved is True else dataclasses.replace(ans, approved=False)
     return ConsentAnswer(ans is True, reason="" if ans is True else "consent said no")
 
 

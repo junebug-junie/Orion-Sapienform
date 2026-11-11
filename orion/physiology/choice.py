@@ -373,8 +373,16 @@ def consent_gate(want: WantV1, rules: Optional[ConsentRules], now: datetime, *,
     binding producer admits) can never let a non-consented act through."""
     req = want.consent_request
     if req is None:
-        return None, None
-    verdict = consent_verdict(want, req, rules, now)
+        # A (family, verb) with a consent rule must ask: the gate's guarantee cannot rest on producer
+        # discipline. Every other want without a request is untouched.
+        rule = rules.get(want.family, want.verb) if rules is not None else None
+        if rule is None:
+            return None, None
+        verdict = ConsentVerdictV1(verdict="refuse", rule_id=rule.rule_id,
+                                   reason=f"request_missing: {want.family}/{want.verb} has a consent rule, and the "
+                                          "want carries no consent request")
+    else:
+        verdict = consent_verdict(want, req, rules, now)
     if verdict.verdict == "allow":
         return verdict, None
     cfg = families.get(want.family) if families is not None else None
@@ -403,14 +411,17 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     verdict, deferral = consent_gate(want, consent_rules, now, families=ctx.families)
     if deferral is not None:
         return deferral
-    return with_consent(_decide(want, state, ctx, book, now, reserve_at_open=reserve_at_open, prime=prime,
-                                prime_refusal=prime_refusal), verdict)
+    return with_consent(decide_priced(want, state, ctx, book, now, reserve_at_open=reserve_at_open, prime=prime,
+                                      prime_refusal=prime_refusal), verdict)
 
 
-def _decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
-            now: datetime, *, reserve_at_open: bool = False,
-            prime: Optional[PrimeRegulationV1] = None,
-            prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
+def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
+                  now: datetime, *, reserve_at_open: bool = False,
+                  prime: Optional[PrimeRegulationV1] = None,
+                  prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
+    """The pricing core, with NO consent gate. Only for a caller that has already run ``consent_gate`` for
+    this want and got no deferral (the market process runs it once, before any read); it attaches the
+    verdict with ``with_consent``. Everyone else calls ``decide``."""
     cfg: Optional[FamilyConfig] = ctx.families.get(want.family)
     if cfg is None:
         return _decision(want, now, tier=want.tier, outcome="deferred", reason="unknown_family",
@@ -794,6 +805,7 @@ def _window_warn(want: WantV1, cfg: FamilyConfig, now: datetime, retry: Optional
 
 __all__ = [
     "consent_gate",
+    "decide_priced",
     "with_consent",
     "EXPLORATION_FLOOR",
     "FLOOR_TIER",

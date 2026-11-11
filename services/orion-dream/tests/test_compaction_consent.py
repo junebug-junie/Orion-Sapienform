@@ -235,3 +235,47 @@ def test_the_rem_pass_asks_once_per_staged_delta_and_survives_a_failed_ask(monke
 
 def test_the_window_constant_matches_families_yaml():
     assert FAMS.get("dream.compaction").deferrable_window_s == timedelta(days=1).total_seconds()
+
+
+def test_a_compact_verdict_never_stands_in_for_a_prune_ask():
+    """Review finding 4: the verb is in the want id, and judge checks verb and reversibility too."""
+    from app.compaction_consent import consent_want, judge
+
+    delta = live_delta(prune=1)
+    compact = consent_want(delta, True, writable=True)
+    prune = consent_want(delta, False, writable=True)
+    assert compact.want_id != prune.want_id and ":compact:" in compact.want_id
+    allowed = market_bid(GRANTED)(compact)
+    assert judge(compact, allowed, NOW).approved is True
+    replayed = allowed.model_copy(update={"want_id": prune.want_id})
+    ans = judge(prune, replayed, NOW)
+    assert ans.approved is False and ans.reason.startswith("verdict_mismatch")
+
+
+def test_a_delta_that_failed_to_persist_is_not_asked_about(monkeypatch):
+    """Review finding 5: the want_ledger row must name a stored delta."""
+    from app import rem_compaction as rc
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_DREAM_REM_ENABLED", True)
+    req = [{"request_id": "r-1", "theme": "loop:ol-1", "op_hint": "consolidate", "evidence_refs": ["ol-1", "ol-2"]}]
+    asked: list = []
+
+    async def asker(delta):
+        asked.append(delta.delta_id)
+
+    for persister in (lambda d: False, lambda d: (_ for _ in ()).throw(RuntimeError("db down"))):
+        d = asyncio.run(rc.run_rem_compaction_once(None, request_loader=lambda n: req, delta_persister=persister,
+                                                   consent_asker=asker))
+        assert d is not None
+    assert asked == []
+
+
+def test_the_sleep_cycle_asks_after_its_own_persist():
+    """app.main's _rem persists after the REM pass returns, so it asks there, only for a stored delta."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+    body = src[src.index("async def _rem("):src.index("async def _start_story(")]
+    assert "consent_asker=" not in body
+    persist_at = body.index("rem_store.persist_compaction_delta")
+    ask_at = body.index("await ask_consent_without_store(d)")
+    assert persist_at < ask_at and "if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED" in body

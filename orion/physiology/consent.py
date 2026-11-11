@@ -15,6 +15,8 @@ gate stay where they are (decided item 6).
 
 Branches, in order (the first that applies decides):
 
+0. (in ``orion.physiology.choice.consent_gate``) a want WITHOUT a request whose (family, verb) has a rule ->
+   refuse ``request_missing``: the guarantee does not rest on the producer remembering to ask;
 1. no rules (consent.yaml missing or malformed) -> refuse ``rules_unavailable`` (fail closed);
 2. the request names another want, family or verb than the want -> refuse ``request_mismatch``;
 3. no rule for (family, verb): ``reversible`` -> allow ``no_rule_reversible``; any other class -> refuse
@@ -139,6 +141,12 @@ def parse_consent(doc: Any) -> ConsentRules:
             raise ValueError(f"{rid}: ({family}, {verb}) already has rule {rules[key].rule_id}")
         rules[key] = ConsentRule(rule_id=rid, family=family, verb=verb, reversibility=rev, consent=consent,
                                  requires=tuple(dict.fromkeys(requires)))
+    used = {r.consent[len(STANDING_PREFIX):] for r in rules.values() if r.consent.startswith(STANDING_PREFIX)}
+    unused = sorted(set(standing) - used)
+    if unused:
+        # A consent that no rule reads never takes effect: most likely a typo in Juniper's PR. Refuse the file,
+        # so the PR's own CI fails instead of the consent silently reading as missing.
+        raise ValueError(f"standing consents not used by any rule: {unused} (rules ask for {sorted(used)})")
     return ConsentRules(rules=rules, standing=standing)
 
 

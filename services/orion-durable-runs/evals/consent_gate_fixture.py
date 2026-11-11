@@ -16,7 +16,8 @@ Two lanes:
   - a ``consent`` deferral is never admitted by the binding rule, not at the window's end, not with no end,
     and a dead market (no body state, unreadable history) cannot turn it into "no answer";
   - with no consent request, every decision for the live want shapes (orion/physiology/tests/
-    consent_fixture.py) is byte-identical with the gate loaded and without it.
+    consent_fixture.py) is byte-identical to the one before this patch: no consent rules and no
+    dream.compaction family on one side, both on the other, with uneven real-shaped weight evidence.
 * ``--live``: over the last ``--days``, from Postgres (read-only): staged REM deltas
   (``dream_compaction_delta``) against consent asks (``want_ledger`` rows of family ``dream.compaction``).
   Gate: every ask carries a consent verdict, no ``dream.compaction`` decision is funded without ``allow``,
@@ -79,6 +80,16 @@ def _acts():
     return out
 
 
+def _uses():
+    """Uneven downstream use (linked, window closed) so the tier's weight normalization really moves."""
+    out = []
+    for fam, rate in (("durable.curiosity_investigate", 0.9), ("thought.painting", 0.2)):
+        for i in range(40):
+            out.append({"act_id": f"{fam}u{i}", "actor": fam, "started_at": NOW - timedelta(days=1, hours=i),
+                        "link_status": "linked", "used": (i % 10) < rate * 10, "window_closed": True})
+    return out
+
+
 class _Cur:
     def __init__(self, rows):
         self.rows = rows
@@ -99,7 +110,9 @@ class _Pool:
                 pool.calls += 1
                 if pool.fail:
                     raise RuntimeError("db down")
-                return _Cur(_acts() if "grammar_acts" in sql else [])
+                if "grammar_acts" in sql:
+                    return _Cur(_acts())
+                return _Cur(_uses() if "act_downstream_use" in sql else [])
 
         class _CM:
             async def __aenter__(self):
@@ -119,12 +132,12 @@ class _Redis:
         return self.raw
 
 
-def market(rules, *, raw=None, pool=None):
+def market(rules, *, raw=None, pool=None, families=None):
     async def publish(d):
         return None
 
     raw = _state().model_dump_json() if raw is None else raw
-    return Market(families=FAMS, families_error=None, pool_getter=lambda: pool or _Pool(),
+    return Market(families=families or FAMS, families_error=None, pool_getter=lambda: pool or _Pool(),
                   redis_getter=lambda: _Redis(raw if raw != "" else None), publish=publish, consent_rules=rules)
 
 
@@ -174,10 +187,14 @@ def fixture() -> list[str]:
         print(f"{'ok ' if ok else 'BAD'} dead market ({label}): reason={d.reason} reads={pool.calls}")
         if not ok:
             fails.append(f"dead market ({label}) let a consent want through: reason={d.reason}")
-    # No consent request: byte-identical with and without the gate.
+    # No consent request: byte-identical with and without the gate AND the new dream.compaction family
+    # (a family in the weight pool moves every other family's weight; it ships `weighted: false`).
+    from orion.physiology.families import FamiliesConfig
+
+    before = FamiliesConfig(families={f: c for f, c in FAMS.families.items() if f != "dream.compaction"})
     same = 0
     for w in live_wants():
-        a = asyncio.run(market(None).bid(w, NOW)).model_dump_json()
+        a = asyncio.run(market(None, families=before).bid(w, NOW)).model_dump_json()
         b = asyncio.run(market(SHIPPED).bid(w, NOW)).model_dump_json()
         if a != b or '"consent"' in b:
             fails.append(f"{w.family}: decision changed by the consent gate with no consent request")

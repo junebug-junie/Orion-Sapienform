@@ -5,6 +5,7 @@
 - The want market now answers one question for acts that are hard to put back: "is this act allowed,
   and who agreed?". One pure function gives `allow`, `refuse` or `needs_consent` and names the rule it
   used (`orion/physiology/consent.py`, rules in `config/physiology/consent.yaml`).
+- A (family, verb) that has a consent rule must ask: a want for it without a request is refused.
 - Choice asks the gate first, before prices, the body state or the act history. A `refuse` or
   `needs_consent` becomes a deferral with reason `consent`. The binding rule never admits it, not even
   at the window's end (`orion/physiology/binding.py` `consent_block`).
@@ -54,7 +55,9 @@ verdict, a `want_ledger` row, and a log line. Turning apply on stays Juniper's s
 - `config/physiology/consent.yaml`: rules `dream.compaction.downscale_only` and `dream.compaction.prune`;
   `standing: {}`.
 - `config/physiology/families.yaml`: new family `dream.compaction` (Tier 2, no lanes, no receptors,
-  86,400 s window).
+  86,400 s window, `weighted: false`); new optional field `weighted`.
+- `orion/physiology/families.py`, `orion/physiology/weights.py`: the `weighted` field (a family out of the
+  tier's weight normalization).
 - `config/physiology/contract.yaml`: registers the dream consent bid site.
 - `orion/schemas/physiology_want.py`: `ConsentRequestV1`, `ConsentVerdictV1`, `WantV1.consent_request`,
   `WantDecisionV1.consent`, reason `consent`.
@@ -107,9 +110,9 @@ verdict, a `want_ledger` row, and a log line. Turning apply on stays Juniper's s
 ## Tests run
 
 ```text
-orion/physiology/tests                         297 passed
+orion/physiology/tests                         302 passed
 services/orion-durable-runs/tests              836 passed, 130 skipped
-services/orion-dream/tests + evals             371 passed, 9 skipped
+services/orion-dream/tests + evals             374 passed, 9 skipped
 cortex-orch / actions / hub / thought shadow-bid tests, sql-writer want_ledger shape,
 tests/test_act_ledger_contract.py              all passed
 topic-foundry shadow-bid test                  collection error (no joblib in the local venv; same on main)
@@ -118,7 +121,8 @@ scripts/check_env_template_parity.py           PASS
 scripts/check_service_env_compose_parity.py    orion-durable-runs OK; orion-dream N/A (env_file)
 scripts/check_env_key_single_source.py         OK
 scripts/check_personal_terms.py                OK
-Mutation check: disabling the gate in decide -> 5 tests fail; disabling consent_block in bind_verdict -> 2 fail
+Mutation checks: disabling the gate in decide -> 5 tests fail; disabling consent_block in bind_verdict -> 2 fail;
+putting dream.compaction back in the weight pool -> 2 tests and the eval fail
 ```
 
 ## Evals run
@@ -135,6 +139,7 @@ ok  no rules read: refused
 ok  dead market (no body state): reason=consent reads=0
 ok  dead market (history unreadable): reason=consent reads=0
 ok  no consent request: 9/9 live want shapes decided byte-identically
+    (one side: no consent rules and no dream.compaction family; other side: both; uneven weight evidence)
 PASS
 
 $ PYTHONPATH=. python services/orion-durable-runs/evals/consent_gate_fixture.py --live --days 3
@@ -154,7 +159,43 @@ services/orion-durable-runs/tests/test_dockerfile_copies_physiology_config.py (p
 
 ## Review findings fixed
 
-REVIEW_FINDINGS_PLACEHOLDER
+Review ran in a subagent against `origin/main...HEAD` of this branch. It found no fail-open path for a
+consent-requested act. Findings and fixes:
+
+- Finding (must-fix): the new `dream.compaction` family changed decisions for wants WITHOUT a consent
+  request. Weights are normalized per tier; a family with no acts of its own sits at its prior forever and
+  lowers every other Tier 2 weight. The "byte-identical" test missed it because both sides used the same
+  families.yaml and empty weights.
+  - Fix: a `weighted: false` field in `config/physiology/families.yaml` (parsed in
+    `orion/physiology/families.py`, honored in `orion/physiology/weights.py`). `dream.compaction` sets it,
+    so it bids at its prior and does not move the tier's mean.
+  - Evidence: `test_adding_the_consent_only_family_moves_no_other_familys_weight` and
+    `test_live_want_shapes_decide_identically_with_and_without_the_new_family` compare families.yaml with
+    and without the family, with uneven real-shaped use evidence. The eval does the same through the market.
+    Removing the fix fails both tests and the eval (`vision.ask: decision changed`, 5 fails).
+- Finding (should-fix): deploy order for `extra=forbid` readers was not documented.
+  - Fix: sql-writer, then durable-runs, then dream, in this report's restart section and the durable-runs
+    README.
+- Finding (should-fix): the gate ran only when a producer asked.
+  - Fix: a want for a (family, verb) that has a rule but carries no request is refused (`request_missing`).
+  - Evidence: `test_a_ruled_act_without_a_request_is_refused`.
+- Finding (should-fix): a `compact` verdict could stand in for a `prune` ask of the same delta (same id,
+  same digest).
+  - Fix: the verb is in the want id, and `judge` also checks verb and reversibility.
+  - Evidence: `test_a_compact_verdict_never_stands_in_for_a_prune_ask`.
+- Finding (nit): the sleep cycle asked before it persisted the delta.
+  - Fix: `_rem` asks after its own persist, only for a stored delta; the REM pass asks only when its
+    persister returned true.
+  - Evidence: `test_a_delta_that_failed_to_persist_is_not_asked_about`, `test_the_sleep_cycle_asks_after_its_own_persist`.
+- Finding (nit): the market evaluated the gate two or three times per bid.
+  - Fix: the market runs `consent_gate` once and prices with `decide_priced`.
+- Finding (nit): a standing consent that no rule reads failed silently.
+  - Fix: `parse_consent` refuses the file, so a typo in Juniper's consent PR fails its own CI.
+  - Evidence: `test_a_standing_consent_no_rule_reads_is_a_config_error`.
+- Finding (nit): enum tuples duplicated the schema Literals.
+  - Fix: `test_the_enum_tuples_match_the_schema_literals`.
+- Finding (nit): `ask_consent` copied a `ConsentAnswer` by position.
+  - Fix: `dataclasses.replace(ans, approved=False)`.
 
 ## Restart required
 

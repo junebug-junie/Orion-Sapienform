@@ -253,3 +253,90 @@ def test_the_live_delta_shape_maps_to_the_compact_rule():
     """Live deltas are all consolidate cards (no downscale, no prune): the compact rule, downscale only."""
     delta = live_delta()
     assert not delta.downscale and not delta.prune and len(delta.consolidate) == 3
+
+
+# --- review findings (PR #3185) ------------------------------------------------------------------------
+
+def _uneven_use_history():
+    """Live-shaped evidence: two Tier 2 families with linked, window-closed downstream uses at very
+    different rates (enough acts to leave the prior), so the tier's weight normalization really moves."""
+    from orion.physiology.weights import UseRecord
+
+    uses = []
+    for fam, rate in (("durable.curiosity_investigate", 0.9), ("thought.painting", 0.2)):
+        for i in range(40):
+            uses.append(UseRecord(act_id=f"{fam}{i}", family=fam, started_at=NOW - timedelta(days=1, hours=i),
+                                  link_status="linked", used=(i % 10) < rate * 10, window_closed=True))
+    return uses
+
+
+def _without(fams, family):
+    from orion.physiology.families import FamiliesConfig
+
+    return FamiliesConfig(families={f: c for f, c in fams.families.items() if f != family})
+
+
+def test_adding_the_consent_only_family_moves_no_other_familys_weight():
+    """Review finding 1: a new Tier 2 family with no acts of its own sat at its prior in the tier's weight
+    normalization and lowered every other Tier 2 weight. ``weighted: false`` keeps it out of the pool."""
+    import dataclasses
+
+    from orion.physiology.families import FamiliesConfig
+    from orion.physiology.weights import weights_now
+
+    uses = _uneven_use_history()
+    with_it = weights_now(FAMS, [], uses, NOW)
+    without = weights_now(_without(FAMS, "dream.compaction"), [], uses, NOW)
+    assert "dream.compaction" not in with_it
+    assert {f: w.weight for f, w in with_it.items()} == {f: w.weight for f, w in without.items()}
+    # The test is not vacuous: in the pool, the family does move the others.
+    pooled = FamiliesConfig(families={**FAMS.families, "dream.compaction": dataclasses.replace(
+        FAMS.get("dream.compaction"), weighted=True)})
+    moved = weights_now(pooled, [], uses, NOW)
+    assert moved["durable.curiosity_investigate"].weight != without["durable.curiosity_investigate"].weight
+
+
+def test_live_want_shapes_decide_identically_with_and_without_the_new_family():
+    """Acceptance check 4 against the families.yaml change itself, with real (non-empty) weights."""
+    from orion.physiology.choice import build_context
+    from orion.physiology.weights import weights_now
+
+    st = body(lane("agent"), lane("agent-gpu2", slots=2), lane("metacog"), lane("diffusion"), lane("chat"),
+              lane("fast"))
+    acts = [a for w in live_wants() for a in history(w.family, slot={"agent": 600.0})]
+    uses = _uneven_use_history()
+    old = _without(FAMS, "dream.compaction")
+    for w in live_wants():
+        a = decide(w, st, build_context(old, acts, uses, st, NOW, weights=weights_now(old, acts, uses, NOW)),
+                   ReservationBook(), NOW)
+        b = decide(w, st, build_context(FAMS, acts, uses, st, NOW, weights=weights_now(FAMS, acts, uses, NOW)),
+                   ReservationBook(), NOW, consent_rules=RULES)
+        assert a.model_dump_json() == b.model_dump_json(), w.family
+
+
+def test_a_ruled_act_without_a_request_is_refused():
+    """Review finding 3: the gate's guarantee does not rest on the producer remembering to ask."""
+    st = body(lane("agent"))
+    for verb in ("compact", "prune"):
+        w = WantV1(want_id=f"bare-{verb}", family="dream.compaction", producer="someone", verb=verb, tier=2)
+        d = decide(w, st, ctx_for(SELF, st), ReservationBook(), NOW, consent_rules=rules_with(STANDING))
+        assert d.reason == "consent" and d.consent.verdict == "refuse"
+        assert d.consent.reason.startswith("request_missing")
+        assert bind_verdict(d, NOW, NOW).admit is False
+
+
+def test_a_standing_consent_no_rule_reads_is_a_config_error():
+    """Review finding 7: a typo in Juniper's consent PR must fail its CI, not read as 'missing' forever."""
+    with pytest.raises(ValueError, match="not used by any rule"):
+        rules_with({"dream-compaction-downscal": {"granted_by": "juniper", "granted_on": "2026-11-11"}})
+
+
+def test_the_enum_tuples_match_the_schema_literals():
+    from typing import get_args
+
+    from orion.schemas.physiology_want import (CONSENT_VERDICTS, DECISION_REASONS, REVERSIBILITY, ConsentRequestV1,
+                                               ConsentVerdictV1)
+
+    assert get_args(ConsentRequestV1.model_fields["reversibility"].annotation) == REVERSIBILITY
+    assert get_args(ConsentVerdictV1.model_fields["verdict"].annotation) == CONSENT_VERDICTS
+    assert set(get_args(WantDecisionV1.model_fields["reason"].annotation)) == set(DECISION_REASONS)

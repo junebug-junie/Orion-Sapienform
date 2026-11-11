@@ -17,10 +17,11 @@ Discipline (§0A / hard constraints):
     consolidate previews (and passes through any request-hinted ops) but performs
     zero canonical writes.
 
-Consent ask (attention patch 3d). After a delta is staged, the pass awaits an injected
+Consent ask (attention patch 3d). After a delta is persisted, the pass awaits an injected
 `consent_asker(delta)`. This module never imports the applier (Phase F stays out of every mutation
-path); the callers in app.main inject `app.compaction_consent.ask_consent_without_store`, which asks the
-want market's consent gate through the applier with NO memory store. So every real delta leaves a
+path); `POST /dreams/rem/run` injects `app.compaction_consent.ask_consent_without_store`, and the sleep
+cycle (app.main `_rem`, which persists after this pass returns) asks after its own persist. The ask goes to
+the want market's consent gate through the applier with NO memory store. So every real delta leaves a
 verdict (want_ledger, and `compaction_apply not_approved ... rule=...` while Juniper's standing consent
 is missing), and nothing can be written. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false` skips the ask.
 """
@@ -178,8 +179,9 @@ async def run_rem_compaction_once(
     persist = delta_persister
     if persist is None:
         from app.rem_store import persist_compaction_delta as persist  # type: ignore[assignment]
+    persisted = False
     try:
-        persist(delta)
+        persisted = bool(persist(delta))
     except Exception as exc:
         logger.warning("rem compaction persist failed id=%s err=%s", delta.delta_id, exc)
 
@@ -188,7 +190,8 @@ async def run_rem_compaction_once(
         delta.delta_id,
         delta.metrics.cards_out,
     )
-    if consent_asker is not None and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
+    # Only a delta that is really staged is asked about (the ledger row must name a stored delta).
+    if consent_asker is not None and persisted and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
         try:
             await consent_asker(delta)
         except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the staged delta stands

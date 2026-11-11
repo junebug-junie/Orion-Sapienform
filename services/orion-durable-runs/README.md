@@ -1132,7 +1132,10 @@ yield and the self-monitor gate stay where they are. A want with no consent requ
 Every verdict logs `physiology_consent verdict=... rule=... want=...`; `/health` -> `physiology_market`
 shows `consent_rules`, `consent_standing`, `consent_error` and per-verdict counts. First consumer: dream
 compaction apply (orion-dream `app/compaction_consent.py`). Eval: `evals/consent_gate_fixture.py`
-(`--live` compares staged REM deltas to consent asks in `want_ledger`).
+(`--live` compares staged REM deltas to consent asks in `want_ledger`). A (family, verb) that has a rule must ask: a
+want for it without a consent request is refused (`request_missing`). Deploy order: a decision that carries
+`consent` needs rebuilt `extra=forbid` readers, so rebuild orion-sql-writer first, then this service, then
+orion-dream (the only sender of consent requests).
 
 **Exploration floor, weekly quota (Patch C3a).** Funded wants are counted from `want_ledger` (rolling 7
 days, re-read with the history) plus this process's own funded decisions, deduplicated by

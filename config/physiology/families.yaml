@@ -20,6 +20,8 @@
 #                        historical cost and nothing is placed.
 #   fixed_cost           Per-act costs that are definitional, not measured (an outreach act IS one
 #                        message to Juniper). ActCostV2 field names only.
+#   weighted             (default true) in its tier's weight normalization. false: weight = prior_weight, and
+#                        the family does not move the tier's mean (a family with no acts of its own).
 #   receptors            Prime's regulate signals this family handles: slow (a temporary charge on its
 #                        bids) and/or quicken (a temporary credit). Orion Prime step 3, 2026-10-30;
 #                        orion/physiology/prime_charge.py. A family without receptors: Prime's signal
@@ -212,9 +214,13 @@ families:
     # has no hold loop). Tier 2, no lanes (applying a delta is a few DB writes, no GPU), no receptors (the
     # spec). No act-ledger actor yet: hunger counts from the want's own opened_at (the delta's creation).
     # 86400: REM stages about 2 deltas a day; a delta older than a day is superseded by the next sleep's.
+    # weighted: false -- it never closes acts of its own, so in the tier's weight normalization it would sit at
+    # its prior forever and lower every other Tier 2 family's weight. Out of the pool, it bids at its prior and
+    # every other family's decision is unchanged.
     tier: 2
     deferrable_window_s: 86400
     lanes: []
+    weighted: false
   vision.ask:
     # 2026-11-04, attention as the want competition patch 2 (docs/superpowers/specs/2026-11-04-attention-as-
     # want-competition-design.md): an open camera ask (orion_ask: vision_individual, vision_person_confirm,

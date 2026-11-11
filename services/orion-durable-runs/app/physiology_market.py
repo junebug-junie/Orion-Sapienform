@@ -9,9 +9,9 @@
 3. the pure decision (``orion.physiology.choice.decide``) against the in-memory reservation book;
 4. the decision published on ``orion:physiology:want:decision`` (sql-writer -> ``want_ledger``).
 
-The exploration floor's weekly quota (Patch C3a) counts funded wants from ``want_ledger`` over the
-rolling 7 days, re-read with the act history; a failed ledger read leaves the last count (and no
-floor until a first read succeeds), it never fails the bid.
+The exploration floor's weekly quota counts ACTS STARTED per family over the rolling 7 days
+(attention patch 3b; ``choice.acts_started`` over this same act history read), re-seeded with each
+history refresh. Before 3b it counted funded wants from ``want_ledger``.
 
 Bid sites in this process (Patch C3a): durable-runs' own admission (``app.run_bids``) calls
 ``Market.bid`` in-process, ``mark_opened`` at the run's first grant and ``release`` at its terminal.
@@ -53,10 +53,9 @@ from typing import Any, Optional
 
 from orion.physiology.appetite import ActRecord
 from orion.physiology.choice import (
-    FLOOR_WINDOW,
-    FundedWant,
     MarketContext,
     ReservationBook,
+    acts_started,
     SYNTHETIC_PRODUCERS,
     build_context,
     decide,
@@ -88,13 +87,6 @@ USES_SQL = """
 SELECT act_id, actor, started_at, link_status, used, window_closed
   FROM act_downstream_use
  WHERE started_at >= %(since)s
-"""
-
-
-FUNDED_SQL = """
-SELECT decision_id, family, tier, decided_at
-  FROM want_ledger
- WHERE outcome = 'funded' AND decided_at >= %(since)s AND NOT (producer = ANY(%(synthetic)s))
 """
 
 
@@ -140,14 +132,6 @@ async def read_history(pool: Any, now: datetime) -> tuple[list[ActRecord], list[
         acts = [act_from_row(r) for r in await (await conn.execute(ACTS_SQL, {"since": since})).fetchall()]
         uses = [use_from_row(r) for r in await (await conn.execute(USES_SQL, {"since": since})).fetchall()]
     return acts, uses
-
-
-async def read_funded(pool: Any, now: datetime) -> list[FundedWant]:
-    """want_ledger's funded wants over the floor's rolling week. Raises on a failed read."""
-    async with pool.connection() as conn:
-        rows = await (await conn.execute(FUNDED_SQL, {"since": now - FLOOR_WINDOW,
-                                                      "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
-    return [FundedWant(str(r["decision_id"]), _utc(r["decided_at"]), str(r["family"]), int(r["tier"])) for r in rows]
 
 
 async def read_event_history(pool: Any, now: datetime) -> dict[str, list[float]]:
@@ -211,10 +195,9 @@ class Market:
                 logger.warning("physiology_bid_event_history_read_failed", exc_info=True)
                 events = self._cache.events if self._cache is not None else None
             self._cache = _Cached(at=now, acts=acts, uses=uses, events=events)
-            try:
-                self.book.seed_funded(await read_funded(self._pool_getter(), now), now)
-            except Exception:  # noqa: BLE001 -- keep the last count; no floor until a first read succeeds
-                logger.warning("physiology_bid_funded_read_failed", exc_info=True)
+            # Attention patch 3b: the exploration floor counts acts started (this same act read),
+            # not funded bids. No separate query, so no separate failure: no history, no bid.
+            self.book.seed_started(acts_started(acts, self.families, now), now)
             return self._cache
 
     async def _state(self) -> Optional[PhysiologyStateV1]:

@@ -47,13 +47,18 @@ Tier 1 reserved share: per lane, the p75 of Tier 1's own hourly use over 14 days
 the lane, capped at 50%. Tier 1 pays no lane price while its reservations fit inside that share;
 Tier 2's capacity line on that lane is the rest.
 
-Exploration floor, a weekly quota (Patch C3a). A Tier 2 family under 5% of Tier 2's FUNDED WANTS
-over the rolling 7 days is funded anyway when only the PRICE said defer (never past a capacity
-line, never with zero hunger). Funded wants are counted from ``want_ledger`` (``seed_funded``) plus
-this process's own funded decisions the ledger has not caught up with, deduplicated by
-``decision_id``. Each floor fund raises the family's share, so the floor stops by itself at 5%;
+Exploration floor, a weekly quota (Patch C3a). A Tier 2 family under 5% of Tier 2's effort over the
+rolling 7 days is funded anyway when only the PRICE said defer (never past a capacity line, never
+with zero hunger). Each floor fund raises the family's share, so the floor stops by itself at 5%;
 there is no per-window rate limit (C1's once-per-lane-window rule starved families: R7 failed).
-No ledger read yet (``funded_seeded`` false): no floor.
+Nothing counted yet (``funded_seeded`` false): no floor. What is counted:
+
+* live, since attention patch 3b (``seed_started``): ACTS STARTED per family, from the act ledger
+  (``grammar_acts.opened_at``), plus this process's own floor funds until the next seed. Funded bids
+  measured how often a family bids, not who got effort (retro leisure: 73% of Tier 2 funded bids
+  from 5 sessions; spec 2026-11-07, decided 2026-11-10 item 4);
+* the older replays (``seed_funded``): funded wants from ``want_ledger`` plus every own funded
+  decision, deduplicated by ``decision_id`` (the C3a rule they replay).
 
 Holdback stays the allocator's own; Choice does not randomize.
 
@@ -80,7 +85,7 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from orion.physiology.appetite import (
     ActRecord,
@@ -147,11 +152,24 @@ class Reservation:
 
 @dataclass(frozen=True)
 class FundedWant:
-    """One funded decision, as the exploration floor counts it (a want_ledger row or this process's own)."""
+    """One entry the exploration floor counts: an act started (``acts_started``: ``decision_id`` is the
+    act id, ``at`` its open), or a funded decision (a want_ledger row or this process's own)."""
     decision_id: str
     at: datetime
     family: str
     tier: int
+
+
+def acts_started(acts: Iterable[ActRecord], families: "FamiliesConfig | Mapping[str, FamilyConfig]", now: datetime) -> list[FundedWant]:
+    """The floor's count (patch 3b): every act of a configured family that OPENED in the rolling
+    week, tagged with its family's tier. Pure; the act history is the market's own 30-day read."""
+    since = now - FLOOR_WINDOW
+    out = []
+    for a in acts:
+        cfg = families.get(a.family)
+        if cfg is not None and a.opened_at is not None and since <= a.opened_at <= now:
+            out.append(FundedWant(f"act:{a.act_id}", a.opened_at, a.family, cfg.tier))
+    return out
 
 
 class ReservationBook:
@@ -165,6 +183,9 @@ class ReservationBook:
         # decision_id -> funded want, the rolling FLOOR_WINDOW: want_ledger rows + this process's own.
         self._funded: dict[str, FundedWant] = {}
         self.funded_seeded = False
+        # Patch 3b: the floor counts acts started (``seed_started``); own decisions count only when
+        # they were floor funds, and only until the next seed (whose acts then include them).
+        self.counts_acts = False
 
     def _prune(self, now: datetime) -> None:
         self._r = [r for r in self._r if r.expires_at > now]
@@ -214,7 +235,20 @@ class ReservationBook:
         self.funded_seeded = True
         self._prune_funded(now)
 
-    def note_funded(self, decision_id: str, family: str, tier: int, at: datetime) -> None:
+    def seed_started(self, rows: "Sequence[FundedWant]", now: datetime) -> None:
+        """Patch 3b: REPLACE the floor's count with the acts started over the rolling week (one row
+        per act, ``decision_id`` = the act id, ``at`` = its open). Own floor funds noted before this
+        seed are dropped: an act that opened since is in ``rows``."""
+        self._funded = {r.decision_id: r for r in rows}
+        self.counts_acts = True
+        self.funded_seeded = True
+        self._prune_funded(now)
+
+    def note_funded(self, decision_id: str, family: str, tier: int, at: datetime, *, floor: bool = False) -> None:
+        """An own funded decision. Counting acts (``seed_started``), only a floor fund counts, as a
+        start the act ledger has not shown yet: that keeps the quota self-limiting between seeds."""
+        if self.counts_acts and not floor:
+            return
         self._funded[decision_id] = FundedWant(decision_id, at, family, tier)
 
     def _prune_funded(self, now: datetime) -> None:
@@ -223,8 +257,8 @@ class ReservationBook:
             del self._funded[k]
 
     def funded_share(self, family: str, tier: int, now: datetime) -> Optional[float]:
-        """``family``'s share of its tier's funded wants over the rolling week; None when the tier
-        funded nothing (no share to defend: every hungry family is under the floor)."""
+        """``family``'s share of its tier's counted effort over the rolling week (acts started, or funded
+        wants for the older replays); None when the tier has none (every hungry family is under the floor)."""
         self._prune_funded(now)
         in_tier = [r for r in self._funded.values() if r.tier == tier and r.at <= now]
         if not in_tier:
@@ -643,8 +677,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                          warnings=_window_warn(want, cfg, now, retry, warnings), **common,
                          why=f"{head}; {k} is full: forecast use + {len(holders)} reservation(s) + this cost exceed its line by {frac_over:.0%}")
 
-    # The weekly quota: a Tier 2 family under 5% of Tier 2's funded wants over the rolling 7 days
-    # (want_ledger + this process's own), counted only once the ledger was read...
+    # The weekly quota: a Tier 2 family under 5% of Tier 2's effort over the rolling 7 days (acts
+    # started; ``ReservationBook.seed_started``), counted only once the history was read...
     floor_share = book.funded_share(want.family, tier, now) if book.funded_seeded else None
     # ...and only for a want with some hunger: the floor guarantees a share to families that want,
     # it does not fund a family whose drive just discharged (intensity 0). An event's salience is
@@ -656,8 +690,9 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"
         if reason == "exploration_floor":
-            fs = ("nothing funded in its tier this week" if floor_share is None
-                  else f"{floor_share:.1%} of Tier {tier}'s funded wants over 7 days")
+            what = "acts started" if book.counts_acts else "funded wants"
+            fs = (f"no {what} in its tier this week" if floor_share is None
+                  else f"{floor_share:.1%} of Tier {tier}'s {what} over 7 days")
             head += f"; under the 5% weekly exploration quota ({fs})"
         secs = cost.scalars.get("seconds")
         ttl = min(ctx.lane_window_sec, max(RESERVATION_MIN_SEC, secs if secs else RESERVATION_MIN_SEC))
@@ -685,7 +720,7 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                              reservation_expires_at=expires if reserved else None, displaced=displaced,
                              warnings=warnings, **common, why=head)
         if want.producer not in SYNTHETIC_PRODUCERS:
-            book.note_funded(decision.decision_id, want.family, tier, now)
+            book.note_funded(decision.decision_id, want.family, tier, now, floor=reason == "exploration_floor")
         return decision
 
     if lane_charge <= 0.0 and prime_part <= 0.0:
@@ -753,6 +788,7 @@ __all__ = [
     "SYNTHETIC_PRODUCERS",
     "Reservation",
     "ReservationBook",
+    "acts_started",
     "STALE_AFTER_SEC",
     "build_context",
     "decide",

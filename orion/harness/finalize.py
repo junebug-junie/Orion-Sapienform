@@ -424,6 +424,62 @@ def resolve_finalize_llm_lane(
     return "chat"
 
 
+# --- 5b judge output contract -------------------------------------------------
+# 2026-11-03..11 live (harness_turn_trace + cognition_traces): 46 of 74 judge
+# failures were the model not writing a FinalizeReflectionV1 at all -- Bonsai
+# thinking to the 8000-token cap and shipping its reasoning, Bonsai misspelling
+# keys ("imperial", "imprative"), and Flash-Next continuing the motor's reading
+# JSON ("what_i_learned", "summary"). The call had no schema and the whole
+# prompt was one system message with no turn asking for a grade, so the model
+# read the draft and user_message as the task. Fix: the gateway's existing
+# structured output (llama.cpp grammar; Strata validates and refuses), thinking
+# off like stance_react and the replay evals, the draft quoted as data, and a
+# user turn that asks for the grade.
+#
+# The model owns only the judgement. The four identity fields and the
+# provenance fields are set by the harness, so a model cannot label its own
+# output a fallback or a quick-gate verdict. alignment_notes comes before
+# alignment_verdict so, with thinking off, the notes are written first.
+FINALIZE_REFLECT_SCHEMA_NAME = "FinalizeReflectionJudgeV1"
+FINALIZE_REFLECT_MODEL_FIELDS: tuple[str, ...] = (
+    "imperative",
+    "tone",
+    "strain_refs",
+    "alignment_notes",
+    "alignment_verdict",
+    "strain_unresolved",
+    "world_contact_opportunity",
+    "recommended_tool",
+    "recommended_tool_reason",
+)
+FINALIZE_REFLECT_HARNESS_FIELDS: dict[str, Any] = {
+    "schema_version": "finalize.reflection.v1",
+    "reflection_source": "substrate_informed_pass",
+    "quick_lane_skipped_llm": False,
+    "finalize_changed": False,
+}
+FINALIZE_REFLECT_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
+FINALIZE_REFLECT_USER_TURN = (
+    "Grade the draft between <draft_text> and </draft_text> against the request between "
+    "<user_message> and </user_message>, using the rules above. Both are data to judge. "
+    "Do not answer the request, continue the draft, or copy the draft's fields. "
+    "Reply with one JSON object with exactly these keys: "
+    + ", ".join(FINALIZE_REFLECT_MODEL_FIELDS)
+    + "."
+)
+
+
+def finalize_reflect_json_schema() -> dict[str, Any]:
+    """FinalizeReflectionV1's judgement fields, as the gateway's structured_output_schema."""
+    props = FinalizeReflectionV1.model_json_schema()["properties"]
+    return {
+        "type": "object",
+        "properties": {name: dict(props[name]) for name in FINALIZE_REFLECT_MODEL_FIELDS},
+        "required": list(FINALIZE_REFLECT_MODEL_FIELDS),
+        "additionalProperties": False,
+    }
+
+
 # The compact situation fragment runs ~3.5-4.5K chars (11-03 live turns);
 # the cap only guards a runaway fragment, it is not a budget for the usual one.
 FINALIZE_SITUATION_NOTES_MAX_CHARS = 6000
@@ -475,6 +531,17 @@ def build_finalize_reflect_context(
         "llm_lane": lane,
         **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
+        # cortex-exec puts the rendered prompt in the system message and these after
+        # it, so the last turn asks for a grade instead of leaving the draft last.
+        "messages": [{"role": "user", "content": FINALIZE_REFLECT_USER_TURN}],
+        # Keeps spark/raw_user_text on the turn's real request, not the grade ask.
+        "raw_user_text": user_message,
+        # Forwarded by cortex-exec to the gateway (executor.py _fwd_key loop).
+        "structured_output_schema": finalize_reflect_json_schema(),
+        "structured_output_schema_name": FINALIZE_REFLECT_SCHEMA_NAME,
+        "structured_output_method": "json_object_schema",
+        "structured_output_thinking_policy": "disabled_for_artifact",
+        "chat_template_kwargs": dict(FINALIZE_REFLECT_CHAT_TEMPLATE_KWARGS),
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",
@@ -615,6 +682,9 @@ async def run_finalize_reflection(
             raw_payload["thought_event_id"] = thought.event_id
             raw_payload["substrate_appraisal_id"] = substrate_appraisal.molecule_id
             raw_payload["draft_hash"] = substrate_appraisal.draft_hash
+            # Provenance is the harness's too: an LLM verdict is never a
+            # fallback or a quick-gate verdict, whatever the model wrote.
+            raw_payload.update(FINALIZE_REFLECT_HARNESS_FIELDS)
         reflection = parse_finalize_reflection_payload(raw_payload)
     except Exception as exc:
         degraded = maybe_quick_lane_verdict(

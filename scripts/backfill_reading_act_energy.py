@@ -321,7 +321,10 @@ def _report(path: Path, s: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     applied = s["mode"] == "apply"
     verdict = ("APPLIED" if applied else "DRY RUN (nothing written)") + (
         f"; {s['errors']} error(s)" if s["errors"] else "")
-    act_ex = [r for r in rows if r["kind"] == "act" and not r.get("error")][:5]
+    act_ok = [r for r in rows if r["kind"] == "act" and not r.get("error")]
+    # Examples that gained energy first, then one of each anomaly.
+    act_ex = [r for r in act_ok if r["wh"] > 0][:5]
+    act_ex += [next(r for r in act_ok if r["anomaly"] == a) for a in sorted({r["anomaly"] for r in act_ok} - {""})]
     hour_ex = sorted((r for r in rows if r["kind"] == "hour" and r.get("after_raw")), key=lambda r: -abs(r["wh"]))[:5]
     lines = [
         f"# {JOB}: {s['mode']}", "",
@@ -347,7 +350,8 @@ def _report(path: Path, s: dict[str, Any], rows: list[dict[str, Any]]) -> None:
         "## Read acts: before / after (wh_by_host)", "",
         "| act_id | before | after | read end |", "|---|---|---|---|",
     ]
-    lines += [f"| {r['id']} | {r['before']} | {r['after']} | {r['note']} |" for r in act_ex]
+    lines += [f"| {r['id']} | {r['before']} | {r['after']} | {r['note']}"
+              + (f"; {r['anomaly']}: {r['basis_wh'][:80]}" if r["anomaly"] else "") + " |" for r in act_ex]
     lines += ["", "## Hourly rows: largest moves (metered / leased_unmetered / unattributed Wh)", "",
               "| host@hour | before | after | moved Wh |", "|---|---|---|---|"]
     lines += [f"| {r['id']} | {r['before']} | {r['after']} | {r['wh']} |" for r in hour_ex]

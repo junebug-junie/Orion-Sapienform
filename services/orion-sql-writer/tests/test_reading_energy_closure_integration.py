@@ -396,7 +396,7 @@ def test_a_read_with_no_lease_gets_a_wh_line_and_is_not_reselected(session):
 
 
 def test_the_hourly_writer_stores_the_read_as_metered(session):
-    from app.orion_energy_attribution import UPSERT_SQL, run_one_attribution
+    from app.orion_energy_attribution import run_one_attribution
 
     _world(session)
     session.commit()
@@ -404,9 +404,9 @@ def test_the_hourly_writer_stores_the_read_as_metered(session):
     run_one_attribution(engine, now=H + timedelta(hours=1, minutes=10))
     row = session.execute(text("SELECT metered_wh, leased_unmetered_wh FROM orion_energy_attribution_hourly "
                                "WHERE host = 'circe' AND hour_start = :h"), {"h": H}).first()
-    new = _hour(session)
+    new, old = _hour(session), _hour(session, charge_reads=False)
     assert row[0] == pytest.approx(new.metered_wh) and row[1] == pytest.approx(new.leased_unmetered_wh)
-    assert UPSERT_SQL is not None
+    assert row[0] > old.metered_wh + 10.0  # the read's ~37 Wh is in the stored metered_wh
 
 
 def _backfill_module():

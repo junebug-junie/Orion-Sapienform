@@ -39,15 +39,22 @@ def test_share_equals_a_hand_count_of_acts_started_this_week():
     assert book.funded_share("hub.world_pulse_read", 2, NOW) == pytest.approx(6 / n2)
 
 
-def test_own_decisions_count_only_as_floor_funds_and_only_until_the_next_seed():
+def test_own_floor_funds_count_for_the_week_across_seeds_and_funded_bids_do_not():
+    """Review finding 3: a family nobody obeys never shows acts. Its floor funds must keep counting
+    across history refreshes, or the floor funds it after every refresh without end."""
+    acts = [FundedWant("act:a", NOW - timedelta(days=1), "durable.self_inquiry", 2)]
     book = ReservationBook()
-    book.seed_started([FundedWant("act:a", NOW - timedelta(days=1), "durable.self_inquiry", 2)], NOW)
+    book.seed_started(acts, NOW)
     book.note_funded("d-bid", "hub.retro_leisure", 2, NOW)                # a funded bid: not effort
     assert book.funded_share("hub.retro_leisure", 2, NOW) == pytest.approx(0.0)
-    book.note_funded("d-floor", "hub.retro_leisure", 2, NOW, floor=True)  # a floor fund: counts now
+    book.note_funded("d-floor", "hub.retro_leisure", 2, NOW, floor=True)  # a floor fund: counts
     assert book.funded_share("hub.retro_leisure", 2, NOW) == pytest.approx(0.5)
-    book.seed_started([FundedWant("act:a", NOW - timedelta(days=1), "durable.self_inquiry", 2)], NOW)
-    assert book.funded_share("hub.retro_leisure", 2, NOW) == pytest.approx(0.0)   # its act never opened
+    for k in range(1, 4):                                                 # refreshes with no new acts
+        book.seed_started(acts, NOW + timedelta(minutes=5 * k))
+        assert book.funded_share("hub.retro_leisure", 2, NOW + timedelta(minutes=5 * k)) == pytest.approx(0.5)
+    later = NOW + timedelta(days=8)                                       # a week on: it ages out
+    book.seed_started([], later)
+    assert book.funded_share("hub.retro_leisure", 2, later) is None
 
 
 def test_the_older_replays_keep_counting_funded_wants():

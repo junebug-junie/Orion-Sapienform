@@ -131,3 +131,36 @@ def test_queue_position_follows_the_grant_order():
     assert queue_position(CFG, leases, "late", T0, ON) == 1
     assert queue_position(CFG, leases, "early", T0, ON) == 2
     assert queue_position(CFG, leases, "late", T0, None) == 2
+
+
+# --- review findings (2026-11-11) ------------------------------------------------------------------
+
+def bg(lid, work_class, net, family, age_s, kind="hold"):
+    return LeaseView(lease_id=lid, work_class=work_class, priority="background", status="queued", kind=kind,
+                     created_at=T0 - timedelta(seconds=age_s), want_net=net, want_family=family)
+
+
+def test_an_upkeep_call_of_another_class_does_not_freeze_this_classes_value_order():
+    """Finding 1: a chat-class call with no net sat between two agent holds and stopped the later one
+    from jumping; the reported position also disagreed with the grant order."""
+    early, upkeep, late = bg("early", "agent", 0.2, "reading", 600), bg("U", "chat", None, None, 300, "request"), \
+        bg("late", "agent", 0.9, "curiosity", 60)
+    leases = [early, upkeep, late]
+    order = [l.lease_id for l in _order(CFG, leases, T0, ON)]
+    assert order.index("late") < order.index("early") and order.index("U") == 1   # U keeps its own slot
+    out = schedule(CFG, one_agent_seat(), cards(), leases, T0, value=ON)
+    assert "late" in granted(out) and "early" not in granted(out)
+    # The position a caller sees (its own class only) agrees with what is granted.
+    assert queue_position(CFG, [early, late], "late", T0, ON) == 1
+
+
+def test_an_owner_granted_first_anyway_is_not_reported_as_a_reorder():
+    """Finding 2: an earlier borrower (metacog class on the agent seat) and a later owner both want
+    the agent seat; owners go first in arrival order too, so the value order decided nothing."""
+    seats = live(**{r: live()[r].__class__(r, False, 0) for r in ("agent-gpu2", "agent-deep", "metacog", "fast", "chat")})
+    borrower = bg("borrower", "metacog", 0.1, "durable.journal_compose", 600, "request")
+    owner = bg("owner", "agent", 0.9, "durable.self_inquiry", 60)
+    out = schedule(CFG, seats, cards(), [borrower, owner], T0, value=ON)
+    arrival = schedule(CFG, seats, cards(), [borrower, owner], T0)
+    assert granted(out) == granted(arrival) == ["owner"]
+    assert not [d for d in out if isinstance(d, Reordered)]

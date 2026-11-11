@@ -91,6 +91,7 @@ from orion.physiology.appetite import (
     ActRecord,
     FamilyAppetite,
     estimate_cost,
+    holds_no_slot,
     hunger,
     lane_hunger_seed,
     rank_value,
@@ -183,9 +184,11 @@ class ReservationBook:
         # decision_id -> funded want, the rolling FLOOR_WINDOW: want_ledger rows + this process's own.
         self._funded: dict[str, FundedWant] = {}
         self.funded_seeded = False
-        # Patch 3b: the floor counts acts started (``seed_started``); own decisions count only when
-        # they were floor funds, and only until the next seed (whose acts then include them).
+        # Patch 3b: the floor counts acts started (``seed_started``) plus this process's own floor
+        # funds, kept for the whole rolling week across seeds (``_own_floor``): a floor fund of a family
+        # nobody obeys never becomes an act, and must still count or the floor never stops itself.
         self.counts_acts = False
+        self._own_floor: dict[str, FundedWant] = {}
 
     def _prune(self, now: datetime) -> None:
         self._r = [r for r in self._r if r.expires_at > now]
@@ -236,31 +239,35 @@ class ReservationBook:
         self._prune_funded(now)
 
     def seed_started(self, rows: "Sequence[FundedWant]", now: datetime) -> None:
-        """Patch 3b: REPLACE the floor's count with the acts started over the rolling week (one row
-        per act, ``decision_id`` = the act id, ``at`` = its open). Own floor funds noted before this
-        seed are dropped: an act that opened since is in ``rows``."""
+        """Patch 3b: REPLACE the acts part of the floor's count with the acts started over the rolling
+        week (one row per act, ``decision_id`` = the act id, ``at`` = its open). Own floor funds stay
+        for the week. A floor fund whose act later opens is then counted twice: an over-count of that
+        family's effort, so the floor stops sooner, never later."""
         self._funded = {r.decision_id: r for r in rows}
         self.counts_acts = True
         self.funded_seeded = True
         self._prune_funded(now)
 
     def note_funded(self, decision_id: str, family: str, tier: int, at: datetime, *, floor: bool = False) -> None:
-        """An own funded decision. Counting acts (``seed_started``), only a floor fund counts, as a
-        start the act ledger has not shown yet: that keeps the quota self-limiting between seeds."""
-        if self.counts_acts and not floor:
+        """An own funded decision. Counting acts (``seed_started``), only a floor fund counts (kept for
+        the week, across seeds): that keeps the quota self-limiting."""
+        if self.counts_acts:
+            if floor:
+                self._own_floor[decision_id] = FundedWant(decision_id, at, family, tier)
             return
         self._funded[decision_id] = FundedWant(decision_id, at, family, tier)
 
     def _prune_funded(self, now: datetime) -> None:
         since = now - FLOOR_WINDOW
-        for k in [k for k, r in self._funded.items() if r.at < since]:
-            del self._funded[k]
+        for d in (self._funded, self._own_floor):
+            for k in [k for k, r in d.items() if r.at < since]:
+                del d[k]
 
     def funded_share(self, family: str, tier: int, now: datetime) -> Optional[float]:
         """``family``'s share of its tier's counted effort over the rolling week (acts started, or funded
         wants for the older replays); None when the tier has none (every hungry family is under the floor)."""
         self._prune_funded(now)
-        in_tier = [r for r in self._funded.values() if r.tier == tier and r.at <= now]
+        in_tier = [r for r in (*self._funded.values(), *self._own_floor.values()) if r.tier == tier and r.at <= now]
         if not in_tier:
             return None
         return sum(1 for r in in_tier if r.family == family) / len(in_tier)
@@ -428,11 +435,11 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                          warnings=warnings, why=f"no act history was read for {want.family}")
 
     # --- Appetite: intensity, value_rank -----------------------------------------------------------
-    # A want whose cost states an EMPTY ``gpu_slot_s_by_lane`` holds no GPU slot: it is placed on no
-    # lane and never capacity-checked on one (attention patch 3b; e.g. reading's after-the-read look,
+    # A want whose cost states it holds no GPU slot (``appetite.no_slot_cost``) is placed on no lane
+    # and never capacity-checked on one (attention patch 3b; e.g. reading's after-the-read look,
     # whose model time was the read's, already spent and already charged to the read's own act).
-    holds_no_slot = want.cost is not None and want.cost.gpu_slot_s_by_lane == {}
-    lanes = [] if holds_no_slot else list(want.lanes or cfg.lanes)
+    no_slot = holds_no_slot(want.cost.model_dump() if want.cost is not None else None)
+    lanes = [] if no_slot else list(want.lanes or cfg.lanes)
     lane_details = {k[len(LANE_PREFIX):]: r.detail for k, r in readings.items() if k.startswith(LANE_PREFIX)}
     seed, seed_lane = lane_hunger_seed(lane_details, lanes)
     h = hunger(app, now, opened_at=want.opened_at, seed_sec=seed, seed_lane=seed_lane)

@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
 
-from app.run_bids import READING_FAMILY, RunBidder, RunValue, reading_want  # noqa: E402
+from app.run_bids import READING_FAMILY, VALUE_PRODUCER, RunBidder, RunValue, reading_want  # noqa: E402
 from orion.gpu_pool.client import acquire_hold, request_payload  # noqa: E402
 from orion.physiology.families import load_families  # noqa: E402
 from orion.schemas.gpu_pool import GpuLeaseReplyV1, GpuLeaseRequestV1  # noqa: E402
@@ -62,6 +62,7 @@ def test_reading_stage_1_gets_a_value_only_bid_and_stage_2_reuses_its_net():
         b = RunBidder(enabled=True, market_getter=lambda: m)
         await b.on_submit(_reading(1, "reading-s1"))
         assert [w.family for w in m.bids] == [READING_FAMILY] and m.bids[0].verb == "look"
+        assert m.bids[0].producer == VALUE_PRODUCER     # told apart from Hub's looks in want_ledger
         assert m.released == ["reading-s1"]           # value only: it reserves nothing
         assert b.on_submit(_reading(2, "reading-s2")) is None   # stage 2 never bids
         v1 = await b.value_for(_reading(1, "reading-s1"))
@@ -105,14 +106,27 @@ def test_unset_value_fields_never_reach_the_wire():
     assert request_payload(req)["want_net"] == 0.5
 
 
+def _old_pool_schema():
+    """GpuLeaseRequestV1 as a pool built before patch 3b validates it: no want_* fields, extra forbidden."""
+    from pydantic import ConfigDict, create_model
+
+    fields = {k: (f.annotation, f) for k, f in GpuLeaseRequestV1.model_fields.items() if not k.startswith("want_")}
+    return create_model("GpuLeaseRequestV1", __config__=ConfigDict(extra="forbid"), **fields)
+
+
 def test_an_old_pool_refusing_the_fields_gets_the_hold_asked_again_without_them(monkeypatch):
+    """Review finding 7: against the REAL refusal text an old pool sends (services/orion-gpu-pool/app/
+    main.py: ``f"invalid:{exc}"[:300]`` of the pydantic error), not a hand-written one."""
+    old = _old_pool_schema()
     sent = []
 
     async def fake_rpc(bus, req, *, source, timeout_sec):
         payload = request_payload(req)
         sent.append(payload)
-        if any(k in payload for k in ("want_id", "want_net", "want_family")):
-            return GpuLeaseReplyV1(status="unavailable", reason="invalid:1 validation error want_net extra_forbidden")
+        try:
+            old.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001 -- exactly as the old pool's handler
+            return GpuLeaseReplyV1(status="unavailable", reason=f"invalid:{exc}"[:300])
         return GpuLeaseReplyV1(status="queued", lease_id="L1", position=3)
 
     import orion.gpu_pool.client as client
@@ -123,6 +137,15 @@ def test_an_old_pool_refusing_the_fields_gets_the_hold_asked_again_without_them(
     sent.clear()
     reply = asyncio.run(acquire_hold(None, holder="durable-runs:r", work_class="agent", request_id="r:2"))
     assert reply.status == "queued" and len(sent) == 1               # nothing to drop: asked once
+    # Any other refusal is passed through, never retried without the fields.
+    async def refuse(bus, req, *, source, timeout_sec):
+        sent.append(request_payload(req))
+        return GpuLeaseReplyV1(status="unavailable", reason="unknown_class:agent")
+    monkeypatch.setattr(client, "lease_rpc", refuse)
+    sent.clear()
+    reply = asyncio.run(acquire_hold(None, holder="durable-runs:r", work_class="agent", request_id="r:3",
+                                     want_id="r", want_net=0.7, want_family="durable.self_inquiry"))
+    assert reply.reason == "unknown_class:agent" and len(sent) == 1
 
 
 # --- register: the first hold request carries the value --------------------------------------------

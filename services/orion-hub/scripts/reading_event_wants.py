@@ -14,8 +14,8 @@ Stage 2 completion. Its window is the family's (3 h from the read). One want per
 deterministic, and a read whose want is already in ``want_ledger`` is not posted again (a restart
 re-reads the ledger).
 
-Cost (attention patch 3b): the want states that its act holds no GPU slot (an explicit empty
-``gpu_slot_s_by_lane``). The look's model time is Prime's, and Prime bids for that itself on its own
+Cost (attention patch 3b): the want states that its act holds no GPU slot
+(``orion.physiology.appetite.no_slot_cost``: an empty ``gpu_slot_s_by_lane`` plus its basis). The look's model time is Prime's, and Prime bids for that itself on its own
 lane; the read's model time is already spent and charged to the read's act. Without this the market
 charged each look a whole read (the family's p90, ~0.7 of the agent lane's hour) and deferred 37 of
 40 on lane capacity the day after patch 3a declared reading's lanes, so Prime lost those concerns.
@@ -33,6 +33,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 
+from orion.physiology.appetite import no_slot_cost
 from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
 from orion.schemas.grammar import ActCostV2
 
@@ -44,7 +45,7 @@ VERB = "look"
 TIER = 2
 PRODUCER = "orion-hub.reading_events"
 # The look holds no GPU slot of its own (module docstring, "Cost").
-LOOK_COST = ActCostV2(gpu_slot_s_by_lane={})
+LOOK_COST = ActCostV2(**no_slot_cost())
 EVENT_PREFIX = "world_pulse_read_seed"
 UNAVAILABLE = "physiology_unavailable"
 

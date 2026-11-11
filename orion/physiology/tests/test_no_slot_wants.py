@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from orion.physiology.appetite import estimate_cost
+from orion.physiology.appetite import estimate_cost, no_slot_cost
 from orion.physiology.choice import ReservationBook, decide
 from orion.physiology.event_wants import event_want
 from orion.physiology.tests.test_choice import FAMS, NOW, body, ctx_for, history, lane
@@ -29,7 +29,7 @@ def test_without_a_stated_cost_a_look_is_charged_a_whole_read_and_deferred_on_a_
 
 
 def test_a_look_that_holds_no_slot_is_not_placed_on_a_lane_and_is_funded_on_its_value():
-    d = decide(look(ActCostV2(gpu_slot_s_by_lane={})), FULL, ctx_for(READS, FULL), ReservationBook(), NOW)
+    d = decide(look(ActCostV2(**no_slot_cost())), FULL, ctx_for(READS, FULL), ReservationBook(), NOW)
     assert d.outcome == "funded" and d.reason == "net_positive" and d.net > 0
     assert d.lane is None and not any(k.startswith("lane:") for k in d.cost_frac) and d.reserved == {}
     assert not any("lane_cost_unmeasured" in w or "no_slot_history" in w for w in d.warnings)
@@ -39,11 +39,15 @@ def test_estimate_cost_reads_an_empty_map_as_stated_not_unknown():
     cfg = FAMS.get(READ)
     from orion.physiology.choice import build_context
     app = build_context(FAMS, READS, [], FULL, NOW).appetite[READ]
-    c = estimate_cost({"gpu_slot_s_by_lane": {}}, cfg, app)
+    c = estimate_cost(no_slot_cost(), cfg, app)
     assert c.lane_slot_s == {} and c.one_of_slot_s is None and c.basis["gpu_slot_s_by_lane"] == "want"
     assert "gpu_slot_s_by_lane" not in c.unpriced
     unset = estimate_cost({"gpu_slot_s_by_lane": None}, cfg, app)    # None still means "estimate it"
     assert unset.one_of_slot_s is not None and unset.basis["gpu_slot_s_by_lane"] == "p90"
+    # Review finding 8: a measured cost that merely held no lease ({}, as act_ledger writes it) is
+    # not the statement: without the basis it is estimated as before.
+    bare = estimate_cost({"gpu_slot_s_by_lane": {}}, cfg, app)
+    assert bare.one_of_slot_s is not None and bare.basis["gpu_slot_s_by_lane"] == "p90"
 
 
 def test_the_hub_reading_producer_states_the_no_slot_cost():
@@ -51,7 +55,7 @@ def test_the_hub_reading_producer_states_the_no_slot_cost():
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "services/orion-hub/scripts"))
     import reading_event_wants as rew
-    assert rew.LOOK_COST.gpu_slot_s_by_lane == {}
+    assert rew.LOOK_COST.gpu_slot_s_by_lane == {} and rew.LOOK_COST.basis == {"gpu_slot_s_by_lane": "holds_no_slot"}
     # It survives the wire (Hub posts model_dump_json; the market validates WantV1).
     from orion.schemas.physiology_want import WantV1
     w = WantV1.model_validate_json(look(rew.LOOK_COST).model_dump_json())

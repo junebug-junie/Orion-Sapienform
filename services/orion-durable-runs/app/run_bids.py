@@ -72,6 +72,12 @@ PRODUCER = "orion-durable-runs.admission"
 # Binding bids carry their own producer, so want_ledger (whose ``shadow`` is always true) still tells
 # an obeyed decision from a shadow one.
 BINDING_PRODUCER = "orion-durable-runs.admission.binding"
+# Patch 3b: reading's value-only bids, under their own producer so a reader of want_ledger can tell
+# them from Hub's after-the-read looks (same family) and from shadow bids that model a real gate.
+VALUE_PRODUCER = "orion-durable-runs.admission.value"
+# How long a run's first hold request waits for its shadow bid to land (patch 3b). Short: a cold
+# history read can take far longer, and the hold then goes out without a net (arrival order).
+VALUE_WAIT_SEC = 1.0
 BID_TIMEOUT_SEC = 30.0          # shadow: a cold history read is a 30-day scan; the run never waits on it
 # Binding: the run DOES wait on this bid (it holds a driver slot), so it is short; a timeout asks the
 # pool as before.
@@ -150,7 +156,7 @@ def reading_want(request: dict[str, Any], tier: int) -> Optional[WantV1]:
     if seed is None or stage != 1 or not run_id or tier not in (1, 2):
         return None
     corr = request.get("correlation_id")
-    return WantV1(want_id=run_id, family=READING_FAMILY, producer=PRODUCER, verb=READING_VERB,
+    return WantV1(want_id=run_id, family=READING_FAMILY, producer=VALUE_PRODUCER, verb=READING_VERB,
                   object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
                   correlation_id=str(corr) if corr else None)
 
@@ -304,7 +310,7 @@ class RunBidder:
             while len(m) > SEEN_MAX:
                 m.popitem(last=False)
 
-    async def value_for(self, request: dict[str, Any], wait_sec: float = BIND_TIMEOUT_SEC) -> Optional[RunValue]:
+    async def value_for(self, request: dict[str, Any], wait_sec: float = VALUE_WAIT_SEC) -> Optional[RunValue]:
         """The net this run's hold request carries (patch 3b), or None (no bid: arrival order). Waits up
         to ``wait_sec`` for a shadow bid still in flight, so the first hold request carries it. A
         reading stage 2 carries its stage 1's net. Never raises."""
@@ -420,5 +426,5 @@ class RunBidder:
 
 __all__ = ["BINDING_FAMILIES", "BINDING_PRODUCER", "BindVerdict", "HOLD_EVENT", "NO_ANSWER_REASONS", "PRODUCER",
            "READING_FAMILY", "REBID_DEFAULT_SEC", "REBID_MAX_SEC", "REBID_MIN_SEC", "RELEASE_EVENT", "RunBidder",
-           "RunValue", "bind_verdict", "binding_family", "decision_detail", "hold_end", "reading_stage",
+           "RunValue", "VALUE_PRODUCER", "VALUE_WAIT_SEC", "bind_verdict", "binding_family", "decision_detail", "hold_end", "reading_stage",
            "reading_want", "want_for_run"]

@@ -101,7 +101,7 @@ from datetime import datetime, timedelta
 from typing import Collection, Iterable, Mapping, Union
 
 from orion.gpu_pool.config import PoolConfig, RoleSpec
-from orion.gpu_pool.value_order import VALUE_PRIORITY, ValueOrderConfig, family_key, sequence
+from orion.gpu_pool.value_order import VALUE_PRIORITY, ValueOrderConfig, sequence
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
@@ -488,12 +488,19 @@ def _order(cfg: PoolConfig, leases: Iterable[LeaseView], now: datetime | None = 
     base = sorted(leases, key=lambda l: (cfg.priority_rank(l.priority), l.created_at, l.lease_id))
     if value is None or not value.enabled or now is None:
         return base
-    bg = [l for l in base if l.priority == VALUE_PRIORITY]
-    if len(bg) < 2:
+    # One work class at a time: leases of different classes wait for different seats, so an upkeep
+    # call of one class must not freeze the value order of another (review finding 1).
+    by_class: dict[str, list[LeaseView]] = {}
+    for l in base:
+        if l.priority == VALUE_PRIORITY:
+            by_class.setdefault(l.work_class, []).append(l)
+    if not any(len(g) > 1 for g in by_class.values()):
         return base
-    seq = iter(sequence(bg, now, net=lambda l: l.want_net, family=lambda l: l.want_family,
-                        arrived=lambda l: l.created_at, aging_per_h=value.aging_per_h, margin=value.margin))
-    return [next(seq) if l.priority == VALUE_PRIORITY else l for l in base]
+    seqs = {wc: iter(sequence(g, now, net=lambda l: l.want_net, family=lambda l: l.want_family,
+                              arrived=lambda l: l.created_at, aging_per_h=value.aging_per_h, margin=value.margin))
+            for wc, g in by_class.items()}
+    # Each class keeps the slots its leases held in arrival order; inside them, value order.
+    return [next(seqs[l.work_class]) if l.priority == VALUE_PRIORITY else l for l in base]
 
 
 def queue_position(cfg: PoolConfig, leases: Iterable[LeaseView], lease_id: str, now: datetime,
@@ -788,24 +795,28 @@ def schedule(
                 out.append(Serialized(lease.lease_id, role, f"serialized:{blocker}"))
                 break
 
-    # Attention patch 3b: name each grant the value order decided -- a later background lease with a
-    # bid took a role while an earlier lease of another family, which that role could serve, waits.
-    # One event per grant (the earliest such lease), so the trace shows both nets and the margin.
-    if value is not None and value.enabled:
-        place = {l.lease_id: i for i, l in enumerate(order)}
-        waiting_bg = [q for q in queued if q.priority == VALUE_PRIORITY and q.lease_id not in granted
-                      and q.want_net is not None]
+    # Attention patch 3b: name each grant the value order decided. Exact, not a guess: the same tick
+    # is scheduled again in arrival order (pure, so this is safe), and a pair is reported only when
+    # arrival order would have granted the earlier lease that role and the value order gave it to a
+    # later lease with a bid instead (review finding 2: owner precedence, hold caps and
+    # serialize_with are then already accounted for). Runs only on a tick that granted a background
+    # lease with a bid -- a rare event, not every tick.
+    if value is not None and value.enabled and any(
+            l.priority == VALUE_PRIORITY and l.want_net is not None for l in order if l.lease_id in granted_role):
+        arrival = {d_.lease_id: d_.role for d_ in schedule(cfg, roles, cards, leases, now, seen_ctx=seen_ctx,
+                                                           guards=guards, shed=shed, frozen=frozen, value=None)
+                   if isinstance(d_, Grant)}
+        by_id = {l.lease_id: l for l in queued}
+        displaced = [by_id[lid] for lid, r in arrival.items()
+                     if lid in by_id and lid not in granted_role and by_id[lid].priority == VALUE_PRIORITY]
         for lease in order:
             role = granted_role.get(lease.lease_id)
-            if role is None or lease.priority != VALUE_PRIORITY or lease.want_net is None:
+            if role is None or lease.priority != VALUE_PRIORITY or lease.want_net is None or lease.lease_id in arrival:
                 continue
-            # Jumped = arrived earlier yet placed later by the value order, same kind, could use the role.
-            jumped = min((q for q in waiting_bg if q.created_at < lease.created_at
-                          and place[q.lease_id] > place[lease.lease_id] and q.kind == lease.kind
-                          and family_key(q.want_family) != family_key(lease.want_family)
-                          and role in cfg.classes[q.work_class].roles and ctx.fits(q, role)),
+            jumped = min((q for q in displaced if arrival[q.lease_id] == role and q.created_at < lease.created_at),
                          key=lambda q: (q.created_at, q.lease_id), default=None)
             if jumped is not None:
+                displaced.remove(jumped)
                 out.append(Reordered(lease.lease_id, jumped.lease_id, role, lease.want_net, jumped.want_net,
                                      lease.want_family, jumped.want_family))
 

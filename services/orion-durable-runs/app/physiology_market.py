@@ -381,4 +381,4 @@ class Market:
                 "prime_regulation": self.prime_regulation, **self.counts}
 
 
-__all__ = ["Market", "act_from_row", "read_event_history", "read_funded", "read_history", "use_from_row"]
+__all__ = ["Market", "act_from_row", "read_event_history", "read_history", "use_from_row"]

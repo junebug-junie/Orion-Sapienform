@@ -272,6 +272,25 @@ class CostEstimate:
     unpriced: tuple[str, ...] = ()
 
 
+# Attention patch 3b: how a producer says "this act holds no GPU slot". Both are required -- an empty
+# slot map AND this basis -- so a measured act cost that merely held no lease (act_ledger writes {})
+# copied into a want is never read as the statement by accident.
+NO_SLOT_BASIS = "holds_no_slot"
+
+
+def no_slot_cost() -> dict[str, Any]:
+    """The ``WantV1.cost`` fields that state the act holds no GPU slot (``ActCostV2(**no_slot_cost())``)."""
+    return {"gpu_slot_s_by_lane": {}, "basis": {"gpu_slot_s_by_lane": NO_SLOT_BASIS}}
+
+
+def holds_no_slot(want_cost: Optional[Mapping[str, Any]]) -> bool:
+    """True when a want's cost states that its act holds no GPU slot (``no_slot_cost``)."""
+    if not want_cost:
+        return False
+    basis = want_cost.get("basis") or {}
+    return want_cost.get("gpu_slot_s_by_lane") == {} and basis.get("gpu_slot_s_by_lane") == NO_SLOT_BASIS
+
+
 def estimate_cost(want_cost: Optional[Mapping[str, Any]], cfg: FamilyConfig, app: FamilyAppetite) -> CostEstimate:
     w = dict(want_cost or {})
     scal: dict[str, float] = {}
@@ -298,9 +317,9 @@ def estimate_cost(want_cost: Optional[Mapping[str, Any]], cfg: FamilyConfig, app
             lane_slot = vals
         else:
             one_of = sum(vals.values())
-    elif isinstance(lanes_w, dict):
-        # An explicit EMPTY map: the producer states this act holds no GPU slot (attention patch 3b:
-        # a follow-up look at a read that already ran). Not "unknown": nothing to estimate.
+    elif holds_no_slot(want_cost):
+        # The producer states this act holds no GPU slot (attention patch 3b: a follow-up look at a
+        # read that already ran). Not "unknown": nothing to estimate.
         basis["gpu_slot_s_by_lane"] = "want"
     elif cfg.lanes:
         if cfg.placement == "fixed":

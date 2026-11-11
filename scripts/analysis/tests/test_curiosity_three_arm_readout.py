@@ -43,7 +43,7 @@ def test_rows_from_before_the_replica_had_a_real_chance_are_left_out():
 
 def test_too_few_runs_give_no_verdict_however_the_numbers_look():
     rows = arms_of(16, [0.5, 0.0], [0.0], [0.0])
-    out = ro.build_report(rows, [], now=START + timedelta(days=6), permutations=200)
+    out = ro.build_report(rows, [], now=START + timedelta(days=6), permutations=200, unblind=True)
     assert not out["primary"]["read"] and out["primary"]["p"] is None
     assert out["primary"]["verdict"].startswith("RUNNING")
     assert out["primary"]["stop"]["completed_per_arm"] == {REP: 16, VAL: 16, UNC: 16}
@@ -109,3 +109,49 @@ def test_render_speaks_plainly_and_names_unknown_answers():
     text = ro.render(out)
     assert "replica plan" in text and "RUNNING" in text and "Answers to Prime: UNKNOWN" in text
     assert ro.render(ro.build_report([], [], now=START, permutations=10)).count("has not started") == 1
+
+
+def test_before_the_stop_the_outcome_numbers_are_hidden():
+    out = ro.build_report(arms_of(16, [0.5, 0.0], [0.0], [0.0]), [], now=START + timedelta(days=6), permutations=50)
+    assert out["blinded"] and "mean_nats" not in out["arms"][REP] and "moved_share" not in out["arms"][REP]
+    assert "mean_nats" not in out["as_treated"]["plan_used"]
+    text = ro.render(out)
+    assert "nats," not in text and "As treated" not in text and "hidden until the stop" in text
+
+
+def test_runs_drawn_after_the_stop_never_change_the_verdict():
+    rows = arms_of(250, [0.0, 0.0, 0.0, 0.6], [0.0] * 7 + [0.1], [0.0] * 7 + [0.1])
+    first = ro.build_report(rows, [], now=START + timedelta(days=40), permutations=300)
+    last_draw = rows[-1]["decided_at"]
+    later = rows + [run(9000 + i, REP, 0.0, hours=(last_draw - START).total_seconds() / 3600 + 1 + i)
+                    for i in range(400)]
+    second = ro.build_report(later, [], now=START + timedelta(days=60), permutations=300)
+    assert second["primary"]["stop"]["stop_at"] == first["primary"]["stop"]["stop_at"] == last_draw
+    assert second["primary"]["p"] == first["primary"]["p"] and second["primary"]["replica_wins"]
+    assert second["primary"]["stop"]["completed_per_arm"][REP] == 250
+
+
+def test_the_harm_look_only_moves_at_a_scheduled_look_and_lost_runs_count_as_failed():
+    early = [run(i, REP, None, hours=i, turn_ok=None) for i in range(12)]
+    early += [run(100 + i, VAL if i % 2 else UNC, 0.1, hours=i) for i in range(40)]
+    assert ro.harm_check(ro.three_arm_rows(early), now=START + timedelta(days=10))["verdict"] == "no look yet"
+    look = ro.harm_check(ro.three_arm_rows(early), now=START + timedelta(days=31))
+    assert look["pause"] and look["failed_turns"]["replica"] == "12/12"
+    # Runs drawn after day 30 cannot move the day-30 look, however bad they are.
+    late = early + [run(500 + i, UNC, None, hours=24 * 31 + i, turn_ok=False) for i in range(50)]
+    again = ro.harm_check(ro.three_arm_rows(late), now=START + timedelta(days=45))
+    assert again["failed_turns"] == look["failed_turns"] and again["look"] == START + timedelta(days=30)
+
+
+def test_too_few_scored_runs_at_the_clock_stop_is_inconclusive_not_a_loss():
+    rows = [run(1, REP, 0.2), run(2, VAL, 0.0, hours=1), run(3, VAL, 0.1, hours=2),
+            run(4, UNC, 0.0, hours=3), run(5, UNC, 0.0, hours=4)]
+    prim = ro.build_report(rows, [], now=START + timedelta(days=200), permutations=50)["primary"]
+    assert prim["read"] and prim["replica_wins"] is None and prim["verdict"].startswith("INCONCLUSIVE")
+
+
+def test_unreadable_answers_go_to_juniper_and_bad_propensity_text_is_not_a_crash():
+    out = ro.build_report(arms_of(2, [0.1], [0.1], [0.1]), None, now=START + timedelta(days=1), permutations=10)
+    assert out["needs_juniper"] == ["answers_unknown"]
+    assert ro.replica_propensity({"arm_propensities": "{not json"}) == 0.0
+    assert ro.replica_propensity({"arm_propensities": "[1, 2]"}) == 0.0

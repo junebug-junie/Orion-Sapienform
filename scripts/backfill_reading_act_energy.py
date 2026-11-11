@@ -157,7 +157,7 @@ def recompute_hour(conn: Any, row: dict[str, Any], *, now: datetime) -> dict[str
                    abs(got.sponsored_wh - float(row["sponsored_wh"])),
                    abs(got.metered_wh - float(row["metered_wh"])))
 
-    if _off(new) <= DRIFT_TOL_WH:
+    if abs(new.metered_wh - old.metered_wh) > DRIFT_TOL_WH and _off(new) <= DRIFT_TOL_WH:
         # Already on the new rule (a re-run, or an hour the live writer recomputed after deploy).
         return {"anomaly": "", "old": old, "new": new, "already_applied": True, "moved_wh": 0.0}
     drift = _off(old)

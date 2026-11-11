@@ -482,7 +482,7 @@ _ENGINE_URL: str | None = None
 
 def _envelope_correlation_id(raw: str) -> str:
     """BaseEnvelope wants a UUID-shaped correlation id; a dispatch correlation
-    id is not always one. Same coercion self_study.py already applies."""
+    id is not always one. Same coercion orch_paths.py applies."""
     try:
         return str(UUID(str(raw)))
     except Exception:  # noqa: BLE001

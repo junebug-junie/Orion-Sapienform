@@ -104,7 +104,7 @@ def test_confirmed_submit_returns_pending_settlement(_no_direct_call):
     assert deadline - submitted == timedelta(seconds=5400)
 
     [call] = bus.calls
-    assert call["channel"] == verb_adapters.self_study_module.CORTEX_ORCH_REQUEST_CHANNEL
+    assert call["channel"] == verb_adapters.orch_paths.CORTEX_ORCH_REQUEST_CHANNEL
     durable = DurableRunRequestV1.model_validate(call["payload"]["context"]["metadata"]["durable_run"])
     assert durable.workflow == "reverie.visual"
     assert durable.run_id == reverie_visual_run_id("dispatch-abc")

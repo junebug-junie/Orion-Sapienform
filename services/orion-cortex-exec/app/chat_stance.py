@@ -405,8 +405,9 @@ def _unified_beliefs_for_stance(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefS
 async def _publish_chat_stance_belief(ctx: Dict[str, Any], beliefs: UnifiedRelationalBeliefSetV1 | None) -> None:
     """Durable per-turn behavioral fact (self-model rebuild arc, 2026-09-05):
     beliefs used to be computed every turn and thrown away. Now logged for
-    real so self_study.py's Layer 1 _behavioral_items() has actual history
-    to read, not nothing.
+    real so the history is readable. Its reader now is curiosity
+    self-inquiry (chat_stance_belief_log); the Layer 1 scan that copied it
+    into Self Atlas was retired 2026-11.
 
     Review finding (2026-09-05): the underlying publish is a real blocking
     Redis call (connect/ping/publish), and unlike

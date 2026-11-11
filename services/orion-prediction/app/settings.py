@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     turn_self_bets_enabled: bool = Field(True, alias="PREDICTION_TURN_SELF_BETS_ENABLED")
     turn_self_bets_settle_sec: float = Field(60.0, ge=5, alias="PREDICTION_TURN_SELF_BETS_SETTLE_SEC")
 
+    # Juniper reachable (app/reachable.py): an hourly forecast of "Juniper messages Orion in the next
+    # hour", settled against chat_message and graded vs a base rate. false = no issue/settle loop.
+    reachable_enabled: bool = Field(True, alias="PREDICTION_REACHABLE_ENABLED")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

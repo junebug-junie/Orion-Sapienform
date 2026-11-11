@@ -27,6 +27,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from app.action_bets import ActionBets, ConflictError, WorldModelShadow
 from app.turn_self_bets import TurnSelfBets
+from app.reachable import Reachable
 from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
@@ -46,6 +47,8 @@ engine: Engine | None = None
 effects: Effects | None = None
 action_bets: ActionBets | None = None
 turn_self_bets: TurnSelfBets | None = None
+reachable: Reachable | None = None
+_last_reachable: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
 _runner_redis: Any = None
@@ -71,6 +74,20 @@ async def _settle_self_bets_forever() -> None:
             pass
 
 
+async def _reachable_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(reachable.tick)
+            _last_reachable.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_reachable.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("reachable_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _sync(fn, *args):
     return await asyncio.to_thread(fn, *args)
 
@@ -91,7 +108,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, turn_self_bets, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, reachable, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -119,6 +136,7 @@ async def lifespan(app: FastAPI):
     action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
                                              if _settings.world_model_shadow_enabled else None))
     turn_self_bets = TurnSelfBets(_store)
+    reachable = Reachable(_store)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
     if _settings.experiment_runner_enabled:
@@ -142,6 +160,8 @@ async def lifespan(app: FastAPI):
         _tasks.append(asyncio.create_task(_tick_forever()))
     if _settings.turn_self_bets_enabled:
         _tasks.append(asyncio.create_task(_settle_self_bets_forever()))
+    if _settings.reachable_enabled:
+        _tasks.append(asyncio.create_task(_reachable_forever()))
     try:
         yield
     finally:
@@ -221,6 +241,8 @@ async def health() -> dict[str, Any]:
             "series": series, "action_bets": await _action_bets_health(),
             "turn_self_bets": {"enabled": _settings.turn_self_bets_enabled, **_jsonable(_last_settle),
                                "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {})},
+            "reachable": {"enabled": _settings.reachable_enabled, **_jsonable(_last_reachable),
+                          "last_pass": _jsonable(reachable.last_pass if reachable else {})},
             "experiment_runner": runner.status() if runner else {"enabled": False}}
 
 
@@ -564,6 +586,18 @@ async def get_turn_self_bets_live(force: bool = False, since: datetime | None = 
         return _jsonable(await asyncio.to_thread(turn_self_bets.live, force, since))
     except psycopg.Error as exc:
         raise HTTPException(503, "turn self-bet store unavailable") from exc
+
+
+@app.get("/reachable")
+async def get_reachable() -> dict[str, Any]:
+    """Juniper reachable: the current hour's forecast and the live grade vs the base rate, overall and
+    for cold hours (no message in the prior 3 h). Spec 2026-11-10-juniper-reachable-forecast-design.md."""
+    if reachable is None:
+        raise HTTPException(503, "starting")
+    try:
+        return _jsonable(await asyncio.to_thread(reachable.live))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "reachable store unavailable") from exc
 
 
 # --- action bets ---------------------------------------------------------------------------------------

@@ -216,13 +216,24 @@ def paired_win_p(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> 
     """
     from scipy import stats
 
+    mean, se, n = paired_gap(candidate, reference, lag)
+    if mean is None:
+        return None, n
+    if se == 0:
+        return (0.0 if mean < 0 else 1.0), n
+    return float(stats.t.cdf(mean / se, df=n - 1)), n
+
+
+def paired_gap(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> tuple[float | None, float | None, int]:
+    """(mean of |candidate| - |reference|, its overlap-aware standard error, n) -- the numbers behind
+    ``paired_win_p``. se is 0 when every difference is equal; (None, None, n) below n = 2."""
     both = np.isfinite(candidate) & np.isfinite(reference)
     d = np.abs(candidate[both]) - np.abs(reference[both])
     n = len(d)
     if n < 2:
-        return None, n
+        return None, None, n
     if np.all(d == d[0]):
-        return (0.0 if d[0] < 0 else 1.0), n
+        return float(d[0]), 0.0, n
     e = d - d.mean()
     lrv = float(e @ e) / n
     for k in range(1, min(lag, n - 1) + 1):
@@ -231,8 +242,7 @@ def paired_win_p(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> 
     r1 = float(e[1:] @ e[:-1]) / float(e @ e)
     r1 = min(0.95, max(0.0, r1) + (1 + 3 * max(0.0, r1)) / n)   # Kendall bias correction, then cap
     lrv = max(lrv, v * (1 + r1) / (1 - r1))
-    t = d.mean() / np.sqrt(lrv / n)
-    return float(stats.t.cdf(t, df=n - 1)), n
+    return float(d.mean()), float(np.sqrt(lrv / n)), n
 
 
 def overlap_lag(horizon_min: int, step_min: int | None) -> int:

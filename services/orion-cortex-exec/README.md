@@ -160,80 +160,34 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_LLM_INTAKE` | ... | LLM worker channel. |
 | `CHANNEL_RECALL_INTAKE` | ... | Recall worker channel. |
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
-| `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
+| `ORION_REPO_ROOT` | auto-detected | Optional override for repo-root resolution (`app/orch_paths.py`) when the container layout differs from local dev. |
 | `ORION_ACTION_OUTCOME_DB_URL` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Shared SQL store for autonomous action outcomes. When set, chat-stance `load_action_outcomes` reads the `action_outcomes` table (written by sql-writer from `action.outcome.emit.v1`); when blank it falls back to the per-container JSON file `ORION_ACTION_OUTCOME_STORE_PATH`. |
-| `CORTEX_REQUEST_CHANNEL` | `orion:cortex:request` | cortex-orch's public request intake channel. `verb_adapters.py` round-trips its own orch calls through it (read via `app/self_study.py`'s `CORTEX_ORCH_REQUEST_CHANNEL`). |
-| `SELF_STUDY_INSPECT_INTERVAL_SEC` | `86400` | How often the chat-lane container runs the Layer 1 scan (`run_self_repo_inspect`, `app/self_study_refresh.py`) and appends a fresh snapshot to `self_knowledge_items`, the table Self Atlas clusters. 0 disables. Since 2026-10-30 this is the only self-study part left; it exists only to feed Self Atlas, and both are the next retirement candidates. |
+| `CORTEX_REQUEST_CHANNEL` | `orion:cortex:request` | cortex-orch's public request intake channel. `verb_adapters.py` round-trips its own orch calls through it (read via `app/orch_paths.py`'s `CORTEX_ORCH_REQUEST_CHANNEL`). |
 | `CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED` | `true` | `skills.imagination.render_scene.v1` with a `dispatch_id` submits a `reverie.visual` durable run (`run_id = reverie_visual_run_id(dispatch_id)`, admission `service.route.diffusion`) through cortex-orch's durable ingress (`app/durable_kickoff.py`, shared with self-study reflect) and returns once the runner's receipt names that run: `outcome="unknown"`, `settlement={state: "pending", durable_run_id, submitted_at, deadline_at}`. execution-dispatch settles the real outcome from the run's terminal state. An unconfirmed submit returns `settlement.state="not_submitted"` (ok=false) with no fallback to the direct call, because the deterministic run may already exist. Manual runs (no `dispatch_id`) and `false` use the direct `/visual-chain/run-once` call. Design: `docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md`. |
 | `CORTEX_EXEC_RENDER_SCENE_RETRY_WINDOW_SEC` | `0` | The durable render's retry window (`admission.deadline_at = submit + this`). `0` = the visual baseline interval (`orion/reverie/baseline.py`, 5400 s): a run that cannot make its image before the next scheduled need ends `failed`/`retry_window_expired` and gives way to it. Capped at `REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC` (6600 s, `orion/schemas/reverie_visual_run.py`): orion-thought releases attempts older than its `ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC`, so no run may outlive that. |
 
-### Self-study knowledge item log (2026-09-05, self-model rebuild arc, Patch 2)
-
-Every Layer 1 inspect run (`run_self_repo_inspect`) now also publishes one `orion:self_study:items
-:write` bus message per Layer-1 item (`publish_self_knowledge_items()`,
-published concurrently, bounded), additive to the existing one-off journal
-summary (which stays exactly that, a summary, not storage of record). This
-is designed to give the new `self_knowledge_items` Postgres table a real,
-growing, multi-run history of Layer-1 facts, with a `metadata_text` column
-flattened for plain-text clustering -- **implemented and unit-tested, not
-yet live-verified this patch** (no real deploy/smoke test performed; see
-the PR report). `orion-sql-writer` must actually subscribe to the new
-channel for this to be true in a running deployment -- confirmed added to
-both `SQL_WRITER_SUBSCRIBE_CHANNELS`' default and a guaranteed-append in
-`effective_subscribe_channels` (a real review finding: registering a
-channel/route/model alone does not make a consumer subscribe to it). It
-exists specifically so Patch 3 (pointing topic-foundry's real clustering
-pipeline at self-facts instead of chat, per the self-model rebuild arc's
-design doc) has a real `source_table` to point a `DatasetSpec` at -- before
-this patch, Layer-1 items were only ever in-process, never durably
-queryable across runs. No new env keys.
-
-### Self-study folded into curiosity (2026-10-30)
+### Self-study folded into curiosity (2026-10-30), Layer 1 and Self Atlas retired (2026-11)
 
 Self-study used to have three layers here: Layer 1 (inspect, repo/hardware/behavior
 facts), Layer 2 (concept induction), and Layer 3 (a daily LLM reflection written to
 `self_concept_history` as `produced_by='layer3_reflect'`). Layers 2 and 3, the
 `self_retrieve` path, the dead RDF writeback code, the `orion-self-study-enrichment`
 service and the four self-study verbs were retired on 2026-10-30 (proposal
-`docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md`). Nothing read
-their output; curiosity's self-inquiry, the dig kit and the body atlas do that work now.
+`docs/superpowers/specs/2026-10-29-self-study-into-curiosity-proposal.md`).
 
-Kept: the Layer 1 timer (it feeds Self Atlas), and `skills.self_study.analyze.v1`
-(telemetry window analysis, tier 0 `autonomic`). Since 2026-11-07 (ladder retirement PR 6)
-nothing triggers it automatically: its only trigger was the dispatch rung's
-`analyze_self_study_source` template, and the reverie painter now reads curiosity's
-self-inquiry answers instead of its journals. It stays in the verb catalog as a
-callable skill. Self Atlas and the Layer 1 feed are the next retirement candidates.
+Layer 1 (`app/self_study.py`, `app/self_study_refresh.py`, `SELF_STUDY_INSPECT_INTERVAL_SEC`,
+the `orion:self_study:items:write` channel) was retired with Self Atlas in 2026-11
+(`docs/superpowers/specs/2026-10-30-self-atlas-replacement-proposal.md`, Patch B). It only
+fed Self Atlas. The dig kit (`python -P -m orion.dig body|inventory|compare`) and the body
+atlas answer "what am I made of" on demand. The `self_knowledge_items` table and its rows
+stay as history; nothing writes to it now. The repo-root and orch round-trip helpers that
+`verb_adapters.py` still needs moved to `app/orch_paths.py`.
 
-### Self-study Layer 1 broadening (2026-09-05, self-model rebuild arc)
-
-`self_study.py`'s Layer 1 (inspect) used to be pure codebase inventory
-(services/modules/channels/verbs/schemas/touchpoints/env_surfaces). Two new
-sections, both additive:
-
-- **`hardware`** -- `_hardware_items()` parses `config/field/
-  orion_field_topology.v1.yaml` directly (nodes/capabilities/edges). v1
-  scope only: live cabinet-sensor readings (temp/humidity/etc) are a known,
-  disclosed fast-follow, not silently dropped -- cortex-exec has no
-  `/run/orion-sensors` mount (only orion-hub does), so a live read needs
-  either a new mount or a cross-service call to orion-hub's
-  `cabinet_sensors_routes.py`.
-- **`behavioral`** -- `_behavioral_items()` reads the most recent rows from
-  the new `chat_stance_belief_log` table (real content: which anchors were
-  live, shift kind, lineage -- not anonymized counts. Juniper's explicit
-  2026-09-05 call: she is the sole user and companion, so redacting her own
-  conversations from Orion's own self-model is moot). That table is
-  populated by `chat_stance.py`'s real per-turn belief computation via
-  `orion/substrate/chat_stance_belief_bus.py`'s
-  `publish_chat_stance_belief_log_sync()` -- previously this belief set was
-  computed every turn and thrown away entirely (only a 4-key compact
-  summary survived 30 minutes in `executor.py`'s in-process
-  `_PRIOR_STANCE_CACHE`).
-
-No new env keys. The behavioral read reuses `self_study_analysis.py`'s
-existing `_get_engine()`/DSN fallback chain (`SUBSTRATE_FELT_STATE_DATABASE_URL`
-→ `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL` → `POSTGRES_URI`) -- no fourth DB-URL
-key for one more table.
+Kept: `skills.self_study.analyze.v1` (telemetry window analysis, tier 0 `autonomic`) and
+`app/self_study_analysis.py`. Since 2026-11-07 (ladder retirement PR 6) nothing triggers it
+automatically: its only trigger was the dispatch rung's `analyze_self_study_source` template,
+and the reverie painter now reads curiosity's self-inquiry answers instead of its journals.
+It stays in the verb catalog as a callable skill.
 
 ### AutonomyStateV2 on chat stance (default off)
 

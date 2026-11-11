@@ -37,7 +37,7 @@ from orion.cognition.github_compactor.constants import (
 )
 
 from .router import PlanRouter
-from . import self_study as self_study_module
+from . import orch_paths
 from .self_study_analysis import run_self_study_analysis
 from .settings import settings
 from .workflow_journal_exec import maybe_publish_workflow_journal_write
@@ -1362,9 +1362,9 @@ async def _submit_render_scene_durable(ctx: VerbContext, request: Any) -> SkillV
         bus=bus,
         source=_actions_source(ctx.meta.get("source")),
         request=durable_request,
-        request_channel=self_study_module.CORTEX_ORCH_REQUEST_CHANNEL,
+        request_channel=orch_paths.CORTEX_ORCH_REQUEST_CHANNEL,
         reply_channel=f"orion:cortex:result:reverie-visual-kickoff:{run_id}:{uuid4().hex[:8]}",
-        envelope_correlation_id=self_study_module._as_envelope_correlation_id(correlation_id),
+        envelope_correlation_id=orch_paths._as_envelope_correlation_id(correlation_id),
         session_id="reverie-visual",
         user_message=REVERIE_VISUAL_WORKFLOW,
     )
@@ -1976,7 +1976,7 @@ def _mesh_service_scripts_child_env() -> dict[str, str]:
 
 
 def _allowlisted_mesh_service_script_paths() -> set[Path]:
-    root = self_study_module.REPO_ROOT.resolve()
+    root = orch_paths.REPO_ROOT.resolve()
     return {
         (root / "mesh-utilities" / "common" / "up_all_services.sh").resolve(),
         (root / "mesh-utilities" / "common" / "refresh_service_envs.sh").resolve(),
@@ -2012,7 +2012,7 @@ async def _run_mesh_util_shell_skill(
             error={"message": "mesh_script_disabled_by_policy"},
         ), []
 
-    repo_root = self_study_module.REPO_ROOT.resolve()
+    repo_root = orch_paths.REPO_ROOT.resolve()
     script_path = (repo_root / script_relpath).resolve()
     allowed = _allowlisted_mesh_service_script_paths()
     if script_path not in allowed:
@@ -2191,7 +2191,7 @@ _HEALTH_POLL_CONFIRM_DELAY_SEC = 3.0
 def _discover_compose_services(repo_root: Path) -> Dict[str, Path]:
     """Map bare service dirname -> its docker-compose.yml, discovered live under REPO_ROOT/services.
 
-    Mirrors ``self_study._service_items()``'s discovery style: walk the real directory tree each
+    Mirrors ``orion.self_inventory``'s discovery style: walk the real directory tree each
     call instead of hand-maintaining a static list, so this never drifts from what's actually on disk.
     """
     out: Dict[str, Path] = {}
@@ -2318,7 +2318,7 @@ async def _run_docker_compose_service_bringup(
         return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="blocked", error={"message": "docker_compose_bringup_disabled_by_policy"}), []
 
     service = str(service_raw or "").strip()
-    repo_root = self_study_module.REPO_ROOT.resolve()
+    repo_root = orch_paths.REPO_ROOT.resolve()
     services_dir = repo_root / "services"
     diagnostics = {
         "repo_root": str(repo_root),
@@ -2660,8 +2660,8 @@ def _plan_request_from_payload(payload: PlanExecutionRequest, verb_name: str, sk
 
 
 # The four self-study verbs (inspect, induce, reflect, retrieve) were retired
-# 2026-10-30 (fold into curiosity). The daily Layer 1 scan that feeds Self Atlas
-# still runs, called directly by app/self_study_refresh.py, not as a verb.
+# 2026-10-30 (fold into curiosity). The daily Layer 1 scan that fed Self Atlas
+# was retired with Self Atlas in 2026-11 (dig kit + body atlas replace it).
 
 
 # ===========================================================================

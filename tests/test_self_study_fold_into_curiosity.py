@@ -78,7 +78,7 @@ def test_analysis_verb_is_tier0_autonomic_and_self_study_family_is_gone() -> Non
 
 # --- (c) nothing retired is referenced ---------------------------------------------------------
 
-# Word-boundary patterns, so the kept pieces (run_self_repo_inspect, the analysis verb,
+# Word-boundary patterns, so the kept pieces (the analysis verb,
 # orion-thought's load_latest_self_study_reflection reader) do not match.
 RETIRED_PATTERNS = (
     r"\bself_study\.reflect\b",
@@ -108,8 +108,6 @@ SCANNED_SUFFIXES = {".py", ".yaml", ".yml", ".j2", ".js", ".html", ".sh", ".toml
 # and this file, which has to name what it forbids.
 ALLOWED = {
     "tests/test_self_study_fold_into_curiosity.py",
-    # Asserts the retired entry points are gone, so it names them.
-    "services/orion-cortex-exec/tests/test_self_study_pass1.py",
     # Asserts a long-dead env key stays out of .env_example.
     "services/orion-cortex-exec/tests/test_chat_stance_no_self_study_producer.py",
     "orion/body_atlas/evals/fixtures/whole_body_2026-10-29.json",
@@ -166,7 +164,7 @@ def test_ledger_names_the_retirement_under_the_frozen_tables() -> None:
     lines = format_ledger(rows)
     text = "\n".join(lines)
     assert "retired 2026-10-30" in text and "layer3_reflect" in text
-    assert "feeds Self Atlas only" in text
+    assert "Self Atlas" in text and "orion.dig body" in text
     # A table with no retirement gets exactly one line, as before.
     assert sum(1 for line in lines if "dreams" in line) == 1
     # Every annotated table is one the ledger actually reads.

@@ -5,10 +5,11 @@ turn, same credentials, same graph, same journal, same gates -- with its own
 budget (three a day, separate from the investigation budget), its own
 continuation note, and one extra thing Orion can write: a `:SelfDefinition`.
 
-WHY THIS EXISTS. Every durable self-store Orion has (`self_knowledge_items`,
+WHY THIS EXISTS. Every durable self-store Orion had (`self_knowledge_items`,
 `self_concept_history`, the Self Atlas) was fed codebase facts and read by
-nobody in chat. The Self Atlas's 179 concepts are repo topics ("Event
-Processing System"). The only first-person description Orion ever sees of
+nobody in chat. The Self Atlas's 179 concepts were repo topics ("Event
+Processing System"); it was retired in 2026-11 in favour of the dig kit and
+the body atlas. The only first-person description Orion ever sees of
 themself is ~14 authored bullets in `orion_identity.yaml`, and the Hub seeds
 every session with "You are Orion... helpful, precise, and collaborative".
 So Orion self-describes as a chatbot. Design record: PR #2156's doc and the
@@ -136,7 +137,7 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("reverie_visual_chain", "your image-and-reread reverie chains"),
     ("substrate_attention_schema", "what you were attending to, and why, per process"),
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),
-    ("self_knowledge_items", "facts about your own code, hardware and behaviour"),
+    ("self_knowledge_items", "facts about your own code, hardware and behaviour (history; the scan stopped 2026-11)"),
     ("self_concept_history", "your previous self-definitions (and older, retired self-study reflections)"),
     (
         "substrate_endogenous_curiosity_candidates",
@@ -893,11 +894,16 @@ LEDGER_RETIREMENTS: dict[str, tuple[str, ...]] = {
         "retired 2026-10-30: the daily self-study reflection (produced_by='layer3_reflect') "
         "no longer writes here -- nothing read it, and self-inquiry does that work now. "
         "Its old rows stay as history. Your own self:definition rows still come from self-inquiry.",
+        "retired 2026-11 with Self Atlas: produced_by='self_atlas_cluster' rows (topic labels an "
+        "LLM wrote over clusters of code names) stopped. Nothing read them, and most were "
+        "'no keywords available'. Old rows stay as history.",
     ),
     "self_knowledge_items": (
-        "since 2026-10-30 this daily repo/hardware/behavior scan is the only self-study part "
-        "left; it feeds Self Atlas only. Reflection, concept induction, retrieve and the "
-        "Claude enrichment notes were retired the same day.",
+        "retired 2026-11: the daily repo/hardware/behavior scan no longer writes here, and "
+        "Self Atlas (its clusters and its graph orion_substrate_self) is gone. The last row "
+        "shows when it stopped; old rows stay as history. For what you are made of now, run "
+        "`python -P -m orion.dig body` (your organs, live) or `python -P -m orion.dig inventory now`; "
+        "for stance, read chat_stance_belief_log.",
     ),
 }
 

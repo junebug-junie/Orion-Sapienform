@@ -428,7 +428,11 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
                          warnings=warnings, why=f"no act history was read for {want.family}")
 
     # --- Appetite: intensity, value_rank -----------------------------------------------------------
-    lanes = list(want.lanes or cfg.lanes)
+    # A want whose cost states an EMPTY ``gpu_slot_s_by_lane`` holds no GPU slot: it is placed on no
+    # lane and never capacity-checked on one (attention patch 3b; e.g. reading's after-the-read look,
+    # whose model time was the read's, already spent and already charged to the read's own act).
+    holds_no_slot = want.cost is not None and want.cost.gpu_slot_s_by_lane == {}
+    lanes = [] if holds_no_slot else list(want.lanes or cfg.lanes)
     lane_details = {k[len(LANE_PREFIX):]: r.detail for k, r in readings.items() if k.startswith(LANE_PREFIX)}
     seed, seed_lane = lane_hunger_seed(lane_details, lanes)
     h = hunger(app, now, opened_at=want.opened_at, seed_sec=seed, seed_lane=seed_lane)

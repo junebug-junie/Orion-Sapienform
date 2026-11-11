@@ -14,8 +14,10 @@ source rows with the SAME pure rules the producers and the market use:
    Acceptance check 1: most events have low salience (share under 0.5 is over half, per source).
 2. **The market's decision** on each posted want, from the act history at that moment: hunger
    (``appetite.hunger``), intensity = max(hunger, salience), and the event rank (``appetite.rank_value``
-   with ``event=True``) against the source's earlier event wants. Both families have no lanes and no fixed
-   cost, so no charge applies and Choice funds every want whose rank is above 0 (asserted, not assumed).
+   with ``event=True``) against the source's earlier event wants. Camera asks have no lanes; reading
+   declares lanes since patch 3a, but its look states that it holds no GPU slot (patch 3b:
+   ``reading_event_wants.LOOK_COST``). Neither has a fixed cost, so no charge applies and Choice funds
+   every want whose rank is above 0 (asserted, not assumed).
    Reported beside the patch-1 rank (against the hunger-only act history) to show the saturation fix.
 3. **Prime's intake** (orion-mind ``PRIME_CONCERNS_FROM_EVENT_WANTS``): at each real Prime thought and at
    each real concern bet of the window, how many funded, unexpired event wants would the frame show
@@ -109,13 +111,20 @@ class Event:
     expires: Optional[datetime] = None
 
 
+# Families whose event wants state an empty gpu_slot_s_by_lane (services/orion-hub/scripts/
+# reading_event_wants.py LOOK_COST, patch 3b): no lane placement, no lane charge, no capacity check.
+NO_SLOT_FAMILIES = frozenset({READ_FAMILY})
+
+
 def simulate(families: FamiliesConfig, events: list[Event], acts: Sequence[ActRecord]) -> list[Event]:
     """Salience, then the market's event-want decision, in time order. Mutates and returns ``events``."""
     for fam in {e.family for e in events}:
         cfg = families.get(fam)
         assert cfg is not None, fam
-        # No lanes and no fixed cost: Choice charges nothing, so it funds iff the rank is above 0.
-        assert not cfg.lanes and not cfg.fixed_cost, f"{fam} has a charge; this replay assumes none"
+        # No lane charge (no lanes, or the producer states the act holds no slot) and no fixed cost:
+        # Choice charges nothing, so it funds iff the rank is above 0.
+        assert (not cfg.lanes or fam in NO_SLOT_FAMILIES) and not cfg.fixed_cost, \
+            f"{fam} has a charge; this replay assumes none"
         mine = sorted((e for e in events if e.family == fam), key=lambda e: e.at)
         for e, s in zip(mine, saliences_over_own_history([(e.at, e.magnitude) for e in mine])):
             e.salience = s

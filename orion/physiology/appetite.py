@@ -298,6 +298,10 @@ def estimate_cost(want_cost: Optional[Mapping[str, Any]], cfg: FamilyConfig, app
             lane_slot = vals
         else:
             one_of = sum(vals.values())
+    elif isinstance(lanes_w, dict):
+        # An explicit EMPTY map: the producer states this act holds no GPU slot (attention patch 3b:
+        # a follow-up look at a read that already ran). Not "unknown": nothing to estimate.
+        basis["gpu_slot_s_by_lane"] = "want"
     elif cfg.lanes:
         if cfg.placement == "fixed":
             lane_slot = {ln: app.lane_slot_s_q[ln] for ln in cfg.lanes if ln in app.lane_slot_s_q}

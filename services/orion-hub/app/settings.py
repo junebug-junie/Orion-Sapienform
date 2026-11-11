@@ -192,7 +192,8 @@ class Settings(BaseSettings):
     # and never holds the Claude credential -- that lives in
     # orion-room-companion. See services/orion-room-companion/README.md for
     # why the credential is deliberately NOT in this container.
-    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=False)
+    # On (2026-11-11): consults ride this relay, and live has run it on since 2026-09.
+    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=True)
     HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
     HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
     HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)

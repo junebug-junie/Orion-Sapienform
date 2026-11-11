@@ -76,6 +76,13 @@ class ImpactV1(BaseModel):
     number_to_watch: str = Field(..., min_length=1)
     how_we_see_it: str = Field(..., min_length=1)
 
+    @field_validator("what_changes", "number_to_watch", "how_we_see_it")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("empty")
+        return value.strip()
+
 
 class CostV1(BaseModel):
     """Doing the work and doing nothing. The consult's own cost is filled by Hub, not the model."""

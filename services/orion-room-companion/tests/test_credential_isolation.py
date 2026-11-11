@@ -281,10 +281,12 @@ def test_settings_helper_does_not_leak_a_real_dotenv_token(tmp_path, monkeypatch
     assert _settings().ROOM_COMPANION_CLAUDE_OAUTH_TOKEN is None
 
 
-def test_only_repo_mount_is_the_sandbox_clone_read_only():
-    """Consult rooms read code (2026-11-11). The only code mount allowed is Orion's FCC sandbox
-    clone (reset to origin/main, no untracked secrets), and only read-only."""
+def test_only_code_mount_is_the_consult_export_read_only():
+    """Consult rooms read code (2026-11-11). The only code mount allowed is the `git archive` export
+    (scripts/export_consult_source.py), read-only. Never the FCC sandbox: its .git remote URL carries
+    a credential and Orion writes into it (review finding, 2026-11-11)."""
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     volumes = compose["services"]["room-companion"]["volumes"]
-    code = [v for v in volumes if "consult-repo" in v or "orion-fcc" in v]
-    assert code == ["${ORION_FCC_SANDBOX_REPO:-/mnt/orion-fcc/repo}:${ROOM_COMPANION_CONSULT_REPO:-/consult-repo}:ro"]
+    code = [v for v in volumes if "consult" in v or "orion-fcc" in v]
+    assert code == ["${ORION_CONSULT_SOURCE_DIR:-/mnt/scripts/orion-consult-src}:/consult-src:ro"]
+    assert not any("orion-fcc" in v for v in volumes)

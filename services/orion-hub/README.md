@@ -344,11 +344,22 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
 - **Orion's turns** run through Orion's real unified turn (`EndogenousOutreach.compose`) on the
   session `consult-<id>`, so none of Juniper's chats are in them. Orion can run digs.
 - **Claude's turns** go to `orion-room-companion` on the room channels (room id `consult:<id>`).
-  Claude reads the deployed code read-only (Read/Grep/Glob) and is the skeptic.
+  Claude reads a read-only `git archive` export of the deployed code (Read/Grep/Glob, no `.git`;
+  `scripts/export_consult_source.py`, refreshed by the post-pull rebuild) and is the skeptic.
 - **Budget.** Before each Claude turn, the loop reads the Claude usage meter
   (`orion:substrate:claude_limit`). It needs a fresh weekly reading that says `clear` and a session
   reading that is not `limited`. Otherwise it waits (`budget:<reason>`) and fails closed. The meter
-  knows only "a limit was hit" or "clear". It has no percentage.
+  knows only "a limit was hit" or "clear". It has no percentage. The readings are pub/sub only and the
+  weekly one is published hourly, so after a Hub restart consults wait up to an hour
+  (`weekly_meter_missing`). The meter reads the athena host's Claude Code transcripts. Consult usage
+  in the companion does not move it.
+- **What Claude sees.** Hub sends the question, its source and Orion's words, nothing else. Orion's
+  turns run on a consult-only session, so no chat continuity is in them. Recall searches the consult
+  question. The unified turn has no switch to turn recall off, and Orion's tools can read Orion's
+  history, so whether Orion quotes a chat is Orion's choice. The prompt asks them not to.
+- **Reliability.** Each Claude send has its own correlation id. A reply that does not match is
+  ignored. A lost reply (Hub down while Claude worked) is re-sent once after
+  `HUB_CONSULT_CLAUDE_TIMEOUT_SEC`. A budget wait keeps the exact pending prompt.
 - **Endings.** `answered`: nothing goes to Juniper. `agreed_proposal` / `disagree`: the brief goes to
   Hub chat (tagging her, with Yes / No / No-because buttons, `static/js/consult.js`) and to her
   email (orion-notify). A brief missing any part (`orion/schemas/consult.py`) is never sent. Claude

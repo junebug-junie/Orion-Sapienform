@@ -61,13 +61,20 @@ EMAIL_EVENT_KIND = "orion.consult.brief"
 # status_reason while a consult is open: who it is waiting for.
 AWAIT_ORION = "awaiting_orion"
 AWAIT_CLAUDE = "awaiting_claude"
-GATE_RETRY = "gate_retry:"
 BUDGET = "budget:"
+MAX_CLAUDE_RESENDS = 1
+
+# Columns set_status may write besides status/status_reason. Code-only names: never request data.
+_SETTABLE = frozenset({
+    "ending", "answer", "brief_json", "brief_text", "brief_sent_at", "email_status",
+    "pending_prompt", "pending_correlation_id", "gate_retry_part", "claude_resends",
+})
 
 _COLUMNS = (
     "consult_id, source_kind, source_ref, source_detail, question, status, status_reason, ending, "
     "turns, claude_cost_usd, answer, brief_json, brief_text, brief_sent_at, email_status, decision, "
-    "decision_reason, decided_at, orion_told_run_id, created_at, updated_at"
+    "decision_reason, decided_at, orion_told_run_id, pending_prompt, pending_correlation_id, gate_retry_part, "
+    "claude_resends, created_at, updated_at"
 )
 
 
@@ -133,6 +140,7 @@ async def set_status(pool, consult_id: str, status: str, reason: Optional[str] =
     sets = ["status = $2", "status_reason = $3", "updated_at = now()"]
     args: List[Any] = [consult_id, status, reason]
     for key, value in fields.items():
+        assert key in _SETTABLE, f"set_status: {key} is not a settable column"
         args.append(json.dumps(value) if key == "brief_json" and value is not None else value)
         sets.append(f"{key} = ${len(args)}")
     await pool.execute(f"UPDATE orion_consult SET {', '.join(sets)} WHERE consult_id = $1", *args)
@@ -184,7 +192,7 @@ async def take_outcomes(pool, *, run_id: str, limit: int = 5) -> List[Dict[str, 
         "UPDATE orion_consult SET orion_told_run_id = $1, orion_told_at = now() WHERE consult_id IN ("
         " SELECT consult_id FROM orion_consult WHERE orion_told_run_id IS NULL AND"
         " (status = 'answered' OR (status = 'brief_sent' AND decision IS NOT NULL))"
-        " ORDER BY updated_at LIMIT $2"
+        " ORDER BY updated_at LIMIT $2 FOR UPDATE SKIP LOCKED"
         f") RETURNING {_COLUMNS}",
         run_id, limit,
     )
@@ -258,8 +266,10 @@ class ConsultLoop:
                     self.tick_sec, self.max_turns, self.weekly_brief_cap)
 
     async def stop(self) -> None:
-        for task in self._tasks:
+        tasks = list(self._tasks)
+        for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
 
     async def _meter_loop(self) -> None:
@@ -376,13 +386,21 @@ class ConsultLoop:
         if reason == AWAIT_ORION:
             return await self._orion_turn(pool, row)
         if reason.startswith(BUDGET):
-            return await self._send_claude(pool, row, retry=True)
-        if reason == AWAIT_CLAUDE or reason.startswith(GATE_RETRY):
+            return await self._send_claude(pool, row)
+        if reason == AWAIT_CLAUDE:
             updated = row.get("updated_at")
             if isinstance(updated, datetime) and (now - updated).total_seconds() > self.claude_timeout_sec:
-                await set_status(pool, cid, "failed", "claude_no_reply")
-                self._push_turn(cid, 0, "Hub", "Claude did not reply in time; this consult stopped.")
-                return {"failed": cid, "why": "claude_no_reply"}
+                if int(row.get("claude_resends") or 0) < MAX_CLAUDE_RESENDS:
+                    # The reply rides pub/sub: a Hub restart while Claude worked loses it. The
+                    # companion resumes the session, so one resend keeps Claude's context.
+                    await set_status(pool, cid, "open", AWAIT_CLAUDE,
+                                     claude_resends=int(row.get("claude_resends") or 0) + 1)
+                    row = await get(pool, cid) or row
+                    logger.warning("consult_claude_reply_lost id=%s -- resending once", cid)
+                    return await self._send_claude(pool, row, resend=True)
+                await set_status(pool, cid, "failed", "claude_no_reply_after_resend")
+                self._push_turn(cid, 0, "Hub", "Claude did not reply in time, twice; this consult stopped.")
+                return {"failed": cid, "why": "claude_no_reply_after_resend"}
             return {"waiting": cid, "for": "claude"}
         await set_status(pool, cid, "failed", f"unknown_state:{reason}")
         return {"failed": cid, "why": reason}
@@ -403,8 +421,11 @@ class ConsultLoop:
             source=self._source(row), question=row["question"],
             transcript=[(t["speaker"], t["text"]) for t in history], turn_no=turn_no, max_turns=self.max_turns,
         )
+        # retrieval_query: recall searches the consult question, not the whole prompt. The turn has
+        # no switch that turns recall off; Orion's own words are what Claude is sent.
         text, debug = await outreach.compose(
-            prompt, f"consult-{cid}-t{turn_no}", lane="agent_first", session_id=orion_session_id(cid),
+            prompt, f"consult-{cid}-t{turn_no}", retrieval_query=row["question"][:500],
+            lane="agent_first", session_id=orion_session_id(cid),
         )
         text = (text or "").strip()
         if not text:
@@ -414,37 +435,46 @@ class ConsultLoop:
         await add_turn(pool, cid, turn_no=turn_no, speaker="Orion", text=text, model=debug.get("model"))
         self._push_turn(cid, turn_no, "Orion", text)
         row = await get(pool, cid) or row
-        return await self._send_claude(pool, row, retry=False)
+        return await self._send_claude(pool, row, prompt=self._claude_prompt(row, await turns(pool, cid)))
 
     # -- Claude's turn --------------------------------------------------------------------------
 
-    async def _send_claude(self, pool, row: Dict[str, Any], *, retry: bool, correction: str = "") -> Dict[str, Any]:
+    def _claude_prompt(self, row: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
+        orion_text = history[-1]["text"] if history and history[-1]["speaker"] == "Orion" else ""
+        return claude_turn_prompt(
+            orion_text=orion_text, turn_no=len(history) + 1, max_turns=self.max_turns,
+            first=not any(t["speaker"] == "Claude" for t in history),
+            source=self._source(row), question=row["question"],
+        )
+
+    async def _send_claude(self, pool, row: Dict[str, Any], *, prompt: Optional[str] = None,
+                           resend: bool = False) -> Dict[str, Any]:
+        """Send one Claude turn. The prompt is stored first, so a budget wait or a lost reply
+        re-sends exactly it (``prompt=None`` re-sends the stored one). Each send gets a fresh
+        correlation id; a reply that does not carry the current one is ignored."""
         cid = row["consult_id"]
+        prompt = prompt if prompt is not None else (row.get("pending_prompt") or "")
+        if not prompt:
+            await set_status(pool, cid, "failed", "no_pending_claude_prompt")
+            return {"failed": cid, "why": "no_pending_claude_prompt"}
         refusal = self.budget()
         if refusal:
-            await set_status(pool, cid, "open", f"{BUDGET}{refusal}")
+            await set_status(pool, cid, "open", f"{BUDGET}{refusal}", pending_prompt=prompt,
+                             pending_correlation_id=None)
             return {"waiting": cid, "for": f"budget:{refusal}"}
-        history = await turns(pool, cid)
         relay = self._relay_provider()
         if relay is None:
-            await set_status(pool, cid, "open", f"{BUDGET}no_relay")
+            await set_status(pool, cid, "open", f"{BUDGET}no_relay", pending_prompt=prompt, pending_correlation_id=None)
             return {"waiting": cid, "for": "relay"}
-        if correction:
-            prompt = correction
-        else:
-            orion_text = history[-1]["text"] if history and history[-1]["speaker"] == "Orion" else ""
-            prompt = claude_turn_prompt(
-                orion_text=orion_text, turn_no=len(history) + 1, max_turns=self.max_turns,
-                first=not any(t["speaker"] == "Claude" for t in history),
-                source=self._source(row), question=row["question"],
-            )
+        correlation_id = f"consult-{cid}-{uuid.uuid4().hex[:8]}"
+        # Written BEFORE the invite: a crash after it is a lost reply (resent once), never an
+        # unknown request in flight.
+        await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_prompt=prompt, pending_correlation_id=correlation_id)
         await relay.invite(
             prompt=prompt, invited_by="Orion", session_id=None, room_id=consult_room_id(cid),
-            correlation_id=f"consult-{cid}-t{len(history) + 1}", trigger="auto",
+            correlation_id=correlation_id, trigger="auto",
         )
-        reason = row.get("status_reason") or ""
-        await set_status(pool, cid, "open", reason if reason.startswith(GATE_RETRY) else AWAIT_CLAUDE)
-        return {"sent": cid, "to": "claude", "retry": retry}
+        return {"sent": cid, "to": "claude", "resend": resend}
 
     async def on_claude_utterance(self, utt: RoomClaudeUtteranceV1) -> None:
         """Called by the room relay for a consult room. Never raises into the relay."""
@@ -464,9 +494,13 @@ class ConsultLoop:
                 logger.info("consult_utterance_ignored id=%s status=%s", cid, row and row["status"])
                 return
             reason = row.get("status_reason") or ""
-            if reason != AWAIT_CLAUDE and not reason.startswith(GATE_RETRY):
-                logger.info("consult_utterance_unexpected id=%s state=%s", cid, reason)
+            if reason != AWAIT_CLAUDE or utt.correlation_id != row.get("pending_correlation_id"):
+                # A late reply to an earlier send, or a reply while nothing is in flight.
+                logger.info("consult_utterance_unexpected id=%s state=%s corr=%s want=%s",
+                            cid, reason, utt.correlation_id, row.get("pending_correlation_id"))
                 return
+            await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_correlation_id=None)
+            gate_retry = row.get("gate_retry_part")
             history = await turns(pool, cid)
             turn_no = len(history) + 1
             if not utt.ok:
@@ -481,7 +515,7 @@ class ConsultLoop:
             self._push_turn(cid, turn_no, "Claude", parsed.room_text or utt.text)
             claude_turns = sum(1 for t in history if t["speaker"] == "Claude") + 1
             if parsed.ending == "continue":
-                if turn_no >= self.max_turns or reason.startswith(GATE_RETRY):
+                if turn_no >= self.max_turns or gate_retry:
                     await set_status(pool, cid, "brief_refused", parsed.error or "no_ending_on_last_turn")
                     return
                 await set_status(pool, cid, "open", AWAIT_ORION)
@@ -489,12 +523,13 @@ class ConsultLoop:
                 return
             result = gate_ending(parsed.ending, parsed.payload)
             if not result.ok:
-                if reason.startswith(GATE_RETRY):
+                if gate_retry:
                     await set_status(pool, cid, "brief_refused", f"missing:{result.refused_part}", ending=parsed.ending)
                     logger.warning("consult_brief_refused id=%s part=%s", cid, result.refused_part)
                     return
-                await set_status(pool, cid, "open", f"{GATE_RETRY}{result.refused_part}", ending=parsed.ending)
-                await self._send_claude(pool, await get(pool, cid) or row, retry=True, correction=(
+                await set_status(pool, cid, "open", AWAIT_CLAUDE, ending=parsed.ending,
+                                 gate_retry_part=result.refused_part)
+                await self._send_claude(pool, await get(pool, cid) or row, prompt=(
                     f"Your ending block was refused: the part `{result.refused_part}` is missing or invalid. "
                     "Send your ending block again, complete, with the same ending. Nothing else is needed."
                 ))
@@ -507,13 +542,18 @@ class ConsultLoop:
             await self._deliver_brief(pool, row, result.brief, parsed.ending, claude_turns)
 
     async def _continue(self, cid: str) -> None:
+        """Orion's next turn right after Claude's, instead of waiting for the tick. Never raises:
+        on an error the tick picks the turn up."""
         pool = self._pool_provider()
         if pool is None:
             return
-        async with self._lock:
-            row = await get(pool, cid)
-            if row and row["status"] == "open" and row.get("status_reason") == AWAIT_ORION:
-                await self._orion_turn(pool, row)
+        try:
+            async with self._lock:
+                row = await get(pool, cid)
+                if row and row["status"] == "open" and row.get("status_reason") == AWAIT_ORION:
+                    await self._orion_turn(pool, row)
+        except Exception:  # noqa: BLE001
+            logger.exception("consult_continue_failed id=%s", cid)
 
     def _spawn(self, coro: Awaitable[Any]) -> None:
         task = asyncio.create_task(coro)

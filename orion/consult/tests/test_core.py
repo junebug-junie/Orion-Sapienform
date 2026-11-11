@@ -93,6 +93,7 @@ def test_good_brief_passes():
     (lambda b: b.update(checked=[{"claim": "x"}]), "checked.0"),
     (lambda b: b.update(checked=[{"claim": "x", "proof": "f:1", "not_checked": True}]), "checked.0"),
     (lambda b: b.pop("impact"), "impact"),
+    (lambda b: b["impact"].update(number_to_watch="  "), "impact.number_to_watch"),
     (lambda b: b["cost"].update(doing_nothing={"value": "$40 a month"}), "cost.doing_nothing"),
     (lambda b: b["cost"].update(doing_the_work={"value": "unknown"}), "cost.doing_the_work"),
     (lambda b: b.update(recommendation="  "), "recommendation"),

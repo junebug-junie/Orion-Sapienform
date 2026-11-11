@@ -342,6 +342,20 @@ apply_deferred_migrations() {
 # (one pending retry at a time). scripts/sync_fcc_sandbox_after_deploy.sh re-checks the clean
 # primary main checkout. Never fails the run. Kill switch:
 # ORION_POST_PULL_SANDBOX_SYNC=0.
+# Consult source export (2026-11-11): the deployed commit as plain tracked files
+# for orion-room-companion's consult rooms (scripts/export_consult_source.py).
+# Never fails the run. Kill switch: ORION_POST_PULL_CONSULT_EXPORT=0.
+export_consult_source() {
+    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
+    [ -n "$ORION_DEPLOY_PINNED_HEAD" ] || return 0
+    [ "${ORION_POST_PULL_CONSULT_EXPORT:-1}" != "0" ] || return 0
+    local line
+    line=$(python3 "$REPO_ROOT/scripts/export_consult_source.py" --repo "$REPO_ROOT" \
+        --ref "$ORION_DEPLOY_PINNED_HEAD" --never-fail </dev/null 2>&1 | tail -n 1)
+    echo "rebuild_services_from_git_diff.sh: CONSULT_EXPORT $line"
+    rebuild_log "CONSULT_EXPORT $line"
+}
+
 sync_fcc_sandbox() {
     [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
     local line helper="$REPO_ROOT/scripts/sync_fcc_sandbox_after_deploy.sh"
@@ -386,6 +400,7 @@ if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
         rebuild_log "NOTHING base=${BASE_REF:-default} (no affected services on this host)"
     fi
+    export_consult_source
     sync_fcc_sandbox ok
     exit 0
 fi
@@ -766,5 +781,6 @@ if [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     exit 1
 fi
 
+export_consult_source
 sync_fcc_sandbox ok
 exit 0

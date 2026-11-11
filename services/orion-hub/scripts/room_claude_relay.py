@@ -127,6 +127,8 @@ class RoomClaudeRelay:
         )
 
     async def stop(self) -> None:
+        for task in list(self._consult_tasks):
+            task.cancel()
         if self._task is not None:
             self._task.cancel()
             try:

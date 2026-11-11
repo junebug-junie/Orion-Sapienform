@@ -7,8 +7,15 @@ Status: Patch 1 built (PR on `feat/consult-claude-patch1`). Approved in chat by 
 - **Claude runs in `orion-room-companion`, not `orion-curiosity-peer`.** The companion already holds
   the subscription token, already runs Claude session by session, and its replies already reach Hub
   chat through the room relay. A consult is a room whose id starts with `consult:`. No new channel.
-  The peer container's repo mount is the primary checkout, which holds `.env` secrets. The companion
-  instead mounts Orion's FCC sandbox clone read-only, and that clone has no secrets.
+  The peer container's repo mount is the primary checkout, which holds `.env` secrets. The FCC
+  sandbox clone is not safe either: its `.git/config` remote URL carries a credential, and Orion
+  writes into it (review finding). The companion mounts a `git archive` export of the deployed
+  commit instead (`scripts/export_consult_source.py`): tracked files only, read-only.
+- **Recall cannot be switched off for Orion's turns.** The unified turn has no such switch, and
+  Orion's tools can read Orion's history anyway. Hub sends only Orion's words. Orion's turns run on
+  a consult-only session (no chat continuity), and recall searches the consult question.
+- **Turn limit with no ending: `brief_refused`, not a forced `disagree`.** The last Claude turn is
+  told to pick an ending. A brief needs Claude's gated parts, and Hub cannot write them itself.
 - **Live data: Orion runs the digs.** Orion's turns go through Orion's real unified turn, which has
   the dig kit. Claude asks; Orion fetches.
 - **No 80% line.** The meter reports only "a limit was hit" or "clear". It has no percentage. The
@@ -60,7 +67,7 @@ Orion does not invent a new kind of question. Each consult names its source by r
 
 ### 2. Who Claude is in a consult, and what Claude can see
 
-Claude runs in `orion-curiosity-peer`, in a new `consult` mode. It does not run in the chat companion, for two reasons:
+(Superseded, see the top: Claude runs in `orion-room-companion`.) Originally: Claude runs in `orion-curiosity-peer`, in a new `consult` mode. It does not run in the chat companion, for two reasons:
 
 - The peer container already has the repo mounted read-only.
 - It holds no secrets.
@@ -76,7 +83,7 @@ The call is `claude -p` with the subscription OAuth token. The companion already
 - **In:** the question, its source row, what Orion already tried, the repo, and dig outputs that Orion attaches.
 - **Out:** Juniper's chat history, Orion's journals, and Orion's personality and system prompt.
 
-The rule is enforced in code, not in a prompt. The consult request schema has no field for chat history or journals. A test refuses any field outside the allow-list.
+The rule is enforced in code for what Hub sends (see the top for what code cannot enforce). The consult request schema has no field for chat history or journals. A test refuses any field outside the allow-list.
 
 **Live data without new credentials.** The peer container stays without DB access. When Claude needs a number, Claude asks for it in a turn, for example "how often did X run this week?" Orion runs it with the dig kit Orion already uses, and attaches the output to the next turn. That gives the turns real content. Claude checks; Orion fetches. It also keeps the credential isolation that the peer container exists for.
 

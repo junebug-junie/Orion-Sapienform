@@ -26,7 +26,7 @@ def settings(tmp_path) -> Settings:
         ROOM_COMPANION_SESSION_STATE_PATH=str(tmp_path / "sessions.json"),
         ROOM_COMPANION_CLAUDE_CONFIG_DIR="/root/.claude",
         ROOM_COMPANION_WORKSPACE=str(tmp_path / "workspace"),
-        ROOM_COMPANION_CONSULT_REPO="/consult-repo",
+        ROOM_COMPANION_CONSULT_REPO="/consult-src/current",
     )
 
 
@@ -70,7 +70,7 @@ def test_consult_room_turn_uses_consult_model_repo_cwd_and_framing(settings):
     prompt, kw = calls[0]
     assert prompt == "Orion:\nwhy?", "Hub writes the consult prompt; the companion must not decorate it"
     assert kw["consult"] is True and kw["tools"] == "Read,Grep,Glob"
-    assert kw["cwd"] == "/consult-repo"
+    assert kw["cwd"] == "/consult-src/current"
     assert kw["model"] == settings.ROOM_COMPANION_CONSULT_MODEL
     assert kw["effort"] == "high"
     assert kw["append_system_prompt"] == SYSTEM_PROMPT + CLAUDE_CONSULT_SYSTEM

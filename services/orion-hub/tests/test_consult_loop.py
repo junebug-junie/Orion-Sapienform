@@ -44,6 +44,8 @@ class FakeStore:
                               question=question, status="pending", status_reason=None, ending=None, turns=0,
                               claude_cost_usd=0.0, answer=None, brief_json=None, brief_text=None, brief_sent_at=None,
                               email_status=None, decision=None, decision_reason=None, orion_told_run_id=None,
+                              pending_prompt=None, pending_correlation_id=None, gate_retry_part=None,
+                              claude_resends=0,
                               created_at=NOW, updated_at=NOW)
         self.turn_rows[cid] = []
         return cid
@@ -64,6 +66,7 @@ class FakeStore:
         return 0
 
     async def set_status(self, pool, cid, status, reason=None, **fields):
+        assert set(fields) <= cl._SETTABLE
         self.rows[cid].update(status=status, status_reason=reason, updated_at=NOW, **fields)
 
     async def turns(self, pool, cid):
@@ -101,7 +104,7 @@ class FakeOutreach:
         self.calls = []
 
     async def compose(self, prompt, correlation_id, retrieval_query=None, lane="agent_first", session_id=None):
-        self.calls.append(dict(prompt=prompt, session_id=session_id, lane=lane))
+        self.calls.append(dict(prompt=prompt, session_id=session_id, lane=lane, retrieval_query=retrieval_query))
         return (self.replies.pop(0) if self.replies else ""), {"model": "MODEL_X"}
 
 
@@ -146,8 +149,14 @@ def brief_block(ending="agreed_proposal", **over):
     return "I checked the code.\n```json\n" + json.dumps({"ending": ending, "brief": brief}) + "\n```"
 
 
-def utt(cid, text, ok=True, cost=0.25):
+STORE: Dict[str, Any] = {}
+
+
+def utt(cid, text, ok=True, cost=0.25, corr=None):
+    """Claude's reply to the request in flight (its correlation id), unless ``corr`` says otherwise."""
+    corr = corr if corr is not None else STORE["store"].rows[cid]["pending_correlation_id"]
     return RoomClaudeUtteranceV1(request_id="r", room_id=consult_room_id(cid), text=text, ok=ok, cost_usd=cost,
+                                 correlation_id=corr,
                                  model="claude-sonnet-5-5", error=None if ok else "boom",
                                  responder=ExternalRoomResponderV1(participant_id="claude"))
 
@@ -156,6 +165,7 @@ def utt(cid, text, ok=True, cost=0.25):
 def world(monkeypatch):
     store = FakeStore()
     store.install(monkeypatch)
+    STORE["store"] = store
     pushed: List[dict] = []
     queue = SimpleNamespace(put_nowait=pushed.append)
     outreach = FakeOutreach(["Why does journal stop?", "I agree: release the lease."])
@@ -229,7 +239,7 @@ async def test_a_refused_brief_gets_one_retry_then_is_never_sent(world):
     await world.loop.tick()
     bad = brief_block(cost={"doing_the_work": {"value": "3 kWh"}, "doing_nothing": {"unknown_reason": "n/a"}})
     await world.loop.on_claude_utterance(utt(cid, bad))
-    assert world.store.rows[cid]["status_reason"] == f"{cl.GATE_RETRY}cost.doing_the_work"
+    assert world.store.rows[cid]["gate_retry_part"] == "cost.doing_the_work"
     assert "cost.doing_the_work" in world.relay.invites[-1]["prompt"]
     await world.loop.on_claude_utterance(utt(cid, bad))
     row = world.store.rows[cid]
@@ -286,7 +296,7 @@ async def test_empty_orion_turn_fails_the_consult(world):
 @pytest.mark.asyncio
 async def test_claude_error_fails_and_unexpected_replies_are_ignored(world):
     cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r7", question="q")
-    await world.loop.on_claude_utterance(utt(cid, "too early"))  # pending: ignored
+    await world.loop.on_claude_utterance(utt(cid, "too early", corr="x"))  # pending: ignored
     assert world.store.turn_rows[cid] == []
     await world.loop.tick()
     await world.loop.on_claude_utterance(utt(cid, "", ok=False))
@@ -305,9 +315,16 @@ async def test_weekly_cap_stops_new_consults(world):
 async def test_claude_silence_times_out(world, monkeypatch):
     cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r9", question="q")
     await world.loop.tick()
+    first = world.relay.invites[-1]
     world.store.rows[cid]["updated_at"] = NOW - timedelta(seconds=world.loop.claude_timeout_sec + 1)
     await world.loop.tick()
-    assert world.store.rows[cid]["status"] == "failed" and world.store.rows[cid]["status_reason"] == "claude_no_reply"
+    resent = world.relay.invites[-1]
+    assert len(world.relay.invites) == 2 and resent["prompt"] == first["prompt"], "a lost reply is re-sent once"
+    assert resent["correlation_id"] != first["correlation_id"]
+    world.store.rows[cid]["updated_at"] = NOW - timedelta(seconds=world.loop.claude_timeout_sec + 1)
+    await world.loop.tick()
+    row = world.store.rows[cid]
+    assert row["status"] == "failed" and row["status_reason"] == "claude_no_reply_after_resend"
 
 
 def test_meter_messages_are_kept_per_kind(world):
@@ -316,3 +333,38 @@ def test_meter_messages_are_kept_per_kind(world):
     world.loop.note_meter({"data": "not json"})
     assert world.loop.meter["weekly_limit"].state == "limited"
     assert world.loop.budget() == "weekly_limited"
+
+
+@pytest.mark.asyncio
+async def test_a_late_reply_to_an_earlier_send_is_ignored(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r10", question="q")
+    await world.loop.tick()
+    stale = world.store.rows[cid]["pending_correlation_id"]
+    world.store.rows[cid]["updated_at"] = NOW - timedelta(seconds=world.loop.claude_timeout_sec + 1)
+    await world.loop.tick()  # resend: new correlation id
+    await world.loop.on_claude_utterance(utt(cid, "late answer", corr=stale))
+    assert world.store.turn_rows[cid][-1]["speaker"] == "Orion", "the stale reply is not stored as Claude's turn"
+    await world.loop.on_claude_utterance(utt(cid, "current answer"))
+    assert world.store.turn_rows[cid][-1]["text"] == "current answer"
+
+
+@pytest.mark.asyncio
+async def test_budget_wait_during_the_brief_retry_keeps_the_correction(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r11", question="q")
+    await world.loop.tick()
+    world.loop.meter["weekly_limit"] = meter("weekly_limit", state="limited")
+    await world.loop.on_claude_utterance(utt(cid, brief_block(recommendation=" ")))
+    row = world.store.rows[cid]
+    assert row["status_reason"] == "budget:weekly_limited" and "recommendation" in row["pending_prompt"]
+    world.loop.meter["weekly_limit"] = meter("weekly_limit")
+    await world.loop.tick()
+    assert "recommendation" in world.relay.invites[-1]["prompt"], "the correction is what gets sent"
+    await world.loop.on_claude_utterance(utt(cid, brief_block(recommendation=" ")))
+    assert world.store.rows[cid]["status"] == "brief_refused", "still only one retry"
+
+
+@pytest.mark.asyncio
+async def test_orion_turn_recall_searches_the_question(world):
+    await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r12", question="Why journal?")
+    await world.loop.tick()
+    assert world.outreach.calls[0]["retrieval_query"] == "Why journal?"

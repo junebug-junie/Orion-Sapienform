@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     ROOM_COMPANION_CONSULT_EFFORT: str = Field(default="high")
     ROOM_COMPANION_CONSULT_TIMEOUT_SEC: float = Field(default=900.0)
     ROOM_COMPANION_CONSULT_TOOLS: str = Field(default="Read,Grep,Glob")
-    ROOM_COMPANION_CONSULT_REPO: str = Field(default="/consult-repo")
+    ROOM_COMPANION_CONSULT_REPO: str = Field(default="/consult-src/current")
 
     # ── Room participant identity ─────────────────────────────────────
     ROOM_COMPANION_PARTICIPANT_ID: str = Field(default="claude")

@@ -9,6 +9,10 @@
 --   brief_json: the gated ConsultBriefV1; brief_text: what Juniper was shown.
 --   decision: yes | no | no_because, from the buttons on the brief.
 --   orion_told_run_id: the curiosity run that was shown the outcome (once).
+--   pending_prompt / pending_correlation_id: the Claude turn in flight. A reply whose
+--     correlation_id does not match is ignored; a budget wait or a lost reply re-sends
+--     the stored prompt. gate_retry_part: the one brief resend Claude gets.
+--   claude_resends: how often a lost Claude reply was re-sent (once at most).
 -- orion_consult_turn: every turn, Orion's and Claude's, in order.
 --
 -- Additive only. Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_orion_consult_v1.sql
@@ -34,6 +38,10 @@ CREATE TABLE IF NOT EXISTS orion_consult (
     decision_reason TEXT,
     decided_at TIMESTAMPTZ,
     orion_told_run_id TEXT,
+    pending_prompt TEXT,
+    pending_correlation_id TEXT,
+    gate_retry_part TEXT,
+    claude_resends INTEGER NOT NULL DEFAULT 0,
     orion_told_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

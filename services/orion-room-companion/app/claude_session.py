@@ -18,7 +18,7 @@ Tools stay off (`--tools ""`). v1 Claude is a companion to think with, not
 an agent: no filesystem, no repo, no network fetch.
 
 The one exception is a CONSULT room (``orion.consult.core.CONSULT_ROOM_PREFIX``): Claude
-gets ``Read,Grep,Glob`` on a read-only, secret-free clone of the code, and the normal
+gets ``Read,Grep,Glob`` on a read-only ``git archive`` export of the deployed code (no ``.git``), and the normal
 permission mode (``consult_argv``), so anything outside the working directory needs a
 permission nobody can grant in ``-p`` mode and is denied. Deny rules name the paths that
 hold secrets in this container (``/proc`` env, the config dir, ``/data``) on top of that.
@@ -95,6 +95,7 @@ CONSULT_DENY_RULES = (
     "Read(//app/**)",
     "Read(**/.env)",
     "Read(**/.env.*)",
+    "Read(**/.git/**)",
 )
 
 

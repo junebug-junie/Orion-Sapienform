@@ -76,6 +76,7 @@ jobs:
             orion/curiosity/tests/test_focus_lifecycle.py \
             orion/harness/tests/test_claim_gate.py \
             services/orion-hub/tests/test_reading_finding_outreach.py \
+            services/orion-hub/tests/test_reading_resonance_outreach.py \
             services/orion-hub/tests/test_outreach_door_policy.py \
             services/orion-hub/evals/test_outreach_door_policy_replay_eval.py \
             services/orion-hub/evals/test_reading_message_rewrite_eval.py \

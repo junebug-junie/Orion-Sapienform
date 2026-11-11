@@ -825,6 +825,7 @@ from orion.schemas.introspect import (
     RecordCorrectionArguments,
 )
 from orion.schemas.reading_resonance import (
+    ReadingResonanceRunBriefV1, ReadingResonanceResultV1,
     ReadingResonanceCheckV1,
     ReadingResonanceJudgmentV1,
     ResonanceCandidateV1,
@@ -1530,6 +1531,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ResonanceCandidateV1": ResonanceCandidateV1,
     "ResonancePacketV1": ResonancePacketV1,
     "ReadingResonanceJudgmentV1": ReadingResonanceJudgmentV1,
+    "ReadingResonanceRunBriefV1": ReadingResonanceRunBriefV1,
+    "ReadingResonanceResultV1": ReadingResonanceResultV1,
     "ReadingResonanceCheckV1": ReadingResonanceCheckV1,
     "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
     "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,

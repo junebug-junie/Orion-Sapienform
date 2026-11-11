@@ -1318,6 +1318,14 @@ class BiometricsSubstrateStore:
                 ),
             )
 
+    def load_unseeded_reading_resonances(self, *, lookback_hours: float) -> list[dict[str, Any]]:
+        from orion.substrate.resonance_seeds import UNSEEDED_RESONANCE_SQL
+        with self._engine.connect() as conn:
+            return [dict(r) for r in conn.execute(text(UNSEEDED_RESONANCE_SQL), {
+                "lookback_hours": lookback_hours,
+                "marker": json.dumps([{"notes": ["source:reading_resonance"]}]),
+            }).mappings().all()]
+
     def load_unseeded_accepted_reading_links(
         self, *, lookback_hours: float, limit: int
     ) -> list[dict[str, Any]]:

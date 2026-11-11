@@ -18,6 +18,7 @@ from orion.orion_day import gather
 from orion.orion_day.tests import fixtures as fx
 from orion.orion_day.window import orion_day_window, yesterday_letter_date
 from orion.world_pulse_read import findings as wp_findings
+from orion.world_pulse_read.resonance_findings import RESONANCE_FINDINGS_SQL
 from orion.schemas.orion_day import DreamHypothesisV1
 
 
@@ -76,7 +77,7 @@ def test_every_window_query_gets_the_half_open_denver_day():
         gather.TEMPORAL_DAY_SQL,  # keyed by the local date, like the world-pulse digest
         gather.WALKWAY_DAY_SQL,  # keyed by (stream, the day's local-midnight start): its own test below
         # keyed by the day's readings: their seed ids, and moves from the first read to window end
-        wp_findings.READ_LINKS_SQL, wp_findings.RUN_PRIOR_MOVES_SQL)]
+        wp_findings.READ_LINKS_SQL, wp_findings.RUN_PRIOR_MOVES_SQL, RESONANCE_FINDINGS_SQL)]
     assert windowed and all(args[0] == window.window_start and args[1] == window.window_end for args in windowed)
     assert window.window_start == datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
     assert window.window_end == datetime(2026, 9, 30, 6, 0, tzinfo=timezone.utc)

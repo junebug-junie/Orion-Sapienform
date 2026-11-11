@@ -377,9 +377,13 @@ async def gather_reading_findings(
                       request_id=r.request_id or "", title=r.title or "", learned=r.learned,
                       article_summary=r.article_summary) for r in readings]
     result = await findings_for_reads(conn, refs, until=until, prior_lookup=prior_lookup)
+    if result.resonance_unchecked:
+        sources["reading_resonance"] = OrionDaySourceStatusV1(status="error", error=result.resonance_unchecked)
     if result.beliefs_unchecked:
         sources["reading_beliefs"] = OrionDaySourceStatusV1(status="error", error=result.beliefs_unchecked)
-    return [r.model_copy(update={"findings": result.by_seed.get(r.seed_id, [])}) for r in readings]
+    return [r.model_copy(update={"findings": result.by_seed.get(r.seed_id, []),
+        "article_summary": next((f.resonance_article_summary for f in result.by_seed.get(r.seed_id, [])
+                                  if f.resonance_article_summary), r.article_summary)}) for r in readings]
 
 
 async def gather_journals_by_prefix(conn: Any, start: datetime, end: datetime, prefix: str) -> list[JournalTextV1]:

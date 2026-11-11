@@ -4036,11 +4036,11 @@ channels:
     kind: "event"
     schema_id: "ReadingLifecycleV1"
     message_kind: "reading.lifecycle.v1"
-    producer_services: ["orion-hub"]
+    producer_services: ["orion-hub", "orion-durable-runs"]
     consumer_services: ["*"]
     stability: "experimental"
     since: "2026-09-10"
-    description: "Lifecycle facts backed by queue timestamps and artifacts; Pub/Sub is not the status store."
+    description: "Reading and resonance lifecycle facts backed by queue timestamps, durable runs and artifacts; Pub/Sub is not the status store."
 
   - name: "orion:prediction:forecast"
     kind: "event"

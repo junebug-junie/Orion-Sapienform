@@ -35,6 +35,9 @@ from app.admitted_graph import (
     WorkflowDeadline, build_admitted_graph,
 )
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
+from app.reading_resonance_graph import build_reading_resonance_graph, finish_detail as resonance_finish_detail
+from orion.schemas.reading_resonance import READING_RESONANCE_WORKFLOW, ReadingResonanceRunBriefV1
+from app.reading_resonance_store import persist_resonance
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
 from app.harness_smoke_graph import build_harness_smoke_graph, finish_detail as harness_smoke_finish_detail
 from app.harness_step import harness_step_correlation_id
@@ -101,7 +104,7 @@ DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_WORKFLOW = "self_sense_eval"
 # The node of each admitted workflow that does GPU work under the hold. A restarted driver that
 # finds one of these still pending fences the previous attempt and replays it under the same hold.
-WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
+WORK_NODES = {READING_RESONANCE_WORKFLOW: {"judge"}, DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
               READING_WORKFLOW: {"reading_turn"},
               # Only generate holds the diffusion hold; it releases it before its result is
               # checkpointed, so a restart after generate resumes at caption with no lease.
@@ -247,6 +250,9 @@ class AdmissionRuntime:
             COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
                 lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
             # Late-bound (like reading/reverie above): the runner's methods are read per call.
+            READING_RESONANCE_WORKFLOW: build_reading_resonance_graph(
+                lambda prompt, **kw: runner._call_reading_resonance_llm(prompt, **kw),
+                lambda result: persist_resonance(self.pool, result), admission_deps, runner._checkpointer),
             JOURNAL_COMPOSE_WORKFLOW: build_journal_compose_graph(
                 lambda brief, **kw: runner._compose_journal(brief, **kw),
                 lambda write: runner._publish_journal_write(write), admission_deps, runner._checkpointer),
@@ -342,6 +348,8 @@ class AdmissionRuntime:
         workflow = workflow or DEFAULT_WORKFLOW
         if workflow == SELF_SENSE_WORKFLOW:
             return self_sense_finish_detail(state)
+        if workflow == READING_RESONANCE_WORKFLOW:
+            return resonance_finish_detail(state)
         if workflow == READING_WORKFLOW:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
@@ -1342,6 +1350,11 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
+        if wf == READING_RESONANCE_WORKFLOW and actual in TERMINAL:
+            await self.runner._reading_resonance_lifecycle(
+                ReadingResonanceRunBriefV1.model_validate(state["brief"]),
+                "resonance_completed" if actual == "completed" else "resonance_failed",
+                state["correlation_id"], None if actual == "completed" else state.get("last_error") or actual)
         if wf == DREAM_CARRY_WORKFLOW and actual in TERMINAL:
             # Any carry terminal, completed-partial included (a deadline stop with a picture still being
             # painted): nobody reads that child any more. _cancel_carry_child skips ended/unknown ones.

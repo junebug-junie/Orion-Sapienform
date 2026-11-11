@@ -358,7 +358,10 @@ class WorldPulseReadStage2Pipeline:
         meaning_target_links: bool = True,
         projector_readiness: Optional[Callable[[], Any]] = None,
         concept_search: Optional[SearchConfig] = None,
+        resonance: Optional[dict[str, Any]] = None,
     ) -> None:
+        self._resonance = resonance
+        self._resonance_task: Optional[asyncio.Task] = None
         self.enabled = enabled
         # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
         # (prompt block, journal writes, and Hub's reading assertion projector).
@@ -443,6 +446,10 @@ class WorldPulseReadStage2Pipeline:
         )
 
     async def stop(self) -> None:
+        if self._resonance_task is not None:
+            self._resonance_task.cancel()
+            await asyncio.gather(self._resonance_task, return_exceptions=True)
+            self._resonance_task = None
         self._stop.set()
         if self._concept_index_task is not None:
             self._concept_index_task.cancel()
@@ -522,7 +529,18 @@ class WorldPulseReadStage2Pipeline:
         async with pool.acquire() as conn:
             return await fn(conn)
 
+    async def _reconcile_resonance(self):
+        from orion.world_pulse_read.resonance_submit import reconcile
+        try:
+            await self._with_conn(lambda conn: reconcile(conn, cfg=self.concept_search,
+                bus=self._bus, source=self._source_ref, durable_url=self.durable_url,
+                substrate_store=self._store_provider() if self._store_provider else None, **self._resonance))
+        except Exception:
+            logger.exception("reading_resonance_reconcile_failed")
+
     async def tick(self, *, force: bool = False) -> str | None:
+        if self._resonance and self.concept_search and (self._resonance_task is None or self._resonance_task.done()):
+            self._resonance_task = asyncio.create_task(self._reconcile_resonance())
         now = datetime.now(timezone.utc)
         self.last_round_trips = 0
         await self._reclaim_stale_claimed()

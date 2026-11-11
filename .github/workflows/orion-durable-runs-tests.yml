@@ -81,6 +81,9 @@ on:
       - "orion/world_pulse_read/introspect.py"
       - "orion/world_pulse_read/findings.py"
       - "orion/schemas/reading_finding.py"
+      - "orion/schemas/reading_resonance.py"
+      - "orion/world_pulse_read/resonance*.py"
+      - "services/orion-sql-db/manual_migration_reading_resonance.sql"
       - "orion/cognition/verbs/orion_day_*.yaml"
       - "orion/cognition/prompts/orion_day_*.j2"
       - "services/orion-sql-db/manual_migration_orion_day_letter_v1.sql"
@@ -168,6 +171,9 @@ on:
       - "orion/world_pulse_read/introspect.py"
       - "orion/world_pulse_read/findings.py"
       - "orion/schemas/reading_finding.py"
+      - "orion/schemas/reading_resonance.py"
+      - "orion/world_pulse_read/resonance*.py"
+      - "services/orion-sql-db/manual_migration_reading_resonance.sql"
       - "orion/cognition/verbs/orion_day_*.yaml"
       - "orion/cognition/prompts/orion_day_*.j2"
       - "services/orion-sql-db/manual_migration_orion_day_letter_v1.sql"
@@ -248,6 +254,7 @@ jobs:
       - name: Pytest services/orion-durable-runs/tests
         env:
           PYTHONPATH: ${{ github.workspace }}
+          TEST_POSTGRES_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider

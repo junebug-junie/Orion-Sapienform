@@ -333,6 +333,24 @@ This uses the same rule curiosity investigate obeys (`orion/physiology/binding.p
   Replay: `PYTHONPATH=. python services/orion-dream/evals/dream_binding_replay.py [--live --days 7]`.
 - The old arousal hold stays until the binding bid has run `on` for 7 days with its checks green.
 
+### Compaction apply asks the market's consent gate (2026-11-11, attention patch 3d)
+
+REM stages about two compaction deltas a day (gist cards from settled open loops). Applying one would change
+memory, so the applier (`app/compaction_applier.py`) needs consent first, and it asks the want market's
+consent gate (`app/compaction_consent.py`): one bid for family `dream.compaction` with a consent request
+(verb `compact`, `snapshot_restorable`, attests `snapshot_dir_writable` and `downscale_only`; a plan that
+would prune asks verb `prune`, `irreversible`, always refused). Rules: `config/physiology/consent.yaml`.
+
+- Consent is asked first, even while `ORION_DREAM_COMPACTION_APPLY_ENABLED=false`. After each staged delta,
+  the REM pass asks through the applier with NO memory store, so nothing can be written. The live trace is
+  a `want_ledger` row (producer `orion-dream.compaction_applier.consent`) and a log line
+  `compaction_apply not_approved delta=... verdict=needs_consent rule=dream.compaction.downscale_only`.
+- Until Juniper merges the standing consent `dream-compaction-downscale` into `consent.yaml`, every ask is
+  `needs_consent`. Turning apply on is her separate decision; it also needs a real memory store, which is
+  not wired (`no_store`).
+- No market answer, a verdict for another delta, or any error is a no. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false`
+  stops the ask.
+
 ### HTTP / bus behavior
 
 - **No Hunter** in this process: `dream.trigger` is consumed by **cortex-orch** so triggers are not duplicated.

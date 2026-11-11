@@ -1,8 +1,8 @@
 """Phase G — compaction applier (memory mutation, hard-gated).
 
 Every safety invariant is exercised against an in-memory fake store: default-off,
-consent-gated (no consent gate exists yet, so a missing one fails closed; the policy-rung
-frame it replaced retired 2026-11-07), snapshot-precedes-apply, downscale-first /
+consent-gated (the want market's consent gate since attention patch 3d; a missing or negative
+answer fails closed, and consent is asked first, even while apply is off), snapshot-precedes-apply, downscale-first /
 prune-gated, rollback-on-error, never-raises.
 """
 from __future__ import annotations
@@ -73,8 +73,8 @@ def _delta(delta_id="d-1"):
 
 
 def _approval(delta_id="d-1"):
-    """A consent that approves exactly one delta id (stands in for the market's consent gate)."""
-    return lambda delta: delta.delta_id == delta_id
+    """A consent that approves exactly one delta id, any plan (stands in for the market's consent gate)."""
+    return lambda delta, downscale_only: delta.delta_id == delta_id
 
 
 # --- gating -------------------------------------------------------------------
@@ -87,6 +87,43 @@ def test_disabled_gate_touches_nothing(tmp_path, monkeypatch):
     assert r.status == "disabled"
     assert r.applied is False
     assert store.calls == []  # not even a snapshot
+
+
+def test_consent_is_asked_first_even_while_apply_is_off():
+    """Patch 3d: the gate is asked before the hot gate, so a staged delta leaves a verdict while apply
+    stays off. No consent while off is not_approved (with the rule), and nothing is touched."""
+    from app import compaction_applier as ca
+
+    asked = []
+
+    def consent(delta, downscale_only):
+        asked.append((delta.delta_id, downscale_only))
+        return ca.ConsentAnswer(False, "needs_consent", "dream.compaction.downscale_only", "standing_consent_missing")
+
+    store = FakeStore()
+    r = ca.apply_compaction_delta(_delta(), consent, store=store, enabled=False)
+    assert asked == [("d-1", True)]
+    assert r.status == "not_approved"
+    assert (r.consent_verdict, r.consent_rule) == ("needs_consent", "dream.compaction.downscale_only")
+    assert store.calls == []
+
+
+def test_consented_but_no_store_writes_nothing():
+    """The REM pass asks with store=None: even consented and on, the best case is no_store."""
+    from app import compaction_applier as ca
+
+    r = ca.apply_compaction_delta(_delta(), _approval(), store=None, enabled=True)
+    assert r.status == "no_store" and r.applied is False
+
+
+def test_the_plan_reaches_consent():
+    """A consent to downscale is not a consent to prune: the callable sees which plan it is asked about."""
+    from app import compaction_applier as ca
+
+    seen = []
+    ca.apply_compaction_delta(_delta(), lambda d, only: seen.append(only) or False, store=FakeStore(),
+                              enabled=True, downscale_only=False)
+    assert seen == [False]
 
 
 def test_not_approved_without_a_consent_gate():
@@ -119,7 +156,7 @@ def test_consent_is_asked_about_this_exact_delta():
                                       prune=[PruneEntryV1(episodic_id="ep-1", salience=0.01)])
     asked = []
 
-    def consent(delta):
+    def consent(delta, downscale_only):
         asked.append(delta.delta_id)
         return delta.delta_id == "dA"
 
@@ -132,13 +169,13 @@ def test_consent_is_asked_about_this_exact_delta():
 def test_only_a_literal_true_is_consent(answer):
     from app import compaction_applier as ca
 
-    assert ca.consent_approves(_delta(), lambda d: answer) is False
+    assert ca.consent_approves(_delta(), lambda d, only: answer) is False
 
 
 def test_a_raising_consent_fails_closed():
     from app import compaction_applier as ca
 
-    def boom(delta):
+    def boom(delta, downscale_only):
         raise RuntimeError("consent store down")
 
     store = FakeStore()

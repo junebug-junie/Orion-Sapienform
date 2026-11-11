@@ -179,7 +179,9 @@ def weight_series(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Seq
     """Daily weights for every bidding family, start..end inclusive (UTC days, evidence up to each
     day's end). Day before ``start``: every family at its normalized prior. ``reliability``: also
     read source (d) (module docstring)."""
-    bidders = {f: c for f, c in families.families.items() if c.bids}
+    # ``weighted: false`` families (families.yaml) stay out: Choice falls back to their prior, and they do not
+    # move the tier's mean, so adding one leaves every other family's weight unchanged.
+    bidders = {f: c for f, c in families.families.items() if c.bids and c.weighted}
     tiers = sorted({c.tier for c in bidders.values()})
 
     def normalize(vals: Mapping[str, float]) -> dict[str, float]:

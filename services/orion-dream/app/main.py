@@ -156,6 +156,8 @@ def build_cycle_deps():
             bus = await _cycle_bus()
         except Exception:
             bus = None
+        from app.compaction_consent import ask_consent_without_store
+
         delta = await run_rem_compaction_once(
             bus,
             request_loader=lambda _n: requests,
@@ -163,7 +165,14 @@ def build_cycle_deps():
             dream_id=cycle_id,
         )
         for d in staged:
-            await asyncio.to_thread(rem_store.persist_compaction_delta, d)
+            stored = await asyncio.to_thread(rem_store.persist_compaction_delta, d)
+            # Attention patch 3d: ask the consent gate only about a delta that is really stored (the
+            # want_ledger row names it), after the persist. No memory store: nothing can be written.
+            if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
+                try:
+                    await ask_consent_without_store(d)
+                except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the sleep goes on
+                    logger.warning("rem compaction consent ask failed id=%s err=%s", d.delta_id, exc)
         return delta.delta_id if delta is not None else None
 
     async def _start_story(trigger):
@@ -448,7 +457,9 @@ async def rem_preview_endpoint():
     try:
         if bus is not None:
             await bus.connect()
-        delta = await run_rem_compaction_once(bus)
+        from app.compaction_consent import ask_consent_without_store
+
+        delta = await run_rem_compaction_once(bus, consent_asker=ask_consent_without_store)
     finally:
         if bus is not None:
             await bus.close()

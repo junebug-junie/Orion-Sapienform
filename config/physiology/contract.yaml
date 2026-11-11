@@ -52,6 +52,8 @@ protected_paths:
   - {glob: "services/orion-durable-runs/app/cooling_act.py", organ: "choice (binding bid site: the cooling world act)"}
   # 2026-11-07, Patch D for hub.outreach: every Hub door that composes a message binds here, listed below as bidder.
   - {glob: "services/orion-hub/scripts/outreach_bind.py", organ: "choice (Patch D bid site: Hub outreach binds)"}
+  # 2026-11-11, attention patch 3d: dream compaction apply asks the market's consent gate here, listed below as bidder.
+  - {glob: "services/orion-dream/app/compaction_consent.py", organ: "choice (consent gate bid site: dream compaction apply)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -123,6 +125,10 @@ readers:
     role: bidder
     reason: Hub outreach's BINDING bid (Patch D) -- the background tick and the reading / office doors obey the market's decision (orion.physiology.binding) before composing; held at most to the end of Juniper's waking day (office visits 5 min).
     note: 2026-11-07, already the Patch D shape
+  - module: services/orion-dream/app/compaction_consent.py
+    role: bidder
+    reason: dream compaction apply's consent ask (attention patch 3d) -- one bid with a consent request per staged delta; approves only on the market's allow verdict (orion.physiology.binding never admits a consent deferral). Reads no regulation or price state of its own.
+    note: 2026-11-11, first consumer of the consent gate (orion/physiology/consent.py)
   - module: services/orion-hub/scripts/endogenous_outreach_decisions.py
     role: bidder
     reason: the Hub daily cap (a veto on optional outreach) counts with the shared exempt lists (orion.physiology.attention_pacing CAP_EXEMPT_SOURCES / CAP_EXEMPT_DOOR_POLICIES) -- constants, not price state; one list for the cap and the attention:juniper line.

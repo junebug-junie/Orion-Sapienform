@@ -1,0 +1,60 @@
+# The market's consent gate (attention patch 3d).
+#
+# Spec: docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md, section 3 "The
+# consent gate" (approved by Juniper 2026-11-10, all defaults). Read by orion/physiology/consent.py in
+# orion-durable-runs (the market process). It takes over ONE job of the retired policy rung (L8): "is this
+# act allowed to change something that cannot be put back, and who agreed?". It does NOT do heat, arousal,
+# caps, quiet hours, the Juniper-first yield or the self-monitor act gate: those answer "is now a good
+# time" and stay where they are.
+#
+# A want asks the gate only when it carries a consent request (WantV1.consent_request). Every other want
+# is decided exactly as before.
+#
+# rules: one entry per (family, verb). The key is the rule id the verdict names.
+#   family, verb    the want's family and grammar verb.
+#   reversibility   reversible | snapshot_restorable | irreversible. Authoritative: a request that claims
+#                   another class is refused.
+#   consent         none | standing:<id> | refused.
+#                   - none: allowed with no consent. Only a `reversible` act may say none.
+#                   - standing:<id>: allowed only while `standing.<id>` below exists (and has not expired).
+#                     If it is missing, the verdict is needs_consent ("a standing consent is missing").
+#                   - refused: always refused.
+#                   An `irreversible` act must say refused (v1 never lets Orion do what cannot be undone).
+#   requires        named preconditions the caller must attest in the request (ConsentRequestV1.attests).
+#                   A missing one is refused.
+#
+# Unknown (family, verb) pairs: a `reversible` request is allowed (today's families are unchanged); any
+# other class is refused (fail closed).
+#
+# standing: the consents Juniper has given. A standing consent is added ONLY by a PR Juniper merges: the
+# merge is her consent, and git history is the record. Each entry: granted_by, granted_on (date), pr (the
+# PR that added it), note, and an optional `expires` (date or datetime; past it the consent is missing).
+#
+# Old policy rung -> this file (substrate_policy.v1, retired PR #3161):
+#   hard_blocks: destructive_action -> reversibility irreversible, consent refused
+#   reversibility below 0.5 -> operator review -> a non-reversible act needs standing consent
+#   unknown proposal kind -> deferred -> an unknown non-reversible act is refused
+#   allow_execution_without_operator: false -> consent none is only allowed for reversible acts
+
+version: 1
+
+rules:
+  # Dream compaction apply (services/orion-dream/app/compaction_applier.py): downscale edge weights and write
+  # dream-provenance gist cards. Every apply snapshots the before-state first and rolls back on any error,
+  # so it is snapshot_restorable. Needs Juniper's standing consent, which does not exist yet: until she
+  # merges `standing.dream-compaction-downscale`, every ask is needs_consent. Turning apply on
+  # (ORION_DREAM_COMPACTION_APPLY_ENABLED) is a separate decision of hers.
+  dream.compaction.downscale_only:
+    family: dream.compaction
+    verb: compact
+    reversibility: snapshot_restorable
+    consent: standing:dream-compaction-downscale
+    requires: [snapshot_dir_writable, downscale_only]
+  # Pruning episodic memory deletes rows. Never in v1.
+  dream.compaction.prune:
+    family: dream.compaction
+    verb: prune
+    reversibility: irreversible
+    consent: refused
+
+standing: {}

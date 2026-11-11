@@ -30,7 +30,7 @@ def test_a_clock_want_serializes_without_the_event_fields():
 
 def test_an_old_consumer_with_forbid_still_parses_a_decision_without_an_event():
     """Stand-in for a not-yet-rebuilt consumer: the pre-patch WantV1 fields with extra=forbid."""
-    old_fields = set(WantV1.model_fields) - {"event_ref", "salience"}
+    old_fields = set(WantV1.model_fields) - {"event_ref", "salience", "consent_request"}
 
     class OldWant(BaseModel):
         model_config = ConfigDict(extra="forbid")

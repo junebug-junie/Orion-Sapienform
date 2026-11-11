@@ -31,6 +31,11 @@ class FamilyConfig:
     # Prime's regulate signals this family handles (orion/physiology/prime_charge.py DIRECTIONS). Empty:
     # a signal to it is refused by Prime and ignored by the market (design section 4.2).
     receptors: tuple[str, ...] = ()
+    # In its tier's weight normalization (orion/physiology/weights.py). false: the family's weight is its
+    # prior and it does not move the tier's mean. For a family that never closes acts of its own (dream
+    # compaction's consent asks): its target would sit at the prior forever and shift every other family's
+    # weight in the tier (review finding, attention patch 3d).
+    weighted: bool = True
 
     @property
     def bids(self) -> bool:
@@ -86,12 +91,15 @@ def parse_families(doc: Any) -> FamiliesConfig:
             raise ValueError(f"{name}: receptors must be a list drawn from {list(RECEPTORS)}")
         if receptors and tier == 0:
             raise ValueError(f"{name}: a Tier 0 family never bids, so a charge on its bids cannot reach it")
+        weighted = body.get("weighted", True)
+        if not isinstance(weighted, bool):
+            raise ValueError(f"{name}: weighted must be true or false")
         if tier != 0 and window <= 0:
             raise ValueError(f"{name}: a bidding family needs deferrable_window_s > 0 (its hunger clock)")
         out[name] = FamilyConfig(family=name, tier=int(tier), prior_weight=prior, deferrable_window_s=window,
                                  lanes=tuple(lanes), placement=placement,
                                  fixed_cost={k: float(v) for k, v in fixed.items()}, note=str(body.get("note") or ""),
-                                 receptors=tuple(dict.fromkeys(str(r) for r in receptors)))
+                                 receptors=tuple(dict.fromkeys(str(r) for r in receptors)), weighted=weighted)
     return FamiliesConfig(families=out)
 
 

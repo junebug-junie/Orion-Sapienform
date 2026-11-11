@@ -57,7 +57,44 @@ DECISION_REASONS = (
     "physiology_unavailable", # deferred: no fresh body state (absent, malformed, older than the stale limit)
     "unknown_family",         # deferred: the family is not in config/physiology/families.yaml
     "family_never_bids",      # deferred: the family is Tier 0 (Juniper's turns, perception) and never bids
+    "consent",                # deferred: the consent gate said refuse or needs_consent (never admitted)
 )
+
+# The act's reversibility class, as config/physiology/consent.yaml and the request name it.
+REVERSIBILITY = ("reversible", "snapshot_restorable", "irreversible")
+CONSENT_VERDICTS = ("allow", "refuse", "needs_consent")
+
+
+class ConsentRequestV1(BaseModel):
+    """What a want asks the consent gate: "may this act run, and who agreed?" (attention patch 3d).
+
+    ``reversibility`` is the producer's own class for the act. The rule in config/physiology/consent.yaml
+    is authoritative: a request that claims another class than its rule is refused. ``payload_digest``
+    binds the verdict to the exact payload (a dream compaction delta's sha256), so a consumer can check
+    that the verdict it got is for the thing it is about to change. ``attests`` are the named
+    preconditions the producer says are true right now (``snapshot_dir_writable``, ``downscale_only``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    want_id: str = Field(min_length=1, max_length=200)
+    family: str = Field(min_length=1, max_length=120)
+    verb: str = Field(min_length=1, max_length=120)
+    object_ref: Optional[str] = Field(default=None, max_length=500)
+    payload_digest: Optional[str] = Field(default=None, max_length=200)
+    reversibility: Literal["reversible", "snapshot_restorable", "irreversible"]
+    attests: List[str] = Field(default_factory=list, max_length=32)
+
+
+class ConsentVerdictV1(BaseModel):
+    """The consent gate's answer. ``rule_id``: the consent.yaml rule it used (None: no rule matched).
+    ``consent_ref``: who agreed (``standing:<id>``), or None. ``reason``: the branch, readable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["allow", "refuse", "needs_consent"]
+    rule_id: Optional[str] = None
+    reason: str = ""
+    consent_ref: Optional[str] = None
 
 
 class WantWindowV1(BaseModel):
@@ -111,6 +148,8 @@ class WantV1(BaseModel):
     # source). Appetite reads intensity = max(hunger, salience): an unusual event can win before the
     # family's clock is due. None: no event, hunger alone.
     salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # The consent gate (patch 3d): present only for an act that changes something hard to put back.
+    consent_request: Optional[ConsentRequestV1] = None
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
@@ -129,7 +168,8 @@ class WantV1(BaseModel):
         return out
 
 
-_EVENT_FIELDS = ("event_ref", "salience")
+# Left out of the serialized want when None (consumers on extra=forbid keep parsing it while they roll forward).
+_EVENT_FIELDS = ("event_ref", "salience", "consent_request")
 
 
 class WantDecisionV1(BaseModel):
@@ -151,7 +191,7 @@ class WantDecisionV1(BaseModel):
     shadow: Literal[True] = True
     reason: Literal[
         "net_positive", "exploration_floor", "price", "sated", "capacity_reserved", "no_acceptable_lane",
-        "physiology_unavailable", "unknown_family", "family_never_bids",
+        "physiology_unavailable", "unknown_family", "family_never_bids", "consent",
     ]
     # The lane Choice placed it on (pool role), or None (no GPU lane, or not placed).
     lane: Optional[str] = None
@@ -191,6 +231,22 @@ class WantDecisionV1(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     why: str = ""
     want: WantV1
+    # The consent gate's verdict (patch 3d). Only on a decision whose want carried a consent request;
+    # left out when None, so every other decision serializes exactly as before.
+    consent: Optional[ConsentVerdictV1] = None
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_consent(self, handler: SerializerFunctionWrapHandler) -> Any:
+        out = handler(self)
+        if "consent" in out and out["consent"] is None:
+            del out["consent"]
+        return out
 
 
 class FundedEventWantV1(BaseModel):
@@ -229,7 +285,11 @@ class FundedEventWantsV1(BaseModel):
 
 
 __all__ = [
+    "CONSENT_VERDICTS",
+    "ConsentRequestV1",
+    "ConsentVerdictV1",
     "DECISION_REASONS",
+    "REVERSIBILITY",
     "FundedEventWantV1",
     "FundedEventWantsV1",
     "WANT_DECISION_CHANNEL",

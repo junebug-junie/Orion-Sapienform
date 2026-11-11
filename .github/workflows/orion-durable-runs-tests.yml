@@ -313,6 +313,13 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_physiology_bind.py \
             services/orion-dream/tests/test_physiology_shadow_bid.py services/orion-dream/evals/test_dream_binding_replay_eval.py
+      - name: Consent gate (attention patch 3d -- the market refuses what it must, dream compaction asks it, nothing else changes)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-durable-runs/evals/consent_gate_fixture.py
+          python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_compaction_applier.py \
+            services/orion-dream/tests/test_compaction_consent.py services/orion-dream/tests/test_rem_compaction.py
       - name: Deploy-order skew eval (old pool refuses holds, then upgrades) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

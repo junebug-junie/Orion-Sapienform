@@ -6,7 +6,7 @@
 2. the act history: ``grammar_acts`` for the last 30 days plus each actor's newest close, and
    ``act_downstream_use`` for the same window -- cached for ``ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC``
    (default 300 s; weights move at most 0.1 per day, appetite by minutes);
-3. the pure decision (``orion.physiology.choice.decide``) against the in-memory reservation book;
+3. the pure decision (``orion.physiology.choice.decide_priced``, after the consent gate) against the in-memory reservation book;
 4. the decision published on ``orion:physiology:want:decision`` (sql-writer -> ``want_ledger``).
 
 The exploration floor's weekly quota (Patch C3a) counts funded wants from ``want_ledger`` over the
@@ -36,6 +36,12 @@ The receiving organ may REFUSE the signal (curiosity replica patch 4: field ``re
 decision's ``why`` names the refusal (treated arm), and each want's record is ``unchanged`` -- what really
 happened -- with what the charge would have done in its ``why``.
 
+The consent gate (attention patch 3d, ``orion.physiology.consent``). A want with a ``consent_request`` is
+answered by the gate BEFORE the body state or the history is read: ``refuse`` or ``needs_consent`` is the
+decision (deferred, reason ``consent``); ``allow`` goes on to be priced, with the verdict on the decision.
+Every verdict is one ``physiology_consent verdict=... rule=... want=...`` log line. Rules:
+config/physiology/consent.yaml (``ORION_PHYSIOLOGY_CONSENT_PATH``); unread -> such a want is refused.
+
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
 """
@@ -59,9 +65,12 @@ from orion.physiology.choice import (
     ReservationBook,
     SYNTHETIC_PRODUCERS,
     build_context,
-    decide,
+    consent_gate,
+    decide_priced,
     unavailable,
+    with_consent,
 )
+from orion.physiology.consent import ConsentRules
 from orion.physiology import prime_charge as pc
 from orion.physiology.binding import BINDING_PRODUCERS
 from orion.physiology.families import FamiliesConfig
@@ -175,9 +184,14 @@ class Market:
 
     def __init__(self, *, families: Optional[FamiliesConfig], families_error: Optional[str], pool_getter,
                  redis_getter, publish, history_ttl_sec: float = 300.0, lane_window_sec: float = 3600.0,
-                 stale_after_sec: float = 360.0, prime_regulation: bool = False) -> None:
+                 stale_after_sec: float = 360.0, prime_regulation: bool = False,
+                 consent_rules: Optional[ConsentRules] = None, consent_error: Optional[str] = None) -> None:
         self.families = families
         self.families_error = families_error
+        # The consent gate (attention patch 3d): config/physiology/consent.yaml. None (missing or malformed):
+        # every want WITH a consent request is refused (rules_unavailable); wants without one are unaffected.
+        self.consent_rules = consent_rules
+        self.consent_error = consent_error
         self._pool_getter = pool_getter
         self._redis_getter = redis_getter
         self._publish = publish
@@ -194,7 +208,7 @@ class Market:
         self.prime_regulation = bool(prime_regulation)
         self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0, "prime_applied": 0, "prime_control": 0,
                        "prime_refused": 0,
-                       "prime_read_failed": 0}
+                       "prime_read_failed": 0, "consent_allow": 0, "consent_refuse": 0, "consent_needs_consent": 0}
 
     async def _history(self, now: datetime) -> _Cached:
         async with self._lock:
@@ -248,13 +262,18 @@ class Market:
 
     async def bid(self, want: WantV1, now: Optional[datetime] = None, *, reserve_at_open: bool = False) -> WantDecisionV1:
         now = now or datetime.now(timezone.utc)
-        state = await self._state()
-        ctx = await self.context(state, now)
-        if ctx is None:
+        # The consent gate first (patch 3d): a refused or unconsented act is deferred before any read, so no
+        # missing market ("no answer", which binding producers admit) can let it through.
+        verdict, deferral = consent_gate(want, self.consent_rules, now, families=self.families)
+        state = await self._state() if deferral is None else None
+        ctx = await self.context(state, now) if deferral is None else None
+        if deferral is not None:
+            decision = deferral
+        elif ctx is None:
             why = (f"families config unavailable ({self.families_error})" if self.families is None
                    else "act history unread")
             # Never fund on a missing market: physiology_unavailable.
-            decision = unavailable(want, now, why=why, state=state)
+            decision = with_consent(unavailable(want, now, why=why, state=state), verdict)
         else:
             # Only an OBEYED bid takes Prime's charge (a shadow bid would grade Prime on holds that never happened).
             sig = await self._prime_signal(want.family, now) if want.producer in BINDING_PRODUCERS else None
@@ -265,18 +284,27 @@ class Market:
                 # The same bid decided the other way, on a throwaway copy of the book (it must not reserve or
                 # count anything): what the charge changed is read from two real decisions, both arms alike.
                 # Refused: the "other way" is the charge as Prime sent it (what the refusal took away).
-                other = decide(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
-                               prime=None if applied is not None else sig)
+                other = decide_priced(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
+                                      prime=None if applied is not None else sig)
             if refusal is not None and sig.arm == "treated":
                 # Not applied, and the decision says why (the refusal names the charge it removed).
-                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
-                                  prime_refusal=refusal)
+                decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
+                                         prime_refusal=refusal)
             else:
-                decision = decide(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=applied)
+                decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open,
+                                         prime=applied)
+            # The gate ran once, above, before any read: attach its (allow) verdict, if any.
+            decision = with_consent(decision, verdict)
             if sig is not None and other is not None:
                 await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None,
                                                 refusal=refusal)
         self.counts[decision.outcome] = self.counts.get(decision.outcome, 0) + 1
+        if decision.consent is not None:
+            self.counts[f"consent_{decision.consent.verdict}"] = self.counts.get(f"consent_{decision.consent.verdict}", 0) + 1
+            logger.info("physiology_consent verdict=%s rule=%s want=%s family=%s verb=%s object=%s consent_ref=%s "
+                        "outcome=%s reason=%s why=%s", decision.consent.verdict, decision.consent.rule_id,
+                        want.want_id, want.family, want.verb, want.object_ref, decision.consent.consent_ref,
+                        decision.outcome, decision.reason, decision.consent.reason)
         try:
             await self._publish(decision)
         except Exception:  # noqa: BLE001 -- the caller still gets its decision; the ledger row is lost
@@ -395,7 +423,10 @@ class Market:
         return {"families": len(self.families.families) if self.families else 0,
                 "families_error": self.families_error, "history_cached_at": self._cache.at.isoformat() if self._cache else None,
                 "reservations": len(self.book.snapshot(now)), "funded_seeded": self.book.funded_seeded,
-                "prime_regulation": self.prime_regulation, **self.counts}
+                "prime_regulation": self.prime_regulation,
+                "consent_rules": len(self.consent_rules.rules) if self.consent_rules else 0,
+                "consent_standing": len(self.consent_rules.standing) if self.consent_rules else 0,
+                "consent_error": self.consent_error, **self.counts}
 
 
 __all__ = ["Market", "act_from_row", "read_event_history", "read_funded", "read_history", "use_from_row"]

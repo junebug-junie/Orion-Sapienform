@@ -96,6 +96,34 @@ def test_input_replies_are_ordered_and_never_dropped():
     asyncio.run(check())
 
 
+def test_presentation_credits_bound_frames_already_accepted_by_socket():
+    async def check():
+        ws, native = Browser(), Native(); ws.release.set()
+        task = asyncio.create_task(transport.relay_messages(ws, native, 'media', 'fixture', media_ack=True))
+        # Unlike a blocked send(), a TCP/proxy buffer accepts frames immediately
+        # even if the remote player has presented none. Reproduce that hidden queue.
+        for i in range(30):
+            native.frame(str(i).encode())
+            for _ in range(8): await asyncio.sleep(0)
+        assert ws.sent == [b'0', b'1', b'2']
+        ws.incoming.put_nowait('{"ack":3}')
+        for _ in range(20): await asyncio.sleep(0)
+        assert ws.sent[-1] == b'29', 'recovery sent stale buffered pictures instead of latest'
+        assert len(ws.sent) == 4
+        assert native.sent == [], 'presentation credit leaked into native controls'
+        ws.incoming.put_nowait(WebSocketDisconnect(1000)); await task
+    asyncio.run(check())
+
+
+def test_media_credit_validation_rejects_unearned_or_invalid_acks():
+    async def check():
+        for ack in ('{"ack":1}', '{"ack":true}', '{"ack":0}', '{"ack":-1}', '{}', '[]', 'invalid'):
+            ws, native = Browser(), Native(); ws.release.set(); ws.incoming.put_nowait(ack)
+            assert await transport.relay_messages(ws, native, 'media', 'fixture', media_ack=True) == 'invalid_media_ack'
+            assert native.sent == []
+    asyncio.run(check())
+
+
 def test_cancel_reclaims_all_child_tasks_and_ingress_limits_remain():
     async def check():
         for channel, message in [('media', 'forbidden'), ('input', 'x' * 4097)]:
@@ -138,6 +166,12 @@ def test_shared_router_keeps_other_http_routes_responsive(tmp_path, monkeypatch)
         async def __aexit__(self, *args): pass
         @asynccontextmanager
         async def ws_connect(self, *args, **kwargs): yield native
+        @asynccontextmanager
+        async def request(self, *args, **kwargs):
+            class Response:
+                status = 200
+                async def json(self): return {'capabilities': {'conditional_resume': True}}
+            yield Response()
     monkeypatch.setattr(retro_routes.aiohttp, 'ClientSession', lambda **kwargs: Client())
     (tmp_path/'hub.token').write_text('x'*48)
     config = SimpleNamespace(HUB_RETRO_ENABLED=True, HUB_RETRO_ORIGIN='http://testserver',
@@ -148,7 +182,9 @@ def test_shared_router_keeps_other_http_routes_responsive(tmp_path, monkeypatch)
     @app.post('/unrelated/chat')
     async def chat(): return {'reply': 'fixture'}
     with TestClient(app) as client:
-        with client.websocket_connect('/api/retro/sessions/'+'a'*36+'/media',
+        capabilities = client.get('/api/retro/health/ready').json()['capabilities']
+        assert capabilities == {'conditional_resume': True, 'retro_media_ack_v1': True}
+        with client.websocket_connect('/api/retro/sessions/'+'a'*36+'/media?flow=ack-v1',
                                       headers={'Origin': 'http://testserver'}) as ws:
             assert blocked.wait(1), 'media write never entered the blocked state'
             assert client.get('/unrelated/status').json() == {'ok': True}

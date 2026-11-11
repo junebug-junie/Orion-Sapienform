@@ -304,6 +304,46 @@ resume after an explicit Pause. Unit tests cover slow/stuck writes, bounded medi
 cleanup, origin isolation, unrelated HTTP routes, stale session callbacks, another
 owner, old native capability, and hung Pause/Stop requests.
 
+### Post-deploy lag regression: acquisition and socket buffers
+
+The original recovery patch could discard a slow successful controller grant when
+another canvas click or focus recovery started a new connect before its response.
+The server then held a lease that the page never used. A pending acquisition now
+blocks those redundant reconnects, times out/aborts after five seconds, and cannot
+overwrite a newer takeover. Pause/Stop can still interrupt it immediately. The
+native browser eval delays a control HTTP response by 650 ms and clicks repeatedly;
+this is a separate fault from delaying input acknowledgments.
+
+One latest application packet was also insufficient to prevent video lag: a send
+can return after copying frames into TCP/proxy buffers, before the browser renders
+them. The negotiated media path now bounds those accepted-but-unpresented frames:
+
+- Proxied `GET /api/retro/health/ready` adds `capabilities.retro_media_ack_v1=true`.
+- The page opts in with `/api/retro/sessions/{id}/media?flow=ack-v1` only when that
+  capability is advertised. Native Retro's media protocol does not change.
+- The gateway sends at most three frames ahead. Browser media messages `{ "ack": N }`
+  cumulatively acknowledge the Nth message on that connection **after presentation**.
+  If the browser skips pending frames, its later cumulative ack releases their
+  credits too. The gateway validates increasing integer acknowledgments up to its
+  actual sent count; these messages never reach the native controller.
+- While credits are exhausted, the reader keeps only the latest native packet.
+  On recovery, old pictures are skipped rather than drained into play. Existing
+  PCM discontinuity handling remains responsible for audio gaps.
+- Origin checks, socket/message/rate limits and stalled-picture safety remain.
+  Old pages/new gateways and new pages/old gateways keep legacy media. Refresh the
+  page before a gateway downgrade because negotiation is cached for that page.
+
+After merging, update clean primary main and rebuild Hub through the wrapper:
+
+```sh
+scripts/safe_docker_build.sh orion-hub up -d --build hub-retro-gateway hub-app
+```
+
+Then reload `/retro` (asset v15). No native Retro rebuild is required for this
+follow-up. This command also restarts Hub chat; the gateway and Hub share router
+code. Carbon's Wi-Fi still showed independent 50–200 ms jitter and occasional
+loss during diagnosis; actual user-device play remains UNVERIFIED until deployment.
+
 ## Play harness (`evals/retro_play.mjs`)
 
 Plays like a person: real Chromium, real Hub tab, scripted Mario input. It records

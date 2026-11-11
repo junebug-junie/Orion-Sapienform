@@ -6,7 +6,7 @@ function page(){
   let now=100, next=0;const timers=new Map(), elements=new Map(), sockets=[], requests=[];
   const element=id=>{
     if(!elements.has(id))elements.set(id,{value:'0',checked:false,hidden:false,disabled:false,dataset:{},
-      textContent:'',events:{},setAttribute(){},getContext:()=>({}),addEventListener(name,fn){this.events[name]=fn;},focus(){},
+      textContent:'',events:{},setAttribute(){},getContext:()=>({createImageData:(w,h)=>({data:new Uint8Array(w*h*4)}),putImageData(){}}),addEventListener(name,fn){this.events[name]=fn;},focus(){},
       classList:{toggle(){}},selectedOptions:[{dataset:{}}]});
     return elements.get(id);
   };
@@ -18,7 +18,7 @@ function page(){
     fail(){this.close();this.onclose?.();}
   }
   let responder=()=>new Promise(()=>{});
-  const context=vm.createContext({console,Map,Set,Blob,Response,DecompressionStream,TextDecoder,
+  const context=vm.createContext({console,Map,Set,Blob,Response,DecompressionStream,TextDecoder,AbortController,
     Uint8Array,DataView,performance:{now:()=>now},WebSocket:Socket,
     location:{protocol:'http:',host:'fixture'},navigator:{getGamepads:()=>[]},
     HTMLInputElement:class{},HTMLSelectElement:class{},HTMLTextAreaElement:class{},
@@ -130,10 +130,68 @@ test('deliberate game click resumes after an explicit Pause',async()=>{
   assert.equal(h.sockets.filter(s=>s.url.endsWith('/input')).length,1);
 });
 
+test('clicking while the controller grant is delayed cannot invalidate that grant',async()=>{
+  const h=page();h.run('closeConnections();lease=null;wanted=true');h.respond(()=>[200,{}]);
+  await h.run('connect(true)');
+  const socket=h.sockets.find(s=>s.url.endsWith('/input'));
+  let respond;
+  h.respond(()=>new Promise(resolve=>respond=resolve));
+  const receiving=socket.onmessage({data:JSON.stringify({connection_id:'owner',generation:'gen'})});
+  await Promise.resolve();const finishGrant=respond, originalIntent=h.run('intent');
+  h.elements.get('screen').events.pointerdown();await h.tick(0);
+  finishGrant([200,{lease:'accepted',epoch:2,port:0}]);await receiving;
+  assert.equal(h.run('intent'),originalIntent,'extra click invalidated pending controller acquisition');
+  assert.equal(h.run('lease?.lease'),'accepted');
+  assert.equal(h.requests.filter(r=>r.url.endsWith('/control')).length,1);
+});
+
+test('late normal acquisition cannot replace an explicit takeover',async()=>{
+  const h=page(), replies=[];
+  h.respond(url=>url.endsWith('/control')?new Promise(resolve=>replies.push(resolve)):[200,{}]);
+  const old=h.run('grant()');await Promise.resolve();
+  const takeover=h.elements.get('takeover').onclick();await h.tick(0);
+  assert.equal(replies.length,2);
+  replies[1]([200,{lease:'new-takeover',epoch:3,port:0}]);await takeover;
+  replies[0]([200,{lease:'old-acquire',epoch:2,port:0}]);await old;
+  assert.equal(h.run('lease.lease'),'new-takeover');
+});
+
+test('hung acquisition is aborted, releases control and cannot wedge connecting',async()=>{
+  const h=page();h.run("lease=null;connection='owner'");let aborted=false;
+  h.respond((url,options)=>url.endsWith('/control')?new Promise((_,reject)=>{
+    options.signal.addEventListener('abort',()=>{aborted=true;reject(Error('aborted'));});
+  }):[200,{state:'running'}]);
+  const connecting=h.run('connect(true)');await h.tick(0);
+  await h.tick(5100);await connecting;
+  assert.equal(aborted,true);assert.equal(h.sockets[0].closed,true);
+  assert.equal(h.run('acquiring'),null);assert.equal(h.run('connecting'),0);
+  await h.tick(500);
+  assert.equal(h.sockets.some(s=>s.url.endsWith('/input')),true,'timeout never retried controller connection');
+});
+
 test('old native service cannot receive an unsafe automatic resume',async()=>{
   const h=page();h.run('conditionalResume=false');h.respond(()=>[409,{detail:'session_paused:disconnect'}]);
   await assert.rejects(h.run('grant()'),/session_paused:disconnect/);
   assert.equal(h.requests.some(r=>r.url.endsWith('/resume')),false);
+});
+
+test('media credits are negotiated and acknowledged only after a current frame is presented',async()=>{
+  const h=page();
+  const header=Buffer.from(JSON.stringify({version:1,width:1,height:1,format:1,video_bytes:4,audio_frames:0,frame:30}));
+  const prefix=Buffer.alloc(4);prefix.writeUInt32BE(header.length);
+  h.context.packet=require('node:zlib').deflateSync(Buffer.concat([prefix,header,Buffer.alloc(4)]));
+  h.run('mediaFlowControl=true;openMedia(transportEpoch)');const socket=h.sockets.at(-1);
+  assert(socket.url.endsWith('/media?flow=ack-v1'));
+  await h.run('draw({data:globalThis.packet,epoch:transportEpoch,socket:media,flow:true,sequence:3})');
+  assert.equal(socket.sent[0].ack,3);assert.equal(h.elements.get('screen').dataset.frame,30);
+  h.run('mediaFlowControl=false;openMedia(transportEpoch)');const legacy=h.sockets.at(-1);
+  assert(legacy.url.endsWith('/media'));
+  await h.run('draw({data:globalThis.packet,epoch:transportEpoch,socket:media,flow:false,sequence:1})');
+  assert.equal(legacy.sent.length,0,'unnegotiated ACK would break an older gateway');
+  h.run('mediaFlowControl=true;openMedia(transportEpoch)');
+  h.run('globalThis.oldMedia=media;media=new WebSocket("replacement")');
+  await h.run('draw({data:globalThis.packet,epoch:transportEpoch,socket:globalThis.oldMedia,flow:true,sequence:4})');
+  assert.equal(h.run('globalThis.oldMedia.sent.length'),0,'old decoder acknowledged a replacement connection');
 });
 
 test('old asynchronous decoder failure cannot close a replacement transport or abandon its packet',async()=>{

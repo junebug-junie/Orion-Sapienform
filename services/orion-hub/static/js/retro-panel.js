@@ -2,11 +2,12 @@
 (() => {
   'use strict';
   const el = id => document.getElementById(id), screen = el('screen'), ctx = screen.getContext('2d');
-  let sid, generation, connection, lease, input, media, seq = 0, timer;
+  let sid, generation, connection, lease, input, media, seq = 0, timer, acquiring=null;
   const outstanding = new Map();
   let audio, gain, audioEnd = 0, lastSample = null, decoding = false, pendingPacket = null, transportEpoch = 0;
   let mediaRetry, mediaHeals=0, mediaWindow=0, lastPictureAt=0, pictureReady=false;
   let conditionalResume=false; // older native services ignore resume bodies: fail closed
+  let mediaFlowControl=false; // negotiate with the gateway; old pages keep legacy media
   const keys = new Set(), sources = new Set();
   const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, Enter:8, ShiftLeft:4, ShiftRight:4};
   // #status sits outside the fullscreen stage, so mirror each message into a toast
@@ -32,7 +33,7 @@
   // Zelda (planner v2): one plan per Retro decision; a heat shed waits out retry_after_sec.
   let plannedDecision = null, planRetryAt = 0, watching = false;
   function heal() {
-    if (!wanted || away || !sid || connecting || lease || healPending || document.hidden || !document.hasFocus()) return;
+    if (!wanted || away || !sid || connecting || acquiring || lease || healPending || document.hidden || !document.hasFocus()) return;
     const now = performance.now(); if (now-healWindow > 10000) { heals = 0; healWindow = now; }
     if (++heals > 3) { wanted = false; report('Could not get the controller back. Click the game or press New game.'); return; }
     const mine = intent, session=sid, epoch=transportEpoch; healPending = true;
@@ -49,8 +50,8 @@
     if (SERVER_PAUSE.has(reason)) { wanted = false; report('Paused. Click the game to keep playing.'); return; }
     report('Reconnecting…'); heal();
   }
-  async function api(path, data) {
-    const r = await fetch('/api/retro/'+path, {method:data === undefined?'GET':'POST', headers:{'Content-Type':'application/json'}, body:data === undefined?undefined:JSON.stringify(data)});
+  async function api(path, data, signal) {
+    const r = await fetch('/api/retro/'+path, {method:data === undefined?'GET':'POST', headers:{'Content-Type':'application/json'}, body:data === undefined?undefined:JSON.stringify(data),signal});
     const value = await r.json();
     if (!r.ok) { const e=Error(typeof value.detail==='string'?value.detail:'Request failed'); e.status=r.status; e.body=value; throw e; }
     return value;
@@ -62,13 +63,15 @@
   }
   function closeConnections() {
     scriptedMode=false;cognitivePort=null;handoffGrant=null;watching=false;
-    transportEpoch++; clearInterval(timer); clearTimeout(mediaRetry); keys.clear(); lease=null; outstanding.clear();
+    transportEpoch++; acquiring=null;clearInterval(timer); clearTimeout(mediaRetry); keys.clear(); lease=null; outstanding.clear();
     if (input) { input.onclose=null; input.close(); } if (media) { media.onclose=null; media.close(); }
     input=null;media=null; pendingPacket=null; flushAudio(); resetChord(chord);
   }
   function neutral() { setOrion(false); closeConnections(); report('Paused. Click the game to keep playing.'); }
   function openMedia(epoch) {
-    const session=sid, socket=new WebSocket(wsURL(`sessions/${sid}/media`));
+    const session=sid, flow=mediaFlowControl;
+    const socket=new WebSocket(wsURL(`sessions/${sid}/media`)+(flow?'?flow=ack-v1':''));
+    let received=0;
     media=socket;socket.binaryType='arraybuffer';
     socket.onclose=()=>{
       if(epoch!==transportEpoch || session!==sid || media!==socket)return;
@@ -81,7 +84,7 @@
         if(epoch===transportEpoch && session===sid && !document.hidden && (input || watching))openMedia(epoch);
       },300);
     };
-    socket.onmessage=e=>{if(epoch===transportEpoch && session===sid && media===socket){pendingPacket={data:e.data,epoch,socket};void drain();}};
+    socket.onmessage=e=>{if(epoch===transportEpoch && session===sid && media===socket){pendingPacket={data:e.data,epoch,socket,flow,sequence:++received};void drain();}};
   }
   function transportLost(reason) {
     const handoff=scriptedMode;
@@ -157,25 +160,39 @@
   async function grant(action='acquire') {
     const epoch=transportEpoch, mine=intent;
     const session=sid, owner=connection, port=Number(el('port').value);
-    let result;
-    for(let attempt=0;attempt<2;attempt++){
-      try{result=await api(`sessions/${session}/control`,{connection_id:owner,port,action});break;}
-      catch(err){
-        if(epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
-        // The old socket's disconnect may pause between resume and acquire. Only
-        // recover automatic pauses, never an explicit Pause or another owner's grant.
-        if(attempt || !conditionalResume || !['session_paused:disconnect','session_paused:no_controller','session_paused:deadline_overrun'].includes(err.message))throw err;
-        await api(`sessions/${session}/resume`,{expected_pause_reason:err.message.slice('session_paused:'.length)});
-        if(epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
+    const pending={epoch,mine,session};acquiring=pending;
+    const controller=new AbortController();
+    const deadline=setTimeout(()=>{
+      controller.abort();
+      if(acquiring===pending && epoch===transportEpoch && mine===intent){
+        transportLost('acquire_timeout');
+        const recoveryEpoch=transportEpoch;
+        // A reused-input connect still holds `connecting` until abort unwinds.
+        // Retry on the next task, after those promise finally blocks have run.
+        setTimeout(()=>{if(recoveryEpoch===transportEpoch && mine===intent && session===sid)heal();},0);
       }
-    }
-    if(epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
-    lease=result;
-    scriptedMode=false;cognitivePort=null;handoffGrant=null;
-    seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
+    },5000);
+    try{
+      let result;
+      for(let attempt=0;attempt<2;attempt++){
+        try{result=await api(`sessions/${session}/control`,{connection_id:owner,port,action},controller.signal);break;}
+        catch(err){
+          if(acquiring!==pending || epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
+          // Only recover automatic pauses, never a newer Pause or another owner.
+          if(attempt || !conditionalResume || !['session_paused:disconnect','session_paused:no_controller','session_paused:deadline_overrun'].includes(err.message))throw err;
+          await api(`sessions/${session}/resume`,{expected_pause_reason:err.message.slice('session_paused:'.length)},controller.signal);
+          if(acquiring!==pending || epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
+        }
+      }
+      if(acquiring!==pending || epoch!==transportEpoch || mine!==intent || session!==sid || document.hidden)return;
+      lease=result;
+      scriptedMode=false;cognitivePort=null;handoffGrant=null;
+      seq=0; outstanding.clear();clearInterval(timer);timer=setInterval(send,50);send();screen.focus();
+    }finally{clearTimeout(deadline);if(acquiring===pending)acquiring=null;}
   }
   const wsURL = path => `${location.protocol==='https:'?'wss':'ws'}://${location.host}/api/retro/${path}`;
   async function connect(recovering=false) {
+    if(acquiring)return; // a delayed successful grant still belongs to this intent
     scriptedMode=false;cognitivePort=null;handoffGrant=null;
     const mine = ++intent; connecting = mine; away = false;
     try { await connectNow(recovering); if (mine === intent) wanted = true; }
@@ -193,11 +210,12 @@
       if(!recovering)await api(`sessions/${sid}/resume`,{});
       if(epoch!==transportEpoch || document.hidden)return;
       if(!lease)await grant();else screen.focus();
+      if(epoch!==transportEpoch || document.hidden)return;
       report('Playing.');return;
     }
     closeConnections(); const epoch=transportEpoch; await sound();
     if(epoch!==transportEpoch || document.hidden)return;
-    if(!sid) { const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true; }
+    if(!sid) { const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true; }
     if(epoch!==transportEpoch || document.hidden)return;
     if(!sid)throw Error('Start a new game first.');
     if(!recovering)await api(`sessions/${sid}/resume`,{});
@@ -238,7 +256,7 @@
     }}
     finally{decoding=false;}
   }
-  async function draw({data,epoch,socket}) {
+  async function draw({data,epoch,socket,flow,sequence}) {
     const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate'));
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
     if(epoch!==transportEpoch || socket!==media)return;
@@ -267,8 +285,9 @@
     if(screen.width!==h.width || screen.height!==h.height){screen.width=h.width;screen.height=h.height;}
     ctx.putImageData(image,0,0);screen.dataset.frame=h.frame;
     lastPictureAt=performance.now();pictureReady=true;
+    if(flow && socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({ack:sequence}));
   }
-  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true;
+  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title;o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true;
     el('player').hidden=false;
     if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}
     else if(state.session?.reason==='service_restart'){el('game').value=state.session.game_id;report('The game service restarted. Choose a save and press Load to continue.');}
@@ -581,7 +600,7 @@
   window.addEventListener('focus',()=>{away=false;heal();});
   screen.addEventListener('pointerdown',()=>{
     away=false;if(takeBack())return;if(scriptedMode)return;
-    if(sid){wanted=true;heals=0;if(!connecting && !lease)void connect().catch(err=>report(err.message));}
+    if(sid){wanted=true;heals=0;if(!connecting && !acquiring && !lease)void connect().catch(err=>report(err.message));}
   });
   padStatus();
   void load().catch(err=>{el('player').hidden=false;report(err.message);});

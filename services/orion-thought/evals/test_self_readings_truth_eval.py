@@ -35,8 +35,9 @@ def test_busy_body_every_number_resolves_to_its_row() -> None:
     block = _block(rows, fx.NOW)
     assert block.text, block.skip_reason
     assert check_block(block.text, rows, fx.NOW) == []
-    assert set(block.shown) == {"node:substrate.execution", "node:substrate.bus_synaptic",
-                                "node:substrate.cabinet"}
+    # The fixture still carries node:substrate.bus_synaptic rows; that node was
+    # retired 2026-11 (PE suite rebuild step 5) and the history cache drops it.
+    assert set(block.shown) == {"node:substrate.execution", "node:substrate.cabinet"}
 
 
 @pytest.mark.parametrize("case", ["calm", "stale", "missing"])

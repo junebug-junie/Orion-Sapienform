@@ -114,17 +114,22 @@ def test_transport_rpc_timeout_grammar():
     assert "waited 420.0s before giving up" in m.evidence
 
 
-def test_transport_bus_synaptic():
+def test_transport_bus_synaptic_source_is_retired_and_reads_no_evidence():
+    """node:substrate.bus_synaptic was retired 2026-11 (PE suite rebuild step
+    5). A historical bus_synaptic transport row falls through to the
+    unknown-source default: nominal, no_evidence -- never a severity."""
     base = {
-        "error": 0.196,
+        "error": 0.73,
         "edge_count": None,
         "transition": "below_to_above",
         "error_threshold": 0.15,
         "evidence_source": "bus_synaptic_prediction_error",
     }
-    assert map_trigger("transport", "r", base).severity == "nominal"
-    assert map_trigger("transport", "r", {**base, "error": 0.35}).severity == "degraded"
-    assert map_trigger("transport", "r", {**base, "error": 0.73}).severity == "critical"
+    m = map_trigger("transport", "r", base)
+    assert m.severity == "nominal"
+    assert m.magnitude == 0.0
+    assert m.density_rationale.startswith("no_evidence")
+    assert "unknown evidence_source=bus_synaptic_prediction_error" in m.density_rationale
 
 
 # --- transport: new condition-shaped upstream (section A gate contract) ----
@@ -418,8 +423,12 @@ def test_every_real_fixture_row_maps_consistently():
         assert _band_ok(m), row
         assert m.causal_density["score"] == m.magnitude
         # Real rows with real upstream should map, not fall to no_evidence
-        # (baseline is legitimately evidence-free).
-        if row["trigger_kind"] != "baseline":
+        # (baseline is legitimately evidence-free; bus_synaptic transport rows
+        # come from a source retired 2026-11 and read no_evidence by design).
+        retired = (row.get("upstream") or {}).get("evidence_source") == "bus_synaptic_prediction_error"
+        if retired:
+            assert m.density_rationale.startswith("no_evidence"), row
+        elif row["trigger_kind"] != "baseline":
             assert not m.density_rationale.startswith("no_evidence"), row
             assert m.evidence, row
         assert "zen" not in m.summary_fallback.lower()

@@ -350,7 +350,7 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   (`orion:substrate:claude_limit`). It needs a fresh weekly reading that says `clear` and a session
   reading that is not `limited`. Otherwise it waits (`budget:<reason>`) and fails closed. The meter
   knows only "a limit was hit" or "clear". It has no percentage. The readings are pub/sub only and the
-  weekly one is published hourly, so after a Hub restart consults wait up to an hour
+  weekly one is published every 15 minutes, so after a Hub restart consults wait up to 15 minutes
   (`weekly_meter_missing`). The meter reads the athena host's Claude Code transcripts. Consult usage
   in the companion does not move it.
 - **What Claude sees.** Hub sends the question, its source and Orion's words, nothing else. Orion's

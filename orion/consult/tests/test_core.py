@@ -133,7 +133,7 @@ def obs(state="clear", observed=True, age=10.0):
 
 @pytest.mark.parametrize("session,weekly,reason", [
     (obs(), None, "weekly_meter_missing"),
-    (obs(), obs(age=4 * 3600), "weekly_meter_stale"),
+    (obs(), obs(age=3 * 900 + 1), "weekly_meter_stale"),
     (obs(), obs(observed=False, state="unknown"), "weekly_unobserved"),
     (obs(), obs(state="limited"), "weekly_limited"),
     (None, obs(), "session_meter_missing"),

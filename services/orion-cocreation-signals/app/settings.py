@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     # expires; a weekly window's answer moves on a day scale, and re-reading
     # 460MB every five minutes for it would be ~165GB/day of pure waste.
     COCREATION_SIGNALS_CLAUDE_LIMIT_WINDOWS: str = Field(
-        default="session_limit:5:300,weekly_limit:168:3600"
+        default="session_limit:5:300,weekly_limit:168:900"
     )
 
     # Real, acknowledged gap (code review 2026-07-30): unlike git_delta/

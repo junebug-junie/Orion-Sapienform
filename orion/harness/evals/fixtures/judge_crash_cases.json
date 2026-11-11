@@ -1,0 +1,705 @@
+{
+ "source": "harness_turn_trace reflect_llm_failed + cognition_traces harness_finalize_reflect, 2026-11-03..11 (pulled 2026-11-11)",
+ "note": "Correlation ids and labels only; turn text is read live by the eval, never stored here.",
+ "failed": [
+  {
+   "correlation_id": "cff47ac7-4929-5c17-93e3-bd176a109882",
+   "failed_at": "2026-11-03T07:19:03",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "24cf4095-daff-5697-a25c-9d65d1d924c6",
+   "failed_at": "2026-11-03T07:19:32",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "c0855921-a2fd-5cff-8eec-fd6e49259bf3",
+   "failed_at": "2026-11-03T09:08:31",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "8b1fe61a-470c-55d0-8127-6ad1d4b6ff65",
+   "failed_at": "2026-11-03T13:35:11",
+   "lane": "chat",
+   "lane_known": true,
+   "failure_class": "validation:motor_shape:what_i_learned",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "002518a0-6dea-5a26-ac23-4df7ba920121",
+   "failed_at": "2026-11-03T17:26:28",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "b354af75-bac1-5dad-bdc9-51129aaf83f6",
+   "failed_at": "2026-11-03T18:48:27",
+   "lane": "chat",
+   "lane_known": true,
+   "failure_class": "validation:motor_shape:what_i_learned",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "c0267383-587e-54b9-b92f-601782acb5a4",
+   "failed_at": "2026-11-03T19:13:07",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "930bb76c-2712-5115-9cf7-05f103a5a6f2",
+   "failed_at": "2026-11-03T19:51:03",
+   "lane": "chat",
+   "lane_known": true,
+   "failure_class": "unparseable:json_broken",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "de6ccf1f-4350-59b2-aca8-795e4f1efec7",
+   "failed_at": "2026-11-03T19:57:28",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "1b316df2-22ca-54b7-8158-c83baf668b45",
+   "failed_at": "2026-11-03T21:39:21",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "c5583cca-92e0-5545-98be-3bb5b26b835d",
+   "failed_at": "2026-11-03T22:50:22",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "b9b18da8-ebe8-56f8-bb88-f1d06dbd2324",
+   "failed_at": "2026-11-04T07:07:15",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "1b59fc4c-2d53-5f5b-901a-ab904a4b374a",
+   "failed_at": "2026-11-04T07:08:22",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "926d9e29-5450-5c42-b0c3-c0f820355d18",
+   "failed_at": "2026-11-04T07:51:07",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "550a0431-6aed-57c2-80d1-2eb6b92c08a4",
+   "failed_at": "2026-11-04T08:49:10",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "7b82ae05-ed4a-5588-93e9-3f2234ef883c",
+   "failed_at": "2026-11-04T14:32:23",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "adc5885d-0482-5fbc-9cd6-e6cd293f0e71",
+   "failed_at": "2026-11-04T15:33:12",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "53c31ff5-f1d9-5dbc-a2dc-c6d976a3e9c1",
+   "failed_at": "2026-11-04T15:49:55",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "8335c26b-46b6-511d-b930-234b07e9c9aa",
+   "failed_at": "2026-11-04T16:51:46",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "05943521-f1db-5879-9ce2-1dfd25d36b80",
+   "failed_at": "2026-11-04T17:03:00",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "599065d7-8aa5-5cec-aa81-e0cc017afac4",
+   "failed_at": "2026-11-04T17:06:34",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "46be1696-a50f-5225-adb7-78e5ed007069",
+   "failed_at": "2026-11-04T17:14:56",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "8a4c05f6-86c4-5a9b-b2ae-6aa1d5266e2c",
+   "failed_at": "2026-11-04T18:11:28",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "a42179a8-2353-54e5-aa92-84915539c2ce",
+   "failed_at": "2026-11-04T19:31:02",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "40dff8a6-a902-534c-b7c3-31ee888ab14a",
+   "failed_at": "2026-11-05T00:45:09",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "1ff1deb6-05d7-55b9-a173-1c3811495f56",
+   "failed_at": "2026-11-05T00:58:57",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "6023c596-ff22-51cc-b79e-f9e1dc0c362c",
+   "failed_at": "2026-11-05T02:07:01",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "02bf2786-1f23-5425-911f-7a78abce1daf",
+   "failed_at": "2026-11-05T02:36:29",
+   "lane": "chat",
+   "lane_known": true,
+   "failure_class": "validation:motor_shape:what_i_learned",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "d6230ab4-681a-51e2-8dae-9d18bc5b5f5f",
+   "failed_at": "2026-11-05T03:02:11",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "c7f63873-9fa3-51b6-ac91-8d8cbd852337",
+   "failed_at": "2026-11-05T03:43:20",
+   "lane": "chat",
+   "lane_known": true,
+   "failure_class": "unparseable:json_broken",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "e543605b-ce27-5cf4-adde-77b12223fb3b",
+   "failed_at": "2026-11-05T05:43:01",
+   "lane": "chat",
+   "lane_known": true,
+   "failure_class": "validation:motor_shape:what_i_learned",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "529b98cd-6e93-5d12-a2a9-1d9c876f6293",
+   "failed_at": "2026-11-05T06:47:04",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "9c4f991a-42db-562a-bd85-bf033a07b5b5",
+   "failed_at": "2026-11-05T07:35:05",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "10c79d34-556e-59b9-9624-5498578d20b5",
+   "failed_at": "2026-11-05T07:37:31",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "d13f83d0-9df9-5c15-8887-97b9651d9200",
+   "failed_at": "2026-11-05T07:45:54",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "96800ad8-7a9c-5006-9e7a-5daa15e640eb",
+   "failed_at": "2026-11-05T07:46:16",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "b2f15f1b-1f71-5938-8964-ea25787b6843",
+   "failed_at": "2026-11-05T09:00:18",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "c6525aca-50e6-5e0b-b794-bb6c60a31132",
+   "failed_at": "2026-11-05T09:11:30",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "5e8959fc-1581-5877-8162-bdbd443cf2a3",
+   "failed_at": "2026-11-05T17:02:33",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "a67ee0ec-af5d-50c0-8639-f0a1ae1573b3",
+   "failed_at": "2026-11-05T17:27:35",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "42ec00dc-4faf-5b37-ad2f-8fdc765c900f",
+   "failed_at": "2026-11-05T18:50:44",
+   "lane": "agent",
+   "lane_known": true,
+   "failure_class": "validation:motor_shape:summary",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "b38a3db2-d67a-51ad-a52c-73bbf711c710",
+   "failed_at": "2026-11-05T20:39:01",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:misspelled_or_other_key:impressive",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "93713f78-3cbb-561a-a334-53327a7a4566",
+   "failed_at": "2026-11-05T22:48:36",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "2c1c815e-5fdc-5dd3-960f-9f8d43ee778f",
+   "failed_at": "2026-11-06T01:12:12",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "9bfb4178-02d8-418c-8aff-60b66fa3b3a6",
+   "failed_at": "2026-11-06T06:13:36",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "unparseable:json_broken",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "e623dcbc-df0c-5a33-ab50-b2b0996c7d82",
+   "failed_at": "2026-11-06T13:39:20",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "b2924599-6754-5c6d-9fcc-3a0206e5e61b",
+   "failed_at": "2026-11-06T13:42:55",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:misspelled_or_other_key:imperial",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "39320d17-40e3-5f00-b35e-6a6a159affeb",
+   "failed_at": "2026-11-06T16:07:18",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "1e3f2dad-f64b-43ba-afb2-5bc2b543bc1f",
+   "failed_at": "2026-11-06T16:48:34",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "unparseable:json_broken",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "a07a8b1e-d144-5390-a537-1764ceaf3c5b",
+   "failed_at": "2026-11-06T19:26:19",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "e2adf9e0-6f25-504f-b13f-e9f6bc8d1fa6",
+   "failed_at": "2026-11-06T23:31:00",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "4ba3c7ea-4fcf-52a2-911d-50794f35001d",
+   "failed_at": "2026-11-07T02:48:13",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "78d139b6-3162-50be-be3d-0559eb9d5e9f",
+   "failed_at": "2026-11-07T02:50:14",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "65a92641-2ff1-5fba-a815-e4bddb8a999e",
+   "failed_at": "2026-11-07T02:50:39",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "gpu_pool_unavailable",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "922ce586-f9a5-4a52-a95a-8cf4e15e5fac",
+   "failed_at": "2026-11-07T06:05:25",
+   "lane": "agent",
+   "lane_known": false,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "b5ca99f4-3425-56ba-8d25-20a1ec978e96",
+   "failed_at": "2026-11-07T08:57:01",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "49602876-bf62-5c32-b62e-c72535b55ac8",
+   "failed_at": "2026-11-07T13:45:53",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "31284417-1780-5f19-b22e-7de950625814",
+   "failed_at": "2026-11-07T17:06:33",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "d4ca89c6-6f53-5911-8d75-c56993d95c25",
+   "failed_at": "2026-11-07T18:18:13",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "7cc168b3-463b-5feb-b1c8-7e2bd7fe2325",
+   "failed_at": "2026-11-08T21:49:26",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "cd5ac92b-1cbb-51c0-a9cd-970d4a02af70",
+   "failed_at": "2026-11-09T11:10:37",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "7b200a0c-af73-5883-a7d9-c1199ac216dd",
+   "failed_at": "2026-11-09T18:24:55",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "37215c9a-2a70-5582-ae41-dfb3332937d8",
+   "failed_at": "2026-11-09T22:35:10",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "2118b6f9-5542-5e5c-b01d-79f01bf20138",
+   "failed_at": "2026-11-10T08:00:07",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "ea19ac7e-cf4b-57d2-b48e-64d75f3ea64c",
+   "failed_at": "2026-11-10T14:49:28",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:misspelled_or_other_key:imperial",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "c96ca568-e655-52b6-8045-4b4bdda7c673",
+   "failed_at": "2026-11-10T16:38:15",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:misspelled_or_other_key:imperial",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "d2b9a325-7ae4-5107-9bab-0c3598f5b5f0",
+   "failed_at": "2026-11-10T17:01:23",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "8eed3ca8-d615-59a1-8dec-38ee6189a533",
+   "failed_at": "2026-11-10T17:14:52",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "validation:missing_fields(schema_version-first)",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "09d1ed79-9159-529f-b351-2a675a8343dc",
+   "failed_at": "2026-11-10T18:09:21",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "validation:misspelled_or_other_key:imperitive",
+   "family": "validation"
+  },
+  {
+   "correlation_id": "f7a641cb-12c7-51b8-821b-83598107aa12",
+   "failed_at": "2026-11-10T19:23:53",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "b4b9d332-1554-57ed-96dc-35348db34da4",
+   "failed_at": "2026-11-10T20:25:38",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "d64b00c9-2b30-58fd-9e98-a375327ffb9a",
+   "failed_at": "2026-11-10T22:44:32",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  },
+  {
+   "correlation_id": "1e8c9122-e427-5f03-91b9-d8b14116bffd",
+   "failed_at": "2026-11-10T22:57:38",
+   "lane": "agent-gpu2",
+   "lane_known": true,
+   "failure_class": "timeout",
+   "family": "transport"
+  },
+  {
+   "correlation_id": "1f4d4b16-2d58-57fd-a84c-e224fdfa9a62",
+   "failed_at": "2026-11-10T23:30:35",
+   "lane": "agent-gpu2",
+   "lane_known": false,
+   "failure_class": "unparseable:thinking_prose",
+   "family": "unparseable"
+  }
+ ],
+ "control": [
+  {
+   "correlation_id": "2d01e5a5-1c0b-5f6e-8bfe-1e9e2401278f",
+   "judged_at": "2026-11-06T13:59:43",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "5dc1799a-80ba-58ec-be30-8b6e6f4be6fd",
+   "judged_at": "2026-11-10T15:23:04",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "19fb9203-1cb3-5e14-aa59-42d4bf619e32",
+   "judged_at": "2026-11-08T12:00:07",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "3eee2d02-7c31-5e69-b6ea-0d12708ac129",
+   "judged_at": "2026-11-10T21:40:06",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "2655da29-909c-5ae9-8a8e-a05415698bbc",
+   "judged_at": "2026-11-06T03:51:16",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "86fd9836-cedf-5b50-976c-caa79abc814b",
+   "judged_at": "2026-11-08T23:12:55",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "4b710b34-0811-5cbb-9ef0-0299ae172c50",
+   "judged_at": "2026-11-09T10:19:36",
+   "lane": "agent"
+  },
+  {
+   "correlation_id": "d9376356-95f1-5414-9fcc-f7977e73871d",
+   "judged_at": "2026-11-03T16:52:06",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "1c77a408-d746-40d0-b6b7-5b17479ed494",
+   "judged_at": "2026-11-03T16:40:28",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "69354b31-2663-4388-8213-d20bad9d3ab6",
+   "judged_at": "2026-11-04T20:09:52",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "b8f818d8-0776-474c-9785-76ca8a3bbf95",
+   "judged_at": "2026-11-06T15:07:52",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "5afd62c3-434b-428f-83df-5a5c532d977b",
+   "judged_at": "2026-11-06T22:56:16",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "73cdff03-31d2-4a03-b7b0-b056f1f0f78a",
+   "judged_at": "2026-11-10T15:13:58",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "0e9262bc-9589-57d9-871c-6a3c926b6dcf",
+   "judged_at": "2026-11-05T06:00:13",
+   "lane": "chat"
+  },
+  {
+   "correlation_id": "b9002a50-02eb-579b-8952-09668b3235e3",
+   "judged_at": "2026-11-07T16:15:48",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "ba272f8e-52b6-5e72-bcbf-c4d8e090d715",
+   "judged_at": "2026-11-06T03:59:14",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "55b5bc54-12b3-5169-8fd2-35f4bdb11f64",
+   "judged_at": "2026-11-06T00:22:02",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "0ca73ab3-af3f-54b2-864c-a33cb4495396",
+   "judged_at": "2026-11-08T17:15:09",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "d7adba68-4136-5d67-8b50-796892f60ba1",
+   "judged_at": "2026-11-09T19:57:46",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "1d97a99a-6189-5648-b9fc-8689b429c462",
+   "judged_at": "2026-11-05T05:39:06",
+   "lane": "agent-gpu2"
+  },
+  {
+   "correlation_id": "e9ab1e28-295e-5940-ab97-66acfd96a531",
+   "judged_at": "2026-11-07T02:13:50",
+   "lane": "agent-gpu2"
+  }
+ ]
+}

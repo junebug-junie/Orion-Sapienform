@@ -68,6 +68,15 @@ on:
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-thought/tests/test_stance_context_response_format.py"
       - "orion/cognition/verbs/stance_react.yaml"
+      # finalize 5b judge request shape (consumers job: schema, thinking off, grade turn)
+      - "orion/cognition/verbs/harness_finalize_reflect.yaml"
+      - "orion/cognition/prompts/harness_finalize_reflect.j2"
+      - "orion/harness/tests/test_finalize_reflect_judge_contract.py"
+      - "orion/harness/evals/judge_crash_replay_eval.py"
+      - "orion/harness/evals/test_judge_crash_replay_eval.py"
+      - "orion/harness/evals/fixtures/judge_crash_cases.json"
+      - "services/orion-cortex-exec/tests/test_finalize_reflect_request_shape.py"
+      - "services/orion-llm-gateway/app/structured_output.py"
       - "services/orion-cortex-exec/app/exec_ctx.py"
       - "services/orion-cortex-exec/app/stance_prepare.py"
       - "services/orion-cortex-exec/app/executor.py"
@@ -136,6 +145,15 @@ on:
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-thought/tests/test_stance_context_response_format.py"
       - "orion/cognition/verbs/stance_react.yaml"
+      # finalize 5b judge request shape (consumers job: schema, thinking off, grade turn)
+      - "orion/cognition/verbs/harness_finalize_reflect.yaml"
+      - "orion/cognition/prompts/harness_finalize_reflect.j2"
+      - "orion/harness/tests/test_finalize_reflect_judge_contract.py"
+      - "orion/harness/evals/judge_crash_replay_eval.py"
+      - "orion/harness/evals/test_judge_crash_replay_eval.py"
+      - "orion/harness/evals/fixtures/judge_crash_cases.json"
+      - "services/orion-cortex-exec/tests/test_finalize_reflect_request_shape.py"
+      - "services/orion-llm-gateway/app/structured_output.py"
       - "services/orion-cortex-exec/app/exec_ctx.py"
       - "services/orion-cortex-exec/app/stance_prepare.py"
       - "services/orion-cortex-exec/app/executor.py"
@@ -271,7 +289,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
           python -m pip install fastapi==0.111.0 httpx==0.27.2 pydantic==2.11.5 pydantic-settings==2.5.2 \
-            SQLAlchemy==2.0.43 aiohttp==3.12.15 python-multipart requests python-dotenv loguru numpy==1.26.4
+            SQLAlchemy==2.0.43 aiohttp==3.12.15 python-multipart requests python-dotenv loguru numpy==1.26.4 jsonschema
       - name: Pool client attach/status + harness/FCC ref transport
         run: python -m pytest orion/gpu_pool/tests/test_client_attach.py orion/harness/tests/test_gpu_lease_transport.py -q -p no:cacheprovider
       - name: field-digester durable_demand_pending from pool holds (real Postgres)
@@ -280,6 +298,10 @@ jobs:
         run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py tests/test_stance_context_response_format.py -q -p no:cacheprovider
       - name: cortex-exec forwards options.gpu_lease and stance thinking-off; Orion's Day verb budgets and lane
         run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_orion_day_verbs.py tests/test_stance_react_thinking_forwarding.py -q -p no:cacheprovider
+      - name: finalize 5b judge asks for a grade under the judgement schema, thinking off (cortex-exec seam + replay eval units)
+        run: |
+          python -m pytest orion/harness/tests/test_finalize_reflect_judge_contract.py orion/harness/evals/test_judge_crash_replay_eval.py -q -p no:cacheprovider
+          (cd services/orion-cortex-exec && python -m pytest tests/test_finalize_reflect_request_shape.py -q -p no:cacheprovider)
       - name: harness-governor admits hold-carrying turns
         run: cd services/orion-harness-governor && python -m pytest tests/test_lane_dispatch_channels.py -q -p no:cacheprovider
       - name: Hub fences the ref with pool status and runs the turn under it

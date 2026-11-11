@@ -411,15 +411,22 @@ def test_lingering_harness_closure_node_never_seeds_curiosity() -> None:
 
 def test_unreadable_glossary_fails_closed_for_prediction_error_only(monkeypatch) -> None:
     """Glossary unreadable -> value_kind None -> no prediction-error seeds; other
-    seed sources still run."""
-    monkeypatch.setattr(
-        self_readings, "node_prediction_error_semantics", lambda node_id: (None, None)
-    )
+    seed sources still run. Exercises the real exception path in
+    world_first.node_prediction_error_semantics."""
+    import orion.attention.world_first as world_first
+    import orion.field.channel_glossary as channel_glossary
+
+    def _boom(*_a, **_k):
+        raise OSError("glossary unreadable")
+
+    monkeypatch.setattr(self_readings, "node_prediction_error_semantics", _REAL_SEMANTICS)
+    monkeypatch.setattr(channel_glossary, "resolve_channel_entry", _boom)
+    monkeypatch.setattr(world_first, "_SEMANTICS_CACHE", {})
     appraisal = SimpleNamespace(
         dimensions={"level": 0.9}, causal_molecule_ids=[], summary="x", confidence=0.7
     )
     seeds = endogenous_curiosity_candidates(
-        nodes=[_node("node:hot", 0.9)], repair_appraisal=appraisal, config=_enabled()
+        nodes=[_node("node:substrate.execution", 0.9)], repair_appraisal=appraisal, config=_enabled()
     )
     assert [n for s in seeds for n in s.notes if n.startswith("source:")] == [
         "source:repair_pressure"

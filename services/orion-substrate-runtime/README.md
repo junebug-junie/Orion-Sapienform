@@ -591,14 +591,14 @@ Besides grammar poll reducers, substrate-runtime subscribes to RPC-style harness
 | Post-turn closure (step 7) | `orion:substrate:post_turn_closure` | `CHANNEL_POST_TURN_CLOSURE`, `ENABLE_POST_TURN_CLOSURE_LISTENER` |
 
 Post-turn closure logs `post_turn_closure received …` on ingest. When
-`surprise_unresolved=true`, it attempts a rung-1 prediction-error graph write only if
-`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` (logs `post_turn_closure_prediction_error_write`
-or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented here.
+`surprise_unresolved=true`, it persists the turn referent (`substrate_turn_referent`, read by
+reverie). It writes no prediction error: `node:substrate.harness_closure` (a fixed 0.65) was
+retired 2026-11-11 (retire step 3,
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`).
 
 `_write_prediction_error_node()` (`app/worker.py`) writes to a single, fixed `node_id` per
 lane (`node:substrate.execution`, `node:substrate.transport`, `node:substrate.biometrics`,
-`node:substrate.chat`, `node:substrate.route`, `node:substrate.harness_closure` for post-turn
-closure), so repeat writes collapse instead of spawning a new node per event.
+`node:substrate.chat`, `node:substrate.route`), so repeat writes collapse instead of spawning a new node per event.
 
 `node:substrate.biometrics` (`biometrics_prediction_error()`, `orion/substrate/
 prediction_error.py`, wired into `_tick()`) is the third instrument in this family, shadow-
@@ -640,9 +640,9 @@ KEYS` (`orion/substrate/falkor_codec.py`) separately carries forward on every re
 ids` is durable against the live Falkor backend via `orion/substrate/falkor_codec.py`'s
 `DYNAMICS_METADATA_KEYS` allowlist (JSON-string-encoded as `contributing_turn_ids_json`,
 same pattern as `taxonomy_path_json`) and is consumed by `orion/substrate/attention_
-broadcast.py::substrate_pressure_signals()` (`evidence_refs`) and `orion/substrate/
-attention_self_model.py::reduce_attention_self_model()`'s optional `harness_closure_signal`
-narrative enrichment — see `docs/superpowers/specs/2026-07-18-prediction-error-attribution-
+broadcast.py::substrate_pressure_signals()` (`evidence_refs`) and world-first attention's
+`evidence_refs` (the `harness_closure_signal` reducer argument was removed 2026-11-11 with
+the node) — see `docs/superpowers/specs/2026-07-18-prediction-error-attribution-
 wiring-design.md`.
 
 **Fixed: execution/route prediction-error was structurally always 0.0, not "quiet" (2026-07-22).**

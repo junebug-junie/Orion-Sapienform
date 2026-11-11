@@ -112,7 +112,8 @@ def _real_ranges() -> dict[tuple[str | None, str], tuple]:
 
 def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     ranges = _real_ranges()
-    # 11 of the 12 semantics entries; harness_closure is a placeholder.
+    # 11 of the 12 semantics entries (harness_closure was a placeholder; its
+    # entry was removed 2026-11-11 when the node was retired).
     # +1 2026-10-15: node:substrate.perception_walkway (curiosity reads it).
     # +1 2026-10-20: node:substrate.strain (strain news, a trigger).
     # +1 2026-10-20: node:substrate.street (street events -> attention).

@@ -163,7 +163,11 @@ EVENT_FADE_GRACE_SEC: float = 60.0
 
 _INTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
 EXTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
-_NEVER_A_MEASUREMENT = frozenset({"placeholder", "bucket"})
+# Value kinds whose stored prediction_error is a real measurement. An internal
+# source with any other kind -- placeholder, bucket, or no glossary entry (None)
+# -- is never a measurement (allow-list since 2026-11-11, retire step 3: a deny
+# list let a retired node with no entry be judged as a level while fresh).
+MEASUREMENT_VALUE_KINDS = frozenset({"level", "count", "trigger", "binary"})
 
 
 class AttentionCandidateSource(Protocol):
@@ -439,9 +443,10 @@ def judge_candidate(
             candidate, False, "insufficient_history", None, "insufficient_history"
         )
     if candidate.source_kind == "internal":
-        if candidate.value_kind in _NEVER_A_MEASUREMENT:
+        if candidate.value_kind not in MEASUREMENT_VALUE_KINDS:
             return CandidateVerdict(
-                candidate, False, f"{candidate.value_kind}: not a measurement", None, mag.band
+                candidate, False, f"{candidate.value_kind or 'unknown'}: not a measurement",
+                None, mag.band,
             )
         if mag.age_sec > internal_max_age_sec:
             return CandidateVerdict(

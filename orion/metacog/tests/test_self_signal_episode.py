@@ -104,9 +104,9 @@ def test_dwell_is_the_seams_orienting_window():
         ("node:substrate.biometrics", None, None, "unknown"),
         ("node:substrate.biometrics", _mag(0.99, "insufficient_history", n=10), None, "unknown"),
         ("node:substrate.biometrics", _mag(0.99, "unusual", age=4000.0), None, "unknown"),
-        # retired harness_closure (2026-11-11): its lingering stored reading only
-        # ages, so it is stale -> unknown, never hot
-        ("node:substrate.harness_closure", _mag(0.99, "unusual", age=4000.0), None, "unknown"),
+        # retired harness_closure (2026-11-11, no glossary entry): not a
+        # measurement even when fresh -> unknown, never hot
+        ("node:substrate.harness_closure", _mag(0.99, "unusual"), None, "unknown"),
         # event-written: news for 300 s, then faded (carried value, not calm)
         ("node:substrate.execution", _mag(0.97, "high", age=60.0), None, "hot"),
         ("node:substrate.execution", _mag(0.97, "high", age=400.0), None, "faded"),

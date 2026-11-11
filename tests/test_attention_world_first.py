@@ -204,13 +204,11 @@ def test_placeholder_is_never_a_measurement(kind) -> None:
     assert not v.eligible and kind in v.reason
 
 
-def test_lingering_retired_harness_closure_node_cannot_win() -> None:
-    """The retired node may keep its last stored 0.65 until it is deleted. Its
-    age only grows (nothing writes it), so the internal stale rule keeps it out."""
-    from orion.attention.world_first import INTERNAL_MAX_AGE_SEC
-
-    v = judge_candidate(body("node:substrate.harness_closure", 1.0, age=INTERNAL_MAX_AGE_SEC + 1))
-    assert not v.eligible and v.reason.startswith("stale")
+def test_internal_node_without_glossary_entry_is_never_a_measurement() -> None:
+    """Retired harness_closure (no glossary entry) is refused even when FRESH:
+    unknown value kind is not a measurement, not merely stale."""
+    v = judge_candidate(body("node:substrate.harness_closure", 1.0))
+    assert not v.eligible and v.reason == "unknown: not a measurement"
 
 
 def test_higher_is_better_inverts_the_bad_direction() -> None:

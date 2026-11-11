@@ -44,6 +44,7 @@ from typing import Iterable, Mapping
 
 from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.attention.world_first import (
+    MEASUREMENT_VALUE_KINDS,
     SUBSTRATE_NODE_PREFIX,
     chat_rate_reading,
     judge_candidate,
@@ -70,9 +71,9 @@ TRIGGER_MIN_FIRES_7D = 5
 
 _PERCENTILE_KINDS = frozenset({"level", "count"})
 _RATE_KINDS = frozenset({"trigger", "binary"})
-# Value kinds whose stored prediction_error is a real measurement. Everything else
-# (placeholder, bucket, or no glossary entry at all) is never read as a size.
-MEASUREMENT_VALUE_KINDS = _PERCENTILE_KINDS | _RATE_KINDS
+# Same set world-first attention judges by; everything else (placeholder, bucket,
+# or no glossary entry at all) is never read as a size.
+assert _PERCENTILE_KINDS | _RATE_KINDS == MEASUREMENT_VALUE_KINDS
 
 
 def node_prediction_error_is_measurement(node_id: str) -> bool:

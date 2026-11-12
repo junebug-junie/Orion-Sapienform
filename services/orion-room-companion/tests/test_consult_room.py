@@ -36,7 +36,7 @@ def _ok(text="hi") -> ClaudeTurnResult:
 
 
 def _argv(consult: bool) -> list[str]:
-    return build_argv("p", claude_bin="claude", model="m", effort="high", setting_sources_env_key="X",
+    return build_argv(claude_bin="claude", model="m", effort="high", setting_sources_env_key="X",
                       session_id="s", resume=False, tools="Read,Grep,Glob", consult=consult)
 
 

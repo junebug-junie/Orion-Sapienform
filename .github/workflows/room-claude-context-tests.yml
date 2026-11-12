@@ -1,0 +1,29 @@
+name: Room Claude context
+# Claude in Hub chat: the whole conversation (Patch 1a), stdin prompt, daily
+# session rotation, the sent-up-to mark, and Orion's light view of side
+# exchanges (open question 11). Design:
+# docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md.
+on:
+  pull_request:
+    paths:
+      - 'orion/schemas/room_claude.py'
+      - 'services/orion-room-companion/**'
+      - '.github/workflows/room-claude-context-tests.yml'
+permissions:
+  contents: read
+jobs:
+  room-claude-companion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-room-companion/requirements.txt
+          python -m pip install "pytest>=8.2,<10"
+      - name: Companion (stdin prompt, rotation, sent-line keys, schema compat)
+        working-directory: services/orion-room-companion
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest tests -q -p no:cacheprovider

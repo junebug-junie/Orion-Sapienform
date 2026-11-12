@@ -3639,30 +3639,34 @@ turns get it, truth rules, search pattern, how to add a tool), see the
 
 ## Orion's Day (daily letter)
 
-Once a day Hub writes Juniper a letter about what Orion thought about yesterday
-(one America/Denver calendar day), and hands a short list of threads to
-Orion's next curiosity run.
+Once a day Orion writes Juniper a letter about yesterday (one America/Denver calendar day).
+Since living Prime Part 3 (design #3224, 2026-11-12) the letter is Prime's end-of-day turn:
+Prime (orion-mind) decides when to write it, and Hub only builds the day's input on Prime's
+order and emails the result. Hub's old letter timer is retired.
 
-- **Scheduling** (`scripts/orion_day_letter.py`): after 08:30 local
-  (`HUB_ORION_DAY_HOUR_LOCAL`/`_MINUTE_LOCAL`) Hub gathers the day and submits an
-  admitted `orion_day.letter` durable run to orion-durable-runs
-  (`HUB_ORION_DAY_DURABLE_URL`). The run writes the `orion_day_letter` row. Hub keeps
-  no state of its own: the attempt number comes from `GET /runs/orion-day-<date>-<n>`,
-  a failed/abandoned attempt is retried as `n+1` up to `HUB_ORION_DAY_MAX_ATTEMPTS`
-  (then one in-app notice), an operator cancel is not retried, and the letter is
-  abandoned at the next day's slot. An empty day sends nothing.
-- **Email** (`scripts/orion_day_email.py`, `templates/orion_day_letter.html.j2`): a row
+- **Prime's order** (`scripts/orion_day_order.py`): `GET /api/orion-day/letters/<date>` says
+  whether the day has a letter; `POST /api/orion-day/letter-run` (`OrionDayLetterOrderV1`) gathers
+  the day (`orion/orion_day/`, read-only SQL), builds the brief and submits ONE admitted
+  `orion_day.letter` durable run under Prime's run id and correlation id
+  (`HUB_ORION_DAY_DURABLE_URL`). Answers (always HTTP 200): `submitted`, `exists`,
+  `already_written`, `empty_day`, `refused`, `unavailable`. The day before the letter is named
+  in the brief's `missed_letters` when it has no row and Prime did not list it. Orders for one
+  day are serialized. Hub never submits a letter on its own. Kill switch: `HUB_ORION_DAY_ENABLED`.
+- **The run** (orion-durable-runs) writes the letter as one unified turn (session
+  `orion_day_letter`; Hub does not frame it as a curiosity run) and persists the row.
+- **Email** (`scripts/orion_day_mailer.py` decides when; `scripts/orion_day_email.py`,
+  `templates/orion_day_letter.html.j2` render): on a terminal `orion_day.letter` run state, and
+  on a sweep every `HUB_ORION_DAY_EMAIL_SWEEP_SEC` over the last 3 days, a row
   with `emailed_at IS NULL` is rendered (HTML with inline styles + a full plain-text
   part, nothing truncated, up to `HUB_ORION_DAY_MAX_IMAGES` reverie images inline as
   `cid:reverieN@orion`) and sent through orion-notify. `emailed_at` /
   `email_notification_id` (uuid5 of the date) are stamped only when notify answers
   `email_status == "sent"`. Kill switch: `HUB_ORION_DAY_EMAIL_ENABLED`.
-- **Carry-forward** (`orion/orion_day/carry_forward.py`): the regular investigate
-  line claims the freshest unexpired, unoffered `carry_forward_md` once and shows it
-  under its own header in the kickoff prompt; a cancelled turn gives it back. The
-  letter's note never reaches curiosity. Kill switch:
-  `HUB_CURIOSITY_CARRY_FORWARD_ENABLED`; freshness `HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS`.
-- **What I read** (2026-10-13): a compact section right under the carry-forward. Per read
+- **Threads** (`carry_forward_md`): the letter's own closing list. The curiosity carry-forward
+  offer is retired (2026-11-12): the threads become Prime concerns, and curiosity hears about
+  them only through Prime's graded `ask`. The email shows them under "Threads I am carrying",
+  with the turn's correlation id and any missed days.
+- **What I read** (2026-10-13): a compact section right under the threads. Per read
   of the day: what the piece says (Stage 2's `article_summary`, 3-5 sentences about the
   source itself), what Orion took from it (the first two sentences of the stored Stage 2
   summary, verbatim), and what the read changed -- a link made (accepted claim whose
@@ -3672,7 +3676,10 @@ Orion's next curiosity run.
   not checked" instead of "no belief moved" (`sources.reading_beliefs`). Built from
   records only: `orion/world_pulse_read/findings.py`, attached as `ReadingItemV1.findings`.
   Reads stored before `article_summary` existed show "(no summary of the piece was recorded)".
-- Checks: `tests/test_orion_day_letter.py`, `tests/test_orion_day_what_i_read.py`; eval
+- Deploy order (Part 3): orion-hub first (it reads the new `sources` fields with forbid models),
+  then orion-durable-runs, then orion-mind (Prime starts ordering).
+- Checks: `tests/test_orion_day_order.py`, `tests/test_orion_day_mailer.py`,
+  `tests/test_orion_day_what_i_read.py`; eval
   `python services/orion-hub/evals/run_orion_day_email_eval.py [--material m.json]`.
 
 ### Reading findings reach Juniper (`scripts/reading_finding_outreach.py`)

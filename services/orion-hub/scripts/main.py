@@ -92,7 +92,8 @@ from scripts.reading_finding_outreach import ReadingFindingOutreach
 from scripts.office_reach_out import OfficeReachOut
 from scripts.reading_event_wants import ReadingEventWants
 from scripts.self_monitor_questions import SelfMonitorQuestionMinter
-from scripts.orion_day_letter import DurableRunsClient, OrionDayLetterLoop
+from scripts.orion_day_mailer import OrionDayMailer
+from scripts.orion_day_order import DurableRunsClient, OrionDayOrderDesk, build_orion_day_order_router
 from scripts.endogenous_outreach import EndogenousOutreach
 from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
@@ -375,7 +376,7 @@ reading_finding_outreach: Optional[ReadingFindingOutreach] = None
 office_reach_out: Optional[OfficeReachOut] = None
 reading_event_wants: Optional[ReadingEventWants] = None
 self_monitor_question_minter: Optional[SelfMonitorQuestionMinter] = None
-orion_day_letter: Optional[OrionDayLetterLoop] = None
+orion_day_mailer: Optional[OrionDayMailer] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 consult_loop: Optional[ConsultLoop] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
@@ -481,7 +482,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -758,7 +759,6 @@ async def startup_event():
                 contractor_peer_enabled=settings.HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED,
                 dream_hypotheses_enabled=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED,
                 dream_hypotheses_per_run=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN,
-                carry_forward_enabled=settings.HUB_CURIOSITY_CARRY_FORWARD_ENABLED,
                 orion_day_corrections_enabled=settings.HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED,
                 focus_enabled=settings.HUB_CURIOSITY_FOCUS_ENABLED,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
@@ -1695,44 +1695,34 @@ async def startup_event():
     dsn_configured = bool(dsn)
     html_content = render_hub_index_html(memory_pool_ok=pool_ok)
 
-    # Orion's Day: one letter a day about what Orion thought about
-    # yesterday. Hub submits the admitted durable run and emails the
-    # persisted row; state is orion_day_letter + the durable registry.
-    # Terminal run states arrive through curiosity's existing
-    # orion:durable:run:state listener (no second subscription); the
-    # tick alone converges when that listener is off. Started here, after the
-    # memory pool exists and outside the bus block (it needs neither the bus nor
-    # a bus-enabled boot).
+    # Orion's Day mailer: emails each persisted orion_day_letter row once. Hub no longer
+    # decides when a letter is written (Prime orders it: scripts/orion_day_order.py, living
+    # Prime Part 3). Terminal run states arrive through curiosity's existing
+    # orion:durable:run:state listener (no second subscription); the slow sweep alone
+    # converges when that listener is off. Started here, after the memory pool exists and
+    # outside the bus block (it needs neither the bus nor a bus-enabled boot).
     try:
-        orion_day_letter = OrionDayLetterLoop(
+        orion_day_mailer = OrionDayMailer(
             enabled=settings.HUB_ORION_DAY_ENABLED,
             email_enabled=settings.HUB_ORION_DAY_EMAIL_ENABLED,
             pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
-            durable=DurableRunsClient(settings.HUB_ORION_DAY_DURABLE_URL),
             notify=NotifyClient(
                 settings.NOTIFY_BASE_URL,
                 settings.NOTIFY_API_TOKEN or None,
                 timeout=settings.HUB_ORION_DAY_NOTIFY_TIMEOUT_SEC,
             ),
-            hour_local=settings.HUB_ORION_DAY_HOUR_LOCAL,
-            minute_local=settings.HUB_ORION_DAY_MINUTE_LOCAL,
-            tick_interval_sec=settings.HUB_ORION_DAY_TICK_SEC,
-            max_attempts=settings.HUB_ORION_DAY_MAX_ATTEMPTS,
+            sweep_interval_sec=settings.HUB_ORION_DAY_EMAIL_SWEEP_SEC,
             email_retry_sec=settings.HUB_ORION_DAY_EMAIL_RETRY_SEC,
-            carry_forward_ttl_hours=settings.HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS,
-            timeout_sec=settings.HUB_ORION_DAY_TIMEOUT_SEC,
             image_dir=settings.REVERIE_VISUAL_STORAGE_DIR,
             max_images=settings.HUB_ORION_DAY_MAX_IMAGES,
             image_max_bytes=settings.HUB_ORION_DAY_IMAGE_MAX_BYTES,
             source_service=settings.SERVICE_NAME,
-            temporal_day_enabled=settings.TEMPORAL_SELF_DAY_BLOCK_ENABLED,
-            prior_reader_provider=build_curiosity_reader,
         )
         if curiosity_investigation is not None:
-            curiosity_investigation.run_state_hooks.append(orion_day_letter.on_run_state)
-        await orion_day_letter.start()
+            curiosity_investigation.run_state_hooks.append(orion_day_mailer.on_run_state)
+        await orion_day_mailer.start()
     except Exception:  # noqa: BLE001
-        logger.exception("orion_day_letter_start_failed")
+        logger.exception("orion_day_mailer_start_failed")
 
     if pool_ok:
         logger.info("memory_store_banner=connected")
@@ -1746,7 +1736,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_letter, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1882,12 +1872,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("self_monitor_questions_stop_failed", exc_info=True)
         self_monitor_question_minter = None
-    if orion_day_letter is not None:
+    if orion_day_mailer is not None:
         try:
-            await orion_day_letter.stop()
+            await orion_day_mailer.stop()
         except Exception:  # noqa: BLE001
-            logger.warning("orion_day_letter_stop_failed", exc_info=True)
-        orion_day_letter = None
+            logger.warning("orion_day_mailer_stop_failed", exc_info=True)
+        orion_day_mailer = None
     if collapse_mirror_chat_reply_handler is not None:
         try:
             await collapse_mirror_chat_reply_handler.stop()
@@ -1964,6 +1954,16 @@ app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(ask_router)
 app.include_router(consult_router)
+# Orion's Day: Prime's letter orders (GET letter status, POST letter-run). The only path that
+# submits an orion_day.letter run; gated by HUB_ORION_DAY_ENABLED inside the desk.
+orion_day_order_desk = OrionDayOrderDesk(
+    enabled=settings.HUB_ORION_DAY_ENABLED,
+    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+    durable=DurableRunsClient(settings.HUB_ORION_DAY_DURABLE_URL),
+    temporal_day_enabled=settings.TEMPORAL_SELF_DAY_BLOCK_ENABLED,
+    prior_reader_provider=build_curiosity_reader,
+)
+app.include_router(build_orion_day_order_router(lambda: orion_day_order_desk))
 app.include_router(motion_story_router)
 app.include_router(people_router)
 app.include_router(walkway_rollup_router)

@@ -1149,12 +1149,6 @@ def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
     return format_dream_section(dream_hypotheses or ())
 
 
-def _carry_forward_section(carry_forward=None) -> list[str]:
-    from orion.orion_day.carry_forward import format_carry_forward_section
-
-    return format_carry_forward_section(carry_forward)
-
-
 def _focus_section(focus=None) -> list[str]:
     from orion.curiosity.focus import format_focus_section
 
@@ -1324,7 +1318,6 @@ def build_kickoff_prompt(
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
     dream_hypotheses: Sequence = (),
-    carry_forward=None,
     open_lived_questions: Sequence[OpenLivedQuestion] = (),
     corrections: Sequence = (),
     today_fact: Optional[str] = None,
@@ -1351,11 +1344,6 @@ def build_kickoff_prompt(
     ``open_lived_questions``: open lived questions with their current answer
     (`self_inquiry.OpenLivedQuestion`), already bounded by the caller. Shown on
     a writable graph only, with the `:LivedAnswer` MERGE that revises each.
-
-    ``carry_forward`` (orion.orion_day.carry_forward.OfferedCarryForward): the threads Orion's
-    Day named for future curiosity. Its own section with its own header, never inside the
-    dream section or the material, and not gated on the graph (it asks for no write). Only
-    the letter's carry-forward text ever arrives here -- never its freeform note.
 
     ``corrections`` (orion.orion_day.corrections.OfferedCorrection): letter claims Juniper and
     Orion agreed were wrong, with the priors they rested on. Shown on a writable graph only
@@ -1409,7 +1397,6 @@ def build_kickoff_prompt(
         lines += _today_section(today_fact)
         lines += _personality_section(personality_cue)
 
-    lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)
     lines += _access_section(
         own_graph=own_graph,

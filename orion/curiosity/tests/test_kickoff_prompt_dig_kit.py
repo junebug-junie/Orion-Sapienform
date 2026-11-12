@@ -17,6 +17,10 @@ def test_access_section_carries_the_dig_kit_lines_by_default() -> None:
         assert line in text
     assert "python -P -m orion.dig help" in DIG_HELP_FIRST
     assert "python -m orion.dig" not in text, "always -P: plain -m runs the sandbox copy"
+    # "first" is local to the dig kit, never a step ahead of the prompt's own first step.
+    assert "before you pick a dig command" in DIG_HELP_FIRST and " first" not in DIG_HELP_FIRST
+    # The boundary paragraph still follows the SQL/graph lines, not the dig block.
+    assert text.index("orion.dig help") < text.index("You also still have read_recall") < text.index("The boundary")
 
 
 def test_dig_kit_false_leaves_it_out() -> None:

@@ -719,6 +719,7 @@ def build_self_naming_prompt(
     if writable:
         lines += _naming_order_of_work_section(own_graph=own_graph, merge=merge)
     lines += _access_section(
+        dig_kit=False,  # one verdict on the clock; the dig kit was never part of this sitting
         own_graph=own_graph,
         atlas_graph=atlas_graph,
         hub_url=hub_url,

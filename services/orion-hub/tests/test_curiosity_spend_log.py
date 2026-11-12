@@ -22,6 +22,7 @@ from orion.curiosity.journal import INVESTIGATION_TAG
 from orion.curiosity.self_inquiry import SELF_INQUIRY_TAG
 from orion.curiosity.kickoff_prompt import ORDER_SENTENCE
 from orion.curiosity.value import (
+    ARM_SELF_INQUIRY,
     ARM_REPLICA_ORDER,
     ARM_UNCERTAINTY_ORDER,
     ARM_VALUE_ORDER,
@@ -322,17 +323,60 @@ def test_a_retried_run_is_scored_from_where_its_first_attempt_began() -> None:
     assert conn.outcomes[run_id]["realized_nats"] == pytest.approx(kl_nats(0.9, 0.5))
 
 
-def test_self_inquiry_turns_are_not_measured() -> None:
+def test_a_self_inquiry_dispatch_writes_a_decision_row_that_offers_nothing() -> None:
+    conn = _SpendConn()
+    loop = _graph_loop(_FakeBus(), reader=_reader([_state("p1", 0.5, 0)]), conn=conn)
+    asyncio.run(loop._record_self_inquiry_decision("e1b2c3d4e5f6"))
+    row = conn.decisions["e1b2c3d4e5f6"]
+    assert row["arm"] == ARM_SELF_INQUIRY == "self_inquiry"
+    assert row["offered"] == [] and row["stale_offered"] == [] and row["material_ids"] == []
+    assert row["value_arm_propensity"] == 1.0
+    # No three-way draw: the three-arm readout reads only rows with arm_propensities.
+    assert row["arm_propensities"] is None
+
+
+def test_self_inquiry_turns_are_measured_like_investigations() -> None:
     bus = _FakeBus()
     conn = _SpendConn()
     run_id = "c1b2c3d4e5f6"
-    _dispatched(conn, run_id)
     reader = _reader([_state("p1", 0.5, 0)])
     loop = _graph_loop(bus, reader=reader, conn=conn)
+    asyncio.run(loop._record_self_inquiry_decision(run_id))
+    _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.9, 1, last_run_id=rid)])
+    stamps: list[str] = []
+
+    async def _stamp(name, *a, **k):
+        stamps.append(name)
+
+    loop._stamp_corrections = lambda *a, **k: _stamp("corrections")  # type: ignore[method-assign]
+    loop._stamp_focus = lambda *a, **k: _stamp("focus")  # type: ignore[method-assign]
+    asyncio.run(loop._turn_result_for(_request(run_id, source_tag=SELF_INQUIRY_TAG), hold_lock=False))
+    assert conn.decisions[run_id]["turn_snapshot"] is not None
+    assert stamps == []    # corrections and focus stay investigation-only
+    assert conn.outcomes[run_id]["realized_nats"] == pytest.approx(kl_nats(0.9, 0.5))
+    assert conn.outcomes[run_id]["turn_ok"] is True
+
+
+def test_self_inquiry_outcomes_switched_off_measure_nothing() -> None:
+    bus = _FakeBus()
+    conn = _SpendConn()
+    run_id = "c2b2c3d4e5f6"
+    reader = _reader([_state("p1", 0.5, 0)])
+    loop = _graph_loop(bus, reader=reader, conn=conn, self_inquiry_outcomes_enabled=False)
+    asyncio.run(loop._record_self_inquiry_decision(run_id))
+    assert run_id not in conn.decisions
+    _dispatched(conn, run_id)    # even a stray decision row is not measured
     _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.9, 1, last_run_id=rid)])
     asyncio.run(loop._turn_result_for(_request(run_id, source_tag=SELF_INQUIRY_TAG), hold_lock=False))
     assert conn.decisions[run_id]["turn_snapshot"] is None
     assert conn.outcomes == {}
+
+
+def test_the_value_model_history_never_reads_a_self_inquiry_outcome() -> None:
+    """On-policy: the yield model learns from priors Orion chose out of an offer. The read itself
+    excludes the self_inquiry arm (checked against a real Postgres in test_curiosity_self_inquiry_outcomes_pg.py)."""
+    sql = " ".join(LOAD_HISTORY_SQL.split())
+    assert "NOT EXISTS" in sql and "d.arm = 'self_inquiry'" in sql and "d.run_id = o.run_id" in sql
 
 
 def test_a_run_with_no_decision_row_records_nothing() -> None:

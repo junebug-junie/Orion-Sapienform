@@ -332,3 +332,16 @@ def test_dispatch_stores_the_packet_and_returns_dispatched() -> None:
     assert asyncio.run(loop.tick_self_inquiry()) == "dispatched"
     assert _namings(bus) == []
     assert any(k.startswith(_SELF_NAMING_PACKET_KEY_PREFIX) for k in bus.redis.values)
+
+
+def test_a_naming_sitting_writes_one_self_inquiry_decision_row() -> None:
+    """A naming sitting is a self-inquiry run: it gets the decision row its outcome needs."""
+    from scripts.curiosity_offer_decisions import INSERT_DECISION_SQL
+    from test_curiosity_self_inquiry import _RecordingGrantConn
+
+    bus = _FakeBus()
+    conn = _RecordingGrantConn()
+    loop = _naming_loop(bus, naming=GOOD, packet=_packet(), conn=conn)
+    assert asyncio.run(loop.tick_self_inquiry()) is None
+    rows = [args for sql, args in conn.writes if sql == INSERT_DECISION_SQL]
+    assert len(rows) == 1 and rows[0][1] == "self_inquiry"

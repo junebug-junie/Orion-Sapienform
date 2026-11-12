@@ -73,6 +73,9 @@ SELECT row_to_json(r) FROM (
  SELECT 'consumer' AS kind, 'curiosity' AS consumer, turn_started_at AS at, false AS exempt
    FROM curiosity_offer_decisions
   WHERE turn_started_at >= '{start.isoformat()}'::timestamptz AND turn_started_at < '{end.isoformat()}'::timestamptz
+    -- Investigation turns only: self-inquiry turns stamp turn_started_at since 2026-11-12 and have their
+    -- own cooldown line.
+    AND arm <> 'self_inquiry'
  UNION ALL
  SELECT 'consumer', 'outreach', decided_at, coalesce(result_json->>'source', '') = 'curiosity_outreach'
    FROM endogenous_outreach_decisions

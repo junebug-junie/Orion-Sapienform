@@ -25,13 +25,21 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from orion.schemas.social_bridge import ParticipantKind, RoomPlatform
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _drop_defaults(data: Any, defaults: Dict[str, Any]) -> Any:
+    if isinstance(data, dict):
+        for key, default in defaults.items():
+            if key in data and data[key] == default:
+                data.pop(key)
+    return data
 
 
 class ExternalRoomResponderV1(BaseModel):
@@ -74,6 +82,15 @@ class RoomTranscriptEntryV1(BaseModel):
     # Claude's own reply). A resumed Claude session already holds these, so
     # the companion never re-sends them on --resume.
     side_exchange: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_new_fields(self, handler):  # type: ignore[no-untyped-def]
+        # Every consumer validates with extra="forbid". Dropping the 2026-11-12
+        # fields when they hold their defaults keeps a payload that does not use
+        # them byte-identical to before, so a companion that has not been rebuilt
+        # yet never sees a key it would reject. Same pattern as
+        # orion/schemas/pre_turn_appraisal.py TurnWindowMessageV1.
+        return _drop_defaults(handler(self), {"turn_ref": None, "unprompted": False, "side_exchange": False})
 
 
 class RoomClaudeRequestV1(BaseModel):
@@ -119,6 +136,11 @@ class RoomClaudeRequestV1(BaseModel):
     # "[Earlier: 323 turns from 2026-09-18 to 2026-11-05 not shown.]".
     transcript_note: Optional[str] = None
     created_at: str = Field(default_factory=_utcnow_iso)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_new_fields(self, handler):  # type: ignore[no-untyped-def]
+        # See RoomTranscriptEntryV1: unset 2026-11-12 fields are left out.
+        return _drop_defaults(handler(self), {"hub_index": None, "transcript_note": None})
 
 
 class RoomClaudeUtteranceV1(BaseModel):

@@ -13,9 +13,16 @@ docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md):
   04:00 America/Denver, so the first invite after 04:00 mints a new session
   that is reseeded from the whole conversation window. This bounds what a
   resumed session carries, and so its per-turn cost.
+- ``sent_keys``: one key per transcript line this session has been sent
+  (``<turn_ref>|<speaker_id>``). On ``--resume`` the companion sends only lines
+  whose key is not here, so a resumed turn never gets duplicates of lines
+  Claude already holds. A key, not a time: Hub writes Juniper's half of a turn
+  when the turn starts and merges Orion's reply into the SAME row later, with
+  the same ``created_at``, so a time mark would skip that reply forever. Keys
+  also keep two Hub sessions sharing one Claude session from hiding each
+  other's lines. Bounded to the newest ``MAX_SENT_KEYS``.
 - ``sent_up_to``: the newest transcript ``created_at`` this session has been
-  sent. On ``--resume`` the companion sends only lines newer than this, so a
-  resumed turn never gets duplicates of lines Claude already holds.
+  sent. Used only for lines with no turn ref (Hub before 2026-11-12).
 
 Legacy entries (a bare session-id string, before 2026-11-12) carry no day, so
 the next invite rotates them: the first turn after this deploy reseeds Claude
@@ -41,6 +48,9 @@ from uuid import uuid4
 # Juniper's clock. A "room day" starts at ROOM_DAY_START_HOUR local time.
 ROOM_TZ_NAME = "America/Denver"
 ROOM_DAY_START_HOUR = 4
+# A day's session sees a few hundred lines (about 110 in the first-turn window
+# on 2026-11-12, plus every new line). The bound only stops unbounded growth.
+MAX_SENT_KEYS = 5000
 
 
 def room_day(now: Optional[datetime] = None) -> str:
@@ -66,6 +76,8 @@ class SessionSlot:
     # None for a fresh session.
     sent_up_to: Optional[str]
     day: str
+    # Keys of lines already sent to this session (see the module docstring).
+    sent_keys: frozenset = frozenset()
     # Why a new session was minted: "new", "rotated" (a new room day or a
     # legacy entry). None when resuming.
     minted_reason: Optional[str] = None
@@ -161,9 +173,11 @@ def peek_or_mint_session(
     existing = entry.get("session_id")
     if existing and (entry.get("day") == today or not rotate_daily):
         mark = entry.get("sent_up_to")
+        keys = entry.get("sent_keys")
         return SessionSlot(
             session_id=existing, resume=True,
             sent_up_to=mark if isinstance(mark, str) and mark else None, day=today,
+            sent_keys=frozenset(k for k in keys if isinstance(k, str)) if isinstance(keys, list) else frozenset(),
         )
     return SessionSlot(
         session_id=str(uuid4()), resume=False, sent_up_to=None, day=today,
@@ -178,20 +192,31 @@ def remember_session(
     *,
     day: Optional[str] = None,
     sent_up_to: Optional[str] = None,
+    sent_keys: Optional[list] = None,
 ) -> None:
     """Record the session a successful turn actually ran under, its room day,
-    and the newest transcript line it has now been sent.
+    and the transcript lines it has now been sent.
 
-    The mark only moves forward: a turn that carried no newer lines keeps the
-    old mark rather than dropping it."""
+    Both marks only grow: a turn that carried nothing new keeps the old ones.
+    A different session id (rotation, a lost session) starts them over."""
     data = _read_all(path)
     old = _entry(data.get(room_key))
+    same = old.get("session_id") == session_id
     mark = sent_up_to
-    if old.get("session_id") == session_id and isinstance(old.get("sent_up_to"), str):
+    if same and isinstance(old.get("sent_up_to"), str):
         mark = latest_iso(old["sent_up_to"], sent_up_to)
-    new = {"session_id": session_id, "day": day or room_day()}
+    keys: list = list(old.get("sent_keys") or []) if same and isinstance(old.get("sent_keys"), list) else []
+    seen = set(keys)
+    for k in sent_keys or []:
+        if isinstance(k, str) and k not in seen:
+            keys.append(k)
+            seen.add(k)
+    keys = keys[-MAX_SENT_KEYS:]
+    new: Dict[str, Any] = {"session_id": session_id, "day": day or room_day()}
     if mark:
         new["sent_up_to"] = mark
+    if keys:
+        new["sent_keys"] = keys
     if data.get(room_key) == new:
         return
     data[room_key] = new

@@ -181,22 +181,36 @@ def render_transcript(entries: Sequence[RoomTranscriptEntryV1]) -> str:
     return "\n".join(render_line(e) for e in entries if e.text.strip())
 
 
+def line_key(entry: RoomTranscriptEntryV1) -> Optional[str]:
+    """``<turn_ref>|<speaker_id>``, or None for a line with no turn ref."""
+    return f"{entry.turn_ref}|{entry.speaker_id}" if entry.turn_ref else None
+
+
 def lines_after_mark(
     entries: Sequence[RoomTranscriptEntryV1],
     *,
     sent_up_to: Optional[str],
     claude_participant_id: str,
+    sent_keys: frozenset = frozenset(),
 ) -> List[RoomTranscriptEntryV1]:
     """The lines a RESUMED session has not been sent yet.
 
-    Drops lines at or before the session's mark, and every side-exchange line
-    (Claude's own replies and the prompts that asked for them): the resumed
-    CLI session already holds those, because it produced them. A line whose
-    time cannot be read is kept -- a duplicate is cheaper than a hole."""
+    Drops every side-exchange line (Claude's own replies and the prompts that
+    asked for them): the resumed CLI session already holds those, because it
+    produced them. A line with a turn ref is dropped only when its key was
+    sent; its time is not used (see session_store's docstring for the
+    half-written-row case that a time mark gets wrong). A line without one
+    (Hub before 2026-11-12) falls back to the time mark. A line whose time
+    cannot be read is kept -- a duplicate is cheaper than a hole."""
     mark = parse_iso(sent_up_to)
     out: List[RoomTranscriptEntryV1] = []
     for e in entries:
         if e.side_exchange or e.speaker_id == claude_participant_id:
+            continue
+        key = line_key(e)
+        if key is not None:
+            if key not in sent_keys:
+                out.append(e)
             continue
         at = parse_iso(e.created_at)
         if mark is not None and at is not None and at <= mark:

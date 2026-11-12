@@ -39,3 +39,18 @@ def test_a_reorder_is_reported_with_both_leases_both_nets_and_the_margin():
         assert (d["jumped_lease_id"], d["net"], d["jumped_net"], d["margin"]) == ("earlier", 0.9, 0.2, 0.1)
         assert (d["family"], d["jumped_family"], d["want_id"]) == ("durable.self_inquiry", "hub.world_pulse_read", "run-2")
     run(go())
+
+
+def test_an_operator_class_lease_that_carries_a_bid_is_refused():
+    """Leased evals (2026-11-12): operator work never bids in Orion's want market."""
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("operator_agent", kind="hold", priority="background", want_id="x", want_net=0.5,
+                                 want_family="eval"))
+        assert (r.status, r.reason, r.lease_id) == ("unavailable", "operator_class_never_bids", None)
+        hi = await rt.acquire(acq("operator_agent", kind="hold", priority="interactive"))
+        assert (hi.status, hi.reason, hi.lease_id) == ("unavailable", "operator_class_background_only", None)
+        ok = await rt.acquire(acq("operator_agent", kind="hold", priority="background"))
+        assert ok.status in ("granted", "queued") and ok.lease_id
+    run(go())

@@ -172,6 +172,27 @@ def test_shares_of_every_lease_close_on_the_measured_total():
     assert hour.sponsored_wh + hour.metered_wh + hour.unattributed_wh == pytest.approx(hour.above_rest_wh)
 
 
+def test_an_operator_lease_share_is_sponsored_not_metered_or_unmetered():
+    """Leased evals (2026-11-12, C3): an eval's lease takes its own 1/n of the card, reported as
+    sponsored (Juniper's work); Orion's lease on the same card pays only its own share."""
+    series = HostSeries(chassis=_flat(900.0), cpu_above=_flat(28.0),
+                        cards={0: _flat(90.0), 1: _flat(52.5), 2: _flat(200.0), 3: _flat(52.5)},
+                        sponsored_cpu=_flat(20.0))
+    a = (_at(0), _at(600))
+    b = (_at(300), _at(900))
+    ea = machine_energy(series, DAY, card=2, start=a[0], end=a[1], others=[b], step_s=1.0)
+    eb = machine_energy(series, DAY, card=2, start=b[0], end=b[1], others=[a], step_s=1.0)
+    hour = attribute_host_window(series, DAY, {2: [LeaseSpan(*a, True), LeaseSpan(*b, False, sponsored=True)]},
+                                 start=_at(0), end=_at(900), step_s=1.0)
+    load = (90.0 - 52.5) + (200.0 - 52.5) + 28.0
+    cpu_sponsored = 300.0 * 20.0 / load * 900.0 / 3600.0
+    assert hour.metered_wh == pytest.approx(ea.wh, rel=1e-9)
+    assert hour.sponsored_lease_wh == pytest.approx(eb.wh, rel=1e-9)
+    assert hour.sponsored_wh == pytest.approx(cpu_sponsored + eb.wh, rel=1e-9)
+    assert hour.leased_unmetered_wh == pytest.approx(0.0, abs=1e-9)
+    assert hour.sponsored_wh + hour.metered_wh + hour.unattributed_wh == pytest.approx(hour.above_rest_wh)
+
+
 def test_whole_machine_is_absent_without_a_chassis_or_cpu_reading_or_a_floor():
     no_chassis = HostSeries(chassis=[], cpu_above=CIRCE_BUSY.cpu_above, cards=CIRCE_BUSY.cards)
     assert machine_energy(no_chassis, DAY, card=2, start=_at(0), end=_at(60)) is None

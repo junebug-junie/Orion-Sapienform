@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Optional, Sequence
 
+from orion.gpu_pool.value_order import is_operator_class
 from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 from orion.schemas.physiology import (
     ATTENTION_JUNIPER,
@@ -89,6 +90,10 @@ class BodyConfig:
     backlog_max_age_sec: float = 30.0
     # generated_at is the pool host's clock: a snapshot this far in the future is still fresh.
     backlog_clock_skew_sec: float = 10.0
+    # Leased evals (2026-11-12, design C4): a lease of an operator work class (an eval Juniper or an
+    # agent started) is not Orion's use of a lane. It is left out of the lane's level and taken out of
+    # its budget (capacity someone else took). False: every lease counts as Orion's, as before.
+    operator_load_sponsored: bool = True
 
 
 # --- inputs (filled by the host's reads) --------------------------------------------------------
@@ -133,6 +138,8 @@ class LeaseEvent:
     held_ms: Optional[float] = None
     # Set on a child call: it runs inside that durable-run hold's slot (gpu_pool_leases).
     hold_lease_id: Optional[str] = None
+    # The lease's pool work class (gpu_pool_leases / gpu_pool_events). None: not read.
+    work_class: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -484,9 +491,18 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig,
     age = (now - newest).total_seconds()
     if age > cfg.lane_events_max_age_sec:
         return all_no("stale:gpu_pool_events", source_at=newest, detail={"age_sec": round(age, 1)}), []
-    intervals, counts = _lease_intervals(inp.events, now)
+    events = list(inp.events)
+    op_intervals: dict[str, list[tuple[datetime, datetime]]] = {}
+    if cfg.operator_load_sponsored:
+        # A lease is operator work when any of its rows names an operator class (a close row may
+        # carry it while the open projection row does not, or the reverse).
+        op_ids = {e.lease_id for e in events if e.lease_id and is_operator_class(e.work_class)}
+        if op_ids:
+            op_intervals, _ = _lease_intervals([e for e in events if e.lease_id in op_ids], now)
+            events = [e for e in events if e.lease_id not in op_ids]
+    intervals, counts = _lease_intervals(events, now)
     w_start = now - timedelta(seconds=window)
-    roles = sorted(set(intervals) | set(capacity or {}))
+    roles = sorted(set(intervals) | set(op_intervals) | set(capacity or {}))
     if not roles:
         # Fresh events, no lease in the window, and no pool state to name the lanes.
         return [_no(LANE_PREFIX.rstrip(":"), "slot_s", "read_failed:gpu_pool_state", source_at=newest)], []
@@ -514,9 +530,17 @@ def lane_readings(inp: LaneInput, now: datetime, cfg: BodyConfig,
         if capacity is None:
             detail["capacity"] = "pool_state_unread"
         detail.update(_hunger(role))
+        line = _cap(role)
+        if role in op_intervals:
+            # Sponsored: an eval's slot time is not Orion's use, and the seat had that much less to give.
+            op_held, _, op_spans = occupied_seconds(op_intervals[role], w_start, now, slots)
+            detail["operator_held_s"] = round(op_held, 3)
+            detail["operator_spans"] = op_spans
+            if line:
+                line = {**line, "budget": max(0.0, line["budget"] - op_held)}
         out.append(PhysiologyConstraintReadingV1(
             constraint=f"{LANE_PREFIX}{role}", unit="slot_s", level=round(held, 3), source_at=newest,
-            detail=detail, **_cap(role)))
+            detail=detail, **line))
     warnings = []
     if counts["open"]:
         warnings.append(f"lane_open_leases:{counts['open']}")

@@ -9,7 +9,9 @@ Rules implemented (numbers match docs/superpowers/specs/2026-09-24-gpu-pool-desi
   5  owners win on their own role: borrowers are never granted while an owner waits, and are
      recalled (grace, then abort) when an owner is starved
   6  queue order: priority, then oldest; inside the background class, by value when ``value`` is
-     given (attention patch 3b, orion/gpu_pool/value_order.py)
+     given (attention patch 3b, orion/gpu_pool/value_order.py). With ``operator_last`` (default on,
+     GPU_POOL_OPERATOR_LAST), operator-class leases (``operator*``, evals) sort after every other
+     background lease and are never moved ahead by value (2026-11-12 leased-evals design, C2)
   7  swap seats: load only when the evicted residents are idle; reclaimed by the residents'
      owners; cooldown; idle unload
   8  operator-only multi-card seats drain everything they evict
@@ -101,7 +103,7 @@ from datetime import datetime, timedelta
 from typing import Collection, Iterable, Mapping, Union
 
 from orion.gpu_pool.config import PoolConfig, RoleSpec
-from orion.gpu_pool.value_order import VALUE_PRIORITY, ValueOrderConfig, sequence
+from orion.gpu_pool.value_order import VALUE_PRIORITY, ValueOrderConfig, is_operator_class, sequence
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
@@ -481,11 +483,22 @@ class _Ctx:
         return self.usable(role) and self.fits(lease, role) and self.serialized_by(role) is None
 
 
+def _operator_last_rank(lease: LeaseView, operator_last: bool) -> int:
+    """1 for an operator-class lease at background priority (it waits behind all of Orion's own
+    background work), else 0. Higher priorities are never touched: an operator route is always
+    background (config/gpu_pool.yaml), and a hand-pressed operator hold (control verb ``hold``,
+    interactive) keeps its place."""
+    return 1 if operator_last and lease.priority == VALUE_PRIORITY and is_operator_class(lease.work_class) else 0
+
+
 def _order(cfg: PoolConfig, leases: Iterable[LeaseView], now: datetime | None = None,
-           value: ValueOrderConfig | None = None) -> list[LeaseView]:
+           value: ValueOrderConfig | None = None, operator_last: bool = True) -> list[LeaseView]:
     """Queue order: priority, then oldest. With ``value`` enabled, the background block alone is
-    re-sequenced by ``value_order.sequence`` (every other class keeps arrival order)."""
-    base = sorted(leases, key=lambda l: (cfg.priority_rank(l.priority), l.created_at, l.lease_id))
+    re-sequenced by ``value_order.sequence`` (every other class keeps arrival order). With
+    ``operator_last``, operator-class background leases come after every other background lease;
+    they are their own work classes, so the value pass below never moves them ahead."""
+    base = sorted(leases, key=lambda l: (cfg.priority_rank(l.priority), _operator_last_rank(l, operator_last),
+                                         l.created_at, l.lease_id))
     if value is None or not value.enabled or now is None:
         return base
     # One work class at a time: leases of different classes wait for different seats, so an upkeep
@@ -504,10 +517,10 @@ def _order(cfg: PoolConfig, leases: Iterable[LeaseView], now: datetime | None = 
 
 
 def queue_position(cfg: PoolConfig, leases: Iterable[LeaseView], lease_id: str, now: datetime,
-                   value: ValueOrderConfig | None = None) -> int:
+                   value: ValueOrderConfig | None = None, operator_last: bool = True) -> int:
     """1-based place of ``lease_id`` among ``leases`` (the queued leases of its class), in the same
     order the grant pass uses. 0 when it is not among them."""
-    for i, l in enumerate(_order(cfg, leases, now, value), start=1):
+    for i, l in enumerate(_order(cfg, leases, now, value, operator_last), start=1):
         if l.lease_id == lease_id:
             return i
     return 0
@@ -524,6 +537,7 @@ def schedule(
     shed: Mapping[str, str] | None = None,
     frozen: Collection[str] | None = None,
     value: ValueOrderConfig | None = None,
+    operator_last: bool = True,
 ) -> list[Decision]:
     """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
     the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
@@ -544,7 +558,10 @@ def schedule(
 
     ``value``: attention patch 3b. Enabled: the background class is granted by value
     (orion/gpu_pool/value_order.py), and each grant that served a later want before an earlier one is
-    reported as ``Reordered``. None or disabled: arrival order, exactly as before."""
+    reported as ``Reordered``. None or disabled: arrival order, exactly as before.
+
+    ``operator_last``: operator-class background leases (evals) queue after every other background
+    lease (rule 6). False: plain arrival order for them too (the rollback, GPU_POOL_OPERATOR_LAST)."""
     d = cfg.defaults
     out: list[Decision] = []
     # U4, on the ORIGINAL priority (before the urgent rollback below rewrites urgent to background).
@@ -667,7 +684,7 @@ def schedule(
 
     # U4: shed leases leave the placement pass entirely -- reported, never granted, never demand.
     # D3: a one-shot request is refused now (its caller falls back at once); the rest wait.
-    for lease in _order(cfg, [l for l in queued if l.lease_id in shed_of]):
+    for lease in _order(cfg, [l for l in queued if l.lease_id in shed_of], operator_last=operator_last):
         if _one_shot(cfg, lease):
             out.append(Unavailable(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
         else:
@@ -676,7 +693,7 @@ def schedule(
     backlogged = [l for l in backlogged if l.lease_id not in shed_of]
 
     # --- 3. grants: a run's own calls first, then owners on their own roles, then the rest
-    order = _order(cfg, queued, now, value)
+    order = _order(cfg, queued, now, value, operator_last)
     granted: set[str] = set()
     granted_role: dict[str, str] = {}
     urgent_n = [sum(1 for l in active_now if l.hold_lease_id is None and l.priority == URGENT)]
@@ -804,7 +821,8 @@ def schedule(
     if value is not None and value.enabled and any(
             l.priority == VALUE_PRIORITY and l.want_net is not None for l in order if l.lease_id in granted_role):
         arrival = {d_.lease_id: d_.role for d_ in schedule(cfg, roles, cards, leases, now, seen_ctx=seen_ctx,
-                                                           guards=guards, shed=shed, frozen=frozen, value=None)
+                                                           guards=guards, shed=shed, frozen=frozen, value=None,
+                                                           operator_last=operator_last)
                    if isinstance(d_, Grant)}
         by_id = {l.lease_id: l for l in queued}
         displaced = [by_id[lid] for lid, r in arrival.items()

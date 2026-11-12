@@ -72,7 +72,7 @@ def hours_to_compute(latest: datetime | None, now: datetime) -> list[datetime]:
     return [first + timedelta(hours=i) for i in range(int((last - first) / timedelta(hours=1)) + 1)]
 
 
-def run_one_attribution(engine=None, now: datetime | None = None) -> int:
+def run_one_attribution(engine=None, now: datetime | None = None, *, operator_sponsored: bool = True) -> int:
     from orion.grammar.act_energy_fill import rest_body_config
 
     if engine is None:
@@ -87,13 +87,13 @@ def run_one_attribution(engine=None, now: datetime | None = None) -> int:
     written = 0
     for host in sorted(cfg.hosts):
         try:
-            written += _run_host(engine, host, now)
+            written += _run_host(engine, host, now, operator_sponsored=operator_sponsored)
         except Exception as exc:  # noqa: BLE001 -- one host failing must not stop the others
             logger.warning("orion_energy_attribution_host_failed host=%s error=%s", host, exc, exc_info=True)
     return written
 
 
-def _run_host(engine, host: str, now: datetime) -> int:
+def _run_host(engine, host: str, now: datetime, *, operator_sponsored: bool = True) -> int:
     from orion.grammar.act_energy_fill import attribute_host_hour
 
     with engine.connect() as conn:
@@ -109,7 +109,8 @@ def _run_host(engine, host: str, now: datetime) -> int:
     written = 0
     for hour in hours:
         with engine.begin() as conn:
-            got, rest_w, source = attribute_host_hour(conn, host, hour, hour + timedelta(hours=1), now=now)
+            got, rest_w, source = attribute_host_hour(conn, host, hour, hour + timedelta(hours=1), now=now,
+                                                      operator_sponsored=operator_sponsored)
             if got is None or got.covered_s <= 0:
                 continue  # no chassis reading this hour: unknown, no row (never 0)
             un = got.unattributed_wh
@@ -136,7 +137,9 @@ async def orion_energy_attribution_loop(settings: Settings) -> None:
     logger.info("orion_energy_attribution_loop starting interval_sec=%.0f", interval)
     while True:
         try:
-            rows = await asyncio.to_thread(run_one_attribution)
+            rows = await asyncio.to_thread(
+                run_one_attribution,
+                operator_sponsored=bool(getattr(settings, "orion_energy_attribution_operator_sponsored", True)))
             logger.info("[ORION_ENERGY_ATTRIBUTION] tick_complete rows_upserted=%d", rows)
         except asyncio.CancelledError:
             raise

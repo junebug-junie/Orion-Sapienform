@@ -24,8 +24,13 @@ grammar event ids from harness_turn_trace.run_artifact; thought_event from the s
 sighting; situation notes from the situation sighting; user_message from chat_history_log, else the
 stance_inputs sighting. Recall is off for this verb now, so neither side gets a memory digest.
 
-Cost: thinking-on old calls run minutes each on agent-gpu2. Bypasses the GPU pool like the other
-replay evals: run it when the lanes are quiet. --sides new skips the old calls.
+Cost: thinking-on old calls run minutes each on agent-gpu2. --sides new skips the old calls.
+
+Seats: one GPU pool operator hold per lane it replays (orion/evals/leased_llm.py, class
+operator_<lane>, background, behind all of Orion's own work), every call through orion-llm-gateway.
+Needs ORION_BUS_URL. chat's card waits until Juniper lends it; pass --lanes agent,agent-gpu2 to skip
+it. If the pool takes a seat back mid-run, the report is written as partial (``stopped``) and the
+eval exits 3; rerun with --resume to continue.
 """
 from __future__ import annotations
 
@@ -37,7 +42,6 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from jinja2 import Environment
 from sqlalchemy import create_engine, text
 
@@ -65,11 +69,9 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "judge_crash_cases.json
 HOP_GUARDRAIL = "If no memory is provided, do not claim prior work; say you don't know."
 OLD_MAX_TOKENS = 8000
 TEMPERATURE = 0.7  # cortex-exec's default when the context sets none
-LANES = {  # lane -> (url, gateway backend name), config/gpu_pool.yaml roles
-    "chat": ("http://100.112.254.99:8011", "strata"),
-    "agent": ("http://100.112.254.99:8015", "strata"),
-    "agent-gpu2": ("http://100.112.254.99:8016", "llamacpp"),
-}
+# lane -> the gateway's backend name for that role (config/gpu_pool.yaml roles), for response_format.
+LANE_BACKENDS = {"chat": "strata", "agent": "strata", "agent-gpu2": "llamacpp"}
+HOLDER = "operator:judge-crash-replay"
 
 
 def _gateway_structured_output():
@@ -213,17 +215,18 @@ def build_request(side: str, template: str, turn: dict, backend: str) -> dict:
     return body
 
 
-def _call(url: str, body: dict) -> dict:
+def _call(lane, body: dict) -> dict:
+    """One judge call on ``lane`` (an orion.evals.leased_llm.OperatorLane). LaneRecalled propagates."""
+    from orion.evals.leased_llm import LaneCallError
+
     try:
-        resp = httpx.post(f"{url}/v1/chat/completions", timeout=900, json=body)
-    except httpx.HTTPError as exc:
-        return classify(None, error=f"transport {type(exc).__name__}")
-    if resp.status_code != 200:
-        return classify(None, error=f"http {resp.status_code} {resp.text[:80]}")
-    choice = resp.json()["choices"][0]
+        data = lane.chat(body, timeout_sec=900)
+    except LaneCallError as exc:
+        return classify(None, error=str(exc)[:80])
+    choice = data["choices"][0]
     out = classify(choice["message"].get("content") or "")
     out["finish_reason"] = choice.get("finish_reason")
-    out["completion_tokens"] = (resp.json().get("usage") or {}).get("completion_tokens")
+    out["completion_tokens"] = (data.get("usage") or {}).get("completion_tokens")
     return out
 
 
@@ -266,25 +269,37 @@ def main() -> int:
     done = {(r["bucket"], r["correlation_id"]) for r in rows}
     cases = [(b, c) for b, c in cases if (b, c["correlation_id"]) not in done]
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, OperatorLanes
+
     engine = create_engine(args.dsn)
-    with engine.connect() as conn:
+    with engine.connect() as conn, OperatorLanes(holder=HOLDER) as seats:
         for i, (bucket, case) in enumerate(cases, 1):
             turn = _turn(conn, case["correlation_id"])
+            conn.rollback()  # no idle-in-transaction session while a model call (or a queue wait) runs
             if turn is None:
                 skipped.append(case["correlation_id"])
                 continue
-            url, backend = LANES[case["lane"]]
+            backend = LANE_BACKENDS[case["lane"]]
             row = {"bucket": bucket, "correlation_id": case["correlation_id"], "lane": case["lane"],
                    "live_failure": case.get("failure_class"), "stored_verdict": turn["stored_verdict"]}
-            for side in sides:
-                row[side] = _call(url, build_request(side, templates[side], turn, backend))
+            try:
+                lane = seats.get(case["lane"])
+                for side in sides:
+                    row[side] = _call(lane, build_request(side, templates[side], turn, backend))
+            except LaneRecalled as exc:
+                args.out.write_text(json.dumps({"partial": True, "stopped": f"recalled: {exc}",
+                                                "seats": seats.summary(), "turns": rows}, indent=2, default=str))
+                print(f"stopped: {exc}; partial report {args.out} (rerun with --resume)", flush=True)
+                return EXIT_RECALLED
             rows.append(row)
             print(f"[{i}/{len(cases)}] {bucket} {case['lane']} {case['correlation_id'][:8]} "
                   f"live={case.get('failure_class') or row['stored_verdict']} "
                   + " ".join(f"{s}={'ok:' + row[s]['verdict'] if row[s]['ok'] else row[s]['failure']}" for s in sides),
                   flush=True)
             args.out.write_text(json.dumps({"partial": True, "turns": rows}, indent=2, default=str))
+        seat_summary = seats.summary()
     report = {"ran_at": datetime.now(timezone.utc).isoformat(), "old_ref": args.old_ref, "sides": sides,
+              "seats": seat_summary,
               "transport_failures_not_replayed": dict(transport), "summary": summarize(rows, sides),
               "skipped_incomplete": skipped, "turns": rows}
     args.out.write_text(json.dumps(report, indent=2, default=str))

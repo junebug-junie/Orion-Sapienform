@@ -253,6 +253,8 @@ class Settings(BaseSettings):
     physiology_energy_monthly_envelope_usd: Optional[float] = Field(
         None, ge=0.0, alias="ORION_PHYSIOLOGY_ENERGY_MONTHLY_ENVELOPE_USD")
     physiology_lane_window_sec: float = Field(3600.0, gt=0.0, alias="ORION_PHYSIOLOGY_LANE_WINDOW_SEC")
+    # Leased evals (2026-11-12): operator-class leases (evals) are left out of a lane's level and budget.
+    physiology_operator_load_sponsored: bool = Field(True, alias="ORION_PHYSIOLOGY_OPERATOR_LOAD_SPONSORED")
     # Body economy Patch B2 (Organ 2 Budget + Organ 5 strain dial), SHADOW: one price per constraint
     # every physiology tick, published on PhysiologyStateV1 and read by nothing that decides.
     # false -> the Body readings only (Patch A3 behaviour).

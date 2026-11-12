@@ -104,7 +104,7 @@ happening.
 | `CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS` | `256` | Completion budget — `wants_direct_answer` plus up to 3 items, each with a follow-up question. |
 | `CURRENT_TURN_SIGNAL_PROBE_TEMPERATURE` | `0.0` | Pinned so the same message gets the same read. |
 
-The read replaces the curiosity policy's old verb-prefix / trailing-`?` regexes: `wants_direct_answer` decides whether Orion's background threads may become a question this turn, and each item's `question` becomes the attention frame's ask (`selected_action.question_text`), which `stance_react.j2` treats as Orion's own curiosity. Live eval: `python services/orion-cortex-exec/evals/run_current_turn_disclosure_live_eval.py --url http://<llm-node>:8011/v1/chat/completions`.
+The read replaces the curiosity policy's old verb-prefix / trailing-`?` regexes: `wants_direct_answer` decides whether Orion's background threads may become a question this turn, and each item's `question` becomes the attention frame's ask (`selected_action.question_text`), which `stance_react.j2` treats as Orion's own curiosity. Live eval: `ORION_BUS_URL=redis://<bus-host>:6379/0 python services/orion-cortex-exec/evals/run_current_turn_disclosure_live_eval.py --lane chat` (it takes a GPU pool operator hold and calls through the gateway, `orion/evals/leased_llm.py`; `--lane agent` runs the same model on gpu1 without waiting for gpu0 to be lent).
 
 **Tests**
 

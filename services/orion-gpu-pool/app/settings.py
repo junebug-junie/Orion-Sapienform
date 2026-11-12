@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     value_order_enabled: bool = Field(True, alias="GPU_POOL_VALUE_ORDER_ENABLED")
     value_margin: float = Field(0.10, ge=0.0, alias="GPU_POOL_VALUE_MARGIN")
     value_aging_per_h: float = Field(0.10, ge=0.0, alias="GPU_POOL_VALUE_AGING_PER_H")
+    # Leased evals (docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md, Phase 1):
+    # operator-class leases (config/gpu_pool.yaml classes operator*, evals) wait behind every one of
+    # Orion's own background leases. false = arrival order for them too.
+    operator_last: bool = Field(True, alias="GPU_POOL_OPERATOR_LAST")
     # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
     # ON in code, .env_example and production (Juniper turned it on; code default aligned 2026-10-10).
     # false refuses every set and settles any active Orion shed ``cancelled`` at boot; it never

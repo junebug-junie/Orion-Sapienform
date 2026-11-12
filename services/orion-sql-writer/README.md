@@ -1258,7 +1258,8 @@ physiology report reads from `grammar_acts.cost_json`:
 `orion_energy_attribution_hourly` (one row per UTC hour per host in `rest_body.yaml`, recomputing the
 last 3 hours every `ORION_ENERGY_ATTRIBUTION_INTERVAL_SEC`, backfilling up to 48 h): `rest_wh`,
 `above_rest_wh`, `sponsored_wh` (Juniper's sponsored containers, e.g. `zelda-dojo-live-*`, their CPU
-share of the overhead), `metered_wh` (leases whose turn some act is charged for: its own
+share of the overhead, plus since 2026-11-12 the card share of operator-class GPU leases -- evals Juniper
+or an agent started, `orion/evals/leased_llm.py`; `ORION_ENERGY_ATTRIBUTION_OPERATOR_SPONSORED`), `metered_wh` (leases whose turn some act is charged for: its own
 correlation_id, or a read's turn, patch 3e),
 `leased_unmetered_wh` (leases whose turn has no act), `unattributed_wh` = above - sponsored - metered,
 stored unclipped (a negative value logs `orion_energy_attribution_negative`). Daily coverage =

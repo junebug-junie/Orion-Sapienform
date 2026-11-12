@@ -145,6 +145,31 @@ def test_lane_slot_seconds_clip_to_the_window_and_merge_one_leases_closes():
     assert warnings == ["lane_open_leases:1"]
 
 
+def test_lane_operator_lease_is_sponsored_not_orions_use():
+    """Leased evals (2026-11-12, C4): an eval's lease leaves the lane's level and its budget."""
+    from dataclasses import replace as dc_replace
+
+    events = [
+        _close("mine", "agent", NOW - timedelta(minutes=10), 600),
+        LeaseEvent(lease_id="ev", role="agent", event="released", at=NOW - timedelta(minutes=5),
+                   held_ms=900_000.0, work_class="operator_agent"),
+        LeaseEvent(lease_id="ev-open", role="chat", event="granted", at=NOW - timedelta(minutes=20),
+                   work_class="operator_chat"),
+    ]
+    out, _ = _lanes(events, {"agent": 1, "chat": 1})
+    assert out["lane:agent"].level == 600.0
+    assert out["lane:agent"].budget == 3600.0 - 900.0
+    assert out["lane:agent"].detail["operator_held_s"] == 900.0
+    assert out["lane:chat"].level == 0.0 and out["lane:chat"].budget == 3600.0 - 1200.0
+    # Rollback: every lease counts as Orion's, as before.
+    old, _ = lane_readings(LaneInput(True, events, {"agent": 1, "chat": 1}, newest_event_at=NOW), NOW,
+                           dc_replace(CFG, operator_load_sponsored=False))
+    by = {r.constraint: r for r in old}
+    assert by["lane:agent"].level == 900.0 and by["lane:agent"].detail["lease_s"] == 1500.0  # one slot: overlap capped
+    assert by["lane:agent"].budget == 3600.0
+    assert "operator_held_s" not in by["lane:agent"].detail
+
+
 def test_lane_retried_lease_does_not_count_its_wait():
     # held 60 s, retried at t-10m; re-granted and held 30 s more, released at t-2m.
     events = [_close("r", "fast", NOW - timedelta(minutes=10), 60, event="retried"),

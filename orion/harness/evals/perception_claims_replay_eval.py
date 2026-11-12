@@ -26,6 +26,13 @@ Cases, each run --repeats times:
 
 Writes raw verdicts and notes to --out; pass = every gated case meets its
 expectation on every repeat.
+
+Seat: one GPU pool operator hold on --lane (orion/evals/leased_llm.py: class
+operator_<lane>, background, behind all of Orion's own work), every call
+through orion-llm-gateway. Needs ORION_BUS_URL. The default lane is chat,
+which waits until Juniper lends gpu0; --lane agent runs the same model on
+gpu1. If the pool takes the seat back mid-run, the report is written as
+partial (``stopped``) and the eval exits 3.
 """
 from __future__ import annotations
 
@@ -37,7 +44,6 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from jinja2 import Environment
 from sqlalchemy import create_engine, text
 
@@ -99,34 +105,33 @@ def _as_reflection(raw: dict) -> SimpleNamespace:
     return SimpleNamespace(alignment_notes=notes if isinstance(notes, list) else [])
 
 
-def _chat(url: str, prompt: str, max_tokens: int) -> str:
-    resp = httpx.post(
-        f"{url}/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens, "temperature": 0.2,
-              "chat_template_kwargs": {"enable_thinking": False}},
-        timeout=300,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"] or ""
+HOLDER = "operator:perception-claims-replay"
 
 
-def _repair(url: str, turn: dict, *, draft: str, reflection: dict, notes: str) -> str:
+def _chat(lane, prompt: str, max_tokens: int) -> str:
+    """One call on ``lane`` (an orion.evals.leased_llm.OperatorLane); a failed call raises."""
+    data = lane.chat({"messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens,
+                      "temperature": 0.2, "chat_template_kwargs": {"enable_thinking": False}}, timeout_sec=300)
+    return data["choices"][0]["message"]["content"] or ""
+
+
+def _repair(lane, turn: dict, *, draft: str, reflection: dict, notes: str) -> str:
     """orion_response_repair.j2, as finalize 5c renders it after a misaligned 5b."""
     prompt = Environment(autoescape=False).from_string(REPAIR_TEMPLATE.read_text()).render(
         user_message=turn["user_message"], draft_text=draft, reflection=reflection,
         grammar_receipts=[], tool_execution="none", situation_notes=notes,
     )
-    return _chat(url, prompt, 3072).strip()
+    return _chat(lane, prompt, 3072).strip()
 
 
-def _reflect(url: str, turn: dict, *, draft: str, notes: str, user_message: str | None = None) -> dict:
+def _reflect(lane, turn: dict, *, draft: str, notes: str, user_message: str | None = None) -> dict:
     ctx = build_finalize_reflect_context(
         correlation_id="eval-perception-claims", draft_text=draft, thought=turn["thought"],
         substrate_appraisal=turn["appraisal"], repair_overlay=make_repair_overlay(),
         user_message=turn["user_message"] if user_message is None else user_message, situation_notes=notes,
     )
     prompt = Environment(autoescape=False).from_string(TEMPLATE.read_text()).render(**ctx)
-    raw = _chat(url, prompt, 1500)
+    raw = _chat(lane, prompt, 1500)
     match = re.search(r"\{.*\}", raw, re.S)
     try:
         out = json.loads(match.group(0)) if match else {}
@@ -139,7 +144,7 @@ def _reflect(url: str, turn: dict, *, draft: str, notes: str, user_message: str 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dsn", default="postgresql+psycopg2://postgres:postgres@localhost:55432/conjourney")
-    ap.add_argument("--llm-url", default="http://100.112.254.99:8011", help="chat lane llama.cpp (gateway route table)")
+    ap.add_argument("--lane", default="chat", help="operator lane: chat (waits until gpu0 is lent) or agent")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--out", default="/tmp/perception-claims-eval/report.json")
     args = ap.parse_args()
@@ -157,10 +162,32 @@ def main() -> int:
         ("supported_street_control", "aligned", t1, dict(draft=STREET_DRAFT.format(name=name), notes=t1["notes_fixed"])),
         ("recorded_notes_baseline", None, t2, dict(draft=t2["draft_text"], notes=t2["notes_recorded"])),
     ]
-    report = {"ran_at": datetime.now(timezone.utc).isoformat(), "llm_url": args.llm_url, "cases": {}}
+    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, operator_lane_sync
+
+    report = {"ran_at": datetime.now(timezone.utc).isoformat(), "lane": args.lane, "cases": {}}
+    try:
+        with operator_lane_sync(args.lane, holder=HOLDER) as lane:
+            try:
+                passed = _run_cases(lane, cases, args.repeats, report)
+            finally:
+                report["seat"] = lane.summary()
+    except LaneRecalled as exc:
+        report.update(partial=True, stopped=f"recalled: {exc}")
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False))
+        print(f"stopped: {exc}; partial report {args.out}")
+        return EXIT_RECALLED
+    report["passed"] = passed
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False))
+    print("report:", args.out, "PASS" if passed else "FAIL")
+    return 0 if passed else 1
+
+
+def _run_cases(lane, cases: list, repeats: int, report: dict) -> bool:
     passed = True
     for name, want, turn, kw in cases:
-        runs = [_reflect(args.llm_url, turn, **kw) for _ in range(args.repeats)]
+        runs = [_reflect(lane, turn, **kw) for _ in range(repeats)]
         ok = None if want is None else all(r["verdict"] == want for r in runs)
         if want == "misaligned":
             # The live 5c path (finalize._recheck_unsupported_claim_repair): repair from
@@ -173,27 +200,23 @@ def main() -> int:
                 if r["verdict"] not in ("misaligned", "uncertain") and not has_unsupported_claim(_as_reflection(r["reflection"])):
                     continue
                 notes = kw["notes"]
-                reply = _repair(args.llm_url, turn, draft=kw["draft"], reflection=r["reflection"], notes=notes)
+                reply = _repair(lane, turn, draft=kw["draft"], reflection=r["reflection"], notes=notes)
                 r["first_repair"] = reply
                 if has_unsupported_claim(_as_reflection(r["reflection"])):
-                    recheck = _reflect(args.llm_url, turn, draft=reply, notes=notes)
+                    recheck = _reflect(lane, turn, draft=reply, notes=notes)
                     r["recheck_verdict"] = recheck["verdict"]
                     if has_unsupported_claim(_as_reflection(recheck["reflection"])):
-                        reply = _repair(args.llm_url, turn, draft=reply, reflection=recheck["reflection"], notes=notes)
+                        reply = _repair(lane, turn, draft=reply, reflection=recheck["reflection"], notes=notes)
                         r["second_repair"] = True
                 r["repaired"] = reply
-                r["repaired_verdict"] = _reflect(args.llm_url, turn, draft=reply, notes=notes)["verdict"]
+                r["repaired_verdict"] = _reflect(lane, turn, draft=reply, notes=notes)["verdict"]
                 ok = ok and r["repaired_verdict"] == "aligned"
         passed = passed and ok is not False
         report["cases"][name] = {"expect": want, "pass": ok, "runs": runs}
         repaired = [r["repaired_verdict"] + ("*" if r.get("second_repair") else "") for r in runs if "repaired_verdict" in r]
         print(f"{name:26s} expect={want!s:10s} got={[r['verdict'] for r in runs]}"
               + (f" repaired->{repaired}" if repaired else "") + f" pass={ok}")
-    report["passed"] = passed
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False))
-    print("report:", args.out, "PASS" if passed else "FAIL")
-    return 0 if passed else 1
+    return passed
 
 
 if __name__ == "__main__":

@@ -331,6 +331,7 @@ async def lifespan(app: FastAPI):
         replay_payload_max_bytes=_settings.replay_payload_max_bytes,
         value_order=ValueOrderConfig(enabled=_settings.value_order_enabled, margin=_settings.value_margin,
                                      aging_per_h=_settings.value_aging_per_h),
+        operator_last=_settings.operator_last,
         shed_enabled=_settings.shed_enabled, orion_shed_enabled=_settings.orion_shed_enabled,
         orion_shed_caps=OrionShedCaps(max_ttl_sec=_settings.orion_shed_max_ttl_sec,
                                       max_sec_per_day=_settings.orion_shed_max_sec_per_day,

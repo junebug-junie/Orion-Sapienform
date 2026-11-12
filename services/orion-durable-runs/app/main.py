@@ -423,7 +423,8 @@ def _build_physiology():
     claude_limits = physiology_store.ClaudeLimitCache()
     cfg = BodyConfig(heat_soft_line_c=s.physiology_heat_soft_line_c,
                      energy_monthly_envelope_usd=s.physiology_energy_monthly_envelope_usd,
-                     lane_window_sec=s.physiology_lane_window_sec)
+                     lane_window_sec=s.physiology_lane_window_sec,
+                     operator_load_sponsored=s.physiology_operator_load_sponsored)
 
     async def read_body(now, heat):
         warnings: list[str] = []

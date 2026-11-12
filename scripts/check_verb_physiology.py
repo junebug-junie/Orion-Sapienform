@@ -4,7 +4,9 @@
 Every ``orion/cognition/verbs/*.yaml`` (except the ``active.yaml`` activation manifest) must
 carry a valid ``physiology`` block: tier 0/1/2, a family slug, lanes that are GPU pool roles or
 classes in ``config/gpu_pool.yaml``, and ``deferrable_window_s >= 0``. Tier 0 must use family
-``turn`` or ``autonomic`` (it never bids), and those two families are tier 0 only.
+``turn`` or ``autonomic`` (it never bids), and those two families are tier 0 only. No verb may
+declare an ``operator*`` lane: those pool classes are Juniper's and agents' evals, which never bid in
+Orion's want market (leased-evals design 2026-11-12, Phase 1).
 
 Spec: docs/superpowers/specs/2026-10-23-organism-body-economy-design.md ("Execution seam").
 Structural only: YAML parse plus validation, no live data. Run from the repo root:
@@ -26,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from orion.gpu_pool.value_order import is_operator_class  # noqa: E402
 from orion.cognition.verb_physiology import (  # noqa: E402
     VerbPhysiologyV1,
     load_pool_lanes,
@@ -63,6 +66,11 @@ def check(verbs_dir: Path, pool_path: Path) -> tuple[list[str], dict[str, VerbPh
             continue
         if block is None:
             errors.append(f"{rel}: missing physiology block (tier, family, lanes, deferrable_window_s)")
+            continue
+        operator_lanes = [lane for lane in block.lanes if is_operator_class(lane)]
+        if operator_lanes:
+            errors.append(f"{rel}: lanes {operator_lanes} are operator work classes (evals); a verb is Orion's "
+                          "own act and never runs or bids on an operator lane")
             continue
         parsed[path.stem] = block
     return errors, parsed

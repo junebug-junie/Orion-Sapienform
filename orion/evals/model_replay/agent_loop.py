@@ -63,48 +63,54 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 INFRA_ERRORS = frozenset({"LeaseUnavailable", "LeaseBacklogged", "PoolRpcTimeout", "ConnectError",
-                          "ConnectTimeout"})
+                          "ConnectTimeout", "HoldGone"})
 
 
 class MessagesClient(Protocol):
     def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]: ...
 
 
-class HttpMessagesClient:
-    """POST {base}/v1/messages. Nothing else is ever sent to the worker."""
+class HoldGone(RuntimeError):
+    """The gateway refused a call because the task's GPU pool hold is gone (recalled or expired)."""
 
-    def __init__(self, base_url: str, transport: Any = None) -> None:
+
+def _hold_gone(text: str) -> bool:
+    from orion.evals.leased_llm import _hold_gone as gone
+
+    return gone(text)
+
+
+class HttpMessagesClient:
+    """POST {base}/v1/messages. ``base`` is orion-llm-gateway (leased evals, 2026-11-12): ``headers``
+    carry the task's pool hold ref and ``model`` names the seat's operator route, so the gateway runs
+    every call as a child of the hold. Nothing is ever sent to a worker directly."""
+
+    def __init__(self, base_url: str, transport: Any = None, *, headers: Optional[dict[str, str]] = None,
+                 model: Optional[str] = None) -> None:
         import httpx
 
         self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.on_hold_gone: Optional[Callable[[str], None]] = None
         # One client per rig, so close() from another thread cuts an in-flight call (run cancelled).
-        self._client = httpx.Client(headers={"anthropic-version": "2023-06-01", "x-api-key": "orion-model-replay"},
-                                    transport=transport)
+        self._client = httpx.Client(headers={"anthropic-version": "2023-06-01", "x-api-key": "orion-model-replay",
+                                             **(headers or {})}, transport=transport)
 
     def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+        if self.model is not None:
+            body = {**body, "model": self.model}
         r = self._client.post(f"{self.base_url}/v1/messages", json=body, timeout=max(5.0, timeout_sec))
+        if r.status_code != 200 and _hold_gone(r.text):
+            # The gateway refused because the task's hold is gone (recalled past its grace): a stop,
+            # not a model failure. run_one ends the task; the runner sees the transport's recall.
+            if self.on_hold_gone is not None:
+                self.on_hold_gone(r.text[:200])
+            raise HoldGone(r.text[:200])
         r.raise_for_status()
         return r.json()
 
     def close(self) -> None:
         self._client.close()
-
-
-class AttachedClient:
-    """Run each call inside ``attach(timeout)`` (an async context manager on ``loop``) -- see
-    pool_hold.attach_factory. The worker call itself runs in a thread; the lease heartbeat on the loop."""
-
-    def __init__(self, inner: MessagesClient, *, loop: Any, attach: Callable[[float], Any]) -> None:
-        self.inner, self.loop, self.attach = inner, loop, attach
-
-    def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
-        import asyncio
-
-        async def call() -> dict[str, Any]:
-            async with self.attach(timeout_sec):
-                return await asyncio.to_thread(self.inner.create, body, timeout_sec)
-
-        return asyncio.run_coroutine_threadsafe(call(), self.loop).result()
 
 
 @dataclass

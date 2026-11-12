@@ -79,6 +79,11 @@ def test_existing_launch_digests_do_not_move():
     for cls in before["classes"].values():
         if "agent-deep" in cls["roles"]:
             cls["roles"].remove("agent-deep")
+    # A class pinned to agent-deep alone (operator_agent_deep) goes with it, and so does its route.
+    gone = {name for name, cls in before["classes"].items() if not cls["roles"]}
+    for name in gone:
+        before["classes"].pop(name)
+    before["routes"] = {k: v for k, v in before["routes"].items() if v["class"] not in gone}
     old = PoolConfig.model_validate(before)
     for role in ("agent-gpu2", "diffusion"):
         assert launch_digest(CFG, role) == launch_digest(old, role)

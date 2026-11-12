@@ -48,7 +48,7 @@ def pg(monkeypatch):
                           "node VARCHAR, measurements JSONB)"))
         conn.execute(text("CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL, "
                           "event VARCHAR NOT NULL, lease_id VARCHAR, cards JSON, turn_correlation_id VARCHAR, "
-                          "held_ms DOUBLE PRECISION, holder VARCHAR, detail JSON)"))
+                          "held_ms DOUBLE PRECISION, holder VARCHAR, detail JSON, work_class VARCHAR)"))
         conn.execute(text("CREATE TABLE grammar_acts (act_id VARCHAR PRIMARY KEY, correlation_id VARCHAR, actor VARCHAR)"))
         # Reading's turns (attention patch 3e): the hourly rule reads them to meter a read's leases.
         conn.execute(text("CREATE TABLE world_pulse_read_seed (seed_id TEXT PRIMARY KEY, trace_id TEXT, "
@@ -149,7 +149,7 @@ def test_negative_unattributed_is_logged_and_stored_unclipped(pg, monkeypatch, c
     over = HostAttribution(rest_wh=600.0, above_rest_wh=100.0, sponsored_wh=0.0, metered_wh=130.0,
                            leased_unmetered_wh=0.0, covered_s=3600.0, split_unknown_s=0.0)
     _seed(pg)  # hosts with no chassis reading are skipped before any hour is computed
-    monkeypatch.setattr(fill, "attribute_host_hour", lambda conn, host, s, e, now=None: (over, 600.0, "fixture"))
+    monkeypatch.setattr(fill, "attribute_host_hour", lambda conn, host, s, e, now=None, **kw: (over, 600.0, "fixture"))
     with caplog.at_level(logging.WARNING, logger="sql-writer.orion_energy_attribution"):
         job.run_one_attribution(pg, now=NOW)
     with pg.connect() as conn:
@@ -168,7 +168,7 @@ def test_a_host_with_no_chassis_reading_is_skipped_and_one_failing_host_does_not
     real = fill.attribute_host_hour
     seen = []
 
-    def flaky(conn, host, s, e, now=None):
+    def flaky(conn, host, s, e, now=None, **kw):
         seen.append(host)
         if host == "athena":
             raise RuntimeError("boom")

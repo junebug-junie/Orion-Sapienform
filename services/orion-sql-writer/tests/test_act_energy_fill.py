@@ -252,3 +252,16 @@ def test_the_real_pool_config_maps_cards_to_hosts():
     cards, err = _REAL_CARD_LOCATIONS()
     assert err is None
     assert cards["gpu2"] == ("circe", 2) and cards["hecate-gpu0"] == ("hecate", 0)
+
+
+def test_card_leases_carry_the_pool_work_class_for_the_sponsored_split():
+    """Leased evals (2026-11-12): the hourly attribution needs each lease's class to report an
+    operator lease (an eval) as sponsored. Rows without the column still read (class None)."""
+    conn = FakeConn(leases=[], rows=[], floors={}, card_leases=[
+        ("ev", _at(0), _at(60), None, "operator_agent"),
+        ("mine", _at(0), _at(60), "corr-1", "agent"),
+        ("old", _at(0), _at(60), "corr-2"),
+    ])
+    got = fill._card_leases_wc(conn, "gpu1", _at(0), _at(60), _at(120))
+    assert {k: v[3] for k, v in got.items()} == {"ev": "operator_agent", "mine": "agent", "old": None}
+    assert fill._card_leases(conn, "gpu1", _at(0), _at(60), _at(120))["mine"] == (_at(0), _at(60), "corr-1")

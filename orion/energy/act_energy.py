@@ -262,6 +262,9 @@ class LeaseSpan:
     start: datetime
     end: datetime
     metered: bool  # some act is charged for the lease's turn (act_cost_ids.turns_charged_to_acts)
+    # Operator work (an eval Juniper or an agent started; pool classes operator*, leased-evals design
+    # 2026-11-12, C3): its share is reported as sponsored, apart from Orion's activity.
+    sponsored: bool = False
 
 
 @dataclass(frozen=True)
@@ -271,6 +274,8 @@ class HostAttribution:
     ``above_rest_wh = sponsored_wh + metered_wh + unattributed_wh`` (unattributed is the
     remainder, NOT clipped: a negative value means over-attribution and the caller logs it).
     ``leased_unmetered_wh`` is the part of unattributed on leased cards whose turn has no act.
+    ``sponsored_wh`` holds the sponsored containers' CPU share AND the operator leases' card share;
+    ``sponsored_lease_wh`` is the operator-lease part of it.
     ``split_unknown_s``: seconds with a chassis reading but a hole in the split (all of their
     above-rest energy lands in unattributed)."""
 
@@ -281,6 +286,7 @@ class HostAttribution:
     leased_unmetered_wh: float
     covered_s: float
     split_unknown_s: float
+    sponsored_lease_wh: float = 0.0
 
     @property
     def unattributed_wh(self) -> float:
@@ -303,7 +309,7 @@ def attribute_host_window(series: HostSeries, floors_by_day: Mapping[date, HostF
     at = _At(series, max_gap_s)
     steps = max(1, math.ceil(elapsed / step_s))
     dt = elapsed / steps
-    rest = above = sponsored = metered = leased_un = covered = unknown = 0.0
+    rest = above = sponsored = metered = leased_un = covered = unknown = sp_lease = 0.0
     # Sweep each card's leases in time order: a busy lane closes ~800 leases an hour, so testing
     # every lease at every second would be quadratic. Steps are increasing, so a pointer suffices.
     order = {c: sorted(spans, key=lambda x: x.start) for c, spans in leases_by_card.items()}
@@ -334,17 +340,19 @@ def attribute_host_window(series: HostSeries, floors_by_day: Mapping[date, HostF
         for card, live in active.items():
             if card not in sp.card_above:
                 continue
-            held = [x.metered for x in live]
-            if not held:
+            if not live:
                 continue
             w = sp.card_above[card] * sp.ratio * dt
-            m = sum(held) / len(held)
+            n = len(live)
+            s_share = sum(1 for x in live if x.sponsored) / n
+            m = sum(1 for x in live if x.metered and not x.sponsored) / n
+            sp_lease += w * s_share
             metered += w * m
-            leased_un += w * (1.0 - m)
+            leased_un += w * (1.0 - m - s_share)
     j = JOULES_PER_WH
-    return HostAttribution(rest_wh=rest / j, above_rest_wh=above / j, sponsored_wh=sponsored / j,
+    return HostAttribution(rest_wh=rest / j, above_rest_wh=above / j, sponsored_wh=(sponsored + sp_lease) / j,
                            metered_wh=metered / j, leased_unmetered_wh=leased_un / j, covered_s=covered,
-                           split_unknown_s=unknown)
+                           split_unknown_s=unknown, sponsored_lease_wh=sp_lease / j)
 
 
 def heat_c(wh: float, sensitivity_c_per_100w: float) -> float:

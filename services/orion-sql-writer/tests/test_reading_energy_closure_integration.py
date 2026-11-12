@@ -71,7 +71,7 @@ CREATE TABLE substrate_action_effect_posterior (
     PRIMARY KEY (dispatch_kind, target_id, signal_id, baseline_bin));
 CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL,
     event VARCHAR NOT NULL, lease_id VARCHAR, holder VARCHAR, role VARCHAR, cards JSON,
-    turn_correlation_id VARCHAR, held_ms DOUBLE PRECISION, detail JSON);
+    turn_correlation_id VARCHAR, held_ms DOUBLE PRECISION, detail JSON, work_class VARCHAR);
 CREATE TABLE world_pulse_read_seed (seed_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
     trace_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), completed_at TIMESTAMPTZ,
     stage2_status TEXT NOT NULL DEFAULT 'pending', stage2_completed_at TIMESTAMPTZ,

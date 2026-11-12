@@ -26,7 +26,10 @@ service keys and container_name. A new seat is covered with no edit here.
 
 What it scans: the whole repo (code, config, compose, templates, units, .env_example, Dockerfile,
 Makefile) -- never a live `.env` unless --live-env is given (operator report). Excluded: hidden
-directories, tests/, evals/, docs/, bench/, graphify-out/, venv/, node_modules/, *.test.js.
+directories, tests/, docs/, graphify-out/, venv/, node_modules/, *.test.js. evals/ and bench/ ARE
+scanned since 2026-11-12 (leased-evals design, Phase 1): a replay eval that posted straight to a
+worker ran on chat's card beside Orion's own work. An eval calls a model through
+orion/evals/leased_llm.py (a GPU pool operator hold + the gateway).
 Addresses: circe's tailnet address and name (config/gpu_pool.yaml) and its LAN addresses.
 
 ALLOW keys are per file + host + port, not per line: a second call to an already-allowed address in
@@ -99,11 +102,16 @@ ALLOW: dict[str, str] = {
     "services/orion-juniper-affective-state/app/vision_backend.py:circe:8011": (
         "docstring stating this service goes through the gateway, NOT straight at circe:8011"
     ),
+    # Recorded snapshots of the pool's own state (the body atlas's whole-body wiring on those days):
+    # data an eval replays offline, never a URL anything calls.
+    "orion/body_atlas/evals/fixtures/whole_body_2026-10-*_wires.json:100.112.254.99:801[46]": (
+        "recorded pool-state snapshot (grant URLs as data); nothing calls it"
+    ),
 }
 
 _EXCLUDED_PARTS = {
-    "tests", "evals", "docs", "graphify-out", "venv", ".venv", "node_modules", "__pycache__",
-    ".worktrees", ".claude", "bench", ".git", ".github", ".pytest_cache", "site-packages",
+    "tests", "docs", "graphify-out", "venv", ".venv", "node_modules", "__pycache__",
+    ".worktrees", ".claude", ".git", ".github", ".pytest_cache", "site-packages",
 }
 _SUFFIXES = {
     ".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".sh", ".yml", ".yaml", ".toml", ".json",

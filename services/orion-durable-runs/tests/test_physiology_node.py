@@ -320,9 +320,10 @@ def test_store_reads_on_postgres():
                                   interval_start timestamptz, energy_kwh double precision,
                                   marginal_usd_per_kwh double precision, computed_at timestamptz)""")
             await conn.execute("""CREATE TABLE gpu_pool_events (event_id varchar PRIMARY KEY, generated_at timestamptz,
-                                  event varchar, lease_id varchar, role varchar, held_ms double precision)""")
+                                  event varchar, lease_id varchar, role varchar, held_ms double precision,
+                                  work_class varchar)""")
             await conn.execute("""CREATE TABLE gpu_pool_leases (lease_id text PRIMARY KEY, status text NOT NULL,
-                                  role text, granted_at timestamptz, hold_lease_id text)""")
+                                  role text, granted_at timestamptz, hold_lease_id text, work_class text)""")
             await conn.execute("""CREATE TABLE endogenous_outreach_decisions (decision_id text PRIMARY KEY,
                                   decided_at timestamptz, outreach boolean, reason text, result_json jsonb,
                                   forced boolean NOT NULL DEFAULT false)""")

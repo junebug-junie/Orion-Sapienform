@@ -172,6 +172,9 @@ SYNC_PREFIXES = (
     # is synced, so without these the flags never reach a live .env.
     "HUB_ACT_LEDGER_",
     "SQL_WRITER_ACT_",
+    # Hourly energy attribution (orion-sql-writer); the leased-evals sponsored flag (2026-11-12)
+    # lives here and would otherwise never reach a live .env.
+    "ORION_ENERGY_ATTRIBUTION_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them

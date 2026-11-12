@@ -176,6 +176,15 @@ def test_gpu_evidence_single_stuck_lease_is_below_the_floor():
     assert gpu_queue_evidence(s, T0 + timedelta(seconds=1000))[2] == 0.0
 
 
+def test_gpu_evidence_queued_evals_are_never_strain():
+    """Leased evals (2026-11-12): operator holds wait for hours by design; they are not Orion's load."""
+    s = snaps([{"operator_agent": 2, "operator_chat": 1, "agent": 1}] * 200)
+    age, depth, sus, held, _, _ = gpu_queue_evidence(s, T0 + timedelta(seconds=1000))
+    assert (depth, sus, held) == (1, 0.0, 0)
+    s = snaps([({"operator_agent": 3}) for _ in range(200)])
+    assert gpu_queue_evidence(s, T0 + timedelta(seconds=1000))[1:3] == (0, 0.0)
+
+
 def test_gpu_evidence_gap_breaks_the_run():
     s = snaps([{"agent": 3}] * 10) + snaps([{"agent": 3}] * 10, start=T0 + timedelta(seconds=100))
     _, _, sus, _, _, _ = gpu_queue_evidence(s, T0 + timedelta(seconds=150))

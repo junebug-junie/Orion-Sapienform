@@ -49,6 +49,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 from orion.autonomy.cabinet_heat import REFLEX_CABINET_HOT, REFLEX_CABINET_UNKNOWN
 from orion.gpu_pool.controller_health import classify as classify_controller_refusal
+from orion.gpu_pool.value_order import is_operator_class
 from orion.schemas.regulation import ArousalInputsV1, ArousalReadingV1
 
 # GPU pool publishes GpuPoolStateV1 every 5 s; sql-writer lands each in ~10 ms (live 10-10).
@@ -100,6 +101,13 @@ def _depth_sum(depth: object) -> Optional[int]:
     return sum(depth.values())
 
 
+def _not_operator(depth):
+    """A per-class depth map without the operator work classes; anything else passes unchanged."""
+    if isinstance(depth, dict):
+        return {k: v for k, v in depth.items() if not is_operator_class(k)}
+    return depth
+
+
 def gpu_queue_evidence(
     snapshots: Sequence[tuple],
     now: datetime,
@@ -123,15 +131,19 @@ def gpu_queue_evidence(
     (held and deferrable 0) when there is no snapshot. A malformed depth map counts as no
     snapshot; a malformed held or deferrable map counts as 0, and held + deferrable never exceed
     the queue.
+
+    Operator work classes (``operator*``: evals Juniper or an agent started, leased-evals design
+    2026-11-12) are left out of every map: an eval waiting for a seat for hours is neither Orion's
+    load nor Orion's hunger, and must never read as strain.
     """
     now = _utc(now)
     rows: list[tuple[datetime, int, int, Optional[str], int]] = []
     for snap in snapshots:
-        ts, depth = snap[0], snap[1]
+        ts, depth = snap[0], _not_operator(snap[1])
         total = _depth_sum(depth)
         if total is None:
             continue
-        held = _depth_sum(snap[2]) if len(snap) > 2 and snap[2] is not None else None
+        held = _depth_sum(_not_operator(snap[2])) if len(snap) > 2 and snap[2] is not None else None
         held = min(held or 0, total)
         reason = (snap[3] if len(snap) > 3 else None) if held else None
         deferrable = _depth_sum(snap[4]) if len(snap) > 4 and snap[4] is not None else None

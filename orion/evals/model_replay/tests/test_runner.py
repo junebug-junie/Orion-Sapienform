@@ -298,3 +298,62 @@ def test_a_recall_mid_task_cuts_the_pair_and_scores_nothing(monkeypatch):
         return await asyncio.wait_for(fut, 2.0)
 
     assert asyncio.run(go()) is None
+
+
+def test_cancelling_the_run_drains_the_pair_before_returning(monkeypatch):
+    """Review finding: an outer cancel must cancel and drain _run_pair before the holds go back."""
+    from orion.evals.model_replay import runner as r
+
+    started, drained = asyncio.Event(), []
+
+    async def slow_pair(task, cfg, rigs):
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            drained.append(True)
+            raise
+
+    monkeypatch.setattr(r, "_run_pair", slow_pair)
+
+    async def go():
+        outer = asyncio.ensure_future(r._run_or_stop(None, None, {}, asyncio.Event()))
+        await started.wait()
+        outer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+        return drained
+
+    assert asyncio.run(go()) == [True]
+
+
+def test_a_gateway_hold_gone_refusal_is_a_stop_not_a_model_failure():
+    import httpx
+
+    from orion.evals.model_replay.agent_loop import INFRA_ERRORS, HoldGone, HttpMessagesClient
+
+    def handler(request):
+        return httpx.Response(503, json={"error": {"type": "gpu_pool_unavailable",
+                                                   "reason": "hold_not_granted:released"}})
+
+    seen = []
+    client = HttpMessagesClient("http://gateway.test:8210", transport=httpx.MockTransport(handler), model="m")
+    client.on_hold_gone = seen.append
+    with pytest.raises(HoldGone):
+        client.create({"messages": []}, 10.0)
+    assert seen and "hold_not_granted" in seen[0] and "HoldGone" in INFRA_ERRORS
+
+
+def test_mark_recalled_sets_the_transports_recall_from_another_thread():
+    import threading
+
+    from orion.evals.model_replay.pool_hold import LeaseHoldTransport
+
+    async def go():
+        t = LeaseHoldTransport("redis://unused")
+        loop = asyncio.get_running_loop()
+        threading.Thread(target=t.mark_recalled, args=(loop, "hold_not_granted")).start()
+        await asyncio.wait_for(t.recalled.wait(), 2.0)
+        return t.recall_reason
+
+    assert asyncio.run(go()).startswith("hold_gone:")

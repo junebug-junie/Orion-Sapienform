@@ -10,6 +10,7 @@ Between tasks the cards go back to normal traffic.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import random
@@ -272,6 +273,13 @@ async def _run_or_stop(task: ReplayTaskV1, cfg: ReplayConfig, rigs: dict[str, Mo
     stop = asyncio.ensure_future(recalled.wait())
     try:
         await asyncio.wait([pair, stop], return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        # Ctrl-C / SIGTERM on the run: the pair's own cancel path (STOP, cut calls, drain threads)
+        # must finish BEFORE the caller's PoolHolds hands the cards back.
+        pair.cancel()
+        with contextlib.suppress(BaseException):
+            await pair
+        raise
     finally:
         stop.cancel()
     if pair.done():
@@ -400,6 +408,8 @@ class LiveRigFactory:
     fetch_cache: FetchCache
     # orion-llm-gateway: every model call goes there under the task's hold (never the grant's URL).
     gateway: str = "http://127.0.0.1:8210"
+    # Called (from a worker thread) when the gateway says the hold is gone: the transport's recall.
+    on_hold_gone: Optional[Callable[[str], None]] = None
 
     def __call__(self, task: ReplayTaskV1, model: str, grant: Grant) -> ModelRig:
         from orion.evals.model_replay.graph_scratch import ScratchGraphs
@@ -431,6 +441,7 @@ class LiveRigFactory:
 
         http_client = agent_loop.HttpMessagesClient(self.gateway, headers=gateway_headers(model, grant),
                                                     model=gateway_route(model))
+        http_client.on_hold_gone = self.on_hold_gone
         client: agent_loop.MessagesClient = http_client
 
         def full_cleanup() -> None:

@@ -202,3 +202,52 @@ def test_operator_lanes_take_a_hold_only_for_a_lane_the_run_uses(pool):
         assert [s["work_class"] for s in lanes.summary()] == ["operator_agent"]
     assert pool.asked["work_class"] == "operator_agent"
     assert pool.exits == ["ok"]
+
+
+def test_ctrl_c_while_queued_withdraws_the_queued_hold(monkeypatch):
+    """Review finding: an interrupt during the queue wait must cancel the acquire (gpu_lease then
+    withdraws the queued lease), not leave it queued for hours."""
+    import threading
+
+    withdrawn = []
+
+    def queued_forever(bus, **kw):
+        @contextlib.asynccontextmanager
+        async def cm():
+            try:
+                await asyncio.sleep(3600)   # waiting in the pool's queue
+            except asyncio.CancelledError:
+                withdrawn.append(True)      # gpu_lease's _acquire withdraws here
+                raise
+            yield None
+        return cm()
+
+    monkeypatch.setattr(pool_client, "gpu_lease", queued_forever)
+
+    async def no_bus(url):
+        return _Bus()
+    monkeypatch.setattr(leased_llm, "_connect_bus", no_bus)
+
+    class InterruptingEvent(threading.Event):
+        def wait(self, timeout=None):
+            super().wait(0.2)
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(leased_llm, "_ready_event", InterruptingEvent)
+    with pytest.raises(KeyboardInterrupt):
+        with operator_lane_sync("chat", holder="operator:t", gateway=GATEWAY):
+            pass
+    assert withdrawn == [True]
+
+
+def test_ctrl_c_in_the_eval_body_releases_as_cancelled(pool):
+    with pytest.raises(KeyboardInterrupt):
+        with _sync(Gateway()):
+            raise KeyboardInterrupt
+    assert pool.exits == ["cancelled"]
+
+
+def test_operator_class_match_is_exact():
+    from orion.gpu_pool.value_order import is_operator_class
+
+    assert not is_operator_class("operators_x") and not is_operator_class("operator-ish")

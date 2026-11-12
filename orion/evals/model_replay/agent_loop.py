@@ -63,11 +63,21 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 INFRA_ERRORS = frozenset({"LeaseUnavailable", "LeaseBacklogged", "PoolRpcTimeout", "ConnectError",
-                          "ConnectTimeout"})
+                          "ConnectTimeout", "HoldGone"})
 
 
 class MessagesClient(Protocol):
     def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]: ...
+
+
+class HoldGone(RuntimeError):
+    """The gateway refused a call because the task's GPU pool hold is gone (recalled or expired)."""
+
+
+def _hold_gone(text: str) -> bool:
+    from orion.evals.leased_llm import _hold_gone as gone
+
+    return gone(text)
 
 
 class HttpMessagesClient:
@@ -81,6 +91,7 @@ class HttpMessagesClient:
 
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.on_hold_gone: Optional[Callable[[str], None]] = None
         # One client per rig, so close() from another thread cuts an in-flight call (run cancelled).
         self._client = httpx.Client(headers={"anthropic-version": "2023-06-01", "x-api-key": "orion-model-replay",
                                              **(headers or {})}, transport=transport)
@@ -89,6 +100,12 @@ class HttpMessagesClient:
         if self.model is not None:
             body = {**body, "model": self.model}
         r = self._client.post(f"{self.base_url}/v1/messages", json=body, timeout=max(5.0, timeout_sec))
+        if r.status_code != 200 and _hold_gone(r.text):
+            # The gateway refused because the task's hold is gone (recalled past its grace): a stop,
+            # not a model failure. run_one ends the task; the runner sees the transport's recall.
+            if self.on_hold_gone is not None:
+                self.on_hold_gone(r.text[:200])
+            raise HoldGone(r.text[:200])
         r.raise_for_status()
         return r.json()
 

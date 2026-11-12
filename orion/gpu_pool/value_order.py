@@ -48,7 +48,8 @@ class ValueOrderConfig:
 def is_operator_class(work_class: Optional[str]) -> bool:
     """True for the pool's operator work classes (``operator``, ``operator_chat``, ...): work Juniper
     or an agent started (an eval, a bench), not one of Orion's own acts."""
-    return bool(work_class) and str(work_class).startswith(OPERATOR_CLASS_PREFIX)
+    wc = str(work_class or "")
+    return wc == OPERATOR_CLASS_PREFIX or wc.startswith(OPERATOR_CLASS_PREFIX + "_")
 
 
 def family_key(family: Optional[str]) -> Optional[str]:

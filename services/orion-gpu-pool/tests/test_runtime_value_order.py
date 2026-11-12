@@ -49,6 +49,8 @@ def test_an_operator_class_lease_that_carries_a_bid_is_refused():
         r = await rt.acquire(acq("operator_agent", kind="hold", priority="background", want_id="x", want_net=0.5,
                                  want_family="eval"))
         assert (r.status, r.reason, r.lease_id) == ("unavailable", "operator_class_never_bids", None)
+        hi = await rt.acquire(acq("operator_agent", kind="hold", priority="interactive"))
+        assert (hi.status, hi.reason, hi.lease_id) == ("unavailable", "operator_class_background_only", None)
         ok = await rt.acquire(acq("operator_agent", kind="hold", priority="background"))
         assert ok.status in ("granted", "queued") and ok.lease_id
     run(go())

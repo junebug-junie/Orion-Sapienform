@@ -134,7 +134,8 @@ async def live(args: argparse.Namespace, tasks) -> int:
             factory = runner.LiveRigFactory(repo=repo_path, run_tag=run_tag, sandbox_image=args.sandbox_image,
                                             graph_image=prod_falkordb_image(), graph_dumps=dumps,
                                             sql=ReadOnlyPsql(), http=http, docker_ro=DockerReadOnly(),
-                                            fetch_cache=FetchCache(http), gateway=gateway_url(args.gateway))
+                                            fetch_cache=FetchCache(http), gateway=gateway_url(args.gateway),
+                                            on_hold_gone=lambda why: transport.mark_recalled(loop, why))
             runner.install_signal_unwind(loop, asyncio.current_task())
             summary = await runner.run_replay(cfg, transport, factory, seat_check=http_seat_check(args.pool_http),
                                               sweep=http_sweeper(args.pool_http))

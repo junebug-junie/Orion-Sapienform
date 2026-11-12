@@ -481,6 +481,13 @@ class LeaseHoldTransport(BusControlTransport):
         reply = await lease_rpc(self._bus, req, source=self.holder, timeout_sec=self.timeout_sec)
         return {"ok": reply.status in ok, "reason": reply.reason, "detail": reply.model_dump(mode="json")}
 
+    def mark_recalled(self, loop: asyncio.AbstractEventLoop, why: str) -> None:
+        """Thread-safe: a call found the hold gone before the heartbeat did (the gateway refused it)."""
+        def _set() -> None:
+            self.recall_reason = self.recall_reason or f"hold_gone:{why[:120]}"
+            self.recalled.set()
+        loop.call_soon_threadsafe(_set)
+
     def _start_beat(self, lease_id: str) -> None:
         if lease_id not in self._beats:
             self._beats[lease_id] = asyncio.create_task(self._beat(lease_id))
@@ -530,6 +537,8 @@ class LeaseHoldTransport(BusControlTransport):
         return grant
 
     async def release(self, lease_id: str, actor: str) -> dict[str, Any]:
+        """Release one hold. Once any seat of this run was recalled, every release says
+        ``cancelled`` (the run stopped because of the recall), not ``ok``."""
         from orion.schemas.gpu_pool import GpuLeaseRequestV1
 
         self._stop_beat(lease_id)

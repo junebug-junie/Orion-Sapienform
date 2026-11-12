@@ -413,6 +413,9 @@ class PoolRuntime:
             if is_operator_class(req.work_class) and req.want_net is not None:
                 # Operator work (evals) never bids in Orion's want market (leased-evals design, C2).
                 return GpuLeaseReplyV1(status="unavailable", reason="operator_class_never_bids")
+            if is_operator_class(req.work_class) and req.priority != "background":
+                # ...and never outranks Orion's background work (C2): background only.
+                return GpuLeaseReplyV1(status="unavailable", reason="operator_class_background_only")
             roles = self.cfg.classes[req.work_class].roles
             if any(self.cfg.roles[r].operator_only for r in roles) and not operator:
                 return GpuLeaseReplyV1(status="unavailable", reason="operator_only_class")

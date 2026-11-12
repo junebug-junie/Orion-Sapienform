@@ -110,6 +110,10 @@ def _call(lane, prompt: str) -> tuple[str, float]:
 def run(lane_name: str, repeats: int) -> int:
     from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, operator_lane_sync
 
+    if not _REAL_BUS_URL:
+        print("ORION_BUS_URL is not set: the GPU pool seat is asked for over the real bus "
+              "(redis://<bus-host>:6379/0). Nothing was called.")
+        return 2
     try:
         with operator_lane_sync(lane_name, holder=HOLDER, bus_url=_REAL_BUS_URL) as lane:
             print(f"    seat: {json.dumps(lane.summary())}")

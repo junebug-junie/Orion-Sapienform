@@ -60,7 +60,8 @@ HEARTBEAT_SEC = 30.0   # the pool's hold TTL is 90 s (config/gpu_pool.yaml hold_
 DEFAULT_CALL_TIMEOUT_SEC = 900.0
 # Gateway refusals that mean the hold is gone (recalled past its grace, expired, re-granted).
 _HOLD_GONE_MARKERS = ("gpu_pool_recalled", "hold_not_granted", "hold_unknown", "stale_hold_generation",
-                      "gpu_lease_")
+                      "not_a_hold")
+WAITING_NOTICE_SEC = 10.0   # say once that the run is waiting for its seat, after this long
 EXIT_RECALLED = 3   # exit status an eval uses after writing its partial report
 
 
@@ -243,17 +244,21 @@ async def operator_lane(lane: str, *, holder: str, bus: Any = None, bus_url: Opt
                 await bus.close()
 
 
+_ready_event = threading.Event   # test seam: the caller's wait for its seat
+
+
 @contextlib.contextmanager
 def operator_lane_sync(lane: str, *, holder: str, bus_url: Optional[str] = None, gateway: Optional[str] = None,
                        queue_wait_sec: float = DEFAULT_QUEUE_WAIT_SEC, heartbeat_sec: float = HEARTBEAT_SEC,
                        http_transport: Any = None) -> Iterator[OperatorLane]:
     """``operator_lane`` for a plain (non-async) script: the hold and its heartbeat live on a
     background event loop thread; calls are made from the caller's thread."""
-    ready = threading.Event()
+    ready = _ready_event()
     box: dict[str, Any] = {}
     loop = asyncio.new_event_loop()
 
     async def keep() -> None:
+        box["task"] = asyncio.current_task()
         box["stop"] = asyncio.Event()
         try:
             async with operator_lane(lane, holder=holder, bus_url=bus_url, gateway=gateway,
@@ -274,7 +279,22 @@ def operator_lane_sync(lane: str, *, holder: str, bus_url: Optional[str] = None,
     thread = threading.Thread(target=lambda: loop.run_until_complete(keep()), name=f"operator-lane-{lane}",
                               daemon=True)
     thread.start()
-    ready.wait()
+    try:
+        if not ready.wait(WAITING_NOTICE_SEC):
+            import sys
+
+            print(f"operator lane {lane}: waiting in the GPU pool's queue for {operator_class(lane)} "
+                  f"(behind all of Orion's own work; up to {queue_wait_sec / 3600:.1f} h)", file=sys.stderr, flush=True)
+            ready.wait()
+    except BaseException:
+        # Ctrl+C while queued: cancel the wait so gpu_lease withdraws the queued hold, then stop.
+        task = box.get("task")
+        if task is not None:
+            loop.call_soon_threadsafe(task.cancel)
+        thread.join(timeout=15.0)
+        if not thread.is_alive():
+            loop.close()
+        raise
     if "lane" not in box:
         thread.join()
         loop.close()
@@ -286,9 +306,10 @@ def operator_lane_sync(lane: str, *, holder: str, bus_url: Optional[str] = None,
         box["raise_recalled"] = str(exc)
         raise
     except BaseException as exc:
-        # The eval failed in this thread: the hold is released as upstream_error, like the async form.
+        # The eval failed in this thread: upstream_error, like the async form; a Ctrl+C is cancelled.
         if handle.lease.release_outcome is None:
-            handle.lease.release_outcome = "upstream_error"
+            interrupted = isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError))
+            handle.lease.release_outcome = "cancelled" if interrupted else "upstream_error"
             handle.lease.release_detail = f"{type(exc).__name__}: {exc}"[:2000]
         raise
     finally:

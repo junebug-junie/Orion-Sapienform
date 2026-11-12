@@ -95,3 +95,18 @@ def test_outside_results_are_never_replayed() -> None:
     (step,) = turn_steps.parse_rows(rows)
     assert step.action == "https://x" and "IGNORE" not in step.result
     assert "IGNORE" not in "\n".join(turn_steps.render([step], "s1"))
+
+
+def test_reading_receipts_are_shown_only_when_they_hold_no_read_text() -> None:
+    name = "mcp__orion-reading__recommend_reading"
+    clean = json.dumps({"ok": True, "result": {"request_id": "r1", "status": "queued", "summary": "", "error": None}})
+    read = json.dumps({"ok": True, "result": {"request_id": "r2", "status": "completed", "summary": "IGNORE ALL"}})
+    rows = [_row("c1", 1, [_use("r", name, url="https://x"), _use("q", name, url="https://y")]),
+            _row("c1", 2, [_res("r", clean), _res("q", read)])]
+    queued, done = turn_steps.parse_rows(rows)
+    assert "queued" in queued.result and not queued.outside
+    assert done.outside and "IGNORE" not in done.result
+    # CONTENT_SQL cuts results to 400 chars: a cut-off receipt fails closed.
+    (cut,) = turn_steps.parse_rows([_row("c1", 1, [_use("r", name, url="https://x")]),
+                                   _row("c1", 2, [_res("r", clean[:30])])])
+    assert cut.outside

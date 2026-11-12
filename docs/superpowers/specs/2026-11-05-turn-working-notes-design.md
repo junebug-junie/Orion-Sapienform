@@ -5,6 +5,12 @@ quarantined reader stay proposals.
 
 Implementation notes (deviations from the text below, and why):
 
+- 2026-11-12 follow-up (after the first live tool turns): orion-reading calls are judged by their
+  result, not by the call. A queued receipt is Orion's own request and ids; only a receipt with a
+  non-empty `summary` or `error` (text from an earlier read) taints, and a non-JSON result fails
+  closed. Live trigger: 15 clean lines held back on 2026-11-11 20:30Z by one `recommend_reading`
+  that only queued a spec. Lines carry no time any more: Orion wrote 02:09Z for steps run at
+  03:05-03:10Z, so a written time is removed and each carried batch is dated by the harness.
 - The notes file is per *turn* (`<dir>/<session>/<correlation>.md`), not one per chat. A turn starts
   with an empty file, so text a tainted turn wrote can never ride along with a later clean turn. The
   per-chat history lives in the carry (Redis, 24 h per turn batch, newest 3,000 chars).

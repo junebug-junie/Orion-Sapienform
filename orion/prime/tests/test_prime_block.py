@@ -212,3 +212,21 @@ def test_hard_cut_never_leaves_a_half_ref():
     b = _render(s, cap=120)
     assert len(b.text) <= 120
     assert b.text.count("[") == b.text.count("]")
+
+
+def test_last_thought_cites_the_saved_thought_id_not_the_count():
+    """Part 3 scope 1: once Prime saves last_thought_id (Part 2), the block cites that id."""
+    b = _render(_state(last_thought_id="0123456789abcdef"))
+    assert "[thought:0123456789abcdef]" in b.text
+    assert "thought:0123456789abcdef" in b.refs
+    assert "#235" not in b.text
+    assert "Last thought (47 min ago; no move)" in b.text
+
+
+def test_saved_thought_id_wins_and_the_move_is_still_named():
+    at = NOW - timedelta(minutes=5)
+    nom = PrimeNominationV1(act_id="act_x", thought_id="ab12cd34ef56ab78", focus_id="f-1", question="Why so hot?",
+                            why="heat", arm="treated", opened_at=at, queued=True)
+    b = _render(_state(last_thought_at=at, last_thought_id="ab12cd34ef56ab78", open_nominations=[nom]))
+    assert "[thought:ab12cd34ef56ab78]" in b.text
+    assert "asked curiosity a question" in b.text

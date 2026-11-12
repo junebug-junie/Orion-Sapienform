@@ -40,6 +40,8 @@ heartbeat: HeartbeatOnly | None = None
 _stop = asyncio.Event()
 _sweep_task: asyncio.Task[None] | None = None
 _checkpointer_cm: Any = None
+checkpoint_prune: Any = None
+_checkpoint_prune_task: Optional[asyncio.Task] = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
@@ -568,6 +570,7 @@ async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
     global field_notes, _field_notes_task, reminiscence, _reminiscence_task
     global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
+    global checkpoint_prune, _checkpoint_prune_task
     from app.runner import DurableRunner
 
     try:
@@ -601,6 +604,12 @@ async def lifespan(app: FastAPI):
                 logger.exception("durable_runs_resume_on_boot_failed")
         _stop.clear()
         _sweep_task = asyncio.create_task(runner.sweep_forever(_stop))
+        if _settings.checkpoint_prune_mode != "off":
+            from app.checkpoint_prune import PrunePoller
+
+            checkpoint_prune = PrunePoller(dsn=_settings.postgres_uri, mode=_settings.checkpoint_prune_mode,
+                                           interval_sec=_settings.checkpoint_prune_interval_sec)
+            _checkpoint_prune_task = asyncio.create_task(checkpoint_prune.run_forever(_stop))
         if _settings.situation_graph_enabled and _settings.orion_bus_enabled:
             situation = _build_situation(saver)
             await situation.start(_stop)
@@ -672,6 +681,8 @@ async def lifespan(app: FastAPI):
         _stop.set()
         if _sweep_task is not None:
             _sweep_task.cancel()
+        if _checkpoint_prune_task is not None:
+            _checkpoint_prune_task.cancel()
         if _reconcile_task is not None:
             _reconcile_task.cancel()
         if _field_notes_task is not None:
@@ -735,6 +746,8 @@ async def health() -> dict[str, Any]:
         "field_note_poll": field_notes.health() if field_notes is not None else None,
         # Daily reminiscence Patch 2: the last tick's decision (episode, week, run submitted or why not).
         "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
+        # LangGraph checkpoint pruning: mode (dry_run ships), last pass's totals / deletions.
+        "checkpoint_prune": checkpoint_prune.health() if checkpoint_prune is not None else None,
     }
 
 

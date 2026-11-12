@@ -42,7 +42,7 @@ from app.admitted_graph import (
     taken_back,
 )
 from orion.journaler.schemas import JournalEntryWriteV1
-from orion.orion_day.budget import extract_refs
+from orion.orion_day.budget import chronology_citations, extract_refs, gate_event_refs
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.temporal_self import DayCitationCheckV1
 from orion.temporal_self.citations import check_arc_citations
@@ -100,6 +100,9 @@ class OrionDayState(TypedDict, total=False):
     # Temporal Self patch 4: the arc citation gate's result per text (DayCitationCheckV1 json).
     note_arc_citations: dict[str, Any]
     carry_forward_arc_citations: dict[str, Any]
+    # [event:] refs removed because the temporal core did not show them.
+    note_rejected_events: list[str]
+    carry_forward_rejected_events: list[str]
     letter_written: bool
     persisted: bool
     persist_outcome: str | None
@@ -156,13 +159,14 @@ def carry_forward_metadata(brief: OrionDayRunBriefV1, note_md: str) -> dict[str,
 
 
 def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCitationCheckV1 | None]:
-    """Temporal Self patch 4: arc ids the closed-day block did not show are removed from the text
-    and counted; a sentence naming the block's labels or clock times without an [arc:] is counted
-    and labelled UNVERIFIED (never retried). None when the letter had no block and cites no arc."""
-    block = brief.material.temporal_day
-    shown = [ref[4:] for ref in (block.records if block else {}) if ref.startswith("arc:")]
-    cleaned, check = check_arc_citations(text, shown, labels=block.labels if block else None)
-    if block is None and not check.rejected_unknown:
+    """Temporal Self patch 4: arc ids the closed-day block and the temporal core did not show are
+    removed from the text and counted; a sentence naming their labels or clock times without an
+    [arc:] is counted and labelled UNVERIFIED (never retried). None when the letter had neither
+    block and cites no arc."""
+    shown, labels = chronology_citations(brief.material)
+    has_block = brief.material.temporal_day is not None or brief.material.temporal_core is not None
+    cleaned, check = check_arc_citations(text, shown, labels=labels if has_block else None)
+    if not has_block and not check.rejected_unknown:
         return text, None
     return cleaned, check
 
@@ -170,10 +174,12 @@ def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCi
 def check_note(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
     if len(text) < MIN_NOTE_CHARS:
         raise EmptyGeneration(f"{ORION_DAY_NOTE_VERB}: completion too short ({len(text)} chars < {MIN_NOTE_CHARS})")
+    text, bad_events = gate_event_refs(text, brief.material)
+    events = {"note_md": text, "note_rejected_events": bad_events} if bad_events else {}
     cleaned, check = gate_arc_citations(text, brief)
     if check is None:
-        return {}
-    return {"note_md": cleaned, "note_arc_citations": check.model_dump(mode="json")}
+        return events
+    return {**events, "note_md": cleaned, "note_arc_citations": check.model_dump(mode="json")}
 
 
 def check_carry_forward(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
@@ -183,9 +189,11 @@ def check_carry_forward(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
         raise EmptyGeneration(f"{ORION_DAY_CARRY_FORWARD_VERB}: completion too short ({len(text)} chars)")
     if not _LIST_ITEM_RE.search(text):
         raise EmptyGeneration(f"{ORION_DAY_CARRY_FORWARD_VERB}: no list item in the completion")
+    text, bad_events = gate_event_refs(text, brief.material)
+    events = {"carry_forward_md": text, "carry_forward_rejected_events": bad_events} if bad_events else {}
     text, check = gate_arc_citations(text, brief)
-    gated = {} if check is None else {"carry_forward_md": text,
-                                      "carry_forward_arc_citations": check.model_dump(mode="json")}
+    gated = events if check is None else {**events, "carry_forward_md": text,
+                                          "carry_forward_arc_citations": check.model_dump(mode="json")}
     refs = extract_refs(text)
     known = set(brief.llm_view.included_refs)
     return {**gated, "carry_forward_refs": {"valid": sum(1 for r in refs if r in known),
@@ -198,6 +206,11 @@ def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[st
         condensed=brief.llm_view.condensed,
         approx_tokens=brief.llm_view.approx_tokens,
         budget_tokens=brief.llm_view.budget_tokens,
+        input_chars=dict(brief.llm_view.source_chars),
+        input_shares=dict(brief.llm_view.source_shares),
+        rejected_event_refs={name: list(state[key]) for name, key in (("note", "note_rejected_events"),
+                                                                       ("carry_forward", "carry_forward_rejected_events"))
+                             if state.get(key)},
         arc_citations={name: DayCitationCheckV1.model_validate(state[key])
                        for name, key in (("note", "note_arc_citations"),
                                          ("carry_forward", "carry_forward_arc_citations"))

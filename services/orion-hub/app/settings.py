@@ -1176,12 +1176,6 @@ class Settings(BaseSettings):
         default=3,
         alias="HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN",
     )
-    # Orion's Day carry-forward (orion/orion_day/carry_forward.py): the regular
-    # investigate line claims the freshest unexpired letter's carry_forward_md
-    # once and shows it as its own kickoff section. Never the letter's note.
-    HUB_CURIOSITY_CARRY_FORWARD_ENABLED: bool = Field(
-        default=True, alias="HUB_CURIOSITY_CARRY_FORWARD_ENABLED"
-    )
     # Orion's Day corrections (orion/orion_day/corrections.py): the regular investigate
     # line, on a writable graph, claims up to 5 recorded letter corrections once, shows each
     # with its named priors' current confidence / times_tested, and stamps at turn end which
@@ -1201,28 +1195,23 @@ class Settings(BaseSettings):
         default=True, alias="HUB_CURIOSITY_FOCUS_ENABLED"
     )
 
-    # --- Orion's Day: the daily letter (scripts/orion_day_letter.py) --------
-    # Hub gathers yesterday (America/Denver), submits an admitted
-    # `orion_day.letter` durable run, and emails the persisted row. State is the
-    # orion_day_letter table + the durable registry; nothing is kept in memory.
-    # Needs services/orion-sql-db/manual_migration_orion_day_letter_v1.sql.
+    # --- Orion's Day: the daily letter (living Prime Part 3) -----------------
+    # Prime (orion-mind) decides when a letter is written and orders it over HTTP
+    # (scripts/orion_day_order.py: GET /api/orion-day/letters/{date}, POST
+    # /api/orion-day/letter-run). Hub gathers the day, submits the admitted
+    # `orion_day.letter` durable run under Prime's run id, and emails the persisted
+    # row (scripts/orion_day_mailer.py). Hub never submits a letter on its own.
+    # Off = the order answers `refused` and no letter is emailed (the status endpoint
+    # still answers). Needs services/orion-sql-db/manual_migration_orion_day_letter_v1.sql.
     HUB_ORION_DAY_ENABLED: bool = Field(default=True, alias="HUB_ORION_DAY_ENABLED")
     # Separate kill switch for the email only: runs still write the letter.
     HUB_ORION_DAY_EMAIL_ENABLED: bool = Field(default=True, alias="HUB_ORION_DAY_EMAIL_ENABLED")
-    HUB_ORION_DAY_HOUR_LOCAL: int = Field(default=8, ge=0, le=23, alias="HUB_ORION_DAY_HOUR_LOCAL")
-    HUB_ORION_DAY_MINUTE_LOCAL: int = Field(default=30, ge=0, le=59, alias="HUB_ORION_DAY_MINUTE_LOCAL")
-    HUB_ORION_DAY_TICK_SEC: float = Field(default=300.0, gt=0, alias="HUB_ORION_DAY_TICK_SEC")
     HUB_ORION_DAY_DURABLE_URL: str = Field(
         default="http://127.0.0.1:8124", alias="HUB_ORION_DAY_DURABLE_URL"
     )
-    # Durable attempts per letter day (orion-day-<date>-1..N); then one notice.
-    HUB_ORION_DAY_MAX_ATTEMPTS: int = Field(default=6, ge=1, alias="HUB_ORION_DAY_MAX_ATTEMPTS")
-    # Per-LLM-call budget sent on the brief (brief.timeout_sec, max 3600).
-    HUB_ORION_DAY_TIMEOUT_SEC: float = Field(default=1800.0, gt=0, le=3600, alias="HUB_ORION_DAY_TIMEOUT_SEC")
-    # How long carry_forward_md stays eligible for curiosity after the letter is written.
-    HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS: float = Field(
-        default=36.0, gt=0, le=336, alias="HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS"
-    )
+    # How often the mailer sweeps the last few days for un-emailed letter rows (the durable
+    # run-state hook emails sooner when curiosity's run-state listener is on).
+    HUB_ORION_DAY_EMAIL_SWEEP_SEC: float = Field(default=900.0, gt=0, alias="HUB_ORION_DAY_EMAIL_SWEEP_SEC")
     # Wait between email attempts after notify did not answer email_status=sent.
     HUB_ORION_DAY_EMAIL_RETRY_SEC: float = Field(default=1800.0, gt=0, alias="HUB_ORION_DAY_EMAIL_RETRY_SEC")
     # Notify call timeout: the request carries inline images.

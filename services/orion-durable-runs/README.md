@@ -563,47 +563,47 @@ acked only after both publishes, deduped by sql-writer). Before this only
 `completed` was, so a waiter such as cortex-exec's self-study reflect never saw an
 admitted failure end the run.
 
-### Admitted Orion's Day letter (`orion_day.letter`, 2026-09-30)
+### Admitted Orion's Day letter (`orion_day.letter`): Prime's end-of-day turn (2026-11-12)
 
-Orion's daily note about yesterday (America/Denver), for the 08:30 "Orion's Day" email.
-Contract: `orion/schemas/orion_day.py`; Hub gathers the day and builds the brief with
-`orion/orion_day/` (read-only SQL + a deterministic ~70k-token budget) and submits an
-admitted request (`llm.route.agent`, background, `deadline_at` = end of the next local day).
-Graph (`app/orion_day_graph.py`):
+Orion's letter about yesterday (America/Denver). Since living Prime Part 3 (design #3224) the letter
+is Prime's own act: orion-mind sees the day closed with no letter, bids a `make` act, and when funded
+orders the run from Hub (`POST /api/orion-day/letter-run`). Hub gathers the day with `orion/orion_day/`
+(read-only SQL, the honest input of `day_input.py`) and submits the admitted request under Prime's
+run id and correlation id (`llm.route.agent`, background, `deadline_at` from Prime's order).
+Contract: `orion/schemas/orion_day.py`. Graph (`app/orion_day_graph.py`):
 
-    resource_request -> resource_wait -> write_note -> write_carry_forward -> persist -> finish
+    resource_request -> resource_wait -> write_letter -> persist -> finish
 
-- Two separate cortex verbs under the run's hold (`options.gpu_lease`, route `agent`):
-  `orion_day_note_v1` (long first-person note, plain markdown; its prompt has no
-  future-curiosity instruction) and `orion_day_carry_forward_v1` (threads for future curiosity,
-  given the digest and the finished note). Each text is checkpointed; a restart never
-  regenerates one. A lost/recalled hold replays the node (not an attempt). A transport error,
-  or a completion `runner.strict_final_text` refuses (empty final text -- never the reasoning
-  fields --, error text framed as prose, `finish_reason=length`) or below the node's floor (note
-  < 400 chars; carry-forward with no list item) is one attempt
-  (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`), and the next one waits out a backoff in `retry_wait`.
-- The hold asks for `requirements.minimum_context_tokens` = digest + note + carry-forward, so a
-  heavy day is never placed on the 65,536-token chat card (live `/props` 2026-09-30) when the
-  pool spills agent work there.
-- The hold is released as soon as the carry-forward text is checkpointed.
+- `write_letter`: ONE unified turn on the durable turn seam (`app/harness_step.py`) under the run's
+  hold: Hub session `orion_day_letter` (Prime's hand-back reads it as a "letter" turn), source tag
+  `orion_day_letter` (not framed as a curiosity run), `require_lookup=False` (Orion may dig and
+  recall; a pure writing turn must not fail the lookup gate). The user message is
+  `orion/orion_day/letter_turn.py`'s: the writing instructions lifted from the retired note verb,
+  the days that got no letter, the whole record (closed-day block, temporal core, Juniper, curiosity,
+  self-sense, reveries, the trimmed tail) and a closing `## Threads I am carrying` section. The turn's
+  own prefix adds the Prime block (Part 1). The reply is split: the letter is `note_md`, the threads
+  `carry_forward_md`. Same failure policy as `harness_smoke_graph`: a lost/recalled hold replays the
+  node; a refusal, timeout, empty reply, transport error or a letter under 400 chars is one attempt
+  (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`, backoff in `retry_wait`); past the budget the run fails with
+  no row. A checkpointed letter is never regenerated. A worker that dies mid-turn has that turn
+  cancelled by its checkpoint-derived id.
+- The hold asks for `requirements.minimum_context_tokens` = record + frame + harness prefix + the
+  letter's completion, so a heavy day is never placed on the 65,536-token chat card.
+- The hold is released as soon as the letter is checkpointed.
 - `persist` (no GPU): `INSERT INTO orion_day_letter ... ON CONFLICT (letter_date) DO NOTHING`
-  (`app/orion_day_store.py`, migration `services/orion-sql-db/manual_migration_orion_day_letter_v1.sql`),
-  then publishes the STORED row's NOTE as `journal.entry.write` (id `uuid5(letter_date)`, the
-  row's `created_at`, the writing run as correlation id, `trigger_kind=orion_day_letter`,
-  journal email disabled: Hub sends the styled email) -- identical from every run, so a later
-  run heals a journal the first never got out. An insert failure backs off and eventually fails
-  the run; once the row exists the journal never fails it (own retry budget, then
-  `journal_published=false`).
-- The checkpoint keeps only a slim brief; the full brief (material + digest, ~1 MB on a heavy
-  day) is read from `durable_admission_runs.request`, so the resume sweep's checkpoint scan
-  does not load it once per checkpoint.
-- Finish detail: `line=orion_day`, `letter_date`, `persisted`, `persist_outcome`
-  (`written` / `already_written` -- key on this, not on `completed`), `existing_run_id`,
-  `journal_entry_id`, `journal_published`, text lengths, `carry_forward_refs`, `llm_attempts`.
-  The status API adds an `orion_day` block.
-- A timed-out verb call is not cancelled at cortex (no harness turn to cancel): the RPC gives up
-  30 s before the node's budget and the hold is released, but the model may finish that
-  generation on the card. It is the same exposure `self_study.reflect` has.
+  (`app/orion_day_store.py`), then publishes the STORED row's letter as `journal.entry.write`
+  (id `uuid5(letter_date)`, the row's `created_at`, `trigger_kind=orion_day_letter`; journal email
+  disabled: Hub sends the styled email). `sources` carries the per-source input shares, the turn's
+  `turn_correlation_id`, Prime's `prime_act_id` and the `missed_letters` the turn was told about.
+  `carry_forward_expires_at` is NULL: the curiosity carry-forward offer is retired.
+- The checkpoint keeps only a slim brief; the full brief is read from `durable_admission_runs.request`.
+- Finish detail and the status API's `orion_day` block: `persisted`, `persist_outcome` (`written` /
+  `already_written` -- key on this, not on `completed`), `turn_correlation_id`, `prime_act_id`, and
+  `threads` (at most 5), which Prime reads to open concerns.
+- Deploy order: orion-hub, then orion-durable-runs, then orion-mind (cortex-exec any time after
+  durable-runs: nothing calls the retired verbs). An in-flight run checkpointed at the old
+  `write_note` / `write_carry_forward` nodes cannot resume on this graph: check `GET /runs/unfinished`
+  for `orion_day.letter` first.
 
 `DurableRunner` can drive more than one compiled graph, keyed by
 `DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --

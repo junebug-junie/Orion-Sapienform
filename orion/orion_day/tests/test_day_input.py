@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
 from orion.orion_day import day_input as di
 from orion.orion_day.budget import chronology_citations, extract_refs, material_refs
@@ -28,7 +27,6 @@ from orion.temporal_self.day_block import render_closed_day_block
 from orion.temporal_self.tests.patch4_fixtures import day_1009
 
 NOW = datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc)
-PROMPT = Path(__file__).resolve().parents[2] / "cognition" / "prompts" / "orion_day_note_v1.j2"
 
 
 def _material(**kw) -> OrionDayMaterialV1:
@@ -219,10 +217,13 @@ def test_build_day_input_is_the_one_entry_point():
     assert material.letter_date == fx.LETTER_DATE
 
 
-def test_note_prompt_carries_the_honesty_line():
-    text = PROMPT.read_text()
-    assert "only where the record supports it" in text and "Do not manufacture either mood" in text
-    assert "BEGIN writing instructions" in text and "END writing instructions" in text
+def test_letter_instructions_carry_the_honesty_line():
+    # The retired note verb's j2 writing instructions live on only as the letter turn's
+    # (orion/orion_day/letter_turn.py, living Prime Part 3).
+    from orion.orion_day.letter_turn import WRITING_INSTRUCTIONS
+
+    assert "only where the record supports it" in WRITING_INSTRUCTIONS
+    assert "Do not manufacture either mood" in WRITING_INSTRUCTIONS
 
 
 # --- the temporal core (constraint 6) ---------------------------------------------------------------

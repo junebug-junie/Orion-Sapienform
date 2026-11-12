@@ -313,12 +313,6 @@ families:
     # verbs: log_collapse_mirror, log_orion_metacognition
     lanes: [metacog]
     placement: one_of
-  orion_day.letter:
-    tier: 1
-    deferrable_window_s: 21600
-    # verbs: orion_day_carry_forward_v1, orion_day_note_v1
-    lanes: [agent]
-    placement: one_of
   spark.introspect:
     tier: 1
     deferrable_window_s: 600

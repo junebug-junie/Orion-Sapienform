@@ -9,8 +9,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-import yaml
-from jinja2 import Environment
 from pydantic import ValidationError
 
 from orion.journaler.dispatch_registry import resolve_policy
@@ -22,8 +20,6 @@ from orion.orion_day.store import letter_from_row
 from orion.orion_day.tests import fixtures as fx
 from orion.schemas.durable_run import DurableRunRequestV1, DurableRunStateV1
 from orion.schemas.orion_day import (
-    ORION_DAY_CARRY_FORWARD_VERB,
-    ORION_DAY_NOTE_VERB,
     ORION_DAY_WORKFLOW,
     OrionDayLetterV1,
     OrionDayMaterialV1,
@@ -35,13 +31,8 @@ from orion.schemas.registry import resolve
 from orion.world_pulse_read import introspect as wp
 
 ROOT = Path(__file__).resolve().parents[3]
-PROMPTS = ROOT / "orion" / "cognition" / "prompts"
-VERBS = ROOT / "orion" / "cognition" / "verbs"
 NOW = datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc)
 
-# Instruction vocabulary that belongs to the carry-forward call only.
-CARRY_FORWARD_WORDS = ("carry", "forward", "future", "tomorrow", "next time", "follow up", "follow-up",
-                       "thread", "to pursue", "open question", "revisit")
 
 
 def _material():
@@ -50,11 +41,6 @@ def _material():
 
 def _brief():
     return brief_from_material(_material())
-
-
-def _render(name: str, od: dict) -> str:
-    return Environment(autoescape=False).from_string((PROMPTS / name).read_text()).render(
-        metadata={"orion_day_input": od})
 
 
 @pytest.mark.parametrize("name,model", [
@@ -85,7 +71,7 @@ def test_request_asks_for_enough_context_for_digest_note_and_carry_forward():
     brief = _brief()
     request = build_orion_day_request(brief)
     need = request.admission.requirements["minimum_context_tokens"]
-    assert need == minimum_context_tokens(brief) == brief.llm_view.approx_tokens + 1500 + 12000 + 4000
+    assert need == minimum_context_tokens(brief) == brief.llm_view.approx_tokens + 2000 + 12000 + 13000
     # A heavy day (the live 2026-09-29 digest: ~70k estimated tokens) cannot go to the 65,536-token chat card.
     heavy = brief.model_copy(update={"llm_view": brief.llm_view.model_copy(update={"approx_tokens": 69938})})
     assert minimum_context_tokens(heavy) > 65536
@@ -147,7 +133,7 @@ def _letter_row(**overrides):
         "note_md": "A long note.", "carry_forward_md": "- [curiosity:ab61e4ccd47b] test it",
         "material": material.model_dump_json(), "sources": json.dumps({"by_source": {}}),
         "journal_entry_id": orion_day_journal_entry_id(fx.LETTER_DATE), "created_at": NOW,
-        "emailed_at": None, "email_notification_id": None, "carry_forward_expires_at": NOW + timedelta(hours=48),
+        "emailed_at": None, "email_notification_id": None, "carry_forward_expires_at": None,
         "carry_forward_offered_at": None, "carry_forward_offered_run_id": None,
     }
     row.update(overrides)
@@ -163,46 +149,20 @@ def test_letter_row_decodes_and_keeps_note_and_carry_forward_apart():
         letter_from_row(_letter_row(note_md=""))
 
 
-# --- the two prompts ---------------------------------------------------------------------------
+# --- the letter turn's prompt -----------------------------------------------------------------
 
 
-def test_note_prompt_carries_no_carry_forward_instruction():
-    rendered = _render("orion_day_note_v1.j2", {"letter_date": "2026-09-29", "timezone": "America/Denver",
-                                               "digest_md": "DIGEST-PLACEHOLDER"})
-    instructions = rendered.split("DIGEST-PLACEHOLDER")[0].lower()
-    for word in CARRY_FORWARD_WORDS:
-        assert word not in instructions, word
-    assert "note_md" not in rendered
+def test_letter_turn_prompt_renders_the_real_digest_and_grounding_rule():
+    # The two verb prompts were retired (living Prime Part 3); the letter is one turn whose user
+    # message is orion/orion_day/letter_turn.py's (its own tests: test_letter_turn.py).
+    from orion.orion_day.letter_turn import THREADS_HEADING, build_letter_prompt
 
-
-def test_note_prompt_renders_the_real_digest_and_grounding_rule():
     brief = _brief()
-    rendered = _render("orion_day_note_v1.j2", {"letter_date": "2026-09-29", "timezone": "America/Denver",
-                                               "digest_md": brief.llm_view.digest_md})
+    rendered = build_letter_prompt(brief)
     assert brief.llm_view.digest_md in rendered
     assert "Do not invent events" in rendered
     assert "first person" in rendered
-
-
-def test_carry_forward_prompt_gets_the_note_and_digest():
-    rendered = _render("orion_day_carry_forward_v1.j2", {
-        "letter_date": "2026-09-29", "timezone": "America/Denver", "digest_md": "DIGEST", "note_md": "THE-NOTE"})
-    assert "DIGEST" in rendered and "THE-NOTE" in rendered
-    assert "future curiosity" in rendered
-    assert rendered.index("DIGEST") < rendered.index("THE-NOTE")
-
-
-@pytest.mark.parametrize("verb,template", [
-    (ORION_DAY_NOTE_VERB, "orion_day_note_v1.j2"),
-    (ORION_DAY_CARRY_FORWARD_VERB, "orion_day_carry_forward_v1.j2"),
-])
-def test_verb_yaml_points_at_its_own_template_with_a_long_timeout(verb, template):
-    data = yaml.safe_load((VERBS / f"{verb}.yaml").read_text())
-    assert data["name"] == verb
-    assert [s["prompt_template"] for s in data["steps"]] == [template]
-    # above the brief's default per-call RPC wait, so the caller times out first
-    assert data["timeout_ms"] > OrionDayRunBriefV1.model_fields["timeout_sec"].default * 1000
-    assert all(s["timeout_ms"] == data["timeout_ms"] for s in data["steps"])
+    assert rendered.index(THREADS_HEADING) < rendered.index(brief.llm_view.digest_md)
 
 
 # --- journal ---------------------------------------------------------------------------------

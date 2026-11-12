@@ -134,7 +134,6 @@ from orion.curiosity.kickoff_prompt import (
     kickoff_material_ids,
     offered_priors_in_prompt,
 )
-from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
 from orion.curiosity.focus import (
     TAKEN as FOCUS_TAKEN,
     fail_focus,
@@ -300,6 +299,7 @@ from orion.schemas.durable_run import (
 )
 from orion.curiosity.urgent_prompt import build_urgent_prompt
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
+from orion.schemas.orion_day import ORION_DAY_LETTER_SOURCE_TAG
 from orion.schemas.curiosity_focus import FOCUS_QUESTION_MAX_CHARS, CuriosityFocusAnchorV1
 from orion.schemas.personality import (
     PERSONALITY_NAMING_KIND,
@@ -312,6 +312,16 @@ from orion.schemas.personality import (
 GPU_LEASE_STATUS_SOURCE = "orion-hub"
 
 logger = logging.getLogger("orion-hub.curiosity_investigation")
+
+
+# Durable turns served on this seam that are NOT curiosity runs: a consult reply to Claude
+# (consult.orion_turn, source "consult_orion_turn:<turn>") and Prime's day letter
+# (orion_day.letter, living Prime Part 3). Their reads are not framed as a curiosity run's.
+NON_CURIOSITY_TURN_SOURCES: tuple[str, ...] = ("consult_orion_turn", ORION_DAY_LETTER_SOURCE_TAG)
+
+
+def is_non_curiosity_turn_source(source: Any) -> bool:
+    return str(source or "").startswith(NON_CURIOSITY_TURN_SOURCES)
 
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 # Upper bound on the attention-surface graph read that precedes the journal
@@ -937,10 +947,6 @@ class CuriosityInvestigation:
         # --- dream hypotheses (orion/dream/hypotheses.py) -------------------
         dream_hypotheses_enabled: bool = False,
         dream_hypotheses_per_run: int = 3,
-        # --- Orion's Day carry-forward (orion/orion_day/carry_forward.py) ---
-        # The regular investigate line only: claims yesterday's letter's
-        # carry_forward_md once and shows it as its own kickoff section.
-        carry_forward_enabled: bool = False,
         # --- Temporal Self "curiosity gets its day" (orion/curiosity/temporal_fact.py) ---
         # One fact line: curiosity runs finished today and their minutes, read from
         # orion-durable-runs' chronicle at `durable_runs_url`. Off here so bare
@@ -1118,13 +1124,12 @@ class CuriosityInvestigation:
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
         self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
-        self.carry_forward_enabled = bool(carry_forward_enabled)
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
         self.personality_cue_enabled = bool(personality_cue_enabled)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         self.focus_enabled = bool(focus_enabled)
         # Other Hub loops that want terminal durable-run states without a second
-        # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
+        # subscription (Orion's Day: scripts/orion_day_mailer.py). Each hook gets
         # every DurableRunStateV1 this listener decodes; a failing hook is logged
         # and never stops curiosity's own handling.
         self.run_state_hooks: list = []
@@ -1645,16 +1650,6 @@ class CuriosityInvestigation:
             now=now, enabled=self.personality_cue_enabled,
         )
 
-    async def _take_carry_forward(self, run_id: str):
-        """Claim Orion's Day carry-forward for this run. None when off or nothing fresh.
-
-        Not gated on the graph: the section asks for no write, so it is shown on
-        every prompt it is claimed for (the claim means "shown to Orion").
-        """
-        if not self.carry_forward_enabled or not run_id:
-            return None
-        return await take_carry_forward(self._pool_provider(), run_id=run_id)
-
     # Consults (scripts/consult_loop.py): main sets this to ``lambda: consult_loop`` after both
     # exist. Class-level so a loop built without __init__ (tests) has no consults, not an error.
     consult_provider: Optional[Callable[[], Any]] = None
@@ -1850,13 +1845,13 @@ class CuriosityInvestigation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_focus_settle_failed run=%s err=%s", run_id, exc)
 
-    async def _release_carry_forward_if_unseen(self, run_id: str) -> None:
+    async def _release_corrections_if_unseen(self, run_id: str) -> None:
         """A durable run that ended before its turn started never showed Orion the
-        carry-forward (or the Orion's Day corrections) it claimed at kickoff: give them back.
+        Orion's Day corrections it claimed at kickoff: give them back.
         "Started" is the run's own `run.started` event in durable-runs' history
         (GET /runs/{id}); on any doubt (unreachable, unknown run) the claim is kept -- a lost
         offer is recoverable by the next day's letter, a double offer is not."""
-        if not (self.carry_forward_enabled or self.orion_day_corrections_enabled) or not run_id:
+        if not self.orion_day_corrections_enabled or not run_id:
             return
         root = str(self.durable_runs_url or "").strip().rstrip("/")
         if not root:
@@ -1868,19 +1863,15 @@ class CuriosityInvestigation:
                 return
             history = resp.json().get("history") or []
         except Exception as exc:  # noqa: BLE001
-            logger.warning("curiosity_carry_forward_release_check_failed run=%s err=%s", run_id, exc)
+            logger.warning("curiosity_corrections_release_check_failed run=%s err=%s", run_id, exc)
             return
         if any(isinstance(e, dict) and e.get("event") == "run.started" for e in history):
             return
-        if self.carry_forward_enabled:
-            await release_carry_forward(self._pool_provider(), run_id=run_id)
-            logger.info("curiosity_carry_forward_released_unstarted run=%s", run_id)
-        if self.orion_day_corrections_enabled:
-            await release_corrections(self._pool_provider(), run_id=run_id)
-            logger.info("curiosity_corrections_released_unstarted run=%s", run_id)
+        await release_corrections(self._pool_provider(), run_id=run_id)
+        logger.info("curiosity_corrections_released_unstarted run=%s", run_id)
 
     async def _release_offers(
-        self, run_id: str, *, dream: bool, carry_forward: bool, corrections: bool = False,
+        self, run_id: str, *, dream: bool, corrections: bool = False,
         focus: bool = False,
     ) -> None:
         """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
@@ -1888,8 +1879,6 @@ class CuriosityInvestigation:
             await release_focus(self._pool_provider(), run_id=run_id)
         if dream:
             await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
-        if carry_forward:
-            await release_carry_forward(self._pool_provider(), run_id=run_id)
         if corrections:
             await release_corrections(self._pool_provider(), run_id=run_id)
 
@@ -2657,7 +2646,6 @@ class CuriosityInvestigation:
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
-        carry_forward = await self._take_carry_forward(run_id)
         corrections = await self._take_corrections(view, run_id)
         consult_outcomes = await self._take_consult_outcomes(view, run_id)
         focus = await self._take_focus(view, run_id)
@@ -2686,7 +2674,6 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
             dream_hypotheses=dream_hypotheses,
-            carry_forward=carry_forward,
             open_lived_questions=open_lived_questions,
             corrections=corrections,
             today_fact=today_fact,
@@ -2701,11 +2688,6 @@ class CuriosityInvestigation:
             logger.info(
                 "curiosity_open_lived_questions_offered run=%s ids=%s",
                 run_id, ",".join(q.question_id for q in open_lived_questions),
-            )
-        if carry_forward is not None:
-            logger.info(
-                "curiosity_carry_forward_offered run=%s letter_date=%s chars=%s",
-                run_id, carry_forward.letter_date, len(carry_forward.text),
             )
         if corrections:
             logger.info(
@@ -2759,7 +2741,7 @@ class CuriosityInvestigation:
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
                     await self._release_offers(
-                        run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
+                        run_id, dream=bool(dream_hypotheses),
                         corrections=bool(corrections), focus=focus is not None,
                     )
                 raise
@@ -2816,7 +2798,7 @@ class CuriosityInvestigation:
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
             await self._release_offers(
-                run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
+                run_id, dream=bool(dream_hypotheses),
                 # Corrections are released only when Orion cannot have seen them: a correction
                 # re-offered after a started turn could be re-tested twice.
                 corrections=bool(corrections) and not turn_began,
@@ -4877,10 +4859,11 @@ class CuriosityInvestigation:
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
-                    # A consult turn (consult.orion_turn) is not a curiosity run: no reading tool
-                    # framed as one, and no read later told "a curiosity run of yours queued".
-                    reading_context="curiosity" if parent_run_id and not str(source).startswith("consult_orion_turn") else None,
-                    reading_parent_run_id=None if str(source).startswith("consult_orion_turn") else parent_run_id,
+                    # A consult turn (consult.orion_turn) or the day letter (orion_day.letter) is not a
+                    # curiosity run: no reading tool framed as one, and no read later told "a curiosity
+                    # run of yours queued".
+                    reading_context="curiosity" if parent_run_id and not is_non_curiosity_turn_source(source) else None,
+                    reading_parent_run_id=None if is_non_curiosity_turn_source(source) else parent_run_id,
                     bus=self._bus,
                     correlation_id=correlation_id,
                     session_id=session_id or self.session_id,
@@ -5831,7 +5814,7 @@ class CuriosityInvestigation:
             await self._handle_urgent_run_state(state)
             return
         if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
-            await self._release_carry_forward_if_unseen(state.run_id)
+            await self._release_corrections_if_unseen(state.run_id)
             await self._settle_focus_after_run_end(state.run_id)
             # A naming run that never finished still leaves its one row (no_answer), so the
             # re-ask clock and the refusal rate stay countable. Keyed on the stored packet.

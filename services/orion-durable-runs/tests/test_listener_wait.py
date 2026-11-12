@@ -495,14 +495,13 @@ def test_episode_distill_unheard_call_waits_without_spending_an_attempt():
     assert result["listener_waits"] == 1 and snap.next == ("retry_wait",)
 
 
-def test_orion_day_unheard_note_waits_then_completes_without_spending_an_attempt():
+def test_orion_day_unheard_letter_turn_waits_then_completes_without_spending_an_attempt():
     from test_orion_day_graph import World as DayWorld, drive
-    from orion.schemas.orion_day import ORION_DAY_NOTE_VERB
 
     async def scenario():
         world, saver = DayWorld(max_attempts=1), InMemorySaver()
-        world.replies[ORION_DAY_NOTE_VERB] = [
-            RpcPublishedToNobody("no listener on orion:cortex:request: request published to nobody")]
+        world.replies = [
+            RpcPublishedToNobody("no listener on orion:curiosity:turn:request: request published to nobody")]
         snap = await drive(world.graph(saver), world)
         # max_attempts=1: had the unheard call spent an attempt, the run would have failed.
         assert snap.values["status"] == "completed"

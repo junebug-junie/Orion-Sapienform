@@ -49,7 +49,6 @@ class ClaudeTurnResult:
 
 
 def build_argv(
-    prompt: str,
     *,
     claude_bin: str,
     model: str,
@@ -61,7 +60,13 @@ def build_argv(
     tools: str = "",
     consult: bool = False,
 ) -> list[str]:
-    argv: list[str] = [claude_bin, "-p", prompt, "--output-format", "json", "--model", model]
+    # The prompt is NOT in argv: it goes over stdin (run_room_turn). Linux
+    # refuses any single argument over 131,072 bytes (MAX_ARG_STRLEN), and a
+    # whole-conversation prompt is up to ~160,000 characters. Verified live
+    # 2026-11-12 in this image (CLI 2.1.239): a 150,101-byte prompt piped to
+    # `claude -p` with no prompt argument was read whole -- Claude answered
+    # with the marker on its last line.
+    argv: list[str] = [claude_bin, "-p", "--output-format", "json", "--model", model]
     # --session-id mints a session; --resume continues one. Passing both is a
     # CLI error, so this is an either/or, never a belt-and-suspenders pair.
     if resume:
@@ -170,7 +175,6 @@ def run_room_turn(
     consult: bool = False,
 ) -> ClaudeTurnResult:
     argv = build_argv(
-        prompt,
         claude_bin=claude_bin,
         model=model,
         effort=effort,
@@ -189,6 +193,7 @@ def run_room_turn(
     try:
         proc = subprocess.run(
             argv,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout_sec,

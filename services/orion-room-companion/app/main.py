@@ -20,7 +20,14 @@ from orion.schemas.room_claude import (
 )
 
 from .claude_session import ClaudeTurnResult, run_room_turn
-from .room_prompt import append_system_prompt_for, build_turn_prompt, filtered_summary, is_pass
+from .room_prompt import (
+    append_system_prompt_for,
+    build_turn_prompt,
+    filtered_summary,
+    is_pass,
+    lines_after_mark,
+    newest_created_at,
+)
 from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
@@ -141,20 +148,37 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     """
     ensure_runtime_dirs(settings)
     key = room_key(request)
-    session_id, resume = peek_or_mint_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
     # A consult room (Hub's consult loop, orion.consult.core): Hub writes the whole user-role
     # text itself, Claude reads the code read-only, thinks harder and gets more time.
     consult = consult_id_from_room(request.room_id) is not None
+    slot = peek_or_mint_session(
+        settings.ROOM_COMPANION_SESSION_STATE_PATH, key, rotate_daily=not consult
+    )
+    session_id, resume = slot.session_id, slot.resume
 
+    # A resumed session gets only the lines it has not been sent: Hub sends the
+    # whole window on every invite and does not know this session's mark.
+    transcript = request.transcript if not resume else lines_after_mark(
+        request.transcript,
+        sent_up_to=slot.sent_up_to,
+        claude_participant_id=settings.ROOM_COMPANION_PARTICIPANT_ID,
+    )
     prompt = request.prompt if consult else build_turn_prompt(
         prompt=request.prompt,
         invited_by_name=request.invited_by,
-        transcript=request.transcript,
+        transcript=transcript,
         # filtered_summary(), not the raw dict. This is the privacy boundary:
         # the summary is third-party-bound, so it goes through the allowlist
         # rather than whatever orion-social-memory happens to include today.
         social_memory_summary=filtered_summary(request.social_memory_summary),
         first_turn=not resume,
+        hub_index=request.hub_index,
+        transcript_note=request.transcript_note,
+    )
+    logger.info(
+        "room_companion_prompt room=%s request=%s resume=%s minted=%s lines=%d/%d prompt_chars=%d",
+        key, request.request_id, resume, slot.minted_reason or "-",
+        len(transcript), len(request.transcript), len(prompt),
     )
 
     result = run_room_turn(
@@ -212,6 +236,10 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
             settings.ROOM_COMPANION_SESSION_STATE_PATH,
             key,
             result.claude_session_id or session_id,
+            day=slot.day,
+            # Every line Hub sent is now held by this session: the ones just
+            # sent, and the older ones it already had.
+            sent_up_to=newest_created_at(request.transcript),
         )
 
     return _to_utterance(settings, request, result)

@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Orion's Day eval: on a fixture day (or a live day, read-only), check what the model is
-given before any model is called.
+given before any model is called. The view is the honest input (``day_input.render_day_input``,
+living Prime design #3224 constraint 7); ``run_orion_day_input_replay.py`` compares it with the old one.
 
 Checks, each PASS/FAIL:
 
 1. separation   -- the note prompt's instructions contain no carry-forward vocabulary and no
                    note placeholder; the carry-forward prompt contains the note and the digest.
 2. grounding    -- every bracketed item reference in the digest resolves to a material item,
-                   and every material item that must be shown in full (curiosity runs, self-sense
-                   answers, readings, reading journals, dreams, compactors) is referenced.
-3. full_text    -- unless the view reports clipping, each full-text body appears verbatim.
-4. condensation -- reveries are condensed (shown <= total, hollow never shown, one per chain).
+                   and every item that must be shown (curiosity runs, the latest answer to each
+                   self-sense question, Juniper's turns, corrections, the chat digest) is referenced.
+3. full_text    -- Juniper's turns always appear verbatim; unless the view reports clipping, so do
+                   the curiosity write-ups and the latest self-sense answers.
+4. condensation -- reveries are condensed (shown <= total, hollow never shown, one per chain) and
+                   every theme with a showable thought gets one, unless the thought cap was hit.
 5. blind        -- no dream-hypothesis id (the scorecard's formed_from join key) in the view.
 6. budget       -- approx_tokens <= budget_tokens; the note prompt fits the agent lane's 131k
                    context with the note's completion budget on top.
@@ -35,7 +38,8 @@ sys.path.insert(0, str(ROOT))
 
 from jinja2 import Environment  # noqa: E402
 
-from orion.orion_day.budget import _Body, build_llm_view, extract_refs, material_refs  # noqa: E402
+from orion.orion_day.budget import _Body, extract_refs, juniper_chat_ref, material_refs  # noqa: E402
+from orion.orion_day.day_input import REVERIE_MAX_THOUGHTS, latest_self_sense, render_day_input  # noqa: E402
 from orion.orion_day.gather import gather_orion_day  # noqa: E402
 from orion.schemas.orion_day import OrionDayMaterialV1  # noqa: E402
 
@@ -53,30 +57,26 @@ def _render(name: str, od: dict) -> str:
 
 def required_refs(m: OrionDayMaterialV1) -> set[str]:
     refs = {f"curiosity:{r.run_id}" for r in m.curiosity_runs}
-    refs |= {f"self_sense:{a.run_id or 'na'}:{a.question_key}" for a in m.self_sense}
-    refs |= {f"reading:{r.seed_id}" for r in m.readings}
-    refs |= {f"reading_journal:{j.entry_id}" for j in m.reading_journals}
-    refs |= {f"dream:{d.id}" for d in m.dream_narratives}
-    refs |= {f"dream_offered:{i}" for i in range(1, len(m.dream_hypotheses) + 1)}
+    refs |= {f"self_sense:{a.run_id or 'na'}:{a.question_key}" for a, _ in latest_self_sense(m.self_sense)}
+    refs |= {f"juniper_chat:{juniper_chat_ref(t.turn_id)}" for t in m.juniper_chat}
     if m.chat_compactor:
         refs.add(f"chat_compactor:{m.chat_compactor.entry_id}")
-    if m.github_compactor:
-        refs.add(f"github_compactor:{m.github_compactor.entry_id}")
     refs |= {f"correction:{c.correction_id}" for c in m.corrections}
     return refs
 
 
 def full_bodies(m: OrionDayMaterialV1) -> list[str]:
-    bodies = [r.journal_body for r in m.curiosity_runs] + [a.answer_text for a in m.self_sense]
-    bodies += [r.learned for r in m.readings] + [j.body for j in m.reading_journals]
-    bodies += [d.narrative or "" for d in m.dream_narratives]
-    bodies += [c.body for c in (m.chat_compactor, m.github_compactor) if c is not None]
+    bodies = [r.journal_body for r in m.curiosity_runs] + [a.answer_text for a, _ in latest_self_sense(m.self_sense)]
     return [b.strip() for b in bodies if b and b.strip()]
+
+
+def juniper_texts(m: OrionDayMaterialV1) -> list[str]:
+    return [x for t in m.juniper_chat if t.prompt for x in (t.prompt, t.response) if x]
 
 
 def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []
-    view = build_llm_view(material)
+    view = render_day_input(material)
     od = {"letter_date": material.letter_date.isoformat(), "timezone": material.timezone, "digest_md": "\x00DIGEST\x00"}
     note_instr = _render("orion_day_note_v1.j2", od).split("\x00DIGEST\x00")[0].lower()
     leaked = [w for w in CARRY_FORWARD_WORDS if w in note_instr]
@@ -94,6 +94,8 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     ok = not leaked_ids and "dream_hypothesis:" not in view.digest_md
     results.append(("blind", ok, f"hypotheses={len(material.dream_hypotheses)} ids_in_view={leaked_ids[:3]}"))
 
+    lost = [t[:60] for t in juniper_texts(material) if t not in view.digest_md]
+    results.append(("juniper_full", not lost, f"turns={len(juniper_texts(material))} absent={lost[:3]}"))
     if view.condensed.full_text_clip_chars is None:
         # Bodies appear verbatim apart from the documented heading demotion (their own markdown
         # headings are pushed below the digest's ### item headings).
@@ -111,7 +113,11 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     for t in material.reverie_thoughts:
         by_prefix.setdefault(t.thought_id[:8], t.chain_id)
     chains = [by_prefix.get(r.split(":", 1)[1]) for r in shown]
-    ok = (c.reverie_thoughts_included <= c.reverie_thoughts_total and not hollow_shown
+    theme_of = {ch.chain_id: ch.theme_key or "unthemed" for ch in material.reverie_chains}
+    showable = {theme_of.get(t.chain_id or "", "unthemed") for t in material.reverie_thoughts
+                if not t.hollow and t.interpretation.strip()}
+    spread = c.reverie_themes_included == len(showable) or c.reverie_thoughts_included >= REVERIE_MAX_THOUGHTS
+    ok = (c.reverie_thoughts_included <= c.reverie_thoughts_total and not hollow_shown and spread
           and len([x for x in chains if x]) == len({x for x in chains if x}))
     results.append(("condensation", ok, f"shown {c.reverie_thoughts_included}/{c.reverie_thoughts_total}, "
                                         f"themes {c.reverie_themes_included}/{c.reverie_themes_total}, hollow_shown={len(hollow_shown)}"))
@@ -121,14 +127,14 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     results.append(("budget", ok, f"digest~{view.approx_tokens} tokens (budget {view.budget_tokens}); "
                                   f"note prompt~{note_prompt_tokens} + {NOTE_MAX_TOKENS} < {AGENT_CONTEXT_TOKENS}"))
 
-    again = build_llm_view(OrionDayMaterialV1.model_validate_json(material.model_dump_json()))
+    again = render_day_input(OrionDayMaterialV1.model_validate_json(material.model_dump_json()))
     results.append(("determinism", again.digest_md == view.digest_md, "rebuilt from JSON"))
     return results
 
 
 async def _fixture_material() -> OrionDayMaterialV1:
     from orion.orion_day.tests import fixtures as fx
-    return await gather_orion_day(fx.FakeConn(corrections=fx.CORRECTIONS), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc))
+    return await gather_orion_day(fx.FakeConn(corrections=fx.CORRECTIONS, juniper_chat=fx.JUNIPER_CHAT), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc))
 
 
 async def _live_material(letter_date: date | None, dsn: str | None) -> OrionDayMaterialV1:

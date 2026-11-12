@@ -380,6 +380,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "reveries": reverie_counts(letter),
         "source_problems": source_problems,
         "condensed": letter.sources.condensed,
+        "input_shares": sorted(letter.sources.input_shares.items(), key=lambda kv: (-kv[1], kv[0])),
     }
 
 

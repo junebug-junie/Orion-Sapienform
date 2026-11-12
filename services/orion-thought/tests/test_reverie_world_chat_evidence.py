@@ -93,3 +93,13 @@ def test_evidence_kind_matches_the_producer() -> None:
     src = (Path(__file__).resolve().parents[3] / "orion" / "attention" / "world_first.py").read_text()
     m = re.search(r'^CHAT_EVIDENCE_KIND = "([^"]+)"$', src, re.M)
     assert m and reverie._CHAT_EVIDENCE_KIND == m.group(1)
+
+
+def test_her_quotes_cannot_close_the_quoted_span() -> None:
+    from app import reverie
+
+    [entry] = reverie._open_loops_for_prompt(
+        _broadcast({"world_evidence": _evidence(message_excerpt='she said "stop" and then "go"')})
+    )
+    assert entry["evidence"].endswith(""""she said 'stop' and then 'go'\"""")
+    assert entry["evidence"].count('"') == 2

@@ -18,6 +18,7 @@ on:
       - "services/orion-thought/app/reverie.py"
       - "tests/test_attention_world_chat_evidence.py"
       - "services/orion-thought/tests/test_reverie_world_chat_evidence.py"
+      - "orion/autonomy/agency_episode_reader.py"
       - ".github/workflows/world-chat-evidence-tests.yml"
   push:
     branches: [main]
@@ -27,8 +28,13 @@ on:
       - "orion/substrate/attention_broadcast.py"
       - "orion/substrate/attention/scoring.py"
       - "orion/cognition/prompts/reverie_narrate.j2"
+      - "services/orion-substrate-runtime/app/store.py"
       - "services/orion-substrate-runtime/app/worker.py"
+      - "services/orion-substrate-runtime/evals/run_world_chat_loop_id_replay.py"
       - "services/orion-thought/app/reverie.py"
+      - "orion/autonomy/agency_episode_reader.py"
+      - "tests/test_attention_world_chat_evidence.py"
+      - "services/orion-thought/tests/test_reverie_world_chat_evidence.py"
       - ".github/workflows/world-chat-evidence-tests.yml"
   workflow_dispatch:
 
@@ -55,7 +61,8 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             tests/test_attention_world_chat_evidence.py \
             tests/test_attention_world_first.py \
-            orion/substrate/tests/test_attention_broadcast_world_first.py
+            orion/substrate/tests/test_attention_broadcast_world_first.py \
+            orion/autonomy/tests/test_agency_episode_reader.py
       - name: Substrate-runtime wiring (latest-turn read, fail-open)
         env:
           POSTGRES_URI: postgresql://unused/unused

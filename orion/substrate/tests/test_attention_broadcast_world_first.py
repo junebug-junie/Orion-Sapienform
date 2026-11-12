@@ -345,3 +345,14 @@ def test_chat_evidence_reaches_the_winning_loop_not_the_trace() -> None:
     no_ev = _chat_frame([1, 3]).open_loops[0]
     assert "world_evidence" not in no_ev.provenance
     assert no_ev.id == loop.id and no_ev.salience == loop.salience
+
+
+def test_a_human_dismiss_on_the_chat_loop_holds_across_conversations() -> None:
+    """Documented trade-off of the fixed label (2026-11-12): world:chat has ONE loop id for all
+    time, so a Hub resolve/dismiss on it excludes chat for the verdict TTL (48 h) in every later
+    conversation too -- as it already did for the old 1-message id, the most common one."""
+    chat_id = _chat_frame([1]).open_loops[0].id
+    with patch.object(ab, "load_terminal_verdict_loop_ids", return_value={chat_id}):
+        frame = _chat_frame([1, 3])
+    assert all(loop.id != chat_id for loop in frame.open_loops)
+    assert _chat_frame([2]).open_loops[0].id == chat_id  # any later burst maps to the same id

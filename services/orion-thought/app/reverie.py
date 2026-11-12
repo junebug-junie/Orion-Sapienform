@@ -356,7 +356,8 @@ def _loop_evidence(loop: Any, *, now: datetime) -> str | None:
     ev = prov.get("world_evidence")
     if not isinstance(ev, dict) or ev.get("kind") != _CHAT_EVIDENCE_KIND:
         return None
-    excerpt = " ".join(str(ev.get("message_excerpt") or "").split())
+    # Her own double quotes become single quotes so the quoted span cannot close early.
+    excerpt = " ".join(str(ev.get("message_excerpt") or "").split()).replace('"', "'")
     if not excerpt:
         return None
     when = ""

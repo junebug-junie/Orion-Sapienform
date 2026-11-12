@@ -97,7 +97,7 @@ def test_evidence_is_not_in_the_debug_trace() -> None:
     assert "private words" not in str(judge_candidate(cand).trace())
 
 
-def test_loop_id_replay_eval_flags_churn_and_passes_the_fix() -> None:
+def _replay_module():
     import importlib.util
     from pathlib import Path
 
@@ -105,12 +105,47 @@ def test_loop_id_replay_eval_flags_churn_and_passes_the_fix() -> None:
     spec = importlib.util.spec_from_file_location("chat_loop_replay", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    old = [f"Juniper is talking ({n} message{'s' if n != 1 else ''} in the last 15 min)" for n in (1, 2, 3, 2, 1)]
+    return mod
+
+
+def _replay_rows():
+    counts = (1, 2, 3, 2, 1)
+    old = [f"Juniper is talking ({n} message{'s' if n != 1 else ''} in the last 15 min)" for n in counts]
     rows = [(NOW + timedelta(minutes=2 * i), _loop_id(d), d) for i, d in enumerate(old)]
-    report = mod.evaluate(rows)
+    turns = WEEK + [NOW - timedelta(minutes=1), NOW + timedelta(minutes=1), NOW + timedelta(minutes=3)]
+    return rows, turns
+
+
+def test_loop_id_replay_eval_flags_churn_and_passes_the_fix() -> None:
+    mod = _replay_module()
+    rows, turns = _replay_rows()
+    report = mod.evaluate(rows, turns)
     assert report["old_distinct_ids"] == 3 and report["old_switches_within_window"] == 4
+    assert report["new_labels"] == [CHAT_TALKING_LABEL]
     assert report["new_distinct_ids"] == 1 and report["new_switches_within_window"] == 0
     assert report["pass"]
     tampered = rows[:-1] + [(rows[-1][0], "open-loop-wrong", rows[-1][2])]
-    assert not mod.evaluate(tampered)["checks"]["formula_reproduces"]
-    assert not mod.evaluate([])["pass"]
+    assert not mod.evaluate(tampered, turns)["checks"]["formula_reproduces"]
+    assert not mod.evaluate([], turns)["pass"]
+
+
+def test_loop_id_replay_eval_fails_if_the_producer_puts_a_count_back(monkeypatch) -> None:
+    mod = _replay_module()
+    rows, turns = _replay_rows()
+    real = mod.chat_candidate
+
+    def counting(turn_times, *, now):
+        cand = real(turn_times, now=now)
+        return cand.model_copy(update={"label": f"{cand.label} ({int(cand.unusualness.value)})"})
+
+    monkeypatch.setattr(mod, "chat_candidate", counting)
+    report = mod.evaluate(rows, turns)
+    assert not report["checks"]["new_single_id"] and not report["pass"]
+
+
+def test_loop_id_replay_eval_checks_stored_ids_after_deploy() -> None:
+    mod = _replay_module()
+    rows, turns = _replay_rows()
+    fixed = [(t, _loop_id(CHAT_TALKING_LABEL), CHAT_TALKING_LABEL) for t, _, _ in rows]
+    assert mod.evaluate(rows[:2] + fixed[2:], turns, stored_since=rows[2][0])["checks"]["stored_single_id"]
+    assert not mod.evaluate(rows, turns, stored_since=rows[0][0])["checks"]["stored_single_id"]

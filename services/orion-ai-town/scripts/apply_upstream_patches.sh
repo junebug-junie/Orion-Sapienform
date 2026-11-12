@@ -21,6 +21,7 @@ PATCHES=(
   "orion-npc-no-self-repeat.patch"
   "orion-mechanical-leave.patch"
   "orion-live-turn-roles.patch"
+  "orion-qwen35-user-turn.patch"
   "orion-walkover-meet.patch"
   "orion-sim-core-hooks.patch"
   "orion-town-correlation-id.patch"

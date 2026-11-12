@@ -485,6 +485,17 @@ Upstream sent every chat line to the model as a `user` turn with a `Name to Name
 
 The same PR rebased `orion-npc-no-self-repeat.patch` onto the continuity/answer-first chain without changing its behavior. On `main`, a fresh apply had stopped at that patch.
 
+### Qwen3.5 NPC opener (`patches/orion-qwen35-user-turn.patch`)
+
+The fast worker's Qwen3.5 chat template requires a user turn. AI Town's NPC-to-NPC
+`startConversationMessage` sent only a system prompt, so the worker returned a
+Jinja 500 (`No user query found in messages.`) for those openers. The patch adds
+one user request to greet the other player. Continue and leave already supply
+user turns through `replyCue`; the human-first path still waits for Juniper.
+`scripts/smoke_llm_rail.sh` now tests the `quick_background` route with this
+system-plus-user shape. Check `llm_call_usage` for `http:openai` on that route
+after deployment; the ledger does not identify individual HTTP callers.
+
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 
 Upstream `player.tick()` deleted the human after `HUMAN_IDLE_TOO_LONG` (5 minutes). `lastInput` was only written at join, so that was a session fuse, not idle detection. The patch removes the kick. Juniper stays in the world until she actually leaves.

@@ -218,7 +218,7 @@ PRODUCER = "orion-mind.prime"
 HTTP_TIMEOUT_SEC = 4.0
 # Hub gathers the day before it answers an order (read-only SQL, seconds); a timed-out order is re-sent and Hub
 # answers ``exists`` for a run it already submitted.
-ORDER_HTTP_TIMEOUT_SEC = 90.0
+ORDER_HTTP_TIMEOUT_SEC = 45.0
 FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
@@ -494,6 +494,13 @@ class PrimeRuntime(MindLoopRuntime):
                 return
             if op.order_status in (None, "unavailable"):
                 if op.deadline_at is not None and now >= op.deadline_at:
+                    # The first order may have landed with its answer lost: a run that exists is followed.
+                    run, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{op.run_id}")
+                    if run is not None:
+                        self.day_letter = self.day_letter.model_copy(update={"open": op.model_copy(update={
+                            "order_status": "exists"})})
+                        await self._settle_letter(now)
+                        return
                     await self._close_letter(now, produced=False, outcome="not_written",
                                              note=f"Hub never took the order before the run's deadline "
                                                   f"({op.order_detail or 'no answer'})")
@@ -522,7 +529,10 @@ class PrimeRuntime(MindLoopRuntime):
             return
         closed, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/temporal-self/day/{day.isoformat()}")
         if closed is None:
-            return  # not drained by the chronicle yet (404), or unreadable: look again later
+            # Not drained by the chronicle yet (404), or unreadable: look again later. A day the chronicle never
+            # closes gets no letter; Hub names it in the next letter's order (the day before with no row).
+            logger.info("prime_day_letter_day_not_closed day=%s err=%s", day, (_err or "-")[:160])
+            return
         status_raw, err = await self._read(
             f"{self.s.PRIME_HUB_URL.rstrip('/')}{ORION_DAY_STATUS_PATH.format(letter_date=day.isoformat())}")
         if status_raw is None:
@@ -620,7 +630,8 @@ class PrimeRuntime(MindLoopRuntime):
         logger.info("prime_day_letter_ordered day=%s run=%s status=%s missed=%d detail=%s", op.letter_date, op.run_id,
                     result.status, len(missed), result.detail or "-")
         if result.status in ("submitted", "exists"):
-            self.day_letter = dl.mark_told(self.day_letter, [m.letter_date for m in missed]).model_copy(update={
+            # "Told" only once the letter that carried them is written (_close_letter): a failed run tells nobody.
+            self.day_letter = self.day_letter.model_copy(update={
                 "open": op.model_copy(update={"order_status": result.status, "order_detail": result.detail,
                                               "missed_sent": [m.letter_date for m in missed]})})
             return
@@ -641,10 +652,14 @@ class PrimeRuntime(MindLoopRuntime):
             return
         produced, note, detail = dl.run_outcome(run)
         if produced is None:
+            # A paused or stuck run must not hold the day open forever (it would block every later letter).
+            if op.deadline_at is not None and now >= op.deadline_at + timedelta(seconds=dl.ACT_HORIZON_GRACE_SEC):
+                await self._close_letter(now, produced=False, outcome="not_written",
+                                         note=f"the letter run {op.run_id} was still {note} past its deadline")
             return
         threads = [str(t) for t in (detail.get("threads") or []) if isinstance(t, str)]
         turn = detail.get("turn_correlation_id")
-        await self._close_letter(now, produced=produced, outcome="written" if produced else "not_written", note=note,
+        await self._close_letter(now, produced=produced, outcome=dl.done_outcome(produced, detail), note=note,
                                  run_id=op.run_id, turn_correlation_id=str(turn) if turn else None, threads=threads)
 
     async def _close_letter(self, now: datetime, *, produced: bool, outcome: dl.DoneOutcome, note: str,
@@ -666,6 +681,8 @@ class PrimeRuntime(MindLoopRuntime):
         no_room = 0
         if produced and threads:
             self.state, concern_ids, no_room = dl.thread_concerns(self.state, day, threads, now)
+        if produced and op.missed_sent:
+            self.day_letter = dl.mark_told(self.day_letter, list(op.missed_sent))
         if turn_correlation_id and self._handback_on():
             self.turn_record = link_started_turn(self.turn_record, turn_correlation_id, op.act_id)
         self.day_letter = dl.finish(self.day_letter, dl.PrimeDayLetterDoneV1(

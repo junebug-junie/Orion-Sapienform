@@ -149,6 +149,8 @@ def test_409_is_exists_other_refusals_are_refused_with_detail():
     assert run(desk(durable=Durable(status=409))).status == "exists"
     res = run(desk(durable=Durable(status=422)))
     assert res.status == "refused" and "http_422" in res.detail
+    res = run(desk(durable=Durable(status=503)))
+    assert res.status == "unavailable" and "http_503" in res.detail  # transient: Prime re-sends
 
 
 def test_an_empty_day_writes_nothing():

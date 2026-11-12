@@ -407,10 +407,16 @@ class OrionDayRunBriefV1(_Model):
     # The letter turn's budget per attempt (the attempt timer and Hub's turn limit derive from it).
     timeout_sec: float = Field(default=1800.0, ge=60.0, le=3600.0)
     # Added 2026-11-12 (living Prime Part 3). Prime's make act that ordered this run, and the
-    # days before it that got no letter. ROLLOUT: additive on a forbid model -- orion-durable-runs
-    # (the reader) deploys before Hub sends them; Hub sends them only on Prime's order.
+    # days before it that got no letter. ROLLOUT: additive on a forbid model. Hub deploys first but
+    # sends them only on Prime's order, and orion-mind (Prime) deploys after orion-durable-runs, so
+    # the reader always has them before any brief carries them.
     prime_act_id: str | None = Field(default=None, max_length=200)
     missed_letters: list[MissedLetterV1] = Field(default_factory=list, max_length=7)
+    # DEPRECATED, IGNORED (living Prime Part 3 retired the curiosity carry-forward offer it timed).
+    # Still accepted so a brief built by the retired Hub timer -- an accepted run in flight across
+    # the deploy, or an old Hub not yet redeployed -- validates instead of failing load_brief.
+    # Nothing reads it; the letter row's carry_forward_expires_at is always written NULL.
+    carry_forward_ttl_hours: float | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _consistent(self):

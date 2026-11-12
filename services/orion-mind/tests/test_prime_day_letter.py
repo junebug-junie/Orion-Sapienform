@@ -142,7 +142,9 @@ def test_a_deferred_bid_writes_nothing_and_past_the_window_the_next_letter_says_
     order = OrionDayLetterOrderV1.model_validate(body)
     assert [m.letter_date for m in order.missed_letters] == [DAY]
     assert "never funded" in order.missed_letters[0].reason
-    assert rt.day_letter.done[-1].told is True
+    # Told only once the letter that carried it is written (not when the order is accepted).
+    assert {d.letter_date: d.told for d in rt.day_letter.done}[DAY] is False
+    assert rt.day_letter.open.missed_sent == [DAY]
 
 
 def _funding(_old):
@@ -238,3 +240,56 @@ def test_flag_off_means_no_bid_no_order_no_record():
     rt = letter_rt(enabled=False)
     asyncio.run(rt.tick())
     assert rt.letter_bids == [] and rt.orders == [] and dl.DAY_LETTER_KEY not in rt.bus.redis.kv
+
+
+def test_a_paused_run_past_its_deadline_closes_the_day_instead_of_blocking_every_later_letter():
+    rt = letter_rt(run={"status": "paused", "orion_day": {}})
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    assert rt.day_letter.open is not None  # still inside the deadline: wait
+    at(rt, 13 * 60 + 5)                    # 12 h deadline + 1 h grace passed
+    assert rt.day_letter.open is None
+    done = rt.day_letter.done[-1]
+    assert done.outcome == "not_written" and "still paused past its deadline" in done.reason
+    assert [k for k, _ in make_acts(rt.bus)] == ["act_opened", "act_closed"]
+
+
+def test_missed_days_stay_untold_when_the_run_that_carried_them_fails():
+    prior = DAY - timedelta(days=1)
+    rt = letter_rt(run={"status": "failed", "error": "boom", "orion_day": {}})
+    rt.day_letter = dl.finish(rt.day_letter, dl.PrimeDayLetterDoneV1(letter_date=prior, outcome="not_written",
+                                                                     reason="never funded", closed_at=T0))
+    asyncio.run(rt.tick())
+    assert [m["letter_date"] for m in rt.orders[0][1]["missed_letters"]] == [str(prior)]
+    at(rt, 6)  # the run failed
+    told = {d.letter_date: d.told for d in rt.day_letter.done}
+    assert told[prior] is False  # no letter named it, so the next order lists it again
+    assert {m.letter_date for m in dl.missed_for(rt.day_letter, DAY + timedelta(days=1))} == {prior, DAY}
+
+
+def test_missed_days_are_told_once_the_letter_carrying_them_is_written():
+    prior = DAY - timedelta(days=1)
+    rt = letter_rt(run={"status": "completed", "orion_day": {"persist_outcome": "written", "threads": []}})
+    rt.day_letter = dl.finish(rt.day_letter, dl.PrimeDayLetterDoneV1(letter_date=prior, outcome="not_written",
+                                                                     reason="never funded", closed_at=T0))
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    assert {d.letter_date: d.told for d in rt.day_letter.done}[prior] is True
+
+
+def test_a_row_another_run_wrote_is_a_letter_not_a_missed_day():
+    rt = letter_rt(run={"status": "completed", "orion_day": {"persist_outcome": "already_written"}})
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    done = rt.day_letter.done[-1]
+    assert done.outcome == "already_written"
+    assert dl.missed_for(rt.day_letter, DAY + timedelta(days=1)) == []
+
+
+def test_an_order_whose_answer_was_lost_is_followed_when_the_run_exists():
+    run = {"status": "completed", "orion_day": {"persist_outcome": "written", "threads": []}}
+    rt = letter_rt(order_status=None, run=run)  # Hub never answers
+    asyncio.run(rt.tick())
+    assert rt.day_letter.open.order_status == "unavailable"
+    at(rt, 12 * 60 + 1)  # past the run deadline: Prime looks for the run before giving up
+    assert rt.day_letter.done[-1].outcome == "written"

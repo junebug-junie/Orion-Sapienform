@@ -100,6 +100,11 @@ def test_letter_run_holds_the_agent_card_for_its_one_turn_and_persists_once():
         status = await rt.status(req.run_id)
         assert status["orion_day"]["persisted"] is True and status["orion_day"]["letter_date"] == "2026-09-29"
         assert status["orion_day"]["turn_correlation_id"] == turn.correlation_id
+        # The exact keys Prime's settle reads (orion/prime/day_letter.py run_outcome).
+        from orion.prime.day_letter import run_outcome
+
+        produced, _note, detail = run_outcome(status)
+        assert produced is True and detail["persist_outcome"] == "written" and detail["threads"]
         assert status["orion_day"]["threads"]
 
         # A second attempt for the same day: completes, writes nothing, republishes the same journal entry.

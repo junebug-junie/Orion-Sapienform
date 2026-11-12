@@ -184,10 +184,11 @@ def window_over(op: PrimeDayLetterOpenV1, now: datetime) -> bool:
 
 
 def missed_for(st: PrimeDayLetterStateV1, day: date) -> list[MissedLetterV1]:
-    """Days before ``day`` with no letter that no letter was told about yet (newest MAX_MISSED_TOLD)."""
+    """Days before ``day`` with no letter that no letter was told about yet (newest MAX_MISSED_TOLD). An empty day
+    is listed too, with its own reason, so Hub never names it "missed for no known reason"."""
     out = [MissedLetterV1(letter_date=d.letter_date, reason=d.reason or "no letter was written")
            for d in sorted(st.done, key=lambda d: d.letter_date)
-           if d.outcome == "not_written" and not d.told and d.letter_date < day]
+           if d.outcome in ("not_written", "empty") and not d.told and d.letter_date < day]
     return out[-MAX_MISSED_TOLD:]
 
 
@@ -219,6 +220,13 @@ def run_outcome(run: dict) -> tuple[Optional[bool], str, dict]:
         return False, f"the run completed but did not write the row (persist_outcome {outcome})", detail
     err = str(run.get("error") or detail.get("error") or "no error recorded")
     return False, f"the run ended {status}: {err}"[:REASON_CAP], detail
+
+
+def done_outcome(produced: bool, detail: dict) -> "DoneOutcome":
+    """How the day ended when the run is terminal: a row another run wrote is a letter, not a missed day."""
+    if produced:
+        return "written"
+    return "already_written" if detail.get("persist_outcome") == "already_written" else "not_written"
 
 
 def thread_concern_id(day: date, index: int) -> str:

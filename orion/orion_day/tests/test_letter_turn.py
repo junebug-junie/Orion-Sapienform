@@ -95,3 +95,12 @@ def test_letter_session_is_the_one_prime_hands_back_as_letter():
 
     assert ORION_DAY_LETTER_SESSION_ID == LETTER_SESSION_ID
     assert classify_who(ORION_DAY_LETTER_SESSION_ID, {}) == "letter"
+
+
+def test_a_brief_from_the_retired_timer_still_validates_and_its_ttl_is_dropped():
+    brief, _ = _brief()
+    old = {**brief.model_dump(mode="json"), "carry_forward_ttl_hours": 36.0}
+    from orion.schemas.orion_day import OrionDayRunBriefV1
+
+    again = OrionDayRunBriefV1.model_validate(old)
+    assert "carry_forward_ttl_hours" not in again.model_dump(mode="json")

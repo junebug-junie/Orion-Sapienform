@@ -12,9 +12,10 @@ The order always answers HTTP 200 with a status (422 only for an invalid body):
 * ``exists``          -- the durable registry already has ``order.run_id`` (or answered 409).
 * ``empty_day``       -- the day holds nothing to write about; no run, no letter.
 * ``submitted``       -- Hub gathered the day, built the brief and durable-runs accepted the run.
-* ``refused``         -- durable-runs refused the request (``detail`` = its answer), or
+* ``refused``         -- durable-runs refused the request with a 4xx (``detail`` = its answer), or
                          HUB_ORION_DAY_ENABLED is off.
-* ``unavailable``     -- no Postgres pool, the store failed, or durable-runs could not be reached.
+* ``unavailable``     -- no Postgres pool, the store failed, or durable-runs could not be reached or
+                         answered 5xx (transient: Prime sends the order again).
 
 Orders for one letter date are serialized with an asyncio lock, so two orders for the same day
 cannot both gather and submit. This module is the only place Hub submits an ``orion_day.letter``
@@ -212,6 +213,9 @@ class OrionDayOrderDesk:
             return self._result(order, "unavailable", detail=f"durable_runs: {exc}")
         if status == 409:
             return self._result(order, "exists", detail=body or "http_409")
+        if status >= 500:
+            # A DB blip or admission not ready yet: transient. Prime re-sends an unavailable order.
+            return self._result(order, "unavailable", detail=f"http_{status}: {body}")
         if status >= 400:
             return self._result(order, "refused", detail=f"http_{status}: {body}")
         logger.info("orion_day_submitted run=%s corr=%s view_tokens=%s missed=%s", order.run_id,

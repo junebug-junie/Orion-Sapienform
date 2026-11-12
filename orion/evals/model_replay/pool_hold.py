@@ -1,26 +1,26 @@
 """Operator holds that pin each model's card for one replay task, released on every exit path.
 
-WHY OPERATOR HOLDS. A caller cannot ask the pool for a role or a profile, only a work class
-(`config/gpu_pool.yaml` classes). So the replay pins cards by class and then CHECKS what it got:
+WHY OPERATOR CLASSES (leased evals, 2026-11-12,
+docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md, Phase 1). A caller
+cannot ask the pool for a role or a profile, only a work class (`config/gpu_pool.yaml` classes). The
+replay asks for the pinned operator classes and then CHECKS what it got:
 
-  * Q4 (gpu1):     class ``memory_distill`` -> roles [agent] only. agent has 1 slot, so one hold
-                   makes gpu1 ours alone. Verified: grant.role == "agent" and grant.profile_name is
-                   the Q4 profile.
-  * Bonsai (gpu2): class ``agent`` -> [agent, agent-gpu2, agent-deep, chat]. Taken AFTER the gpu1
-                   hold, so agent is full and the class falls through to agent-gpu2. Verified:
-                   grant.role == "agent-gpu2" and grant.profile_name is the Bonsai profile. Only one
-                   hold: the pool allows one non-urgent hold per role (stage 7.2), so a second one
-                   would land on hecate or chat. gpu2's other slot can serve one-off calls, as in
-                   production; the replay's own calls ride the hold as attached child leases.
+  * Q4 (gpu1):     class ``operator_agent`` -> roles [agent] only. Verified: grant.role == "agent"
+                   and grant.profile_name is the Q4 profile.
+  * Bonsai (gpu2): class ``operator_agent_gpu2`` -> roles [agent-gpu2] only. Verified the same way.
 
-A grant on the wrong role or profile is released immediately and the task is retried later
-(runner: the seat check waits until gpu1 and gpu2 carry no other run's hold). Because class
-``agent`` CAN fall through to agent-deep (hecate) or chat when gpu2 is busy, such a grant may
-exist for the length of one RPC round trip before it is given back. An operator-only class
-covering just agent-gpu2 would remove that; it is a config/gpu_pool.yaml change, not made here.
+``LeaseHoldTransport`` (the replay's transport) asks at ``background`` priority through the lease
+RPC, heartbeats each granted hold, and makes it non-retryable. So the replay waits behind every one
+of Orion's own background leases, an owner that waits recalls it (the transport's ``recalled`` event;
+the runner then stops and writes a partial report), and the heat reflex sheds it like Orion's own
+background work. A killed process's hold ends on its own at the pool's heartbeat TTL.
 
-Operator holds have no heartbeat and no expiry (``lease_graph.py``: operator -> expiry None), so a
-leaked hold stays until the role's ``max_hold_sec`` or forever on gpu1. Hence:
+``BusControlTransport`` (the control verb ``hold``: interactive, operator, no heartbeat) is kept only
+for a hand-run reservation Juniper starts herself (scripts/gpu_pool_clear_gpu2.py with
+``RESERVE_SEATS``), the same kind of hold as the Hub's experiment-seat button.
+
+Control-verb holds have no heartbeat and no expiry (``lease_graph.py``: operator -> expiry None), so a
+leaked one stays until the role's ``max_hold_sec`` or forever on gpu1. For every hold, either kind:
   1. every hold request is appended to ``holds.jsonl`` BEFORE it is sent, its lease id as soon as the
      pool answers; a hold RPC that times out (the pool may still have created the lease) triggers a
      sweep of the pool's own lease table for this holder (``sweep``);
@@ -57,11 +57,18 @@ class SeatSpec:
     extra_slot_holds: int = 0  # additional holds on the same class to fill the seat's other slots
 
 
+# The replay's seats: pinned operator classes (one role each), background, behind Orion's own work.
 SEATS: dict[str, SeatSpec] = {
+    "q4": SeatSpec("q4", "operator_agent", "agent", Q4_PROFILE),
+    "bonsai": SeatSpec("bonsai", "operator_agent_gpu2", "agent-gpu2", BONSAI_PROFILE),
+}
+# A hand-run reservation (scripts/gpu_pool_clear_gpu2.py, BusControlTransport, interactive): gpu1 via
+# class memory_distill, then gpu2 via class agent falling through once agent is full.
+RESERVE_SEATS: dict[str, SeatSpec] = {
     "q4": SeatSpec("q4", "memory_distill", "agent", Q4_PROFILE),
     "bonsai": SeatSpec("bonsai", "agent", "agent-gpu2", BONSAI_PROFILE),
 }
-# gpu1 first: with agent's only slot held, class `agent` cannot land on agent.
+# gpu1 first (the reservation's class `agent` cannot then land on agent).
 ACQUIRE_ORDER = ("q4", "bonsai")
 
 
@@ -140,6 +147,7 @@ class PoolHolds:
     transport: ControlTransport
     ledger: HoldLedger
     models: tuple[str, ...] = ACQUIRE_ORDER
+    seat_specs: dict[str, SeatSpec] = field(default_factory=lambda: dict(SEATS))
     actor: str = "bonsai-replay-eval"
     grant_timeout_sec: float = 1800.0
     # Live lease ids the pool itself holds for HOLDER (reads /v1/pool); used when a hold RPC failed
@@ -154,7 +162,7 @@ class PoolHolds:
             for key in ACQUIRE_ORDER:
                 if key not in self.models:
                     continue
-                spec = SEATS[key]
+                spec = self.seat_specs[key]
                 self.seats[key] = await self._acquire_verified(spec)
                 for _ in range(spec.extra_slot_holds):
                     await self._acquire_extra(spec)
@@ -280,20 +288,20 @@ def lease_ended(reply: dict[str, Any]) -> bool:
 HOLDER = "operator:bonsai-replay-eval"
 
 
-def attach_factory(bus: Any, model: str, grant: Grant) -> Callable[[float], Any]:
-    """Each model call as a child lease of the task's hold (pool verb ``attach``), exactly how a
-    durable run's calls ride its hold. Without it the pool sees an idle hold and lends the slot to
-    one-off calls in the middle of a replayed generation (gap sharing), slowing one model at random."""
-    from orion.gpu_pool.client import gpu_lease
+def gateway_headers(model: str, grant: Grant, holder: str = HOLDER) -> dict[str, str]:
+    """The headers every model call of this task carries to orion-llm-gateway: the task's hold ref.
+    The gateway attaches the call as a child of the hold (pool verb ``attach``), exactly how a
+    durable run's calls ride its hold, so the pool never lends the slot away mid-generation."""
+    from orion.llm.resource_lease import GPU_LEASE_HEADER, encode_gpu_lease_header
     from orion.schemas.gpu_pool import GpuLeaseRefV1
 
-    ref = GpuLeaseRefV1(lease_id=grant.lease_id, generation=grant.generation, role=grant.role, holder=HOLDER)
+    ref = GpuLeaseRefV1(lease_id=grant.lease_id, generation=grant.generation, role=grant.role, holder=holder)
+    return {GPU_LEASE_HEADER: encode_gpu_lease_header(ref)}
 
-    def enter(timeout_sec: float) -> Any:
-        return gpu_lease(bus, work_class=SEATS[model].work_class, holder=HOLDER, priority="interactive",
-                         kind="request", deadline_sec=max(30.0, min(600.0, timeout_sec)), hold=ref)
 
-    return enter
+def gateway_route(model: str) -> str:
+    """The gateway route a model's calls name: its seat's operator class (config/gpu_pool.yaml)."""
+    return SEATS[model].work_class
 
 
 LIVE_STATUSES = ("granted", "recalling", "queued", "retry_wait", "backlogged")
@@ -444,6 +452,95 @@ class BusControlTransport:
             return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout_sec)
         except asyncio.TimeoutError:
             return None
+
+
+class LeaseHoldTransport(BusControlTransport):
+    """The replay's transport (leased evals, 2026-11-12): holds through the lease RPC at ``background``,
+    non-retryable, heartbeated, on the pinned operator classes. ``recalled`` is set once the pool asks
+    for any held seat back (or loses it); the runner then stops the run and writes a partial report.
+    Grants still arrive on the pool event channel (``wait_granted``, inherited)."""
+
+    def __init__(self, bus_url: str, timeout_sec: float = 15.0, *, holder: str = HOLDER,
+                 heartbeat_sec: float = 30.0, queue_deadline_sec: float = 3 * 3600.0) -> None:
+        super().__init__(bus_url, timeout_sec)
+        self.holder, self.heartbeat_sec, self.queue_deadline_sec = holder, heartbeat_sec, queue_deadline_sec
+        self.recalled = asyncio.Event()
+        self.recall_reason: Optional[str] = None
+        self._beats: dict[str, asyncio.Task] = {}
+
+    async def __aexit__(self, *exc: Any) -> None:
+        for task in list(self._beats.values()):
+            task.cancel()
+        self._beats.clear()
+        await super().__aexit__(*exc)
+
+    async def _rpc(self, req: Any, ok: tuple[str, ...] = ("ok",)) -> dict[str, Any]:
+        """A lease-RPC reply in the control-reply shape PoolHolds reads (``ok``, ``reason``, ``detail``)."""
+        from orion.gpu_pool.client import lease_rpc
+
+        reply = await lease_rpc(self._bus, req, source=self.holder, timeout_sec=self.timeout_sec)
+        return {"ok": reply.status in ok, "reason": reply.reason, "detail": reply.model_dump(mode="json")}
+
+    def _start_beat(self, lease_id: str) -> None:
+        if lease_id not in self._beats:
+            self._beats[lease_id] = asyncio.create_task(self._beat(lease_id))
+
+    def _stop_beat(self, lease_id: str) -> None:
+        task = self._beats.pop(lease_id, None)
+        if task is not None:
+            task.cancel()
+
+    async def _beat(self, lease_id: str) -> None:
+        from orion.gpu_pool.client import heartbeat_lease
+
+        while True:
+            await asyncio.sleep(self.heartbeat_sec)
+            try:
+                reply = await heartbeat_lease(self._bus, lease_id, source=self.holder, timeout_sec=self.timeout_sec)
+            except Exception:  # noqa: BLE001 -- a missed beat is survivable; the TTL is 3x this
+                continue
+            if reply.status != "granted":
+                self.recall_reason = f"{lease_id}:{reply.status}" + (f":{reply.reason}" if reply.reason else "")
+                self.recalled.set()
+                if reply.status != "recall":
+                    return
+
+    async def hold(self, work_class: str, actor: str) -> dict[str, Any]:
+        from datetime import datetime, timedelta, timezone
+
+        from orion.schemas.gpu_pool import GpuLeaseRequestV1
+
+        req = GpuLeaseRequestV1(
+            verb="acquire", request_id=f"{self.holder}:{uuid.uuid4().hex}", holder=self.holder,
+            work_class=work_class, priority="background", kind="hold", retryable=False,
+            deadline_at=datetime.now(timezone.utc) + timedelta(seconds=self.queue_deadline_sec))
+        res = await self._rpc(req, ok=("granted", "queued"))
+        detail = res["detail"]
+        lid = detail.get("lease_id")
+        if lid and lid not in self._grants:
+            self._grants[lid] = asyncio.get_running_loop().create_future()
+        if lid and detail.get("status") == "granted":
+            self._start_beat(lid)
+        return res
+
+    async def wait_granted(self, lease_id: str, timeout_sec: float) -> Optional[dict[str, Any]]:
+        grant = await super().wait_granted(lease_id, timeout_sec)
+        if grant is not None:
+            self._start_beat(lease_id)
+        return grant
+
+    async def release(self, lease_id: str, actor: str) -> dict[str, Any]:
+        from orion.schemas.gpu_pool import GpuLeaseRequestV1
+
+        self._stop_beat(lease_id)
+        outcome = "cancelled" if self.recalled.is_set() else "ok"
+        return await self._rpc(GpuLeaseRequestV1(verb="release", lease_id=lease_id, outcome=outcome))
+
+    async def cancel(self, lease_id: str, actor: str) -> dict[str, Any]:
+        from orion.schemas.gpu_pool import GpuLeaseRequestV1
+
+        self._stop_beat(lease_id)
+        return await self._rpc(GpuLeaseRequestV1(verb="cancel", lease_id=lease_id))
 
 
 def seat_problem(pool_state: dict[str, Any], models: tuple[str, ...] = ACQUIRE_ORDER, holder: str = HOLDER) -> Optional[str]:

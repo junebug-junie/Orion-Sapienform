@@ -17,6 +17,10 @@ operator holds through the GPU pool, prints READY, and keeps them until Ctrl+C, 
 Cost: the agent lane has no circe card while this runs; its work waits in the pool queue. Operator
 holds are priority interactive, so only work of strictly higher priority may use their gaps (H3).
 
+This is a reservation Juniper starts by hand, like the Hub's experiment-seat button, so it keeps the
+interactive control-verb hold (leased-evals design 2026-11-12, answer 5). Code-driven evals do not use
+it: they hold seats at background through orion/evals/leased_llm.py.
+
     ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_clear_gpu2.py
     ... --release-leftovers OUT_DIR   # after a SIGKILL
 """
@@ -34,7 +38,8 @@ from pathlib import Path
 from typing import Any
 
 from orion.evals.model_replay.pool_hold import (
-    SEATS, BusControlTransport, HoldLedger, HoldRefused, PoolHolds, http_sweeper, release_leftovers,
+    RESERVE_SEATS as SEATS, BusControlTransport, HoldLedger, HoldRefused, PoolHolds, http_sweeper,
+    release_leftovers,
 )
 
 ACTOR = "gpu-power-bench"
@@ -98,7 +103,7 @@ async def hold(args: argparse.Namespace, bus_url: str) -> int:
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         loop.add_signal_handler(sig, stop.set)
     async with BusControlTransport(bus_url) as transport:
-        holds = PoolHolds(transport=transport, ledger=ledger, actor=ACTOR,
+        holds = PoolHolds(transport=transport, ledger=ledger, actor=ACTOR, seat_specs=dict(SEATS),
                           grant_timeout_sec=args.grant_timeout_sec, sweep=http_sweeper(args.pool_http, HOLDER))
         print(f"asking the pool for gpu1 and both gpu2 slots (waits up to {args.grant_timeout_sec / 60:.0f} min "
               f"for running work to finish); ledger {ledger.path}", flush=True)

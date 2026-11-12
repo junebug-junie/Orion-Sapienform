@@ -25,7 +25,8 @@ from typing import Any, Awaitable, Callable, Optional
 from orion.evals.model_replay import agent_loop, scoring, write_claims
 from orion.evals.model_replay.fixture import FIXTURE_PATH, ReplayTaskV1
 from orion.evals.model_replay.pool_hold import (
-    ACQUIRE_ORDER, SEATS, ControlTransport, Grant, HoldLedger, HoldRefused, PoolHolds,
+    ACQUIRE_ORDER, SEATS, ControlTransport, Grant, HoldLedger, HoldRefused, PoolHolds, gateway_headers,
+    gateway_route,
 )
 from orion.evals.model_replay.sandbox import FetchCache, ToolLog, Toolbox, sandbox_env
 
@@ -260,6 +261,30 @@ async def _run_pair(task: ReplayTaskV1, cfg: ReplayConfig, rigs: dict[str, Model
         pool.shutdown(wait=False)
 
 
+async def _run_or_stop(task: ReplayTaskV1, cfg: ReplayConfig, rigs: dict[str, ModelRig],
+                       recalled: Optional[asyncio.Event]) -> Optional[list[scoring.TaskScore]]:
+    """``_run_pair``, cut short (None, the task is not scored) when the pool recalls a held seat."""
+    if recalled is None:
+        return await _run_pair(task, cfg, rigs)
+    if recalled.is_set():
+        return None
+    pair = asyncio.ensure_future(_run_pair(task, cfg, rigs))
+    stop = asyncio.ensure_future(recalled.wait())
+    try:
+        await asyncio.wait([pair, stop], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stop.cancel()
+    if pair.done():
+        return pair.result()
+    pair.cancel()   # _run_pair's cancel path stops the threads and cuts in-flight calls
+    try:
+        await pair
+    except asyncio.CancelledError:
+        pass
+    STOP.clear()
+    return None
+
+
 async def run_replay(cfg: ReplayConfig, transport: ControlTransport, rig_factory: RigFactory,
                      *, log: Callable[[str], None] = print, seat_check: Optional[SeatCheck] = None,
                      sweep: Optional[Callable[[], Any]] = None, seat_wait_sec: float = 3 * 3600.0,
@@ -293,11 +318,21 @@ async def run_replay(cfg: ReplayConfig, transport: ControlTransport, rig_factory
                         for rig in rigs.values():
                             rig.cleanup()
                         raise
-                    scores = await _run_pair(task, cfg, rigs)
+                    scores = await _run_or_stop(task, cfg, rigs, getattr(transport, "recalled", None))
                 break
             except HoldRefused as exc:
                 # Every hold is already released. Wait for the seats and try again.
                 log(f"    hold refused ({exc}); holds released")
+        recalled = getattr(transport, "recalled", None)
+        if recalled is not None and recalled.is_set():
+            # Orion needs the seat (leased evals, answer 6): stop here, no automatic resume.
+            stopped = f"recalled: {getattr(transport, 'recall_reason', None) or 'seat taken back'}"
+            log(f"    {task.task_id}: GPU pool took a seat back ({stopped}); stopping. Resume later with "
+                f"--out {cfg.out_dir}")
+            summary = finalize(cfg)
+            summary["stopped"] = stopped
+            (cfg.out_dir / "summary.json").write_text(json.dumps(summary, indent=1, default=str), encoding="utf-8")
+            return summary
         if scores is None:
             log(f"    {task.task_id}: not run this time; resume with --out {cfg.out_dir}")
             continue
@@ -363,9 +398,8 @@ class LiveRigFactory:
     http: Any
     docker_ro: Any
     fetch_cache: FetchCache
-    # (model, grant) -> attach(timeout) context factory; None = call the worker without a child lease
-    attach: Optional[Callable[[str, Grant], Callable[[float], Any]]] = None
-    loop: Any = None
+    # orion-llm-gateway: every model call goes there under the task's hold (never the grant's URL).
+    gateway: str = "http://127.0.0.1:8210"
 
     def __call__(self, task: ReplayTaskV1, model: str, grant: Grant) -> ModelRig:
         from orion.evals.model_replay.graph_scratch import ScratchGraphs
@@ -395,10 +429,9 @@ class LiveRigFactory:
                 if part in holder:
                     holder[part].stop()
 
-        http_client = agent_loop.HttpMessagesClient(grant.url)
+        http_client = agent_loop.HttpMessagesClient(self.gateway, headers=gateway_headers(model, grant),
+                                                    model=gateway_route(model))
         client: agent_loop.MessagesClient = http_client
-        if self.attach is not None:
-            client = agent_loop.AttachedClient(client, loop=self.loop, attach=self.attach(model, grant))
 
         def full_cleanup() -> None:
             http_client.close()

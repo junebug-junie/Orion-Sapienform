@@ -434,7 +434,11 @@ hub index). Checks 1-3. Built 2026-11-12, with question 11's light view
 above, both optional: `RoomTranscriptEntryV1.side_exchange` (a resumed Claude session already holds its
 own side exchanges, so the companion never re-sends them) and `RoomClaudeRequestV1.transcript_note` (the
 "Earlier: N turns" line). The "Earlier" line does not name the `conversation_older` tool until Patch 1b
-builds it. The hub index has no tool-category line until Patch 1b either.
+builds it. The hub index has no tool-category line until Patch 1b either. The "sent up to here" mark is a
+set of per-line keys (`<turn ref>|<speaker>`), not a time: Hub merges Orion's reply into the row that
+Juniper's half already opened, with the same `created_at`, so a time mark would skip that reply on every
+resumed turn (code review, 2026-11-12). Lines without a turn ref keep the time mark. Shipped as two PRs,
+companion first, because the request schema is `extra="forbid"`.
 
 **Patch 1b: the consent rail and two tools.** `prime_now` (category `prime`) and `body_economy`
 (category `body`). Both readers already print short text, and neither names a third party. Builds the

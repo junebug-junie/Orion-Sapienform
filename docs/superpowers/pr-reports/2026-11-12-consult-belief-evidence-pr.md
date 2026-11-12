@@ -119,6 +119,6 @@ No manual restart. The post-pull rebuild applies the migration and rebuilds orio
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3246
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

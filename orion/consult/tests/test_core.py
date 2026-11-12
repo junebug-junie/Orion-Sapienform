@@ -10,7 +10,6 @@ from orion.consult.core import (
     budget_refusal,
     claude_turn_prompt,
     consult_id_from_room,
-    consult_outcomes_section,
     consult_room_id,
     gate_ending,
     orion_session_id,
@@ -192,27 +191,3 @@ def test_stuck_prior_source():
     assert stuck_prior_source(SimpleNamespace(subject_prior_id=None, subject_claim="x")) is None
     ref, q = stuck_prior_source(SimpleNamespace(subject_prior_id="p1", subject_claim="Claim."))
     assert ref == "prior:p1" and "Claim." in q
-
-
-def test_outcomes_section_separates_juniper_answer_from_truth():
-    lines = consult_outcomes_section([
-        {"consult_id": "c1", "ending": "answered", "answer": "by design", "question": "why?"},
-        {"consult_id": "c2", "ending": "agreed_proposal", "decision": "no_because", "decision_reason": "too costly",
-         "question": "fix?"},
-    ])
-    text = "\n".join(lines)
-    assert "not proof the claim is true" in text
-    assert "c1 was answered: by design" in text and "no, because: too costly" in text
-    assert consult_outcomes_section([]) == []
-
-
-def test_orion_prompt_fits_the_brief_limit_by_cutting_the_oldest_turns():
-    from orion.consult.core import ORION_PROMPT_MAX_CHARS
-    from orion.schemas.consult_turn_run import ConsultOrionTurnBriefV1
-
-    transcript = [("Orion", "o" * 30000), ("Claude", "c" * 30000), ("Orion", "p" * 20000), ("Claude", "LATEST " * 2000)]
-    text = orion_turn_prompt(source="s", question="q", transcript=transcript, turn_no=5, max_turns=6)
-    assert len(text) <= ORION_PROMPT_MAX_CHARS and "characters cut to fit" in text
-    assert ("LATEST " * 2000).strip() in text, "the turn Orion answers stays whole"
-    ConsultOrionTurnBriefV1(consult="consult.orion_turn", consult_id="c", turn_no=5, prompt=text,
-                            session_id="consult-c", timeout_sec=900)

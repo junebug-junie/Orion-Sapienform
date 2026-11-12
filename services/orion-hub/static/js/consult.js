@@ -170,7 +170,21 @@
   }
 
   // One plain sentence for where a consult stands. Failures say why.
+  function beliefText(c) {
+    const priors = Array.isArray(c.belief_prior_ids) ? c.belief_prior_ids : [];
+    switch (String(c.belief_state || "")) {
+      case "recorded": return " Orion recorded it on " + (priors.length === 1 ? "belief " : "beliefs ") + priors.join(", ") + ".";
+      case "not_recorded": return " Orion did not record it on a belief (offered " + String(c.belief_offers || 0) + " times).";
+      case "waiting": return " Not yet recorded on Orion's beliefs.";
+      default: return "";
+    }
+  }
+
   function statusText(c) {
+    return statusOnly(c) + beliefText(c);
+  }
+
+  function statusOnly(c) {
     const reason = String(c.status_reason || "");
     switch (String(c.status || "")) {
       case "pending": return "Waiting to start.";

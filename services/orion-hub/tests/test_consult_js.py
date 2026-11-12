@@ -147,6 +147,23 @@ def test_status_text_says_where_each_consult_stands():
                    "Stopped: the brief failed its check (missing:cost). Nothing was sent."]
 
 
+def test_status_text_says_whether_orion_recorded_the_outcome_on_a_belief():
+    got = _node("""
+      return [
+        api.statusText({status: "brief_sent", decision: "yes", belief_state: "recorded", belief_prior_ids: ["p1"]}),
+        api.statusText({status: "answered", answer: "x.", belief_state: "recorded", belief_prior_ids: ["p1", "p2"]}),
+        api.statusText({status: "brief_sent", decision: "no", belief_state: "not_recorded", belief_offers: 3}),
+        api.statusText({status: "answered", answer: "x.", belief_state: "waiting"}),
+        api.statusText({status: "brief_sent", belief_state: null}),
+      ];
+    """)
+    assert got == ["Brief sent. You said: yes. Orion recorded it on belief p1.",
+                   "Answered. Nothing for you. Answer: x. Orion recorded it on beliefs p1, p2.",
+                   "Brief sent. You said: no. Orion did not record it on a belief (offered 3 times).",
+                   "Answered. Nothing for you. Answer: x. Not yet recorded on Orion's beliefs.",
+                   "Brief sent. Waiting for your answer."]
+
+
 def test_consult_rows_stay_out_of_orions_context():
     """The memory bridge and Ask Claude read chat rows by turnId / data-message-body; consult rows have neither."""
     got = _node("""

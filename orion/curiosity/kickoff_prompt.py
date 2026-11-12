@@ -1385,7 +1385,7 @@ def build_kickoff_prompt(
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
         if writable:
-            from orion.consult.core import consult_outcomes_section
+            from orion.consult.beliefs import consult_outcomes_section
 
             lines += consult_outcomes_section(consult_outcomes)
         # Only offered when Orion can write the prior that would adopt one --

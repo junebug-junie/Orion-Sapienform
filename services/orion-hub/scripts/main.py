@@ -717,6 +717,7 @@ async def startup_event():
                 prior_coverage_slots=settings.HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS,
                 stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
                 spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
+                self_inquiry_outcomes_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED,
                 value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,
                 value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
                 replica_arm_enabled=settings.HUB_CURIOSITY_REPLICA_ARM_ENABLED,

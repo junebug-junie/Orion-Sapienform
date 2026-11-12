@@ -287,6 +287,8 @@ def test_curiosity_formed_and_moved_untested_are_not_chosen():
             "no_timestamp",
         ),
         ("not a mapping", OUTCOME_ROW, "no_offer_row"),
+        # A self-inquiry run's decision row offers nothing: its tested priors are not a choice.
+        (dict(OFFER_ROW, arm="self_inquiry", offered=[], stale_offered=[]), OUTCOME_ROW, "self_inquiry_no_offer"),
     ],
 )
 def test_curiosity_malformed_returns_none(offer, outcome, reason):

@@ -1284,6 +1284,16 @@ uncertainty order still decides.
 The switch stays off until
 `scripts/analysis/replay_curiosity_realized_nats.py --pg` shows the measurement
 is not degenerate and says how many runs per arm the comparison needs.
+**Self-inquiry runs are measured too** (since 2026-11-12,
+`HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED`, default true). At dispatch a self-inquiry run writes a
+decision row with `arm = 'self_inquiry'`, nothing offered, propensity 1.0 and no `arm_propensities`
+(so the three-arm readout never sees it); its turn is snapshotted and diffed, and
+`curiosity_run_outcomes` gets its row. The value model's history (`LOAD_HISTORY_SQL`) and the
+personality choice lanes (`orion/personality/choices.py`, durable-runs `curiosity_choice`) skip this
+arm: no prior was chosen from an offer. Orion's Day, Temporal Self and reading credit read the rows as
+they read investigations. Before this, 97 of 100 philosophical findings (all from self-inquiry) had
+no outcome row.
+
 `HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
 must be applied first:
 `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`. Without it,

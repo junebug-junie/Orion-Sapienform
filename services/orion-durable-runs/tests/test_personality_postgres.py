@@ -133,6 +133,11 @@ async def seed_rows(pool, at):
              {"at": at, "o": json.dumps([{"prior_id": "self:a_thing_20261015", "rank": 1, "slot": "order"}])})
     await ex(pool, "INSERT INTO curiosity_run_outcomes VALUES ('run1', %(at)s, true, 0.1, %(p)s::jsonb)",
              {"at": at, "p": json.dumps([{"kind": "tested", "prior_id": "self:a_thing_20261015"}])})
+    # A self-inquiry run's rows (arm self_inquiry, nothing offered): measured, but never a choice.
+    await ex(pool, "INSERT INTO curiosity_offer_decisions VALUES ('run2', %(at)s, 'self_inquiry', '[]', '[]', '[]', %(at)s)",
+             {"at": at})
+    await ex(pool, "INSERT INTO curiosity_run_outcomes VALUES ('run2', %(at)s, true, 0.2, %(p)s::jsonb)",
+             {"at": at, "p": json.dumps([{"kind": "tested", "prior_id": "self:another_thing_20261015"}])})
     await ex(pool, "INSERT INTO self_concept_history VALUES ('sc2', %(at)s, 'self:definition', 2, 'I am newer.', "
                    "'curiosity_self_inquiry')", {"at": at})
 
@@ -166,6 +171,7 @@ def test_full_loop_on_postgres():
         assert {"dream:h1", "journal:j1", "chat:c1", "outreach:o1", "reverie:r1", "reading:s1", "day_letter:2026-10-16",
                 "curiosity_choice:run1:self:a_thing_20261015", "self_inquiry_seed:sc2"} <= ids
         assert "chat:pre" not in ids and "journal:j2" not in ids
+        assert not any(i.startswith("curiosity_choice:run2") for i in ids)   # self-inquiry: no choice
         active = await q(pool, "SELECT * FROM personality_disposition WHERE status = 'active'")
         assert len(active) == 1 and set(active[0]["lane_counts"]) == {"dream", "journal", "chat"}
         # j1 is a metacog journal: keyed by its source (graph.source_key), not its lane.

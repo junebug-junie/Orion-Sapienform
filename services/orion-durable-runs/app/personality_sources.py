@@ -263,7 +263,9 @@ SOURCES: tuple[SourceSpec, ...] = (
                + _keyset_naive_utc("created_at", "id"), chat_item("outreach")),
     SourceSpec("curiosity_choice", "SELECT d.run_id, d.offered, d.stale_offered, d.material_ids, d.turn_started_at, "
                "d.decided_at, d.arm, o.per_prior, o.completed_at, o.turn_ok, o.realized_nats "
-               "FROM curiosity_run_outcomes o JOIN curiosity_offer_decisions d USING (run_id) WHERE "
+               "FROM curiosity_run_outcomes o JOIN curiosity_offer_decisions d USING (run_id) "
+               # A self-inquiry run's decision row offers nothing: no choice to read (choices.py skips it too).
+               "WHERE d.arm <> 'self_inquiry' AND "
                + _keyset("o.completed_at", "o.run_id"), curiosity_item),
     SourceSpec("self_inquiry_seed", "SELECT entry_id, created_at, concept_id, version, content FROM self_concept_history "
                "WHERE produced_by = 'curiosity_self_inquiry' AND btrim(coalesce(content, '')) <> '' AND "

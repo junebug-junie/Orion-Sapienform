@@ -100,6 +100,8 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider orion/dig/tests/test_refs_contract.py
       - name: Frame eval on live inputs (grounded, bounded, honest gaps, settles)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_frame_eval.py
+      - name: Prime block eval on live state (grounded refs, 600-char cap, stale renders absent)
+        run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_block_eval.py
       - name: Wake replay on the live trigger timeline (attention is not a trigger; rate, daily wake, quiet floor)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_wake_replay.py
       - name: orion-mind (resident loop + every existing Mind test)

@@ -232,6 +232,7 @@ def build_harness_prompt(
     reading_binding: Any = None,
     reading_only: bool = False,
     working_notes_block: str | None = None,
+    prime_block: str | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -246,6 +247,7 @@ def build_harness_prompt(
         reading_binding=reading_binding,
         reading_only=reading_only,
         working_notes_block=working_notes_block,
+        prime_block=prime_block,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -531,6 +533,7 @@ class HarnessRunner:
             reading_binding=getattr(request, "reading_binding", None),
             reading_only=getattr(request, "reading_only", False),
             working_notes_block=working_notes_block,
+            prime_block=getattr(request, "prime_block", None),
         )
 
         try:

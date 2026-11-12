@@ -1846,6 +1846,11 @@ class Settings(BaseSettings):
     ORION_PRESENCE_DEFAULT_REQUESTOR: str = Field(default="Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")
     ORION_PRESENCE_PERSIST_ALLOWED: bool = Field(default=False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
     ORION_SITUATION_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_ENABLED")
+    # Living Prime Part 1 (orion/prime/block.py): Prime's cited present in every unified turn's prefix.
+    # Kill switch: false renders no block (the prompt is then unchanged). STALE_MIN: Prime state whose last
+    # tick is older than this renders only "Prime has not ticked since <time>".
+    HUB_PRIME_BLOCK_ENABLED: bool = Field(default=True, alias="HUB_PRIME_BLOCK_ENABLED")
+    HUB_PRIME_BLOCK_STALE_MIN: float = Field(default=10.0, gt=0.0, alias="HUB_PRIME_BLOCK_STALE_MIN")
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
     # 2026-08-30, Juniper's explicit request: previously hardcoded to a bare
     # 1200 inside orion.situational.context.hub_settings_to_runtime_namespace

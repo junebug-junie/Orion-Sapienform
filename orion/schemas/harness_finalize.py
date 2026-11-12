@@ -334,6 +334,17 @@ class HarnessRunRequestV1(BaseModel):
             "the block entirely rather than showing a placeholder."
         ),
     )
+    prime_block: str | None = Field(
+        default=None,
+        description=(
+            "Prime's present (living Prime design Part 1): concerns held now, last thought and its "
+            "move, open asks/regulate signals, body read, each line cited. Rendered by code in "
+            "orion-hub BEFORE this request is built (orion/prime/block.py::fetch_prime_block, capped "
+            "at 600 chars) and placed verbatim after the situation fragment "
+            "(orion/harness/prefix.py). None when HUB_PRIME_BLOCK_ENABLED is off; an older governor "
+            "ignores the key (this model ignores unknown keys), so deploy the governor first."
+        ),
+    )
     recent_turns: list[TurnWindowMessageV1] = Field(
         default_factory=list,
         max_length=HARNESS_RECENT_TURNS_MAX,

@@ -2064,6 +2064,29 @@ Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure s
 
 ---
 
+## Prime block in every unified turn (living Prime, Part 1)
+
+Every unified turn (chat, curiosity, consult, self-sense: they all run through
+`orion/hub/turn_orchestrator.py::execute_unified_turn`) gets a short block with Prime's present,
+placed right after the Situation block in the motor prompt. Prime is Orion's slow loop between
+turns (`services/orion-mind/app/prime_loop.py`).
+
+- **What it shows:** concerns Prime holds now (age, `[prime_concern:<id>]`, `[arc:<id>]`), the last
+  thought's reading and its move or "no move" (`[thought:<id>]`), open questions to curiosity and
+  regulate signals with their settle state, and the last body read. Every line ends with a ref.
+- **How:** code renders it (`orion/prime/block.py::fetch_prime_block`) from Redis
+  `orion:prime:state` plus the tick time `orion:prime:concerns.as_of`. No model writes it. Capped at
+  600 characters; free text is cut, refs never are.
+- **Stale means absent:** a last tick older than `HUB_PRIME_BLOCK_STALE_MIN` (default 10 min; Prime
+  ticks every 15 s) renders only "Prime has not ticked since <time>". Unreadable Redis renders a
+  labelled absent line. The turn never fails on it.
+- **Evidence:** Hub logs `prime_block corr=... status=ok refs=N` per turn and
+  `prime_block_citations corr=... label=verified|UNVERIFIED|no_prime_claims` after the reply (a
+  Prime ref the block did not show is counted as rejected). The block is in the turn's
+  `cockpit_turn_sighting` `motor_boot` prompt.
+- **Kill switch:** `HUB_PRIME_BLOCK_ENABLED=false` (no block; the prompt is unchanged).
+- **Eval:** `python orion/prime/evals/run_prime_block_eval.py [--live]`.
+
 ## Draft-first chat replies (spec L8)
 
 `HUB_UNIFIED_DRAFT_FIRST_ENABLED=true` (default): on Unified Chat turns the

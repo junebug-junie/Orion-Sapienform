@@ -150,7 +150,7 @@ def test_the_settings_flag_reaches_the_bidder():
     from app.settings import Settings
 
     assert "physiology_bid_reading" in Settings.model_fields                  # a rename fails here
-    assert Settings.model_fields["physiology_bid_reading"].default == "shadow"
+    assert Settings.model_fields["physiology_bid_reading"].default == "on"
     for mode, expect in (("on", True), ("shadow", False), ("typo", False)):
         s = Settings.model_construct(physiology_bid_reading=mode)
         assert make_bidder(s).reading_binding_enabled is expect

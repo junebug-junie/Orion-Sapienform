@@ -183,7 +183,7 @@ def make_bidder(settings, market_getter=None) -> RunBidder:
         market_getter=market_getter or (lambda: None),
         binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on",
         # Attention 3c: reading stage 1 binds (live week; shadow = 3b's value-only bid).
-        reading_binding_enabled=_bind_mode(getattr(settings, "physiology_bid_reading", "shadow")) == "on")
+        reading_binding_enabled=_bind_mode(getattr(settings, "physiology_bid_reading", "on")) == "on")
 
 
 def _economy_held(state: dict) -> bool:

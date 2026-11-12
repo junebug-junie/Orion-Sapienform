@@ -301,7 +301,7 @@ class Settings(BaseSettings):
     # sated deferral holds the run and re-bids, at most 2,900 s (a held read occupies one of Hub's 3
     # in-flight reading slots), then asks anyway. shadow -> patch 3b's value-only bid, admission unchanged. Ships SHADOW by Juniper's decided
     # rule: a family binds only for a deliberate live week with this off switch.
-    physiology_bid_reading: str = Field("shadow", alias="ORION_PHYSIOLOGY_BID_READING")
+    physiology_bid_reading: str = Field("on", alias="ORION_PHYSIOLOGY_BID_READING")
     # Orion Prime step 3 (2026-10-30): apply Prime's regulate signals (Redis orion:prime:regulate:<family>) as
     # bounded, temporary charges (slow) / credits (quicken) on the bids of families that declare receptors in
     # config/physiology/families.yaml (today only durable.curiosity_investigate). false -> the market never

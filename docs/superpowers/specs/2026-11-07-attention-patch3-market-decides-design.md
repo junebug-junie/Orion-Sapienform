@@ -413,7 +413,7 @@ cost patched in, 807 real read starts):
   first.**
 
 **Live week.**
-- Flag `ORION_PHYSIOLOGY_BID_READING` in durable-runs: `shadow` (default until the week starts) or
+- Flag `ORION_PHYSIOLOGY_BID_READING` in durable-runs: `on` (default since 2026-11-12; was `shadow` until the live week) or
   `on`. This follows `ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE`.
 - Off switch: set it to `shadow`. That restores today's behaviour exactly.
 - Daily checks (counts go in the PR report):

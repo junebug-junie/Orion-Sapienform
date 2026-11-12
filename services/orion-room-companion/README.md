@@ -236,13 +236,29 @@ Juniper. Such a turn is different in five ways:
 
 ## Session continuity
 
-One room is one durable Claude session. The first turn mints a uuid and passes
-`--session-id`; every later turn passes `--resume`. The map lives in
-`ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
+One room is one durable Claude session per Denver day. The first turn mints a
+uuid and passes `--session-id`; every later turn passes `--resume`. The map
+lives in `ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
+
+- **Daily rotation.** The first invite after 04:00 America/Denver mints a new
+  session, reseeded from the whole conversation Hub sends. This bounds what a
+  resumed session carries, and so its per-turn cost. Consult rooms never
+  rotate (a consult can run across 04:00). A legacy entry from before
+  2026-11-12 (a bare session id, no day) rotates on its first invite.
+- **Sent-up-to mark.** Hub sends the whole window on every invite. The
+  companion keeps, per session, the newest line time it has sent, and a
+  resumed turn gets only lines newer than that, plus the new message. It
+  never re-sends side-exchange lines (Claude's own replies and the prompts
+  that asked for them): the session already holds them.
 
 That is what makes Claude a *participant* rather than a stateless helper, and
-it means a turn sends only the new message — the transcript in the request is
+it means a turn sends only what is new — the transcript in the request is
 first-turn seeding and a recovery path, not the memory mechanism.
+
+**The prompt goes over stdin, never argv.** Linux refuses any single argument
+over 131,072 bytes, and a first-turn prompt is up to ~160,000 characters.
+Verified live 2026-11-12 in this image (CLI 2.1.239): a 150,101-byte prompt
+piped to `claude -p` was read whole.
 
 If a `--resume` fails because the CLI no longer holds that session, the
 mapping is dropped so the next turn can mint a fresh one. Without that, the
@@ -263,6 +279,14 @@ Room-native context and nothing from Orion's interior. Specifically:
   through an **allowlist** (`_SUMMARY_KEYS`) rather than wholesale — this is a
   third-party-bound payload, so "everything we happened to have" is the wrong
   default.
+- On a session's first turn: a names-and-counts index of what is open in Hub
+  (`hub_index`: the tab Juniper is on, open consults, open asks, how many
+  concerns Prime holds -- never their content), and the whole Hub
+  conversation back to `HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS` (160,000), oldest
+  first, whole rows only, after one `[Earlier: N turns ... not shown.]` line.
+  Each line reads `Speaker [turn:1a2b3c4d] (Thu Nov 12 09:16): text`, with
+  Orion's unprompted messages labelled `Oríon (unprompted)` and Claude's own
+  side exchanges as `Juniper (to Claude)` / `Claude`.
 - The new message, prefixed with who said it.
 
 Not sent: recall results, self-state, drives, journals, mirrors. Tools are off

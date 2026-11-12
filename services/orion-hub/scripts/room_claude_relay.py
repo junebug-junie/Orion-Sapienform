@@ -154,6 +154,8 @@ class RoomClaudeRelay:
         social_memory_summary: Optional[Dict[str, Any]] = None,
         trigger: str = "manual",
         connection_id: Optional[str] = None,
+        hub_index: Optional[str] = None,
+        transcript_note: Optional[str] = None,
     ) -> RoomClaudeRequestV1:
         """Ask the companion for one Claude turn. Returns the request so the
         caller can correlate; the reply arrives asynchronously on the bus.
@@ -180,11 +182,18 @@ class RoomClaudeRelay:
             trigger="auto" if trigger == "auto" else "manual",
             transcript=entries,
             social_memory_summary=social_memory_summary or {},
+            hub_index=hub_index,
+            transcript_note=transcript_note,
         )
         self._pending[request.request_id] = {
             "session_id": session_id,
             "connection_id": connection_id,
             "invited_at": _utcnow_iso(),
+            # Kept so the stored reply row also holds what asked for it (open
+            # question 11): Orion can read the side exchange, Claude's next
+            # session can see its own earlier exchanges in context.
+            "prompt": prompt,
+            "invited_by": invited_by,
         }
         await self._publish(self.request_channel, "room.claude.request.v1", request)
         logger.info(
@@ -296,7 +305,7 @@ class RoomClaudeRelay:
             text=utterance.text, utterance=utterance, session_id=session_id,
             connection_id=target_connection_id, ok=True,
         )
-        await self._publish_history(utterance, session_id=session_id)
+        await self._publish_history(utterance, session_id=session_id, pending=pending)
 
     def _push(
         self,
@@ -383,14 +392,27 @@ class RoomClaudeRelay:
                 )
 
     async def _publish_history(
-        self, utterance: RoomClaudeUtteranceV1, *, session_id: Optional[str]
+        self,
+        utterance: RoomClaudeUtteranceV1,
+        *,
+        session_id: Optional[str],
+        pending: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist Claude's turn with the responder identity attached.
 
         `external_responder` is the field this feature adds: every stored room
         turn until now named who spoke *to* Orion and assumed Orion answered,
         which cannot express a third participant replying directly.
+
+        The prompt that asked for the reply (2026-11-12, open question 11) goes
+        in ``client_meta.room_claude.prompt``, NOT in the row's ``prompt``
+        column. That column is what makes a row a Juniper turn everywhere
+        else: orion-sql-writer's ``_memory_turn_initiator`` turns any row with
+        a prompt into memory, and every reader of chat_history_log treats it as
+        something Juniper said to Orion. A side exchange with Claude is neither.
         """
+        prompt = str((pending or {}).get("prompt") or "").strip()
+        invited_by = str((pending or {}).get("invited_by") or "").strip()
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 
@@ -411,6 +433,8 @@ class RoomClaudeRelay:
                         "claude_session_id": utterance.claude_session_id,
                         "cost_usd": utterance.cost_usd,
                         "duration_ms": utterance.duration_ms,
+                        **({"prompt": prompt} if prompt else {}),
+                        **({"invited_by": invited_by} if invited_by else {}),
                     },
                 },
             )

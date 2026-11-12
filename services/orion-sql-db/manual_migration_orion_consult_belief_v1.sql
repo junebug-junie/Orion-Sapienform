@@ -17,4 +17,4 @@ ALTER TABLE orion_consult ADD COLUMN IF NOT EXISTS belief_finding_id TEXT;
 ALTER TABLE orion_consult ADD COLUMN IF NOT EXISTS belief_prior_ids TEXT[];
 ALTER TABLE orion_consult ADD COLUMN IF NOT EXISTS belief_recorded_run_id TEXT;
 ALTER TABLE orion_consult ADD COLUMN IF NOT EXISTS belief_recorded_at TIMESTAMPTZ;
-CREATE INDEX IF NOT EXISTS orion_consult_told_run_idx ON orion_consult (orion_told_run_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS orion_consult_told_run_idx ON orion_consult (orion_told_run_id);

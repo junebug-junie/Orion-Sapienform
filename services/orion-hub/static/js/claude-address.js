@@ -5,9 +5,13 @@
   // composer's send) and for the amber "this goes to Claude" cue.
   //
   // Only a LEADING @claude counts. "@claude" mid-sentence is ordinary text for
-  // Orion, and "@claudette" / "@claude_x" are not an address (\b needs a
-  // non-word character after "claude").
-  const ADDRESS = /^@claude\b/i;
+  // Orion. The address must end the text or be followed by whitespace or one
+  // of , : ; -- so "@claudette", "@claude_x", "@claude-bot", "@claude.ai" and
+  // "@claude's take" are ordinary text too (a bare \b would route the last
+  // three and send Claude "'s take"). app.js carries a copy of this pattern as
+  // a fail-closed fallback for when this file does not load; keep them equal
+  // (tests/test_claude_address_fallback_parity.py).
+  const ADDRESS = /^@claude(?=$|[\s,:;])/i;
   // One separator right after the address is part of the address, not the
   // message: "@claude: why?" and "@claude, why?" both send "why?".
   const LEADING_SEPARATOR = /^\s*[,:;]?\s*/;

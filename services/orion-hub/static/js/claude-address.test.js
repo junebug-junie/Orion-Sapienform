@@ -34,7 +34,10 @@ test('@claude mid-sentence is ordinary text for Orion', () => {
 });
 
 test('@claudette-style names are not an address', () => {
-  for (const text of ['@claudette hi', '@claude_bot hi', '@claude2 hi', 'claude hi', '@ claude hi']) {
+  for (const text of [
+    '@claudette hi', '@claude_bot hi', '@claude2 hi', 'claude hi', '@ claude hi',
+    '@claude-bot hi', '@claude.ai hi', "@claude's take?",
+  ]) {
     assert.equal(parseClaudeAddress(text).toClaude, false, text);
   }
 });

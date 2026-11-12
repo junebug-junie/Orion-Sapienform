@@ -12,9 +12,13 @@ just page load:
      nothing to Orion. Claude's reply frame (sent by the mock socket) then frees it.
   4. "@claude" alone falls back to the last room message, without its "@claude" address.
   5. A refused invite (503) leaves the text in the box and still sends nothing to Orion.
+  5b. Pending images block an @claude send (the invite is text-only); text and images stay put.
+  5c. The expanded composer: amber cue on its Send, Enter sends one invite, both boxes clear.
   6. "@claudette ..." and a mid-sentence "@claude" are ordinary chat: no amber, no invite, and
      the message goes to Orion (the control that proves the "nothing to Orion" checks can see a
      real Orion send).
+  7. Fail closed: with claude-address.js answering 404, "@claude ..." still invites Claude and
+     still sends nothing to Orion (app.js's fallback pattern).
 
 The Hub websocket is a mock server (page.route_web_socket), so a real Orion turn shows up as a
 chat frame on it -- "nothing to Orion" is measured on the same rail a real turn uses.
@@ -68,6 +72,7 @@ def run() -> int:
     to_orion: list = []
     static_hits: list = []
     index_html = render_index()
+    block_module = [False]
 
     def check(cond: bool, label: str) -> None:
         print(("PASS " if cond else "FAIL ") + label)
@@ -87,6 +92,8 @@ def run() -> int:
             return route.fulfill(status=200, body=index_html, content_type="text/html")
         if path_only.startswith("/static/"):
             static_hits.append(path)
+            if block_module[0] and path_only.endswith("/claude-address.js"):
+                return route.fulfill(status=404, body="")
             file = HUB / path_only.lstrip("/")
             if file.is_file():
                 ctype = mimetypes.guess_type(str(file))[0] or "application/octet-stream"
@@ -102,7 +109,8 @@ def run() -> int:
                 body=json.dumps({"ok": True, "request_id": "r1", "correlation_id": "c1"}),
                 content_type="application/json",
             )
-        if request.method != "GET" and "chat" in path_only:
+        # Image upload stages a file for a later turn; it is not a turn.
+        if request.method != "GET" and "chat" in path_only and path_only != "/api/chat/attachments":
             to_orion.append(f"{request.method} {path_only} {request.post_data or ''}"[:300])
         if path_only == "/api/session":
             return route.fulfill(status=200, body=json.dumps({"session_id": "sess-smoke"}), content_type="application/json")
@@ -227,6 +235,44 @@ def run() -> int:
         check(any("Could not invite Claude (503)" in t for t in bubbles("System")), "refusal shown as a System line")
         check(refused not in bubbles("You"), "no You bubble for a refused invite")
 
+        # 5b. pending images block the @claude send
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000d4944415478da63f8cfc0f01f0005000201a2dd7d1d0000000049454e44ae426082"
+        )
+        page.set_input_files("#attachmentFileInput", files=[{"name": "dot.png", "mimeType": "image/png", "buffer": png}])
+        page.wait_for_timeout(800)
+        pending = page.locator(".om-chip-remove").count()
+        check(pending == 1, f"an image is pending ({pending}), so the block below is a real check")
+        box.fill("@claude look at this picture")
+        box.press("Enter")
+        wait_settle()
+        check(len(invites) == 4, "pending images block the @claude invite")
+        check(not to_orion, "pending images + @claude: nothing to Orion")
+        check(box.input_value() == "@claude look at this picture", "pending images + @claude: text stays in the box")
+        check("Images cannot go to Claude" in page.locator("#status").inner_text(), "pending images + @claude: says why")
+        page.locator(".om-chip-remove").first.click()
+        page.wait_for_timeout(200)
+        check(page.locator(".om-chip-remove").count() == 0, "image removed again")
+
+        # 5c. expanded composer
+        box.fill("")
+        page.locator("#chatInputExpandButton").click()
+        area = page.locator("#chatInputExpandTextarea")
+        area.wait_for(state="visible")
+        area.fill("@claude from the big box")
+        modal_send = page.locator("#chatInputExpandModalSend")
+        check(modal_send.get_attribute("data-claude-address") == "1", "expanded Send is marked for Claude")
+        check("bg-amber-600" in (modal_send.get_attribute("class") or ""), "expanded Send turns amber")
+        area.press("Enter")
+        wait_settle()
+        check(not to_orion, "expanded @claude: nothing to Orion")
+        check(any(i.get("prompt") == "from the big box" for i in invites), "expanded @claude invites Claude")
+        check(box.input_value() == "" and area.input_value() == "", "expanded @claude clears both boxes")
+        if sockets:
+            claude_replies("")
+        invites_before_control = len(invites)
+
         # 6. not an address: ordinary chat for Orion (also the control for the checks above)
         for text in ("@claudette hello there", "please ask @claude about this"):
             box.fill(text)
@@ -234,14 +280,28 @@ def run() -> int:
             before = len(to_orion)
             box.press("Enter")
             page.wait_for_timeout(800)
-            check(len(invites) == 4, f"{text!r} does not invite Claude")
+            check(len(invites) == invites_before_control, f"{text!r} does not invite Claude")
             check(len(to_orion) > before and text in to_orion[-1], f"{text!r} goes to Orion as a chat frame")
             if sockets:  # end the in-flight Orion turn so the next send is not queued behind it
                 sockets[-1].send(json.dumps({"llm_response": "ok", "correlation_id": f"o-{before}"}))
                 page.wait_for_timeout(300)
 
-        app_errors = [e for e in errors if "claude" in e.lower() or "OrionClaudeAddress" in e]
-        check(not app_errors, f"no page errors from the @claude path ({app_errors[:2]})")
+        check(not errors, f"no page errors at all ({errors[:2]})")
+
+        # 7. fail closed without claude-address.js
+        block_module[0] = True
+        page.reload()
+        page.wait_for_selector("#chatInput", state="visible", timeout=20000)
+        page.wait_for_timeout(1500)
+        check(page.evaluate("() => !window.OrionClaudeAddress"), "module really missing on reload")
+        orion_before, invites_before = len(to_orion), len(invites)
+        page.locator("#chatInput").fill("@claude are you there?")
+        page.locator("#chatInput").press("Enter")
+        wait_settle()
+        check(len(to_orion) == orion_before, f"module missing: @claude still not sent to Orion ({to_orion[orion_before:][:1]})")
+        check(len(invites) == invites_before + 1 and invites[-1].get("prompt") == "are you there?",
+              "module missing: @claude still invites Claude, address stripped")
+        check(page.locator("#sendButton").get_attribute("data-claude-address") in ("0", None), "module missing: cue reset after send")
         browser.close()
 
     print(json.dumps({"invites": invites, "to_orion": to_orion[:5], "failures": failures}, indent=2))

@@ -74,6 +74,12 @@ _RESULT_CHECKED_PREFIXES = ("mcp__orion-reading__",)
 # learned, article summary, journal excerpt). Clean only when it returns no items.
 _READING_RESULTS_TOOL = "mcp__orion-introspect__reading_results"
 _EMPTY_READING_RESULT_KEYS = frozenset({"ok", "operation", "as_of", "total_available", "items", "error"})
+# Also inside server, sometimes outside text: orion_day's readings / world_news sections
+# and a carry item's citations return the day's page-read records, each tagged by its ref
+# (orion/orion_day/letter_parts.py SECTION_PREFIXES). Any such ref in the result holds back.
+# walkway_day (Orion's own camera rollup) is not page text.
+_ORION_DAY_TOOL = "mcp__orion-introspect__orion_day"
+_PAGE_READ_REF = re.compile(r"(?<![A-Za-z0-9_])(?:reading|reading_journal|world_pulse_digest):")
 # A receipt is clean only in this shape (orion/world_pulse_read/queue.py reading_status /
 # _reading_status_row): an allowlist, so a new receipt field is held back until checked.
 _RECEIPT_KEYS = frozenset({
@@ -180,6 +186,9 @@ def outside_result(name: str, content: Any) -> bool:
     """
     if not _result_checked(name):
         return False
+    if name == _ORION_DAY_TOOL:
+        # Matched on the raw text, so a cut-off or non-JSON copy is still checked.
+        return bool(_PAGE_READ_REF.search(result_text(content)))
     try:
         payload = json.loads(result_text(content))
     except ValueError:
@@ -190,7 +199,7 @@ def outside_result(name: str, content: Any) -> bool:
 
 
 def _result_checked(name: str) -> bool:
-    return name == _READING_RESULTS_TOOL or name.startswith(_RESULT_CHECKED_PREFIXES)
+    return name in (_READING_RESULTS_TOOL, _ORION_DAY_TOOL) or name.startswith(_RESULT_CHECKED_PREFIXES)
 
 
 def _empty_reading_result(payload: Any) -> bool:

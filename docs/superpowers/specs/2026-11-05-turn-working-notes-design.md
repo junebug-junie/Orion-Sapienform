@@ -10,6 +10,11 @@ Implementation notes (deviations from the text below, and why):
   text, article summary, journal excerpt). Only an `ok` result with no items is clean; any item,
   an unknown field, an error, or non-JSON holds back. Live cost: 1 call in the 30 days to 11-12
   (10-05), which now reads as tainted. The eval counts it under `live_held_back_reasons`.
+  Review found the same leak in `orion_day`: its readings / world_news sections and a carry
+  item's citations return page-read records. It holds back when its result holds a
+  `reading:`, `reading_journal:` or `world_pulse_digest:` ref (matched on raw text, so cut-off
+  copies are checked). Live: 3 of 27 calls in 30 days. Open: curiosity results may quote pages
+  too; not checked here.
 - 2026-11-12 follow-up (after the first live tool turns): orion-reading calls are judged by their
   result, not by the call. Only a bare receipt for a chat-made request is clean: known fields only,
   empty `summary`/`error`, and a `request` with no `title` that is not world-pulse or a re-entry

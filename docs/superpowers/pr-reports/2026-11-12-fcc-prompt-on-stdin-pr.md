@@ -32,8 +32,8 @@ None.
 ## Tests run
 
 ```text
-pytest orion/harness/tests/test_fcc_prompt_on_stdin.py -q   5 passed
-pytest orion/harness/tests -q                               844 passed
+pytest orion/harness/tests/test_fcc_prompt_on_stdin.py -q -W error::ResourceWarning   7 passed
+pytest orion/harness/tests -q                               846 passed
 ```
 
 ## Evals run
@@ -51,7 +51,14 @@ Live failure evidence: harness_turn_trace 174a5c2e-1a73-5bfa-9244-8883a9f48cc7
 
 ## Review findings fixed
 
-See PR comments / follow-up commit.
+- Finding: the stdin write blocked inside `start()`. A CLI that hung before reading its prompt would block forever, before the readline loop's stall timer and deadline could run.
+  - Fix: the prompt is written by a background task. `start()` returns at once, the existing timers govern the turn, and `close()` cancels a writer that is still blocked.
+  - Evidence: `test_start_returns_when_the_cli_never_reads_stdin` (child sleeps without reading; start returns, writer done after kill+close).
+- Finding (test gap): no test for a CLI that exits without reading stdin.
+  - Fix: `test_cli_exiting_without_reading_stdin_is_not_an_error` (BrokenPipe swallowed, exit code 3 reported).
+- Nit: tests passed `env={}`. Now `dict(os.environ)`.
+- Nit: comment now says the limit is per argument, not ARG_MAX.
+- Not changed: a prompt that itself starts with `--` stays in argv. The CLI already misreads such a prompt, so this is not new.
 
 ## Restart required
 

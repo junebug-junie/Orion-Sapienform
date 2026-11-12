@@ -1826,6 +1826,7 @@ async def _acquire_warm_turn(
 # Linux refuses any single exec argument longer than MAX_ARG_STRLEN (32 pages = 131,072 bytes)
 # with E2BIG, before the process exists. A prompt past this size goes in on stdin instead
 # (`claude -p` with no positional prompt reads it from stdin). Margin under the kernel limit.
+# This is the per-argument limit only; the argv+env total (ARG_MAX, ~2 MB) is far off.
 ARGV_PROMPT_MAX_BYTES = 100_000
 
 
@@ -1861,6 +1862,7 @@ class _SpawnTurnIO:
         self.claude_bin = claude_bin
         self.proc: Any = None
         self.died_before_output = False
+        self._stdin_writer: Optional[asyncio.Future] = None
 
     async def start(self) -> Any:
         stdin_kw = {"stdin": asyncio.subprocess.PIPE} if self.stdin_prompt is not None else {}
@@ -1876,15 +1878,22 @@ class _SpawnTurnIO:
         assert self.proc.stdout is not None
         if self.stdin_prompt is not None:
             logger.info("fcc_prompt_on_stdin bytes=%s", len(self.stdin_prompt))
-            try:
-                self.proc.stdin.write(self.stdin_prompt)
-                await self.proc.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                # The CLI exited before reading its prompt; its stderr and exit code tell why.
-                pass
-            finally:
-                self.proc.stdin.close()
+            # In the background: a CLI that hangs before reading must still meet the turn's
+            # stall timer and deadline in the readline loop, which only start once we return.
+            self._stdin_writer = asyncio.ensure_future(self._write_stdin(self.proc.stdin, self.stdin_prompt))
         return self.proc
+
+    @staticmethod
+    async def _write_stdin(stdin: Any, data: bytes) -> None:
+        try:
+            stdin.write(data)
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # The CLI exited (or was killed) before reading its prompt; its exit code and
+            # stderr tell why.
+            pass
+        finally:
+            stdin.close()
 
     async def readline(self) -> bytes:
         return await self.proc.stdout.readline()
@@ -1906,6 +1915,9 @@ class _SpawnTurnIO:
             return ""
 
     async def close(self) -> None:
+        # A writer still blocked here means the CLI never read its prompt; the turn is over.
+        if self._stdin_writer is not None and not self._stdin_writer.done():
+            self._stdin_writer.cancel()
         return None
 
 

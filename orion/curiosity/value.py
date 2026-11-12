@@ -72,6 +72,10 @@ ARM_UNCERTAINTY_ORDER = "uncertainty_order"
 ARM_REPLICA_ORDER = "replica_order"
 # Every arm a draw can return, in band order (value, replica, then uncertainty takes the rest).
 OFFER_ARMS = (ARM_VALUE_ORDER, ARM_REPLICA_ORDER, ARM_UNCERTAINTY_ORDER)
+# Not an offer arm: a self-inquiry run's decision row (nothing offered, no draw). It exists so the
+# self-inquiry turn is measured like an investigation; every reader that models a choice among offered
+# priors (value-model history, personality choices) skips it.
+ARM_SELF_INQUIRY = "self_inquiry"
 
 KIND_TESTED = "tested"
 KIND_FORMED = "formed"

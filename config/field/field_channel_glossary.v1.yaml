@@ -681,7 +681,7 @@ channels:
     channel: prediction_error
     level: [node]
     category: physical_substrate
-    meaning: "How much the machines' pressure readings moved since the last sample: mean absolute change across pressure hints, 0.30 of change = 1.0 (a fixed scale, not versus its own history)."
+    meaning: "How much the machines' pressure readings moved since the last sample: mean absolute change across the machines' own pressure hints, 0.30 of change = 1.0 (a fixed scale, not versus its own history). Room sensors (athena's cabinet_* hints: proximity, vibration, ambient audio, climate, EM, UV) are not in it since definition v3 (2026-11-12)."
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.biometrics'"
     consumers:
       - "orion.attention.field_attention.selectors:select_node_targets"
@@ -690,6 +690,7 @@ channels:
     semantics:
       value_kind: level
       rest: "about 0.02-0.03 (sensor jitter); 0.0 = nothing moved at all."
+      # v3 (room keys out) 7-day replay to 2026-11-12, history ticks: min 0.0001, p05 0.0057, p25 0.026, <0.01 on 9.9% of ticks -- still reaches rest, so the band is kept.
       # rest_range live 2026-10-13: p05 0.0003, p50 0.0176, p95 0.0755, max 0.24, 0.53% exact 0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); median sits below the prose 0.02 floor, band kept at the prose 0.03 top
       rest_range: [0.0, 0.03]
       sparsity: per_tick

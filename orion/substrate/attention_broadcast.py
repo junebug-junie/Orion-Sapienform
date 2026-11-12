@@ -432,6 +432,9 @@ def world_first_signals(
             except (AttributeError, TypeError, ValueError):
                 pass
         internal = cand.source_kind == "internal"
+        world_evidence = getattr(cand, "evidence", None)
+        if not isinstance(world_evidence, dict):
+            world_evidence = None
         scores[cand.source_id] = score
         signals.append(
             AttentionSignalV1(
@@ -461,6 +464,10 @@ def world_first_signals(
                     # 1.0 unless an event-written source is fading; the band
                     # above is the event's own (unfaded) band.
                     "world_first_event_decay": round(verdict.event_decay, 6),
+                    # What the source saw (world:chat: Juniper's latest message).
+                    # scoring.build_open_loops copies provenance onto the loop,
+                    # where reverie renders it. Not in the debug trace.
+                    **({"world_evidence": dict(world_evidence)} if world_evidence else {}),
                 },
             )
         )

@@ -62,12 +62,12 @@ def test_silent_node_helper_and_kill_switch(enabled: bool, expected: set[str]) -
     assert set(out) == expected
 
 
-@pytest.mark.parametrize("enabled,expected_exclude,expected_version", [(True, {"hecate"}, 2), (False, set(), 1)])
+@pytest.mark.parametrize("enabled,expected_exclude,expected_version", [(True, {"hecate"}, 3), (False, set(), 1)])
 def test_tick_passes_silent_nodes_to_the_producer(
     monkeypatch, enabled: bool, expected_exclude: set[str], expected_version: int
 ) -> None:
-    """Kill switch off stamps v1: the old formula ran, and the attention baseline
-    must not fold v1 numbers under the v2 label."""
+    """Kill switch off stamps a non-live version (1): silent nodes were not excluded,
+    so the attention baseline must not fold those numbers under the live (v3) label."""
     worker = _worker(enabled)
     worker._settings.biometrics_grammar_batch_limit = 500
     for i in range(5):

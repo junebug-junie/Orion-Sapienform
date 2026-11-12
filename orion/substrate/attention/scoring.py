@@ -14,6 +14,13 @@ _PLAN_RE = re.compile(r"\b(plan|planning|going to|tomorrow|next|later|schedule|d
 _ANOMALY_RE = re.compile(r"\b(weird|unexpected|anomaly|regression|broken|failed|mismatch|surprise)\b", re.I)
 
 
+def open_loop_id(target_text: str) -> str:
+    """The open-loop id for a signal's target text: a hash of the first 120
+    chars, lowercased. A label that carries a count or an age gets a new id
+    every time that number moves (world:chat, fixed 2026-11-12)."""
+    return stable_id("open-loop", compact(target_text, 120).lower())
+
+
 def known_blob(inputs: dict[str, Any], ctx: dict[str, Any]) -> str:
     pieces: list[str] = [str(ctx.get("memory_digest") or "")]
     for section in ("identity", "concept_induction", "social", "reflective", "reasoning_summary", "autonomy"):
@@ -112,7 +119,7 @@ def build_open_loops(
     # apart if the id formula ever changes.
     deduped = merge_signals(signals, limit=len(signals))
     id_signal_pairs = [
-        (stable_id("open-loop", compact(s.target_text, 120).lower()), s) for s in deduped
+        (open_loop_id(s.target_text), s) for s in deduped
     ]
 
     excluded_loop_ids: set[str] = set()

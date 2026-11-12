@@ -1419,8 +1419,10 @@ class BiometricsSubstrateWorker:
                     prediction_error=error,
                     now=now,
                     caused_by_event_ids=evidence_event_ids,
-                    # Kill switch off = the v1 formula ran, so stamp v1: the
-                    # attention baseline must not mix the two under one version.
+                    # Kill switch off = silent nodes were NOT excluded, so this is
+                    # not the live formula: stamp 1, which here means "not the live
+                    # formula, never folded" (not "the v1 formula"). (Room
+                    # keys are always out since v3; there is no switch for that.)
                     definition_version=(
                         None if self._settings.biometrics_silent_node_exclusion else 1
                     ),
@@ -3489,7 +3491,17 @@ class BiometricsSubstrateWorker:
         except Exception as exc:  # noqa: BLE001 -- absent, not calm
             logger.warning("substrate_world_first_chat_read_failed err=%s", exc)
             turns = None
-        candidates = [chat_candidate(turns, now=now)]
+        latest = None
+        # Evidence only (Juniper's latest message for reverie), read only when a
+        # turn is in the counting window: a failed read costs the excerpt, never
+        # the candidate. The text is never logged.
+        try:
+            if turns and any(t > now - CHAT_RATE_WINDOW for t in turns):
+                latest = self._store.fetch_latest_chat_turn(since=now - CHAT_RATE_WINDOW)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("substrate_world_first_chat_latest_read_failed err=%s", type(exc).__name__)
+            latest = None
+        candidates = [chat_candidate(turns, now=now, latest_turn=latest)]
         if not bool(getattr(self._settings, "attention_world_reading_enabled", False)):
             return candidates
 

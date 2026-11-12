@@ -70,6 +70,8 @@ def test_export_stays_inside_one_read_only_transaction():
     assert sql.rstrip().endswith("ROLLBACK;") and sql.count("ROLLBACK;") == 1
     assert "curiosity_offer_decisions" in sql and "turn_started_at" in sql and "endogenous_outreach_decisions" in sql
     assert "NOT forced" in sql and "curiosity_outreach" in sql
+    # Investigation turns only: self-inquiry turns stamp turn_started_at too (since 2026-11-12).
+    assert "AND arm <> 'self_inquiry'" in sql
 
 
 def test_a_sleep_end_cuts_the_tired_hold_like_the_post_sleep_publish():

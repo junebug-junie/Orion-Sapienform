@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set
 
+from orion.llm.routes import AGENT_LANE_ROUTES
+
 VALID_LLM_LANES = frozenset({"chat", "spark", "background", "agent"})
 
 # Prefer explicit lane-named keys; metacog remains a backward-compatible background-class worker.
@@ -115,6 +117,12 @@ def resolve_llm_lane_route(
         return _missing("background_route_missing")
 
     if logical_lane == "agent":
+        # An agent-lane route the caller named on purpose (orion.llm.routes.AGENT_LANE_ROUTES)
+        # is kept: `judge` is the finalize 5b judge, which must not be moved to class `agent`
+        # (that class still lists the gpu2 seat).
+        br = str(body_route or "").strip()
+        if br in AGENT_LANE_ROUTES and br in route_table_keys:
+            return _ok(br, "agent", "agent_lane_caller_route")
         rk = _first_route_key(route_table_keys, _AGENT_ROUTE_KEYS)
         if rk:
             return _ok(rk, "agent", "agent_route")

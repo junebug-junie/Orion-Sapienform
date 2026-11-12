@@ -144,3 +144,21 @@ def test_act_ledger_rows_are_not_read_as_motor_episodes():
 
     src = inspect.getsource(agency_episode_reader)
     assert src.count("dispatch_kind NOT LIKE 'act:%%'") == 2
+
+
+def test_loop_outcomes_are_newest_first_and_refused_when_capped(monkeypatch):
+    """world:chat has one fixed loop id (2026-11-12), so its outcomes pile up across conversations.
+    An oldest-first cap would drop the newest episodes' 'acted' rows and fake 'missing' links."""
+    conn = Connection()
+
+    class CappedCursor(Cursor):
+        def execute(self, query, params=None):
+            super().execute(query, params)
+            if "FROM attention_loop_outcome" in query:
+                self.rows = [{"outcome_id": f"o{i}", "loop_id": "open-loop-chat"} for i in range(params[-1])]
+
+    conn.cursor = lambda **kw: CappedCursor(conn)
+    data = collect(conn, Graph(), limit=1)
+    query = next(q for q, _ in conn.queries if "FROM attention_loop_outcome" in q)
+    assert "ORDER BY created_at DESC" in query
+    assert data["loop_outcomes"]["status"] == "truncated" and data["loop_outcomes"]["rows"] == []

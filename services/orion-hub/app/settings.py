@@ -1028,6 +1028,13 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SPEND_LOG_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_SPEND_LOG_ENABLED"
     )
+    # Self-inquiry runs are measured like investigations: a decision row (arm self_inquiry, nothing
+    # offered) at dispatch and a curiosity_run_outcomes row at turn end. Kept out of the value model's
+    # history and the personality choice lanes. Needs the spend log on.
+    # docs/superpowers/specs/2026-10-16-attention-world-candidates-design.md, "The self-inquiry gap".
+    HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED"
+    )
     # ON since 2026-11-04: the replay reported the measurement usable (see .env_example).
     HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"

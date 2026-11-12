@@ -20,7 +20,7 @@ ranked as one. The ranking rule lives in ``orion.attention.world_first``.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -167,3 +167,12 @@ class AttentionCandidateV1(BaseModel):
     sustain_window_sec: float | None = Field(default=None, gt=0.0)
     hot_dwell_sec: float | None = Field(default=None, ge=0.0)
     evidence_refs: list[str] = Field(default_factory=list)
+    # What the source actually saw, not just that it fired (spec
+    # docs/superpowers/specs/2026-10-16-attention-world-candidates-design.md,
+    # "What the winner carries downstream"). Carried by the substrate broadcast
+    # into the winning signal's provenance["world_evidence"], which reverie
+    # renders. Never part of ranking, never in the debug trace. world:chat:
+    # Juniper's latest message (orion.attention.world_first.chat_candidate).
+    # Additive and optional: built and consumed in-process, never deserialized
+    # from another service.
+    evidence: dict[str, Any] | None = None

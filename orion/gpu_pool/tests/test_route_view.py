@@ -69,7 +69,8 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "quick_turn",          # repair-pressure probe, 2026-10-23 (pinned below)
                              "quick_embodied",      # Orion's town speech, 2026-10-23
                              "prime",               # Orion Prime's thoughts, 2026-10-30 (pinned below)
-                             "prime_starved"}       # Prime after a try that got no seat, 2026-11-03 (pinned below)
+                             "prime_starved",       # Prime after a try that got no seat, 2026-11-03 (pinned below)
+                             "judge"}               # finalize 5b judge off a gpu2 hold, 2026-11-12 (pinned below)
 # Roles whose server type changed after the freeze report the current one wherever they serve.
 BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata", "agent": "strata"}   # Strata on gpu0 10-30, gpu1 10-31
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
@@ -214,3 +215,16 @@ def test_prime_routes_are_the_chat_worker_at_system_and_starved():
         assert r["priority"] == "system"   # definitional: hidden from the picker
         assert route in SYSTEM_LLM_ROUTES and route not in BACKGROUND_LLM_ROUTES
         assert route not in METACOG_LLM_ROUTES
+
+
+def test_judge_route_is_agent_work_that_never_lands_on_the_gpu2_seat():
+    """The finalize 5b judge off a hold (2026-11-12, orion/harness/finalize.py): gpu1, then chat's card
+    only while lent; never agent-gpu2 or hecate. System priority, system-only, a cortex-exec override."""
+    from orion.llm.routes import BACKGROUND_LLM_ROUTES, CORTEX_OVERRIDE_SYSTEM_ROUTES, SYSTEM_LLM_ROUTES
+    spec = CFG.routes["judge"]
+    assert (spec.work_class, spec.priority) == ("judge", "system")
+    assert CFG.classes["judge"].roles == ["agent", "chat"]
+    assert "judge" in SYSTEM_LLM_ROUTES and "judge" in CORTEX_OVERRIDE_SYSTEM_ROUTES
+    assert "judge" not in BACKGROUND_LLM_ROUTES
+    [r] = [e for e in build_route_view(None, CFG)["routes"] if e["id"] == "judge"]
+    assert r["priority"] == "system"

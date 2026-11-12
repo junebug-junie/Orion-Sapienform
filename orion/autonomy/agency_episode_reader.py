@@ -92,9 +92,12 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
         "FROM substrate_attention_broadcast_log WHERE log_id = ANY(%s)", (log_ids,))
     sql("loop_outcomes", "SELECT outcome_id, loop_id, verdict, actor, created_at, "
         "features_at_close->>'episode_id' AS episode_id FROM attention_loop_outcome WHERE loop_id = ANY(%s) "
-        "ORDER BY created_at LIMIT %s", (loop_ids, limit * 10 + 1))
+        "ORDER BY created_at DESC LIMIT %s", (loop_ids, limit * 10 + 1))
     # Refuse a capped relationship set rather than asserting false missing links.
-    for source in ("graph_briefs", "sql_briefs", "outcomes"):
+    # loop_outcomes: newest first, and refused when capped -- one loop id (world:chat's fixed label,
+    # 2026-11-12) gathers outcomes across conversations, so an oldest-first cap would drop the
+    # newest episodes' 'acted' rows and report their links as missing.
+    for source in ("graph_briefs", "sql_briefs", "outcomes", "loop_outcomes"):
         if len(bundle.get(source, {}).get("rows", [])) > limit * 10:
             bundle[source] = {"status": "truncated", "rows": []}
     return bundle

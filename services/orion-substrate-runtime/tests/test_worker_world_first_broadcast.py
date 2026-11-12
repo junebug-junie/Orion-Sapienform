@@ -125,3 +125,39 @@ def test_event_decay_setting_reaches_the_broadcast(monkeypatch) -> None:
                 patch.object(ab, "build_substrate_attention_frame", spy):
             w._attention_broadcast_tick()
         assert seen[-1] is expected, env
+
+
+def _busy_turns(now):
+    return [now - timedelta(days=d, minutes=40) for d in range(1, 7)] + [now - timedelta(minutes=1)]
+
+
+def test_chat_winner_carries_juniper_latest_message(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = _busy_turns(now)
+    w._store.fetch_latest_chat_turn.return_value = ("turn-9", now - timedelta(minutes=1), "what did you see today?")
+    proj = _tick(w)
+    assert proj.attended_node_ids == ["world:chat"]
+    loop = next(l for l in proj.frame.open_loops if l.id == proj.selected_open_loop_id)
+    assert loop.description == "Juniper is talking"
+    assert loop.provenance["world_evidence"]["message_excerpt"] == "what did you see today?"
+    assert loop.provenance["world_evidence"]["chat_turn_id"] == "turn-9"
+
+
+def test_latest_message_read_failure_keeps_the_winner_without_evidence(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = _busy_turns(now)
+    w._store.fetch_latest_chat_turn.side_effect = RuntimeError("db down")
+    proj = _tick(w)
+    assert proj.attended_node_ids == ["world:chat"]
+    loop = next(l for l in proj.frame.open_loops if l.id == proj.selected_open_loop_id)
+    assert "world_evidence" not in loop.provenance
+
+
+def test_latest_message_not_read_when_no_turn_in_the_window(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = [now - timedelta(days=d, minutes=40) for d in range(1, 7)]
+    _tick(w)
+    w._store.fetch_latest_chat_turn.assert_not_called()

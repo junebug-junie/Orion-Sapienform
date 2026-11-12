@@ -696,6 +696,10 @@ recorded finding.
    with evidence pass-through, the yield rule, and the flag.
 3. **Third:** carry Juniper's latest message as evidence on `world:chat` and drop
    the count from its label (from revision 1).
+   **Built 2026-11-12** (branch `fix/world-chat-loop-id`): stable label "Juniper is
+   talking", `AttentionCandidateV1.evidence`, broadcast pass-through to
+   `provenance["world_evidence"]`, reverie rendering. Report:
+   `docs/superpowers/pr-reports/2026-11-12-world-chat-loop-id-pr.md` (PR #3225).
 4. **Later, each behind its own gate:** reading (needs confidences), painting
    (needs act-ledger history), presence (needs identity + debounce).
 

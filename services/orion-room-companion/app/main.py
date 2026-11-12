@@ -25,6 +25,7 @@ from .room_prompt import (
     build_turn_prompt,
     filtered_summary,
     is_pass,
+    line_key,
     lines_after_mark,
     newest_created_at,
 )
@@ -162,6 +163,7 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         request.transcript,
         sent_up_to=slot.sent_up_to,
         claude_participant_id=settings.ROOM_COMPANION_PARTICIPANT_ID,
+        sent_keys=slot.sent_keys,
     )
     prompt = request.prompt if consult else build_turn_prompt(
         prompt=request.prompt,
@@ -240,6 +242,7 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
             # Every line Hub sent is now held by this session: the ones just
             # sent, and the older ones it already had.
             sent_up_to=newest_created_at(request.transcript),
+            sent_keys=[k for k in (line_key(e) for e in request.transcript) if k],
         )
 
     return _to_utterance(settings, request, result)

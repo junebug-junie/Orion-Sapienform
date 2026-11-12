@@ -246,8 +246,11 @@ lives in `ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
   rotate (a consult can run across 04:00). A legacy entry from before
   2026-11-12 (a bare session id, no day) rotates on its first invite.
 - **Sent-up-to mark.** Hub sends the whole window on every invite. The
-  companion keeps, per session, the newest line time it has sent, and a
-  resumed turn gets only lines newer than that, plus the new message. It
+  companion keeps, per session, a key for every line it has sent
+  (`<turn ref>|<speaker>`), and a resumed turn gets only lines with a new key,
+  plus the new message. A key and not a time, because Hub merges Orion's reply
+  into the row Juniper's half already opened, with the same `created_at`.
+  Lines from Hub before 2026-11-12 (no turn ref) fall back to a time mark. It
   never re-sends side-exchange lines (Claude's own replies and the prompts
   that asked for them): the session already holds them.
 

@@ -16,6 +16,9 @@ on:
       - 'services/orion-hub/tests/test_room_claude_*.py'
       - 'services/orion-hub/tests/test_chat_history_rehydrate.py'
       - 'services/orion-hub/app/settings.py'
+      - 'services/orion-hub/requirements.txt'
+      - 'services/orion-hub/scripts/pg_engine.py'
+      - 'services/orion-hub/scripts/cortex_request_builder.py'
       - 'services/orion-sql-writer/app/worker.py'
       - '.github/workflows/room-claude-context-tests.yml'
 permissions:
@@ -40,7 +43,7 @@ jobs:
           python -m pip install -r services/orion-room-companion/requirements.txt
           # rdflib/pyshacl: api_routes imports orion.memory_graph (not in hub requirements.txt).
           python -m pip install "pytest>=8.2,<10" "pytest-asyncio>=0.23,<1" rdflib pyshacl
-      - name: Companion (stdin prompt, rotation, mark)
+      - name: Companion (stdin prompt, rotation, sent-line keys, schema compat)
         working-directory: services/orion-room-companion
         run: PYTHONPATH=${{ github.workspace }} python -m pytest tests -q -p no:cacheprovider
       - name: Hub (whole-conversation window, side-exchange view, relay)

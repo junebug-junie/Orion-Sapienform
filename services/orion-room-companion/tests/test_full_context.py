@@ -257,3 +257,71 @@ def test_old_hub_payload_without_new_fields_still_parses():
         "transcript": [{"speaker_id": "juniper", "speaker_name": "Juniper", "text": "x"}],
     })
     assert req.hub_index is None and req.transcript[0].turn_ref is None
+
+
+# -- review findings (2026-11-12) ---------------------------------------------------
+
+
+def _run_two(settings, first, second):
+    prompts = []
+    now = datetime(2026, 11, 12, 16, 0, tzinfo=timezone.utc)
+    with patch("app.main.run_room_turn", side_effect=lambda p, **kw: prompts.append(p) or _ok()), \
+            patch("app.session_store.datetime") as dt:
+        dt.now.return_value = now
+        dt.fromisoformat = datetime.fromisoformat
+        for transcript, sid in (first, second):
+            run_turn(settings, RoomClaudeRequestV1(
+                room_id="hub-direct", invited_by="Juniper", prompt="hey", session_id=sid, transcript=transcript,
+            ))
+    return prompts
+
+
+def test_orions_reply_merged_into_a_half_written_row_is_still_sent(settings):
+    """Hub writes Juniper's half when the turn starts and merges Orion's reply
+    into the same row later, with the same created_at. Juniper invited Claude
+    in between. A time mark would drop Orion's reply forever."""
+    at = "2026-11-12T15:00:00+00:00"
+    juniper = _line("what about X?", at, ref="t9")
+    orion = _line("X is fine.", at, who="orion", ref="t9")
+    prompts = _run_two(settings, ([juniper], "s1"), ([juniper, orion], "s1"))
+    assert "X is fine." in prompts[1]
+    assert "what about X?" not in prompts[1]
+
+
+def test_a_second_hub_session_does_not_hide_its_older_lines(settings):
+    """All Hub sessions share one Claude room session. Session B's lines are
+    older than session A's newest one, and must still be sent."""
+    a = _line("from A", "2026-11-12T15:05:00+00:00", ref="a1")
+    b = _line("from B", "2026-11-12T14:00:00+00:00", ref="b1")
+    prompts = _run_two(settings, ([a], "hub-A"), ([b], "hub-B"))
+    assert "from B" in prompts[1]
+
+
+def test_sent_keys_are_stored_and_bounded(tmp_path):
+    from app.session_store import MAX_SENT_KEYS
+
+    path = tmp_path / "s.json"
+    remember_session(path, "k", "s1", day="d", sent_keys=[f"r{i}|j" for i in range(MAX_SENT_KEYS + 10)])
+    remember_session(path, "k", "s1", day="d", sent_keys=["new|j"])
+    keys = _read_all(path)["k"]["sent_keys"]
+    assert len(keys) == MAX_SENT_KEYS and keys[-1] == "new|j"
+    remember_session(path, "k", "s2", day="d", sent_keys=["x|j"])
+    assert _read_all(path)["k"]["sent_keys"] == ["x|j"], "a new session starts its keys over"
+
+
+def test_unset_new_fields_are_left_out_of_the_payload():
+    """An old companion (extra=forbid) must accept what a new producer sends
+    when it does not use the new fields -- that is what makes
+    HUB_ROOM_CLAUDE_CONTEXT_MODE=recent a real rollback."""
+    req = RoomClaudeRequestV1(
+        room_id="hub-direct", invited_by="Juniper", prompt="hi",
+        transcript=[RoomTranscriptEntryV1(speaker_id="juniper", speaker_name="Juniper", text="x")],
+    )
+    data = req.model_dump(mode="json")
+    assert "hub_index" not in data and "transcript_note" not in data
+    assert set(data["transcript"][0]) == {"speaker_id", "speaker_name", "speaker_kind", "text", "created_at"}
+    full = RoomClaudeRequestV1(
+        room_id="hub-direct", invited_by="Juniper", prompt="hi", hub_index="i",
+        transcript=[_line("x", "2026-11-12T15:00:00+00:00", side_exchange=True)],
+    )
+    assert RoomClaudeRequestV1.model_validate(full.model_dump(mode="json")) == full

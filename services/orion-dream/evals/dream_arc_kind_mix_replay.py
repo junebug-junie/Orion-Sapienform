@@ -2,7 +2,7 @@
 """Eval: which kinds of Temporal Self arcs does each sleep replay, before and after the one-arc-per-kind rule?
 READ-ONLY.
 
-Live 11-12: over 5 days, 15 of 18 arcs replayed in dreams were ``interoception`` body arcs (substrate
+Live 11-12: over the 5 days to 11-12, 15 of 18 arcs (over 14 days: 35 of 39) replayed in dreams were ``interoception`` body arcs (substrate
 execution / perception / chat / bus_synaptic). They run for hours and their returns count sensor flicker, so
 they outweigh every other kind. ``replay.arc_candidates`` now keeps one arc per kind (the heaviest) before the
 20-candidate cap; the dream arm and the control pool both draw from that list.
@@ -16,7 +16,9 @@ Two lanes:
   started_at), the closed arcs that ended in it (same filter as ``cycle_store.ARC_ROWS_SQL``), and the
   non-arc items it really replayed. Rebuilds the replay with the old rule (fidelity: does it match the arcs
   the sleep really replayed?) and with the new rule, and prints the kind mix per sleep and in total.
-  Gate: under the new rule no sleep replays two arcs of one kind, and the arc cap (a third) still holds.
+  Gates: the old-rule rebuild matches what really ran in at least 80% of sleeps (else it proves nothing),
+  and, when any sleep had two or more kinds available, the non-interoception share of replayed arcs rises.
+  One arc per kind and the third-of-the-replay cap hold by construction and are asserted, not gated.
 
 Limit: non-arc candidates that LOST their slot to an arc are not stored, so the rebuild cannot put them back.
 A slot an arc gives up under the new rule is reported as ``freed`` (a real sleep would fill it with the next
@@ -48,6 +50,7 @@ from app.replay import (  # noqa: E402
     walkway_replay_slots,
 )
 
+FIDELITY_MIN = 0.8  # old-rule rebuild must match what really ran in this share of sleeps
 K = 12  # settings.DREAM_REPLAY_MAX default; the live lane reads the real setting
 
 
@@ -66,24 +69,30 @@ def _arc_kinds(replay: list[ReplayItemV1]) -> list[str]:
 
 # --- fixture lane --------------------------------------------------------------------------------------
 
-def _fixture() -> int:
-    now = datetime(2026, 11, 11, 4, 57, tzinfo=timezone.utc)
-    since = now - timedelta(hours=9)
-
+def live_1112_rows(now: datetime) -> list[dict[str, Any]]:
+    """The 11-11 04:57 sleep's window, shape-for-shape (shared with tests/test_replay_arc_candidates.py):
+    four interoception body arcs about different substrate nodes (hours of dwell, sensor flicker counted as
+    returns), each heavier than the one attention arc and the one conversation arc that closed with them."""
     def row(aid, kind, ref, dwell, returns, minutes_ago):
         ended = now - timedelta(minutes=minutes_ago)
         return {"arc_id": aid, "kind": kind, "subject_ref": ref, "subject_label": ref,
                 "began_at": ended - timedelta(seconds=dwell), "ended_at": ended, "status": "closed",
                 "attention_returns": returns, "cumulative_dwell_sec": dwell}
 
-    rows = [
+    return [
         row("perc", "interoception", "node:substrate.perception", 14400.0, 9, 30),
         row("chat", "interoception", "node:substrate.chat", 10800.0, 7, 40),
         row("exec", "interoception", "node:substrate.execution", 9000.0, 6, 50),
         row("bus", "interoception", "node:substrate.bus_synaptic", 7200.0, 5, 60),
         row("att", "attention", "world:reading", 1500.0, 2, 70),
-        row("conv", "conversation", "conv-1", 1200.0, 1, 80),
+        row("conv", "conversation", "9c91d646-cbd0-4977-8cdd-d2c82045c7f9", 1200.0, 1, 80),
     ]
+
+
+def _fixture() -> int:
+    now = datetime(2026, 11, 11, 4, 57, tzinfo=timezone.utc)
+    since = now - timedelta(hours=9)
+    rows = live_1112_rows(now)
     existing = [ReplayItemV1(ref_id=f"metacog:{i}", source_kind="metacog", text="t", weight=1.0, reason="r")
                 for i in range(3)]
     existing += [ReplayItemV1(ref_id=f"compaction_request:{i}", source_kind="compaction_request", text="t",
@@ -147,6 +156,7 @@ def _live(days: int) -> int:
     match = n = freed = 0
     mismatched: list[str] = []
     max_same_after = max_arcs_after = 0
+    multi_kind = 0  # sleeps whose window held closed arcs of two or more kinds
     print(f"{'sleep':<17} {'started (UTC)':<12} {'real arcs replayed':<52} after")
     for c in cycles:
         if not c.get("since"):
@@ -156,6 +166,8 @@ def _live(days: int) -> int:
         stored = [ReplayItemV1(**r) for r in (c.get("replay") or [])]
         existing = [r for r in stored if r.source_kind != "arc"]
         real_arcs = [r for r in stored if r.source_kind == "arc"]
+        if len({a.tags[0] for a in arc_candidates(arcs, since, until)}) >= 2:
+            multi_kind += 1
         rebuilt_old = _replay(existing, arc_candidates(arcs, since, until, one_per_kind=False), k)
         new = _replay(existing, arc_candidates(arcs, since, until), k)
         if sorted(r.ref_id for r in rebuilt_old if r.source_kind == "arc") == sorted(r.ref_id for r in real_arcs):
@@ -166,7 +178,7 @@ def _live(days: int) -> int:
         tot_real.update(real_k)
         tot_before.update(_arc_kinds(rebuilt_old))
         tot_after.update(new_k)
-        freed += max(0, len(real_k) - len(new_k))
+        freed += max(0, len(_arc_kinds(rebuilt_old)) - len(new_k))  # rule effect only, not rebuild error
         if new_k:
             max_same_after = max(max_same_after, max(Counter(new_k).values()))
         max_arcs_after = max(max_arcs_after, len(new_k))
@@ -187,7 +199,21 @@ def _live(days: int) -> int:
           + (f" (differ: {', '.join(mismatched)})" if mismatched else ""))
     print(f"arc slots freed for existing items: {freed}")
     print(f"most arcs of one kind in one sleep, new rule: {max_same_after}; most arcs in one sleep: {max_arcs_after}")
-    ok = max_same_after <= 1 and max_arcs_after <= arc_replay_slots(k)
+    # By construction (arc_candidates, select_replay's source_caps), not a gate: asserted.
+    assert max_same_after <= 1 and max_arcs_after <= arc_replay_slots(k)
+
+    def other_share(cnt: Counter) -> float:
+        total = sum(cnt.values())
+        return (total - cnt["interoception"]) / total if total else 0.0
+
+    fid = match / n if n else 0.0
+    ok_fid = fid >= FIDELITY_MIN
+    ok_mix = multi_kind == 0 or other_share(tot_after) > other_share(tot_before)
+    print(f"gate: old-rule fidelity {fid:.0%} >= {FIDELITY_MIN:.0%}: {'ok' if ok_fid else 'FAIL'}"
+          " (else the rebuild proves nothing)")
+    print(f"gate: non-interoception share {other_share(tot_before):.0%} -> {other_share(tot_after):.0%} "
+          f"({multi_kind} sleeps had 2+ kinds available): {'ok' if ok_mix else 'FAIL'}")
+    ok = ok_fid and ok_mix
     print("live: PASS" if ok else "live: FAIL")
     return 0 if ok else 1
 

@@ -288,12 +288,15 @@ def test_arcs_about_one_subject_are_one_candidate_the_heaviest():
                        ended=NOW - timedelta(minutes=minutes_ago)), "subject_ref": "node:substrate.bus_synaptic"}
 
     rows = [same("s1", 900, 11, 200), same("s2", 2280, 8, 100), same("s3", 1680, 7, 10),
-            {**_arc("other", kind="concern"), "subject_ref": "node:substrate.bus_synaptic"}]
-    got = arc_candidates(rows, SINCE, NOW)
+            {**_arc("other", kind="concern"), "subject_ref": "node:substrate.bus_synaptic"},
+            {**_arc("node2", kind="interoception", dwell=60.0, returns=0), "subject_ref": "node:substrate.chat"}]
+    # one_per_kind=False isolates the per-subject rule (one-per-kind would hide its absence)
+    got = arc_candidates(rows, SINCE, NOW, one_per_kind=False)
     ids = [c.ref_id for c in got]
-    assert len(ids) == 2 and "arc:other" in ids  # same subject, different kind: two things
-    (intero,) = [c for c in got if c.tags == ["interoception"]]
-    assert intero.ref_id == "arc:s2"  # 38 min, 8 returns: the heaviest of the three
+    assert len(ids) == 3 and "arc:other" in ids  # same subject, different kind: two things
+    assert "arc:node2" in ids  # same kind, different subject: its own thing
+    intero = [c for c in got if c.tags == ["interoception"] and c.ref_id != "arc:node2"]
+    assert [c.ref_id for c in intero] == ["arc:s2"]  # 38 min, 8 returns: the heaviest of the three
 
 
 def test_live_1012_mix_keeps_the_compaction_requests():
@@ -372,21 +375,15 @@ def test_control_pool_sees_only_the_replayable_arcs(monkeypatch):
 
 
 def _live_1112_rows(now):
-    """The 11-11 04:57 sleep's window, shape-for-shape: four interoception body arcs about
-    different substrate nodes (hours of dwell, sensor flicker counted as returns), each
-    heavier than the one attention arc and the one conversation arc that closed with them."""
-    def row(aid, kind, ref, dwell, returns, minutes_ago):
-        return {**_arc(aid, kind=kind, dwell=dwell, returns=returns, ended=now - timedelta(minutes=minutes_ago)),
-                "subject_ref": ref}
+    """Shared with the kind-mix eval, so the two cannot drift apart."""
+    import importlib.util
+    from pathlib import Path
 
-    return [
-        row("perc", "interoception", "node:substrate.perception", 14400.0, 9, 30),
-        row("chat", "interoception", "node:substrate.chat", 10800.0, 7, 40),
-        row("exec", "interoception", "node:substrate.execution", 9000.0, 6, 50),
-        row("bus", "interoception", "node:substrate.bus_synaptic", 7200.0, 5, 60),
-        row("att", "attention", "world:reading", 1500.0, 2, 70),
-        row("conv", "conversation", "9c91d646-cbd0-4977-8cdd-d2c82045c7f9", 1200.0, 1, 80),
-    ]
+    path = Path(__file__).resolve().parents[1] / "evals" / "dream_arc_kind_mix_replay.py"
+    spec = importlib.util.spec_from_file_location("dream_arc_kind_mix_replay", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.live_1112_rows(now)
 
 
 def test_live_1112_mix_takes_one_arc_per_kind():

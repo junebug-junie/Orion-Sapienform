@@ -513,7 +513,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         lease_token = act.bind_leases()
         # Mixing rule: arcs join the pool as their own source_kind, capped at a third of the
         # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
-        # thirds; ARC_WEIGHT_MAX (0.8) keeps a critical metacog ahead of every arc. Arcs never
+        # thirds; ARC_WEIGHT_MAX (0.75) keeps a critical metacog ahead of every arc. Arcs never
         # start a sleep on their own: with no existing candidate the cycle above is `empty`.
         # Arcs above an existing item's weight do displace it, within that third. At most one
         # arc per kind (replay.arc_candidates): the replay and the control pool below both

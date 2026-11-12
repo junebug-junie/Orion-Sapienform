@@ -55,6 +55,9 @@ GOOD_JUDGEMENT = {
     "world_contact_opportunity": False,
     "recommended_tool": None,
     "recommended_tool_reason": None,
+    "promises_made": [],
+    "offers_accepted": [],
+    "promises_kept": [],
 }
 
 

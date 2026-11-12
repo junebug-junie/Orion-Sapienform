@@ -69,6 +69,34 @@ class SubstrateFinalizeAppraisalV1(BaseModel):
 # ("reflection_failed"). The turn-outcome molecule still carries alignment_verdict="misaligned".
 REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
 
+# Intention ledger, step D0 (docs/superpowers/specs/2026-11-11-intention-ledger-design.md).
+# Max promise items the judge may list per field.
+PROMISE_ITEMS_MAX = 3
+PROMISE_QUOTE_MAX_CHARS = 240
+
+
+class PromiseV1(BaseModel):
+    """One forward promise Orion made in this reply, as the 5b judge found it.
+
+    quote is an exact span of the reply. Plain code (orion.harness.promise_gate) drops any
+    quote that is not literally in the reply, so the judge can name a promise but cannot
+    invent one. offer=True marks a promise that waits for Juniper's yes ("if you want,
+    I'll ..."): it is recorded, but it counts as a promise only after a later judge call
+    lists it in offers_accepted (Juniper's 2026-11-12 answer 1).
+    """
+
+    # Length caps are enforced by the judge's JSON schema and by the gate, not here: a
+    # malformed promise list must never fail validation and sink the alignment verdict.
+    quote: str
+    offer: bool = False
+
+
+class OpenPromiseRefV1(BaseModel):
+    """An earlier promise shown to the judge so it can say this reply kept it."""
+
+    id: str
+    quote: str
+
 
 class FinalizeReflectionV1(BaseModel):
     schema_version: Literal["finalize.reflection.v1"] = "finalize.reflection.v1"
@@ -116,6 +144,23 @@ class FinalizeReflectionV1(BaseModel):
     # structurally unreachable for a benign "what do you see" ask. See
     # orion/harness/finalize.py::maybe_run_finalize_tool_retry.
     world_contact_opportunity: bool = False
+
+    # Intention ledger D0 (ORION_PROMISE_LEDGER_ENABLED). Judge-written, then gated by
+    # orion.harness.promise_gate.gate_promises before anything reads them:
+    # - promises_made: promises in THIS reply, each an exact quote of it.
+    # - offers_accepted: quotes of offers from Orion's previous reply that THIS user
+    #   message accepts; only quotes the harness showed the judge survive.
+    # - promises_kept: ids of open promises THIS reply delivers; only ids the harness
+    #   showed the judge survive.
+    # No consumer validates this model with extra="forbid", so old readers drop the
+    # fields. Empty lists on every reflection the judge did not write. Caps
+    # (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the gate.
+    # Source of truth: the run artifact (HarnessRunV1.reflection), gated against the final
+    # text Juniper saw. The copy in HarnessVerdictMoleculeV1 is published before response
+    # repair and is gated only against the draft; D1 must not open acts from it.
+    promises_made: list[PromiseV1] = Field(default_factory=list)
+    offers_accepted: list[str] = Field(default_factory=list)
+    promises_kept: list[str] = Field(default_factory=list)
 
 
 class HarnessVerdictMoleculeV1(BaseModel):

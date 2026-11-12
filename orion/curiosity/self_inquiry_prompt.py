@@ -21,6 +21,7 @@ from typing import Optional, Sequence
 
 from orion.curiosity.self_question_pool import Family, SelfQuestion
 from orion.curiosity.kickoff_prompt import (
+    DIG_HELP_FIRST,
     _access_section,
     _budget_section,
     _continuation_section,
@@ -296,8 +297,11 @@ DIG_BODY_COMMANDS: tuple[str, ...] = (
     "channels, verbs, schemas (a past date works after `open <date>`)",
     "    python -P -m orion.dig open <date>, then compare <date> now  -- what was added or removed since then",
     "    python -P -m orion.dig body-economy        -- what your body costs and what is using power",
+    "    python -P -m orion.dig field-notes 7       -- what changed in you this week: "
+    "your notes on each merged PR",
     "  Each prints a short result and the path of the full file. Cite that "
-    "path as evidence. `python -P -m orion.dig help` lists the rest.",
+    "path as evidence.",
+    DIG_HELP_FIRST,
 )
 
 
@@ -535,6 +539,7 @@ def build_self_inquiry_prompt(
     lines += _records_section(ledger, repo_root=repo_root, family=family)
     lines += _senses_section(senses)
     lines += _access_section(
+        dig_kit=False,  # the records section already shows the dig kit
         own_graph=own_graph,
         atlas_graph=atlas_graph,
         hub_url=hub_url,

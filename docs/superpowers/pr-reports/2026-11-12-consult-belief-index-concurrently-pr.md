@@ -64,6 +64,6 @@ cd /mnt/scripts/Orion-Sapienform && scripts/safe_docker_build.sh orion-hub up -d
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3247
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

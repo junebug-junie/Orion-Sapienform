@@ -85,6 +85,6 @@ No manual restart. The post-pull rebuild rebuilds orion-harness-governor and syn
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3235
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

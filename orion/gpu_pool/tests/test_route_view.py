@@ -70,7 +70,10 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "quick_embodied",      # Orion's town speech, 2026-10-23
                              "prime",               # Orion Prime's thoughts, 2026-10-30 (pinned below)
                              "prime_starved",       # Prime after a try that got no seat, 2026-11-03 (pinned below)
-                             "judge"}               # finalize 5b judge off a gpu2 hold, 2026-11-12 (pinned below)
+                             "judge",               # finalize 5b judge off a gpu2 hold, 2026-11-12 (pinned below)
+                             # operator work (evals), 2026-11-12 (pinned below)
+                             "operator", "operator_chat", "operator_agent", "operator_agent_gpu2",
+                             "operator_agent_deep", "operator_metacog", "operator_fast"}
 # Roles whose server type changed after the freeze report the current one wherever they serve.
 BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata", "agent": "strata"}   # Strata on gpu0 10-30, gpu1 10-31
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
@@ -228,3 +231,18 @@ def test_judge_route_is_agent_work_that_never_lands_on_the_gpu2_seat():
     assert "judge" not in BACKGROUND_LLM_ROUTES
     [r] = [e for e in build_route_view(None, CFG)["routes"] if e["id"] == "judge"]
     assert r["priority"] == "system"
+
+
+def test_operator_routes_are_background_and_land_only_on_their_pinned_role():
+    """Leased evals (2026-11-12): every operator route is background; a pinned one names one role."""
+    routes = _by_id(build_route_view(_state([_role(r) for r in ("chat", "agent", "agent-gpu2", "metacog", "fast")],
+                                            gpu0_lent=True)))
+    from orion.gpu_pool.config import load_pool_config
+
+    cfg = load_pool_config()
+    for rid in ("operator", "operator_chat", "operator_agent", "operator_agent_gpu2", "operator_agent_deep",
+                "operator_metacog", "operator_fast"):
+        assert cfg.routes[rid].priority == "background", rid
+        assert cfg.routes[rid].work_class == rid
+    assert routes["operator_chat"]["role"] == "chat"
+    assert routes["operator_agent_gpu2"]["role"] == "agent-gpu2"

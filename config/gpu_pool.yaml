@@ -174,6 +174,23 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   # Juniper lends it (rule 9), never the gpu2 seat or hecate. Wait, not backlog: nobody resumes a
   # judge call later. Rollback: delete this class, its route and the owner entry on `agent`.
   judge:          {roles: [agent, chat], on_unavailable: wait}
+  # Operator work (evals, benches, probes Juniper or an agent starts by hand; 2026-11-12, design
+  # docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md, Phase 1). Not Orion's
+  # own acts: no role names these classes as owner, so they are borrowers everywhere -- an owner that
+  # waits recalls them (rule 5) and chat's card / hecate take them only while Juniper has lent the card
+  # (rule 9). Their routes are `background` (shed by the heat reflex with Orion's background work) and
+  # they sort after every other background lease (orion/gpu_pool/value_order.py OPERATOR_CLASS_PREFIX,
+  # GPU_POOL_OPERATOR_LAST). They never bid (scripts/check_verb_physiology.py refuses an operator* lane)
+  # and the body economy reads their load as sponsored, not Orion's (PHYSIOLOGY_OPERATOR_LOAD_SPONSORED).
+  # Callers: orion/evals/leased_llm.py only. Wait, not backlog: an eval nobody resumes later.
+  # `operator`: any big lane. The pinned ones replay one specific lane.
+  operator:            {roles: [agent-gpu2, agent, agent-deep, chat], on_unavailable: wait}
+  operator_chat:       {roles: [chat], on_unavailable: wait}
+  operator_agent:      {roles: [agent], on_unavailable: wait}
+  operator_agent_gpu2: {roles: [agent-gpu2], on_unavailable: wait}
+  operator_agent_deep: {roles: [agent-deep], on_unavailable: wait}
+  operator_metacog:    {roles: [metacog], on_unavailable: wait}
+  operator_fast:       {roles: [fast], on_unavailable: wait}
 
 routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:
            # the gateway refuses a route that is not here rather than guess a GPU.
@@ -234,6 +251,15 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # seat at all (orion/mindloop/runtime.py, Prime's loop). Both system-only (orion/llm/routes.py).
   prime: {class: chat, priority: system}
   prime_starved: {class: chat, priority: starved}
+  # Operator work (classes.operator* above): one route per class, always `background`. Named in the
+  # `model` field of a gateway call that carries the eval's operator hold (X-Orion-Gpu-Lease).
+  operator: {class: operator, priority: background}
+  operator_chat: {class: operator_chat, priority: background}
+  operator_agent: {class: operator_agent, priority: background}
+  operator_agent_gpu2: {class: operator_agent_gpu2, priority: background}
+  operator_agent_deep: {class: operator_agent_deep, priority: background}
+  operator_metacog: {class: operator_metacog, priority: background}
+  operator_fast: {class: operator_fast, priority: background}
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).

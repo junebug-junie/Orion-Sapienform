@@ -37,7 +37,7 @@ from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
     Reordered, Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, queue_position, schedule,
 )
-from orion.gpu_pool.value_order import ValueOrderConfig
+from orion.gpu_pool.value_order import ValueOrderConfig, is_operator_class
 from orion.gpu_pool.orion_shed import (
     SHED_DECISION_REASON as ORION_SHED_DECISION_REASON, MemoryOrionShedLedger, OrionShedCaps,
     OrionShedController, OrionShedLedger,
@@ -166,7 +166,7 @@ class PoolRuntime:
                  perception_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
                  perception_alert_held_sec_per_hour: float = 3360.0,
                  perception_realert_sec: float = 21600.0,
-                 value_order: ValueOrderConfig | None = None):
+                 value_order: ValueOrderConfig | None = None, operator_last: bool = True):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
@@ -174,6 +174,8 @@ class PoolRuntime:
         self.prober, self.now, self.mode = prober, now, mode
         # Attention patch 3b: the background class is served by value (None: arrival order).
         self.value_order = value_order
+        # Leased evals (2026-11-12): operator-class background leases queue behind all of Orion's own.
+        self.operator_last = operator_last
         self.service_name = service_name
         self.announce_stale_sec, self.probe_interval_sec = announce_stale_sec, probe_interval_sec
         self.state_publish_sec, self.replay_payload_max_bytes = state_publish_sec, replay_payload_max_bytes
@@ -408,6 +410,9 @@ class PoolRuntime:
         async with self._locked("acquire"):
             if not req.work_class or req.work_class not in self.cfg.classes:
                 return GpuLeaseReplyV1(status="unavailable", reason=f"unknown_class:{req.work_class}")
+            if is_operator_class(req.work_class) and req.want_net is not None:
+                # Operator work (evals) never bids in Orion's want market (leased-evals design, C2).
+                return GpuLeaseReplyV1(status="unavailable", reason="operator_class_never_bids")
             roles = self.cfg.classes[req.work_class].roles
             if any(self.cfg.roles[r].operator_only for r in roles) and not operator:
                 return GpuLeaseReplyV1(status="unavailable", reason="operator_only_class")
@@ -646,7 +651,7 @@ class PoolRuntime:
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
                              seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked,
                              frozen=(self.actuated if self.paused is not None else frozenset()) | set(self._reconciling),
-                             value=self.value_order)
+                             value=self.value_order, operator_last=self.operator_last)
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
@@ -1693,7 +1698,8 @@ class PoolRuntime:
         inside the background class when ``value_order`` is on)."""
         peers = [self._view(r) for r in await self.store.live_leases()
                  if r["status"] == "queued" and r["work_class"] == row["work_class"] and r["lease_id"] != row["lease_id"]]
-        return queue_position(self.cfg, peers + [self._view(row)], row["lease_id"], self.now(), self.value_order) or 1
+        return queue_position(self.cfg, peers + [self._view(row)], row["lease_id"], self.now(), self.value_order,
+                              self.operator_last) or 1
 
     # --- state + events ---------------------------------------------------------------
     async def snapshot(self, include_leases: bool = True, include_config: bool = False,

@@ -28,6 +28,10 @@ from datetime import datetime
 from typing import Callable, Optional, Sequence, TypeVar
 
 VALUE_PRIORITY = "background"
+# Operator work (evals, benches; config/gpu_pool.yaml classes ``operator*``, 2026-11-12 leased-evals
+# design C2): it never bids, and inside the background class it waits behind every one of Orion's own
+# background leases, whatever their arrival order (scheduler ``_order``, flag GPU_POOL_OPERATOR_LAST).
+OPERATOR_CLASS_PREFIX = "operator"
 DEFAULT_MARGIN = 0.10
 DEFAULT_AGING_PER_H = 0.10
 
@@ -39,6 +43,12 @@ class ValueOrderConfig:
     enabled: bool = True
     margin: float = DEFAULT_MARGIN
     aging_per_h: float = DEFAULT_AGING_PER_H
+
+
+def is_operator_class(work_class: Optional[str]) -> bool:
+    """True for the pool's operator work classes (``operator``, ``operator_chat``, ...): work Juniper
+    or an agent started (an eval, a bench), not one of Orion's own acts."""
+    return bool(work_class) and str(work_class).startswith(OPERATOR_CLASS_PREFIX)
 
 
 def family_key(family: Optional[str]) -> Optional[str]:
@@ -98,5 +108,5 @@ def sequence(waiting: Sequence[T], now: datetime, *, net: Callable[[T], Optional
     return out
 
 
-__all__ = ["DEFAULT_AGING_PER_H", "DEFAULT_MARGIN", "VALUE_PRIORITY", "ValueOrderConfig", "family_key", "pick",
-           "score", "sequence"]
+__all__ = ["DEFAULT_AGING_PER_H", "DEFAULT_MARGIN", "OPERATOR_CLASS_PREFIX", "VALUE_PRIORITY", "ValueOrderConfig",
+           "family_key", "is_operator_class", "pick", "score", "sequence"]

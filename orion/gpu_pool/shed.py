@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from orion.gpu_pool.value_order import is_operator_class
+
 SHEDDABLE: tuple[str, ...] = ("background", "system", "starved")
 
 
@@ -193,10 +195,14 @@ def is_deferrable_self_work(row: Any) -> bool:
     Waiting deferrable self-work is hunger (an unfunded want), not strain (body-economy design
     2026-10-23, "S2 decision"). Requests at any priority, and background REQUESTS, are not this.
     A durable-run hold that serves Juniper must therefore ask for ``system`` or ``urgent`` priority:
-    ``ResourceRequirementV1.priority`` defaults to ``background``, which reads as self-work here."""
+    ``ResourceRequirementV1.priority`` defaults to ``background``, which reads as self-work here.
+
+    Operator work (classes ``operator*``: evals Juniper or an agent started) is not Orion's own and
+    is never hunger (leased-evals design 2026-11-12, C3/C4)."""
     row = row if isinstance(row, dict) else vars(row)
     return (row.get("status") == "queued" and row.get("priority") == "background"
-            and row.get("kind") == "hold" and row.get("hold_lease_id") is None)
+            and row.get("kind") == "hold" and row.get("hold_lease_id") is None
+            and not is_operator_class(row.get("work_class")))
 
 
 def deferrable_queued(leases: Any, blocked: Any, *, reasons: Any = None) -> dict[str, int]:

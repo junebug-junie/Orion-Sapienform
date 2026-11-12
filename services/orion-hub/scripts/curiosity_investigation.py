@@ -144,8 +144,9 @@ from orion.curiosity.focus import (
     take_focus,
 )
 from orion.consult.beliefs import (
-    CONSULT_EVIDENCE_CYPHER,
     PRIOR_RUNS_CYPHER,
+    consult_evidence_cypher,
+    finding_id_for,
     recorded_evidence,
     source_prior_ids,
 )
@@ -1711,11 +1712,16 @@ class CuriosityInvestigation:
             out.append(row)
         return tuple(out)
 
-    async def _stamp_consult_beliefs(self, run_id: str) -> None:
-        """After the turn: which offered consult outcomes this run recorded as a finding joined to a
-        prior. Read-only on the graph; the only writes are the consult rows. Recorded: stamped.
-        Not recorded (or the graph could not be read): given back for a later run, the offer
-        counted. Never raises into the turn."""
+    async def _stamp_consult_beliefs(self, run_id: str, *, release_missing: bool = True) -> None:
+        """Which offered consult outcomes this run recorded: a finding with the expected id joined
+        to a prior by an allowed edge (``orion.consult.beliefs.EDGES_FOR``). Read-only on the graph;
+        the only writes are the consult rows. Never raises into the turn.
+
+        Recorded: stamped. Not recorded: given back for a later run (the offer counted) when
+        ``release_missing`` -- the run has ended. A durable attempt's turn end passes False: a retry
+        of the same run still holds the prompt and may yet write it; the terminal run state settles
+        it. A failed graph read keeps every claim: a blip must not spend an offer, and
+        ``STALE_CLAIM_SEC`` reclaims a claim nothing else settles."""
         if not run_id:
             return
         try:
@@ -1725,21 +1731,25 @@ class CuriosityInvestigation:
             offered = await outcomes_offered_to(pool, run_id)
             if not offered:
                 return
-            found: dict = {}
-            if self._reader is not None:
-                try:
-                    rows = await asyncio.to_thread(self._reader.query, CONSULT_EVIDENCE_CYPHER)
-                    found = recorded_evidence(offered, rows)
-                except Exception as exc:  # noqa: BLE001 -- unknown reads as not recorded; MERGE makes a re-offer safe
-                    logger.warning("curiosity_consult_evidence_read_failed run=%s err=%s", run_id, exc)
-            for cid, (finding_id, prior_ids) in found.items():
-                await stamp_belief(pool, cid, run_id=run_id, finding_id=finding_id, prior_ids=prior_ids)
+            cypher = consult_evidence_cypher(finding_id_for(r["consult_id"], r.get("ending")) for r in offered)
+            if self._reader is None or cypher is None:
+                logger.warning("curiosity_consult_beliefs_unreadable run=%s offered=%d", run_id, len(offered))
+                return
+            try:
+                rows = await asyncio.to_thread(self._reader.query, cypher)
+            except Exception as exc:  # noqa: BLE001 -- the claims stay; see docstring
+                logger.warning("curiosity_consult_evidence_read_failed run=%s err=%s", run_id, exc)
+                return
+            found, wrong = recorded_evidence(offered, rows)
+            for cid, (finding_id, prior_ids, writer) in found.items():
+                await stamp_belief(pool, cid, run_id=writer or run_id, finding_id=finding_id, prior_ids=prior_ids)
             missing = [r["consult_id"] for r in offered if r["consult_id"] not in found]
-            if missing:
+            if missing and release_missing:
                 await release_outcomes(pool, run_id, consult_ids=missing, refund=False)
             logger.info(
-                "curiosity_consult_beliefs run=%s recorded=%s not_recorded=%s", run_id,
+                "curiosity_consult_beliefs run=%s recorded=%s not_recorded=%s wrong_edge=%s released=%s", run_id,
                 ",".join(f"{c}->{'+'.join(found[c][1])}" for c in found) or "-", ",".join(missing) or "-",
+                ",".join(f"{c}:{'+'.join(v)}" for c, v in wrong.items()) or "-", bool(missing and release_missing),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_consult_beliefs_failed run=%s err=%s", run_id, exc)
@@ -2889,7 +2899,10 @@ class CuriosityInvestigation:
             )
             if consult_outcomes and turn_began:
                 # Orion may have written them before the cancel: read back, give back the rest.
-                await self._stamp_consult_beliefs(run_id)
+                # Bounded: shutdown must not wait on the graph. A claim left behind is reclaimed
+                # after STALE_CLAIM_SEC.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self._stamp_consult_beliefs(run_id), timeout=5.0)
             if focus is not None and turn_began:
                 # Hub going away mid-turn: this turn's end will never be stamped, and it is no
                 # durable run, so nothing else will settle it. Best effort; never blocks the cancel.
@@ -5785,7 +5798,8 @@ class CuriosityInvestigation:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                 if investigation:
                     await self._stamp_corrections(request.run_id)
-                    await self._stamp_consult_beliefs(request.run_id)
+                    # A retry of this run may still record it: the run's end state settles the rest.
+                    await self._stamp_consult_beliefs(request.run_id, release_missing=False)
                     await self._stamp_focus(request.run_id, turn_ok=bool(text))
                 if text and request.source_tag in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
                     # After the spend/focus stamps: the hop is not part of the
@@ -5914,6 +5928,9 @@ class CuriosityInvestigation:
             return
         # Normally the turn end already stamped it; this only catches a stamp that failed.
         await self._settle_focus_after_run_end(state.run_id, completed=True)
+        # The durable turn end stamps without giving anything back (a retry may still write it);
+        # the run is over now, so what it did not record goes to a later run.
+        await self._stamp_consult_beliefs(state.run_id)
         detail = state.detail or {}
         # Same completion hook as SelfDefinition / outreach: durable admission
         # never reaches the in-process journal enqueue.

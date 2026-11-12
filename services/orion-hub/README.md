@@ -383,9 +383,9 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   (`take_outcomes`), with the beliefs the consult's source names (`orion/consult/beliefs.py`). Orion
   writes one `:Finding` with a fixed id (`consult:<id>:answer` or `consult:<id>:decision`) joined to
   a `:Prior`. At turn end Hub reads the graph (read only) and stamps the consult row
-  (`belief_finding_id`, `belief_prior_ids`). Not recorded: offered to a later run, 3 times at most.
-  Juniper's answer is joined with `ABOUT` and does not move confidence; it is not proof the claim is
-  true. Hub never writes `:Prior` nodes. Hub chat shows whether each outcome was recorded.
+  (`belief_finding_id`, `belief_prior_ids`). Not recorded when the run ends: offered to a later run,
+  3 times at most; a claim no run settled is taken again after 12 h. Juniper's answer counts only
+  when joined with `ABOUT` and does not move confidence; it is not proof the claim is true. Hub never writes `:Prior` nodes. Hub chat shows whether each outcome was recorded.
 - **Storage.** `orion_consult`, `orion_consult_turn` (`services/orion-sql-db/manual_migration_orion_consult_v1.sql`,
   belief columns in `manual_migration_orion_consult_belief_v1.sql`).
   Turns are NOT written to `chat_history_log`. Only the brief is, as unsolicited (out of turn recall).

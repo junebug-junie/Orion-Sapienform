@@ -273,11 +273,18 @@ one: offer, Orion writes, Hub reads back.
   new). An answer is tested like any evidence (`times_tested + 1`, `SUPPORTS` / `CONTRADICTS`).
   Juniper's answer is joined with `ABOUT` and does not move confidence: it says what she wants,
   not what is true. MERGE makes a re-offer harmless.
-- **Read-back (Hub, turn end).** One fixed read of every `consult:` finding joined to a prior.
-  Found: `belief_finding_id`, `belief_prior_ids`, `belief_recorded_run_id`, `belief_recorded_at`.
-  Not found, or the graph could not be read: given back for a later run. `belief_offers` counts
-  the runs shown it; at 3 Hub stops asking and Hub chat says "Orion did not record it". A run that
-  never reached its turn gives its outcomes back without counting the offer.
+- **Read-back (Hub).** One read of the expected finding ids (Hub-made hex, validated before the
+  query is built) joined to a prior. A decision finding counts only when joined with `ABOUT`; one
+  joined with `SUPPORTS`/`CONTRADICTS` is not recorded and is logged. Found:
+  `belief_finding_id`, `belief_prior_ids`, `belief_recorded_run_id` (the run that wrote the
+  finding), `belief_recorded_at`. Not found when the run has ended: given back for a later run.
+  A durable attempt's turn end stamps but gives nothing back (a retry of the run may still write
+  it); the run's terminal state settles the rest. A failed graph read keeps the claim (a blip
+  spends no offer). `belief_offers` counts the runs shown it; at 3 Hub stops asking and Hub chat
+  says "Orion did not record it". A run that never reached its turn gives its outcomes back
+  without counting the offer. A claim no run settled is taken again after 12 hours
+  (`STALE_CLAIM_SEC`), so a run that died on any path cannot hold an outcome forever. A repeat
+  offer tells Orion not to test the prior again for the same evidence.
 - **Patch 2 builds on it.** The 7-day outcome check writes its own finding on `belief_prior_ids`.
 
 Migration `manual_migration_orion_consult_belief_v1.sql` (additive; auto-applied on pull).

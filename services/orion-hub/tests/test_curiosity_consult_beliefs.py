@@ -17,10 +17,10 @@ from test_curiosity_investigation import _FakeBus, _FakeReader, _loop
 class Store:
     def __init__(self) -> None:
         self.rows: Dict[str, Dict[str, Any]] = {
-            "c1": dict(consult_id="c1", source_kind="curiosity_run", source_ref="curiosity_run:src", status="answered",
+            "aaaaaa000001": dict(consult_id="aaaaaa000001", source_kind="curiosity_run", source_ref="curiosity_run:src", status="answered",
                        ending="answered", answer="by design", decision=None, question="why?",
                        orion_told_run_id=None, belief_offers=0, belief_recorded_at=None),
-            "c2": dict(consult_id="c2", source_kind="stuck_prior", source_ref="prior:p-stuck", status="brief_sent",
+            "aaaaaa000002": dict(consult_id="aaaaaa000002", source_kind="stuck_prior", source_ref="prior:p-stuck", status="brief_sent",
                        ending="agreed_proposal", answer=None, decision="yes", question="fix?",
                        orion_told_run_id=None, belief_offers=0, belief_recorded_at=None),
         }
@@ -72,7 +72,7 @@ def _world(monkeypatch, *, evidence=None, raises=False):
     loop.consult_provider = lambda: object()
     loop._reader = _FakeReader(raises=raises, answers={
         "p.last_run_id AS last_run_id": [{"prior_id": "p-src", "run_id": "src"}, {"prior_id": "p-other", "run_id": "x"}],
-        "STARTS WITH 'consult:'": evidence or [],
+        "f.finding_id IN": evidence or [],
         "p.claim AS claim": PRIORS,
     })
     return loop, store
@@ -86,31 +86,51 @@ def test_kickoff_offers_each_outcome_with_the_beliefs_its_source_names(monkeypat
     loop, store = _world(monkeypatch)
     taken = asyncio.run(loop._take_consult_outcomes(_View(), "run-1"))
     by_id = {r["consult_id"]: r for r in taken}
-    assert [p.prior_id for p in by_id["c1"]["belief_priors"]] == ["p-src"]
-    assert [p.prior_id for p in by_id["c2"]["belief_priors"]] == ["p-stuck"]
+    assert [p.prior_id for p in by_id["aaaaaa000001"]["belief_priors"]] == ["p-src"]
+    assert [p.prior_id for p in by_id["aaaaaa000002"]["belief_priors"]] == ["p-stuck"]
     assert {r["belief_offers"] for r in store.rows.values()} == {1}
 
 
 def test_turn_end_stamps_what_orion_recorded_and_gives_back_the_rest(monkeypatch):
-    evidence = [{"finding_id": "consult:c1:answer", "prior_id": "p-src", "edge": "SUPPORTS", "run_id": "run-1"}]
+    evidence = [{"finding_id": "consult:aaaaaa000001:answer", "prior_id": "p-src", "edge": "SUPPORTS", "run_id": "run-1"}]
     loop, store = _world(monkeypatch, evidence=evidence)
     asyncio.run(loop._take_consult_outcomes(_View(), "run-1"))
     asyncio.run(loop._stamp_consult_beliefs("run-1"))
-    assert store.stamped == [("c1", "consult:c1:answer", ("p-src",))]
-    assert store.released == [("run-1", ("c2",), False)], "not recorded: back to a later run, the offer counted"
-    assert store.rows["c2"]["orion_told_run_id"] is None and store.rows["c2"]["belief_offers"] == 1
+    assert store.stamped == [("aaaaaa000001", "consult:aaaaaa000001:answer", ("p-src",))]
+    assert store.released == [("run-1", ("aaaaaa000002",), False)], "not recorded: back to a later run, the offer counted"
+    assert store.rows["aaaaaa000002"]["orion_told_run_id"] is None and store.rows["aaaaaa000002"]["belief_offers"] == 1
 
 
-def test_an_unreadable_graph_gives_everything_back_counted(monkeypatch):
+def test_an_unreadable_graph_keeps_every_claim(monkeypatch):
     loop, store = _world(monkeypatch)
     asyncio.run(loop._take_consult_outcomes(_View(), "run-1"))
     loop._reader.raises = True
     asyncio.run(loop._stamp_consult_beliefs("run-1"))
-    assert store.stamped == [] and store.released == [("run-1", ("c1", "c2"), False)]
+    assert store.stamped == [] and store.released == [], "a graph blip spends no offer"
+    assert {r["orion_told_run_id"] for r in store.rows.values()} == {"run-1"}
+
+
+def test_a_durable_attempt_stamps_but_gives_back_nothing_until_the_run_ends(monkeypatch):
+    evidence = [{"finding_id": "consult:aaaaaa000001:answer", "prior_id": "p-src", "edge": "SUPPORTS", "run_id": "run-1"}]
+    loop, store = _world(monkeypatch, evidence=evidence)
+    asyncio.run(loop._take_consult_outcomes(_View(), "run-1"))
+    asyncio.run(loop._stamp_consult_beliefs("run-1", release_missing=False))
+    assert store.stamped == [("aaaaaa000001", "consult:aaaaaa000001:answer", ("p-src",))] and store.released == []
+    assert store.rows["aaaaaa000002"]["orion_told_run_id"] == "run-1", "a retry of this run may still record it"
+    asyncio.run(loop._stamp_consult_beliefs("run-1"))  # the run's end state
+    assert store.released == [("run-1", ("aaaaaa000002",), False)]
+
+
+def test_juniper_answer_joined_as_proof_is_not_recorded(monkeypatch):
+    evidence = [{"finding_id": "consult:aaaaaa000002:decision", "prior_id": "p-stuck", "edge": "SUPPORTS"}]
+    loop, store = _world(monkeypatch, evidence=evidence)
+    asyncio.run(loop._take_consult_outcomes(_View(), "run-1"))
+    asyncio.run(loop._stamp_consult_beliefs("run-1"))
+    assert store.stamped == [] and store.released == [("run-1", ("aaaaaa000001", "aaaaaa000002"), False)]
 
 
 def test_a_failed_run_that_never_started_refunds_and_a_started_one_reads_back(monkeypatch):
-    loop, store = _world(monkeypatch, evidence=[{"finding_id": "consult:c2:decision", "prior_id": "p-stuck"}])
+    loop, store = _world(monkeypatch, evidence=[{"finding_id": "consult:aaaaaa000002:decision", "prior_id": "p-stuck", "edge": "ABOUT"}])
     asyncio.run(loop._take_consult_outcomes(_View(), "run-1"))
 
     async def never_started(run_id):
@@ -128,8 +148,8 @@ def test_a_failed_run_that_never_started_refunds_and_a_started_one_reads_back(mo
 
     loop._run_started = unknown
     asyncio.run(loop._release_offers_after_failed_run("run-2"))
-    assert store.stamped == [("c2", "consult:c2:decision", ("p-stuck",))]
-    assert store.released[-1] == ("run-2", ("c1",), False)
+    assert store.stamped == [("aaaaaa000002", "consult:aaaaaa000002:decision", ("p-stuck",))]
+    assert store.released[-1] == ("run-2", ("aaaaaa000001",), False)
 
 
 def test_no_outcomes_means_no_graph_read(monkeypatch):

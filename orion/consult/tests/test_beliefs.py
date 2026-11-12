@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from orion.consult.beliefs import (
-    CONSULT_EVIDENCE_CYPHER,
     MAX_BELIEF_OFFERS,
+    consult_evidence_cypher,
     PRIOR_RUNS_CYPHER,
     consult_outcomes_section,
     finding_id_for,
@@ -21,8 +21,12 @@ def test_one_fixed_finding_id_per_outcome_kind():
     assert finding_id_for("c1", "disagree") == "consult:c1:decision"
 
 
-def test_fixed_reads_splice_no_id():
-    assert "consult:" in CONSULT_EVIDENCE_CYPHER and "$" not in CONSULT_EVIDENCE_CYPHER
+def test_the_read_back_lists_only_well_formed_consult_finding_ids():
+    q = consult_evidence_cypher(["consult:9f138a849520:answer", "consult:abc123:decision",
+                                 "consult:x' OR 1=1 //:answer", "consult:abc123:other", "prior:p1"])
+    assert "IN ['consult:9f138a849520:answer', 'consult:abc123:decision']" in q
+    assert "OR 1=1" not in q and "other" not in q
+    assert consult_evidence_cypher(["consult:NOT-HEX:answer"]) is None
     assert "last_run_id" in PRIOR_RUNS_CYPHER
 
 
@@ -34,19 +38,23 @@ def test_source_priors_come_from_the_source():
     assert source_prior_ids({"source_kind": "self_monitor", "source_ref": "self_finding:x"}, runs) == []
 
 
-def test_only_the_expected_finding_joined_to_a_prior_counts():
+def test_only_the_expected_finding_joined_by_an_allowed_edge_counts():
     consults = [{"consult_id": "c1", "ending": "answered"}, {"consult_id": "c2", "ending": "agreed_proposal"},
-                {"consult_id": "c3", "ending": "disagree"}]
+                {"consult_id": "c3", "ending": "disagree"}, {"consult_id": "c4", "ending": "agreed_proposal"}]
     rows = [
-        {"finding_id": "consult:c1:answer", "prior_id": "p1", "edge": "SUPPORTS"},
+        {"finding_id": "consult:c1:answer", "prior_id": "p1", "edge": "SUPPORTS", "run_id": "r7"},
         {"finding_id": "consult:c1:answer", "prior_id": "p2", "edge": "ABOUT"},
         {"finding_id": "consult:c1:answer", "prior_id": "p1", "edge": "ABOUT"},
         # wrong kind for c2: a decision written as an answer is not the decision finding
         {"finding_id": "consult:c2:answer", "prior_id": "p3", "edge": "ABOUT"},
         {"finding_id": "consult:c3:decision", "prior_id": "", "edge": "ABOUT"},
+        # Juniper's answer joined as proof: not recorded, reported
+        {"finding_id": "consult:c4:decision", "prior_id": "p4", "edge": "SUPPORTS"},
         {"finding_id": "consult:other:decision", "prior_id": "p4", "edge": "ABOUT"},
     ]
-    assert recorded_evidence(consults, rows) == {"c1": ("consult:c1:answer", ["p1", "p2"])}
+    found, wrong = recorded_evidence(consults, rows)
+    assert found == {"c1": ("consult:c1:answer", ["p1", "p2"], "r7")}
+    assert wrong == {"c4": ["SUPPORTS"]}
 
 
 def test_decision_section_says_not_proof_and_does_not_move_confidence():
@@ -76,3 +84,9 @@ def test_unreadable_beliefs_are_said_and_nothing_claimed_is_empty():
                                                "belief_priors": None}]))
     assert "could not be read this time" in text
     assert consult_outcomes_section([]) == []
+
+
+def test_a_repeat_offer_says_not_to_test_again():
+    row = {"consult_id": "c1", "ending": "answered", "answer": "a", "belief_priors": [], "belief_offers": 2}
+    assert "do not test the prior again" in "\n".join(consult_outcomes_section([row]))
+    assert "do not test the prior again" not in "\n".join(consult_outcomes_section([{**row, "belief_offers": 1}]))

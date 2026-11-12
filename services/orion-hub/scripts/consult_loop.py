@@ -49,7 +49,7 @@ from orion.consult.core import (
     source_line,
 )
 from orion.consult.core import self_monitor_sources, stuck_prior_source
-from orion.consult.beliefs import MAX_BELIEF_OFFERS
+from orion.consult.beliefs import MAX_BELIEF_OFFERS, STALE_CLAIM_SEC
 from orion.schemas.claude_limit import ClaudeLimitObservationV1
 from orion.schemas.room_claude import RoomClaudeUtteranceV1
 
@@ -79,7 +79,7 @@ _COLUMNS = (
     "consult_id, source_kind, source_ref, source_detail, question, status, status_reason, ending, "
     "turns, claude_cost_usd, answer, brief_json, brief_text, brief_sent_at, email_status, decision, "
     "decision_reason, decided_at, orion_told_run_id, pending_prompt, pending_correlation_id, gate_retry_part, "
-    "claude_resends, belief_offers, belief_finding_id, belief_prior_ids, belief_recorded_run_id, "
+    "claude_resends, orion_told_at, belief_offers, belief_finding_id, belief_prior_ids, belief_recorded_run_id, "
     "belief_recorded_at, created_at, updated_at"
 )
 
@@ -113,8 +113,11 @@ def belief_state(row: Dict[str, Any]) -> Optional[str]:
         return None
     if row.get("belief_recorded_at"):
         return "recorded"
-    if int(row.get("belief_offers") or 0) >= MAX_BELIEF_OFFERS and not row.get("orion_told_run_id"):
-        return "not_recorded"
+    if int(row.get("belief_offers") or 0) >= MAX_BELIEF_OFFERS:
+        told_at = row.get("orion_told_at")
+        stale = isinstance(told_at, datetime) and told_at < _now() - timedelta(seconds=STALE_CLAIM_SEC)
+        if not row.get("orion_told_run_id") or stale:
+            return "not_recorded"
     return "waiting"
 
 
@@ -219,13 +222,15 @@ async def take_outcomes(pool, *, run_id: str, limit: int = 5) -> List[Dict[str, 
         "UPDATE orion_consult SET orion_told_run_id = $1, orion_told_at = now(), belief_offers = belief_offers + 1"
         " WHERE consult_id IN ("
         # belief_offers = 0 with a claim: shown to a run before offers were counted (and never read
-        # back), so it is offered again.
-        " SELECT consult_id FROM orion_consult WHERE (orion_told_run_id IS NULL OR belief_offers = 0)"
+        # back), so it is offered again. A claim older than STALE_CLAIM_SEC: its run died on a path
+        # that neither stamped nor gave it back.
+        " SELECT consult_id FROM orion_consult WHERE (orion_told_run_id IS NULL OR belief_offers = 0"
+        " OR orion_told_at < now() - make_interval(secs => $4))"
         " AND belief_recorded_at IS NULL"
         " AND belief_offers < $3 AND (status = 'answered' OR (status = 'brief_sent' AND decision IS NOT NULL))"
         " ORDER BY updated_at LIMIT $2 FOR UPDATE SKIP LOCKED"
         f") RETURNING {_COLUMNS}",
-        run_id, limit, MAX_BELIEF_OFFERS,
+        run_id, limit, MAX_BELIEF_OFFERS, float(STALE_CLAIM_SEC),
     )
     return [_row(r) for r in rows]
 

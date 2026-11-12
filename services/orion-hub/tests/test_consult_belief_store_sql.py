@@ -87,3 +87,15 @@ async def test_an_outcome_shown_before_offers_were_counted_is_offered_again(conn
     await conn.execute("UPDATE orion_consult SET orion_told_run_id = 'old-run', orion_told_at = now() WHERE consult_id = 'c1'")
     taken = await cl.take_outcomes(conn, run_id="r1")
     assert await _ids(taken) == ["c1", "c2"] and {r["belief_offers"] for r in taken} == {1}
+
+
+@pytest.mark.asyncio
+async def test_a_claim_no_run_settled_is_taken_again_after_the_stale_age(conn):
+    from orion.consult.beliefs import STALE_CLAIM_SEC
+
+    await cl.take_outcomes(conn, run_id="r-dead")  # the run dies on a path with no stamp or release
+    assert await cl.take_outcomes(conn, run_id="r2") == [], "a fresh claim is not taken twice"
+    await conn.execute("UPDATE orion_consult SET orion_told_at = now() - make_interval(secs => $1)",
+                       float(STALE_CLAIM_SEC + 60))
+    taken = await cl.take_outcomes(conn, run_id="r3")
+    assert await _ids(taken) == ["c1", "c2"] and {r["belief_offers"] for r in taken} == {2}

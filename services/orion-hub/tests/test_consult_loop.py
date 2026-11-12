@@ -519,3 +519,12 @@ def test_belief_state_for_hub_chat():
     capped = {"status": "brief_sent", "decision": "yes", "belief_offers": MAX_BELIEF_OFFERS}
     assert cl.belief_state({**capped, "orion_told_run_id": "r"}) == "waiting", "the last offer is still running"
     assert cl.belief_state(capped) == "not_recorded"
+
+
+def test_a_last_offer_whose_run_never_settled_reads_not_recorded(monkeypatch):
+    from orion.consult.beliefs import MAX_BELIEF_OFFERS, STALE_CLAIM_SEC
+
+    monkeypatch.setattr(cl, "_now", lambda: NOW)
+    row = {"status": "answered", "belief_offers": MAX_BELIEF_OFFERS, "orion_told_run_id": "r"}
+    assert cl.belief_state({**row, "orion_told_at": NOW - timedelta(seconds=60)}) == "waiting"
+    assert cl.belief_state({**row, "orion_told_at": NOW - timedelta(seconds=STALE_CLAIM_SEC + 1)}) == "not_recorded"

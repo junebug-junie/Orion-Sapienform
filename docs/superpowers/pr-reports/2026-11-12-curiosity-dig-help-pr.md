@@ -102,7 +102,7 @@ No manual restart required (post-pull rebuild covers orion-hub).
 - Concern: about 400 more characters in the investigation prompt. No size cap applies.
 - Mitigation: none needed.
 - Severity: low
-- Concern: the live `.env` could override `GITHUB_TOOLSETS`. If it does, the catalog's GitHub entry would point at tools that are not there. UNVERIFIED.
-- Mitigation: default `repos,pull_requests` covers both tools.
+- Concern: a live override of `GITHUB_TOOLSETS` would make the catalog's GitHub entry point at tools that are not there.
+- Mitigation: checked 2026-11-12. No service `.env` sets it, and neither does the harness-governor container env. The default `repos,pull_requests` (read-only) covers both tools.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

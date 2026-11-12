@@ -149,7 +149,7 @@ def test_negative_unattributed_is_logged_and_stored_unclipped(pg, monkeypatch, c
     over = HostAttribution(rest_wh=600.0, above_rest_wh=100.0, sponsored_wh=0.0, metered_wh=130.0,
                            leased_unmetered_wh=0.0, covered_s=3600.0, split_unknown_s=0.0)
     _seed(pg)  # hosts with no chassis reading are skipped before any hour is computed
-    monkeypatch.setattr(fill, "attribute_host_hour", lambda conn, host, s, e, now=None: (over, 600.0, "fixture"))
+    monkeypatch.setattr(fill, "attribute_host_hour", lambda conn, host, s, e, now=None, **kw: (over, 600.0, "fixture"))
     with caplog.at_level(logging.WARNING, logger="sql-writer.orion_energy_attribution"):
         job.run_one_attribution(pg, now=NOW)
     with pg.connect() as conn:
@@ -168,7 +168,7 @@ def test_a_host_with_no_chassis_reading_is_skipped_and_one_failing_host_does_not
     real = fill.attribute_host_hour
     seen = []
 
-    def flaky(conn, host, s, e, now=None):
+    def flaky(conn, host, s, e, now=None, **kw):
         seen.append(host)
         if host == "athena":
             raise RuntimeError("boom")

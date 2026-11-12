@@ -75,9 +75,15 @@ def test_finalize_lane_under_a_hold_is_the_agent_route_not_the_role():
     assert resolve_finalize_llm_lane(gpu_lease=REF) == GPU_LEASE_ROUTE == "agent"
 
 
+AGENT_HOLD = GpuLeaseRefV1(lease_id="hold-2", generation=1, role="agent", holder="durable-runs:run-2")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("repair_required", [False, True])
-async def test_every_finalize_hop_carries_the_ref(monkeypatch, repair_required):
+@pytest.mark.parametrize("hold", [REF, AGENT_HOLD], ids=["gpu2-seat", "agent"])
+async def test_every_finalize_hop_carries_the_ref(monkeypatch, repair_required, hold):
+    """Every hop carries the ref, except the 5b judge of a hold on the gpu2 seat: that one call
+    leaves the hold on route ``judge`` (2026-11-12, resolve_finalize_judge_placement)."""
     monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
     thought, overlay, draft = make_thought(), make_repair_overlay(), "A grounded internal draft."
     molecule = build_draft_molecule(correlation_id="t", thought=thought, draft_text=draft, grammar_receipts=[],
@@ -91,9 +97,13 @@ async def test_every_finalize_hop_carries_the_ref(monkeypatch, repair_required):
         if verb == "look_at_camera":
             return {"final_text": "The camera shows a table."}
         seen.append(verb)
-        assert request.context["gpu_lease"] == REF.model_dump(mode="json")
         assert "resource_lease" not in request.context
-        assert request.context["llm_route"] == request.context["llm_lane"] == "agent"
+        if verb == "harness_finalize_reflect" and hold is REF:
+            assert "gpu_lease" not in request.context
+            assert request.context["llm_route"] == "judge" and request.context["llm_lane"] == "agent"
+        else:
+            assert request.context["gpu_lease"] == hold.model_dump(mode="json")
+            assert request.context["llm_route"] == request.context["llm_lane"] == "agent"
         if verb == "harness_finalize_reflect":
             reflections += 1
             reflection = make_reflection(
@@ -108,7 +118,7 @@ async def test_every_finalize_hop_carries_the_ref(monkeypatch, repair_required):
     await run_harness_finalize_chain(
         correlation_id="t", draft_text=draft, draft_molecule=molecule, thought=thought, grammar_receipts=[],
         repair_overlay=overlay, user_message="What does the camera show?", voice_contract=None,
-        cortex_client=cortex_client, substrate_client=substrate_client, gpu_lease=REF,
+        cortex_client=cortex_client, substrate_client=substrate_client, gpu_lease=hold,
     )
     assert seen[:2] == ["harness_finalize_reflect", "harness_finalize_reflect"]
     assert ("orion_response_repair" in seen) is repair_required

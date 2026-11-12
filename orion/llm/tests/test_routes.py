@@ -157,7 +157,8 @@ def test_quick_embodied_is_system_only_but_cortex_may_override_with_it():
     # Hub and orion-actions call without allow_system: still refused there.
     assert normalize_llm_route("quick_embodied") is None
     assert normalize_llm_route("quick_embodied", allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) == "quick_embodied"
-    # The exception is exactly one route; other system routes stay refused even for cortex.
-    assert CORTEX_OVERRIDE_SYSTEM_ROUTES == {"quick_embodied"}
+    # The exceptions are named: quick_embodied, and judge (harness finalize's 5b judge off a hold,
+    # 2026-11-12). Other system routes stay refused even for cortex.
+    assert CORTEX_OVERRIDE_SYSTEM_ROUTES == {"quick_embodied", "judge"}
     for route in SYSTEM_LLM_ROUTES - CORTEX_OVERRIDE_SYSTEM_ROUTES:
         assert normalize_llm_route(route, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) is None

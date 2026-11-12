@@ -416,12 +416,52 @@ def resolve_finalize_llm_lane(
     A hold's calls attach to the hold's role whatever route they name, so the
     route only names the work class (``GPU_LEASE_ROUTE``, durable holds are
     agent class).
+
+    The repair uses this as-is. The 5b judge goes through
+    ``resolve_finalize_judge_placement``, which leaves a hold that is not on a
+    judge role (2026-11-12).
     """
     if gpu_lease is not None:
         return GPU_LEASE_ROUTE
     if is_agent_route_model_label(fcc_model_label):
         return "agent"
     return "chat"
+
+
+# --- 5b judge placement ----------------------------------------------------------
+# 2026-11-12: a hold's calls run on the hold's role, so the judge of a durable run
+# held on the gpu2 seat (pool role ``agent-gpu2``) ran on whatever model that seat
+# had loaded: 22 of 90 judge calls 11-11 05:29Z..11-12, the rest on Flash-Next.
+# With thinking off (PR #3195) that seat's judge caught 2 of 5 false claims in
+# replay (5 of 5 with thinking on, which burns 8000 tokens and returns nothing);
+# Flash-Next agent caught 6 of 9 vs 5 of 9. So the judge keeps its hold only on a
+# role it was checked on, and otherwise leaves the hold for ONE call: route
+# ``judge`` (config/gpu_pool.yaml classes.judge: gpu1, then chat's card only while
+# Juniper lends it), admitted by the pool like any call without a hold. The motor,
+# the repair and the run's other calls stay on the hold. The owner rule above
+# (corr 60f0e051) is untouched: a turn without a hold resolves exactly as before.
+FINALIZE_JUDGE_ROUTE = "judge"
+# Must equal config/gpu_pool.yaml classes.judge.roles (pinned by
+# orion/harness/tests/test_finalize_judge_placement.py). Pool role names, not models.
+FINALIZE_JUDGE_HOLD_ROLES: frozenset[str] = frozenset({"agent", "chat"})
+
+
+def resolve_finalize_judge_placement(
+    *,
+    gpu_lease: GpuLeaseRefV1 | None = None,
+    fcc_model_label: str | None = None,
+) -> tuple[str, str, GpuLeaseRefV1 | None]:
+    """(llm_route, llm_lane, gpu_lease to send) for the 5b judge call.
+
+    A hold on a judge role, or no hold: the owner rule (``resolve_finalize_llm_lane``)
+    and the hold ref, as before. A hold on any other role: route ``judge``, the
+    ``agent`` lane class, and NO hold ref -- with the ref the gateway would attach the
+    call to the hold's role whatever route it names.
+    """
+    if gpu_lease is not None and gpu_lease.role not in FINALIZE_JUDGE_HOLD_ROLES:
+        return FINALIZE_JUDGE_ROUTE, "agent", None
+    lane = resolve_finalize_llm_lane(gpu_lease=gpu_lease, fcc_model_label=fcc_model_label)
+    return lane, lane, gpu_lease
 
 
 # --- 5b judge output contract -------------------------------------------------
@@ -505,7 +545,7 @@ def build_finalize_reflect_context(
     fcc_model_label: str | None = None,
     situation_notes: str | None = None,
 ) -> dict[str, Any]:
-    lane = resolve_finalize_llm_lane(
+    route, lane, judge_lease = resolve_finalize_judge_placement(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -525,11 +565,13 @@ def build_finalize_reflect_context(
         # actually said. 11-03: notes said "Rowan usually comes around 11:39", the
         # draft said "Rowan right on her usual 11:39", and 5b had nothing to check it with.
         "situation_notes": _clip_situation_notes(situation_notes),
-        # Owner-lane finalize: hold route when admitted; else agent FCC label
-        # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.
-        "llm_route": lane,
+        # Owner-lane finalize: hold route when admitted on a judge role; route
+        # `judge` and no hold ref when the hold is elsewhere (5b judge placement
+        # above); else agent FCC label → agent; else chat. Cortex-exec honors
+        # top-level llm_route/llm_lane.
+        "llm_route": route,
         "llm_lane": lane,
-        **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
+        **({"gpu_lease": judge_lease.model_dump(mode="json")} if judge_lease else {}),
         "allow_chat_fallback": False,
         # cortex-exec puts the rendered prompt in the system message and these after
         # it, so the last turn asks for a grade instead of leaving the draft last.

@@ -120,6 +120,11 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # pool priority `starved`, after a try that got no seat. System-only: see SYSTEM_LLM_ROUTES.
         "prime",
         "prime_starved",
+        # The finalize 5b judge of a durable run whose hold is not on a judge role (2026-11-12,
+        # orion/harness/finalize.py resolve_finalize_judge_placement): gpu1, or chat's card while
+        # lent, never the gpu2 seat. System-only, and cortex-exec accepts it as a caller override:
+        # see SYSTEM_LLM_ROUTES and CORTEX_OVERRIDE_SYSTEM_ROUTES.
+        "judge",
     }
 )
 
@@ -158,6 +163,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "metacog_perception",
     "prime",
     "prime_starved",
+    "judge",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -262,6 +268,9 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
         "metacog_perception",
         "prime",
         "prime_starved",
+        # `judge` (2026-11-12): harness finalize's 5b judge off a hold. A human picking it would
+        # get the agent model at system priority; never a Compute choice.
+        "judge",
     }
 )
 
@@ -269,8 +278,10 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
 #: This is the explicit decision SYSTEM_LLM_ROUTES asks for: Hub (its picker and its raw
 #: POST /api/chat body) and orion-actions keep refusing these, so no human Compute choice
 #: reaches them; only a bus caller that names one does. `quick_embodied` (2026-10-23):
-#: orion-embodiment's town speech arrives at cortex-exec only as this override.
-CORTEX_OVERRIDE_SYSTEM_ROUTES: FrozenSet[str] = frozenset({"quick_embodied"})
+#: orion-embodiment's town speech arrives at cortex-exec only as this override. `judge`
+#: (2026-11-12): harness finalize's 5b judge reaches cortex-exec only as ctx["llm_route"]
+#: (orion/harness/finalize.py build_finalize_reflect_context).
+CORTEX_OVERRIDE_SYSTEM_ROUTES: FrozenSet[str] = frozenset({"quick_embodied", "judge"})
 
 if not CORTEX_OVERRIDE_SYSTEM_ROUTES <= SYSTEM_LLM_ROUTES:
     raise RuntimeError(

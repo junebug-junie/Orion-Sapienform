@@ -45,6 +45,7 @@ from typing import Any, Awaitable, Callable
 from orion.grammar.acts import act_closed_event, act_opened_event, build_act
 from orion.grammar.publish import GRAMMAR_EVENT_CHANNEL
 from orion.schemas.grammar import ActCostV1, ActV1, ActVerb, GrammarEventV1
+from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW
 from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
@@ -119,6 +120,15 @@ FAMILIES: dict[str, RunActFamily] = {
         "the ledger, all five hops live) by 21600s after its first GPU pool grant, or by the run's own admission "
         "deadline + 600s when that is later. ESTIMATE, not measured (no completed runs yet, 2026-11-07): the "
         "window is 6 h"),
+    # Consult turns (2026-11-12): one of Orion's turns in a consult with Claude
+    # (docs/superpowers/specs/2026-11-11-consult-claude-before-juniper-design.md). Tier 2 by Juniper's decision
+    # (config/physiology/families.yaml). One completed run so far, so the horizon is a bound from the run's own
+    # limits: 3 attempts x 3600 s + backoff + GPU queue waits between attempts; 21600 s leaves ~2.5 h of queue.
+    "consult_orion_turn": RunActFamily(
+        "consult_orion_turn", "durable.consult_orion_turn", "ask", 21600.0,
+        "artifact_produced (the durable run ends completed: Orion's consult turn text checkpointed for Hub) by "
+        "21600s after its first GPU pool grant. ESTIMATE, not measured (one completed run, 2026-11-11): 3 "
+        "attempts x 3600s turn + backoff fits in 11000s; the rest is GPU queue between attempts"),
 }
 
 
@@ -128,7 +138,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
     Included: curiosity.investigate (line investigate -> infer, self_inquiry -> ask),
     self_sense_eval (sense), journal.compose (make), reminiscence.episode (make; tier 2,
     design default 2026-11-07), pr.field_note (make; tier-1 upkeep, Juniper
-    2026-11-04 -- named here so each note is an act with a measured cost). Excluded on purpose:
+    2026-11-04 -- named here so each note is an act with a measured cost), consult.orion_turn
+    (ask; tier 2, Juniper 2026-11-12). Excluded on purpose:
 
     * urgent curiosity runs (``brief.urgent`` set): an incident report a sensor alarm forced
       (cabinet AC, GPU heat), a reflex rather than a want;
@@ -156,6 +167,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
         return FAMILIES["pr_field_note"]
     if workflow == REMINISCENCE_WORKFLOW:
         return FAMILIES["reminiscence"]
+    if workflow == CONSULT_ORION_TURN_WORKFLOW:
+        return FAMILIES["consult_orion_turn"]
     return None
 
 

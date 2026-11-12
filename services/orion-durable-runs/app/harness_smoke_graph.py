@@ -2,6 +2,7 @@
 
     resource_request -> resource_wait -> harness_step -> finish
                                          harness_step (failed attempt) -> retry_wait -> resource_request
+                         harness_step (cut short, consult only) -> retry_wait -> resource_request
 
 The smoke for the durable-run -> harness step seam (``app/harness_step.py``). It proves, on the live
 rail, that a durable run can wait for a GPU pool hold, run a step as a harness turn under it, and
@@ -12,7 +13,11 @@ checkpoint the turn's final text as the step's result -- with retry/resume intac
   ``failed_attempt`` policy (backoff in ``retry_wait``, then a fresh hold); past
   ``DURABLE_RUNS_RETRY_MAX_ATTEMPTS`` the run fails with the turn's error, never an empty success;
 * a pool take-back replays the step without spending an attempt;
-* a checkpointed step is never re-run (a restart after it resumes at ``finish``).
+* a checkpointed step is never re-run (a restart after it resumes at ``finish``);
+* ``retry_cut_short`` (consult.orion_turn): a turn the FCC motor stopped mid-work
+  (``orion.harness.cut_short.CUT_SHORT_CODES``) is a failed attempt while a retry will still run. Hub
+  resumes the attempt's claude session (``resume_key = run_id:source_tag``), so the retry continues the
+  work, and its prompt says so. The last attempt keeps the honest cut-short text rather than failing.
 
 Nothing is persisted beyond the durable-run checkpoint, the admission row and its state rows: no
 journal, no memory card, no recall write (the turn runs with Hub's ``no_write``).
@@ -25,18 +30,36 @@ from typing import Any, TypedDict
 
 from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt,
-    replay_if_requeued, resource_nodes, retry_wait_node, taken_back,
+    replay_if_requeued, resource_nodes, retry_wait_node, retry_would_run, taken_back,
 )
 from app.graph import attempt_timeout_sec
 from app.harness_step import (
-    TURN_REPLY_GRACE_SEC, RunTurn, harness_step_correlation_id, run_harness_step, step_detail,
+    TURN_REPLY_GRACE_SEC, HarnessStepFailed, RunTurn, harness_step_correlation_id, run_harness_step, step_detail,
 )
+from orion.harness.cut_short import CUT_SHORT_CODES
 from orion.schemas.consult_turn_run import (
     CONSULT_ORION_TURN_STEP_KEY, CONSULT_ORION_TURN_TAG, ConsultOrionTurnBriefV1,
 )
 from orion.schemas.harness_step_run import (
     HARNESS_ECHO_SMOKE_SESSION_ID, HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_TAG, HarnessEchoSmokeBriefV1,
 )
+
+
+# ``last_error`` of a cut-short attempt starts with this (after the exception type).
+CUT_SHORT_ERROR = "harness_step_cut_short"
+# Put before the prompt of the attempt after a cut-short one. The session is resumed, so Orion has
+# the earlier attempt's tool calls and results in context.
+CUT_SHORT_CONTINUE_NOTE = (
+    "Your previous attempt at this turn was cut short before you finished (time ran out). Your earlier "
+    "tool calls and results are above. Do not start over: continue from where you stopped, and write "
+    "your finished reply."
+)
+
+
+def cut_short_status(record: dict[str, Any]) -> str | None:
+    """The motor's cut-short code for a landed step, else None."""
+    status = (record.get("debug") or {}).get("harness_grounding_status")
+    return status if status in CUT_SHORT_CODES else None
 
 
 class HarnessSmokeState(TypedDict, total=False):
@@ -99,14 +122,15 @@ def build_harness_smoke_graph(run_turn: RunTurn, admission: AdmissionDeps, check
 def build_consult_turn_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):
     """consult.orion_turn: the same one-step graph; the step is Orion's consult turn."""
     return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=CONSULT_ORION_TURN_STEP_KEY,
-                                           brief_model=ConsultOrionTurnBriefV1, step_args=_consult_step)
+                                           brief_model=ConsultOrionTurnBriefV1, step_args=_consult_step,
+                                           retry_cut_short=True)
 
 
 def build_single_step_harness_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any, *,
-                                    step_key: str, brief_model: Any, step_args: Any):
+                                    step_key: str, brief_model: Any, step_args: Any, retry_cut_short: bool = False):
     """One admitted run, one harness turn: the graph harness.echo_smoke and consult.orion_turn share.
     ``step_args(brief)`` gives the turn's prompt, source_tag, session_id and optional
-    retrieval_query / require_lookup."""
+    retrieval_query / require_lookup. ``retry_cut_short``: see the module docstring."""
     from langgraph.graph import END, START, StateGraph
 
     resource_request, resource_wait, after_wait = resource_nodes(admission)
@@ -121,11 +145,14 @@ def build_single_step_harness_graph(run_turn: RunTurn, admission: AdmissionDeps,
         turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
         correlation_id = harness_step_correlation_id(state, step_key)
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": step_key}
+        args = dict(step_args(brief))
+        if retry_cut_short and CUT_SHORT_ERROR in str(state.get("last_error") or ""):
+            args["prompt"] = f"{CUT_SHORT_CONTINUE_NOTE}\n\n{args['prompt']}"
 
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
             return await run_harness_step(
                 run_turn, held, step_key=step_key, correlation_id=correlation_id,
-                timeout_sec=turn_timeout, **step_args(brief))
+                timeout_sec=turn_timeout, **args)
 
         try:
             record = await admission.execute({**state, "step_correlation_id": correlation_id}, operation)
@@ -147,7 +174,14 @@ def build_single_step_harness_graph(run_turn: RunTurn, admission: AdmissionDeps,
                 return {**replay, "harness_turn_meta": turn_meta}
             return await failed_attempt(admission, state, exc, waiting={"status": "retrying", "retry_node": None},
                                         extra={"harness_turn_meta": turn_meta}, attempt_sec=brief.timeout_sec)
+        cut = cut_short_status(record) if retry_cut_short else None
+        if cut and retry_would_run(admission, state, attempt_sec=brief.timeout_sec):
+            return await failed_attempt(admission, state, HarnessStepFailed(f"{CUT_SHORT_ERROR}:{step_key}:{cut}"),
+                                        waiting={"status": "retrying", "retry_node": None},
+                                        extra={"harness_turn_meta": turn_meta}, attempt_sec=brief.timeout_sec)
         record["attempts"] = int(state.get("attempt") or 0) + 1
+        if cut:
+            record["cut_short"] = cut    # the last attempt: kept, labelled, never an empty failure
         return {"steps": {**(state.get("steps") or {}), step_key: record}, "harness_turn_meta": turn_meta,
                 "status": "running", "attempt": 0, "retry_at": None, "last_error": None}
 

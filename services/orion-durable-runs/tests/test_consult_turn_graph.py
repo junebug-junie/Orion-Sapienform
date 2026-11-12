@@ -13,15 +13,24 @@ import pytest
 
 pytest.importorskip("langgraph")
 
+from datetime import datetime, timedelta
+
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from app.admitted_graph import AdmissionDeps
-from app.harness_smoke_graph import build_consult_turn_graph, consult_turn_finish_detail
+from app.harness_smoke_graph import (
+    CUT_SHORT_CONTINUE_NOTE, CUT_SHORT_ERROR, build_consult_turn_graph, build_harness_smoke_graph,
+    consult_turn_finish_detail,
+)
 from app.harness_step import harness_step_correlation_id
 from orion.schemas.consult_turn_run import (
     CONSULT_ORION_TURN_STEP_KEY, CONSULT_ORION_TURN_TAG, CONSULT_ORION_TURN_WORKFLOW, consult_turn_run_id,
 )
+from orion.schemas.durable_run import CuriosityTurnResultV1
 from tests.test_harness_smoke_graph import REF, World
+from tests.test_harness_smoke_graph import CFG as SMOKE_CFG
+from tests.test_harness_smoke_graph import initial as smoke_initial
 
 RUN_ID = consult_turn_run_id("9f138a849520", 3)
 CFG = {"configurable": {"thread_id": RUN_ID}}
@@ -87,3 +96,79 @@ def test_admission_runtime_registers_the_consult_turn():
     assert detail["line"] == "consult_orion_turn" and detail["turn_correlation_id"] == "c-1"
     state = {**_initial(), "lease": dict(REF), "hold_seq": 1}
     assert harness_step_correlation_id(state, CONSULT_ORION_TURN_STEP_KEY)
+
+
+CUT_TEXT = "[Cut short - not a finished answer.] I stopped after 83 steps. Found so far: ..."
+
+
+class CutWorld(World):
+    """``("cut", text)`` is a turn the motor stopped mid-work: ok, with text, grounding fcc_timeout."""
+
+    async def turn(self, req):
+        if self.replies and isinstance(self.replies[0], tuple) and self.replies[0][0] == "cut":
+            self.turns.append(req)
+            _, text = self.replies.pop(0)
+            return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text=text, ok=True,
+                                         debug={"harness_grounding_status": "fcc_timeout", "fcc_elapsed_sec": 540.0})
+        return await super().turn(req)
+
+
+async def _resume_after_backoff(world, saver):
+    snap = await _graph(world, saver).aget_state(CFG)
+    assert snap.next == ("retry_wait",)
+    world.now = datetime.fromisoformat(snap.values["retry_at"]) + timedelta(seconds=1)
+    world.grant()
+    return await asyncio.wait_for(_graph(world, saver).ainvoke(Command(resume=True), CFG), 2)
+
+
+def test_a_cut_short_turn_is_retried_in_the_same_session_and_told_to_continue():
+    async def scenario():
+        world, saver = CutWorld(replies=[("cut", CUT_TEXT), LONG]), InMemorySaver()
+        world.grant()
+        await asyncio.wait_for(_graph(world, saver).ainvoke(_initial(), CFG), 2)
+        snap = await _graph(world, saver).aget_state(CFG)
+        assert CUT_SHORT_ERROR in snap.values["last_error"] and "fcc_timeout" in snap.values["last_error"]
+        assert CONSULT_ORION_TURN_STEP_KEY not in (snap.values.get("steps") or {}), "cut text is not the result"
+        result = await _resume_after_backoff(world, saver)
+        assert result["status"] == "completed"
+        first, second = world.turns
+        # Same source tag -> Hub's resume_key (run_id:source_tag) resumes the cut attempt's session.
+        assert second.source_tag == first.source_tag and second.attempt == 2
+        assert second.prompt.startswith(CUT_SHORT_CONTINUE_NOTE) and second.prompt.endswith("Reply to Claude.")
+        assert not first.prompt.startswith(CUT_SHORT_CONTINUE_NOTE)
+        step = result["steps"][CONSULT_ORION_TURN_STEP_KEY]
+        assert step["text"] == LONG and "cut_short" not in step
+    asyncio.run(scenario())
+
+
+def test_the_last_attempt_keeps_the_honest_cut_short_text():
+    async def scenario():
+        world, saver = CutWorld(replies=[("cut", CUT_TEXT), ("cut", CUT_TEXT)], max_attempts=2), InMemorySaver()
+        world.grant()
+        await asyncio.wait_for(_graph(world, saver).ainvoke(_initial(), CFG), 2)
+        result = await _resume_after_backoff(world, saver)
+        assert result["status"] == "completed", "never an empty failure when the turn found things"
+        step = result["steps"][CONSULT_ORION_TURN_STEP_KEY]
+        assert step["text"] == CUT_TEXT and step["cut_short"] == "fcc_timeout" and step["attempts"] == 2
+        assert len(world.turns) == 2
+    asyncio.run(scenario())
+
+
+def test_a_cut_short_turn_is_kept_when_no_whole_attempt_fits_before_the_deadline():
+    async def scenario():
+        world, saver = CutWorld(replies=[("cut", CUT_TEXT)]), InMemorySaver()
+        world.grant()
+        state = _initial()
+        state["admission"]["deadline_at"] = (world.now + timedelta(seconds=905)).isoformat()   # < one 900 s attempt after the 10 s backoff
+        result = await asyncio.wait_for(_graph(world, saver).ainvoke(state, CFG), 2)
+        assert result["status"] == "completed" and result["steps"]["turn"]["cut_short"] == "fcc_timeout"
+    asyncio.run(scenario())
+
+
+def test_harness_echo_smoke_does_not_retry_cut_short_turns():
+    async def scenario():
+        world, saver = CutWorld(replies=[("cut", CUT_TEXT)]), InMemorySaver()
+        world.grant()
+        result = await asyncio.wait_for(world.graph(saver).ainvoke(smoke_initial(), SMOKE_CFG), 2)
+        assert result["status"] == "completed" and len(world.turns) == 1
+    asyncio.run(scenario())

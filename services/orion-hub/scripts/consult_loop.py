@@ -208,11 +208,20 @@ async def take_outcomes(pool, *, run_id: str, limit: int = 5) -> List[Dict[str, 
     return [_row(r) for r in rows]
 
 
-async def recent(pool, *, undecided_only: bool, limit: int = 20) -> List[Dict[str, Any]]:
-    where = "WHERE status = 'brief_sent' AND decision IS NULL" if undecided_only else ""
-    rows = await pool.fetch(
-        f"SELECT {_COLUMNS} FROM orion_consult {where} ORDER BY created_at DESC LIMIT $1", limit
-    )
+UNDECIDED = "(status = 'brief_sent' AND decision IS NULL)"
+
+
+async def recent(pool, *, undecided_only: bool, limit: int = 20,
+                 recent_hours: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Newest first. ``recent_hours``: every consult touched in that window, plus every brief still
+    waiting for Juniper's answer however old (Hub chat's page-load view)."""
+    args: List[Any] = [limit]
+    if recent_hours:
+        args.append(_now() - timedelta(hours=float(recent_hours)))
+        where = f"WHERE {UNDECIDED} OR updated_at >= $2"
+    else:
+        where = f"WHERE {UNDECIDED}" if undecided_only else ""
+    rows = await pool.fetch(f"SELECT {_COLUMNS} FROM orion_consult {where} ORDER BY created_at DESC LIMIT $1", *args)
     return [_row(r) for r in rows]
 
 
@@ -236,7 +245,7 @@ class ConsultLoop:
         max_turns: int = DEFAULT_MAX_TURNS,
         weekly_brief_cap: int = 3,
         claude_timeout_sec: float = 1200.0,
-        orion_timeout_sec: float = 900.0,
+        orion_timeout_sec: float = 3600.0,
         source_max_age_hours: float = 72.0,
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] = _now,

@@ -95,8 +95,13 @@ def test_hold_end_is_the_deferrable_window_or_before_the_runs_own_deadline():
     assert hold_end(w.model_copy(update={"opened_at": None}), 21600.0) is None
 
 
-def test_only_curiosity_investigate_binds_and_only_with_the_flag_on():
-    assert BINDING_FAMILIES == frozenset({"durable.curiosity_investigate"})
+def test_only_curiosity_investigate_and_consult_turns_bind_and_only_with_the_flag_on():
+    assert BINDING_FAMILIES == frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn"})
+    consult = FAMS.get("durable.consult_orion_turn")
+    # Tier 2 (Juniper 2026-11-12); a short window, so a held consult turn waits at most half an hour.
+    assert consult.tier == 2 and 0 < consult.deferrable_window_s <= 1800
+    assert binding_family(_req("consult.orion_turn", None), True) == "durable.consult_orion_turn"
+    assert binding_family(_req("consult.orion_turn", None), False) is None
     assert FAMS.get("durable.curiosity_investigate").deferrable_window_s > 0
     assert binding_family(_req(), True) == "durable.curiosity_investigate"
     assert binding_family(_req(), False) is None

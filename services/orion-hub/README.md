@@ -347,7 +347,14 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   the session `consult-<id>`: none of Juniper's chats are in it, Orion can run digs, and lookup is
   not required. The loop reads the result back with `GET /runs/{run_id}` (`HUB_CONSULT_DURABLE_URL`).
   Moved off the in-process outreach compose on 2026-11-12: the first live consult died on Orion's
-  second turn when the shared lane was busy.
+  second turn when the shared lane was busy. Each attempt gets 3600 s (Orion digs ~54 min after
+  Hub's finalize reserve). A turn the FCC motor cuts short is retried in the same resumed session
+  and told to continue; the last attempt keeps the honest cut-short text. Each turn is a tier-2
+  want in Orion's body economy (`durable.consult_orion_turn`, act `ask`, 30-minute window): its
+  bid binds, so a busy, expensive agent lane can hold a turn for up to half an hour.
+- **In Hub chat**, turns show live. On page load, every brief still waiting for Juniper comes back
+  in full, and every other consult touched in the last 48 h is one collapsed line with its status
+  (failures say why); a click opens the status and the turns. None of it enters Orion's context.
 - **Claude's turns** go to `orion-room-companion` on the room channels (room id `consult:<id>`).
   Claude reads a read-only `git archive` export of the deployed code (Read/Grep/Glob, no `.git`;
   `scripts/export_consult_source.py`, refreshed by the post-pull rebuild) and is the skeptic.

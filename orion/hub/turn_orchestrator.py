@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -983,6 +983,49 @@ async def _deliver_cockpit_frames(
         logger.warning("cockpit frame deliver failed", exc_info=True)
 
 
+async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) -> Any:
+    """Prime's present for this turn (orion/prime/block.py, living Prime design Part 1), or None
+    when HUB_PRIME_BLOCK_ENABLED is off. Fail-open: an unreadable Prime renders a labelled absent
+    block; anything unexpected here returns None and the turn goes on without it."""
+    if not bool(getattr(settings, "HUB_PRIME_BLOCK_ENABLED", True)):
+        return None
+    try:
+        from orion.prime.block import fetch_prime_block
+
+        try:
+            redis = bus.redis
+        except Exception:  # noqa: BLE001 -- bus not connected: same as unreadable
+            from orion.prime.block import absent_block
+
+            block = absent_block("Hub's bus is not connected, so Prime's state could not be read")
+        else:
+            stale_min = float(getattr(settings, "HUB_PRIME_BLOCK_STALE_MIN", 10.0) or 10.0)
+            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min))
+        logger.info("prime_block corr=%s %s", correlation_id, block.log_fields())
+        return block
+    except Exception:  # noqa: BLE001 -- the Prime block must never break a turn
+        logger.warning("prime_block_failed corr=%s", correlation_id, exc_info=True)
+        return None
+
+
+def _log_prime_citations(prime_block: Any, final_text: Any, *, correlation_id: str) -> None:
+    """Count the reply's Prime refs against the block it was shown (orion/prime/block.py
+    check_prime_citations): one log line per turn, like temporal_self_day_citations. Never raises."""
+    if prime_block is None:
+        return
+    try:
+        from orion.prime.block import check_prime_citations
+
+        # A stale or absent block showed no refs: any Prime ref in the reply then is invented, and counted.
+        status = getattr(prime_block, "status", None)
+        shown = prime_block.refs if status == "ok" else ()
+        check = check_prime_citations(str(final_text or ""), shown)
+        logger.info("prime_block_citations corr=%s block=%s %s rejected_examples=%s", correlation_id,
+                    status, check.log_fields(), list(check.examples))
+    except Exception:  # noqa: BLE001
+        logger.warning("prime_block_citations_failed corr=%s", correlation_id, exc_info=True)
+
+
 async def execute_unified_turn(
     *,
     bus: Any,
@@ -1458,6 +1501,8 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
+    # The Prime read (two Redis GETs, <= 1 s) runs alongside the situation build, not after it.
+    prime_task = asyncio.create_task(_build_prime_block(bus, settings=cfg, correlation_id=correlation_id))
     situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,
         user_message=user_message,
@@ -1474,6 +1519,7 @@ async def execute_unified_turn(
         session_id,
         correlation_id=correlation_id,
     )
+    prime_block = await prime_task
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
     situation_hop_status = str(situation_bundle.get("status") or "ok")
     if situation_hop_status == "empty":
@@ -1626,6 +1672,7 @@ async def execute_unified_turn(
         mode=mode_tag,
         utterance_origin=utterance_origin,
         situation_prompt_fragment=situation_prompt_fragment,
+        prime_block=prime_block.text if prime_block is not None else None,
         draft_preview=bool(draft_preview),
     )
     harness_bus = harness_rpc_bus or bus
@@ -1650,6 +1697,7 @@ async def execute_unified_turn(
             attachments=list(harness_req.attachments or []),
             recent_turns=list(harness_req.recent_turns or []),
             situation_prompt_fragment=harness_req.situation_prompt_fragment,
+            prime_block=harness_req.prime_block,
         )
     except Exception:
         logger.warning(
@@ -1763,6 +1811,8 @@ async def execute_unified_turn(
     # _success_frames/_publish_unified_turn_chat_history so the final frame,
     # the persisted chat_history_log row, AND HarnessRunRequestV1.mode
     # (consumed by orion-harness-governor's own grammar trace) all agree.
+    if run.final_text:
+        _log_prime_citations(prime_block, run.final_text, correlation_id=correlation_id)
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,

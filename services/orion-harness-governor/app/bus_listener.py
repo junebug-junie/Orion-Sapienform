@@ -420,6 +420,14 @@ async def _maybe_publish_draft_preview(
     return text, None
 
 
+def _finalize_notes(request: Any) -> str | None:
+    """What the finalize judge is told the motor saw: the Prime block (living Prime Part 1) first, so
+    the judge's 6,000-char notes clip can never cut it, then the Situation block. Without the Prime
+    block a correct "I'm holding X [prime_concern:..]" would read as ungrounded to the judge."""
+    parts = [p for p in (getattr(request, "prime_block", None), request.situation_prompt_fragment) if p]
+    return "\n\n".join(parts) if parts else None
+
+
 async def handle_harness_run_request(
     bus: OrionBusAsync,
     request: HarnessRunRequestV1,
@@ -575,7 +583,7 @@ async def handle_harness_run_request(
             preserve_structured_output=bool(request.reading_only),
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
-            situation_notes=request.situation_prompt_fragment,
+            situation_notes=_finalize_notes(request),
             cut_short=bool(getattr(motor, "cut_short_reason", None)),
             # The perception re-check (finalize._recheck_unsupported_claim_repair)
             # stays inside the reply budget instead of running it out.

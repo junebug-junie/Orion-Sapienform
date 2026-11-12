@@ -16,8 +16,11 @@ The socket-injection half is modelled on `endogenous_outreach.py`, which
 already solves the same problem (get an unsolicited message into an open
 chat) including the busy/idle guards that stop a bubble landing mid-turn.
 
-`invite()` has ONE caller as of 2026-09-08: the operator route
-(api_routes.py, a human clicking "Ask Claude").
+`invite()` has two callers: the operator route (api_routes.py), reached
+from the chat room only by a deliberate act of Juniper's -- clicking "Ask
+Claude", or sending a chat-box message that starts with "@claude"
+(static/js/claude-address.js) -- and the consult loop (consult_loop.py) for
+its own consult:* rooms.
 
 The post-turn auto-invite in websocket_handler.py is GONE -- removed on
 Juniper's call because it shipped every private Hub chat turn to Claude to

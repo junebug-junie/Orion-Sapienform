@@ -546,10 +546,16 @@
               <option value="relaxed">Relaxed</option>
             </select>
             <button id="presenceOpenButton" type="button" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20">Presence</button>
-            <!-- Invite Claude into the room. This button is the ONLY producer
-                 of orion:room:claude:request, which keeps spend bounded by
-                 deliberate acts. That was briefly untrue: a post-turn hook
-                 auto-invited Claude after every chat turn until it was removed
+            <!-- Invite Claude into the room. Two producers of
+                 orion:room:claude:request, both deliberate acts by Juniper,
+                 which keeps spend bounded: this button, and a chat-box message
+                 that starts with "@claude" (static/js/claude-address.js;
+                 app.js routeComposerToClaude, which never starts an Orion
+                 turn). Both call the same askClaude() invite; nothing automatic
+                 invites Claude into the chat room. (The consult loop,
+                 scripts/consult_loop.py, uses the same channel for its own
+                 consult:* rooms, not this chat.) An automatic invite existed once:
+                 a post-turn hook auto-invited Claude after every chat turn until it was removed
                  2026-09-08 (Juniper: private chat turns are not Claude's
                  business). Orion reaching out on its own is coming back as an
                  endogenous trigger, not a per-turn firehose. -->
@@ -4943,6 +4949,7 @@
   <script src="/static/js/orion-message-tray.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/orion-abilities.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub-attention-tracker.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/claude-address.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

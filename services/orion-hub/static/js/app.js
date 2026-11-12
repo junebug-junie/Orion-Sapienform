@@ -3706,6 +3706,7 @@ let chatTurnTimer = null;
     if (!value) return;
     syncChatInputFromExpandTextarea();
     closeChatInputExpandModal({ applyToInput: false, focusInput: false });
+    if (routeComposerToClaude(value)) return;
     await submitExplicitChatText(value);
   }
 
@@ -10144,8 +10145,15 @@ let chatTurnTimer = null;
     if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !busy);
   }
 
-  async function askClaude() {
-    const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
+  // `typed`, when given, is a chat-box message that started with "@claude"
+  // (see routeComposerToClaude): its prompt with the address stripped, plus
+  // the original text to echo as Juniper's bubble. Called with no argument by
+  // the Ask Claude button, which reads the composer itself.
+  async function askClaude(typed) {
+    const fromAddress = Boolean(typed && typeof typed === 'object');
+    const value = fromAddress
+      ? String(typed.prompt || '').trim()
+      : (chatInput && chatInput.value ? chatInput.value : '').trim();
     // Falls back to the last thing said when the composer is empty, so "Ask
     // Claude" works as "weigh in on this" without retyping the question.
     // That fallback text is not necessarily Juniper's -- it could be Orion's
@@ -10159,7 +10167,12 @@ let chatTurnTimer = null;
     if (!prompt) {
       const last = lastRoomMessage();
       if (last) {
-        prompt = last.text;
+        // Juniper's own "@claude ..." bubble is a fallback candidate too;
+        // hand Claude the message, not the address.
+        const addressed = window.OrionClaudeAddress
+          ? window.OrionClaudeAddress.parseClaudeAddress(last.text)
+          : { toClaude: false, prompt: last.text };
+        prompt = (addressed.toClaude && addressed.prompt) ? addressed.prompt : last.text;
         invitedBy = last.sender === 'You' ? 'Juniper' : last.sender;
       } else {
         prompt = 'What do you make of the conversation so far?';
@@ -10183,7 +10196,19 @@ let chatTurnTimer = null;
         setAskClaudeBusy(false);
         return;
       }
-      if (value && chatInput) chatInput.value = '';
+      if (fromAddress) {
+        // Her words stay visible in the room. Shown only once the invite is
+        // accepted, so a refused invite leaves the text in the box instead.
+        // DOM only: nothing here reaches Orion's history (see PR report
+        // docs/superpowers/pr-reports/2026-11-12-hub-at-claude-pr.md).
+        if (value) appendMessage('You', typed.original || value, 'text-white', { mode: 'room_claude' });
+        if (chatInput) chatInput.value = '';
+        if (chatInputExpandTextarea) chatInputExpandTextarea.value = '';
+        updateClaudeAddressCue();
+      } else if (value && chatInput) {
+        chatInput.value = '';
+        updateClaudeAddressCue();
+      }
       // Busy stays on until the room_claude_utterance frame arrives; the reply
       // is asynchronous over the socket, not in this response.
     } catch (err) {
@@ -10210,12 +10235,60 @@ let chatTurnTimer = null;
     return null;
   }
 
-  if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
+  // A chat-box message starting with "@claude" goes to Claude through the same
+  // invite as the Ask Claude button and NEVER starts an Orion turn. Returns
+  // true when it took the message (sent, or held because Claude is still
+  // replying), false when the text is ordinary chat for Orion.
+  function routeComposerToClaude(text) {
+    const parsed = window.OrionClaudeAddress
+      ? window.OrionClaudeAddress.parseClaudeAddress(text)
+      : { toClaude: false };
+    if (!parsed.toClaude) return false;
+    if (askClaudeButton && askClaudeButton.disabled) {
+      // Same limit as the button: one Claude turn in flight at a time. The
+      // text stays in the box; it is not handed to Orion instead.
+      updateStatus('Claude is still replying. Your @claude message is still in the box.');
+      return true;
+    }
+    askClaude({ prompt: parsed.prompt, original: String(text || '').trim() });
+    return true;
+  }
+
+  // Amber Send button (and expanded-composer Send) while the box starts with
+  // "@claude", so Juniper sees where the message goes before she sends it.
+  const CLAUDE_CUE_ON = ['bg-amber-600', 'hover:bg-amber-500'];
+  const CLAUDE_CUE_OFF = ['bg-indigo-600', 'hover:bg-indigo-500'];
+  function updateClaudeAddressCue() {
+    const text = chatInputExpandModalRoot && !chatInputExpandModalRoot.classList.contains('hidden') && chatInputExpandTextarea
+      ? chatInputExpandTextarea.value
+      : (chatInput ? chatInput.value : '');
+    const toClaude = Boolean(window.OrionClaudeAddress
+      && window.OrionClaudeAddress.parseClaudeAddress(text).toClaude);
+    for (const btn of [sendButton, chatInputExpandModalSend]) {
+      if (!btn) continue;
+      if (btn.dataset.claudeAddress === (toClaude ? '1' : '0')) continue;
+      btn.dataset.claudeAddress = toClaude ? '1' : '0';
+      btn.classList.remove(...(toClaude ? CLAUDE_CUE_OFF : CLAUDE_CUE_ON));
+      btn.classList.add(...(toClaude ? CLAUDE_CUE_ON : CLAUDE_CUE_OFF));
+      if (btn === sendButton) btn.textContent = toClaude ? 'To Claude' : 'Send';
+      btn.title = toClaude ? 'Starts with @claude: goes to Claude, not Orion' : '';
+    }
+    if (chatInput && chatInput.dataset.claudeAddress !== (toClaude ? '1' : '0')) {
+      // Border, not ring: the box's own focus:ring-indigo-500 would win over
+      // an amber ring exactly while she is typing.
+      chatInput.dataset.claudeAddress = toClaude ? '1' : '0';
+      chatInput.classList.toggle('border-amber-500', toClaude);
+      chatInput.classList.toggle('border-gray-700', !toClaude);
+    }
+  }
+
+  if (askClaudeButton) askClaudeButton.addEventListener('click', () => askClaude());
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (cockpitLiveButton) cockpitLiveButton.addEventListener('click', openLiveCockpit);
   if (chatInput) {
     chatInput.addEventListener('input', () => {
+      updateClaudeAddressCue();
       if (!chatInputExpandModalRoot || chatInputExpandModalRoot.classList.contains('hidden')) return;
       syncChatExpandTextareaFromInput();
     });
@@ -10271,7 +10344,10 @@ let chatTurnTimer = null;
     notificationsDismissAllBtn.addEventListener('click', () => dismissAllNotifications());
   }
   if (chatInputExpandTextarea) {
-    chatInputExpandTextarea.addEventListener('input', syncChatInputFromExpandTextarea);
+    chatInputExpandTextarea.addEventListener('input', () => {
+      syncChatInputFromExpandTextarea();
+      updateClaudeAddressCue();
+    });
     chatInputExpandTextarea.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -12381,6 +12457,7 @@ let chatTurnTimer = null;
   async function sendTextMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
+    if (routeComposerToClaude(text)) return;
     await submitExplicitChatText(text);
   }
 

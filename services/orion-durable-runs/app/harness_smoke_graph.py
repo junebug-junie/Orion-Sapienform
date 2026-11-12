@@ -31,6 +31,9 @@ from app.graph import attempt_timeout_sec
 from app.harness_step import (
     TURN_REPLY_GRACE_SEC, RunTurn, harness_step_correlation_id, run_harness_step, step_detail,
 )
+from orion.schemas.consult_turn_run import (
+    CONSULT_ORION_TURN_STEP_KEY, CONSULT_ORION_TURN_TAG, ConsultOrionTurnBriefV1,
+)
 from orion.schemas.harness_step_run import (
     HARNESS_ECHO_SMOKE_SESSION_ID, HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_TAG, HarnessEchoSmokeBriefV1,
 )
@@ -58,28 +61,62 @@ class HarnessSmokeState(TypedDict, total=False):
     harness_turn_meta: dict[str, Any]   # the last issued turn's identity (failed-run detail, cancel)
 
 
-def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
+def _finish_detail(state: dict[str, Any], *, line: str, step_key: str) -> dict[str, Any]:
     steps = state.get("steps") or {}
-    echo = steps.get(HARNESS_ECHO_SMOKE_STEP_KEY) or {}
+    step = steps.get(step_key) or {}
     return {
-        "line": "harness_smoke",
-        "turn_correlation_id": echo.get("turn_correlation_id"),
+        "line": line,
+        "turn_correlation_id": step.get("turn_correlation_id"),
         "steps": {key: step_detail(record) for key, record in steps.items()},
     }
 
 
+def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
+    return _finish_detail(state, line="harness_smoke", step_key=HARNESS_ECHO_SMOKE_STEP_KEY)
+
+
+def consult_turn_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
+    """consult.orion_turn's finish detail. Hub reads the full text from ``GET /runs/{run_id}``."""
+    return _finish_detail(state, line="consult_orion_turn", step_key=CONSULT_ORION_TURN_STEP_KEY)
+
+
+def _smoke_step(brief: HarnessEchoSmokeBriefV1) -> dict[str, Any]:
+    return {"prompt": brief.prompt, "source_tag": HARNESS_ECHO_SMOKE_TAG, "session_id": HARNESS_ECHO_SMOKE_SESSION_ID}
+
+
+def _consult_step(brief: ConsultOrionTurnBriefV1) -> dict[str, Any]:
+    # require_lookup=False: Orion may reply to Claude without tool use. The source tag carries the
+    # turn so each consult turn has its own resumed session key (harness_step.py constraints).
+    return {"prompt": brief.prompt, "source_tag": f"{CONSULT_ORION_TURN_TAG}:t{brief.turn_no}",
+            "session_id": brief.session_id, "retrieval_query": brief.retrieval_query, "require_lookup": False}
+
+
 def build_harness_smoke_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):
+    return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=HARNESS_ECHO_SMOKE_STEP_KEY,
+                                           brief_model=HarnessEchoSmokeBriefV1, step_args=_smoke_step)
+
+
+def build_consult_turn_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):
+    """consult.orion_turn: the same one-step graph; the step is Orion's consult turn."""
+    return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=CONSULT_ORION_TURN_STEP_KEY,
+                                           brief_model=ConsultOrionTurnBriefV1, step_args=_consult_step)
+
+
+def build_single_step_harness_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any, *,
+                                    step_key: str, brief_model: Any, step_args: Any):
+    """One admitted run, one harness turn: the graph harness.echo_smoke and consult.orion_turn share.
+    ``step_args(brief)`` gives the turn's prompt, source_tag, session_id and optional
+    retrieval_query / require_lookup."""
     from langgraph.graph import END, START, StateGraph
 
     resource_request, resource_wait, after_wait = resource_nodes(admission)
     retry_wait = retry_wait_node(admission)
-    step_key = HARNESS_ECHO_SMOKE_STEP_KEY
 
     async def harness_step(state: HarnessSmokeState) -> dict:
         state = dict(state)
         if step_key in (state.get("steps") or {}):
             return {"status": "running"}    # resumed after the step's checkpoint: never re-run it
-        brief = HarnessEchoSmokeBriefV1.model_validate(state["brief"])
+        brief = brief_model.model_validate(state["brief"])
         window = attempt_timeout_sec(state, brief.timeout_sec, admission.now())   # the node timer, deadline-clamped
         turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
         correlation_id = harness_step_correlation_id(state, step_key)
@@ -87,9 +124,8 @@ def build_harness_smoke_graph(run_turn: RunTurn, admission: AdmissionDeps, check
 
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
             return await run_harness_step(
-                run_turn, held, step_key=step_key, prompt=brief.prompt, correlation_id=correlation_id,
-                timeout_sec=turn_timeout, source_tag=HARNESS_ECHO_SMOKE_TAG,
-                session_id=HARNESS_ECHO_SMOKE_SESSION_ID)
+                run_turn, held, step_key=step_key, correlation_id=correlation_id,
+                timeout_sec=turn_timeout, **step_args(brief))
 
         try:
             record = await admission.execute({**state, "step_correlation_id": correlation_id}, operation)

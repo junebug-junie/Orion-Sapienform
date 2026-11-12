@@ -212,9 +212,11 @@ class Settings(BaseSettings):
     HUB_CONSULT_WEEKLY_BRIEF_CAP: int = Field(default=3)
     # A sent Claude turn with no reply after this long ends the consult (failed).
     HUB_CONSULT_CLAUDE_TIMEOUT_SEC: float = Field(default=1200.0)
-    # Orion's consult turn, per attempt (agent lane, then chat fallback). Longer than outreach's
-    # 300 s: Orion runs digs. The first live consult timed out at 300 s mid-dig (2026-11-11).
-    HUB_CONSULT_ORION_TIMEOUT_SEC: float = Field(default=600.0)
+    # Orion's consult turn is a durable run (consult.orion_turn): this is its budget per attempt.
+    # The GPU pool queue wait is not counted, and durable-runs retries a failed attempt.
+    HUB_CONSULT_ORION_TIMEOUT_SEC: float = Field(default=900.0)
+    # orion-durable-runs' HTTP API (submit + read back Orion's consult turn runs).
+    HUB_CONSULT_DURABLE_URL: str = Field(default="http://127.0.0.1:8124")
     # A source not started within this window expires (never started).
     HUB_CONSULT_SOURCE_MAX_AGE_HOURS: float = Field(default=72.0)
     HUB_CONSULT_NOTIFY_TIMEOUT_SEC: float = Field(default=20.0)

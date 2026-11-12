@@ -315,6 +315,26 @@ def claude_turn_prompt(
     return "\n\n".join(parts)
 
 
+# The durable brief's prompt limit (orion/schemas/consult_turn_run.py) minus headroom for the
+# fixed text. Older turns are cut first; the latest turn (the one Orion answers) stays whole.
+ORION_PROMPT_MAX_CHARS = 58000
+
+
+def _fit_transcript(transcript: Sequence[tuple[str, str]], budget: int) -> list[tuple[str, str]]:
+    """Cut the oldest turns' text to fit ``budget`` chars, never the latest turn. Pure."""
+    items = [(who, text.strip()) for who, text in transcript]
+    total = sum(len(t) for _, t in items)
+    i = 0
+    while total > budget and i < len(items) - 1:
+        who, text = items[i]
+        keep = max(0, len(text) - (total - budget))
+        cut = text[:keep].rstrip() + f" [... {len(text) - keep} characters cut to fit; the full turn is stored]"
+        total -= len(text) - len(cut)
+        items[i] = (who, cut)
+        i += 1
+    return items
+
+
 def orion_turn_prompt(
     *,
     source: str,
@@ -322,8 +342,10 @@ def orion_turn_prompt(
     transcript: Sequence[tuple[str, str]],
     turn_no: int,
     max_turns: int,
+    max_chars: int = ORION_PROMPT_MAX_CHARS,
 ) -> str:
-    """What Orion is asked on each of their consult turns. Pure."""
+    """What Orion is asked on each of their consult turns. Pure. Fits ``max_chars`` by cutting the
+    oldest turns first (``_fit_transcript``)."""
     head = (
         "You are in a consult with Claude about your own plumbing. Juniper asked that questions "
         "about how you work, things that look wrong, and fixes you want go to Claude first. "
@@ -334,7 +356,9 @@ def orion_turn_prompt(
     )
     parts = [head, f"Where this came from: {source}", f"The question:\n{question.strip()}"]
     if transcript:
-        parts.append("The consult so far:\n" + "\n\n".join(f"{who}: {text.strip()}" for who, text in transcript))
+        fixed = sum(len(x) for x in parts) + 1200
+        fitted = _fit_transcript(transcript, max(2000, max_chars - fixed - len(question)))
+        parts.append("The consult so far:\n" + "\n\n".join(f"{who}: {text}" for who, text in fitted))
         parts.append(
             "Reply to Claude. If Claude proposes a change and you agree, say 'I agree' and why. If "
             "you do not, say what you think instead and why."

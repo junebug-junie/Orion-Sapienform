@@ -4838,8 +4838,10 @@ class CuriosityInvestigation:
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
-                    reading_context="curiosity" if parent_run_id else None,
-                    reading_parent_run_id=parent_run_id,
+                    # A consult turn (consult.orion_turn) is not a curiosity run: no reading tool
+                    # framed as one, and no read later told "a curiosity run of yours queued".
+                    reading_context="curiosity" if parent_run_id and not str(source).startswith("consult_orion_turn") else None,
+                    reading_parent_run_id=None if str(source).startswith("consult_orion_turn") else parent_run_id,
                     bus=self._bus,
                     correlation_id=correlation_id,
                     session_id=session_id or self.session_id,
@@ -5665,6 +5667,8 @@ class CuriosityInvestigation:
                     **({"urgent": True} if request.urgent is not None else {}),
                     **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
                     **({"curiosity_focus": request.focus} if request.focus is not None else {}),
+                    # A writing-only durable step (consult.orion_turn) says so; None keeps the gate.
+                    **({"require_lookup": request.require_lookup} if request.require_lookup is not None else {}),
                     # Stable across attempts, leases and restarts; the purpose keeps two
                     # different turns of one run from sharing a session.
                     resume_key=f"{request.run_id}:{request.source_tag}",

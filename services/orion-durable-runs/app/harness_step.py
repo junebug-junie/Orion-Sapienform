@@ -83,6 +83,8 @@ async def run_harness_step(
     timeout_sec: float,
     source_tag: str,
     session_id: str,
+    retrieval_query: str | None = None,
+    require_lookup: bool | None = None,
 ) -> dict[str, Any]:
     """Run one harness turn under the run's hold; the step's result record.
 
@@ -97,6 +99,8 @@ async def run_harness_step(
         attempt=int(state.get("attempt") or 0) + 1,
         gpu_lease=_gpu_lease(state),
         session_id=session_id,
+        retrieval_query=retrieval_query,
+        require_lookup=require_lookup,
     )
     result, meta = await timed_turn(run_turn, request)
     if result.run_id != request.run_id or result.correlation_id != request.correlation_id:

@@ -23,7 +23,6 @@ from orion.schemas.social_context import (
 from orion.schemas.social_inspection import SocialInspectionSnapshotV1
 from orion.schemas.social_freshness import SocialDecaySignalV1, SocialMemoryFreshnessV1, SocialRegroundingDecisionV1
 from orion.schemas.social_artifact import SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtifactRevisionV1
-from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
 from orion.schemas.social_claim import (
     SocialClaimAttributionV1,
     SocialClaimRevisionV1,
@@ -74,7 +73,6 @@ from .synthesizer import (
     classify_shared_artifact_decision,
     extract_topics,
     update_room_claim_tracking,
-    update_commitments,
     synthesize_social_calibration,
     synthesize_social_memory_hygiene,
     update_participant_continuity,
@@ -161,7 +159,6 @@ def _row_to_room(row: SocialRoomContinuitySQL | None) -> SocialRoomContinuityV1 
         closure_signal=SocialClosureSignalV1.model_validate(row.closure_signal) if row.closure_signal else None,
         floor_decision=SocialFloorDecisionV1.model_validate(row.floor_decision) if row.floor_decision else None,
         gif_usage_state=SocialGifUsageStateV1.model_validate(row.gif_usage_state) if row.gif_usage_state else None,
-        active_commitments=[SocialCommitmentV1.model_validate(item) for item in (row.active_commitments or []) if isinstance(item, dict)],
         calibration_signals=[SocialCalibrationSignalV1.model_validate(item) for item in (row.calibration_signals or []) if isinstance(item, dict)],
         peer_calibrations=[SocialPeerCalibrationV1.model_validate(item) for item in (row.peer_calibrations or []) if isinstance(item, dict)],
         trust_boundaries=[SocialTrustBoundaryV1.model_validate(item) for item in (row.trust_boundaries or []) if isinstance(item, dict)],
@@ -305,8 +302,6 @@ class SocialMemoryService:
             room_ritual_summary = None
             peer_style_existing = None
             room_ritual_existing = None
-            created_commitments: list[SocialCommitmentV1] = []
-            commitment_resolutions: list[SocialCommitmentResolutionV1] = []
             claim_tracking = ClaimTrackingResult()
             deliberation = None
             floor_result = None
@@ -381,18 +376,6 @@ class SocialMemoryService:
 
                 room_existing = _row_to_room(sess.get(SocialRoomContinuitySQL, f"{platform}:{room_id}"))
                 room_ritual_existing = _row_to_room_ritual(sess.get(SocialRoomRitualSummarySQL, f"{platform}:{room_id}"))
-                active_commitments, created_commitments, commitment_resolutions = update_commitments(
-                    room_existing.active_commitments if room_existing else [],
-                    turn,
-                    platform=platform,
-                    room_id=room_id,
-                    topics=topics,
-                    thread_summary=(room_existing.current_thread_summary if room_existing else "") or ", ".join(topics[:2]) or "the active room thread",
-                    artifact_dialogue_active=artifact_dialogue_active,
-                    artifact_confirmation=room_artifact_confirmation,
-                    ttl_minutes=self.settings.social_memory_commitment_ttl_minutes,
-                    max_open=self.settings.social_memory_commitment_max_open,
-                )
                 room_summary = update_room_continuity(
                     room_existing,
                     turn,
@@ -409,7 +392,6 @@ class SocialMemoryService:
                     artifact_revision=room_artifact_revision,
                     artifact_confirmation=room_artifact_confirmation,
                     thread_ttl_hours=self.settings.social_memory_open_thread_ttl_hours,
-                    active_commitments=active_commitments,
                 )
                 claim_tracking = update_room_claim_tracking(
                     existing=room_existing,
@@ -482,7 +464,6 @@ class SocialMemoryService:
                     turn=turn,
                     room=room_summary,
                     claim_tracking=claim_tracking,
-                    active_commitments=active_commitments,
                     artifact_dialogue_active=artifact_dialogue_active,
                 )
                 room_summary = room_summary.model_copy(
@@ -521,7 +502,6 @@ class SocialMemoryService:
                     thread_key=room_summary.current_thread_key,
                     claim_tracking=claim_tracking,
                     calibration=calibration,
-                    commitment_resolutions=commitment_resolutions,
                     artifact_dialogue_active=artifact_dialogue_active,
                     shared_artifact_statuses=[
                         peer_artifact_decision.status,
@@ -646,24 +626,6 @@ class SocialMemoryService:
                         room_summary.handoff_signal.thread_key,
                         room_summary.handoff_signal.handoff_kind,
                         room_summary.handoff_signal.rationale,
-                    )
-                for commitment in created_commitments:
-                    logger.info(
-                        "social_commitment_created room_id=%s thread_key=%s commitment_id=%s type=%s summary=%s",
-                        room_id,
-                        commitment.thread_key,
-                        commitment.commitment_id,
-                        commitment.commitment_type,
-                        commitment.summary[:120],
-                    )
-                for resolution in commitment_resolutions:
-                    logger.info(
-                        "social_commitment_resolved room_id=%s thread_key=%s commitment_id=%s state=%s reason=%s",
-                        room_id,
-                        resolution.thread_key,
-                        resolution.commitment_id,
-                        resolution.state,
-                        resolution.resolution_reason[:120],
                     )
                 for claim in claim_tracking.claims:
                     logger.info(
@@ -861,18 +823,6 @@ class SocialMemoryService:
                 self.settings.social_memory_room_channel,
                 "social.room.continuity.v1",
                 room_summary,
-            )
-        for commitment in created_commitments:
-            await self._publish(
-                self.settings.social_memory_commitment_channel,
-                "social.commitment.v1",
-                commitment,
-            )
-        for resolution in commitment_resolutions:
-            await self._publish(
-                self.settings.social_memory_commitment_resolution_channel,
-                "social.commitment.resolution.v1",
-                resolution,
             )
         for claim in claim_tracking.claims:
             await self._publish(

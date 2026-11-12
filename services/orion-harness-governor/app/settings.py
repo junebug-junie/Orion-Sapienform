@@ -143,6 +143,9 @@ class HarnessGovernorSettings(BaseSettings):
     response_repair_timeout_sec: float = Field(540.0, alias="RESPONSE_REPAIR_TIMEOUT_SEC")
     substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
     finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
+    # Intention ledger D0; read at call time by orion/harness/promise_gate.py, mirrored
+    # here so operators see the effective flag.
+    orion_promise_ledger_enabled: bool = Field(True, alias="ORION_PROMISE_LEDGER_ENABLED")
 
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")

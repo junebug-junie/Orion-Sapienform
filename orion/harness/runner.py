@@ -515,7 +515,7 @@ class HarnessRunner:
             if notes_session
             else None
         )
-        outside_content: set[str] = set()
+        outside_content = working_notes.OutsideContent()
 
         prompt = build_harness_prompt(
             thought=thought,
@@ -642,7 +642,7 @@ class HarnessRunner:
                         continue
                     reading_tracker.observe(step)
                     if notes_file is not None:
-                        outside_content.update(working_notes.outside_content_reasons([step]))
+                        outside_content.observe(step)
                     # Heartbeat frames stay in the live stream, receipts and step_count (unchanged)
                     # but are not grammar-recorded work: kept out of the collector atoms AND out
                     # of step_char_sum/max so avg_step_chars (= sum / completed atoms) keeps a
@@ -838,7 +838,7 @@ class HarnessRunner:
                     session_id=notes_session,
                     notes_file=notes_file,
                     carried_in=working_notes_block or "",
-                    outside_content=sorted(outside_content),
+                    outside_content=outside_content.reasons(),
                 ))
 
         reading_receipts = reading_tracker.outcomes()

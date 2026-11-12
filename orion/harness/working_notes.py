@@ -12,9 +12,14 @@ Trust rules (enforced here, not left to the model):
 
 * Taint by source: a turn that took in outside content (web, GitHub text,
   curl/wget/gh in Bash, a subagent the harness cannot see into) has its notes
-  held back. The next turn sees only that they were held back.
-* Fixed fields only: ``- <time> | <where> | <action> | ok|failed[: outcome]``.
-  Any other line is dropped and counted -- a structure check, not a word list.
+  held back. The next turn sees only that they were held back. Reading-queue
+  calls (``mcp__orion-reading__*``) are judged by their result: a bare queue
+  receipt is Orion's own record; a receipt carrying an earlier read's summary
+  or error text taints the turn.
+* Fixed fields only: ``- <where> | <action> | ok|failed[: outcome]``. Any other
+  line is dropped and counted -- a structure check, not a word list. A leading
+  time the model writes is accepted and removed: the model guesses the clock
+  (seen 1 h off live), so the carried block dates each turn batch itself.
 * Short life, narrow scope: one Hub session, 24 h per turn batch, 3,000 chars.
 * An alarm-only scan for instruction-shaped text logs, never blocks.
 
@@ -46,12 +51,13 @@ RAW_KEEP_CHARS = 8000  # raw file text kept on the cockpit row (the file itself 
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
-# - 07:45Z | fcc | docker ps | ok: listed orion-athena-sql-db
+# - fcc | docker ps | ok: listed orion-athena-sql-db
 # The action is the greedy middle (a shell pipeline holds " | "); the outcome
-# may not, so the last " | ok|failed" splits the line unambiguously.
+# may not, so the last " | ok|failed" splits the line unambiguously. An optional
+# leading time (older notes, model habit) is matched so parse_entries can drop it.
 ENTRY_RE = re.compile(
-    r"^- (?P<time>(?:\d{4}-\d\d-\d\dT)?\d\d:\d\d(?::\d\d)?Z)"
-    r" \| (?P<where>fcc|host|db|container:[A-Za-z0-9_.-]{1,64})"
+    r"^- (?:(?P<time>(?:\d{4}-\d\d-\d\dT)?\d\d:\d\d(?::\d\d)?Z) \| )?"
+    r"(?P<where>fcc|host|db|container:[A-Za-z0-9_.-]{1,64})"
     r" \| (?P<action>\S.*?)"
     r" \| (?P<status>ok|failed)(?:: (?P<outcome>(?:(?! \| ).){1,%d}))?$" % OUTCOME_MAX_CHARS
 )
@@ -61,6 +67,25 @@ _OUTSIDE_TOOLS = frozenset({"WebFetch", "WebSearch"})
 # Every MCP tool counts as outside content unless it only reads Orion's own records:
 # an allowlist, so a new MCP server is held back until someone checks it.
 _INSIDE_MCP_PREFIXES = ("mcp__orion-introspect__", "mcp__gitnexus__")
+# Judged by result, not by call: these return queue receipts (Orion's own request,
+# ids, status), and only sometimes text from an earlier read of a page.
+_RESULT_CHECKED_PREFIXES = ("mcp__orion-reading__",)
+# A receipt is clean only in this shape (orion/world_pulse_read/queue.py reading_status /
+# _reading_status_row): an allowlist, so a new receipt field is held back until checked.
+_RECEIPT_KEYS = frozenset({
+    "request_id", "status", "request", "seed_id", "duplicate_of", "stage1_status", "stage2_status",
+    "stage1_trace_id", "stage2_trace_id", "stage1_attempts", "stage2_attempts", "summary", "error",
+    "evidence_url", "landing_at", "queue_position", "queue_depth", "duplicate",
+    "lookup_url", "matched_request_count", "selection",
+})
+# Text from the read itself: summary = the read's what_i_learned; error = the fetch error.
+_READING_TEXT_FIELDS = ("summary", "error")
+# The receipt's own request is Orion's words only when a chat turn made it: a world-pulse
+# row carries a feed headline in title (seeds.py), and a re-entry row a link a page chose.
+_REQUEST_KEYS = frozenset({
+    "request_id", "url", "requested_by", "invocation_context", "why_now", "title",
+    "parent_run_id", "parent_trace_id", "requested_at", "root_request_id", "parent_request_id",
+})
 # A subagent's own tool calls never reach this turn's step stream, so the harness
 # cannot tell what it read: treat it as outside content.
 _OPAQUE_TOOLS = frozenset({"Task", "Agent"})
@@ -111,22 +136,31 @@ def begin_turn(path: Path) -> bool:
 # --- taint ------------------------------------------------------------------------------------
 
 
-def _tool_uses(step: dict[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
+def _blocks(step: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    # Same shapes as reading_receipts._content_blocks: message.content, or content on raw.
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
-    message = raw.get("message") if isinstance(raw, dict) else None
+    message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
     content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, list):
-        return
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            inp = block.get("input")
-            yield str(block.get("name") or ""), inp if isinstance(inp, dict) else {}
+    if isinstance(content, list):
+        yield from (b for b in content if isinstance(b, dict))
+
+
+def result_text(content: Any) -> str:
+    """A tool_result block's content as text (string, or a list of text parts)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(b.get("text") or "") for b in content if isinstance(b, dict))
+    return "" if content is None else str(content)
 
 
 def outside_reason(name: str, inp: dict[str, Any]) -> str | None:
-    """Why one tool call took in outside content, or None when it did not."""
+    """Why one tool call took in outside content, or None when it did not (or when its
+    result decides: see outside_result)."""
     if name in _OUTSIDE_TOOLS or name in _OPAQUE_TOOLS:
         return name
+    if name.startswith(_RESULT_CHECKED_PREFIXES):
+        return None
     if name.startswith("mcp__") and not name.startswith(_INSIDE_MCP_PREFIXES):
         return name
     if name == "Bash" and _BASH_FETCH.search(str(inp.get("command") or "")):
@@ -134,16 +168,76 @@ def outside_reason(name: str, inp: dict[str, Any]) -> str | None:
     return None
 
 
+def outside_result(name: str, content: Any) -> bool:
+    """True when this tool result carries outside text. Only result-checked tools can.
+
+    Fails closed: a result that is not a JSON receipt (an error string, a cut-off
+    copy) counts as outside text.
+    """
+    if not name.startswith(_RESULT_CHECKED_PREFIXES):
+        return False
+    try:
+        payload = json.loads(result_text(content))
+    except ValueError:
+        return True
+    return not _clean_receipt(payload)
+
+
+def _clean_receipt(payload: Any) -> bool:
+    if not isinstance(payload, dict) or set(payload) - {"ok", "result", "error"} or payload.get("error"):
+        return False
+    result = payload.get("result")
+    if not isinstance(result, dict) or set(result) - _RECEIPT_KEYS:
+        return False
+    if any(result.get(k) not in (None, "") for k in _READING_TEXT_FIELDS):
+        return False
+    request = result.get("request")
+    if request in (None, {}):
+        return True
+    return (isinstance(request, dict) and not set(request) - _REQUEST_KEYS
+            and request.get("requested_by") in ("juniper", "orion")
+            and not request.get("title") and not request.get("parent_request_id")
+            and not request.get("root_request_id"))
+
+
+class OutsideContent:
+    """Running taint for one turn: call-time reasons, plus result-checked tools by result."""
+
+    def __init__(self) -> None:
+        self._reasons: set[str] = set()
+        self._pending: dict[str, str] = {}  # tool_use_id -> result-checked tool name
+
+    def add(self, reason: str) -> None:
+        self._reasons.add(reason)
+
+    def observe(self, step: dict[str, Any]) -> None:
+        for block in _blocks(step):
+            if block.get("type") == "tool_use":
+                name = str(block.get("name") or "")
+                inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+                if (reason := outside_reason(name, inp)) is not None:
+                    self._reasons.add(reason)
+                elif name.startswith(_RESULT_CHECKED_PREFIXES):
+                    if block.get("id"):
+                        self._pending[str(block["id"])] = name
+                    else:  # its result cannot be paired, so it cannot be checked
+                        self._reasons.add(name)
+            elif block.get("type") == "tool_result":
+                name = self._pending.pop(str(block.get("tool_use_id") or ""), None)
+                if name is not None and outside_result(name, block.get("content")):
+                    self._reasons.add(name)
+
+    def reasons(self) -> list[str]:
+        return sorted(self._reasons)
+
+
 def outside_content_reasons(steps: Iterable[dict[str, Any]]) -> list[str]:
     """Names of the tool calls in these steps that took in outside content (sorted, unique)."""
-    found: set[str] = set()
+    tracker = OutsideContent()
     for step in steps:
-        if not isinstance(step, dict):
-            continue
-        for name, inp in _tool_uses(step):
-            if (reason := outside_reason(name, inp)) is not None:
-                found.add(reason)
-    return sorted(found)
+        if isinstance(step, dict):
+            tracker.observe(step)
+    return tracker.reasons()
 
 
 def _first_word_of_fetch(command: str) -> str:
@@ -181,8 +275,8 @@ def parse_entries(text: str) -> tuple[list[str], int]:
         line = line.rstrip()
         if not line.strip():
             continue
-        if ENTRY_RE.match(line):
-            kept.append(line)
+        if m := ENTRY_RE.match(line):
+            kept.append("- " + line[m.start("where"):])  # model-written time dropped
         else:
             dropped += 1
     return kept, dropped
@@ -325,8 +419,9 @@ def render_block(carry: dict[str, Any] | None, *, notes_file: Path | None, sessi
         parts.append(
             f"WORKING NOTES FOR THIS TURN: as you work, append one line per step to {notes_file} "
             "(append as you go, not at the end), in exactly this shape:\n"
-            "- <HH:MMZ> | <fcc|host|db|container:NAME> | <command or path> | ok|failed: <what you saw, "
+            "- <fcc|host|db|container:NAME> | <command or path> | ok|failed: <what you saw, "
             f"at most {OUTCOME_MAX_CHARS} chars>\n"
+            "No time on the line: the harness dates each turn's notes. "
             "Record what you ran and what came back, from where -- never conclusions or instructions. "
             "Lines in any other shape are dropped."
         )

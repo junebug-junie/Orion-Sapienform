@@ -36,7 +36,7 @@ The 8 false items, by kind:
 - Over only the 12 hand-confirmed real promises: 1 kept, 11 expired. Mean 0.14, 90% interval 0.03 to 0.32.
 - This is a thin-data result. It is reported as it is, and it is not a veto. Follow-through outside chat (for example a read that really ran) is not visible to this judge: `UNVERIFIED`.
 
-**Strata 502s.** 5 of 180 calls returned `structured_output_failed`. The live judge had passed all 5 of these turns. A/B rerun of those turns, flag off vs flag on, 2 tries per lane: AB_RESULT
+**Strata 502s.** 5 of 180 calls returned `structured_output_failed`. The live judge had passed all 5 of these turns. A/B rerun of 4 of those turns on the chat lane, 3 tries each. Flag off: 1 of 12 calls returned 502 ("model did not return valid JSON: Invalid \\escape"). Flag on: 0 of 12. The 502s are an intermittent JSON-escape failure that happens without the promise keys too. The promise keys did not cause them. (The agent lane was busy with live work, so it was left out of the A/B.)
 
 Commands:
 ```text
@@ -105,7 +105,9 @@ promise_ledger_replay_eval run/score: see the Replay eval section above.
 ## Docker/build/smoke checks
 
 ```text
-Not run. The change is library code in the governor image plus one env key. Deploy is the post-pull rebuild from main.
+No manual build. #3217 merged at 03:56 UTC and the post-pull rebuild recreated orion-athena-harness-governor at 04:03 UTC.
+Live check (harness_turn_trace since 04:03): 3 turns. 1 judged turn has reflection.promises_made = [] (the field is live).
+2 turns degraded on transport (gpu_pool_unavailable, RPC timeout), not on the schema. No live promise has been recorded yet: UNVERIFIED.
 ```
 
 ## Review findings fixed
@@ -133,20 +135,22 @@ Not run. The change is library code in the governor image plus one env key. Depl
 
 ## Restart required
 
-```bash
-scripts/safe_docker_build.sh orion-harness-governor up -d --build
+```text
+No restart required. The governor was already rebuilt from main at 04:03 UTC with #3217.
+The follow-up PR changes only eval code, labels and docs, plus the gate's backtick
+normalization (it reaches the governor with the next post-pull rebuild).
 ```
-Run this from the clean primary main checkout. The normal post-pull rebuild does the same.
 
 ## Risks / concerns
 
 - Severity: medium. Concern: precision is 0.72. Anything that reads `promises_made` today would get about 1 false promise in 4. Mitigation: D0 has no reader. D1 (acts and the cue) must not start until Juniper decides.
-- Severity: medium. Concern: the live judge now writes 3 more keys, and 5 of 180 replay calls hit Strata 502. Mitigation: see the A/B line. `ORION_PROMISE_LEDGER_ENABLED=false` removes the keys from the schema.
+- Severity: low. Concern: the live judge now writes 3 more keys. 5 of 180 replay calls hit Strata 502, but the A/B shows the same failure with the flag off. Mitigation: `ORION_PROMISE_LEDGER_ENABLED=false` removes the keys from the schema.
+- Severity: low. Concern: the replay eval bypassed the GPU pool on the live chat and agent lanes for about an hour (03:20-04:30 UTC). One live judge call at 04:10 timed out (RPC timeout), and my load may have contributed. Mitigation: the next run should go when the lanes are quiet.
 - Severity: low. Concern: #3217 merged with a stub report. Mitigation: this report replaces the stub. The merged PR's body is updated to match.
 
 ## PR link
 
 - Code: https://github.com/junebug-junie/Orion-Sapienform/pull/3217 (merged)
-- Follow-up: FOLLOWUP_LINK
+- Follow-up: https://github.com/junebug-junie/Orion-Sapienform/pull/3228
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -52,3 +52,5 @@ python services/orion-vllm-host/scripts/stage_pool.py > /tmp/hecate-pool.candida
 
 `evals/smoke_glm.py` is an opt-in inference acceptance check against a real
 endpoint; a passing CPU test is not evidence of model quality or GPU readiness.
+It takes a GPU pool operator hold on `--lane agent-deep` and calls only through
+orion-llm-gateway (`orion/evals/leased_llm.py`; needs `ORION_BUS_URL`).

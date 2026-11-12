@@ -15,12 +15,15 @@ Messages are split into the set used while designing the prompt ("tuning") and a
 held-out set written afterwards with no shared vocabulary ("heldout"); both are
 reported separately so a prompt overfit to the tuning set shows up.
 
-Calls the llama.cpp OpenAI endpoint directly with the same body the gateway
-sends (thinking off, temperature/max_tokens from settings). Read-only.
+Sends the same body the gateway sends (thinking off, temperature/max_tokens from
+settings) through orion-llm-gateway, under one GPU pool operator hold on --lane
+(orion/evals/leased_llm.py: class operator_<lane>, background, behind all of Orion's
+own work). Never a model server's own URL. Read-only. If the pool takes the seat
+back mid-run, it stops and exits 3 (no result).
 
-Run:
-  python services/orion-cortex-exec/evals/run_current_turn_disclosure_live_eval.py \
-      --url http://<llm-node>:8013/v1/chat/completions [--repeats 3]
+Run (ORION_BUS_URL must name the real bus: the hold is asked for over it):
+  ORION_BUS_URL=redis://<bus-host>:6379/0 \
+  python services/orion-cortex-exec/evals/run_current_turn_disclosure_live_eval.py [--lane chat|agent|fast] [--repeats 3]
 """
 from __future__ import annotations
 
@@ -30,7 +33,6 @@ import os
 import statistics
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 _SERVICE_DIR = str(Path(__file__).resolve().parents[1])
@@ -39,6 +41,9 @@ for _path in (_SERVICE_DIR, _REPO_ROOT):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+# The bus the GPU pool hold is asked over: only a URL the caller set, never the placeholder below
+# (which exists so cortex-exec's settings import without a bus).
+_REAL_BUS_URL = os.environ.get("ORION_BUS_URL")
 os.environ.setdefault("SERVICE_NAME", "cortex-exec")
 os.environ.setdefault("SERVICE_VERSION", "0.2.0")
 os.environ.setdefault("NODE_NAME", "athena")
@@ -85,23 +90,39 @@ _FALSE_ALARM_CEILING = 0.2
 _DIRECT_ACCURACY_FLOOR = 0.8
 
 
-def _call(url: str, prompt: str) -> tuple[str, float]:
+HOLDER = "operator:current-turn-disclosure-eval"
+
+
+def _call(lane, prompt: str) -> tuple[str, float]:
+    """One probe call on ``lane`` (an orion.evals.leased_llm.OperatorLane). LaneRecalled propagates."""
     body = {
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": settings.current_turn_signal_probe_max_tokens,
         "temperature": settings.current_turn_signal_probe_temperature,
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     started = time.monotonic()
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.load(resp)
+    data = lane.chat(body, timeout_sec=60)
     elapsed = time.monotonic() - started
     return (data["choices"][0]["message"].get("content") or "").strip(), elapsed
 
 
-def run(url: str, repeats: int) -> int:
-    print(f"\n=== current-turn disclosure live eval  url={url}  repeats={repeats}")
+def run(lane_name: str, repeats: int) -> int:
+    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, operator_lane_sync
+
+    try:
+        with operator_lane_sync(lane_name, holder=HOLDER, bus_url=_REAL_BUS_URL) as lane:
+            print(f"    seat: {json.dumps(lane.summary())}")
+            return _run(lane, repeats)
+    except LaneRecalled as exc:
+        print(f"\nRESULT: STOPPED (no result) -- {exc}")
+        return EXIT_RECALLED
+
+
+def _run(lane, repeats: int) -> int:
+    from orion.evals.leased_llm import LaneRecalled
+
+    print(f"\n=== current-turn disclosure live eval  lane={lane.lane}  repeats={repeats}")
     print(
         f"    temperature={settings.current_turn_signal_probe_temperature} "
         f"max_tokens={settings.current_turn_signal_probe_max_tokens} "
@@ -115,7 +136,9 @@ def run(url: str, repeats: int) -> int:
         for case_set, kind, message, expected_direct in _CASES:
             s = stats.setdefault(case_set, {"share": 0, "share_hit": 0, "control": 0, "false_alarm": 0})
             try:
-                raw, elapsed = _call(url, build_current_turn_llm_prompt(message))
+                raw, elapsed = _call(lane, build_current_turn_llm_prompt(message))
+            except LaneRecalled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 print(f"  [ERROR] {message[:50]!r}: {exc}")
                 parse_failures += 1
@@ -168,7 +191,9 @@ def run(url: str, repeats: int) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--url", required=True, help="llama.cpp OpenAI chat/completions URL for the probe's lane")
+    parser.add_argument("--lane", default="chat",
+                        help="operator lane: chat (the probe's route, CURRENT_TURN_SIGNAL_PROBE_ROUTE; waits until gpu0 "
+                             "is lent), agent (same model on gpu1), or fast (the 8B)")
     parser.add_argument("--repeats", type=int, default=1)
     args = parser.parse_args()
-    sys.exit(run(args.url, args.repeats))
+    sys.exit(run(args.lane, args.repeats))

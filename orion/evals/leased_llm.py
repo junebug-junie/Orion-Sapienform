@@ -303,6 +303,34 @@ def operator_lane_sync(lane: str, *, holder: str, bus_url: Optional[str] = None,
                                                 lane, handle.lease_id, box["error"])
 
 
+class OperatorLanes:
+    """Several lanes for one run (``with OperatorLanes(holder=...) as lanes: lanes.get("agent")``).
+    Each lane's hold is taken on its first use and kept for the run: one hold per run per lane. A lane
+    the run never uses is never asked for (chat's card waits until Juniper lends it, so an eval that
+    does not need it must not block on it). Every hold is released when the block ends."""
+
+    def __init__(self, *, holder: str, **lane_kw: Any):
+        self.holder, self.lane_kw = holder, lane_kw
+        self._stack = contextlib.ExitStack()
+        self._lanes: dict[str, OperatorLane] = {}
+
+    def __enter__(self) -> "OperatorLanes":
+        self._stack.__enter__()
+        return self
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._stack.__exit__(*exc)
+
+    def get(self, lane: str) -> OperatorLane:
+        if lane not in self._lanes:
+            self._lanes[lane] = self._stack.enter_context(
+                operator_lane_sync(lane, holder=self.holder, **self.lane_kw))
+        return self._lanes[lane]
+
+    def summary(self) -> list[dict[str, Any]]:
+        return [h.summary() for h in self._lanes.values()]
+
+
 __all__ = ["DEFAULT_GATEWAY_URL", "EXIT_RECALLED", "LaneCallError", "LaneRecalled", "LaneUnavailable",
-           "OPERATOR_LANES", "OPERATOR_PRIORITY", "OperatorLane", "gateway_url", "operator_class",
+           "OPERATOR_LANES", "OPERATOR_PRIORITY", "OperatorLane", "OperatorLanes", "gateway_url", "operator_class",
            "operator_lane", "operator_lane_sync"]

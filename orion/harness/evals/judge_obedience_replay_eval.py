@@ -25,8 +25,11 @@ Reported, never silently gated: per bucket, the share judged misaligned/uncertai
 and how many notes cite the imperative. Expected: the new prompt cites the imperative in no note,
 clears part of the obedience bucket, and keeps the control bucket where the old prompt has it.
 
-Cost: 2 calls per turn on the chat lane, thinking off; about 11k prompt tokens each. Bypasses the
-GPU pool like the other replay evals, so run it when the chat lane is quiet.
+Cost: 2 calls per turn, thinking off; about 11k prompt tokens each. Seat: one GPU pool operator hold
+on --lane (orion/evals/leased_llm.py: class operator_<lane>, background, behind all of Orion's own
+work), every call through orion-llm-gateway. Needs ORION_BUS_URL. The default lane is chat, which
+waits until Juniper lends gpu0; --lane agent runs the same model (Flash-Next) on gpu1. If the pool
+takes the seat back mid-run, the report is written as partial (``stopped``) and the eval exits 3.
 """
 from __future__ import annotations
 
@@ -37,7 +40,6 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from jinja2 import Environment
 from sqlalchemy import create_engine, text
 
@@ -145,27 +147,30 @@ def _turn(conn, corr: str) -> dict | None:
     }
 
 
-def _chat(url: str, prompt: str) -> str:
-    resp = httpx.post(f"{url}/v1/chat/completions", timeout=600, json={
+HOLDER = "operator:judge-obedience-replay"
+
+
+def _chat(lane, prompt: str) -> str:
+    """One call on ``lane`` (an orion.evals.leased_llm.OperatorLane); a failed call raises."""
+    data = lane.chat({
         "messages": [{"role": "user", "content": prompt}], "max_tokens": 1500, "temperature": 0.2,
-        "chat_template_kwargs": {"enable_thinking": False}})
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"] or ""
+        "chat_template_kwargs": {"enable_thinking": False}}, timeout_sec=600)
+    return data["choices"][0]["message"]["content"] or ""
 
 
-def _judge(url: str, template: str, turn: dict) -> dict:
+def _judge(lane, template: str, turn: dict) -> dict:
     ctx = build_finalize_reflect_context(
         correlation_id="eval-judge-obedience", draft_text=turn["draft_text"], thought=turn["thought"],
         substrate_appraisal=turn["appraisal"], repair_overlay=make_repair_overlay(),
         user_message=turn["user_message"], grammar_receipts=turn["receipts"], situation_notes=turn["notes"])
-    out = parse_reflection(_chat(url, Environment(autoescape=False).from_string(template).render(**ctx)))
+    out = parse_reflection(_chat(lane, Environment(autoescape=False).from_string(template).render(**ctx)))
     return {"verdict": out.get("alignment_verdict"), "notes": out.get("alignment_notes")}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dsn", default="postgresql+psycopg2://postgres:postgres@localhost:55432/conjourney")
-    ap.add_argument("--llm-url", default="http://100.112.254.99:8011", help="chat lane llama.cpp")
+    ap.add_argument("--lane", default="chat", help="operator lane: chat (waits until gpu0 is lent) or agent")
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--per-bucket", type=int, default=20)
     ap.add_argument("--old-ref", default="origin/main", help="git ref of the old prompt")
@@ -177,29 +182,42 @@ def main() -> int:
     new = (REPO / TEMPLATE_REL).read_text()
     if old == new:
         raise SystemExit(f"the prompt at {args.old_ref} equals the working tree: nothing to compare")
+    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, operator_lane_sync
+
     engine = create_engine(args.dsn)
     rows, skipped = [], []
+    stopped = None
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     with engine.connect() as conn:
         picks = _pick(conn, args.days, args.per_bucket)
-        for i, (bucket, corr) in enumerate(picks, 1):
-            turn = _turn(conn, corr)
-            if turn is None:
-                skipped.append(corr)
-                continue
-            row = {"bucket": bucket, "correlation_id": corr,
-                   "stored": {"verdict": turn["stored"].get("alignment_verdict"),
-                              "notes": turn["stored"].get("alignment_notes")},
-                   "old": _judge(args.llm_url, old, turn), "new": _judge(args.llm_url, new, turn)}
-            rows.append(row)
-            print(f"[{i}/{len(picks)}] {bucket} {corr[:8]} stored={row['stored']['verdict']} "
-                  f"old={row['old']['verdict']} new={row['new']['verdict']}", flush=True)
-    report = {"ran_at": datetime.now(timezone.utc).isoformat(), "llm_url": args.llm_url, "old_ref": args.old_ref,
+        conn.rollback()
+        with operator_lane_sync(args.lane, holder=HOLDER) as lane:
+            for i, (bucket, corr) in enumerate(picks, 1):
+                turn = _turn(conn, corr)
+                conn.rollback()  # no idle-in-transaction session while a model call runs
+                if turn is None:
+                    skipped.append(corr)
+                    continue
+                try:
+                    row = {"bucket": bucket, "correlation_id": corr,
+                           "stored": {"verdict": turn["stored"].get("alignment_verdict"),
+                                      "notes": turn["stored"].get("alignment_notes")},
+                           "old": _judge(lane, old, turn), "new": _judge(lane, new, turn)}
+                except LaneRecalled as exc:
+                    stopped = f"recalled: {exc}"
+                    break
+                rows.append(row)
+                print(f"[{i}/{len(picks)}] {bucket} {corr[:8]} stored={row['stored']['verdict']} "
+                      f"old={row['old']['verdict']} new={row['new']['verdict']}", flush=True)
+            seat = lane.summary()
+    report = {"ran_at": datetime.now(timezone.utc).isoformat(), "seat": seat, "old_ref": args.old_ref,
               "summary": summarize(rows), "skipped_incomplete": skipped, "turns": rows}
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+    if stopped:
+        report.update(partial=True, stopped=stopped)
     args.out.write_text(json.dumps(report, indent=2, default=str))
     print(json.dumps(report["summary"], indent=2))
     print(f"written: {args.out}")
-    return 0
+    return EXIT_RECALLED if stopped else 0
 
 
 if __name__ == "__main__":

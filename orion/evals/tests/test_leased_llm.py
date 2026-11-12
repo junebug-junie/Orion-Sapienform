@@ -190,3 +190,15 @@ def test_the_helper_names_no_worker_address():
     src = inspect.getsource(leased_llm)
     urls = set(re.findall(r"https?://[\w.\-]+:\d+", src))
     assert urls == {"http://127.0.0.1:8210"}, urls
+
+
+def test_operator_lanes_take_a_hold_only_for_a_lane_the_run_uses(pool):
+    from orion.evals.leased_llm import OperatorLanes
+
+    gw = Gateway()
+    with OperatorLanes(holder="operator:t", gateway=GATEWAY, http_transport=httpx.MockTransport(gw)) as lanes:
+        lanes.get("agent").chat({"messages": []})
+        lanes.get("agent").chat({"messages": []})
+        assert [s["work_class"] for s in lanes.summary()] == ["operator_agent"]
+    assert pool.asked["work_class"] == "operator_agent"
+    assert pool.exits == ["ok"]

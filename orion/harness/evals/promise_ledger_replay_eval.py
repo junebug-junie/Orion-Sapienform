@@ -21,8 +21,11 @@ Subcommands:
          design's hand-found statements, and the baseline keep rate with a 90% interval.
 
 Inputs are read live from Postgres and are never stored in the repo. Lanes are the
-Flash-Next chat/agent lanes (GPU 0/1), not Bonsai. Bypasses the GPU pool like the other
-replay evals: run it when the lanes are quiet.
+Flash-Next lanes (--lanes, default agent = GPU 1; chat = GPU 0 runs the same model but waits
+until Juniper lends the card). Each lane is one GPU pool operator hold
+(orion/evals/leased_llm.py: class operator_<lane>, background, behind all of Orion's own work),
+and every call goes through orion-llm-gateway. Needs ORION_BUS_URL. If the pool takes the seat
+back mid-run, the report is written as partial (``stopped``) and the eval exits 3.
 """
 from __future__ import annotations
 
@@ -36,13 +39,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
 from jinja2 import Environment
 
 from orion.core.llm_json import parse_json_object
 from orion.harness.evals.judge_crash_replay_eval import (
     HOP_GUARDRAIL,
-    LANES,
+    LANE_BACKENDS,
     REPO,
     TEMPERATURE,
     _gateway_structured_output,
@@ -63,7 +65,8 @@ LABELS = Path(__file__).resolve().parent / "fixtures" / "promise_ledger_labels.j
 OUT_DIR = Path("/tmp/promise-ledger-replay")
 HORIZON = timedelta(hours=72)
 MAX_TOKENS = 2000
-EVAL_LANES = ("chat", "agent")  # Flash-Next on circe GPU 0 / GPU 1
+DEFAULT_LANES = "agent"  # Flash-Next on circe GPU 1; add chat (GPU 0) only while Juniper lends it
+HOLDER = "operator:promise-ledger-replay"
 
 
 def quote_hash(quote: str) -> str:
@@ -175,15 +178,16 @@ def build_request(turn: dict, *, backend: str, pending_offers: list[str],
     }
 
 
-def _call(url: str, body: dict) -> tuple[dict | None, str | None, float]:
+def _call(lane, body: dict) -> tuple[dict | None, str | None, float]:
+    """One judge call on ``lane`` (an orion.evals.leased_llm.OperatorLane). LaneRecalled propagates."""
+    from orion.evals.leased_llm import LaneCallError
+
     t0 = time.monotonic()
     try:
-        resp = httpx.post(f"{url}/v1/chat/completions", timeout=900, json=body)
-    except httpx.HTTPError as exc:
-        return None, f"transport {type(exc).__name__}", time.monotonic() - t0
-    if resp.status_code != 200:
-        return None, f"http {resp.status_code} {resp.text[:80]}", time.monotonic() - t0
-    raw = resp.json()["choices"][0]["message"].get("content") or ""
+        data = lane.chat(body, timeout_sec=900)
+    except LaneCallError as exc:
+        return None, str(exc)[:100], time.monotonic() - t0
+    raw = data["choices"][0]["message"].get("content") or ""
     try:
         payload = parse_json_object(raw)
     except Exception:
@@ -201,9 +205,15 @@ def run(args: argparse.Namespace) -> int:
     ledger = ReplayLedger()
     rows: list[dict] = []
     last_offers: dict[str, list[str]] = {}  # session -> gated offers in Orion's last reply
+    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, OperatorLanes
+
+    eval_lanes = tuple(x for x in args.lanes.split(",") if x)
+    unknown = [x for x in eval_lanes if x not in LANE_BACKENDS]
+    if unknown or not eval_lanes:
+        raise SystemExit(f"--lanes: unknown {unknown}; one of {sorted(LANE_BACKENDS)}")
     engine = create_engine(args.dsn)
     t_start = time.monotonic()
-    with engine.connect() as conn:
+    with engine.connect() as conn, OperatorLanes(holder=HOLDER) as seats:
         turns = _turns(conn, since, until)
         conn.rollback()
         if args.only:
@@ -226,15 +236,21 @@ def run(args: argparse.Namespace) -> int:
                 rows.append(row)
                 last_offers[t["session_id"]] = []
                 continue
-            lane = EVAL_LANES[i % len(EVAL_LANES)]
-            url, backend = LANES[lane]
+            lane = eval_lanes[i % len(eval_lanes)]
+            backend = LANE_BACKENDS[lane]
             open_refs = [OpenPromiseRefV1(id=p.id, quote=p.quote) for p in open_now]
             # An offer Juniper accepts is often done in the same reply: show the pending
             # offers as keepable too, or that keep could never be seen.
             offer_ids = {f"offer{k + 1}": q for k, q in enumerate(pending)}
             open_refs += [OpenPromiseRefV1(id=k, quote=q) for k, q in offer_ids.items()]
             body = build_request(inputs, backend=backend, pending_offers=pending, open_promises=open_refs)
-            payload, error, secs = _call(url, body)
+            try:
+                payload, error, secs = _call(seats.get(lane), body)
+            except LaneRecalled as exc:
+                args.out.write_text(json.dumps({"partial": True, "stopped": f"recalled: {exc}",
+                                                "seats": seats.summary(), "turns": rows}, indent=2, default=str))
+                print(f"stopped: {exc}; partial report {args.out}", flush=True)
+                return EXIT_RECALLED
             row.update({"lane": lane, "secs": round(secs, 1), "pending_offers": pending,
                         "open_promises": [p.id for p in open_now]})
             if payload is None:
@@ -293,11 +309,12 @@ def run(args: argparse.Namespace) -> int:
                   f"made={len(row.get('promises_made') or [])} acc={len(row.get('offers_accepted') or [])} "
                   f"kept={row.get('promises_kept') or []} {row.get('error') or ''}", flush=True)
             args.out.write_text(json.dumps({"partial": True, "turns": rows}, indent=2, default=str))
+        seat_summary = seats.summary()
     # A promise is expired only if 72 h really passed before the data ends (now, or --until).
     data_end = min(until, datetime.now(timezone.utc).replace(tzinfo=None))
     report = {
         "ran_at": datetime.now(timezone.utc).isoformat(), "since": since.isoformat(), "until": until.isoformat(),
-        "turns": rows,
+        "seats": seat_summary, "turns": rows,
         "ledger": [{**p.__dict__, "made_at": p.made_at.isoformat(),
                     "kept_at": p.kept_at.isoformat() if p.kept_at else None} for p in ledger.promises],
         "outcomes": ledger.outcomes(data_end),
@@ -388,6 +405,8 @@ def main() -> int:
     r.add_argument("--until", help="UTC naive ISO time; default now")
     r.add_argument("--out", type=Path, default=OUT_DIR / "report.json")
     r.add_argument("--only", help="comma-separated correlation id prefixes (smoke runs)")
+    r.add_argument("--lanes", default=DEFAULT_LANES,
+                   help="comma-separated, alternated per turn: agent, chat (chat waits until gpu0 is lent)")
     s = sub.add_parser("sheet")
     s.add_argument("--report", type=Path, default=OUT_DIR / "report.json")
     c = sub.add_parser("score")

@@ -38,9 +38,12 @@ UNSTAMPED_DEFINITION_VERSION = 1
 # node_biometrics v2 (2026-10-20): nodes that stopped reporting (last report older
 #   than 6x their own report interval -- hecate in BMC-only standby) are left out of
 #   the hint-change mean instead of adding a 0.0 delta per frozen key.
+# node_biometrics v3 (2026-11-12): athena's room-sensor hints (``cabinet_*``: proximity,
+#   vibration, ambient audio, climate, EM, UV, staleness) are left out of the mean.
+#   They read the room, not the machines (orion/substrate/biometrics_loop/room_hints.py).
 PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {
     "chat_session": 3,
-    "node_biometrics": 2,
+    "node_biometrics": 3,
 }
 
 

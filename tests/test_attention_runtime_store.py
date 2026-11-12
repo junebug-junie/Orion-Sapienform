@@ -15,6 +15,7 @@ sys.path.insert(0, str(SVC))
 
 from app.store import AttentionRuntimeStore  # noqa: E402
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1  # noqa: E402
+from orion.schemas.prediction_error_definitions import prediction_error_definition_version  # noqa: E402
 
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
@@ -308,8 +309,11 @@ def test_advance_node_prediction_error_baseline_degrades_to_cold_start_on_error(
 # -- definition-version reset (2026-09-25) --------------------------------------
 # chat_session and node_biometrics moved to prediction-error definition v2+
 # (orion/schemas/prediction_error_definitions.py; route_arbitration, the
-# original vehicle here, was retired 2026-11 -- these use node_biometrics, v2). A baseline built on v1 numbers
+# original vehicle here, was retired 2026-11 -- these use node_biometrics, whose live
+# version is read from the table, v3 since 2026-11-12). A baseline built on older numbers
 # must restart, and receipts the old producer wrote must not seed the new one.
+
+_LIVE_BIO = prediction_error_definition_version("node_biometrics")
 
 _CURSOR = datetime(2026, 9, 25, 5, 0, tzinfo=timezone.utc)
 _V1_ROUTE_ROW = {
@@ -340,7 +344,7 @@ def test_baseline_resets_when_definition_version_moves() -> None:
         existing_row={**_V1_ROUTE_ROW, "definition_version": "1"},
         new_rows=[
             {"error": "0.0", "definition_version": None, "created_at": later},  # old producer
-            {"error": "0.5", "definition_version": "2", "created_at": later},
+            {"error": "0.5", "definition_version": str(_LIVE_BIO), "created_at": later},
         ],
         version_column=True,
         persisted=persisted,
@@ -351,7 +355,7 @@ def test_baseline_resets_when_definition_version_moves() -> None:
     # 10,254 v1 observations discarded; only the one v2 receipt folded.
     assert baseline.observation_count == 1
     assert baseline.last_value == pytest.approx(0.5)
-    assert persisted[-1]["definition_version"] == 2
+    assert persisted[-1]["definition_version"] == _LIVE_BIO
     assert persisted[-1]["_versioned_sql"] is True
     assert persisted[-1]["last_receipt_created_at"] == later  # cursor passes both rows
 
@@ -370,8 +374,32 @@ def test_baseline_reset_is_persisted_even_with_no_new_receipts() -> None:
 
     assert baseline.observation_count == 0
     assert baseline.last_value is None
-    assert persisted and persisted[-1]["definition_version"] == 2
+    assert persisted and persisted[-1]["definition_version"] == _LIVE_BIO
     assert persisted[-1]["last_receipt_created_at"] == _CURSOR  # cursor kept
+
+
+def test_v2_biometrics_baseline_restarts_on_v3_room_exclusion() -> None:
+    """2026-11-12: room sensors left the biometrics mean (v3). A baseline built on v2
+    numbers restarts; a v2 receipt still in flight is not folded into it."""
+    assert _LIVE_BIO == 3
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    later = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
+    persisted: list[dict] = []
+    store._engine, _conn, _calls = _mock_engine_for_baseline(
+        existing_row={**_V1_ROUTE_ROW, "definition_version": "2"},
+        new_rows=[
+            {"error": "0.09", "definition_version": "2", "created_at": later},
+            {"error": "0.04", "definition_version": "3", "created_at": later},
+        ],
+        version_column=True,
+        persisted=persisted,
+    )
+
+    baseline = _advance(store, "node:substrate.biometrics", "node_biometrics")
+
+    assert baseline.observation_count == 1
+    assert baseline.last_value == pytest.approx(0.04)
+    assert persisted[-1]["definition_version"] == 3
 
 
 def test_old_version_receipts_never_seed_a_fresh_baseline() -> None:
@@ -382,7 +410,7 @@ def test_old_version_receipts_never_seed_a_fresh_baseline() -> None:
     later = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
     persisted: list[dict] = []
     store._engine, _conn, _calls = _mock_engine_for_baseline(
-        existing_row={**_V1_ROUTE_ROW, "definition_version": "2", "observation_count": 0,
+        existing_row={**_V1_ROUTE_ROW, "definition_version": str(_LIVE_BIO), "observation_count": 0,
                       "ewma": 0.0, "variance": 0.0, "last_value": None},
         new_rows=[{"error": "0.0003", "definition_version": None, "created_at": later}],
         version_column=True,
@@ -510,7 +538,7 @@ def test_version_skipped_receipts_are_logged(caplog) -> None:
     store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
     later = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
     store._engine, _conn, _calls = _mock_engine_for_baseline(
-        existing_row={**_V1_ROUTE_ROW, "definition_version": "2"},
+        existing_row={**_V1_ROUTE_ROW, "definition_version": str(_LIVE_BIO)},
         new_rows=[{"error": "0.0003", "definition_version": None, "created_at": later}],
         version_column=True,
     )

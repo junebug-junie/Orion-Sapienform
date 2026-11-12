@@ -7,21 +7,13 @@ from orion.schemas.biometrics_projection import AvailabilityStatus, NodeBiometri
 from orion.schemas.grammar import GrammarEventV1
 
 from .ids import parse_biometrics_trace_id
+from .room_hints import CABINET_ROLE_TO_HINT
 
 _SPIKE_TRACE_PREFIX = "cabinet.ambient.spike:"
 
-_CABINET_ROLE_TO_HINT: dict[str, str] = {
-    "cabinet_climate_activity_signal": "cabinet_climate_activity",
-    "cabinet_particulate_activity_signal": "cabinet_particulate_activity",
-    "cabinet_em_activity_signal": "cabinet_em_activity",
-    "cabinet_uv_activity_signal": "cabinet_uv_activity",
-    "cabinet_vibration_activity_signal": "cabinet_vibration_activity",
-    "cabinet_proximity_activity_signal": "cabinet_proximity_activity",
-    "cabinet_sensor_staleness_signal": "cabinet_sensor_staleness",
-    "cabinet_ambient_audio_activity_signal": "cabinet_ambient_audio_activity",
-    "cabinet_ambient_audio_staleness_signal": "cabinet_ambient_audio_staleness",
-    "cabinet_ambient_audio_spike_signal": "cabinet_ambient_audio_activity",
-}
+# One owner for the room keys: room_hints.py (they stay on the projection but
+# are kept out of the machine-body reading there).
+_CABINET_ROLE_TO_HINT = CABINET_ROLE_TO_HINT
 
 
 def _utc_now(now: datetime | None) -> datetime:

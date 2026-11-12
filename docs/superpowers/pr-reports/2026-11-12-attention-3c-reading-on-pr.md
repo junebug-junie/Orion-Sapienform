@@ -22,6 +22,8 @@
 - `services/orion-durable-runs/app/settings.py`: the field default is now `"on"`.
 - `services/orion-durable-runs/docker-compose.yml`: the fallback is now `:-on`.
 - `services/orion-durable-runs/tests/test_reading_binding.py`: the default assertion now expects `on`.
+- `services/orion-durable-runs/app/admission_runtime.py`: the fallback for settings without the field is now `on`.
+- `docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md`: the spec states the new default.
 
 ## Schema / bus / API changes
 
@@ -66,7 +68,12 @@ First binding decisions expected after world-pulse seeds start (~13:00Z): UNVERI
 
 ## Review findings fixed
 
-- See the PR conversation. The review ran in a subagent on `git diff origin/main...HEAD`.
+- The review ran in a subagent on `git diff origin/main...HEAD`. It found 0 blockers and 2 minor findings.
+- Finding: `admission_runtime.py:186` still used `"shadow"` as its fallback for settings objects that lack the field.
+  - Fix: the fallback is now `"on"`, the same as the default.
+- Finding: the spec, section 4, still called `shadow` the default.
+  - Fix: the spec now says `on` has been the default since 2026-11-12.
+- Not changed: the #3200 PR report still says `shadow`. That was correct for that PR, and the report is historical.
 
 ## Restart required
 

@@ -434,10 +434,13 @@ def test_hecate_watched_by_default_silent_when_off_alarms_when_hot():
 
     nodes = dict(HARDWARE_WATCH_HEAT_NODES=defaults.heat_nodes, HARDWARE_WATCH_GPU_NODES=defaults.gpu_nodes)
     w, store, rec, clock = make(**nodes)
-    feed_cooling(store, -4000, 3000, varying)
+    feed_cooling(store, -9000, 9000, varying)
+    feed_temp(store, "hecate", "gpu0_temp_c", -7200, -6600, 87.0)   # hot, then powered off 1 h 55 min ago
+    feed_temp(store, "hecate", "temp_c_max", -7200, -6600, 95.0)
     at(clock, 300)
     go(w.tick())
     assert store.open_incidents() == []                   # hecate off: silence opens nothing
+    assert [ch for ch, _ in rec.log if ch != HARDWARE_WATCH_REFLEX_SHED_CHANNEL] == []   # no incident, no alert
 
     feed_temp(store, "hecate", "gpu0_temp_c", 0, 900, 87.0)
     at(clock, 900)

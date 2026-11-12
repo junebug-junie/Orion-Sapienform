@@ -95,6 +95,15 @@ def test_quote_match_tolerates_whitespace_and_curly_quotes_only() -> None:
     assert not quote_in_text("the read is still queued.", REPLY)  # case is kept
     assert not quote_in_text("I'll", REPLY)  # a fragment is not a promise
     assert not quote_in_text("", REPLY)
+    # Dashes and the ellipsis character are rewritten by models when they copy.
+    assert quote_in_text("lands -- then I'll pull it back...", "It lands \u2014 then I'll pull it back\u2026")
+
+
+def test_short_quote_is_counted_as_too_short_not_as_missing() -> None:
+    result = gate_promises(_reflection(promises_made=[PromiseV1(quote="I'll do it.")]),
+                           reply_text="Sure. I'll do it.", enabled=True)
+    assert result.reflection.promises_made == []
+    assert result.dropped_too_short == 1 and result.dropped_not_in_text == []
 
 
 def test_over_long_duplicate_and_over_cap_quotes_are_dropped() -> None:
@@ -123,10 +132,13 @@ async def test_judge_paraphrase_never_reaches_the_reflection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_malformed_promise_list_does_not_sink_the_verdict() -> None:
+@pytest.mark.parametrize("bad", [
+    {"promises_made": ["not an object", {"offer": True}], "promises_kept": [7]},
+    {"promises_made": 7, "offers_accepted": True, "promises_kept": "act_1"},
+])
+async def test_malformed_promise_list_does_not_sink_the_verdict(bad: dict) -> None:
     async def _judge(_req: object) -> dict[str, object]:
-        return {"final_text": json.dumps({**JUDGEMENT, "promises_made": ["not an object", {"offer": True}],
-                                          "promises_kept": [7]})}
+        return {"final_text": json.dumps({**JUDGEMENT, **bad})}
 
     reflection, _, _ = await run_finalize_reflection(
         correlation_id="c-bad", draft_text=REPLY, thought=make_thought(repair_pressure_level=0.9),
@@ -135,6 +147,14 @@ async def test_malformed_promise_list_does_not_sink_the_verdict() -> None:
     assert reflection.reflection_source != REFLECTION_SOURCE_JUDGE_FAILED
     assert reflection.alignment_verdict == "aligned"
     assert reflection.promises_made == [] and reflection.promises_kept == []
+    assert reflection.offers_accepted == []
+
+
+def test_string_false_offer_is_not_an_offer() -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+
+    made = coerce_promise_fields({"promises_made": [{"quote": FIRM, "offer": "false"}]})["promises_made"]
+    assert made[0].offer is False
 
 
 def test_kept_entry_that_is_not_an_open_promise_is_dropped() -> None:
@@ -189,15 +209,61 @@ def test_flag_on_schema_asks_for_promise_fields_and_validates_them() -> None:
     schema = finalize_reflect_json_schema(True)
     assert list(schema["properties"])[-3:] == list(PROMISE_FIELDS)
     jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False}]}, schema)
+    # No caps in the schema: Strata 502s an answer that breaks it, which would sink the
+    # verdict. Four promises or a long quote must pass the schema; the gate caps them.
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False}] * 4}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM}] * 4}, schema)
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False}]}, schema)
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM}]}, schema)
     rendered = _render(_ctx())
     required = rendered.split("\nREQUIRED JSON FIELDS (", 1)[1].split("\nFAIL-CLOSED", 1)[0]
     listed = [line[2:].split(":", 1)[0] for line in required.splitlines() if line.startswith("- ")]
     assert listed == list(FINALIZE_REFLECT_MODEL_FIELDS)
     assert "PROMISES (independent of alignment_verdict" in rendered
+
+
+@pytest.mark.parametrize("flag", ["true", "false"])
+def test_opening_instruction_is_intact_with_flag_on_and_off(flag: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORION_PROMISE_LEDGER_ENABLED", flag)
+    rendered = _render(_ctx())
+    assert "Output only the judgement JSON described under REQUIRED JSON FIELDS.\n" in rendered
+    # Promise rules come after every alignment rule, never before INPUTS.
+    if flag == "true":
+        assert rendered.index("INPUTS") < rendered.index("TOOL RECOMMENDATION") < rendered.index("PROMISES (")
+
+
+@pytest.mark.asyncio
+async def test_chain_regates_promises_against_the_final_text() -> None:
+    """Response repair rewrites the draft and drops the promise: the stored reflection
+    must not keep a promise Juniper never saw."""
+    from orion.harness.finalize import run_harness_finalize_chain
+    from orion.harness.runner import build_coalition_snapshot, build_draft_molecule
+
+    thought = make_thought()
+    molecule = build_draft_molecule(
+        correlation_id="c-regate", thought=thought, draft_text=REPLY, grammar_receipts=[],
+        coalition_snapshot=build_coalition_snapshot(thought), repair_overlay=make_repair_overlay())
+    judged = {**JUDGEMENT, "alignment_verdict": "misaligned",
+              "promises_made": [{"quote": FIRM, "offer": False}]}
+
+    async def substrate_client(_mol: object):
+        return make_appraisal(surprise_level=0.5)
+
+    async def cortex_client(_req: object):
+        return {"final_text": json.dumps(judged), "trace_id": "t"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("orion.harness.finalize.extract_response_repair_text",
+                   lambda _result: "The read is still queued.")
+        chain = await run_harness_finalize_chain(
+            correlation_id="c-regate", draft_text=REPLY, draft_molecule=molecule, thought=thought,
+            grammar_receipts=[], repair_overlay=make_repair_overlay(), user_message=USER,
+            voice_contract=None, cortex_client=cortex_client, substrate_client=substrate_client)
+
+    assert chain.response_repair_ran is True
+    assert chain.final_text == "The read is still queued."
+    assert chain.verdict_molecule.reflection.promises_made  # draft-gated copy, published first
+    assert chain.reflection.promises_made == []  # what the run artifact stores
 
 
 def test_flag_off_judge_is_not_asked_and_gate_clears(monkeypatch: pytest.MonkeyPatch) -> None:

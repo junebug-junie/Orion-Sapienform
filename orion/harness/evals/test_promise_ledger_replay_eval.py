@@ -28,7 +28,17 @@ def test_ledger_shows_oldest_three_open_and_expires_at_72h() -> None:
     assert [p.id for p in led.open_at(T0 + timedelta(hours=6))] == ["p2", "p3", "p4"]
     # p2 (made T0+1h) is past its 72 h horizon at T0+74h; p3, p4 are still open.
     assert [p.id for p in led.open_at(T0 + timedelta(hours=74))] == ["p3", "p4"]
-    assert led.outcomes(T0 + timedelta(hours=74)) == {"kept": 1, "expired": 1, "censored": 2}
+    assert led.outcomes(T0 + timedelta(hours=74)) == {"kept": 1, "expired": 1, "expired_never_shown": 0,
+                                                      "censored": 2}
+
+
+def test_promise_never_shown_is_not_counted_as_broken() -> None:
+    led = ReplayLedger()
+    for h in range(4):
+        led.add(quote=f"I'll do thing {h} later today", made_at=T0, correlation_id=f"c{h}", offer=False)
+    led.open_at(T0 + timedelta(hours=1))  # shows p1..p3 only
+    assert led.outcomes(T0 + timedelta(hours=80)) == {"kept": 0, "expired": 3, "expired_never_shown": 1,
+                                                      "censored": 0}
 
 
 def test_beta_summary_is_the_posterior_of_a_uniform_prior() -> None:

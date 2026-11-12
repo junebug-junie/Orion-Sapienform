@@ -154,7 +154,10 @@ class FinalizeReflectionV1(BaseModel):
     #   showed the judge survive.
     # No consumer validates this model with extra="forbid", so old readers drop the
     # fields. Empty lists on every reflection the judge did not write. Caps
-    # (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the judge schema and the gate.
+    # (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the gate.
+    # Source of truth: the run artifact (HarnessRunV1.reflection), gated against the final
+    # text Juniper saw. The copy in HarnessVerdictMoleculeV1 is published before response
+    # repair and is gated only against the draft; D1 must not open acts from it.
     promises_made: list[PromiseV1] = Field(default_factory=list)
     offers_accepted: list[str] = Field(default_factory=list)
     promises_kept: list[str] = Field(default_factory=list)

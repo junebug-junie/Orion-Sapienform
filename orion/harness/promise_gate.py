@@ -43,6 +43,7 @@ _QUOTE_MARKS = str.maketrans({
     "“": '"', "”": '"', "‟": '"', "″": '"',
 })
 _WS = re.compile(r"\s+")
+_DASH = re.compile(r"\s*(?:\u2014|\u2013|--)\s*")
 
 
 def promise_ledger_enabled() -> bool:
@@ -51,8 +52,11 @@ def promise_ledger_enabled() -> bool:
 
 
 def normalize_for_quote_match(text: str) -> str:
-    """Whitespace runs to one space, curly quote marks to straight ones. Case is kept."""
-    return _WS.sub(" ", (text or "").translate(_QUOTE_MARKS)).strip()
+    """Whitespace runs to one space; curly quote marks, dashes and the ellipsis character to
+    their plain forms (models rewrite these when they copy). Case and words are kept."""
+    t = (text or "").translate(_QUOTE_MARKS).replace("\u2026", "...")
+    t = _DASH.sub("-", t)
+    return _WS.sub(" ", t).strip()
 
 
 def quote_in_text(quote: str, text: str) -> bool:
@@ -66,13 +70,15 @@ class PromiseGateResult:
     kept_made: int = 0
     dropped_not_in_text: list[str] = field(default_factory=list)
     dropped_too_long: int = 0
+    dropped_too_short: int = 0
     dropped_unknown_offer: list[str] = field(default_factory=list)
     dropped_unknown_kept: list[str] = field(default_factory=list)
     dropped_over_cap: int = 0
 
     @property
     def dropped_total(self) -> int:
-        return (len(self.dropped_not_in_text) + self.dropped_too_long + len(self.dropped_unknown_offer)
+        return (len(self.dropped_not_in_text) + self.dropped_too_long + self.dropped_too_short
+                + len(self.dropped_unknown_offer)
                 + len(self.dropped_unknown_kept) + self.dropped_over_cap)
 
 
@@ -84,12 +90,16 @@ def split_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
 
 def coerce_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
     """Lenient parse of popped promise fields. Wrong shapes become empty, never an error."""
+    def _list(name: str) -> list[Any]:
+        value = raw.get(name)
+        return value if isinstance(value, list) else []
+
     made: list[PromiseV1] = []
-    for item in raw.get("promises_made") or []:
+    for item in _list("promises_made"):
         if isinstance(item, dict) and isinstance(item.get("quote"), str):
-            made.append(PromiseV1(quote=item["quote"], offer=bool(item.get("offer", False))))
-    accepted = [x for x in (raw.get("offers_accepted") or []) if isinstance(x, str)]
-    kept = [x for x in (raw.get("promises_kept") or []) if isinstance(x, str)]
+            made.append(PromiseV1(quote=item["quote"], offer=item.get("offer") is True))
+    accepted = [x for x in _list("offers_accepted") if isinstance(x, str)]
+    kept = [x for x in _list("promises_kept") if isinstance(x, str)]
     return {"promises_made": made, "offers_accepted": accepted, "promises_kept": kept}
 
 
@@ -116,6 +126,9 @@ def gate_promises(
         norm = normalize_for_quote_match(promise.quote)
         if len(promise.quote) > PROMISE_QUOTE_MAX_CHARS:
             result.dropped_too_long += 1
+            continue
+        if len(norm) < PROMISE_QUOTE_MIN_CHARS:
+            result.dropped_too_short += 1
             continue
         if not quote_in_text(promise.quote, reply_text):
             result.dropped_not_in_text.append(promise.quote)
@@ -152,9 +165,9 @@ def gate_promises(
     if result.dropped_total or made or accepted or kept:
         logger.info(
             "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d "
-            "dropped_too_long=%d dropped_unknown_offer=%d dropped_unknown_kept=%d dropped_over_cap=%d",
+            "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d dropped_over_cap=%d",
             correlation_id, len(made), sum(1 for p in made if p.offer), len(accepted), len(kept),
-            len(result.dropped_not_in_text), result.dropped_too_long, len(result.dropped_unknown_offer),
+            len(result.dropped_not_in_text), result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
             len(result.dropped_unknown_kept), result.dropped_over_cap,
         )
     return result

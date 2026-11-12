@@ -37,8 +37,6 @@ from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
-    PROMISE_ITEMS_MAX,
-    PROMISE_QUOTE_MAX_CHARS,
     REFLECTION_SOURCE_JUDGE_FAILED,
     FinalizeReflectionV1,
     OpenPromiseRefV1,
@@ -498,33 +496,25 @@ def finalize_reflect_user_turn(promise_ledger: bool | None = None) -> str:
 # The grade turn with every field (flag on, the shipped default).
 FINALIZE_REFLECT_USER_TURN = finalize_reflect_user_turn(True)
 
-# Bounds the gateway enforces on the promise keys. The model itself has no caps, so a
-# judge that breaks them on a lane without schema enforcement still validates; the gate
-# (orion.harness.promise_gate) applies the same caps.
+# Shapes of the promise keys. No maxItems / maxLength on purpose: Strata checks the answer
+# after it is written and returns HTTP 502 for one that breaks the schema, so a cap here
+# would let one long quote fail the whole verdict (PR #3197 declined maxLength for the same
+# reason). The caps (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the gate instead.
 _PROMISE_SCHEMA: dict[str, dict[str, Any]] = {
     "promises_made": {
         "type": "array",
-        "maxItems": PROMISE_ITEMS_MAX,
         "items": {
             "type": "object",
             "properties": {
-                "quote": {"type": "string", "maxLength": PROMISE_QUOTE_MAX_CHARS},
+                "quote": {"type": "string"},
                 "offer": {"type": "boolean"},
             },
             "required": ["quote", "offer"],
             "additionalProperties": False,
         },
     },
-    "offers_accepted": {
-        "type": "array",
-        "maxItems": PROMISE_ITEMS_MAX,
-        "items": {"type": "string", "maxLength": PROMISE_QUOTE_MAX_CHARS},
-    },
-    "promises_kept": {
-        "type": "array",
-        "maxItems": PROMISE_ITEMS_MAX,
-        "items": {"type": "string", "maxLength": 80},
-    },
+    "offers_accepted": {"type": "array", "items": {"type": "string"}},
+    "promises_kept": {"type": "array", "items": {"type": "string"}},
 }
 
 
@@ -1105,10 +1095,7 @@ def build_response_repair_context(
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
     situation_notes: str | None = None,
-    pending_offers: list[str] | None = None,
-    open_promises: list[OpenPromiseRefV1] | None = None,
 ) -> dict[str, Any]:
-    promise_ledger = promise_ledger_enabled()
     lane = resolve_finalize_llm_lane(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
@@ -1149,8 +1136,6 @@ def build_response_repair_plan_request(
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
     situation_notes: str | None = None,
-    pending_offers: list[str] | None = None,
-    open_promises: list[OpenPromiseRefV1] | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_response_repair", mode="brain")
     return PlanExecutionRequest(

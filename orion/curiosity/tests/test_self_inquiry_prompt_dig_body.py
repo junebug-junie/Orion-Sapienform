@@ -63,3 +63,13 @@ def test_lived_run_gets_the_body_as_an_option_not_the_first_stop() -> None:
     assert DIG_BODY_LEAD_LIVED in text and DIG_BODY_LEAD_ANATOMY not in text
     assert "python -P -m orion.dig body" in text
     assert "2. Look: records, repo, your graph." in text
+
+
+def test_self_inquiry_names_field_notes_and_says_run_help_first_once() -> None:
+    from orion.curiosity.kickoff_prompt import DIG_HELP_FIRST
+
+    for text in (_text(), _text(question=_q("lived"), graph_enabled=True)):
+        assert "python -P -m orion.dig field-notes 7" in text
+        assert text.count(DIG_HELP_FIRST) == 1, "help-first said once, not again in the access section"
+        assert "lists the rest" not in text
+        assert "python -P -m orion.dig history 7" not in text, "the kickoff block stays out of self-inquiry"

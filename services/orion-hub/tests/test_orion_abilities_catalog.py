@@ -9,7 +9,8 @@ the real sources by text (no imports, no services) and fail when:
 * a ``capacity`` sub-verb or a ``body-economy`` section (``orion/physiology/report_text.py`` SECTIONS)
   has no entry;
 * an MCP tool the chat motor is told about (``orion/introspect/brief.py``,
-  ``orion/world_pulse_read/tools.py``, ``orion/fcc/self_index_brief.py``) or an AI Town server tool
+  ``orion/world_pulse_read/tools.py``, ``orion/fcc/self_index_brief.py``, ``orion/fcc/github_repo_context.py``)
+  or an AI Town server tool
   (``services/orion-ai-town/mcp/orion_aitown_mcp/server.py``) has no entry;
 * an entry is malformed: empty text, a bare command as the message, a hint without the command in
   backticks, a hint naming a dig command that does not exist, or a ``source`` file that is gone.
@@ -36,8 +37,10 @@ MCP_BRIEFS = {
     "orion-introspect": REPO / "orion" / "introspect" / "brief.py",
     "orion-reading": REPO / "orion" / "world_pulse_read" / "tools.py",
     "gitnexus": REPO / "orion" / "fcc" / "self_index_brief.py",
+    "github": REPO / "orion" / "fcc" / "github_repo_context.py",
 }
-MCP_SERVER_CONST = {"ORION_INTROSPECT": "orion-introspect", "ORION_READING": "orion-reading", "GITNEXUS": "gitnexus"}
+MCP_SERVER_CONST = {"ORION_INTROSPECT": "orion-introspect", "ORION_READING": "orion-reading", "GITNEXUS": "gitnexus",
+                    "GITHUB": "github"}
 #: The servers themselves: a tool added there with no brief line must still fail the gate.
 INTROSPECT_TOOLS = REPO / "orion" / "introspect" / "tools.py"          # ToolSpec("name", ...)
 READING_SERVER = REPO / "orion" / "world_pulse_read" / "mcp_server.py"  # Tool(name="name", ...)

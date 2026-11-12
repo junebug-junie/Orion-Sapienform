@@ -432,6 +432,22 @@ def _street_captions_section(material: StudyMaterial) -> list[str]:
     return lines
 
 
+#: The pointer to the rest of the dig kit. Curiosity used `dig field-notes` 0 times in 14 days
+#: to 2026-11-12 (scripts/report_dig_kit_usage.py, run in the governor) while "`dig help` lists
+#: the rest" closed a list nobody read to the end. "First" is local to the dig kit: the
+#: prompts' own first step (write your answer) still comes first.
+DIG_HELP_FIRST = (
+    "  These are a few. Your dig kit has more, for your body, your history and your "
+    "past work: before you pick a dig command, run `python -P -m orion.dig help` to see them all."
+)
+DIG_RECENT_WORK_LINES: tuple[str, ...] = (
+    "  Your dig kit, read-only (always `python -P`, so the deployed code answers):",
+    "    python -P -m orion.dig field-notes 7   -- what changed in you this week: your notes on each merged PR",
+    "    python -P -m orion.dig history 7       -- every PR merged this week, and the commits",
+    DIG_HELP_FIRST,
+)
+
+
 def _access_section(
     *,
     own_graph: str,
@@ -440,8 +456,12 @@ def _access_section(
     graph_enabled: bool = True,
     writable: bool = True,
     extra_tables: Sequence[tuple[str, str]] = (),
+    dig_kit: bool = True,
 ) -> list[str]:
     """What Orion can actually reach, named as possible and never as required.
+
+    `dig_kit` adds the dig-kit pointer (recent PRs, then `dig help`); a prompt that
+    already shows the dig kit passes False so it is not said twice.
 
     `extra_tables` are (name, what it holds) pairs the read-only role has
     ADDITIONALLY been granted for this run -- the self-inquiry line's outcome
@@ -508,6 +528,9 @@ def _access_section(
         "",
         *atlas_lines,
         *own_lines,
+        # Off where the prompt already shows the dig kit (self-inquiry's records section)
+        # or asks for one verdict only (the naming sitting).
+        *([*DIG_RECENT_WORK_LINES, ""] if dig_kit else []),
         "  You also still have read_recall, read_memory and read_graph, plus "
         "Read over your own repo checkout, Bash, and a scratch directory if a "
         "long chain of work needs somewhere to accumulate.",

@@ -6,6 +6,13 @@ It now supports **latent vector emission** for vLLM/llama-cola responses (when t
 
 For **llama.cpp** and **llama-cola** backends, `ChatRequestPayload.options` may include **`chat_template_kwargs`** (e.g. `{"enable_thinking": false}`). The gateway forwards that object to `/v1/chat/completions` so Qwen3-style thinking can be toggled **per request** without restarting the model host.
 
+For a llama.cpp grant in GPU pool class `fast`, both bus chat and OpenAI HTTP
+calls send `enable_thinking=false` when the caller omits it. The gateway
+preserves an explicit `enable_thinking=true` or `false`; structured-output
+policy may still disable thinking for artifact requests. This keeps short quick calls and JSON
+extractors independent of the worker's launch default; other pool classes keep
+their own policy.
+
 ### Spark metadata (v1)
 
 The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is thin metadata only:

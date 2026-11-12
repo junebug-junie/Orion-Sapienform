@@ -19,6 +19,7 @@ from orion.core.bus.async_service import OrionBusAsync
 
 from . import lane_senders, pool_placement, upstream_cancel
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
+from .fast_thinking import with_thinking_off_default
 from .models import ChatBody, ChatMessage
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
@@ -1680,6 +1681,8 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
         base_url = route_target.url
         route_url = base_url
         served_by = route_target.served_by
+        if plan.work_class == "fast" and backend == "llamacpp":
+            body = body.model_copy(update={"options": with_thinking_off_default(body.options or {})})
         if backend == "vllm":
             model = route_target.model or _normalize_model_for_vllm(model)
         if backend == "ollama":

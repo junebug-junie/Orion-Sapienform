@@ -315,6 +315,20 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertEqual(result["served_by"], "circe-worker-agent")
         self.assertEqual(result["backend"], "llamacpp")
 
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_fast_bus_defaults_thinking_off_but_keeps_explicit_choice(self, mock_execute):
+        mock_execute.return_value = {"text": "OK", "raw": {}}
+        for route, options, expected in (
+            ("quick_background", {"max_tokens": 24}, False),
+            ("quick", {"chat_template_kwargs": {"enable_thinking": True}}, True),
+            ("metacog", {"max_tokens": 24}, None),
+        ):
+            body = ChatBody(route=route, messages=[ChatMessage(role="user", content="hello")], options=options)
+            run_llm_chat(body, _granted(body))
+            sent = mock_execute.call_args.args[0].options or {}
+            assert (sent.get("chat_template_kwargs") or {}).get("enable_thinking") is expected
+            assert body.options == options
+
     @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_forwards_logprobs_when_requested(self, mock_client_factory):
         mock_client = MagicMock()
@@ -516,6 +530,18 @@ class TestLLMBackendExecution(unittest.TestCase):
             run_llm_chat(body, _granted(body))
         mock_native.assert_called_once()
         mock_openai.assert_not_called()
+
+    @patch("app.llm_backend._execute_llamacpp_native_completion")
+    def test_fast_native_logprob_probe_gets_thinking_off_default(self, mock_native):
+        mock_native.return_value = {"text": "native", "spark_meta": {}, "raw": {}}
+        with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
+            settings, "llm_logprob_native_completion_enabled", True
+        ):
+            body = ChatBody(messages=[ChatMessage(role="user", content="hi")], route="quick_turn",
+                            options={"return_logprobs": True, "logprob_probe_mode": "native_completion"})
+            run_llm_chat(body, _granted(body))
+        sent = mock_native.call_args.args[0]
+        self.assertEqual(sent.options["chat_template_kwargs"], {"enable_thinking": False})
 
     @patch("app.llm_backend._execute_llamacpp_native_completion")
     @patch("app.llm_backend._execute_openai_chat")

@@ -87,7 +87,12 @@ request spent ~48 seconds in prompt evaluation after cold load; warmed requests
 were much faster. A thinking-on call capped at 128 tokens ended with empty
 `content` and `finish_reason=length`; at 512 tokens the same type of call
 finished with final content. Callers enabling thinking need a sufficient output
-budget and room inside the 4k slot.
+budget and room inside the 4k slot. After the live switch, a different
+intentionally thinking-on gateway probe also exhausted 512 output tokens
+before final text; 1,024 completed after 658 output tokens. Ordinary quick
+calls have thinking off by default. The gateway patch makes that request-level
+default explicit for llama.cpp `fast`-class calls while preserving an explicit
+thinking-on choice, subject to the structured-output policy.
 
 One JSON quirk surfaced: a weak prompt ("Return JSON with status ok and count 3")
 with `response_format: {"type":"json_object"}` sometimes returned a fenced

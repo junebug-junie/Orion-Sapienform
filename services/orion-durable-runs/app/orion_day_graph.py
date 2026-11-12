@@ -42,7 +42,7 @@ from app.admitted_graph import (
     taken_back,
 )
 from orion.journaler.schemas import JournalEntryWriteV1
-from orion.orion_day.budget import extract_refs
+from orion.orion_day.budget import chronology_citations, extract_refs
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.temporal_self import DayCitationCheckV1
 from orion.temporal_self.citations import check_arc_citations
@@ -156,13 +156,14 @@ def carry_forward_metadata(brief: OrionDayRunBriefV1, note_md: str) -> dict[str,
 
 
 def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCitationCheckV1 | None]:
-    """Temporal Self patch 4: arc ids the closed-day block did not show are removed from the text
-    and counted; a sentence naming the block's labels or clock times without an [arc:] is counted
-    and labelled UNVERIFIED (never retried). None when the letter had no block and cites no arc."""
-    block = brief.material.temporal_day
-    shown = [ref[4:] for ref in (block.records if block else {}) if ref.startswith("arc:")]
-    cleaned, check = check_arc_citations(text, shown, labels=block.labels if block else None)
-    if block is None and not check.rejected_unknown:
+    """Temporal Self patch 4: arc ids the closed-day block and the temporal core did not show are
+    removed from the text and counted; a sentence naming their labels or clock times without an
+    [arc:] is counted and labelled UNVERIFIED (never retried). None when the letter had neither
+    block and cites no arc."""
+    shown, labels = chronology_citations(brief.material)
+    has_block = brief.material.temporal_day is not None or brief.material.temporal_core is not None
+    cleaned, check = check_arc_citations(text, shown, labels=labels if has_block else None)
+    if not has_block and not check.rejected_unknown:
         return text, None
     return cleaned, check
 
@@ -198,6 +199,8 @@ def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[st
         condensed=brief.llm_view.condensed,
         approx_tokens=brief.llm_view.approx_tokens,
         budget_tokens=brief.llm_view.budget_tokens,
+        input_chars=dict(brief.llm_view.source_chars),
+        input_shares=dict(brief.llm_view.source_shares),
         arc_citations={name: DayCitationCheckV1.model_validate(state[key])
                        for name, key in (("note", "note_arc_citations"),
                                          ("carry_forward", "carry_forward_arc_citations"))

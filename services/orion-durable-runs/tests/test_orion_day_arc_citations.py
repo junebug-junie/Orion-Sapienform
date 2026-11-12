@@ -131,7 +131,7 @@ def test_note_prompt_asks_for_the_chronology_brackets_before_and_after_the_recor
     head, tail = rendered.split(digest)
     assert "Cite your chronology" in head
     assert "copy the [arc:<id>] next to that fact into the same sentence" in head
-    assert "[arc:<id>] for one arc, [day:<date>] for a count over the whole day" in head
+    assert "[arc:<id>] for one arc, [event:<id>] for one act or expectation, [day:<date>] for a count over the whole day" in head
     assert "a sentence naming an attention subject or a time also needs that fact's [arc:<id>]" in head
     assert "marked unverified" in head and "you do not need to cite" not in head.split("Cite your chronology")[1]
     assert "put the [arc:<id>] shown next to that fact in the same sentence" in tail
@@ -169,3 +169,24 @@ def test_a_day_bracket_alone_does_not_verify_an_attention_sentence():
     note = "Harness closure prediction error held me 2 h 15 min over 11 arcs [day:2026-10-09]." + PAD
     out = check_note(note, brief)
     assert out["note_md"] == note and out["note_arc_citations"]["label"] == "UNVERIFIED"
+
+
+def test_an_arc_shown_only_by_the_temporal_core_is_kept_and_shares_are_stored():
+    """Living Prime #3224: the temporal core is a second cited block; its arcs pass the gate, and
+    the honest input's per-source shares land in sources.input_shares."""
+    from orion.orion_day.day_input import render_day_input
+    from orion.orion_day.temporal_core import render_temporal_core
+
+    day = day_1009()
+    material = brief_1009(with_block=False).material.model_copy(update={"temporal_core": render_temporal_core(day)})
+    brief = OrionDayRunBriefV1(letter_date=material.letter_date, window_start=material.window_start,
+                               window_end=material.window_end, material=material,
+                               llm_view=render_day_input(material))
+    core_arc = next(r[4:] for r in material.temporal_core.records if r.startswith("arc:"))
+    note = f"I talked with Juniper [arc:{core_arc}]. And a door [arc:deadbeefdeadbeef]." + PAD
+    out = check_note(note, brief)
+    assert f"[arc:{core_arc}]" in out["note_md"] and "[arc:deadbeefdeadbeef]" not in out["note_md"]
+    state = {"run_id": "r", "note_md": out["note_md"], "carry_forward_md": "- x", **out}
+    sources = OrionDayLetterSourcesV1.model_validate(letter_row(state, brief, datetime.now(timezone.utc))["sources"])
+    assert sources.input_shares == brief.llm_view.source_shares and sources.input_shares
+    assert sources.input_chars["temporal_core"] == len(material.temporal_core.text)

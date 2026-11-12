@@ -12,7 +12,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from orion.orion_day.budget import DEFAULT_BUDGET_TOKENS, build_llm_view
+from orion.orion_day.day_input import DAY_INPUT_BUDGET_TOKENS as DEFAULT_BUDGET_TOKENS, render_day_input
 from orion.orion_day.gather import DEFAULT_GITHUB_REPO, gather_orion_day
 from orion.world_pulse_read.findings import PriorLookup
 from orion.schemas.durable_run import DurableRunRequestV1
@@ -63,7 +63,9 @@ def brief_from_material(
         window_start=material.window_start,
         window_end=material.window_end,
         material=material,
-        llm_view=build_llm_view(material, budget_tokens=budget_tokens),
+        # The honest input (living Prime design #3224, constraint 7): Juniper protected, reveries
+        # by theme, self-sense once each, readings and news as a trimmed tail.
+        llm_view=render_day_input(material, budget_tokens=budget_tokens),
         llm_route=ORION_DAY_LLM_ROUTE,
         timeout_sec=timeout_sec,
         carry_forward_ttl_hours=carry_forward_ttl_hours,

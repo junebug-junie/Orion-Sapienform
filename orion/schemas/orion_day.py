@@ -7,7 +7,8 @@ email from the persisted row, and offers the carry-forward text to curiosity.
 Flow:
 
     Hub: gather_orion_day(conn, letter_date) -> OrionDayMaterialV1   (read-only SQL)
-         build_llm_view(material)            -> OrionDayLlmViewV1    (budgeted text)
+         render_day_input(material)          -> OrionDayLlmViewV1    (budgeted text, per-source shares;
+                                                                     orion/orion_day/day_input.py)
          OrionDayRunBriefV1 -> DurableRunRequestV1(workflow="orion_day.letter", admission=agent)
     durable-runs: resource_request -> resource_wait -> write_note -> write_carry_forward
                   -> persist (orion_day_letter row + journal entry of the NOTE) -> finish
@@ -230,6 +231,20 @@ class WalkwayDayV1(_Model):
     complete: bool = False
 
 
+class JuniperChatTurnV1(_Model):
+    """One chat turn between Juniper and Orion (``chat_history_log``), full text.
+
+    ``unsolicited`` = Orion wrote to Juniper first (a curiosity outreach: empty prompt,
+    ``client_meta.unsolicited``); ``prompt`` is then empty and ``response`` is what Orion sent."""
+
+    turn_id: str
+    correlation_id: str | None = None
+    at: datetime
+    prompt: str = ""
+    response: str = ""
+    unsolicited: bool = False
+
+
 class OrionDayCorrectionV1(_Model):
     """A letter claim Juniper and Orion agreed was wrong, as recorded by Orion
     (``orion_day_correction``, orion/orion_day/corrections.py). In a day's material when it was
@@ -282,6 +297,15 @@ class OrionDayMaterialV1(_Model):
     # Added 2026-10-18 (walkway rollups): the walkway day rollup line. None = no row (table not
     # migrated, reducer off, camera not installed). Same rollout rule as ``corrections``.
     walkway_day: WalkwayDayV1 | None = None
+    # Added 2026-11-12 (living Prime design #3224, constraint 7): Juniper's chat turns for the day,
+    # full text, and Orion's unsolicited messages to her. Default-empty so stored rows still validate.
+    # Same rollout rule as ``corrections``: rebuild orion-durable-runs (the forbid reader) before
+    # or with orion-hub.
+    juniper_chat: list[JuniperChatTurnV1] = Field(default_factory=list)
+    # Added 2026-11-12 (constraint 6): the temporal core -- expectations, acts and their graded
+    # outcomes, threads with Juniper, the body's day -- rendered from the closed day by a fixed
+    # template (orion/orion_day/temporal_core.py), cited by [arc:<id>] / [event:<id>]. Same rule.
+    temporal_core: TemporalSelfDayBlockV1 | None = None
     sources: dict[str, OrionDaySourceStatusV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -299,6 +323,7 @@ class OrionDayMaterialV1(_Model):
             self.curiosity_runs, self.self_sense, self.readings, self.reading_journals,
             self.dream_narratives, self.dream_hypotheses, self.reverie_thoughts,
             self.visual_reveries, self.chat_compactor, self.github_compactor,
+            any(t.prompt.strip() for t in self.juniper_chat),
         ))
 
 
@@ -332,6 +357,10 @@ class OrionDayLlmViewV1(_Model):
     condensed: OrionDayCondensationV1 = Field(default_factory=OrionDayCondensationV1)
     # Every bracketed item reference rendered into digest_md, e.g. "curiosity:ab61e4ccd47b".
     included_refs: list[str] = Field(default_factory=list)
+    # Added 2026-11-12 (constraint 7): characters each source got in digest_md, and that over the
+    # digest's length, so the mix can be inspected. Empty on views built before it (build_llm_view).
+    source_chars: dict[str, int] = Field(default_factory=dict)
+    source_shares: dict[str, float] = Field(default_factory=dict)
 
 
 # --- the durable run brief ------------------------------------------------------------------
@@ -382,6 +411,10 @@ class OrionDayLetterSourcesV1(_Model):
     # "carry_forward"). Unknown [arc:] ids were removed from the stored text and are listed here;
     # label UNVERIFIED = a sentence named the closed day's record without citing an arc.
     arc_citations: dict[str, DayCitationCheckV1] = Field(default_factory=dict)
+    # Added 2026-11-12 (constraint 7): per-source characters and shares of the writer's input
+    # (OrionDayLlmViewV1.source_chars / source_shares). Empty on rows written before it.
+    input_chars: dict[str, int] = Field(default_factory=dict)
+    input_shares: dict[str, float] = Field(default_factory=dict)
 
 
 class OrionDayLetterV1(_Model):

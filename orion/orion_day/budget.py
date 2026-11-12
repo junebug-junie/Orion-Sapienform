@@ -59,7 +59,7 @@ MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
                      r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|correction|"
-                     r"arc|day)"
+                     r"arc|day|event|juniper_chat)"
                      r":[^\]\s]+)\]")
 
 
@@ -146,10 +146,8 @@ def reading_change_lines(r: ReadingItemV1, material: OrionDayMaterialV1) -> list
 
 
 
-def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
-    """(section heading, [str | _Body, ...]) in render order. _Body parts are clippable."""
-    sections: list[tuple[str, list]] = []
-
+def curiosity_section(material: OrionDayMaterialV1) -> tuple[str, list] | None:
+    """The curiosity section (runs with outcomes and write-ups, then failed runs), or None."""
     runs = []
     for run in material.curiosity_runs:
         head = f"### [curiosity:{run.run_id}] {run.journal_title or 'Curiosity run'} (line: {run.line or 'unknown'}"
@@ -175,9 +173,20 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         runs.append(parts)
     failed = [[f"- [curiosity_failed:{f.run_id}] {f.workflow} failed {_fmt_time(f.failed_at)}: {f.error or 'no error recorded'}"]
               for f in material.curiosity_failed]
-    if runs or failed:
-        sections.append((f"## Curiosity ({len(material.curiosity_runs)} runs finished, "
-                         f"{len(material.curiosity_failed)} failed)", runs + failed))
+    if not (runs or failed):
+        return None
+    return (f"## Curiosity ({len(material.curiosity_runs)} runs finished, "
+            f"{len(material.curiosity_failed)} failed)", runs + failed)
+
+
+
+def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
+    """(section heading, [str | _Body, ...]) in render order. _Body parts are clippable."""
+    sections: list[tuple[str, list]] = []
+
+    curiosity = curiosity_section(material)
+    if curiosity is not None:
+        sections.append(curiosity)
 
     if material.self_sense:
         sections.append(("## Self-sense answers", [[
@@ -418,11 +427,36 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
     records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
     records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
     records |= {f"correction:{c.correction_id}": dump(c) for c in material.corrections}
+    records |= {f"juniper_chat:{juniper_chat_ref(t.turn_id)}": dump(t) for t in material.juniper_chat}
+    if material.temporal_core is not None:
+        records |= dict(material.temporal_core.records)  # "arc:" / "event:" / "day:" -> compact row
     if material.temporal_day is not None:
         records |= dict(material.temporal_day.records)  # "arc:<id>" / "day:<id>" -> compact stored row
     for c in material.reverie_chains:
         records.setdefault(f"reverie_theme:{c.theme_key or 'unthemed'}", dump(c))
     return records
+
+
+def juniper_chat_ref(turn_id: str) -> str:
+    """The short id a chat turn is cited by (``[juniper_chat:<first 12 chars>]``)."""
+    return turn_id[:12]
+
+
+def chronology_citations(material: OrionDayMaterialV1) -> tuple[list[str], dict[str, list[str]]]:
+    """Arc ids the writer was shown (closed-day block and temporal core) and the labels that name
+    them, for the [arc:] citation gate. One place, so both blocks are gated the same way."""
+    shown: list[str] = []
+    labels: dict[str, list[str]] = {}
+    for block in (material.temporal_day, material.temporal_core):
+        if block is None:
+            continue
+        for ref in block.records:
+            if ref.startswith("arc:") and ref[4:] not in shown:
+                shown.append(ref[4:])
+        for text, ids in block.labels.items():
+            merged = labels.setdefault(text, [])
+            merged += [i for i in ids if i not in merged]
+    return shown, labels
 
 
 def material_refs(material: OrionDayMaterialV1) -> set[str]:

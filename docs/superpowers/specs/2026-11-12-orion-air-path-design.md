@@ -258,6 +258,14 @@ For Juniper:
    and makes the absolute "heat added" level usable.
 7. When hecate comes online, will it sit in the closet top beside circe?
 
+### Juniper's answers (2026-11-12)
+
+- **AC (Q2):** off because it is fall. An open window and a fan cool the office instead. So the window also drives closet CO2, which matches the CO2 finding.
+- **Office noise (Q4):** not a cost. circe is always loud, and Juniper enters that room only for maintenance. The office-sound number stays dropped.
+- **Closet-top limit (Q5):** Juniper asked for my read. No closet-top limit is needed now. Live, 30 days: the closet top peaked at 32.1 °C. circe's GPUs peaked at 82 °C (gpu3; the alarm is at 85 °C). The hottest GPU hours came when the closet top was cool (20-25 °C), and the hourly correlation is -0.25. Load heats the GPUs, not the closet air. The existing per-GPU ceiling already protects circe. The real gap was hecate: the hardware watch did not watch it. PR #3239 adds it.
+- **hecate (Q7):** it sits on top of circe. So hecate breathes the hottest air in the closet. Recheck the closet-top heat fit in hecate's first online week (already in the acceptance checks).
+- Still open: Q1 (moot; the board reports as pan-1), Q3, Q6.
+
 ## Proposed schema / API changes
 
 No bus channel, no new table, no schema registry change, no env key. All inside `orion-prediction`.

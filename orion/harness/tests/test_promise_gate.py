@@ -97,6 +97,7 @@ def test_quote_match_tolerates_whitespace_and_curly_quotes_only() -> None:
     assert not quote_in_text("", REPLY)
     # Dashes and the ellipsis character are rewritten by models when they copy.
     assert quote_in_text("lands -- then I'll pull it back...", "It lands \u2014 then I'll pull it back\u2026")
+    assert quote_in_text("I'll write the perception_reader.py patch", "I'll write the `perception_reader.py` patch")
 
 
 def test_short_quote_is_counted_as_too_short_not_as_missing() -> None:

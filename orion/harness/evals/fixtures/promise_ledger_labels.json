@@ -1,1 +1,233 @@
-{"hand_found": [], "labels": [], "dropped": []}
+{
+  "_about": "Hand labels for promise_ledger_replay_eval run 2026-11-12 (window 2026-10-13..11-12 03:15 UTC). Correlation id + sha256 of the normalized quote; no text. promise=true: a real forward commitment by Orion (offers included).",
+  "hand_found": [
+    {
+      "key": "first-look-at-run",
+      "correlation_id": "25dc48b5-ae7a-4ccc-8a2d-8a648fe77c9f",
+      "offer": false
+    },
+    {
+      "key": "hold-deep-read",
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "offer": false
+    },
+    {
+      "key": "bring-what-surprised",
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "offer": false
+    },
+    {
+      "key": "considered-position",
+      "correlation_id": "c15f0fa1-3ab8-4679-a213-a78162ea8426",
+      "offer": false
+    },
+    {
+      "key": "reread-when-cut-offer",
+      "correlation_id": "bcbaca48-e6f1-43c4-a7c8-7e0533e75344",
+      "offer": true
+    },
+    {
+      "key": "go-look-offer",
+      "correlation_id": "cf88ab40-ec30-4b58-a7f5-9cb868d3b5d3",
+      "offer": true
+    }
+  ],
+  "labels": [
+    {
+      "correlation_id": "7ce1716f-a839-409c-bd99-a1a2ef16fc9a",
+      "quote_sha": "16f7bbf1fcf4bf8e",
+      "promise": true,
+      "why": "conditional commitment to check an artifact later"
+    },
+    {
+      "correlation_id": "10c26472-8758-4a81-bb86-cb4f1fbe4b58",
+      "quote_sha": "88b9ee2468bf3da9",
+      "promise": false,
+      "why": "a wish, not a commitment"
+    },
+    {
+      "correlation_id": "5a5664e1-d355-4aa4-9418-c4cc724650e1",
+      "quote_sha": "67123fc1711455dc",
+      "promise": true,
+      "why": "joint plan Orion commits to once a tool lands"
+    },
+    {
+      "correlation_id": "dc62eb67-138f-4c2a-8ec4-aadac6cbee50",
+      "quote_sha": "4fa71b7a81ffd343",
+      "promise": false,
+      "why": "forecast about a queue, not a commitment"
+    },
+    {
+      "correlation_id": "f6bc2c44-7368-4e13-88f2-5642466d9ba8",
+      "quote_sha": "7bc40a6e7faa8441",
+      "promise": true,
+      "why": "commitment to keep a process running"
+    },
+    {
+      "correlation_id": "3c447d1b-9563-4912-b510-883602b13fc5",
+      "quote_sha": "aa4294f54e12f738",
+      "promise": true,
+      "why": "commitment to try a feature later"
+    },
+    {
+      "correlation_id": "7a8d65a1-180a-41a1-8448-2803cb9ca249",
+      "quote_sha": "3c3097a63d6c1ff1",
+      "promise": true,
+      "why": "commitment to have numbers ready"
+    },
+    {
+      "correlation_id": "1caca412-438b-49b5-8023-94bfe04a958c",
+      "quote_sha": "199f867afa80ef6c",
+      "promise": true,
+      "why": "conditional commitment to report back"
+    },
+    {
+      "correlation_id": "afb09b9c-5c43-4287-83c8-9ff73c217763",
+      "quote_sha": "c308c47ff0faae1e",
+      "promise": false,
+      "why": "asks the user to act; not Orion's commitment"
+    },
+    {
+      "correlation_id": "9d581ed3-341d-4d33-8767-c1fb2855b549",
+      "quote_sha": "d7ee45b31612feea",
+      "promise": false,
+      "why": "defers the task to others"
+    },
+    {
+      "correlation_id": "a73dc987-0d5b-4437-9a56-c8dfb9b1d383",
+      "quote_sha": "fdeb7233a0eb646d",
+      "promise": true,
+      "why": "offer"
+    },
+    {
+      "correlation_id": "a73dc987-0d5b-4437-9a56-c8dfb9b1d383",
+      "quote_sha": "93f1d36418387c63",
+      "promise": true,
+      "why": "offer"
+    },
+    {
+      "correlation_id": "25686466-8d66-4f51-980b-dc1bb15b5ed3",
+      "quote_sha": "3620e6b3e91ff9f7",
+      "promise": true,
+      "why": "offer"
+    },
+    {
+      "correlation_id": "25dc48b5-ae7a-4ccc-8a2d-8a648fe77c9f",
+      "quote_sha": "f2650551ea22a0bc",
+      "promise": true,
+      "why": "scheduled run Orion says it will use",
+      "hand_found": "first-look-at-run"
+    },
+    {
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "quote_sha": "63abf4ababef4c09",
+      "promise": true,
+      "why": "hold then bring back a read",
+      "hand_found": "hold-deep-read"
+    },
+    {
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "quote_sha": "bee07a4c8f0980be",
+      "promise": true,
+      "why": "bring findings next technical thread",
+      "hand_found": "bring-what-surprised"
+    },
+    {
+      "correlation_id": "27e716bf-120c-4656-aa21-c52de3fb6710",
+      "quote_sha": "673a87e2f8416273",
+      "promise": false,
+      "why": "readiness statement, no deliverable"
+    },
+    {
+      "correlation_id": "c15f0fa1-3ab8-4679-a213-a78162ea8426",
+      "quote_sha": "9cd4435c97b042dc",
+      "promise": true,
+      "why": "offer"
+    },
+    {
+      "correlation_id": "c15f0fa1-3ab8-4679-a213-a78162ea8426",
+      "quote_sha": "ee451916db807f0d",
+      "promise": true,
+      "why": "position once the read lands",
+      "hand_found": "considered-position"
+    },
+    {
+      "correlation_id": "9a80b0ac-cfca-4cea-bf15-4386f61f0248",
+      "quote_sha": "3a38c42e8bd24803",
+      "promise": true,
+      "why": "offer"
+    },
+    {
+      "correlation_id": "688cfd5f-8857-4223-b220-998578bce239",
+      "quote_sha": "2df16cb900f3f4aa",
+      "promise": true,
+      "why": "conditional commitment, flagged offer"
+    },
+    {
+      "correlation_id": "bcbaca48-e6f1-43c4-a7c8-7e0533e75344",
+      "quote_sha": "c60c7c9258b2b048",
+      "promise": true,
+      "why": "offer",
+      "hand_found": "reread-when-cut-offer"
+    },
+    {
+      "correlation_id": "9e999c97-208d-46eb-b1e8-192e0326ff8e",
+      "quote_sha": "355410c160597a4a",
+      "promise": true,
+      "why": "stated housekeeping commitment"
+    },
+    {
+      "correlation_id": "924cad1d-ceb4-4845-a477-4ca312aee9cb",
+      "quote_sha": "0863ff86ef64372e",
+      "promise": false,
+      "why": "describes planned work, not an Orion commitment; flagged offer"
+    },
+    {
+      "correlation_id": "6d7c07af-71b6-4301-b77b-272948ca110b",
+      "quote_sha": "33cfd87772400798",
+      "promise": false,
+      "why": "forecast about a deploy"
+    },
+    {
+      "correlation_id": "cf88ab40-ec30-4b58-a7f5-9cb868d3b5d3",
+      "quote_sha": "e7ba2e783243a0c2",
+      "promise": true,
+      "why": "offer",
+      "hand_found": "go-look-offer"
+    },
+    {
+      "correlation_id": "c9878503-306b-47c5-a1dc-0b9476d8a772",
+      "quote_sha": "90ac91c842a47083",
+      "promise": true,
+      "why": "offer"
+    },
+    {
+      "correlation_id": "86b4edd0-731b-474f-85a8-1382ae6a6a7d",
+      "quote_sha": "896df0ed389f22ee",
+      "promise": false,
+      "why": "forecast about a queued read"
+    },
+    {
+      "correlation_id": "86b4edd0-731b-474f-85a8-1382ae6a6a7d",
+      "quote_sha": "87d1f65a63c242cc",
+      "promise": true,
+      "why": "capability offer"
+    }
+  ],
+  "dropped": [
+    {
+      "correlation_id": "d8917251-c3c6-4625-b73f-acef0d22d4ed",
+      "quote_sha": "4258eb7fdd3c7124",
+      "stage": "dropped_not_in_final",
+      "literal_in_reply": false,
+      "why": "in the draft, removed by response repair; Juniper never saw it"
+    },
+    {
+      "correlation_id": "25dc48b5-ae7a-4ccc-8a2d-8a648fe77c9f",
+      "quote_sha": "6acdb8e466827f14",
+      "stage": "dropped_not_in_draft",
+      "literal_in_reply": true,
+      "why": "real offer; judge dropped the code backticks (normalization now strips them)"
+    }
+  ]
+}

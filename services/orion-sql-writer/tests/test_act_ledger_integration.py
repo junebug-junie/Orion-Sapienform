@@ -509,7 +509,7 @@ def test_producer_cost_wins_and_v2_fields_are_kept(session):
 _ENERGY_DDL = """
 CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL,
     event VARCHAR NOT NULL, lease_id VARCHAR, role VARCHAR, cards JSON, turn_correlation_id VARCHAR,
-    held_ms DOUBLE PRECISION);
+    held_ms DOUBLE PRECISION, work_class VARCHAR);
 CREATE TABLE orion_biometrics_summary (id VARCHAR PRIMARY KEY, "timestamp" VARCHAR NOT NULL,
     node VARCHAR, measurements JSONB);
 CREATE TABLE energy_cost_accrued (id BIGSERIAL PRIMARY KEY, interval_start TIMESTAMPTZ NOT NULL,

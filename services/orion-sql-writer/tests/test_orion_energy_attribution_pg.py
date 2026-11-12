@@ -48,7 +48,7 @@ def pg(monkeypatch):
                           "node VARCHAR, measurements JSONB)"))
         conn.execute(text("CREATE TABLE gpu_pool_events (event_id VARCHAR PRIMARY KEY, generated_at TIMESTAMPTZ NOT NULL, "
                           "event VARCHAR NOT NULL, lease_id VARCHAR, cards JSON, turn_correlation_id VARCHAR, "
-                          "held_ms DOUBLE PRECISION, holder VARCHAR, detail JSON)"))
+                          "held_ms DOUBLE PRECISION, holder VARCHAR, detail JSON, work_class VARCHAR)"))
         conn.execute(text("CREATE TABLE grammar_acts (act_id VARCHAR PRIMARY KEY, correlation_id VARCHAR, actor VARCHAR)"))
         # Reading's turns (attention patch 3e): the hourly rule reads them to meter a read's leases.
         conn.execute(text("CREATE TABLE world_pulse_read_seed (seed_id TEXT PRIMARY KEY, trace_id TEXT, "

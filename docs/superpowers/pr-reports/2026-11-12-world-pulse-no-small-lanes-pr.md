@@ -182,6 +182,6 @@ Also check on one stage-2 reading turn: cortex-exec logs `pre_turn_appraisal_par
 
 ## PR link
 
-(added after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3238
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

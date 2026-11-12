@@ -218,7 +218,7 @@ def test_build_day_input_is_the_one_entry_point():
 
 
 def test_letter_instructions_carry_the_honesty_line():
-    # The retired orion_day_note_v1.j2's writing instructions live on only as the letter turn's
+    # The retired note verb's j2 writing instructions live on only as the letter turn's
     # (orion/orion_day/letter_turn.py, living Prime Part 3).
     from orion.orion_day.letter_turn import WRITING_INSTRUCTIONS
 

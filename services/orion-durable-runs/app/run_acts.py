@@ -133,9 +133,10 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
     * urgent curiosity runs (``brief.urgent`` set): an incident report a sensor alarm forced
       (cabinet AC, GPU heat), a reflex rather than a want;
     * every other workflow: reading.turn and reverie.visual already have acts in Hub and thought,
-      dream.carry belongs to the dream producer, and memory.episode_distill, curiosity.compaction,
-      compactor.digest and orion_day.letter are upkeep, not wants (design Organ 3b
-      Tier 1). temporal_self / physiology / personality / situation are timer threads, not durable runs.
+      dream.carry belongs to the dream producer, and memory.episode_distill, curiosity.compaction
+      and compactor.digest are upkeep, not wants (design Organ 3b Tier 1). orion_day.letter opens
+      no run act here: Prime opens and closes its ``make`` act itself (actor prime; living Prime
+      #3224 Part 3). temporal_self / physiology / personality / situation are timer threads, not durable runs.
     """
     workflow = state.get("workflow") or CURIOSITY_WORKFLOW
     brief = state.get("brief") if isinstance(state.get("brief"), dict) else {}

@@ -1,56 +1,62 @@
-"""The `orion_day.letter` admitted durable workflow: Orion's note about yesterday.
+"""The `orion_day.letter` admitted durable workflow: Orion's letter about yesterday, as ONE unified turn.
 
-Design: orion/schemas/orion_day.py (contract), orion/orion_day/ (gather + budget, run by Hub).
+Design: orion/schemas/orion_day.py (contract; living Prime #3224 Part 3), orion/orion_day/letter_turn.py
+(the turn's prompt and how its reply splits), orion/orion_day/ (gather + budget, run by Hub on Prime's order).
 
-    resource_request -> resource_wait -> write_note -> write_carry_forward
-      -> persist -> finish            (failed on a terminal error; retry_wait between attempts)
+    resource_request -> resource_wait -> write_letter -> persist -> finish
+                                         write_letter (failed attempt) -> retry_wait -> resource_request
+                                         persist (retry) -> retry_wait -> persist
+                                         (failed on a terminal error)
 
-* ``write_note`` / ``write_carry_forward`` each make ONE cortex verb call under the run's GPU
-  pool hold (``options.gpu_lease``) and checkpoint their text. Two calls, two fields: the note
-  prompt carries no instruction about future curiosity; the carry-forward prompt gets the
-  finished note plus the digest. A lost/recalled hold replays the node (never an attempt). A
-  transport failure, an error/empty/truncated completion (``runner.strict_final_text``) or a
-  completion below the node's floor is one attempt; the next attempt waits out a backoff in
-  ``retry_wait`` (a cortex restart must not burn the budget in seconds); past the budget the
-  run fails. A restart resumes at the first node without a checkpointed text -- a finished
-  note is never regenerated.
-* The hold is released as soon as the carry-forward text is checkpointed: ``persist`` needs no GPU.
+* ``write_letter`` runs ONE unified turn on the durable turn seam (``app/harness_step.py``) under the
+  run's GPU pool hold: session ``ORION_DAY_LETTER_SESSION_ID``, source tag ``ORION_DAY_LETTER_SOURCE_TAG``,
+  ``require_lookup=False`` (Orion may dig and recall, but a pure writing turn must not fail Hub's lookup
+  gate). The reply is split by ``split_letter`` into the letter (``note_md``) and its closing threads
+  (``carry_forward_md`` + ``threads``). Same exception policy as ``harness_smoke_graph``: a lost hold
+  replays the node (never an attempt); a refusal, a timeout, an empty reply, a transport error or a
+  letter under ``MIN_NOTE_CHARS`` is one failed attempt (``failed_attempt``: backoff in ``retry_wait``,
+  then a fresh hold); past the budget the run fails with no row. The step record (full text + the turn's
+  correlation id) and the gated texts are checkpointed together, and a checkpointed letter is never
+  regenerated. The hold is released as soon as the letter is checkpointed: ``persist`` needs no GPU.
 * The checkpoint carries a SLIM brief (``slim_brief``: no material, no digest). The full brief
   (~1 MB on a heavy day) lives once in the accepted request row (durable_admission_runs.request)
-  and each node that needs it reads it from there (``OrionDayDeps.load_brief``) -- otherwise
-  every checkpoint of the run would copy it, and the runner's resume sweep loads every
-  checkpoint's blobs.
+  and each node that needs it reads it from there (``OrionDayDeps.load_brief``).
 * ``persist`` writes ``orion_day_letter`` with ``INSERT ... ON CONFLICT (letter_date) DO NOTHING``
   (one letter per day, first writer wins), then publishes the STORED row's note -- never the
-  carry-forward -- as a journal entry with a stable id (uuid5 of the date) and the row's own
+  threads -- as a journal entry with a stable id (uuid5 of the date) and the row's own
   ``created_at``, so every replay (and a later run for the same day) republishes the identical
   entry. An insert failure retries and eventually fails the run (no letter exists). Once the
   row exists the run never fails over the journal: publish retries on its own budget, and if it
   is exhausted the run still completes with ``journal_published=False``.
+  ``carry_forward_expires_at`` is written NULL: the curiosity carry-forward offer is retired; the
+  threads reach curiosity through Prime, which reads them from ``finish_detail`` (``GET /runs/{run_id}``).
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypedDict
 
 from app.admitted_graph import (
-    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, listener_wait, resource_nodes,
-    taken_back,
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, failed_attempt, replay_if_requeued,
+    resource_nodes, retry_wait_node, taken_back,
+)
+from app.graph import attempt_timeout_sec
+from app.harness_step import (
+    TURN_REPLY_GRACE_SEC, HarnessStepFailed, RunTurn, harness_step_correlation_id, run_harness_step,
 )
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.orion_day.budget import chronology_citations, extract_refs, gate_event_refs
-from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.orion_day.letter_turn import MAX_THREADS, NO_THREADS_MD, build_letter_prompt, split_letter
 from orion.schemas.temporal_self import DayCitationCheckV1
 from orion.temporal_self.citations import check_arc_citations
 from orion.schemas.orion_day import (
-    ORION_DAY_CARRY_FORWARD_VERB,
     ORION_DAY_JOURNAL_SOURCE_KIND,
     ORION_DAY_JOURNAL_TRIGGER_KIND,
-    ORION_DAY_NOTE_VERB,
+    ORION_DAY_LETTER_SESSION_ID,
+    ORION_DAY_LETTER_SOURCE_TAG,
     OrionDayLetterSourcesV1,
     OrionDayRunBriefV1,
     orion_day_journal_entry_id,
@@ -58,20 +64,15 @@ from orion.schemas.orion_day import (
 
 logger = logging.getLogger(__name__)
 
-# A completion shorter than this is not a note (a refusal, a stub).
+# A letter shorter than this is not a letter (a refusal, a stub): one failed attempt.
 MIN_NOTE_CHARS = 400
-MIN_CARRY_FORWARD_CHARS = 40
-LLM_WORK_NODES = frozenset({"write_note", "write_carry_forward"})
-# The verb RPC gives up this long before AdmissionRuntime.execute's per-node timeout (both derive
-# from brief.timeout_sec), so a slow call ends as the RPC's own clean error, not the node's.
-RPC_TIMEOUT_MARGIN_SEC = 30.0
+LETTER_STEP_KEY = "letter"
 # Journal publish attempts once the letter row exists (never fails the run).
 JOURNAL_MAX_ATTEMPTS = 8
-_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+\S", flags=re.MULTILINE)
 
 # Brief keys kept in the checkpoint; everything else is read from the stored request row.
 SLIM_BRIEF_KEYS = ("letter_date", "timezone", "window_start", "window_end", "llm_route", "timeout_sec",
-                   "carry_forward_ttl_hours")
+                   "prime_act_id", "missed_letters")
 
 
 class OrionDayState(TypedDict, total=False):
@@ -81,8 +82,7 @@ class OrionDayState(TypedDict, total=False):
     brief: dict[str, Any]   # slim_brief(...)
     admission: dict[str, Any]
     requested_at: str
-    attempt: int
-    llm_attempts: dict[str, int]
+    attempt: int            # failed attempts of write_letter; reset when the letter lands
     hold_takebacks: int
     listener_waits: int   # RPCs published to nobody this run waited out (listener_wait; never an attempt)
     lease: dict[str, Any] | None
@@ -94,8 +94,11 @@ class OrionDayState(TypedDict, total=False):
     retry_at: str | None
     retry_node: str | None
     tail_attempts: dict[str, int]
+    steps: dict[str, dict[str, Any]]    # "letter" -> the turn's step record (full text, turn_correlation_id)
+    harness_turn_meta: dict[str, Any]   # the last issued turn's identity (failed-run detail, cancel)
     note_md: str | None
     carry_forward_md: str | None
+    threads: list[str]
     carry_forward_refs: dict[str, int]
     # Temporal Self patch 4: the arc citation gate's result per text (DayCitationCheckV1 json).
     note_arc_citations: dict[str, Any]
@@ -111,8 +114,9 @@ class OrionDayState(TypedDict, total=False):
     existing_run_id: str | None
 
 
-class EmptyGeneration(RuntimeError):
-    """The verb answered, but with nothing usable. Counted as an attempt, never a success."""
+class LetterTooShort(HarnessStepFailed):
+    """The turn answered, but the letter part is under ``MIN_NOTE_CHARS``. One failed attempt
+    (a RuntimeError via HarnessStepFailed: retryable), never a success."""
 
 
 def slim_brief(brief: dict[str, Any]) -> dict[str, Any]:
@@ -121,9 +125,8 @@ def slim_brief(brief: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass
 class OrionDayDeps:
-    # (verb, metadata, llm_route, *, gpu_lease, timeout_sec, user_text) -> final answer text; raises
-    # on transport failure / non-ok result / empty, error-framed or truncated text.
-    call_verb_text: Callable[..., Awaitable[str]]
+    # The Hub turn RPC (Runner._run_turn): CuriosityTurnRequestV1 -> CuriosityTurnResultV1.
+    run_turn: RunTurn
     # (row: dict) -> the STORED row for that letter_date: {"run_id", "note_md", "created_at"}
     # (this run's, or an earlier run's).
     persist_letter: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -131,31 +134,6 @@ class OrionDayDeps:
     publish_journal: Callable[[JournalEntryWriteV1], Awaitable[str | None]]
     # (state) -> the FULL brief from the accepted request row (the checkpoint holds slim_brief)
     load_brief: Callable[[dict[str, Any]], Awaitable[OrionDayRunBriefV1]]
-
-
-def _lease_ref(state: dict) -> GpuLeaseRefV1 | None:
-    lease = state.get("lease")
-    if not lease:
-        return None
-    return GpuLeaseRefV1.model_validate({k: lease[k] for k in ("lease_id", "generation", "role", "holder")})
-
-
-def note_metadata(brief: OrionDayRunBriefV1) -> dict[str, Any]:
-    """The note verb's whole input. Deliberately nothing about future curiosity."""
-    return {"orion_day_input": {
-        "letter_date": brief.letter_date.isoformat(),
-        "timezone": brief.timezone,
-        "digest_md": brief.llm_view.digest_md,
-    }}
-
-
-def carry_forward_metadata(brief: OrionDayRunBriefV1, note_md: str) -> dict[str, Any]:
-    return {"orion_day_input": {
-        "letter_date": brief.letter_date.isoformat(),
-        "timezone": brief.timezone,
-        "digest_md": brief.llm_view.digest_md,
-        "note_md": note_md,
-    }}
 
 
 def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCitationCheckV1 | None]:
@@ -172,35 +150,59 @@ def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCi
 
 
 def check_note(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
+    """The letter part: the floor (a failed attempt below it), then the event and arc gates."""
     if len(text) < MIN_NOTE_CHARS:
-        raise EmptyGeneration(f"{ORION_DAY_NOTE_VERB}: completion too short ({len(text)} chars < {MIN_NOTE_CHARS})")
+        raise LetterTooShort(f"orion_day_letter: letter too short ({len(text)} chars < {MIN_NOTE_CHARS})")
     text, bad_events = gate_event_refs(text, brief.material)
-    events = {"note_md": text, "note_rejected_events": bad_events} if bad_events else {}
+    out: dict[str, Any] = {"note_md": text}
+    if bad_events:
+        out["note_rejected_events"] = bad_events
     cleaned, check = gate_arc_citations(text, brief)
-    if check is None:
-        return events
-    return {**events, "note_md": cleaned, "note_arc_citations": check.model_dump(mode="json")}
+    if check is not None:
+        out.update(note_md=cleaned, note_arc_citations=check.model_dump(mode="json"))
+    return out
 
 
-def check_carry_forward(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
-    """Structural floor: at least one list item. Its refs are counted against the digest's refs
-    (reported, not enforced: a thread without a bracket is still a thread)."""
-    if len(text) < MIN_CARRY_FORWARD_CHARS:
-        raise EmptyGeneration(f"{ORION_DAY_CARRY_FORWARD_VERB}: completion too short ({len(text)} chars)")
-    if not _LIST_ITEM_RE.search(text):
-        raise EmptyGeneration(f"{ORION_DAY_CARRY_FORWARD_VERB}: no list item in the completion")
-    text, bad_events = gate_event_refs(text, brief.material)
-    events = {"carry_forward_md": text, "carry_forward_rejected_events": bad_events} if bad_events else {}
+def _bullets(md: str) -> list[str]:
+    return [line[2:].strip() for line in md.splitlines() if line.startswith("- ") and line[2:].strip()]
+
+
+def check_threads(carry_forward_md: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
+    """The threads part: the same event and arc gates the carry-forward had. No floor -- a letter that
+    names no thread keeps ``NO_THREADS_MD`` and Prime opens no concern from it. Refs are counted against
+    the digest's refs (reported, not enforced: a thread without a bracket is still a thread)."""
+    if carry_forward_md == NO_THREADS_MD:
+        return {"carry_forward_md": carry_forward_md, "threads": [], "carry_forward_refs": {"valid": 0, "unknown": 0}}
+    text, bad_events = gate_event_refs(carry_forward_md, brief.material)
+    out: dict[str, Any] = {}
+    if bad_events:
+        out["carry_forward_rejected_events"] = bad_events
     text, check = gate_arc_citations(text, brief)
-    gated = events if check is None else {**events, "carry_forward_md": text,
-                                          "carry_forward_arc_citations": check.model_dump(mode="json")}
+    if check is not None:
+        out["carry_forward_arc_citations"] = check.model_dump(mode="json")
+    threads = _bullets(text)
+    if not threads:   # every bullet was only refs the gates removed
+        text, threads = NO_THREADS_MD, []
     refs = extract_refs(text)
     known = set(brief.llm_view.included_refs)
-    return {**gated, "carry_forward_refs": {"valid": sum(1 for r in refs if r in known),
-                                            "unknown": sum(1 for r in refs if r not in known)}}
+    return {**out, "carry_forward_md": text, "threads": threads,
+            "carry_forward_refs": {"valid": sum(1 for r in refs if r in known),
+                                   "unknown": sum(1 for r in refs if r not in known)}}
+
+
+def check_letter(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
+    """Split the turn's reply and gate both parts. Raises (a failed attempt) on a too-short letter."""
+    parts = split_letter(text)
+    note = check_note(parts.note_md, brief)
+    threads = check_threads(parts.carry_forward_md, brief)
+    if note["note_md"].strip() == threads["carry_forward_md"].strip():
+        # orion_day_letter requires two distinct texts (OrionDayLetterV1._separate).
+        raise HarnessStepFailed("orion_day_letter: letter and threads are the same text")
+    return {**note, **threads}
 
 
 def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[str, Any]:
+    step = (state.get("steps") or {}).get(LETTER_STEP_KEY) or {}
     sources = OrionDayLetterSourcesV1(
         by_source=brief.material.sources,
         condensed=brief.llm_view.condensed,
@@ -215,6 +217,9 @@ def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[st
                        for name, key in (("note", "note_arc_citations"),
                                          ("carry_forward", "carry_forward_arc_citations"))
                        if state.get(key)},
+        turn_correlation_id=step.get("turn_correlation_id"),
+        prime_act_id=brief.prime_act_id,
+        missed_letters=list(brief.missed_letters),
     )
     return {
         "letter_date": brief.letter_date,
@@ -227,7 +232,8 @@ def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[st
         "sources": sources.model_dump(mode="json"),
         "journal_entry_id": orion_day_journal_entry_id(brief.letter_date),
         "created_at": now,
-        "carry_forward_expires_at": now + timedelta(hours=brief.carry_forward_ttl_hours),
+        # The curiosity carry-forward offer is retired (living Prime Part 3): never offered again.
+        "carry_forward_expires_at": None,
     }
 
 
@@ -248,14 +254,24 @@ def journal_entry(stored: dict[str, Any], brief: OrionDayRunBriefV1) -> JournalE
     )
 
 
+def letter_turn_correlation_id(state: dict) -> str | None:
+    """The unified turn that wrote this run's checkpointed letter, or None before it lands."""
+    step = (state.get("steps") or {}).get(LETTER_STEP_KEY) or {}
+    return step.get("turn_correlation_id")
+
+
 def finish_detail(state: dict) -> dict[str, Any]:
-    """Small, bounded facts for the terminal state event -- never the texts or the material.
+    """Small, bounded facts for the terminal state event -- never the letter or the material.
     Hub reads the letter itself from orion_day_letter; ``persist_outcome`` (not ``completed``)
-    says whether THIS run wrote it."""
+    says whether THIS run wrote it. Prime reads ``threads`` (at most ``MAX_THREADS``, each already
+    cut by split_letter), ``turn_correlation_id`` and ``prime_act_id`` from ``GET /runs/{run_id}``."""
     brief = state.get("brief") or {}
+    step = (state.get("steps") or {}).get(LETTER_STEP_KEY) or {}
     return {
         "line": "orion_day",
         "letter_date": brief.get("letter_date"),
+        "prime_act_id": brief.get("prime_act_id"),
+        "turn_correlation_id": step.get("turn_correlation_id"),
         "persisted": bool(state.get("persisted")),
         "persist_outcome": state.get("persist_outcome"),
         "existing_run_id": state.get("existing_run_id"),
@@ -263,88 +279,82 @@ def finish_detail(state: dict) -> dict[str, Any]:
         "journal_published": bool(state.get("journal_published")),
         "note_chars": len(state.get("note_md") or ""),
         "carry_forward_chars": len(state.get("carry_forward_md") or ""),
+        "threads": list(state.get("threads") or [])[:MAX_THREADS],
+        "threads_total": len(state.get("threads") or []),
         "carry_forward_refs": dict(state.get("carry_forward_refs") or {}),
         "arc_citations": {name: {"label": c.get("label"), "cited": len(c.get("cited_valid") or []),
                                  "rejected": len(c.get("rejected_unknown") or []),
                                  "uncited": c.get("uncited_day_sentences", 0)}
                           for name, c in (("note", state.get("note_arc_citations")),
                                           ("carry_forward", state.get("carry_forward_arc_citations"))) if c},
-        "llm_attempts": dict(state.get("llm_attempts") or {}),
+        "letter_attempts": step.get("attempts"),
+        "harness_step_count": (step.get("debug") or {}).get("harness_step_count"),
         "hold_takebacks": int(state.get("hold_takebacks") or 0),
     }
 
 
 def build_orion_day_graph(deps: OrionDayDeps, admission: AdmissionDeps, checkpointer: Any):
     from langgraph.graph import END, START, StateGraph
-    from langgraph.types import interrupt
 
     resource_request, resource_wait, after_wait = resource_nodes(admission)
+    retry_wait = retry_wait_node(admission)
 
     def backoff(attempts: int) -> str:
         delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (attempts - 1))
         return (admission.now() + timedelta(seconds=delay)).isoformat()
 
-    def llm_node(name: str, verb: str, field: str, metadata_for, check, user_text: str):
-        async def operation(state: dict) -> dict:
-            brief = await deps.load_brief(state)
-            text = await deps.call_verb_text(
-                verb, metadata_for(brief, state), brief.llm_route, gpu_lease=_lease_ref(state),
-                timeout_sec=max(60.0, brief.timeout_sec - RPC_TIMEOUT_MARGIN_SEC), user_text=user_text,
-            )
-            text = (text or "").strip()
-            return {field: text, **check(text, brief)}
+    async def write_letter(state: OrionDayState) -> dict:
+        state = dict(state)
+        if LETTER_STEP_KEY in (state.get("steps") or {}) and state.get("note_md"):
+            return {"status": "running"}    # resumed after the letter's checkpoint: never re-run the turn
+        timeout_sec = float((state.get("brief") or {}).get("timeout_sec") or 1800.0)
+        window = attempt_timeout_sec(state, timeout_sec, admission.now())   # the node timer, deadline-clamped
+        turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
+        correlation_id = harness_step_correlation_id(state, LETTER_STEP_KEY)
+        turn_meta = {"turn_correlation_id": correlation_id, "step_key": LETTER_STEP_KEY}
 
-        async def node(state: OrionDayState) -> dict:
-            if state.get(field):
-                return {"status": "running"}  # already checkpointed: never regenerate
-            attempts = dict(state.get("llm_attempts") or {})
-            try:
-                result = await admission.execute(dict(state), operation)
-            except WorkflowDeadline:
-                released = await admission.release(dict(state), "workflow_deadline")
-                return {**released, "status": "failed", "last_error": "workflow_deadline"}
-            except RunControlPending:
-                raise
-            except HoldRecalled:
-                return {"status": "waiting_resource", "lease": None, "hold": None}
-            except HoldLost as exc:
-                # The pool took the hold back: wait for it again and replay this node. Not an attempt.
-                return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
-                                        {"status": "waiting_resource"})
-            except Exception as exc:  # noqa: BLE001 -- transport failure or unusable completion: one attempt
-                # cortex-orch restarting: the call reached nobody. Wait it out, replay, no attempt.
-                parked = await listener_wait(admission, dict(state), exc,
-                                             waiting={"status": "retrying", "retry_node": name})
-                if parked is not None:
-                    return parked
-                attempts[name] = attempts.get(name, 0) + 1
-                error = f"{type(exc).__name__}: {exc}"[:500]
-                if attempts[name] >= admission.max_attempts:
-                    released = await admission.release(dict(state), "attempt_failed")
-                    return {**released, "status": "failed", "llm_attempts": attempts, "last_error": error}
-                released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
-                return {**released, "status": "retrying", "llm_attempts": attempts, "last_error": error,
-                        "retry_node": name, "retry_at": backoff(attempts[name])}
-            attempts[name] = attempts.get(name, 0) + 1
-            update = {**result, "llm_attempts": attempts, "status": "running", "last_error": None,
-                      "retry_node": None}
-            if name == "write_carry_forward":
-                # Both texts are checkpointed with this update: the rest needs no GPU. Hand the hold
-                # back -- outside the try, so a release hiccup can never discard a finished text.
-                try:
-                    update.update(await admission.release({**dict(state), **update}, "completed"))
-                except Exception:  # noqa: BLE001 -- finish releases again; the pool's TTL is the backstop
-                    logger.warning("orion_day_hold_release_failed run=%s", state.get("run_id"), exc_info=True)
-            return update
-        return node
+        async def operation(held: dict[str, Any]) -> dict[str, Any]:
+            brief = await deps.load_brief(held)
+            record = await run_harness_step(
+                deps.run_turn, held, step_key=LETTER_STEP_KEY, prompt=build_letter_prompt(brief),
+                correlation_id=correlation_id, timeout_sec=turn_timeout,
+                source_tag=ORION_DAY_LETTER_SOURCE_TAG, session_id=ORION_DAY_LETTER_SESSION_ID,
+                retrieval_query=f"my day {brief.letter_date.isoformat()}", require_lookup=False)
+            # Inside the attempt: a too-short letter is a failed attempt, never a checkpointed one.
+            return {"record": record, "gated": check_letter(record["text"], brief)}
 
-    write_note = llm_node(
-        "write_note", ORION_DAY_NOTE_VERB, "note_md",
-        lambda brief, state: note_metadata(brief), check_note, "Write your note about the day.")
-    write_carry_forward = llm_node(
-        "write_carry_forward", ORION_DAY_CARRY_FORWARD_VERB, "carry_forward_md",
-        lambda brief, state: carry_forward_metadata(brief, state["note_md"]), check_carry_forward,
-        "List the threads from this day.")
+        try:
+            result = await admission.execute({**state, "step_correlation_id": correlation_id}, operation)
+        except WorkflowDeadline:
+            released = await admission.release(state, "workflow_deadline")
+            return {**released, "status": "failed", "last_error": "workflow_deadline", "harness_turn_meta": turn_meta}
+        except RunControlPending:
+            raise
+        except HoldRecalled:
+            return {"status": "waiting_resource", "lease": None, "hold": None}
+        except HoldLost as exc:   # HoldPreempted too: the pool keeps its place, no attempt spent
+            update = await taken_back(admission, state, exc.release_reason, f"{type(exc).__name__}: {exc}",
+                                      {"status": "waiting_resource"})
+            return {**update, "harness_turn_meta": turn_meta}
+        except Exception as exc:  # noqa: BLE001 -- refusal, timeout, empty/short letter, transport: the shared policy
+            # A failed turn may be the pool's (it took the hold back mid-turn): replay, no attempt.
+            replay = await replay_if_requeued(admission, state, {"status": "waiting_resource"})
+            if replay is not None:
+                return {**replay, "harness_turn_meta": turn_meta}
+            return await failed_attempt(admission, state, exc, waiting={"status": "retrying", "retry_node": None},
+                                        extra={"harness_turn_meta": turn_meta}, attempt_sec=timeout_sec)
+        record = result["record"]
+        record["attempts"] = int(state.get("attempt") or 0) + 1
+        update = {**result["gated"], "steps": {**(state.get("steps") or {}), LETTER_STEP_KEY: record},
+                  "harness_turn_meta": turn_meta, "status": "running", "attempt": 0, "retry_at": None,
+                  "retry_node": None, "last_error": None}
+        # The letter is checkpointed with this update: the rest needs no GPU. Hand the hold back --
+        # outside the try, so a release hiccup can never discard a finished letter.
+        try:
+            update.update(await admission.release({**state, **update}, "completed"))
+        except Exception:  # noqa: BLE001 -- finish releases again; the pool's TTL is the backstop
+            logger.warning("orion_day_hold_release_failed run=%s", state.get("run_id"), exc_info=True)
+        return update
 
     async def persist(state: OrionDayState) -> dict:
         now = admission.now()
@@ -385,12 +395,6 @@ def build_orion_day_graph(deps: OrionDayDeps, admission: AdmissionDeps, checkpoi
         return {**outcome, "status": "retrying", "tail_attempts": attempts, "last_error": "journal_publish_failed",
                 "retry_node": "persist", "retry_at": backoff(attempts["journal"])}
 
-    async def retry_wait(state: OrionDayState) -> dict:
-        until = datetime.fromisoformat(state["retry_at"])
-        if admission.now() < until:
-            interrupt({"reason": "retrying", "until": state["retry_at"]})
-        return {"status": "retrying"}
-
     async def finish(state: OrionDayState) -> dict:
         released = await admission.release(dict(state), "completed")
         return {**released, "status": "completed"}
@@ -399,32 +403,30 @@ def build_orion_day_graph(deps: OrionDayDeps, admission: AdmissionDeps, checkpoi
         released = await admission.release(dict(state), "failed")
         return {**released, "status": "failed"}
 
-    def after_llm(successor: str):
-        def route(state) -> str:
-            return {"waiting_resource": "resource_request", "retrying": "retry_wait",
-                    "failed": "failed"}.get(state.get("status"), successor)
-        return route
+    def after_letter(state) -> str:
+        return {"waiting_resource": "resource_request", "retrying": "retry_wait",
+                "failed": "failed"}.get(state.get("status"), "persist")
 
     def after_grant(state) -> str:
         decision = after_wait(state)
         if decision != "granted":
             return decision
-        return "write_carry_forward" if state.get("note_md") else "write_note"
+        # A run resumed with its letter already checkpointed goes straight on to persist.
+        return "persist" if state.get("note_md") else "write_letter"
 
     g = StateGraph(OrionDayState)
     for name, node in {"resource_request": resource_request, "resource_wait": resource_wait,
-                       "write_note": write_note, "write_carry_forward": write_carry_forward,
-                       "persist": persist, "retry_wait": retry_wait, "finish": finish, "failed": failed}.items():
+                       "write_letter": write_letter, "persist": persist, "retry_wait": retry_wait,
+                       "finish": finish, "failed": failed}.items():
         g.add_node(name, node)
     g.add_edge(START, "resource_request")
     g.add_conditional_edges("resource_request", lambda s: "failed" if s.get("status") == "failed" else "resource_wait")
     g.add_conditional_edges("resource_wait", after_grant,
-                            {"write_note": "write_note", "write_carry_forward": "write_carry_forward",
+                            {"write_letter": "write_letter", "persist": "persist",
                              "request": "resource_request", "failed": "failed"})
-    g.add_conditional_edges("write_note", after_llm("write_carry_forward"))
-    g.add_conditional_edges("write_carry_forward", after_llm("persist"))
+    g.add_conditional_edges("write_letter", after_letter)
     g.add_conditional_edges("persist", lambda s: {"retrying": "retry_wait", "failed": "failed"}.get(s.get("status"), "finish"))
-    # An LLM retry goes back for the hold (resource_request); a persist retry needs none.
+    # A letter retry goes back for the hold (resource_request); a persist retry needs none.
     g.add_conditional_edges("retry_wait", lambda s: "persist" if s.get("retry_node") == "persist" else "resource_request",
                             {"persist": "persist", "resource_request": "resource_request"})
     g.add_edge("finish", END)

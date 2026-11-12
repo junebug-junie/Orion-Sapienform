@@ -37,32 +37,32 @@ def _payload(final_text="", *, reasoning=None, finish_reason="stop", ok=True, tr
 
 
 def test_final_text_is_returned():
-    assert strict_final_text(_payload(NOTE), "orion_day_note_v1") == NOTE.strip()
+    assert strict_final_text(_payload(NOTE), "plain_text_verb_v1") == NOTE.strip()
 
 
 def test_reasoning_is_never_accepted_as_the_answer():
     thinking = "We need to write a long note. Let me look at the record first... " * 30
     with pytest.raises(RuntimeError, match="verb_empty_final_text"):
-        strict_final_text(_payload("", reasoning=thinking), "orion_day_note_v1")
+        strict_final_text(_payload("", reasoning=thinking), "plain_text_verb_v1")
 
 
 @pytest.mark.parametrize("text", ["[Error: llamacpp timed out after waiting]",
                                   "Error: upstream 503 from gateway, please retry later."])
 def test_error_text_framed_as_prose_is_refused(text):
     with pytest.raises(RuntimeError, match="verb_error_text"):
-        strict_final_text(_payload(text), "orion_day_carry_forward_v1")
+        strict_final_text(_payload(text), "plain_text_verb_v2")
 
 
 def test_a_completion_cut_off_at_max_tokens_is_refused():
     with pytest.raises(RuntimeError, match="verb_truncated_at_max_tokens"):
-        strict_final_text(_payload(NOTE, finish_reason="length"), "orion_day_note_v1")
+        strict_final_text(_payload(NOTE, finish_reason="length"), "plain_text_verb_v1")
     with pytest.raises(RuntimeError, match="verb_truncated_at_max_tokens"):
-        strict_final_text(_payload(NOTE, truncation=True), "orion_day_note_v1")
+        strict_final_text(_payload(NOTE, truncation=True), "plain_text_verb_v1")
 
 
 def test_prose_that_merely_mentions_an_error_is_kept():
     text = "The codebase kept throwing errors I could not map, and I sat with that. " * 10
-    assert strict_final_text(_payload(text), "orion_day_note_v1") == text.strip()
+    assert strict_final_text(_payload(text), "plain_text_verb_v1") == text.strip()
 
 
 def _runner(reply):
@@ -81,11 +81,11 @@ def test_call_verb_text_sends_the_verb_route_hold_and_metadata():
     runner = _runner(_payload(NOTE))
     ref = GpuLeaseRefV1(lease_id="hold-1", generation=2, role="agent", holder="durable-runs:r")
     text = asyncio.run(runner._call_verb_text(
-        "orion_day_note_v1", {"orion_day_input": {"digest_md": "d"}}, "agent",
+        "plain_text_verb_v1", {"orion_day_input": {"digest_md": "d"}}, "agent",
         gpu_lease=ref, timeout_sec=870.0, user_text="Write your note about the day."))
     assert text == NOTE.strip()
     ((request, timeout, label),) = runner.sent
-    assert request["verb"] == "orion_day_note_v1" and label == "orion_day_note_v1" and timeout == 870.0
+    assert request["verb"] == "plain_text_verb_v1" and label == "plain_text_verb_v1" and timeout == 870.0
     assert request["options"]["llm_route"] == "agent" and request["options"]["policy_dispatch_only"] is True
     assert request["options"]["gpu_lease"]["lease_id"] == "hold-1"
     # Thinking off: live 2026-09-30 the note's hidden reasoning ate all 12000 max_tokens.
@@ -97,7 +97,7 @@ def test_call_verb_text_sends_the_verb_route_hold_and_metadata():
 def test_call_verb_text_raises_on_a_not_ok_result():
     runner = _runner(_payload(NOTE, ok=False))
     with pytest.raises(RuntimeError, match="verb_not_ok"):
-        asyncio.run(runner._call_verb_text("orion_day_note_v1", {}, "agent", timeout_sec=10.0, user_text="x"))
+        asyncio.run(runner._call_verb_text("plain_text_verb_v1", {}, "agent", timeout_sec=10.0, user_text="x"))
 
 
 def test_call_verb_text_forwards_structured_output_options_but_never_lets_them_override_thinking():

@@ -364,7 +364,7 @@ def test_both_turn_end_paths_stamp_and_only_investigate_takes():
 def test_durable_brief_omits_empty_corrections_for_an_older_durable_runs():
     from orion.orion_day.brief import build_orion_day_request
     from orion.schemas.orion_day import OrionDayRunBriefV1
-    from scripts.orion_day_letter import brief_request_payload
+    from scripts.orion_day_order import brief_request_payload
 
     material = asyncio.run(fx.gather.gather_orion_day(
         fx.FakeConn(), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc)))
@@ -399,3 +399,60 @@ def test_email_shows_corrections_from_conversations():
     assert 'data-section="corrections"' in html
     plain = fx.reread_letter()
     assert "Corrections from conversations" not in email.render_html(plain, [])
+
+
+# --- an unstarted durable curiosity run gives its claimed corrections back -------------------------
+# (moved here from the retired timer's test file: the same release path used to carry the retired
+# carry-forward offer too; living Prime Part 3 left it releasing corrections only)
+
+
+def _release_loop(monkeypatch, history, status=200):
+    from test_curiosity_investigation import _FakeBus, _loop as curiosity_loop
+
+    released: list[str] = []
+    loop = curiosity_loop(_FakeBus(), text="found it", orion_day_corrections_enabled=True)
+    loop.durable_runs_url = "http://durable"
+    g = type(loop)._release_corrections_if_unseen.__globals__
+
+    async def fake_release(pool, *, run_id):
+        released.append(run_id)
+
+    class _Resp:
+        status_code = status
+
+        def json(self):
+            return {"history": history}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            return _Resp()
+
+    class _Httpx:
+        AsyncClient = _Client
+
+    monkeypatch.setitem(g, "httpx", _Httpx)
+    monkeypatch.setitem(g, "release_corrections", fake_release)
+    return loop, released
+
+
+def test_an_unstarted_durable_curiosity_run_gives_its_corrections_back(monkeypatch):
+    loop, released = _release_loop(monkeypatch, [{"event": "run.accepted"}, {"event": "run.abandoned"}])
+    asyncio.run(loop._release_corrections_if_unseen("run-x"))
+    assert released == ["run-x"]
+
+
+def test_a_started_or_unknown_run_keeps_the_corrections_claim(monkeypatch):
+    loop, released = _release_loop(monkeypatch, [{"event": "run.started"}])
+    asyncio.run(loop._release_corrections_if_unseen("run-x"))
+    loop2, released2 = _release_loop(monkeypatch, [], status=404)
+    asyncio.run(loop2._release_corrections_if_unseen("run-y"))
+    assert released == [] and released2 == []

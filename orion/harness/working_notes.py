@@ -70,6 +70,16 @@ _INSIDE_MCP_PREFIXES = ("mcp__orion-introspect__", "mcp__gitnexus__")
 # Judged by result, not by call: these return queue receipts (Orion's own request,
 # ids, status), and only sometimes text from an earlier read of a page.
 _RESULT_CHECKED_PREFIXES = ("mcp__orion-reading__",)
+# Inside server, outside text: each item is a page Orion read (title, url, what it
+# learned, article summary, journal excerpt). Clean only when it returns no items.
+_READING_RESULTS_TOOL = "mcp__orion-introspect__reading_results"
+_EMPTY_READING_RESULT_KEYS = frozenset({"ok", "operation", "as_of", "total_available", "items", "error"})
+# Also inside server, sometimes outside text: orion_day's readings / world_news sections
+# and a carry item's citations return the day's page-read records, each tagged by its ref
+# (orion/orion_day/letter_parts.py SECTION_PREFIXES). Any such ref in the result holds back.
+# walkway_day (Orion's own camera rollup) is not page text.
+_ORION_DAY_TOOL = "mcp__orion-introspect__orion_day"
+_PAGE_READ_REF = re.compile(r"(?<![A-Za-z0-9_])(?:reading|reading_journal|world_pulse_digest):")
 # A receipt is clean only in this shape (orion/world_pulse_read/queue.py reading_status /
 # _reading_status_row): an allowlist, so a new receipt field is held back until checked.
 _RECEIPT_KEYS = frozenset({
@@ -159,7 +169,7 @@ def outside_reason(name: str, inp: dict[str, Any]) -> str | None:
     result decides: see outside_result)."""
     if name in _OUTSIDE_TOOLS or name in _OPAQUE_TOOLS:
         return name
-    if name.startswith(_RESULT_CHECKED_PREFIXES):
+    if _result_checked(name):
         return None
     if name.startswith("mcp__") and not name.startswith(_INSIDE_MCP_PREFIXES):
         return name
@@ -174,13 +184,29 @@ def outside_result(name: str, content: Any) -> bool:
     Fails closed: a result that is not a JSON receipt (an error string, a cut-off
     copy) counts as outside text.
     """
-    if not name.startswith(_RESULT_CHECKED_PREFIXES):
+    if not _result_checked(name):
         return False
+    if name == _ORION_DAY_TOOL:
+        # Matched on the raw text, so a cut-off or non-JSON copy is still checked.
+        return bool(_PAGE_READ_REF.search(result_text(content)))
     try:
         payload = json.loads(result_text(content))
     except ValueError:
         return True
+    if name == _READING_RESULTS_TOOL:
+        return not _empty_reading_result(payload)
     return not _clean_receipt(payload)
+
+
+def _result_checked(name: str) -> bool:
+    return name in (_READING_RESULTS_TOOL, _ORION_DAY_TOOL) or name.startswith(_RESULT_CHECKED_PREFIXES)
+
+
+def _empty_reading_result(payload: Any) -> bool:
+    # orion/world_pulse_read/introspect.py reading_results: nothing matched -> no items.
+    return (isinstance(payload, dict) and not set(payload) - _EMPTY_READING_RESULT_KEYS
+            and payload.get("ok") is True and payload.get("operation") == "reading_result"
+            and payload.get("items") in (None, []) and not payload.get("error"))
 
 
 def _clean_receipt(payload: Any) -> bool:
@@ -217,7 +243,7 @@ class OutsideContent:
                 inp = block.get("input") if isinstance(block.get("input"), dict) else {}
                 if (reason := outside_reason(name, inp)) is not None:
                     self._reasons.add(reason)
-                elif name.startswith(_RESULT_CHECKED_PREFIXES):
+                elif _result_checked(name):
                     if block.get("id"):
                         self._pending[str(block["id"])] = name
                     else:  # its result cannot be paired, so it cannot be checked

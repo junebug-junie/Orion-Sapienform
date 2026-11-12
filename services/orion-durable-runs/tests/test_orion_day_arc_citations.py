@@ -16,12 +16,11 @@ sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1])]
 
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
-from app.orion_day_graph import check_carry_forward, check_note, finish_detail, letter_row  # noqa: E402
+from app.orion_day_graph import check_note, check_threads, finish_detail, letter_row  # noqa: E402
 from orion.orion_day.budget import build_llm_view, extract_refs, material_ref_records  # noqa: E402
 from orion.orion_day.window import orion_day_window  # noqa: E402
 from orion.schemas.orion_day import (  # noqa: E402
-    ORION_DAY_CARRY_FORWARD_VERB, ORION_DAY_NOTE_VERB, OrionDayLetterSourcesV1, OrionDayMaterialV1,
-    OrionDayRunBriefV1,
+    OrionDayLetterSourcesV1, OrionDayMaterialV1, OrionDayRunBriefV1,
 )
 from orion.temporal_self.day_block import render_closed_day_block  # noqa: E402
 from orion.temporal_self.tests.patch4_fixtures import day_1009  # noqa: E402
@@ -59,7 +58,7 @@ def test_no_closed_day_means_no_block_and_no_check():
     brief = brief_1009(with_block=False)
     assert "My day as my own chronology" not in brief.llm_view.digest_md
     note = "Harness closure prediction error held me." + PAD
-    assert check_note(note, brief) == {}
+    assert check_note(note, brief) == {"note_md": note}
 
 
 def test_note_known_kept_unknown_removed_uncited_unverified():
@@ -74,11 +73,12 @@ def test_note_known_kept_unknown_removed_uncited_unverified():
     assert c["uncited_examples"] == ["Juniper spoke at 18:08."]
 
 
-def test_carry_forward_counts_refs_after_the_gate():
+def test_threads_count_refs_after_the_gate():
     brief = brief_1009()
     carry = (f"- [arc:{HARNESS}] Why did harness closure dominate?\n"
              "- [arc:feedfacefeedface] Look at the invented thing.")
-    out = check_carry_forward(carry, brief)
+    out = check_threads(carry, brief)
+    assert len(out["threads"]) == 2 and "feedface" not in out["threads"][1]
     assert "[arc:feedfacefeedface]" not in out["carry_forward_md"]
     assert out["carry_forward_refs"] == {"valid": 1, "unknown": 0}
     assert out["carry_forward_arc_citations"]["rejected_unknown"] == ["arc:feedfacefeedface"]
@@ -100,12 +100,12 @@ def test_full_run_never_retries_for_citations_and_persists_them():
     async def scenario():
         world, saver = base.World(), InMemorySaver()
         world.brief = brief_1009()
-        world.replies[ORION_DAY_NOTE_VERB] = [
-            "Harness closure prediction error held me most of the day [arc:deadbeefdeadbeef]." + PAD]
-        world.replies[ORION_DAY_CARRY_FORWARD_VERB] = [f"- [arc:{HARNESS}] Look at harness closure."]
+        world.replies = [
+            "Harness closure prediction error held me most of the day [arc:deadbeefdeadbeef]." + PAD
+            + f"\n\n## Threads I am carrying\n- [arc:{HARNESS}] Look at harness closure."]
         snap = await base.drive(world.graph(saver), world)
         assert snap.values["status"] == "completed"
-        assert snap.values["llm_attempts"] == {"write_note": 1, "write_carry_forward": 1}  # no retry
+        assert len(world.turns) == 1  # one turn, never retried for citations
         row = world.rows[date(2026, 10, 9)]
         assert "[arc:deadbeefdeadbeef]" not in row["note_md"]
         note_check = row["sources"]["arc_citations"]["note"]
@@ -118,11 +118,12 @@ def test_full_run_never_retries_for_citations_and_persists_them():
 
 
 def _render_note(digest_md: str) -> str:
-    from jinja2 import Environment
-    template = (ROOT / "orion" / "cognition" / "prompts" / "orion_day_note_v1.j2").read_text()
-    return Environment(autoescape=False).from_string(template).render(
-        metadata={"orion_day_input": {"letter_date": "2026-10-09", "timezone": "America/Denver",
-                                      "digest_md": digest_md}})
+    """The letter turn's user message (orion/orion_day/letter_turn.py) for a brief with this digest."""
+    from orion.orion_day.letter_turn import build_letter_prompt
+
+    brief = brief_1009()
+    view = brief.llm_view.model_copy(update={"digest_md": digest_md})
+    return build_letter_prompt(brief.model_copy(update={"llm_view": view}))
 
 
 def test_note_prompt_asks_for_the_chronology_brackets_before_and_after_the_record():

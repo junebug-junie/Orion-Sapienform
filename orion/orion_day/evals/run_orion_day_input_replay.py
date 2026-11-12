@@ -13,7 +13,8 @@ every [arc:] / [event:] ref resolves. A review aid for Juniper's read, not a met
 feeds a model or a gate. Exit 1 when a new-side check fails (Juniper's words missing, a question
 shown twice, a ref that does not resolve).
 
-``--dump DIR`` also writes each side's digest and rendered note prompt (``orion_day_note_v1.j2``)
+``--dump DIR`` also writes each side's digest and the letter turn's rendered user message
+(``orion/orion_day/letter_turn.py``)
 to DIR, so the letters can be generated from them.
 
 Usage:
@@ -34,14 +35,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from jinja2 import Environment  # noqa: E402
 
 from orion.orion_day.budget import build_llm_view, material_refs  # noqa: E402
 from orion.orion_day.day_input import SOURCES, render_day_input  # noqa: E402
 from orion.orion_day.gather import gather_orion_day  # noqa: E402
 from orion.schemas.orion_day import OrionDayLlmViewV1, OrionDayMaterialV1  # noqa: E402
 
-PROMPTS = ROOT / "orion" / "cognition" / "prompts"
 # Old digest sections by their "## " heading prefix (budget._full_text_blocks / _render_reveries).
 OLD_HEADINGS = (
     ("## My day as my own chronology", "chronology"), ("## Curiosity", "curiosity"),
@@ -95,9 +94,13 @@ def unresolved(view: OrionDayLlmViewV1, material: OrionDayMaterialV1) -> list[st
 
 
 def _render_prompt(view: OrionDayLlmViewV1, material: OrionDayMaterialV1) -> str:
-    template = Environment(autoescape=False).from_string((PROMPTS / "orion_day_note_v1.j2").read_text())
-    return template.render(metadata={"orion_day_input": {
-        "letter_date": material.letter_date.isoformat(), "timezone": material.timezone, "digest_md": view.digest_md}})
+    from orion.orion_day.letter_turn import build_letter_prompt
+    from orion.schemas.orion_day import OrionDayRunBriefV1
+
+    brief = OrionDayRunBriefV1(letter_date=material.letter_date, timezone=material.timezone,
+                               window_start=material.window_start, window_end=material.window_end,
+                               material=material, llm_view=view)
+    return build_letter_prompt(brief)
 
 
 def report(material: OrionDayMaterialV1, dump: Path | None = None) -> bool:

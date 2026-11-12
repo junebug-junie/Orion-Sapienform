@@ -76,9 +76,12 @@ from app.pool_hold import (
 from app.run_acts import RunActEmitter
 from app.run_bids import HOLD_EVENT, RELEASE_EVENT, RunBidder
 from app.orion_day_graph import (
-    OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
+    LETTER_STEP_KEY as ORION_DAY_LETTER_STEP_KEY, OrionDayDeps, build_orion_day_graph,
+    finish_detail as orion_day_finish_detail, letter_turn_correlation_id as orion_day_letter_turn_id,
+    slim_brief as orion_day_slim_brief,
 )
 from app.orion_day_store import persist_letter as persist_orion_day_letter
+from orion.orion_day.letter_turn import MAX_THREADS as ORION_DAY_MAX_THREADS
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
 from app.reverie_visual_graph import (
     RETRY_WINDOW_EXPIRED, abandon_request, build_reverie_visual_graph,
@@ -117,9 +120,9 @@ WORK_NODES = {READING_RESONANCE_WORKFLOW: {"judge"}, DEFAULT_WORKFLOW: {"run_sta
               COMPACTOR_DIGEST_WORKFLOW: {"digest"},
               # Only compose holds the GPU; publish lets the hold go before it sends the write.
               JOURNAL_COMPOSE_WORKFLOW: {"compose"},
-              # Both LLM calls run under the hold; a restart replays the first one without a
-              # checkpointed text (a finished note is never regenerated). persist needs no GPU.
-              ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"},
+              # The letter's one unified turn runs under the hold; it releases the hold once the
+              # letter is checkpointed (never regenerated). persist needs no GPU.
+              ORION_DAY_WORKFLOW: {"write_letter"},
               # Only a text hop holds the LLM hold; it releases it before its hop is checkpointed.
               # Image hops are child reverie.visual runs and hold nothing in the carry.
               DREAM_CARRY_WORKFLOW: {"text_hop"},
@@ -285,7 +288,7 @@ class AdmissionRuntime:
                 ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self"))),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
-                call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
+                run_turn=lambda request: runner._run_turn(request),
                 persist_letter=lambda row: persist_orion_day_letter(self.pool, row),
                 publish_journal=lambda entry: runner._publish_journal(entry),
                 load_brief=self._orion_day_brief,
@@ -743,7 +746,7 @@ class AdmissionRuntime:
             detail["turn_correlation_id"] = turn_correlation_id(state)
         elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
                                        HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, REMINISCENCE_WORKFLOW,
-                                       CONSULT_ORION_TURN_WORKFLOW) \
+                                       CONSULT_ORION_TURN_WORKFLOW, ORION_DAY_WORKFLOW) \
                 and state.get("step_correlation_id"):
             # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
             # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
@@ -1114,10 +1117,9 @@ class AdmissionRuntime:
         if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
             # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
             return
-        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW, DREAM_CARRY_WORKFLOW):
+        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW):
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
-            # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain
-            # cortex verbs, never a harness run, so there is nothing to cancel by turn id.
+            # recorded artifact, or a generate_in_flight retry).
             return
         ids: list[str] = []
         try:
@@ -1146,6 +1148,10 @@ class AdmissionRuntime:
         step_key = HARNESS_STEP_WORKFLOWS.get(state.get("workflow"))
         if state.get("workflow") in HARNESS_MULTI_STEP_WORKFLOWS:
             step_key = HARNESS_MULTI_STEP_WORKFLOWS[state["workflow"]](state)
+        if state.get("workflow") == ORION_DAY_WORKFLOW:
+            # The letter's one unified turn (orion_day_graph.write_letter): harness_turn_meta above
+            # names the issued turn; before the letter lands its id also derives from the checkpoint.
+            step_key = ORION_DAY_LETTER_STEP_KEY
         if step_key and step_key not in (state.get("steps") or {}):
             # The step turn a dead worker left running: its id derives from the checkpoint.
             ids.append(harness_step_correlation_id(state, step_key))
@@ -1657,11 +1663,14 @@ class AdmissionRuntime:
                    if workflow == REMINISCENCE_WORKFLOW else {}),
                 **({"orion_day": {
                     "letter_date": (values.get("brief") or {}).get("letter_date"),
-                    "note_ready": bool(values.get("note_md")),
-                    "carry_forward_ready": bool(values.get("carry_forward_md")),
+                    "letter_ready": bool(values.get("note_md")),
+                    "threads": list(values.get("threads") or [])[:ORION_DAY_MAX_THREADS],
+                    "turn_correlation_id": orion_day_letter_turn_id(values)
+                    or (values.get("harness_turn_meta") or {}).get("turn_correlation_id"),
+                    "prime_act_id": (values.get("brief") or {}).get("prime_act_id"),
                     "persisted": bool(values.get("persisted")),
                     "persist_outcome": values.get("persist_outcome"),
-                    "llm_attempts": dict(values.get("llm_attempts") or {}),
+                    "attempt": int(values.get("attempt") or 0),
                     "retry_at": values.get("retry_at"),
                     "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
                     "error": values.get("last_error")}

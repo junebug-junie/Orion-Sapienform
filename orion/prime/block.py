@@ -144,22 +144,28 @@ def stale_block(ticked_at: datetime, now: datetime) -> PrimeBlockV1:
 def _thought_ref(state: PrimeStateV1) -> tuple[Optional[str], str]:
     """(ref id, move words) for the last thought.
 
-    The state does not persist the last thought's id. A move the last thought made is still open in the
-    state (a question to curiosity or a regulate signal, opened at the thought's own time), and carries the
-    thought id: then the ref is exact. Otherwise the ref is Prime's own thought count (``#235`` = its 235th
-    thought), a number stored in the state, and the move is "no move" (none of its moves is open)."""
+    The ref is ``last_thought_id`` (the id Prime's runtime saves with ``last_reading``, living Prime Part 2) when
+    the state has it. A state saved before that field existed falls back to Prime's own thought count (``#235`` =
+    its 235th thought). The move is the open question or regulate signal the last thought made (opened at the
+    thought's own time, carrying its id), else "no move"."""
     at = state.last_thought_at
     if at is None:
         return None, ""
     # Exact match by construction: Prime's _conclude uses one `now` for apply_answer's last_thought_at and
     # for the move's opened_at (services/orion-mind/app/prime_loop.py _conclude/_nominate/_regulate).
+    move_tid, move = None, "no move"
     for n in state.open_nominations:
         if n.opened_at >= at:
-            return n.thought_id, "asked curiosity a question"
-    for r in state.open_regulations:
-        if r.opened_at >= at:
-            return r.thought_id, f"regulate {r.direction} {r.family}"
-    return f"#{state.thoughts_total}", "no move"
+            move_tid, move = n.thought_id, "asked curiosity a question"
+            break
+    else:
+        for r in state.open_regulations:
+            if r.opened_at >= at:
+                move_tid, move = r.thought_id, f"regulate {r.direction} {r.family}"
+                break
+    if state.last_thought_id:
+        return state.last_thought_id, move
+    return (move_tid or f"#{state.thoughts_total}"), move
 
 
 def _lines(state: PrimeStateV1, now: datetime, ticked_at: datetime) -> list[_Line]:

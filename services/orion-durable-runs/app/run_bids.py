@@ -109,7 +109,9 @@ SEEN_MAX = 5000
 # unread, timeout): it asks the pool, as before -- this patch removes no other gate (Hub's own vetoes,
 # the pool's queue and the heat reflex still apply), so "no answer" falls back to the old gates, never
 # to "funded by the economy" and never to "held forever".
-BINDING_FAMILIES = frozenset({"durable.curiosity_investigate"})
+# Consult turns bind too (Juniper 2026-11-12, tier 2): an hour-long turn on the agent lane is exactly
+# what the market prices. The flag (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE) gates every family here.
+BINDING_FAMILIES = frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn"})
 HOLD_DEADLINE_MARGIN_SEC = 1800.0   # a run with its own deadline is released this long before it
 HOLD_EVENT = "run.economy_held"
 # Patch 3b: reading's value-only bid (stage 1). The act is Hub's ``hub.world_pulse_read look``.

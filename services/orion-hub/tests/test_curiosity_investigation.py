@@ -2766,6 +2766,27 @@ def test_actual_curiosity_run_id_reaches_reading_binding(monkeypatch):
     assert captured["correlation_id"] == "trace-id"
 
 
+@pytest.mark.parametrize("source", ["orion_day_letter", "consult_orion_turn:t2"])
+def test_letter_and_consult_turns_are_not_framed_as_curiosity_runs(monkeypatch, source):
+    """The day letter (Prime's end-of-day turn) and a consult reply ride the durable turn seam
+    with a parent run id, but neither is a curiosity run: no curiosity reading framing."""
+    from orion.schemas.orion_day import ORION_DAY_LETTER_SOURCE_TAG
+
+    assert ORION_DAY_LETTER_SOURCE_TAG == "orion_day_letter"
+    captured = {}
+
+    async def turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": "a letter", "harness_step_count": 9}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    loop = _loop(_FakeBus(), text=None)
+    loop._generate = CuriosityInvestigation._generate.__get__(loop)
+    asyncio.run(loop._generate("prompt", "trace-id", parent_run_id="orion-day-2026-11-11-1", source=source))
+    assert captured["reading_context"] is None
+    assert captured["reading_parent_run_id"] is None
+
+
 # --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED) ------------------------
 
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL  # noqa: E402

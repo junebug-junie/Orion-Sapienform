@@ -272,6 +272,23 @@ async def listener_wait(admission: AdmissionDeps, state: dict, exc: BaseExceptio
     return update
 
 
+def _retry_at(admission: AdmissionDeps, attempt: int, retry_base: float, backoff: bool) -> datetime:
+    delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1)) if backoff else 0.0
+    return admission.now() + timedelta(seconds=delay)
+
+
+def retry_would_run(admission: AdmissionDeps, state: dict, *, attempt_sec: float | None = None,
+                    backoff: bool = True) -> bool:
+    """Whether ``failed_attempt`` would retry this state rather than fail it (budget left and a whole
+    attempt fits before the deadline). For a node that may keep a weak result instead of failing:
+    it retries only when a retry will actually run."""
+    attempt = int(state.get("attempt") or 0) + 1
+    max_attempts, retry_base = retry_budget(admission, state)
+    if attempt >= max_attempts:
+        return False
+    return not retry_cannot_finish(state, _retry_at(admission, attempt, retry_base, backoff), attempt_sec)
+
+
 async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseException, *, waiting: dict,
                          extra: dict | None = None, attempt_sec: float | None = None,
                          backoff: bool = True) -> dict:
@@ -305,8 +322,7 @@ async def failed_attempt(admission: AdmissionDeps, state: dict, exc: BaseExcepti
     if attempt >= max_attempts:
         released = await admission.release(state, "attempt_failed")
         return {**released, "status": "failed", "attempt": attempt, "last_error": error, **extra}
-    delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1)) if backoff else 0.0
-    retry_at = admission.now() + timedelta(seconds=delay)
+    retry_at = _retry_at(admission, attempt, retry_base, backoff)
     if retry_cannot_finish(state, retry_at, attempt_sec):
         # A doomed retry only burns the GPU until the deadline kills it: end now.
         released = await admission.release(state, "attempt_failed")

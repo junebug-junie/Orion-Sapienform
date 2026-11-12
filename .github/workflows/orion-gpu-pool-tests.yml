@@ -82,7 +82,6 @@ on:
       - "services/orion-cortex-exec/app/executor.py"
       - "services/orion-cortex-exec/tests/test_stance_react_thinking_forwarding.py"
       - "services/orion-cortex-exec/tests/test_gpu_lease_forwarding.py"
-      - "services/orion-cortex-exec/tests/test_orion_day_verbs.py"
       - "services/orion-harness-governor/app/bus_listener.py"
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-hub/scripts/thought_client.py"
@@ -159,7 +158,6 @@ on:
       - "services/orion-cortex-exec/app/executor.py"
       - "services/orion-cortex-exec/tests/test_stance_react_thinking_forwarding.py"
       - "services/orion-cortex-exec/tests/test_gpu_lease_forwarding.py"
-      - "services/orion-cortex-exec/tests/test_orion_day_verbs.py"
       - "services/orion-harness-governor/app/bus_listener.py"
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-hub/scripts/thought_client.py"
@@ -296,8 +294,8 @@ jobs:
         run: cd services/orion-field-digester && python -m pytest tests/test_queue_contention_digestion.py tests/test_durable_waiting_sql_postgres.py -q -p no:cacheprovider
       - name: orion-thought stance carries the ref; JSON mode and thinking off on every lane
         run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py tests/test_stance_context_response_format.py -q -p no:cacheprovider
-      - name: cortex-exec forwards options.gpu_lease and stance thinking-off; Orion's Day verb budgets and lane
-        run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_orion_day_verbs.py tests/test_stance_react_thinking_forwarding.py -q -p no:cacheprovider
+      - name: cortex-exec forwards options.gpu_lease and stance thinking-off
+        run: cd services/orion-cortex-exec && python -m pytest tests/test_gpu_lease_forwarding.py tests/test_stance_react_thinking_forwarding.py -q -p no:cacheprovider
       - name: finalize 5b judge asks for a grade under the judgement schema, thinking off (cortex-exec seam + replay eval units)
         run: |
           python -m pytest orion/harness/tests/test_finalize_reflect_judge_contract.py orion/harness/evals/test_judge_crash_replay_eval.py -q -p no:cacheprovider

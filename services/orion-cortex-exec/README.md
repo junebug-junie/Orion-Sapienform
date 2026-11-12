@@ -523,17 +523,12 @@ Exec is tested via the Orchestrator flow.
 python scripts/bus_harness.py brain "plan a party"
 ```
 
-## Orion's Day verbs (2026-09-30)
+## Orion's Day verbs: retired (2026-11-12)
 
-`orion_day_note_v1` and `orion_day_carry_forward_v1` (`orion/cognition/verbs/`) are called by
-the `orion_day.letter` durable run (services/orion-durable-runs) under its GPU pool hold, route
-`agent` (also this executor's default for them when a caller forgets to stamp one). Both return
-plain text and stay out of the structured-output verb list.
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `LLM_ORION_DAY_NOTE_MAX_TOKENS` | `12000` | Completion budget for the long reflective note (reasoning tokens count against it on the agent-lane model). |
-| `LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS` | `4000` | Completion budget for the carry-forward thread list. |
+`orion_day_note_v1` and `orion_day_carry_forward_v1` were retired with their token budgets
+(`LLM_ORION_DAY_NOTE_MAX_TOKENS`, `LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS`): the day letter is now
+Prime's end-of-day unified turn (living Prime design #3224 Part 3, `orion/orion_day/letter_turn.py`),
+which runs on the harness, not through this executor.
 
 ### Stance build: no full-graph hydrate (2026-10-06)
 

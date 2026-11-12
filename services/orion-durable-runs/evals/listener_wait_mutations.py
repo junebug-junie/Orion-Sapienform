@@ -28,7 +28,9 @@ MUTANTS = [
  ("compactor skips wait", "app/compactor_digest_graph.py", "            if parked is not None:\n                return parked\n            # An urgent", "            # An urgent"),
  ("journal skips wait", "app/journal_compose_graph.py", "            if parked is not None:\n                return parked\n", ""),
  ("distill skips wait", "app/episode_distill_graph.py", "            if parked is not None:\n                return parked\n", ""),
- ("orion_day skips wait", "app/orion_day_graph.py", "                if parked is not None:\n                    return parked\n", ""),
+ # The day letter is one harness turn since living Prime Part 3: it waits through the shared failed_attempt
+ # (mutant "failed_attempt skips wait" above); this one checks it still counts its waits.
+ ("orion_day state drops counter", "app/orion_day_graph.py", "    listener_waits: int", "    _unused_listener_waits: int"),
  ("runner swallows admitted", "app/runner.py", "            if admitted:\n                # Nobody received it", "            if False:\n                # Nobody received it"),
  ("bus raises base class", "../../orion/core/bus/async_service.py", "raise RpcPublishedToNobody(f\"no listener on {request_channel}: request published to nobody\")", "raise RpcNoListener(f\"no listener on {request_channel}: request published to nobody\")"),
  ("urgent budget ignored", "app/admitted_graph.py", "    if is_urgent(state):\n        # Urgent runs end", "    if False:\n        # Urgent runs end"),

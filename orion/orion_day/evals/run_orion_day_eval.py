@@ -5,8 +5,9 @@ living Prime design #3224 constraint 7); ``run_orion_day_input_replay.py`` compa
 
 Checks, each PASS/FAIL:
 
-1. separation   -- the note prompt's instructions contain no carry-forward vocabulary and no
-                   note placeholder; the carry-forward prompt contains the note and the digest.
+1. letter_prompt -- the letter turn's user message (orion/orion_day/letter_turn.py; the two verb
+                   prompts were retired with living Prime Part 3) holds the writing instructions,
+                   the honesty line, the threads section's heading and the whole digest.
 2. grounding    -- every bracketed item reference in the digest resolves to a material item,
                    and every item that must be shown (curiosity runs, the latest answer to each
                    self-sense question, Juniper's turns, corrections, the chat digest) is referenced.
@@ -15,8 +16,8 @@ Checks, each PASS/FAIL:
 4. condensation -- reveries are condensed (shown <= total, hollow never shown, one per chain) and
                    every theme with a showable thought gets one, unless the thought cap was hit.
 5. blind        -- no dream-hypothesis id (the scorecard's formed_from join key) in the view.
-6. budget       -- approx_tokens <= budget_tokens; the note prompt fits the agent lane's 131k
-                   context with the note's completion budget on top.
+6. budget       -- approx_tokens <= budget_tokens; the turn's minimum context (record, frame, the
+                   unified turn's harness prefix and the letter's completion) fits the agent lane's 131k.
 7. determinism  -- two builds of the same material are byte-identical.
 
 Usage:
@@ -36,23 +37,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from jinja2 import Environment  # noqa: E402
-
 from orion.orion_day.budget import _Body, extract_refs, juniper_chat_ref, material_refs  # noqa: E402
 from orion.orion_day.day_input import REVERIE_MAX_THOUGHTS, latest_self_sense, render_day_input  # noqa: E402
 from orion.orion_day.gather import gather_orion_day  # noqa: E402
+from orion.orion_day.brief import brief_from_material, minimum_context_tokens  # noqa: E402
+from orion.orion_day.letter_turn import THREADS_HEADING, WRITING_INSTRUCTIONS, build_letter_prompt  # noqa: E402
 from orion.schemas.orion_day import OrionDayMaterialV1  # noqa: E402
 
-PROMPTS = ROOT / "orion" / "cognition" / "prompts"
 AGENT_CONTEXT_TOKENS = 131_072
-NOTE_MAX_TOKENS = 12_000
-CARRY_FORWARD_WORDS = ("carry", "forward", "future", "tomorrow", "next time", "follow up", "follow-up",
-                       "thread", "to pursue", "open question", "revisit")
-
-
-def _render(name: str, od: dict) -> str:
-    return Environment(autoescape=False).from_string((PROMPTS / name).read_text()).render(
-        metadata={"orion_day_input": od})
 
 
 def required_refs(m: OrionDayMaterialV1) -> set[str]:
@@ -77,12 +69,11 @@ def juniper_texts(m: OrionDayMaterialV1) -> list[str]:
 def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []
     view = render_day_input(material)
-    od = {"letter_date": material.letter_date.isoformat(), "timezone": material.timezone, "digest_md": "\x00DIGEST\x00"}
-    note_instr = _render("orion_day_note_v1.j2", od).split("\x00DIGEST\x00")[0].lower()
-    leaked = [w for w in CARRY_FORWARD_WORDS if w in note_instr]
-    cf = _render("orion_day_carry_forward_v1.j2", {**od, "digest_md": view.digest_md, "note_md": "\x00NOTE\x00"})
-    ok = not leaked and "note_md" not in note_instr and "\x00NOTE\x00" in cf and view.digest_md in cf
-    results.append(("separation", ok, f"note-instruction leaks={leaked}"))
+    brief = brief_from_material(material)
+    prompt = build_letter_prompt(brief)
+    ok = (WRITING_INSTRUCTIONS in prompt and "Do not manufacture either mood" in prompt
+          and THREADS_HEADING in prompt and view.digest_md in prompt)
+    results.append(("letter_prompt", ok, f"prompt_chars={len(prompt)}"))
 
     refs = extract_refs(view.digest_md)
     unresolved = sorted(set(refs) - material_refs(material))
@@ -122,10 +113,10 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     results.append(("condensation", ok, f"shown {c.reverie_thoughts_included}/{c.reverie_thoughts_total}, "
                                         f"themes {c.reverie_themes_included}/{c.reverie_themes_total}, hollow_shown={len(hollow_shown)}"))
 
-    note_prompt_tokens = int(len(_render("orion_day_note_v1.j2", {**od, "digest_md": view.digest_md})) / view.chars_per_token)
-    ok = view.approx_tokens <= view.budget_tokens and note_prompt_tokens + NOTE_MAX_TOKENS < AGENT_CONTEXT_TOKENS
+    need = minimum_context_tokens(brief)
+    ok = view.approx_tokens <= view.budget_tokens and need < AGENT_CONTEXT_TOKENS
     results.append(("budget", ok, f"digest~{view.approx_tokens} tokens (budget {view.budget_tokens}); "
-                                  f"note prompt~{note_prompt_tokens} + {NOTE_MAX_TOKENS} < {AGENT_CONTEXT_TOKENS}"))
+                                  f"letter turn needs~{need} < {AGENT_CONTEXT_TOKENS}"))
 
     again = render_day_input(OrionDayMaterialV1.model_validate_json(material.model_dump_json()))
     results.append(("determinism", again.digest_md == view.digest_md, "rebuilt from JSON"))

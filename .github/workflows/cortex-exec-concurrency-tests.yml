@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "services/orion-cortex-exec/app/main.py"
+      - "services/orion-cortex-exec/app/pre_turn_appraisal.py"
       - "services/orion-cortex-exec/tests/test_exec_concurrent_handlers.py"
       - "services/orion-cortex-exec/tests/test_pre_turn_appraisal_concurrency.py"
       - "orion/core/bus/bus_service_chassis.py"
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - "services/orion-cortex-exec/app/main.py"
+      - "services/orion-cortex-exec/app/pre_turn_appraisal.py"
       - "services/orion-cortex-exec/tests/test_exec_concurrent_handlers.py"
       - "services/orion-cortex-exec/tests/test_pre_turn_appraisal_concurrency.py"
       - "orion/core/bus/bus_service_chassis.py"

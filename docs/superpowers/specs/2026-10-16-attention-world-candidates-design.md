@@ -699,7 +699,7 @@ recorded finding.
    **Built 2026-11-12** (branch `fix/world-chat-loop-id`): stable label "Juniper is
    talking", `AttentionCandidateV1.evidence`, broadcast pass-through to
    `provenance["world_evidence"]`, reverie rendering. Report:
-   `docs/superpowers/pr-reports/2026-11-12-world-chat-loop-id-pr.md`.
+   `docs/superpowers/pr-reports/2026-11-12-world-chat-loop-id-pr.md` (PR #3225).
 4. **Later, each behind its own gate:** reading (needs confidences), painting
    (needs act-ledger history), presence (needs identity + debounce).
 

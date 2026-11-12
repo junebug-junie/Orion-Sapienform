@@ -105,4 +105,4 @@ Verify `/props` reports `Qwen3.5-9B-UD-Q5_K_XL.gguf`, `/slots` remains four 4096
 
 ## PR link
 
-Pending PR creation.
+https://github.com/junebug-junie/Orion-Sapienform/pull/3233

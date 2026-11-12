@@ -77,6 +77,11 @@ LIB_HOPS = 1
 #: on an entry that no longer matches anything unresolved.
 DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # Cross-service writers code cannot see (validate-then-persist, HTTP API).
+    "orion.prime.state:PrimeStateV1": (
+        "orion-mind",
+        "app/prime_loop.py writes Redis orion:prime:state every tick; hub's room_claude_context reads it "
+        "back via orion.prime.block.parse_prime_redis for the Claude invite's concern count",
+    ),
     "orion.memory_graph.dto:SuggestDraftV1": (
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",

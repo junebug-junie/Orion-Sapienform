@@ -2468,7 +2468,19 @@ def _memory_turn_initiator(prompt: str, client_meta: Any) -> str | None:
     """Who opened a turn, or None when the turn is not memory: "juniper" when she wrote a
     prompt; "orion" only for Orion's own outreach (client_meta.unsolicited, the flag the
     outreach path writes). Other prompt-less rows -- e.g. Claude speaking in the room
-    (client_meta.room_claude, 17 live rows) -- stay out of memory, as before 2026-10-09."""
+    (client_meta.room_claude, 18 live rows) -- stay out of memory, as before 2026-10-09.
+
+    A room_claude row is never memory, even with a prompt (2026-11-12): Hub now keeps
+    Juniper's @claude prompt in client_meta.room_claude.prompt, and a side exchange with
+    Claude must not become Orion's memory if that text ever reaches the prompt column."""
+    meta = client_meta
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:  # noqa: BLE001
+            meta = None
+    if isinstance(meta, dict) and meta.get("room_claude"):
+        return None
     if prompt:
         return "juniper"
     if isinstance(client_meta, dict) and client_meta.get("unsolicited") is True:

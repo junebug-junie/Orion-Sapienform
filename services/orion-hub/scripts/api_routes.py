@@ -2464,7 +2464,24 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
         raise HTTPException(status_code=422, detail="prompt required")
 
     session_id = (payload.session_id or "").strip() or None
-    transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+    transcript_note: Optional[str] = None
+    hub_index: Optional[str] = None
+    mode = str(getattr(settings, "HUB_ROOM_CLAUDE_CONTEXT_MODE", "full") or "full").strip().lower()
+    if mode == "recent":
+        # Rollback path: the old 12-turn, 48 h window.
+        transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+    else:
+        # The whole conversation back to a character cap, plus a names-and-counts
+        # index of what is open in Hub (scripts/room_claude_context.py).
+        from scripts import main as hub_main
+        from scripts.room_claude_context import build_room_claude_context
+
+        transcript, transcript_note, hub_index = await build_room_claude_context(
+            session_id,
+            max_chars=int(getattr(settings, "HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS", 160000)),
+            bus=getattr(hub_main, "bus", None),
+            claude_name=settings.HUB_ROOM_CLAUDE_PARTICIPANT_NAME,
+        )
 
     try:
         request = await room_claude_relay.invite(
@@ -2474,6 +2491,8 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
             room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
             transcript=transcript,
             connection_id=(payload.connection_id or "").strip() or None,
+            hub_index=hub_index,
+            transcript_note=transcript_note,
         )
     except Exception as exc:
         logger.exception("room_claude_invite_failed")
@@ -2485,11 +2504,16 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
         "correlation_id": request.correlation_id,
         "room_id": request.room_id,
         "transcript_turns": len(request.transcript),
+        "transcript_chars": sum(len(e.text) for e in request.transcript),
+        "transcript_note": request.transcript_note,
     }
 
 
 async def _recent_room_transcript(session_id: Optional[str], limit: int) -> list[dict]:
     """Recent conversation for Claude's FIRST turn of a session.
+
+    Used only when HUB_ROOM_CLAUDE_CONTEXT_MODE=recent (the rollback path);
+    the default is scripts/room_claude_context.py's whole-conversation window.
 
     Not the memory mechanism -- the companion holds the conversation on
     Claude's side via --resume and ignores this on later turns. This is seeding

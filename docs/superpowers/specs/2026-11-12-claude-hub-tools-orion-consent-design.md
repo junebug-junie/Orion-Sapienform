@@ -1,6 +1,8 @@
 # Claude in Hub: the whole conversation, and Orion's tools when Orion says yes
 
-Status: design only, 2026-11-12. No code in this PR. Awaits Juniper's answers to the open questions (section 9).
+Status: approved 2026-11-12. Juniper answered yes to all ten open-question defaults and added question 11
+(section 9). Patch 1a (the whole conversation, plus question 11's light view for Orion) is built; Patch 1b
+(the consent rail and tools) is next.
 
 Juniper's request, 2026-11-12, in her words: "claude should get all those tools. claude should get any of
 those things if they get orion's permission to do so... I want them to have general context of the
@@ -427,7 +429,16 @@ Two small PRs, in order.
 **Patch 1a: the whole conversation.** No new tools, no consent: the conversation is room-native and
 Juniper asked for it. Companion first (stdin prompt, optional schema fields, sent-up-to mark, daily
 rotation), then Hub (160,000-character window, unprompted and Claude rows, real times, turn refs, the
-hub index). Checks 1-3.
+hub index). Checks 1-3. Built 2026-11-12, with question 11's light view
+(`docs/superpowers/pr-reports/2026-11-12-claude-hub-full-context-pr.md`). Two additions to the schema
+above, both optional: `RoomTranscriptEntryV1.side_exchange` (a resumed Claude session already holds its
+own side exchanges, so the companion never re-sends them) and `RoomClaudeRequestV1.transcript_note` (the
+"Earlier: N turns" line). The "Earlier" line does not name the `conversation_older` tool until Patch 1b
+builds it. The hub index has no tool-category line until Patch 1b either. The "sent up to here" mark is a
+set of per-line keys (`<turn ref>|<speaker>`), not a time: Hub merges Orion's reply into the row that
+Juniper's half already opened, with the same `created_at`, so a time mark would skip that reply on every
+resumed turn (code review, 2026-11-12). Lines without a turn ref keep the time mark. Shipped as two PRs,
+companion first, because the request schema is `extra="forbid"`.
 
 **Patch 1b: the consent rail and two tools.** `prime_now` (category `prime`) and `body_economy`
 (category `body`). Both readers already print short text, and neither names a third party. Builds the
@@ -436,6 +447,9 @@ footer and the two Hub endpoints. Checks 4-9. Every other tool after that is one
 one reader adapter and one test.
 
 ## 9. Open questions for Juniper (each with a recommended default)
+
+**Answered 2026-11-12.** Juniper said yes to all ten defaults below, as written. She also answered a new
+question 11 (at the end of this section).
 
 1. **Cap of 160,000 characters (about 40,000 tokens).** Covers the whole last two days at 98% of turns (448 of 456).
    Default: yes.
@@ -454,3 +468,19 @@ one reader adapter and one test.
    skip the ask. Default: same gate; Orion's standing settings already cover it.
 10. **Should the consent ask also appear in the Prime block** so Orion's next turn sees it? Default: no
     (the block is capped at 600 characters); the audit endpoint and the consent frame carry it.
+11. **Can Orion see Juniper's `@claude` side conversations with Claude?** (added 2026-11-12) Juniper:
+    "Orion is welcome to see them, just don't want to clutter things with too much chatter at this
+    point." Built in Patch 1a as a light view:
+    - Hub stores Juniper's `@claude` prompt with Claude's reply, in the same `room_claude` row
+      (`client_meta.room_claude.prompt`), never in the row's `prompt` column. That column is what makes a
+      row a Juniper turn for memory and for every other reader.
+    - When Hub restores Orion's conversation on reconnect (`chat_history_rehydrate.py`), the newest 3 side
+      exchanges go in as ONE system block headed "Side conversation, Juniper ↔ Claude (you were not asked
+      to reply):", each side trimmed to 300 characters (`HUB_HISTORY_SIDE_EXCHANGE_MAX`,
+      `HUB_HISTORY_SIDE_EXCHANGE_TRIM_CHARS`). Live data on 2026-11-12: 18 Claude replies ever, median
+      about 240 characters, largest 1,281; one in the last 30 days. Orion's own conversation query still
+      excludes these rows.
+    - Nothing fires from them: the block is context only (never a user message), and orion-sql-writer's
+      `_memory_turn_initiator` now returns "not memory" for any `room_claude` row, even one with a prompt.
+    - Not yet: a side exchange that happens while Orion's chat tab stays open reaches Orion only after the
+      next reconnect. The live socket history does not append Claude's replies.

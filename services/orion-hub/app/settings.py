@@ -197,6 +197,21 @@ class Settings(BaseSettings):
     HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
     HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
     HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)
+    # What Claude gets on an invite (2026-11-12, Patch 1a of
+    # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md).
+    # "full": the whole Hub conversation, newest rows first, whole rows only, back
+    # to HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS characters, with Orion's unprompted
+    # messages and Claude's own side exchanges labelled, real times, turn refs,
+    # and a names-and-counts index of what is open in Hub.
+    # "recent": the old HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS window (rollback).
+    HUB_ROOM_CLAUDE_CONTEXT_MODE: str = Field(default="full")
+    HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS: int = Field(default=160000)
+    # Orion's light view of Juniper's side conversations with Claude (open
+    # question 11): on reconnect rehydrate, the newest N side exchanges go into
+    # Orion's context as ONE labelled block ("you were not asked to reply"),
+    # each side trimmed. 0 turns the block off.
+    HUB_HISTORY_SIDE_EXCHANGE_MAX: int = Field(default=3)
+    HUB_HISTORY_SIDE_EXCHANGE_TRIM_CHARS: int = Field(default=300)
     CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
     CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
 

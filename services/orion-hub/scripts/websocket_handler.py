@@ -482,6 +482,9 @@ async def _rehydrate_connection_history(
             max_turns=int(getattr(settings, "HUB_CONTEXT_TURNS", 10)),
             max_age_hours=float(getattr(settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
             enabled=bool(getattr(settings, "HUB_HISTORY_REHYDRATE_ENABLED", True)),
+            side_exchange_max=int(getattr(settings, "HUB_HISTORY_SIDE_EXCHANGE_MAX", 3) or 0),
+            # 0 means "do not trim" (render_side_exchange_block trims only when > 0).
+            side_exchange_trim_chars=int(getattr(settings, "HUB_HISTORY_SIDE_EXCHANGE_TRIM_CHARS", 300)),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("history_rehydrate_failed session=%s err=%s", session_id, exc)

@@ -1,6 +1,7 @@
 # Intention ledger (step D): Orion keeps track of what Orion promised
 
-Status: design (proposal mode), 2026-11-11. No code changed. Juniper approves before any build.
+Status: design (proposal mode), 2026-11-11. **Approved by Juniper 2026-11-12, every default
+accepted** (see "Juniper's answers"). Next patch: D0, the replay eval.
 Arc: unified-turn self-prediction, PR #2869
 (`docs/superpowers/specs/2026-10-23-unified-turn-self-prediction-design.md`), step D:
 "a reducer over turn outcomes keeps what Orion meant, did, left open and promised, and the next
@@ -233,6 +234,17 @@ the same list (D1). Nothing else reads the list: no outreach trigger, and no mot
    separate small PR, because a word list must not grow. The decision belongs to Juniper,
    because social rooms are a different surface.]
 
+### Juniper's answers (2026-11-12)
+
+Juniper accepted every bracketed default above:
+
+1. Offers count as promises only after Juniper accepts them. The judge decides acceptance from
+   the reply plus Juniper's next message, not from a word list.
+2. One fixed 72 h horizon for every promise.
+3. Orion-started messages are out of v1.
+4. No Hub close/drop button in v1.
+5. Retire the social-memory word-list commitment detector, in a separate small PR.
+
 ## Files likely to touch
 
 - `orion/schemas/harness_finalize.py`: `PromiseV1`, two fields on `FinalizeReflectionV1`
@@ -269,10 +281,14 @@ the same list (D1). Nothing else reads the list: no outreach trigger, and no mot
    appears in a later stance prompt (`cockpit_turn_sighting`). Otherwise `UNVERIFIED`.
 7. **Does it help (the settled outcome):** keep rate = kept / (kept + expired) for promises
    made in the 28 days after deploy, compared with the replay baseline (eval 1 also grades
-   follow-through on old turns with the same judge). The test is a Fisher exact test, and the
-   read is pre-registered for 2026-12-16. The likely n is 10 to 25 promises. A "no detectable
-   change" result is the expected early outcome and is not a pass. The ledger stays on if the
-   keep rate rose and the guard metric (promises per turn ≤ 2× baseline) held.
+   follow-through on old turns with the same judge). The read is pre-registered for
+   2026-12-16. The likely n is 10 to 25 promises. Report the change as an effect size with
+   its uncertainty, not as a significance test: a Beta(1, 1) prior on each keep rate, the
+   posterior difference (after minus before), its 90% interval, and P(keep rate rose). There
+   is no 0.05 line and no pass/fail significance verdict. A wide interval from thin data is
+   reported as it is; it is never used as a veto. The guard metric still applies: promises
+   per Juniper turn must stay ≤ 2× the baseline (5 of 95 turns). If it does not, the flag goes
+   off (failure mode 4).
 8. **Calibration:** the self-monitor shows `act.hub.chat_reply.say.promise` with a Brier score
    for `predicted`, and its status is not `ungradeable`.
 

@@ -187,8 +187,8 @@ def test_qwen3_8b_balanced_profile_forwards_enable_thinking_false(monkeypatch):
     assert cmd.index("--jinja") < cmd.index("--chat-template-kwargs")
 
 
-def test_qwen3_8b_atlas_metacog_profile_q5km_single_lane_16k(monkeypatch):
-    """Atlas metacog: Q5_K_M, n_parallel=1 -> full 16k ctx per slot, reasoning off."""
+def test_qwen3_8b_atlas_metacog_profile_q5km_four_4k_slots(monkeypatch):
+    """Atlas metacog: Q5_K_M, four 4k slots, reasoning off."""
     repo_root = Path(__file__).resolve().parents[3]
     config_path = repo_root / "config" / "llm_profiles.yaml"
 
@@ -229,9 +229,9 @@ def test_qwen3_8b_atlas_metacog_profile_q5km_single_lane_16k(monkeypatch):
     cmd, _env = main.build_llama_server_cmd_and_env(profile)
     assert _find_flag_value(cmd, "--reasoning") == "off"
     assert _find_flag_value(cmd, "--ctx-size") == "16384"
-    assert _find_flag_value(cmd, "--parallel") == "1"
+    assert _find_flag_value(cmd, "--parallel") == "4"
     assert _find_flag_value(cmd, "--reasoning-budget") == "0"
-    assert _find_flag_value(cmd, "--n-predict") == "4096"
+    assert _find_flag_value(cmd, "--n-predict") == "1024"
     assert _find_flag_value(cmd, "--temp") == "0.35"
     assert "--chat-template-kwargs" not in cmd
 

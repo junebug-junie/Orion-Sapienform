@@ -72,6 +72,8 @@ services:
       PRIME_CONCERNS_FROM_EVENT_WANTS: ${PRIME_CONCERNS_FROM_EVENT_WANTS:-true}
       PRIME_EVENT_WANTS_HOURS: ${PRIME_EVENT_WANTS_HOURS:-24}
       PRIME_EVENT_WANTS_LIMIT: ${PRIME_EVENT_WANTS_LIMIT:-8}
+      # Living Prime Part 2, turn hand-back (app/prime_loop.py); see .env_example.
+      PRIME_TURN_HANDBACK_ENABLED: ${PRIME_TURN_HANDBACK_ENABLED:-true}
       # Self-monitor E1 act gate on Prime's acts (app/prime_loop.py); see .env_example.
       SELF_MONITOR_ACT_GATE_ENABLED: ${SELF_MONITOR_ACT_GATE_ENABLED:-true}
       SELF_MONITOR_PROBE_INTERVAL_SEC: ${SELF_MONITOR_PROBE_INTERVAL_SEC:-21600}

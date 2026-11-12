@@ -3761,12 +3761,14 @@ channels:
     stability: "experimental"
     since: "2026-10-06"
 
+  # orion-mind (2026-11-12, living Prime Part 2): Prime folds each finished turn's ingress + finalize hops
+  # into its state (orion/prime/handback.py). Read-only second consumer; payload unchanged.
   - name: "orion:cockpit:hop"
     kind: "event"
     schema_id: "CockpitHopV1"
     message_kind: "cockpit.hop.v1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-hub", "orion-mind"]
     stability: "experimental"
     since: "2026-09-06"
 

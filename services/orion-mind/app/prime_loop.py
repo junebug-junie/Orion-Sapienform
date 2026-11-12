@@ -82,6 +82,15 @@ each verb is gated, and what a refusal means:
 * ``infer`` (the thought): before the bid. A refusal is no bid and no model call; the probe is spent
   only when the model was reached (the thought act opens), matching the act's own rule.
 
+Every turn ends back in Prime (living Prime design Part 2, PRIME_TURN_HANDBACK_ENABLED; orion/prime/handback.py):
+a listener on the bus channel orion:cockpit:hop (the hops Hub already publishes for every unified turn) cuts each
+ingress and finalize hop to a small signal and queues it in memory; the tick drains the queue and folds it into
+Prime's state deterministically. A turn that made a promise opens a concern (event_ref ``turn:<correlation_id>``)
+within the loop-guard bounds; a turn whose prompt cites an open ``prime_concern:<id>`` and replied settles it.
+Only those two wake a thought; every finished turn shows in the next frame. The hand-back record lives in its own
+Redis key (orion:prime:turns). Pub/sub is not durable: a turn that finishes while orion-mind is down is not handed
+back. Flag off: no listener, no fold, no frame section.
+
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
 """
@@ -92,6 +101,7 @@ import asyncio
 import json
 import logging
 import urllib.request
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
@@ -134,6 +144,16 @@ from orion.prime.acts import (
     thought_act,
     treated_focus_gone,
 )
+from orion.prime.handback import (
+    HANDBACK_CHANNEL,
+    TURNS_KEY,
+    PrimeTurnsStateV1,
+    TurnSignalV1,
+    fold_turn_signals,
+    link_started_turn,
+    signal_from_hop,
+    turn_lines,
+)
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
     PRIME_CONCERNS_KEY,
@@ -161,6 +181,7 @@ from orion.prime.thought import (
     system_prompt,
 )
 from orion.refs import RefV1, resolve as resolve_ref
+from orion.schemas.cockpit_sighting import CockpitHopV1
 from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaRepliesViewV1
 from orion.schemas.grammar import ActV1
 from orion.schemas.physiology_want import FundedEventWantsV1
@@ -182,6 +203,9 @@ FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
+# Hand-back signals queued between ticks (a tick drains them). Hops of sessions that are not handed back never
+# reach it (signal_from_hop); world-pulse finalize hops do, ~300 a day, so a 15 s tick never comes near this.
+TURN_INBOX_MAX = 500
 
 # Prime on the bus, in the body economy, the ledger, Redis and the logs (orion/mindloop/instance.py).
 PRIME_IDENTITY = LoopIdentity(
@@ -226,6 +250,90 @@ class PrimeRuntime(MindLoopRuntime):
         # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
         self._bet_refused_at: dict[str, datetime] = {}
         self._last_settle: Optional[datetime] = None
+        # Turn hand-back (Part 2): the listener appends, the tick drains (one event loop, no lock needed).
+        self.turn_record = PrimeTurnsStateV1()
+        self._turn_inbox: deque[TurnSignalV1] = deque(maxlen=TURN_INBOX_MAX)
+        self._turn_hops_dropped = 0
+        self._listener: Optional[asyncio.Task] = None
+
+    # --- turn hand-back (living Prime design, Part 2) ----------------------------------------
+    def _handback_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_TURN_HANDBACK_ENABLED", False))
+
+    async def start(self, *, connect: bool = False) -> None:
+        await super().start(connect=connect)
+        if self._handback_on():
+            self._listener = asyncio.create_task(self._listen_turns(), name="orion-prime-turn-handback")
+
+    async def stop(self) -> None:
+        if self._listener is not None:
+            self._listener.cancel()
+            try:
+                await self._listener
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._listener = None
+        await super().stop()
+
+    async def _listen_turns(self) -> None:
+        """Subscribe to the cockpit hops; resubscribe with backoff on any failure (a silent socket included:
+        iter_messages raises on it)."""
+        delay = 1.0
+        while not self._stop.is_set():
+            try:
+                async with self.bus.subscribe(HANDBACK_CHANNEL) as pubsub:
+                    logger.info("prime_handback_subscribed channel=%s", HANDBACK_CHANNEL)
+                    delay = 1.0
+                    async for msg in self.bus.iter_messages(pubsub):
+                        self.accept_hop(msg.get("data"))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_handback_listen_failed err=%s retry_in=%.0fs", type(exc).__name__, delay)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+            delay = min(delay * 2, 60.0)
+
+    def accept_hop(self, data: Any) -> None:
+        """One bus message: decode, validate as CockpitHopV1 (the channel's registered schema), cut to a signal."""
+        try:
+            decoded = self.bus.codec.decode(data)
+            if not decoded.ok:
+                raise ValueError("undecodable")
+            hop = CockpitHopV1.model_validate(decoded.envelope.payload)
+            signal = signal_from_hop(hop.model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001
+            self._turn_hops_dropped += 1
+            if self._turn_hops_dropped in (1, 10, 100) or self._turn_hops_dropped % 1000 == 0:
+                logger.warning("prime_handback_hop_dropped total=%d err=%s", self._turn_hops_dropped,
+                               str(exc)[:160])
+            return
+        if signal is not None:
+            self._turn_inbox.append(signal)
+
+    def _fold_turns(self, now: datetime) -> None:
+        if not self._turn_inbox:
+            return
+        signals = list(self._turn_inbox)
+        self._turn_inbox.clear()
+        self.state, self.turn_record, folded = fold_turn_signals(self.state, self.turn_record, signals, now)
+        for t in folded:
+            logger.info("prime_turn_handback corr=%s who=%s verdict=%s promises=%d opened=%s refused=%s settled=%s",
+                        t.correlation_id, t.who, t.verdict, len(t.promise_refs), t.opened_concern_id or "-",
+                        t.thread_refused or "-", ",".join(t.settled_concern_ids) or "-")
+
+    async def load(self) -> None:
+        await super().load()
+        if not self._handback_on():
+            return
+        try:
+            raw = await self.bus.redis.get(TURNS_KEY)
+            if raw:
+                self.turn_record = PrimeTurnsStateV1.model_validate_json(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prime_turns_load_failed err=%s (starting empty)", str(exc)[:200])
 
     # --- persistence: Prime's first published call ------------------------------------------
     async def save(self) -> None:
@@ -234,6 +342,11 @@ class PrimeRuntime(MindLoopRuntime):
         Prime's state. Written on every save, so its ``as_of`` doubles as Prime's liveness: a reader that
         finds it old knows Prime stopped."""
         await super().save()
+        if self._handback_on():
+            try:
+                await self.bus.redis.set(TURNS_KEY, self.turn_record.model_dump_json())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_turns_save_failed err=%s", type(exc).__name__)
         try:
             await self.bus.redis.set(PRIME_CONCERNS_KEY, concerns_view(self.state, now=self.clock()).model_dump_json())
         except Exception as exc:  # noqa: BLE001
@@ -250,6 +363,9 @@ class PrimeRuntime(MindLoopRuntime):
         snap, inputs = await self._read_body_and_attention()
         now = self.clock()
         self.state = lapse_concerns(observe(self.state, snap, now), now)
+        if self._handback_on():
+            self._fold_turns(now)
+            inputs.turns = turn_lines(self.turn_record, now)
         await self._maybe_settle(now)
         await self._settle_regulations(now)
         await self._flush_concern_acts()
@@ -679,6 +795,15 @@ class PrimeRuntime(MindLoopRuntime):
         self.state = self.state.model_copy(update={"open_regulations": keep, "regulation_rest_until": rest})
 
     # --- settling questions ----------------------------------------------------------------
+    @staticmethod
+    def _run_turn_correlation(runs: list[Any], run_id: Optional[str]) -> Optional[str]:
+        """The unified turn a curiosity run ran as (Hub's runs API ``harness.turn_correlation_id``), or None."""
+        if not run_id:
+            return None
+        run = next((r for r in runs if isinstance(r, dict) and str(r.get("run_id") or "") == run_id), None)
+        corr = ((run or {}).get("harness") or {}).get("turn_correlation_id")
+        return str(corr)[:200] if corr else None
+
     async def _maybe_settle(self, now: datetime) -> None:
         if not self.state.open_nominations:
             return
@@ -718,7 +843,11 @@ class PrimeRuntime(MindLoopRuntime):
                 # Past the horizon with no outcome: the ledger expires the act at 0; Prime lets go.
                 self.state = note_outcome(self.state, f"my question {nom.question[:120]!r} got no outcome before its horizon")
                 continue
-            await self._close(act, NOMINATION_COMPONENT, produced=settled.produced, note=settled.note)
+            turn_corr = self._run_turn_correlation(runs, settled.run_id)
+            if turn_corr and self._handback_on():
+                self.turn_record = link_started_turn(self.turn_record, turn_corr, act.act_id)
+            await self._close(act, NOMINATION_COMPONENT, produced=settled.produced,
+                              note=f"{settled.note} turn {turn_corr}" if turn_corr else settled.note)
             logger.info("prime_nomination_settled focus=%s arm=%s produced=%s note=%s",
                         nom.focus_id, nom.arm, settled.produced, settled.note)
             seen = settled.note if nom.arm == "treated" else "held back as a control (it was never sent)"

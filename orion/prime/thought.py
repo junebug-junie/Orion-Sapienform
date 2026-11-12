@@ -233,6 +233,9 @@ class FrameInputs:
     organ_replies_error: Optional[str] = None
     # Answering is on in this process (CURIOSITY_REPLICA_ENABLED and CURIOSITY_REPLICA_ANSWERS_ENABLED).
     organ_replies_on: bool = False
+    # Turn hand-back (living Prime Part 2, orion/prime/handback.py turn_lines): the latest finished turns.
+    # None: the hand-back is off and the section is not shown.
+    turns: Optional[list[str]] = None
 
 
 def shows_organ_replies(inputs: "FrameInputs") -> bool:
@@ -375,7 +378,9 @@ def _curiosity_lines(inputs: FrameInputs) -> list[str]:
 
 def _concern_line(c: PrimeConcernV1, now: datetime) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
-    about = f"event {c.event_ref}" if c.event_ref else f"arc {c.arc_id or 'none'}"
+    ref = c.event_ref or ""
+    about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
+             else f"event {ref}" if ref else f"arc {c.arc_id or 'none'}")
     return (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
             f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
 
@@ -442,6 +447,8 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
         "WHAT HAPPENED TO YOUR EARLIER MOVES:\n" + ("\n".join(f"- {o}" for o in state.recent_outcomes) or "(none yet)"),
+        *(["TURNS THAT HANDED BACK TO YOU (finished chat, curiosity, consult and letter turns, newest first):\n"
+           + "\n".join(inputs.turns)] if inputs.turns is not None else []),
         "QUESTIONS YOU ASKED THAT ARE STILL OPEN:\n" + ("\n".join(
             f"- {n.question!r} (asked {_age(inputs.now, n.opened_at.isoformat())}"
             f"{'; held back as a control, not sent' if n.arm == 'control' else ''})"

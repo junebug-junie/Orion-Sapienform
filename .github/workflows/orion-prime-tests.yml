@@ -34,6 +34,10 @@ on:
       - "scripts/analysis/curiosity_three_arm_readout.py"
       - "scripts/analysis/tests/test_curiosity_three_arm_readout.py"
       - "orion/regulation/juniper_turns.py"
+      # The turn hand-back reads Hub's cockpit hops (living Prime Part 2).
+      - "orion/schemas/cockpit_sighting.py"
+      - "orion/cockpit/**"
+      - "orion/consult/core.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -63,6 +67,10 @@ on:
       - "scripts/analysis/curiosity_three_arm_readout.py"
       - "scripts/analysis/tests/test_curiosity_three_arm_readout.py"
       - "orion/regulation/juniper_turns.py"
+      # The turn hand-back reads Hub's cockpit hops (living Prime Part 2).
+      - "orion/schemas/cockpit_sighting.py"
+      - "orion/cockpit/**"
+      - "orion/consult/core.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:

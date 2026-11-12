@@ -87,6 +87,8 @@ def test_sql_is_keyset_capped_and_chat_is_naive_utc():
     assert "btrim(coalesce(prompt, '')) <> ''" in by["chat"].sql
     assert "btrim(coalesce(prompt, '')) = ''" in by["outreach"].sql
     assert "o.completed_at" in by["curiosity_choice"].sql and "JOIN curiosity_offer_decisions" in by["curiosity_choice"].sql
+    # A self-inquiry run (arm self_inquiry, nothing offered) is not a choice: filtered in SQL, not just in choices.py.
+    assert "d.arm <> 'self_inquiry'" in by["curiosity_choice"].sql
     assert "produced_by = 'curiosity_self_inquiry'" in by["self_inquiry_seed"].sql
     assert "mirror_kinds" in by["journal"].sql and set(ps.JOURNAL_MIRROR_SOURCE_KINDS) == {"world_pulse", "orion_day"}
     assert "DISTINCT ON (concept_id)" in ps.SEED_SQL

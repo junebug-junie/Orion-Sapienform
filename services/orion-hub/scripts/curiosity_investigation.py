@@ -1507,6 +1507,8 @@ class CuriosityInvestigation:
             self._pool_provider(),
             run_id=run_id,
             arm=ARM_SELF_INQUIRY,
+            # The column is P(value arm) for offer draws; for this arm it carries no weight (the spec's
+            # 1.0: the arm was certain). Every weighting reader filters by arm or arm_propensities first.
             value_arm_propensity=1.0,
             offered=[],
             stale_offered=[],
@@ -3866,6 +3868,9 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
+                measured = self._measured_turn(SELF_INQUIRY_TAG)
+                if measured:
+                    await self._spend_turn_started(run_id)
                 text, debug = await self._generate(
                     prompt,
                     correlation_id,
@@ -3873,6 +3878,8 @@ class CuriosityInvestigation:
                     parent_run_id=run_id,
                     **({"retrieval_query": retrieval_query} if retrieval_query else {}),
                 )
+                if measured:
+                    await self._spend_turn_ended(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise

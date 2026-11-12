@@ -894,3 +894,48 @@ def test_the_chat_phrase_force_cannot_override_strain_but_run_now_can() -> None:
     assert _mirrors(bus) == []
     # The operator button keeps its wider override.
     assert _asyncio.run(loop.tick_self_inquiry(force=True)) is None
+
+
+# --- the self-inquiry decision row (2026-10-16 attention-world-candidates design, the self-inquiry gap) ---
+
+
+class _RecordingGrantConn(_GrantConn):
+    """`_GrantConn` that keeps every write, so a test can see the spend log's rows."""
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.writes: list[tuple[str, tuple]] = []
+
+    async def execute(self, sql, *args):
+        self.writes.append((sql, args))
+        return None
+
+
+def _decision_rows(conn) -> list[tuple]:
+    from scripts.curiosity_offer_decisions import INSERT_DECISION_SQL
+
+    return [args for sql, args in conn.writes if sql == INSERT_DECISION_SQL]
+
+
+def test_a_self_inquiry_run_writes_one_self_inquiry_decision_row_and_is_measured() -> None:
+    from scripts.curiosity_offer_decisions import SET_TURN_SNAPSHOT_SQL
+
+    bus = _FakeBus()
+    conn = _RecordingGrantConn()
+    loop = _self_loop(bus, reader=_DefinitionReader(), conn=conn, kickoff_via_cortex=False)
+    assert asyncio.run(loop.tick_self_inquiry()) is None
+    rows = _decision_rows(conn)
+    assert len(rows) == 1
+    run_id, arm, propensity, offered = rows[0][0], rows[0][1], rows[0][2], rows[0][3]
+    assert arm == "self_inquiry" and propensity == 1.0 and offered == "[]"
+    # The direct (non-cortex) turn is snapshotted too, so it can get its outcome row.
+    assert any(sql == SET_TURN_SNAPSHOT_SQL and args[0] == run_id for sql, args in conn.writes)
+
+
+def test_self_inquiry_outcomes_off_writes_no_decision_row() -> None:
+    bus = _FakeBus()
+    conn = _RecordingGrantConn()
+    loop = _self_loop(bus, reader=_DefinitionReader(), conn=conn, kickoff_via_cortex=False,
+                      self_inquiry_outcomes_enabled=False)
+    assert asyncio.run(loop.tick_self_inquiry()) is None
+    assert _decision_rows(conn) == []

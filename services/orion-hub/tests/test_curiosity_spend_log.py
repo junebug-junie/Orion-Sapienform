@@ -343,8 +343,16 @@ def test_self_inquiry_turns_are_measured_like_investigations() -> None:
     loop = _graph_loop(bus, reader=reader, conn=conn)
     asyncio.run(loop._record_self_inquiry_decision(run_id))
     _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.9, 1, last_run_id=rid)])
+    stamps: list[str] = []
+
+    async def _stamp(name, *a, **k):
+        stamps.append(name)
+
+    loop._stamp_corrections = lambda *a, **k: _stamp("corrections")  # type: ignore[method-assign]
+    loop._stamp_focus = lambda *a, **k: _stamp("focus")  # type: ignore[method-assign]
     asyncio.run(loop._turn_result_for(_request(run_id, source_tag=SELF_INQUIRY_TAG), hold_lock=False))
     assert conn.decisions[run_id]["turn_snapshot"] is not None
+    assert stamps == []    # corrections and focus stay investigation-only
     assert conn.outcomes[run_id]["realized_nats"] == pytest.approx(kl_nats(0.9, 0.5))
     assert conn.outcomes[run_id]["turn_ok"] is True
 

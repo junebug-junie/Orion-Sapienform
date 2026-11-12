@@ -39,13 +39,12 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from orion.curiosity.value import ARM_SELF_INQUIRY  # a self-inquiry run's decision row (nothing offered)
 from orion.schemas.personality import MAX_CHOICE_LIST, ChoiceOptionV1, PersonalityChoiceV1
 
 LANE_CURIOSITY = "curiosity_prior_selection"
 LANE_OVERRIDE = "voluntary_attention_override"
 KIND_TESTED = "tested"
-# orion/curiosity/value.py ARM_SELF_INQUIRY: a self-inquiry run's decision row (nothing offered).
-ARM_SELF_INQUIRY = "self_inquiry"
 PRIOR_REF_PREFIX = "curiosity_prior:"
 
 

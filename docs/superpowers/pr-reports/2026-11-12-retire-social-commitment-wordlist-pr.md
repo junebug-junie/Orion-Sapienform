@@ -134,6 +134,6 @@ scripts/safe_docker_build.sh orion-social-memory up -d --build && scripts/safe_d
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3216
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

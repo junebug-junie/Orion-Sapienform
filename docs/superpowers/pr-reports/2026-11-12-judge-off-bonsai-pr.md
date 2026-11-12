@@ -194,6 +194,6 @@ scripts/safe_docker_build.sh orion-gpu-pool up -d --build && scripts/safe_docker
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3219
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

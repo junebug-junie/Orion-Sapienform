@@ -36,6 +36,34 @@ Hub tick (scheduling, material, worldview, prompt)
 - A thread older than `DURABLE_RUNS_MAX_AGE_HOURS` is abandoned (one `abandoned` state
   event), never resumed into a different day's material.
 
+### Checkpoint pruning (2026-11-12)
+
+The Postgres saver keeps every checkpoint, pending write and channel version forever, and every
+saver call (including the resume sweep's `alist(None)` every `DURABLE_RUNS_RESUME_SWEEP_SEC`)
+runs behind ONE lock per saver. Measured 2026-11-12: the sweep's listing read 53.8k checkpoints in
+16 s warm (~4M buffer hits), 9 s of it the three `temporal_self` day threads, whose blob join
+hashes every blob the thread ever wrote (5,321 rows to return 10). While it runs, temporal_self's
+own checkpoint read waits on that lock.
+
+`app/checkpoint_prune.py` keeps, per `(thread_id, checkpoint_ns)`: the newest checkpoint, its
+pending writes, and the blob each channel's newest version points at. It deletes older checkpoints,
+their writes, and superseded channel versions. Nothing at or above the newest is touched, so a
+writer racing it is safe. Durable-runs never reads history (no `aget_state_history`, no
+`checkpoint_id` in a config; the sweep keeps only the newest per thread).
+
+- In-service: `DURABLE_RUNS_CHECKPOINT_PRUNE_MODE` = `off` | `dry_run` (shipped) | `apply`, every
+  `DURABLE_RUNS_CHECKPOINT_PRUNE_INTERVAL_SEC` (3600), first pass 5 min after boot, on its own
+  connection (never the saver's lock). Log line `checkpoint_prune mode=... ckpt_del=...`;
+  `/health` -> `checkpoint_prune`. Skips a pass while a `pg_dump` runs.
+- By hand: `docker exec orion-athena-durable-runs python /app/scripts/prune_checkpoints.py`
+  (dry run; `--apply` deletes; `--thread-prefix temporal_self:` limits it; `--json`).
+- Only the `public` checkpoint tables (durable-runs). The GPU pool's `gpu_pool` schema is not covered.
+- It never deletes whole threads: a finished run keeps one checkpoint, so the sweep still grows with
+  the number of threads (follow-up: drop terminal threads older than `DURABLE_RUNS_MAX_AGE_HOURS`).
+- Repo-wide readers of older history: `orion/memory/referents/backfill.py` (now falls back to the
+  newest checkpoint's `answer_text`). A `DeltaChannel` (`add_messages`) in any durable-runs graph
+  would be truncated; `tests/test_checkpoint_prune.py` fails if one appears.
+
 ### One failed-attempt policy for admitted work nodes (2026-10-23)
 
 `app/admitted_graph.py:failed_attempt` decides what an exception from a work node does, so a

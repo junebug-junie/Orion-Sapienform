@@ -309,3 +309,39 @@ def test_camera_placeholder_for_missing_input_is_absent_not_quiet() -> None:
     assert by_id[PERCEPTION_WALKWAY_NODE_ID]["absent"] is True
     assert by_id[PERCEPTION_NODE_ID]["absent"] is True
     assert sorted(frame.debug["world_first"]["absent_sources"]) == sorted(by_id)
+
+
+def _chat_frame(minutes_ago, latest=None):
+    turns = [NOW - timedelta(days=d, minutes=30) for d in range(1, 7)] + [
+        NOW - timedelta(minutes=m) for m in minutes_ago
+    ]
+    return _frame(
+        [_node("node:substrate.biometrics", "Bio PE")],
+        {"node:substrate.biometrics": _mag(0.4)},
+        external=[chat_candidate(turns, now=NOW, latest_turn=latest)],
+    )
+
+
+def test_chat_loop_id_is_stable_as_messages_arrive() -> None:
+    """Live bug 2026-11: 'Juniper is talking (N messages ...)' gave every N its own loop id."""
+    ids = set()
+    for minutes_ago in ([1], [1, 3], [1, 3, 5]):
+        proj = ab.broadcast_projection_from_frame(_chat_frame(minutes_ago))
+        assert proj.attended_node_ids == [WORLD_CHAT_SOURCE_ID]
+        ids.add(proj.selected_open_loop_id)
+    assert len(ids) == 1
+
+
+def test_chat_evidence_reaches_the_winning_loop_not_the_trace() -> None:
+    latest = ("turn-7", NOW - timedelta(minutes=1), "did the camera move?")
+    frame = _chat_frame([1, 3], latest=latest)
+    loop = frame.open_loops[0]
+    ev = loop.provenance["world_evidence"]
+    assert ev["message_excerpt"] == "did the camera move?"
+    assert ev["chat_turn_id"] == "turn-7" and ev["messages_in_window"] == 2
+    # No ranking side effect: the loop's refs are unchanged.
+    assert loop.source_refs == [WORLD_CHAT_SOURCE_ID]
+    assert "did the camera move?" not in str(frame.debug["world_first"])
+    no_ev = _chat_frame([1, 3]).open_loops[0]
+    assert "world_evidence" not in no_ev.provenance
+    assert no_ev.id == loop.id and no_ev.salience == loop.salience

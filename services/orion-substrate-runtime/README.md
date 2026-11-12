@@ -1312,6 +1312,17 @@ Juniper is busy, and the candidate is absent (not calm) if the journal query fai
 in-memory cache bounds the read path. Set the flag to `false` and restart substrate-runtime to
 disable it.
 
+**`world:chat` carries what Juniper said (2026-11-12).** The chat candidate's label is the fixed
+text "Juniper is talking", so its open-loop id stays the same through a conversation (it used to
+carry the message count, and each new message gave the conversation a new loop id). When a turn is
+in the 15-minute window, the worker reads Juniper's newest turn (`fetch_latest_chat_turn`, the same
+turn definition as the count) and puts a whitespace-collapsed excerpt of at most 200 characters,
+its `chat_history_log` id, its time and the window count on the candidate's `evidence`. The
+broadcast copies it to the winning loop's `provenance["world_evidence"]`; reverie renders it as her
+words. It is evidence only: ranking, band and refs do not change, and the text is not in the debug
+trace or any log line. A failed read drops the excerpt, never the candidate. Replay:
+`evals/run_world_chat_loop_id_replay.py --days 7`.
+
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
 in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).

@@ -44,7 +44,11 @@ After deploy: `docker logs orion-mind 2>&1 | grep prime_day_letter_funded` withi
 
 ## Review findings fixed
 
-See PR conversation.
+- Finding: the `prime_day_letter_funded` log could not tell funded from queued.
+  - Fix: the line now logs `outcome` and `reason`.
+- Finding: docstrings said only "funded" goes ahead.
+  - Fix: prime_loop.py, day_letter.py, orion_day.py, orion_day_order.py now name the worth-it capacity deferral.
+- Review verdict otherwise: no material findings (release is a no-op for an unreserved want; the letter run is not a binding family in durable-runs, so it is not re-bid and held).
 
 ## Restart required
 

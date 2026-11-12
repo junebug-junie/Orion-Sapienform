@@ -1,7 +1,7 @@
 """Orion's Day: Prime's order for a day letter (living Prime design #3224, Part 3).
 
 Hub never decides when a letter is written. Prime (orion-mind) does: when yesterday is closed and
-has no letter, Prime bids a ``make`` act, and when the act is funded it orders the run here.
+has no letter, Prime bids a ``make`` act, and when the act goes ahead (funded, or a worth-it capacity deferral that queues at the pool) it orders the run here.
 
 ``GET  /api/orion-day/letters/{letter_date}`` -> OrionDayLetterStatusV1 (does the day have a letter)
 ``POST /api/orion-day/letter-run``            OrionDayLetterOrderV1 -> OrionDayLetterOrderResultV1

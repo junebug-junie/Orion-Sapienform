@@ -6,7 +6,7 @@ Since 2026-11-12 (living Prime design #3224, Part 3) the letter is Prime's end-o
         orion-durable-runs) and Hub says it has no letter (GET /api/orion-day/letters/<date>)
         -> Prime bids a ``make`` act (actor prime) in the body economy; deferred -> no letter
            unless a later bid inside the window is funded (then the next letter says so)
-        -> funded: Prime opens the act and orders the run (POST Hub /api/orion-day/letter-run,
+        -> funded, or a capacity deferral worth its price (queues at the GPU pool): Prime opens the act and orders the run (POST Hub /api/orion-day/letter-run,
            OrionDayLetterOrderV1)
     Hub: gather_orion_day(conn, letter_date) -> OrionDayMaterialV1          (read-only SQL)
          render_day_input(material)          -> OrionDayLlmViewV1           (orion/orion_day/day_input.py)
@@ -505,7 +505,7 @@ class OrionDayLetterStatusV1(_Model):
 
 
 class OrionDayLetterOrderV1(_Model):
-    """``POST {HUB}/api/orion-day/letter-run``: Prime's funded make act orders the day's letter.
+    """``POST {HUB}/api/orion-day/letter-run``: Prime's make act (funded, or queued at the pool on a worth-it capacity deferral) orders the day's letter.
 
     Hub gathers the day, builds the brief and submits the durable run under exactly this ``run_id``
     and ``correlation_id`` (so Prime can follow it with ``GET {DURABLE}/runs/{run_id}``)."""

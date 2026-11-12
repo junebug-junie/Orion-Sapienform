@@ -84,7 +84,8 @@ class SocialRoomContinuityV1(BaseModel):
     def _drop_retired_active_commitments(cls, data):
         # The word-list promise detector that filled `active_commitments` was retired
         # 2026-11-12. A not-yet-rebuilt social-memory still sends the key during rollout;
-        # drop it unread so this forbid model does not reject the whole room payload.
+        # drop it unread so registry/bus consumers of orion:social:room:continuity do not
+        # reject the whole room payload. Remove once social-memory with this change is live.
         if isinstance(data, dict) and "active_commitments" in data:
             data = {k: v for k, v in data.items() if k != "active_commitments"}
         return data

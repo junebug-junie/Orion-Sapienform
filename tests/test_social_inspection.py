@@ -286,3 +286,19 @@ def test_hub_direct_inspection_sections_include_skill_when_present() -> None:
     }
     sections = build_hub_direct_inspection_sections(route_debug=route_debug, metadata={})
     assert any(section.section_kind == "artifact_dialogue" for section in sections)
+
+
+def test_room_continuity_schema_drops_retired_active_commitments_key() -> None:
+    from orion.schemas.social_memory import SocialRoomContinuityV1
+
+    room = SocialRoomContinuityV1.model_validate(
+        {
+            "room_key": "callsyne:room-alpha",
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "active_commitments": [{"summary": "legacy", "state": "open"}],
+        }
+    )
+
+    assert not hasattr(room, "active_commitments")
+    assert "active_commitments" not in room.model_dump()

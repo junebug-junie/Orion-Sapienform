@@ -664,6 +664,8 @@ class SocialTurnPolicyEvaluator:
             )
 
         if any(token in prompt for token in _REPAIR_CONTRADICTION_HINTS):
+            # A peer-message contradiction cue. Despite its legacy name it does not read
+            # commitments: the word-list promise detector was retired 2026-11-12.
             return SocialRepairSignalV1(
                 platform=message.platform,
                 room_id=message.room_id,
@@ -757,8 +759,8 @@ class SocialTurnPolicyEvaluator:
             decision = "reset_thread"
             rationale = "the thread should be reset before Orion continues so it does not answer across threads"
         elif repair_signal.repair_type == "commitment_contradiction":
-            decision = "repair" if repair_signal.confidence >= 0.75 else "clarify"
-            rationale = "Orion should correct or briefly clarify the contradiction without re-litigating it"
+            decision = "clarify"
+            rationale = "Orion should briefly clarify the contradiction without re-litigating it"
         elif repair_signal.repair_type == "clarification_after_misalignment":
             decision = "clarify"
             rationale = "a single compact clarification is better than pressing forward"

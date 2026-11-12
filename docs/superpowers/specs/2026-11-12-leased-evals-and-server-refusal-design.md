@@ -317,6 +317,8 @@ runbook.
 
 ## Open questions for Juniper (each has a default)
 
+**Answered 2026-11-12:** Juniper accepted all 9 defaults ("hit it"). Phase 1 build started.
+
 1. **Placement.** Operator class at `background`, sorted last, not a tier, never bids? Default: yes.
 2. **Energy.** Count operator leases as `sponsored` (reported apart from Orion's activity)?
    Default: yes. Rest stays Orion's, per your 10-30 ruling.

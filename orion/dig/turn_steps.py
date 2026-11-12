@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from orion.harness.working_notes import outside_reason
+from orion.harness.working_notes import outside_reason, outside_result, result_text
 
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 MAX_TURNS = 5
@@ -92,14 +92,6 @@ def action_of(name: str, inp: dict[str, Any]) -> str:
     return _one_line(json.dumps(inp, sort_keys=True, default=str), ACTION_CHARS) if inp else ""
 
 
-def result_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(str(b.get("text") or "") for b in content if isinstance(b, dict))
-    return "" if content is None else str(content)
-
-
 def parse_rows(rows: Iterable[dict[str, str]]) -> list[Step]:
     """tool_use blocks in order, each joined to its tool_result by id."""
     steps: list[Step] = []
@@ -128,6 +120,9 @@ def parse_rows(rows: Iterable[dict[str, str]]) -> list[Step]:
                     continue
                 step.status = "failed" if block.get("is_error") else "ok"
                 # Never replay outside text: a later clean turn could copy it into its notes.
+                # CONTENT_SQL cuts results to 400 chars, so a reading receipt fails to parse
+                # here and is hidden (fails closed).
+                step.outside = step.outside or outside_result(step.tool, block.get("content"))
                 step.result = ("(outside content; not shown here)" if step.outside
                                else result_text(block.get("content")))
     return steps

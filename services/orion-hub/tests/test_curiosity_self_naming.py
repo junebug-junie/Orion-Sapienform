@@ -136,6 +136,11 @@ def test_prompt_carries_code_filled_ids_and_no_example_names() -> None:
     assert "weight" not in text.lower()
 
 
+def test_naming_sitting_gets_no_dig_kit() -> None:
+    """One verdict on the clock: no dig pointer competes with the write-first step."""
+    assert "orion.dig" not in build_self_naming_prompt(packet=_packet(), run_id=RUN)
+
+
 def test_prompt_refuses_ids_it_cannot_embed_safely() -> None:
     with pytest.raises(ValueError):
         build_self_naming_prompt(packet=_packet(disposition_id='disp"1'), run_id=RUN)

@@ -227,7 +227,6 @@ from orion.schemas.social_bridge import (
     ExternalRoomPostResultV1,
     ExternalRoomTurnSkippedV1,
 )
-from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
 from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
 from orion.schemas.social_context import SocialContextCandidateV1, SocialContextSelectionDecisionV1, SocialContextWindowV1
 from orion.schemas.social_inspection import (
@@ -1145,8 +1144,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RoomClaudeUtteranceV1": RoomClaudeUtteranceV1,
     "RoomTranscriptEntryV1": RoomTranscriptEntryV1,
     "ExternalRoomResponderV1": ExternalRoomResponderV1,
-    "SocialCommitmentV1": SocialCommitmentV1,
-    "SocialCommitmentResolutionV1": SocialCommitmentResolutionV1,
     "SocialBridgeSummaryV1": SocialBridgeSummaryV1,
     "SocialClarifyingQuestionV1": SocialClarifyingQuestionV1,
     "SocialDeliberationDecisionV1": SocialDeliberationDecisionV1,

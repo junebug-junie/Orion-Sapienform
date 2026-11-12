@@ -441,19 +441,6 @@ class SocialRoomBridgeService:
             gif_interpretation=gif_interpretation,
         )
         if social_memory:
-            open_commitments = [
-                item
-                for item in ((social_memory.get("room") or {}).get("active_commitments") or [])
-                if isinstance(item, dict) and str(item.get("state") or "open") == "open"
-            ][:2]
-            if decision.repair_decision is not None and decision.repair_decision.decision in {"yield", "reset_thread"}:
-                logger.info(
-                    "social_repair_commitments_suppressed room_id=%s message_id=%s decision=%s",
-                    message.room_id,
-                    message.message_id,
-                    decision.repair_decision.decision,
-                )
-                open_commitments = []
             hub_payload.update(
                 {
                     "social_peer_continuity": social_memory.get("participant"),
@@ -464,7 +451,6 @@ class SocialRoomBridgeService:
                     "social_context_window": social_memory.get("context_window"),
                     "social_context_selection_decision": social_memory.get("context_selection_decision"),
                     "social_context_candidates": social_memory.get("context_candidates"),
-                    "social_open_commitments": open_commitments or None,
                     "social_thread_routing": decision.thread_routing.model_dump(mode="json") if decision.thread_routing else None,
                     "social_handoff_signal": decision.handoff_signal.model_dump(mode="json") if decision.handoff_signal else None,
                     "social_repair_signal": decision.repair_signal.model_dump(mode="json") if decision.repair_signal else None,

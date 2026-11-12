@@ -543,6 +543,16 @@
           "keywords": ["impact", "blast radius", "trace"],
           "covers": {"mcp": ["mcp__gitnexus__impact", "mcp__gitnexus__trace"]},
           "source": "orion/fcc/self_index_brief.py"
+        },
+        {
+          "id": "pr-read",
+          "title": "Read one PR on GitHub",
+          "description": "Orion opens one pull request on GitHub, read-only: its title, description, state and who merged it. For everything merged lately, use \"What changed lately?\" instead.",
+          "message": "Please open this pull request on GitHub and tell me what it changed in you and why: #",
+          "hint": "(tools: `mcp__github__get_pull_request`, or `mcp__github__list_pull_requests` for the latest one)",
+          "keywords": ["GitHub", "pull request", "PR"],
+          "covers": {"mcp": ["mcp__github__get_pull_request", "mcp__github__list_pull_requests"]},
+          "source": "orion/fcc/github_repo_context.py:github_mcp_brief_lines; orion/fcc/mcp_config.py:github"
         }
       ]
     },
@@ -602,7 +612,8 @@
     "mcp": {
       "mcp__orion-aitown__aitown_resume_world": "Refused by design since 2026-10-30: Juniper opens the town with Hub's Unfreeze button.",
       "mcp__orion-aitown__aitown_send_input": "Raw god-mode input to the world; there is no plain request that maps to it safely.",
-      "mcp__orion-aitown__aitown_stop_world": "Stops the simulation, and nothing in chat can restart it (resume is refused); Juniper uses Hub's controls instead."
+      "mcp__orion-aitown__aitown_stop_world": "Stops the simulation, and nothing in chat can restart it (resume is refused); Juniper uses Hub's controls instead.",
+      "mcp__github__search_pull_requests": "The chat brief tells Orion to avoid it: one call fills ~65k of context. Reading one PR uses get_pull_request."
     }
   }
 }

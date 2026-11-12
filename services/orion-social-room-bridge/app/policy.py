@@ -598,7 +598,6 @@ class SocialTurnPolicyEvaluator:
 
         target_participant_id = message.target_participant_id or thread_routing.target_participant_id
         target_participant_name = message.target_participant_name or thread_routing.target_participant_name
-        active_commitments = [item for item in room.get("active_commitments") or [] if isinstance(item, dict)]
         participant_hint = (target_participant_name or target_participant_id or "").strip()
 
         if any(token in prompt for token in _REPAIR_THREAD_MISMATCH_HINTS):
@@ -665,20 +664,20 @@ class SocialTurnPolicyEvaluator:
             )
 
         if any(token in prompt for token in _REPAIR_CONTRADICTION_HINTS):
-            confidence = 0.84 if active_commitments else 0.58
-            trigger = "active_commitment" if active_commitments else "peer_message"
+            # A peer-message contradiction cue. Despite its legacy name it does not read
+            # commitments: the word-list promise detector was retired 2026-11-12.
             return SocialRepairSignalV1(
                 platform=message.platform,
                 room_id=message.room_id,
                 thread_key=thread_routing.thread_key,
                 repair_type="commitment_contradiction",
-                trigger=trigger,  # type: ignore[arg-type]
+                trigger="peer_message",
                 source_participant_id=message.sender_id,
                 source_participant_name=message.sender_name,
-                confidence=confidence,
+                confidence=0.58,
                 detected=True,
                 rationale="the peer signaled a contradiction against Orion's recent local continuity",
-                reasons=[str((active_commitments[0] if active_commitments else {}).get("summary") or "")[:120] or "recent contradiction cue"],
+                reasons=["recent contradiction cue"],
                 metadata={"source": "social-turn-policy"},
             )
 
@@ -760,8 +759,8 @@ class SocialTurnPolicyEvaluator:
             decision = "reset_thread"
             rationale = "the thread should be reset before Orion continues so it does not answer across threads"
         elif repair_signal.repair_type == "commitment_contradiction":
-            decision = "repair" if repair_signal.confidence >= 0.75 else "clarify"
-            rationale = "Orion should correct or briefly clarify the contradiction without re-litigating it"
+            decision = "clarify"
+            rationale = "Orion should briefly clarify the contradiction without re-litigating it"
         elif repair_signal.repair_type == "clarification_after_misalignment":
             decision = "clarify"
             rationale = "a single compact clarification is better than pressing forward"
@@ -1134,13 +1133,6 @@ class SocialTurnPolicyEvaluator:
             addressed=addressed,
         )
         matching_thread = ranked_threads[0][0] if ranked_threads else exact_thread
-        relevant_commitments = self._relevant_commitments(
-            room=room,
-            message=message,
-            matching_thread=matching_thread,
-            target_participant_id=target_participant_id,
-        )
-        active_commitment = relevant_commitments[0] if relevant_commitments else None
         candidate_threads = [thread for thread, score in ranked_threads if score >= 0.18][:3]
         secondary_candidates = [
             str(thread.get("thread_summary") or "")[:180]
@@ -1157,11 +1149,6 @@ class SocialTurnPolicyEvaluator:
             routing = "summarize_room"
             rationale = "the room is asking for a summary or handoff-aware recap"
             reason_tags.append("room_summary_preferred")
-        elif active_commitment and str(active_commitment.get("commitment_type") or "") == "summarize_room" and not target_participant_id:
-            audience_scope = "summary"
-            routing = "summarize_room"
-            rationale = "an open room-summary commitment is due soon and locally relevant"
-            reason_tags.extend(["commitment_influenced_routing", "room_summary_preferred"])
         elif any(token in prompt for token in ("back to", "pick this back up", "again")):
             audience_scope = "thread"
             if self._revival_allowed(
@@ -1172,17 +1159,10 @@ class SocialTurnPolicyEvaluator:
                 routing = "revive_thread"
                 rationale = "the prompt is reviving a still-relevant open thread"
                 reason_tags.append("revival_allowed")
-                if active_commitment and str(active_commitment.get("commitment_type") or "") in {"return_to_thread", "answer_pending_question"}:
-                    reason_tags.append("commitment_influenced_routing")
             else:
                 routing = "wait"
                 rationale = "revival was requested but the thread is stale, unresolved context is weak, or a fresher thread competes"
                 reason_tags.extend(["revival_suppressed", "unclear_audience_wait"])
-        elif active_commitment and str(active_commitment.get("commitment_type") or "") == "yield_then_reenter" and not addressed:
-            audience_scope = "none"
-            routing = "wait"
-            rationale = "an active yield commitment is still locally relevant, so waiting is safer than forcing re-entry"
-            reason_tags.extend(["commitment_influenced_routing", "unclear_audience_wait"])
         elif target_participant_id and not addressed and not target_is_orion:
             audience_scope = "peer"
             routing = "wait"
@@ -1237,11 +1217,7 @@ class SocialTurnPolicyEvaluator:
             ambiguity_level=ambiguity_level,  # type: ignore[arg-type]
             rationale=rationale,
             reasons=reason_tags + [rationale],
-            metadata={
-                "source": "social-turn-policy",
-                "commitment_summary": str((active_commitment or {}).get("summary") or "")[:160],
-                "commitment_due_state": str((active_commitment or {}).get("due_state") or ""),
-            },
+            metadata={"source": "social-turn-policy"},
         )
 
     def _handoff_signal(
@@ -1454,40 +1430,6 @@ class SocialTurnPolicyEvaluator:
 
     def _room_reply_preferred(self, *, prompt: str) -> bool:
         return any(token in prompt for token in ("everyone", "room", "all of you", "anyone"))
-
-    def _relevant_commitments(
-        self,
-        *,
-        room: dict[str, Any],
-        message: CallSyneRoomMessageV1,
-        matching_thread: dict[str, Any] | None,
-        target_participant_id: str | None,
-    ) -> list[dict[str, Any]]:
-        commitments = [item for item in room.get("active_commitments") or [] if isinstance(item, dict)]
-        prompt = str(message.text or "").lower()
-        ranked: list[tuple[float, dict[str, Any]]] = []
-        for commitment in commitments:
-            if str(commitment.get("state") or "open") != "open":
-                continue
-            score = 0.0
-            if matching_thread and commitment.get("thread_key") == matching_thread.get("thread_key"):
-                score += 0.45
-            if target_participant_id and commitment.get("target_participant_id") == target_participant_id:
-                score += 0.35
-            if str(commitment.get("commitment_type") or "") == "summarize_room" and any(
-                token in prompt for token in ("summary", "recap", "where are we", "what do you think")
-            ):
-                score += 0.4
-            if str(commitment.get("commitment_type") or "") in {"return_to_thread", "answer_pending_question"} and any(
-                token in prompt for token in ("back to", "again", "?")
-            ):
-                score += 0.3
-            if str(commitment.get("due_state") or "") == "due_soon":
-                score += 0.12
-            if str(commitment.get("due_state") or "") == "stale":
-                score -= 0.08
-            ranked.append((score, commitment))
-        return [item for _, item in sorted(ranked, key=lambda pair: pair[0], reverse=True) if _ > 0.08][:2]
 
     def _revival_allowed(
         self,

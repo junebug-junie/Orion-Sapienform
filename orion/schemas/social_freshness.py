@@ -22,7 +22,6 @@ SocialMemoryArtifactKind = Literal[
     "trust_boundary",
     "peer_style",
     "room_ritual",
-    "commitment",
     "deliberation_summary",
     "handoff_closure",
     "unknown",

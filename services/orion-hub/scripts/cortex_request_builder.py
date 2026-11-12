@@ -661,7 +661,6 @@ def build_cortex_chat_request(
         turn_handoff = payload.get("social_turn_handoff") or ((room_continuity or {}).get("turn_handoff")) or {}
         closure_signal = payload.get("social_closure_signal") or ((room_continuity or {}).get("closure_signal")) or {}
         floor_decision = payload.get("social_floor_decision") or ((room_continuity or {}).get("floor_decision")) or {}
-        open_commitments = payload.get("social_open_commitments") or ((room_continuity or {}).get("active_commitments")) or []
         context_window = payload.get("social_context_window") or {}
         context_selection_decision = payload.get("social_context_selection_decision") or {}
         context_candidates = payload.get("social_context_candidates") or []
@@ -751,7 +750,6 @@ def build_cortex_chat_request(
                 "social_context_candidates": [SocialContextCandidateV1.model_validate(item).model_dump(mode="json") for item in context_candidates[:8] if isinstance(item, dict)] if isinstance(context_candidates, list) else None,
                 "social_episode_snapshot": SocialEpisodeSnapshotV1.model_validate(episode_snapshot).model_dump(mode="json") if episode_snapshot else None,
                 "social_reentry_anchor": SocialReentryAnchorV1.model_validate(reentry_anchor).model_dump(mode="json") if reentry_anchor else None,
-                "social_open_commitments": open_commitments[:2] if isinstance(open_commitments, list) else None,
                 "social_thread_routing": thread_routing or None,
                 "social_handoff_signal": handoff_signal or None,
                 "social_repair_signal": repair_signal or None,

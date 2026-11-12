@@ -576,8 +576,11 @@ class PrimeRuntime(MindLoopRuntime):
         decision = await self.bid(want)
         op = op.model_copy(update={"bids": bid_no})
         outcome = getattr(decision, "outcome", None)
-        if outcome != "funded":
-            # Never fail open: no answer is "not funded" (orion/physiology/client.py).
+        if not pc.goes_ahead(decision):
+            # Never fail open: no answer is "not funded" (orion/physiology/client.py). A capacity deferral
+            # worth its price DOES go ahead: the GPU pool's own queue holds it (orion/physiology/binding.py,
+            # bind_verdict). Live 11-12: treating it as a refusal deferred 20 of 20 letter bids (net +0.67,
+            # lane:agent full) for 9 h, and no letter was written.
             why = str(getattr(decision, "why", "") or "")[:160]
             reason = f"{outcome or 'no answer'} ({getattr(decision, 'reason', None) or '-'}" \
                      f"{', ' + str(getattr(decision, 'binding_constraint', None)) if getattr(decision, 'binding_constraint', None) else ''})" \

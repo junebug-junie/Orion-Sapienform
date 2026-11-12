@@ -1,8 +1,11 @@
 """Recover referent aliases from saved distill runs and resolve already-stored memories.
 
 Stage 1 stored ``(key, role)`` only and dropped the writer's aliases. Those aliases are
-still in each run's LangGraph checkpoint (``checkpoint_writes`` channel ``answer_text``,
-thread = ``episode_distill_run.run_id``). This re-reads them, matches each distilled
+still in each run's LangGraph checkpoint (thread = ``episode_distill_run.run_id``): first the
+``checkpoint_writes`` row of channel ``answer_text``, else the newest checkpoint's own
+``answer_text`` value. The second is what survives durable-runs' checkpoint prune
+(``services/orion-durable-runs/app/checkpoint_prune.py`` keeps only the newest checkpoint and its
+writes; the answer's write sits on an older checkpoint, its value in the newest state). This re-reads them, matches each distilled
 memory to its stored row by the same deterministic id the writer used
 (``memory_id_for``), and runs the SAME referent step the live persist runs, with the
 memory's stored verified quotes. No LLM call, no re-validation.
@@ -28,6 +31,11 @@ _RUNS = "SELECT episode_id, run_id FROM episode_distill_run ORDER BY finished_at
 _ANSWER = """
 SELECT type, blob FROM checkpoint_writes WHERE thread_id = %s AND channel = 'answer_text'
 ORDER BY checkpoint_id DESC, idx DESC LIMIT 1
+"""
+# The saver keeps a str channel value inline in the checkpoint's jsonb (never in checkpoint_blobs).
+_ANSWER_STATE = """
+SELECT checkpoint -> 'channel_values' ->> 'answer_text' AS text FROM checkpoints
+WHERE thread_id = %s AND checkpoint_ns = '' ORDER BY checkpoint_id DESC LIMIT 1
 """
 _MEMORIES = """
 SELECT memory_id::text AS memory_id, created_at FROM episode_memory WHERE episode_id = %s ORDER BY created_at, memory_id
@@ -79,10 +87,12 @@ async def backfill_episode(conn: Any, episode_id: str, run_id: str, *, now: date
                            policy: ReferentPolicy) -> dict[str, int]:
     answers: dict[str, dict[str, Any]] = {}
     rows = await _all(conn, _ANSWER, (run_id,))
-    if rows:
-        text = decode_answer(rows[0]["type"], rows[0]["blob"])
-        if text:
-            answers = aliases_from_answer(episode_id, text)
+    text = decode_answer(rows[0]["type"], rows[0]["blob"]) if rows else None
+    if not text:
+        state = await _all(conn, _ANSWER_STATE, (run_id,))
+        text = state[0]["text"] if state and isinstance(state[0]["text"], str) else None
+    if text:
+        answers = aliases_from_answer(episode_id, text)
     memories = await _all(conn, _MEMORIES, (episode_id,))
     ids = [m["memory_id"] for m in memories]
     if not ids:

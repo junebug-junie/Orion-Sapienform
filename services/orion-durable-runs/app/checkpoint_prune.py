@@ -23,6 +23,14 @@ adds newer rows -- channel versions only grow), blobs of channels the newest doe
 version string that is not ``<digits>[.<anything>]`` (fail closed). Each statement re-reads the
 newest checkpoint itself, so a checkpoint written mid-run only makes the rule stricter.
 
+Readers of history this relies on there being none of (checked 2026-11-12, repo-wide):
+``orion/memory/referents/backfill.py`` read ``answer_text`` from ``checkpoint_writes`` (an older
+checkpoint's write); it now falls back to the newest checkpoint's state, which this keeps. No
+durable-runs graph uses a ``DeltaChannel`` (its value is rebuilt by walking parent checkpoints and
+their writes, which this deletes); ``tests/test_checkpoint_prune.py`` fails if one appears.
+This does not delete whole threads: a finished run keeps one checkpoint, so the resume sweep still
+grows with thread count (follow-up: drop terminal threads past DURABLE_RUNS_MAX_AGE_HOURS).
+
 Dry run by default; ``scripts/prune_checkpoints.py`` is the operator entry point.
 """
 
@@ -39,20 +47,26 @@ logger = logging.getLogger("orion-durable-runs.checkpoint_prune")
 MODES = ("off", "dry_run", "apply")
 
 # The newest checkpoint per (thread, ns), restricted to the threads in %(threads)s (NULL = all).
+# Ids first (index-only), then one jsonb read per thread -- not a detoast of every checkpoint row.
 _LATEST = (
-    "SELECT DISTINCT ON (thread_id, checkpoint_ns) thread_id, checkpoint_ns, checkpoint_id, "
-    "checkpoint -> 'channel_versions' AS cv "
+    "SELECT n.thread_id, n.checkpoint_ns, n.checkpoint_id, k.checkpoint -> 'channel_versions' AS cv FROM ("
+    "SELECT DISTINCT ON (thread_id, checkpoint_ns) thread_id, checkpoint_ns, checkpoint_id "
     "FROM checkpoints WHERE (%(threads)s::text[] IS NULL OR thread_id = ANY(%(threads)s::text[])) "
     "AND (%(prefix)s::text IS NULL OR thread_id LIKE %(prefix)s::text) "
-    "ORDER BY thread_id, checkpoint_ns, checkpoint_id DESC"
+    "ORDER BY thread_id, checkpoint_ns, checkpoint_id DESC) n "
+    "JOIN checkpoints k ON k.thread_id = n.thread_id AND k.checkpoint_ns = n.checkpoint_ns "
+    "AND k.checkpoint_id = n.checkpoint_id"
 )
 
 # LangGraph's Postgres versions are f"{int:032}.{random}"; compare the integer part only, and only
 # when both sides have one (anything else is kept).
 _VERSION_INT = r"^[0-9]+(\.|$)"
+# CASE, not AND: Postgres may evaluate AND operands in any order, and the cast must never see a
+# version the guard rejected.
 _BLOB_STALE = (
-    f"l.cv ? b.channel AND b.version ~ '{_VERSION_INT}' AND (l.cv ->> b.channel) ~ '{_VERSION_INT}' "
-    "AND split_part(b.version, '.', 1)::numeric < split_part(l.cv ->> b.channel, '.', 1)::numeric"
+    f"(CASE WHEN l.cv ? b.channel AND b.version ~ '{_VERSION_INT}' AND (l.cv ->> b.channel) ~ '{_VERSION_INT}' "
+    "THEN split_part(b.version, '.', 1)::numeric < split_part(l.cv ->> b.channel, '.', 1)::numeric "
+    "ELSE false END)"
 )
 
 PLAN_SQL = f"""
@@ -176,11 +190,15 @@ def _batches(items: list[str], size: int) -> Iterable[list[str]]:
 
 
 def apply_plan(conn: Any, plan: Plan, *, batch_threads: int = 200, lock_timeout: str = "5s",
-               statement_timeout: str = "120s", prefix: Optional[str] = None) -> dict:
+               statement_timeout: str = "120s", prefix: Optional[str] = None,
+               should_stop: Callable[[], bool] = lambda: False) -> dict:
     """DELETE what ``plan`` found, one transaction per batch of threads. Each statement recomputes
     the newest checkpoint itself (see module docstring). ``conn`` must not be in autocommit."""
-    deleted = {"checkpoints": 0, "writes": 0, "blobs": 0, "batches": 0}
+    deleted = {"checkpoints": 0, "writes": 0, "blobs": 0, "batches": 0, "stopped": False}
     for batch in _batches(plan.threads_to_prune, batch_threads):
+        if should_stop():
+            deleted["stopped"] = True   # shutdown: finished batches stay committed, the rest waits
+            break
         params = _params(threads=batch, prefix=prefix)
         with conn.transaction():
             with conn.cursor() as cur:
@@ -203,7 +221,8 @@ def _interval(v: str) -> str:
 
 
 def run_once(dsn: str, *, apply: bool = False, prefix: Optional[str] = None, batch_threads: int = 200,
-             allow_during_backup: bool = False, connect: Optional[Callable[[str], Any]] = None) -> dict:
+             allow_during_backup: bool = False, connect: Optional[Callable[[str], Any]] = None,
+             should_stop: Callable[[], bool] = lambda: False) -> dict:
     """One pass on its own connection (never the saver's: the saver serialises every call behind
     one lock, see README). Dry run unless ``apply``. Returns the report; ``status`` is ``ok`` or
     ``skipped_backup``."""
@@ -225,7 +244,8 @@ def run_once(dsn: str, *, apply: bool = False, prefix: Optional[str] = None, bat
                   "by_family": plan.by_family(), "largest_threads": plan.largest_threads()}
         if apply:
             t0 = time.monotonic()
-            report["deleted"] = apply_plan(conn, plan, batch_threads=batch_threads, prefix=prefix)
+            report["deleted"] = apply_plan(conn, plan, batch_threads=batch_threads, prefix=prefix,
+                                           should_stop=should_stop)
             report["apply_sec"] = round(time.monotonic() - t0, 3)
     return report
 
@@ -236,10 +256,12 @@ class PrunePoller:
 
     def __init__(self, *, dsn: str, mode: str, interval_sec: float, first_delay_sec: float = 300.0,
                  runner: Callable[..., dict] = run_once) -> None:
+        import threading
         if mode not in MODES:
             raise ValueError(f"checkpoint prune mode {mode!r} not in {MODES}")
         self.dsn, self.mode, self.interval_sec, self.first_delay_sec = dsn, mode, interval_sec, first_delay_sec
         self._runner = runner
+        self._stopping = threading.Event()   # read by the worker thread between delete batches
         self.last: Optional[dict] = None
         self.last_error: Optional[str] = None
         self.passes = 0
@@ -248,7 +270,8 @@ class PrunePoller:
         if self.mode == "off":
             return None
         try:
-            report = await asyncio.to_thread(self._runner, self.dsn, apply=self.mode == "apply")
+            report = await asyncio.to_thread(self._runner, self.dsn, apply=self.mode == "apply",
+                                             should_stop=self._stopping.is_set)
         except Exception as exc:  # noqa: BLE001 - one bad pass must not stop the loop
             self.last_error = f"{type(exc).__name__}: {exc}"[:300]
             logger.warning("checkpoint_prune_failed mode=%s error=%s", self.mode, self.last_error)
@@ -263,6 +286,10 @@ class PrunePoller:
                     t.get("threads_to_prune"), t.get("ckpt_del"), t.get("ckpt_total"), t.get("writes_del"),
                     t.get("blobs_del"), t.get("blobs_total"), report.get("deleted"))
         return report
+
+    def request_stop(self) -> None:
+        """Shutdown: an apply pass in its worker thread stops before its next batch."""
+        self._stopping.set()
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         delay = self.first_delay_sec

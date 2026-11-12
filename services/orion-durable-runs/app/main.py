@@ -681,6 +681,8 @@ async def lifespan(app: FastAPI):
         _stop.set()
         if _sweep_task is not None:
             _sweep_task.cancel()
+        if checkpoint_prune is not None:
+            checkpoint_prune.request_stop()
         if _checkpoint_prune_task is not None:
             _checkpoint_prune_task.cancel()
         if _reconcile_task is not None:
@@ -747,7 +749,8 @@ async def health() -> dict[str, Any]:
         # Daily reminiscence Patch 2: the last tick's decision (episode, week, run submitted or why not).
         "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
         # LangGraph checkpoint pruning: mode (dry_run ships), last pass's totals / deletions.
-        "checkpoint_prune": checkpoint_prune.health() if checkpoint_prune is not None else None,
+        "checkpoint_prune": (checkpoint_prune.health() if checkpoint_prune is not None
+                             else {"mode": _settings.checkpoint_prune_mode}),
     }
 
 

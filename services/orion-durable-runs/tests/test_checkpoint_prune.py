@@ -163,6 +163,14 @@ def test_prune_keeps_state_and_resume_on_real_postgres(pg, capsys):
     ck_a, wr_a, bl_a = _counts(conn, ta)
     assert ck_a > 6 and bl_a > 6
 
+    # a pending write for a checkpoint not yet committed (async durability: task writes land before
+    # their checkpoint row): its id is above the newest, so it must survive
+    newest_id = conn.execute("SELECT max(checkpoint_id) AS m FROM checkpoints WHERE thread_id = %s", (ta,)).fetchone()["m"]
+    racing_id = newest_id + "z"   # sorts after the newest, like the next uuid6
+    conn.execute("INSERT INTO checkpoint_writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob,"
+                 " task_path) VALUES (%s, '', %s, 'racing-task', 0, 'counter', 'empty', ''::bytea, '')", (ta, racing_id))
+    ck_a, wr_a, bl_a = _counts(conn, ta)
+
     # dry run (the CLI default) deletes nothing and reports the work
     assert prune_checkpoints.main(["--dsn", dsn, "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
@@ -179,6 +187,9 @@ def test_prune_keeps_state_and_resume_on_real_postgres(pg, capsys):
     conn.autocommit = True
     assert deleted["checkpoints"] == report["totals"]["ckpt_del"]
     assert deleted["blobs"] == report["totals"]["blobs_del"] and deleted["batches"] == 2
+    assert deleted["writes"] == report["totals"]["writes_del"]
+    assert conn.execute("SELECT count(*) AS n FROM checkpoint_writes WHERE task_id = 'racing-task'").fetchone()["n"] == 1
+    conn.execute("DELETE FROM checkpoint_writes WHERE task_id = 'racing-task'")
 
     assert _counts(conn, ta)[0] == 1 and _counts(conn, tb)[0] == 1
     versions = {r["version"] for r in conn.execute(
@@ -231,7 +242,7 @@ def test_poller_dry_run_reports_and_never_applies():
 
     calls = []
 
-    def fake(dsn, *, apply):
+    def fake(dsn, *, apply, **_):
         calls.append(apply)
         return {"status": "ok", "mode": "apply" if apply else "dry_run",
                 "totals": {"threads": 3, "ckpt_del": 7, "blobs_del": 9}}
@@ -250,7 +261,7 @@ def test_poller_apply_mode_passes_apply_and_off_does_nothing():
     from app.checkpoint_prune import PrunePoller
 
     calls = []
-    fake = lambda dsn, *, apply: calls.append(apply) or {"status": "ok", "totals": {}, "deleted": {"checkpoints": 1}}
+    fake = lambda dsn, *, apply, **_: calls.append(apply) or {"status": "ok", "totals": {}, "deleted": {"checkpoints": 1}}
     asyncio.run(PrunePoller(dsn="x", mode="apply", interval_sec=60, runner=fake).tick())
     asyncio.run(PrunePoller(dsn="x", mode="off", interval_sec=60, runner=fake).tick())
     assert calls == [True]
@@ -263,7 +274,7 @@ def test_poller_survives_a_failed_pass():
 
     from app.checkpoint_prune import PrunePoller
 
-    def boom(dsn, *, apply):
+    def boom(dsn, *, apply, **_):
         raise RuntimeError("db away")
 
     p = PrunePoller(dsn="x", mode="dry_run", interval_sec=60, runner=boom)
@@ -281,7 +292,7 @@ def test_poller_loop_waits_first_delay_and_stops():
     async def go():
         stop = asyncio.Event()
         p = PrunePoller(dsn="x", mode="dry_run", interval_sec=0.01, first_delay_sec=0.01,
-                        runner=lambda dsn, *, apply: calls.append(1) or {"status": "ok", "totals": {}})
+                        runner=lambda dsn, *, apply, **_: calls.append(1) or {"status": "ok", "totals": {}})
         task = asyncio.create_task(p.run_forever(stop))
         await asyncio.sleep(0.08)
         stop.set()
@@ -302,3 +313,56 @@ def test_settings_ship_dry_run(monkeypatch):
     assert "DURABLE_RUNS_CHECKPOINT_PRUNE_MODE=dry_run" in example
     compose = (SERVICE_ROOT / "docker-compose.yml").read_text()
     assert "DURABLE_RUNS_CHECKPOINT_PRUNE_MODE:-dry_run" in compose
+
+
+def test_update_state_threads_read_back_and_resume_after_prune(pg):
+    """admission_runtime's own write path: aupdate_state(..., as_node=...) checkpoints."""
+    from langgraph.types import Command
+
+    from app.checkpoint_prune import apply_plan, build_plan
+
+    saver, conn, _ = pg
+    _a, b = _graphs(saver)
+    tb = "reverie-visual-0123456789abcdef"
+    b.invoke({"constant": ["c"], "tick": {"i": 0}, "counter": {"n": 0}}, _cfg(tb))      # paused on interrupt
+    b.update_state(_cfg(tb), {"counter": {"n": 40}}, as_node="bump")
+    b.update_state(_cfg(tb), {"tick": {"i": 7}})
+    before = b.get_state(_cfg(tb))
+    conn.autocommit = False
+    plan = build_plan(conn)
+    conn.commit()
+    apply_plan(conn, plan)
+    conn.autocommit = True
+    assert _counts(conn, tb)[0] == 1
+    after = b.get_state(_cfg(tb))
+    assert after.values == before.values and after.next == before.next
+    out = b.invoke(Command(resume="juniper"), _cfg(tb))
+    assert out["counter"] == {"n": 40} and out["answer"] == "juniper"
+
+
+def test_apply_stops_between_batches_when_asked(pg):
+    from app.checkpoint_prune import apply_plan, build_plan
+
+    saver, conn, _ = pg
+    _seed_history(saver, conn)
+    conn.autocommit = False
+    plan = build_plan(conn)
+    conn.commit()
+    asked = iter([False, True])
+    deleted = apply_plan(conn, plan, batch_threads=1, should_stop=lambda: next(asked))
+    conn.autocommit = True
+    assert deleted["batches"] == 1 and deleted["stopped"] is True
+
+
+def test_no_durable_runs_graph_uses_a_delta_channel():
+    """A DeltaChannel's value is rebuilt from parent checkpoints and their writes -- exactly what the
+    prune deletes. If a graph adopts one (e.g. add_messages / MessagesState), prune must change first."""
+    hits = []
+    for path in (SERVICE_ROOT / "app").rglob("*.py"):
+        if path.name == "checkpoint_prune.py":
+            continue
+        text = path.read_text()
+        for needle in ("DeltaChannel", "add_messages", "MessagesState"):
+            if needle in text:
+                hits.append(f"{path.name}: {needle}")
+    assert hits == []

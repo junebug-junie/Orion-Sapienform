@@ -58,6 +58,11 @@ writer racing it is safe. Durable-runs never reads history (no `aget_state_histo
 - By hand: `docker exec orion-athena-durable-runs python /app/scripts/prune_checkpoints.py`
   (dry run; `--apply` deletes; `--thread-prefix temporal_self:` limits it; `--json`).
 - Only the `public` checkpoint tables (durable-runs). The GPU pool's `gpu_pool` schema is not covered.
+- It never deletes whole threads: a finished run keeps one checkpoint, so the sweep still grows with
+  the number of threads (follow-up: drop terminal threads older than `DURABLE_RUNS_MAX_AGE_HOURS`).
+- Repo-wide readers of older history: `orion/memory/referents/backfill.py` (now falls back to the
+  newest checkpoint's `answer_text`). A `DeltaChannel` (`add_messages`) in any durable-runs graph
+  would be truncated; `tests/test_checkpoint_prune.py` fails if one appears.
 
 ### One failed-attempt policy for admitted work nodes (2026-10-23)
 

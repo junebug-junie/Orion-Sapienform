@@ -105,6 +105,6 @@ No manual restart. The post-pull rebuild rebuilds orion-hub and orion-durable-ru
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3236
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

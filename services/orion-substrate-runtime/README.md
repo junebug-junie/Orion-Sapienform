@@ -1312,6 +1312,28 @@ Juniper is busy, and the candidate is absent (not calm) if the journal query fai
 in-memory cache bounds the read path. Set the flag to `false` and restart substrate-runtime to
 disable it.
 
+**`world:chat` carries what Juniper said (2026-11-12).** The chat candidate's label is the fixed
+text "Juniper is talking", so its open-loop id stays the same through a conversation (it used to
+carry the message count, and each new message gave the conversation a new loop id). When a turn is
+in the 15-minute window, the worker reads Juniper's newest turn (`fetch_latest_chat_turn`, the same
+turn definition as the count) and puts a whitespace-collapsed excerpt of at most 200 characters,
+its `chat_history_log` id, its time and the window count on the candidate's `evidence`. The
+broadcast copies it to the winning loop's `provenance["world_evidence"]`; reverie renders it as her
+words. It is evidence only: ranking, band and refs do not change. A failed read drops the excerpt,
+never the candidate.
+
+Where the excerpt is stored: it is part of the broadcast frame, so it is in the current snapshot
+(`substrate_attention_broadcast_projection`), in `substrate_attention_broadcast_log` on every tick
+chat wins (168 h retention), on the broadcast bus message (and the bus mirror, 24 h), and in the
+reverie prompt. It is not in the world-first debug trace or any log line.
+
+One id for all conversations: the fixed label gives `world:chat` one loop id
+(`open-loop-3aa14b029771`) forever, not one per conversation. A Hub resolve/dismiss on it hides
+chat from the broadcast for the 48 h verdict TTL in later conversations too, and reverie's 15-min
+refractory treats chat as one theme. The old 1-message id, the most common, already worked this
+way. Replay: `evals/run_world_chat_loop_id_replay.py --days 7`; after deploy add
+`--stored-since <deploy time>` to check the stored ids directly.
+
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
 in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).

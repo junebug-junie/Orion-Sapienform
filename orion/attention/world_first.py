@@ -1013,14 +1013,78 @@ def chat_rate_magnitude(turn_times: Sequence[datetime], *, now: datetime, **kw) 
     return chat_rate_reading(turn_times, now=now, **kw)[0]
 
 
+# The world:chat label. It becomes the open loop's description and the loop id
+# is a hash of it (orion/substrate/attention/scoring.py), so it must not carry
+# a count or an age: live 2026-11-05..12, "Juniper is talking (N messages in the
+# last 15 min)" gave one conversation a new loop id each time N moved (311
+# chat-won broadcast ticks, 3 ids, 24 id switches between chat wins less than
+# 15 min apart). The count now rides in ``evidence``.
+CHAT_TALKING_LABEL = "Juniper is talking"
+CHAT_QUIET_LABEL = "chat is quiet"
+# Juniper's latest message on the candidate: reverie reads the winner and should
+# know what she said, not only that she talked (spec 2026-10-16, revision 1
+# "Recommended next patch" 2: excerpt <= 200 chars + chat_history_log id).
+CHAT_EVIDENCE_EXCERPT_CHARS = 200
+CHAT_EVIDENCE_KIND = "juniper_latest_message"
+
+
+def chat_message_excerpt(text: str, limit: int = CHAT_EVIDENCE_EXCERPT_CHARS) -> tuple[str, bool]:
+    """(whitespace-collapsed excerpt of at most ``limit`` chars, truncated?)."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat, False
+    return flat[: max(1, limit - 1)].rstrip() + "\u2026", True
+
+
+def chat_latest_message_evidence(
+    latest_turn: tuple[object, datetime, str] | None,
+    *,
+    now: datetime,
+    messages_in_window: int,
+    window: timedelta = CHAT_RATE_WINDOW,
+) -> dict | None:
+    """Evidence dict for Juniper's latest turn, or None.
+
+    ``latest_turn`` is ``(chat_history_log.id, created_at, prompt)`` from
+    ``CHAT_LATEST_TURN_SQL``. None when it is malformed, empty, in the future,
+    or older than the counting ``window`` (then it is not one of the turns that
+    made chat busy, so it is not this candidate's evidence)."""
+    if not isinstance(latest_turn, tuple) or len(latest_turn) != 3:
+        return None
+    turn_id, said_at, prompt = latest_turn
+    if not isinstance(said_at, datetime) or not isinstance(prompt, str):
+        return None
+    said_at = _aware(said_at)
+    now = _aware(now)
+    if said_at > now or said_at <= now - window:
+        return None
+    excerpt, truncated = chat_message_excerpt(prompt)
+    if not excerpt:
+        return None
+    return {
+        "kind": CHAT_EVIDENCE_KIND,
+        "chat_turn_id": str(turn_id) if turn_id is not None else None,
+        "said_at": said_at.isoformat(),
+        "message_excerpt": excerpt,
+        "truncated": truncated,
+        "messages_in_window": int(messages_in_window),
+        "window_min": int(window.total_seconds() // 60),
+    }
+
+
 def chat_candidate(
     turn_times: Sequence[datetime] | None,
     *,
     now: datetime,
     absent_reason: str | None = None,
+    latest_turn: tuple[object, datetime, str] | None = None,
 ) -> AttentionCandidateV1:
     """Chat as the first external source. ``turn_times`` None = the read
-    failed: absent, never calm."""
+    failed: absent, never calm.
+
+    ``latest_turn`` (optional, ``(id, created_at, prompt)``): Juniper's newest
+    message, carried as ``evidence`` when it falls in the counting window.
+    Evidence only: it never changes the reading, the band or the label."""
     now = _aware(now)
     if turn_times is None:
         mag = _missing_magnitude()
@@ -1031,16 +1095,16 @@ def chat_candidate(
         mag, mid = chat_rate_reading(turn_times, now=now)
         last = max((_aware(t) for t in turn_times), default=None)
     n = int(mag.value)
+    evidence = (
+        chat_latest_message_evidence(latest_turn, now=now, messages_in_window=n)
+        if n and absent_reason is None
+        else None
+    )
     return AttentionCandidateV1(
         candidate_id=f"attention-candidate:{WORLD_CHAT_SOURCE_ID}",
         source_id=WORLD_CHAT_SOURCE_ID,
         source_kind="external",
-        label=(
-            f"Juniper is talking ({n} message{'s' if n != 1 else ''} in the last "
-            f"{int(CHAT_RATE_WINDOW.total_seconds() // 60)} min)"
-            if n
-            else "chat is quiet"
-        ),
+        label=CHAT_TALKING_LABEL if n else CHAT_QUIET_LABEL,
         unusualness=mag,
         rank_percentile=mid,
         observed_at=last,
@@ -1049,6 +1113,7 @@ def chat_candidate(
         value_kind="count",
         polarity=None,
         evidence_refs=[WORLD_CHAT_SOURCE_ID, "chat_history_log"],
+        evidence=evidence,
     )
 
 
@@ -1140,8 +1205,15 @@ def reading_candidate(
 # Juniper's turns only: Orion-initiated rows (outreach, metacog background)
 # carry no source and an empty prompt. One query, shared by every caller so
 # the definition cannot drift between contests.
-CHAT_TURN_TIMES_SQL = (
-    "SELECT created_at FROM chat_history_log "
+_CHAT_TURN_WHERE = (
     "WHERE created_at >= :since AND source LIKE 'hub%' "
-    "AND coalesce(prompt, '') <> '' ORDER BY created_at"
+    "AND coalesce(prompt, '') <> '' "
+)
+CHAT_TURN_TIMES_SQL = "SELECT created_at FROM chat_history_log " + _CHAT_TURN_WHERE + "ORDER BY created_at"
+# Juniper's newest turn, same definition as the count above (shared WHERE), for
+# the world:chat evidence. Bounded text: the excerpt is cut to 200 chars anyway.
+CHAT_LATEST_TURN_SQL = (
+    "SELECT id, created_at, left(prompt, 2000) FROM chat_history_log "
+    + _CHAT_TURN_WHERE
+    + "ORDER BY created_at DESC LIMIT 1"
 )

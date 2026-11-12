@@ -98,6 +98,9 @@ SOURCE (bounded internal input — what your attention settled on right now)
 - open loops (one line each: id | what it is | the measured signal or why it is open{% if has_settled_loops %} | verdict{% endif %}):
 {% for ol in open_loops %}
   - {{ ol.id }} | {{ ol.description or ol.target_type }}{% if ol.signal %} | {{ ol.signal }}{% elif ol.why_it_matters %} | {{ ol.why_it_matters }}{% endif %}{% if ol.outcome %} | verdict: {{ ol.outcome.line }}{% endif %}
+{% if ol.evidence %}
+    what it is about: {{ ol.evidence }}
+{% endif %}
 {% endfor %}
 {% endif %}
 {% if recent_percepts %}

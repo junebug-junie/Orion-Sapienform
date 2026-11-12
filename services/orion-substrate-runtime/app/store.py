@@ -875,6 +875,25 @@ class BiometricsSubstrateStore:
             for r in rows
         ]
 
+    def fetch_latest_chat_turn(self, *, since: datetime) -> tuple[str, datetime, str] | None:
+        """Juniper's newest chat turn since `since` as (id, created_at, prompt),
+        or None. Same turn definition as fetch_chat_turn_times (shared WHERE in
+        orion.attention.world_first). Evidence for the world:chat candidate:
+        the text goes onto the candidate only, never into a log line."""
+        from orion.attention.world_first import CHAT_LATEST_TURN_SQL
+
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(CHAT_LATEST_TURN_SQL),
+                {"since": since.astimezone(timezone.utc).replace(tzinfo=None)},
+            ).fetchone()
+        if not row:
+            return None
+        created_at = row[1]
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return (str(row[0]), created_at, str(row[2] or ""))
+
     def fetch_accepted_reading_link_events(
         self, *, since: datetime
     ) -> list[tuple[datetime, str, str]]:

@@ -1,23 +1,26 @@
-"""Orion's Day: the daily letter about what Orion thought about yesterday.
+"""Orion's Day: the daily letter about what Orion lived through yesterday.
 
-Backend half (this module, orion/orion_day/, the `orion_day.letter` durable
-workflow). The Hub half schedules it at 08:30 America/Denver, renders the HTML
-email from the persisted row, and offers the carry-forward text to curiosity.
+Since 2026-11-12 (living Prime design #3224, Part 3) the letter is Prime's end-of-day turn:
 
-Flow:
-
-    Hub: gather_orion_day(conn, letter_date) -> OrionDayMaterialV1   (read-only SQL)
-         render_day_input(material)          -> OrionDayLlmViewV1    (budgeted text, per-source shares;
-                                                                     orion/orion_day/day_input.py)
+    Prime (orion-mind): the temporal chronicle closed yesterday (GET /temporal-self/day/<date> on
+        orion-durable-runs) and Hub says it has no letter (GET /api/orion-day/letters/<date>)
+        -> Prime bids a ``make`` act (actor prime) in the body economy; deferred -> no letter
+           unless a later bid inside the window is funded (then the next letter says so)
+        -> funded: Prime opens the act and orders the run (POST Hub /api/orion-day/letter-run,
+           OrionDayLetterOrderV1)
+    Hub: gather_orion_day(conn, letter_date) -> OrionDayMaterialV1          (read-only SQL)
+         render_day_input(material)          -> OrionDayLlmViewV1           (orion/orion_day/day_input.py)
          OrionDayRunBriefV1 -> DurableRunRequestV1(workflow="orion_day.letter", admission=agent)
-    durable-runs: resource_request -> resource_wait -> write_note -> write_carry_forward
-                  -> persist (orion_day_letter row + journal entry of the NOTE) -> finish
-    Hub: SELECT * FROM orion_day_letter WHERE letter_date = ... -> OrionDayLetterV1 -> email
+    durable-runs: resource_request -> resource_wait -> write_letter (ONE unified turn on the
+                  durable turn seam, session ``orion_day_letter``; prompt built by
+                  orion/orion_day/letter_turn.py) -> persist (orion_day_letter row + journal
+                  entry of the NOTE) -> finish
+    Hub: emails the persisted row (unchanged)
+    Prime: GET /runs/<run_id> -> closes the make act; the letter's threads become Prime concerns
 
-Two outputs, never mixed: ``note_md`` is Orion's freeform note about the day (its
-prompt carries no instruction about future curiosity at all); ``carry_forward_md``
-is a second call's list of threads for future curiosity. They are separate
-fields, separate columns and separate verbs.
+Two outputs, never mixed: ``note_md`` is Orion's letter; ``carry_forward_md`` is the letter's
+own closing list of threads (split off the same turn's reply by ``letter_turn.split_letter``).
+The threads reach curiosity only through Prime (a concern, then Prime's graded ``ask``).
 
 Every model is ``extra="forbid"``. The dream-hypothesis model is part of the
 blind-experiment guard: it has no ``arm`` / ``ref_a`` / ``ref_b`` field, so a
@@ -36,15 +39,21 @@ from orion.schemas.reading_finding import ReadingFindingV1
 from orion.schemas.temporal_self import DayCitationCheckV1, TemporalSelfDayBlockV1
 
 ORION_DAY_WORKFLOW = "orion_day.letter"
-ORION_DAY_NOTE_VERB = "orion_day_note_v1"
-ORION_DAY_CARRY_FORWARD_VERB = "orion_day_carry_forward_v1"
 ORION_DAY_TIMEZONE = "America/Denver"
 ORION_DAY_LLM_ROUTE = "agent"
 ORION_DAY_JOURNAL_TRIGGER_KIND = "orion_day_letter"
 ORION_DAY_JOURNAL_SOURCE_KIND = "orion_day"
 
 # The graph's work nodes, in order (services/orion-durable-runs/app/orion_day_graph.py).
-ORION_DAY_NODES: tuple[str, ...] = ("write_note", "write_carry_forward", "persist", "finish")
+ORION_DAY_NODES: tuple[str, ...] = ("write_letter", "persist", "finish")
+# The letter turn's Hub session and turn source. The session id is the one Prime's turn hand-back
+# reads as "letter" (orion/prime/handback.py LETTER_SESSION_ID; a test pins the two together).
+ORION_DAY_LETTER_SESSION_ID = "orion_day_letter"
+ORION_DAY_LETTER_SOURCE_TAG = "orion_day_letter"
+# Prime's order to Hub (HTTP, orion-hub scripts/orion_day_order.py).
+ORION_DAY_ORDER_PATH = "/api/orion-day/letter-run"
+ORION_DAY_STATUS_PATH = "/api/orion-day/letters/{letter_date}"
+_RUN_ID_PATTERN = r"^orion-day-\d{4}-\d{2}-\d{2}-\d+$"
 
 _JOURNAL_NS = uuid5(NAMESPACE_URL, "orion.orion_day.letter.journal.v1")
 
@@ -375,8 +384,16 @@ class OrionDayLlmViewV1(_Model):
 # --- the durable run brief ------------------------------------------------------------------
 
 
+class MissedLetterV1(_Model):
+    """A day with no letter, as Prime recorded it (its make bid was never funded, the run failed,
+    or the day closed while Prime was down). The next letter's turn is told, once, plainly."""
+
+    letter_date: date
+    reason: str = Field(min_length=1, max_length=300)
+
+
 class OrionDayRunBriefV1(_Model):
-    """Everything the `orion_day.letter` run needs, built by Hub at kickoff."""
+    """Everything the `orion_day.letter` run needs. Built by Hub on Prime's order."""
 
     letter_date: date
     timezone: str = ORION_DAY_TIMEZONE
@@ -387,11 +404,13 @@ class OrionDayRunBriefV1(_Model):
     # Never `chat` (scripts/check_chat_route_poachers.py). The pool spills agent work to the
     # chat card only when that card is lent, which is the pool's call, not this brief's.
     llm_route: Literal["agent"] = ORION_DAY_LLM_ROUTE
-    # Per-LLM-call budget: the RPC wait for each verb and AdmissionRuntime.execute's per-node
-    # timeout (it reads brief.timeout_sec). Both verbs' YAML timeout_ms stay above it.
-    timeout_sec: float = Field(default=1800.0, gt=0.0, le=3600.0)
-    # How long the carry-forward text stays eligible for curiosity (sets carry_forward_expires_at).
-    carry_forward_ttl_hours: float = Field(default=48.0, gt=0.0, le=24 * 14)
+    # The letter turn's budget per attempt (the attempt timer and Hub's turn limit derive from it).
+    timeout_sec: float = Field(default=1800.0, ge=60.0, le=3600.0)
+    # Added 2026-11-12 (living Prime Part 3). Prime's make act that ordered this run, and the
+    # days before it that got no letter. ROLLOUT: additive on a forbid model -- orion-durable-runs
+    # (the reader) deploys before Hub sends them; Hub sends them only on Prime's order.
+    prime_act_id: str | None = Field(default=None, max_length=200)
+    missed_letters: list[MissedLetterV1] = Field(default_factory=list, max_length=7)
 
     @model_validator(mode="after")
     def _consistent(self):
@@ -427,6 +446,12 @@ class OrionDayLetterSourcesV1(_Model):
     # [event:<id>] refs the gate removed because the temporal core did not show them, per text
     # ("note", "carry_forward"). Empty = none removed.
     rejected_event_refs: dict[str, list[str]] = Field(default_factory=dict)
+    # Added 2026-11-12 (living Prime Part 3): the unified turn that wrote the letter (find it in
+    # cockpit_turn_sighting / harness_turn_trace), Prime's make act, and the missed days the turn
+    # was told about. ROLLOUT: Hub (the forbid reader) deploys before orion-durable-runs writes them.
+    turn_correlation_id: str | None = None
+    prime_act_id: str | None = None
+    missed_letters: list[MissedLetterV1] = Field(default_factory=list)
 
 
 class OrionDayLetterV1(_Model):
@@ -447,6 +472,8 @@ class OrionDayLetterV1(_Model):
     created_at: datetime
     emailed_at: datetime | None = None
     email_notification_id: str | None = None
+    # The retired curiosity carry-forward offer's columns (offer retired 2026-11-12, living Prime
+    # Part 3: threads reach curiosity through Prime). Never written any more; kept so old rows load.
     carry_forward_expires_at: datetime | None = None
     carry_forward_offered_at: datetime | None = None
     carry_forward_offered_run_id: str | None = None
@@ -456,3 +483,55 @@ class OrionDayLetterV1(_Model):
         if self.note_md.strip() == self.carry_forward_md.strip():
             raise ValueError("note_md and carry_forward_md must be distinct outputs")
         return self
+
+
+# --- Prime's order and Hub's answers (HTTP; living Prime Part 3) ----------------------------
+
+
+class OrionDayLetterStatusV1(_Model):
+    """``GET {HUB}/api/orion-day/letters/{letter_date}``: does the day have a letter yet."""
+
+    schema_version: Literal["orion_day.letter_status.v1"] = "orion_day.letter_status.v1"
+    letter_date: date
+    letter_exists: bool
+    run_id: str | None = None
+    emailed: bool = False
+
+
+class OrionDayLetterOrderV1(_Model):
+    """``POST {HUB}/api/orion-day/letter-run``: Prime's funded make act orders the day's letter.
+
+    Hub gathers the day, builds the brief and submits the durable run under exactly this ``run_id``
+    and ``correlation_id`` (so Prime can follow it with ``GET {DURABLE}/runs/{run_id}``)."""
+
+    schema_version: Literal["orion_day.letter_order.v1"] = "orion_day.letter_order.v1"
+    letter_date: date
+    run_id: str = Field(pattern=_RUN_ID_PATTERN, max_length=80)
+    correlation_id: str = Field(min_length=1, max_length=200)
+    prime_act_id: str = Field(min_length=1, max_length=200)
+    missed_letters: list[MissedLetterV1] = Field(default_factory=list, max_length=7)
+    deadline_at: datetime
+    timeout_sec: float = Field(default=1800.0, ge=60.0, le=3600.0)
+
+    @model_validator(mode="after")
+    def _checks(self):
+        _aware(self.deadline_at, "deadline_at")
+        if not self.run_id.startswith(f"orion-day-{self.letter_date.isoformat()}-"):
+            raise ValueError("run_id must be orion_day_run_id(letter_date, n)")
+        return self
+
+
+OrionDayOrderStatus = Literal["submitted", "exists", "already_written", "empty_day", "refused", "unavailable"]
+
+
+class OrionDayLetterOrderResultV1(_Model):
+    """Hub's answer to an order. ``submitted`` / ``exists`` (the same run is already in the
+    registry): follow ``run_id``. ``already_written``: a letter row exists (``run_id`` = its run).
+    ``empty_day``: nothing to write about, no run. ``refused``: durable-runs refused the request
+    (``detail``). ``unavailable``: the store or durable-runs could not be reached; try again."""
+
+    schema_version: Literal["orion_day.letter_order_result.v1"] = "orion_day.letter_order_result.v1"
+    letter_date: date
+    run_id: str | None = None
+    status: OrionDayOrderStatus
+    detail: str | None = Field(default=None, max_length=500)

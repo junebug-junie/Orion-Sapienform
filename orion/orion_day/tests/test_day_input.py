@@ -10,7 +10,7 @@ from pathlib import Path
 from orion.orion_day import day_input as di
 from orion.orion_day.budget import chronology_citations, extract_refs, material_refs
 from orion.orion_day.day_input import build_day_input, latest_self_sense, render_day_input
-from orion.orion_day.gather import JUNIPER_CHAT_SQL, TEMPORAL_CORE_EVENTS_SQL, gather_orion_day
+from orion.orion_day.gather import JUNIPER_CHAT_SOURCES, JUNIPER_CHAT_SQL, TEMPORAL_CORE_EVENTS_SQL, gather_orion_day
 from orion.orion_day.temporal_core import render_temporal_core
 from orion.orion_day.tests import fixtures as fx
 from orion.orion_day.window import orion_day_window
@@ -58,7 +58,11 @@ def test_juniper_chat_sql_reads_the_window_in_utc_and_skips_empty_prompts_unless
     conn = fx.FakeConn(juniper_chat=fx.JUNIPER_CHAT)
     asyncio.run(gather_orion_day(conn, fx.LETTER_DATE, now=NOW))
     w = orion_day_window(fx.LETTER_DATE)
-    assert (JUNIPER_CHAT_SQL, (w.window_start, w.window_end)) in conn.calls
+    assert (JUNIPER_CHAT_SQL, (w.window_start, w.window_end, JUNIPER_CHAT_SOURCES)) in conn.calls
+    # Only her rows: Hub chat sources or her browser (NULL source with an origin), never an agent's
+    # 'hub' rpc ping or a Collapse Mirror block (live sources, 120 days to 2026-11-12).
+    assert "source = ANY($3::text[])" in JUNIPER_CHAT_SQL and "client_meta ? 'origin'" in JUNIPER_CHAT_SQL
+    assert "hub" not in JUNIPER_CHAT_SOURCES and "collapse_mirror_reply" not in JUNIPER_CHAT_SOURCES
 
 
 def test_juniper_turns_survive_any_budget_in_full_and_outreach_is_trimmed():
@@ -194,8 +198,14 @@ def test_letter_sources_carry_input_shares_and_old_rows_still_validate():
 
 
 def test_every_ref_resolves_and_the_view_is_deterministic():
-    m = _material(temporal_day=day_1009().model_dump(mode="json"))
+    day, _ = _core_day()
+    rows = [{"event_id": "action_outcome:3", "source_kind": "action_outcome", "verdict": "claim_upheld=false",
+             "occurred_at": day.closed_at, "payload_json": '{"dispatch_kind": "act:say", "target_id": "hub.outreach"}'}]
+    conn = fx.FakeConn(juniper_chat=fx.JUNIPER_CHAT, temporal_day=day.model_dump(mode="json"), temporal_events=rows)
+    m = asyncio.run(gather_orion_day(conn, date(2026, 10, 9), now=NOW))  # the closed day's own date
     view = render_day_input(m)
+    assert any(r.startswith("arc:") for r in view.included_refs)
+    assert "event:action_outcome:3" in view.included_refs
     assert set(extract_refs(view.digest_md)) <= material_refs(m)
     again = render_day_input(OrionDayMaterialV1.model_validate_json(m.model_dump_json()))
     assert again.digest_md == view.digest_md and again.source_shares == view.source_shares
@@ -295,3 +305,45 @@ def test_chronology_citations_cover_both_blocks():
     block_arcs = {r[4:] for r in m.temporal_day.records if r.startswith("arc:")}
     assert set(shown) == core_arcs | block_arcs
     assert labels
+
+
+# --- review follow-ups ---------------------------------------------------------------------------
+
+
+def test_tail_cuts_and_self_sense_dedupe_are_counted_for_the_email():
+    m = _material()
+    many = [ReadingItemV1(seed_id=f"reading:{i:04d}", occurred_at=fx.T0, title=f"News {i}", learned="word " * 2000)
+            for i in range(300)]
+    view = render_day_input(m.model_copy(update={"readings": many}))
+    c = view.condensed
+    assert c.tail_items_total >= 300 and 0 < c.tail_items_left_out < c.tail_items_total
+    assert f"({c.tail_items_left_out} more trimmed items left out to fit" in view.digest_md
+    assert c.self_sense_answers_total == len(m.self_sense) and c.self_sense_answers_shown == 1
+    assert view.source_chars["readings"] <= di.TAIL_MAX_CHARS
+
+
+def test_no_reverie_heading_when_nothing_is_showable():
+    hollow = [ReverieThoughtV1(thought_id="h0000001", created_at=fx.T0, interpretation="x", hollow=True)]
+    view = render_day_input(_bare(reverie_thoughts=hollow, juniper_chat=[
+        JuniperChatTurnV1(turn_id="t1", at=fx.T0, prompt="hi", response="hello")]))
+    assert "## Reveries" not in view.digest_md
+    assert view.condensed.reverie_thoughts_hollow_skipped == 1
+
+
+def test_a_ref_pasted_into_chat_is_not_a_citation():
+    turn = JuniperChatTurnV1(turn_id="t1", at=fx.T0, prompt="what is [arc:deadbeefdeadbeef]?", response="ok")
+    view = render_day_input(_bare(juniper_chat=[turn]))
+    assert "arc:deadbeefdeadbeef" not in view.included_refs
+    assert "(arc:deadbeefdeadbeef)" in view.digest_md
+
+
+def test_temporal_core_never_leaves_a_heading_over_nothing():
+    day, events = _core_day()
+    for cap in range(120, 900, 20):
+        core = render_temporal_core(day, events, max_chars=cap)
+        if core is None:
+            continue
+        lines = core.text.splitlines()
+        for i, line in enumerate(lines):
+            if line.endswith(":") and not line.startswith("- "):
+                assert i + 1 < len(lines) and lines[i + 1].startswith("- "), (cap, core.text)

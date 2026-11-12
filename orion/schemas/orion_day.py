@@ -299,8 +299,9 @@ class OrionDayMaterialV1(_Model):
     walkway_day: WalkwayDayV1 | None = None
     # Added 2026-11-12 (living Prime design #3224, constraint 7): Juniper's chat turns for the day,
     # full text, and Orion's unsolicited messages to her. Default-empty so stored rows still validate.
-    # Same rollout rule as ``corrections``: rebuild orion-durable-runs (the forbid reader) before
-    # or with orion-hub.
+    # ROLLOUT: unlike ``corrections`` this goes both ways -- Hub writes the brief durable-runs reads,
+    # and durable-runs writes the letter row (material + sources.input_*) Hub reads with forbid
+    # models. Deploy orion-hub and orion-durable-runs together, outside the letter's 08:30 fire window.
     juniper_chat: list[JuniperChatTurnV1] = Field(default_factory=list)
     # Added 2026-11-12 (constraint 6): the temporal core -- expectations, acts and their graded
     # outcomes, threads with Juniper, the body's day -- rendered from the closed day by a fixed
@@ -346,6 +347,14 @@ class OrionDayCondensationV1(_Model):
     full_text_items_clipped: int = 0
     # Per-item character cap applied to full-text bodies; None = nothing clipped.
     full_text_clip_chars: int | None = None
+    # Added 2026-11-12 (honest input, constraint 7). Same two-way rollout as OrionDayMaterialV1.juniper_chat.
+    # Self-sense answers gathered vs the one-per-question answers shown.
+    self_sense_answers_total: int = 0
+    self_sense_answers_shown: int = 0
+    # The trimmed tail (readings, journals, dreams, news, code changes, street, visual reveries):
+    # items offered, items left out at its cap. Every tail item shown is cut to one short line.
+    tail_items_total: int = 0
+    tail_items_left_out: int = 0
 
 
 class OrionDayLlmViewV1(_Model):
@@ -415,6 +424,9 @@ class OrionDayLetterSourcesV1(_Model):
     # (OrionDayLlmViewV1.source_chars / source_shares). Empty on rows written before it.
     input_chars: dict[str, int] = Field(default_factory=dict)
     input_shares: dict[str, float] = Field(default_factory=dict)
+    # [event:<id>] refs the gate removed because the temporal core did not show them, per text
+    # ("note", "carry_forward"). Empty = none removed.
+    rejected_event_refs: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class OrionDayLetterV1(_Model):

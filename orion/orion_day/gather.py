@@ -215,12 +215,19 @@ WHERE day_id = $1 AND event_id = ANY($2::text[]) AND ingested_at <= $3
 """
 
 # Juniper's turns and Orion's unsolicited messages to her. created_at is UTC with no zone.
+# Only rows that are hers: Hub chat sources, or a NULL source sent from her browser (client_meta has
+# an origin; live 07-31..09-28). Not an agent's rpc ping (source 'hub') nor a Collapse Mirror block.
+JUNIPER_CHAT_SOURCES = ["hub_orion", "hub_ws", "hub_http"]
 JUNIPER_CHAT_SQL = """
 SELECT id, correlation_id, created_at, prompt, response,
        COALESCE((client_meta->>'unsolicited')::boolean, false) AS unsolicited
 FROM chat_history_log
 WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC') AND created_at < ($2::timestamptz AT TIME ZONE 'UTC')
-  AND (COALESCE(prompt, '') <> '' OR COALESCE((client_meta->>'unsolicited')::boolean, false))
+  AND (
+    COALESCE((client_meta->>'unsolicited')::boolean, false)
+    OR (COALESCE(prompt, '') <> '' AND (source = ANY($3::text[])
+                                        OR (source IS NULL AND client_meta ? 'origin')))
+  )
 ORDER BY created_at, id
 """
 
@@ -563,7 +570,7 @@ async def gather_juniper_chat(conn: Any, start: datetime, end: datetime) -> list
     return [JuniperChatTurnV1(
         turn_id=str(r["id"]), correlation_id=r["correlation_id"], at=_aware(r["created_at"]),
         prompt=(r["prompt"] or "").strip(), response=(r["response"] or "").strip(), unsolicited=bool(r["unsolicited"]),
-    ) for r in await conn.fetch(JUNIPER_CHAT_SQL, start, end)]
+    ) for r in await conn.fetch(JUNIPER_CHAT_SQL, start, end, JUNIPER_CHAT_SOURCES)]
 
 
 async def gather_orion_day(

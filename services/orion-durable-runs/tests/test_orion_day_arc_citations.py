@@ -190,3 +190,26 @@ def test_an_arc_shown_only_by_the_temporal_core_is_kept_and_shares_are_stored():
     sources = OrionDayLetterSourcesV1.model_validate(letter_row(state, brief, datetime.now(timezone.utc))["sources"])
     assert sources.input_shares == brief.llm_view.source_shares and sources.input_shares
     assert sources.input_chars["temporal_core"] == len(material.temporal_core.text)
+
+
+def test_an_event_ref_the_core_did_not_show_is_removed_and_recorded():
+    from orion.orion_day.day_input import render_day_input
+    from orion.orion_day.temporal_core import render_temporal_core
+    from orion.schemas.temporal_self import ExpectationRefV1
+
+    day = day_1009()
+    resolved = [ExpectationRefV1(event_id="action_outcome:7", source_kind="action_outcome",
+                                 committed_at=day.closed_at - timedelta(hours=2),
+                                 resolved_at=day.closed_at - timedelta(hours=2), verdict="claim_upheld=false")]
+    day = day.model_copy(update={"frame": day.frame.model_copy(update={
+        "expectations_resolved_today": resolved, "expectations_resolved_total": 1})})
+    material = brief_1009(with_block=False).material.model_copy(update={"temporal_core": render_temporal_core(day)})
+    brief = OrionDayRunBriefV1(letter_date=material.letter_date, window_start=material.window_start,
+                               window_end=material.window_end, material=material, llm_view=render_day_input(material))
+    note = "One act missed [event:action_outcome:7]. Another I made up [event:action_outcome:999999]." + PAD
+    out = check_note(note, brief)
+    assert "[event:action_outcome:7]" in out["note_md"] and "999999" not in out["note_md"]
+    assert out["note_rejected_events"] == ["action_outcome:999999"]
+    state = {"run_id": "r", "carry_forward_md": "- x", **out}
+    sources = OrionDayLetterSourcesV1.model_validate(letter_row(state, brief, datetime.now(timezone.utc))["sources"])
+    assert sources.rejected_event_refs == {"note": ["action_outcome:999999"]}

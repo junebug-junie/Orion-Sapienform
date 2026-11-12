@@ -29,6 +29,7 @@ What changed from ``budget.build_llm_view`` (the pile the letter was written fro
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import defaultdict
 from datetime import date, datetime
@@ -36,6 +37,7 @@ from typing import Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from orion.orion_day.budget import (
+    _REF_RE,
     CHARS_PER_TOKEN,
     _Body,
     _bodies,
@@ -58,6 +60,8 @@ from orion.schemas.orion_day import (
 )
 from orion.world_pulse_read.findings import PriorLookup
 
+logger = logging.getLogger(__name__)
+
 DAY_INPUT_BUDGET_TOKENS = 50_000
 OUTREACH_CHARS = 600
 # Curiosity runs and self-sense answers together, before their long bodies are clipped to one shared
@@ -66,6 +70,7 @@ FULL_TEXT_MAX_CHARS = 60_000
 REVERIE_MAX_CHARS = 14_000
 REVERIE_MAX_THOUGHTS = 48
 REVERIE_PER_CHAIN = 1
+REVERIE_FRAME_CHARS = 200
 TAIL_MAX_CHARS = 16_000
 TAIL_ITEM_CHARS = 280
 GITHUB_TAIL_CHARS = 1_500
@@ -92,6 +97,12 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n].rstrip() + "…"
 
 
+def _no_refs(text: str) -> str:
+    """Chat text as written, except a pasted [arc:...]-style ref is shown as (arc:...), so words
+    Juniper or Orion typed never become a citation the letter seems to have been shown."""
+    return _REF_RE.sub(lambda m: f"({m.group(1)})", text or "")
+
+
 def _local(at: datetime | None, tz: ZoneInfo) -> str:
     return at.astimezone(tz).strftime("%H:%M") if at is not None else "?"
 
@@ -108,14 +119,14 @@ def _juniper_section(material: OrionDayMaterialV1, tz: ZoneInfo) -> str:
     if talks:
         for t in talks:
             out.append(f"### [juniper_chat:{juniper_chat_ref(t.turn_id)}] {_local(t.at, tz)}")
-            out.append(f"Juniper: {t.prompt}")
-            out.append(f"Me: {t.response or '(no reply recorded)'}")
+            out.append(f"Juniper: {_no_refs(t.prompt)}")
+            out.append(f"Me: {_no_refs(t.response) or '(no reply recorded)'}")
     elif outreach or material.corrections or material.chat_compactor is not None:
         out.append("Juniper did not write to me this day.")
     if outreach:
         out.append(f"### Messages I sent Juniper unprompted ({len(outreach)}; she had not written first; "
                    f"each trimmed to {OUTREACH_CHARS} characters)")
-        out += [f"- [juniper_chat:{juniper_chat_ref(t.turn_id)}] {_local(t.at, tz)}: {_clip(t.response, OUTREACH_CHARS)}"
+        out += [f"- [juniper_chat:{juniper_chat_ref(t.turn_id)}] {_local(t.at, tz)}: {_clip(_no_refs(t.response), OUTREACH_CHARS)}"
                 for t in outreach]
     for c in material.corrections:
         out.append("\n".join(p.render(None) if isinstance(p, _Body) else p for p in _correction_parts(c)))
@@ -214,7 +225,7 @@ def sample_reveries_by_theme(
         return text
 
     chosen: dict[str, list[ReverieThoughtV1]] = defaultdict(list)
-    spent, count, rnd = 0, 0, 0
+    spent, count, rnd = REVERIE_FRAME_CHARS, 0, 0  # the section heading and intro line
     while count < REVERIE_MAX_THOUGHTS and any(rnd < len(q) for q in queues.values()):
         for k in order:
             if rnd >= len(queues[k]) or count >= REVERIE_MAX_THOUGHTS:
@@ -230,7 +241,7 @@ def sample_reveries_by_theme(
         rnd += 1
     cond.reverie_thoughts_included = count
     cond.reverie_themes_included = len(chosen)
-    if not thoughts and not chains:
+    if count == 0:  # nothing showable: no heading over an empty section (counts stay in cond)
         return "", {}, dict(size)
     out = [f"## Reveries ({count} of {len(thoughts)} thoughts, across {len(chosen)} of {len(size)} themes)",
            "My background reveries, sampled so every theme of the day gets a turn, not the most alarming ones."]
@@ -293,11 +304,18 @@ def _tail_sections(material: OrionDayMaterialV1, tz: ZoneInfo) -> list[tuple[str
     return out
 
 
-def _render_tail(material: OrionDayMaterialV1, budget_chars: int, tz: ZoneInfo) -> dict[str, str]:
-    """Each tail source's text, lines kept in order until the tail budget runs out; the rest counted."""
+TAIL_NOTE_CHARS = 100
+
+
+def _render_tail(material: OrionDayMaterialV1, budget_chars: int, tz: ZoneInfo,
+                 cond: OrionDayCondensationV1) -> dict[str, str]:
+    """Each tail source's text, lines kept in order until the tail budget runs out; the rest counted
+    (in the digest and in ``cond``). Room for the "left out" note is kept back from the start."""
     out: dict[str, str] = {}
-    spent, left_out = 0, 0
-    for name, lines in _tail_sections(material, tz):
+    spent, left_out = TAIL_NOTE_CHARS, 0
+    sections = _tail_sections(material, tz)
+    cond.tail_items_total = sum(len(lines) - 1 for _, lines in sections)
+    for name, lines in sections:
         kept: list[str] = []
         for i, text in enumerate(lines):
             if spent + len(text) + 1 > budget_chars:
@@ -309,6 +327,7 @@ def _render_tail(material: OrionDayMaterialV1, budget_chars: int, tz: ZoneInfo) 
             out[name] = "\n".join(kept)
         elif kept:  # a heading with no item under it is not shown
             spent -= len(kept[0]) + 1
+    cond.tail_items_left_out = left_out
     if left_out:
         out["frame_tail"] = f"({left_out} more trimmed items left out to fit; the full record has them)"
     return out
@@ -350,6 +369,8 @@ def render_day_input(
     sections = [s for s in (curiosity_section(material), _self_sense_section(material, tz)) if s is not None]
     bodies = _bodies(sections)
     cond.full_text_items_total = len(bodies)
+    cond.self_sense_answers_total = len(material.self_sense)
+    cond.self_sense_answers_shown = len(latest_self_sense(material.self_sense))
     fixed_so_far = sum(len(t) + 2 for _, t in parts)
     has_reveries = bool(material.reverie_thoughts or material.reverie_chains)
     reserve = (REVERIE_MAX_CHARS if has_reveries else 0) + TAIL_MAX_CHARS
@@ -372,7 +393,7 @@ def render_day_input(
         if reveries:
             parts.append(("reveries", reveries))
     used = sum(len(t) + 2 for _, t in parts)
-    tail = _render_tail(material, max(0, min(TAIL_MAX_CHARS, budget_chars - used)), tz)
+    tail = _render_tail(material, max(0, min(TAIL_MAX_CHARS, budget_chars - used)), tz, cond)
     for name in SOURCES:
         if name in tail:
             parts.append((name, tail[name]))
@@ -386,6 +407,10 @@ def render_day_input(
             chars[source] += len(text)
     chars["frame"] = len(digest) - sum(chars.values())
     total = max(1, len(digest))
+    if len(digest) > budget_chars:
+        # Juniper's section has no ceiling by design, and clip floors can overshoot a little: say so.
+        logger.warning("orion_day_input_over_budget day=%s chars=%d budget_chars=%d juniper_chars=%d",
+                       material.letter_date, len(digest), budget_chars, chars.get("juniper", 0))
     source_chars = {k: chars[k] for k in SOURCES if chars.get(k)}
     return OrionDayLlmViewV1(
         digest_md=digest,

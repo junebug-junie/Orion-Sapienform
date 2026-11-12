@@ -355,6 +355,9 @@ def build_llm_view(
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     chars_per_token: float = CHARS_PER_TOKEN,
 ) -> OrionDayLlmViewV1:
+    """REPLAY ONLY since 2026-11-12: the old pile, kept as the "old" side of
+    ``evals/run_orion_day_input_replay.py``. Production uses ``day_input.render_day_input``;
+    do not wire this back in. Retired with the verb in living Prime Part 3."""
     budget_chars = int(budget_tokens * chars_per_token)
     cond = OrionDayCondensationV1()
     header = (f"# My day: {material.letter_date.isoformat()} ({material.timezone}, "
@@ -440,6 +443,24 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
 def juniper_chat_ref(turn_id: str) -> str:
     """The short id a chat turn is cited by (``[juniper_chat:<first 12 chars>]``)."""
     return turn_id[:12]
+
+
+_EVENT_REF_RE = re.compile(r"\[event:([^\]\s]+)\]")
+
+
+def gate_event_refs(text: str, material: OrionDayMaterialV1) -> tuple[str, list[str]]:
+    """Remove [event:<id>] refs the temporal core did not show; return (text, removed ids as written)."""
+    shown = {r[len("event:"):] for r in (material.temporal_core.records if material.temporal_core else {})
+             if r.startswith("event:")}
+    removed: list[str] = []
+
+    def _strip(m: re.Match[str]) -> str:
+        if m.group(1) in shown:
+            return m.group(0)
+        removed.append(m.group(1))
+        return ""
+
+    return _EVENT_REF_RE.sub(_strip, text or ""), removed
 
 
 def chronology_citations(material: OrionDayMaterialV1) -> tuple[list[str], dict[str, list[str]]]:

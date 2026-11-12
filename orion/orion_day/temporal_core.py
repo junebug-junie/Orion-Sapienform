@@ -190,18 +190,35 @@ def render_temporal_core(
 
     if not lines:
         return None
+    def fits(rows: list[tuple[int, str]], extra: list[str]) -> bool:
+        return len("\n".join([t for _, t in rows] + extra)) <= max_chars
+
+    def drop_orphans(rows: list[tuple[int, str]]) -> int:
+        # A heading ("...:") whose item lines were all dropped goes too: never a heading over nothing.
+        n = 0
+        i = len(rows) - 1
+        while i >= 0:
+            t = rows[i][1]
+            if t.endswith(":") and not t.startswith("- ") and not (i + 1 < len(rows) and rows[i + 1][1].startswith("- ")):
+                rows.pop(i)
+                n += 1
+            i -= 1
+        return n
+
     kept = list(lines)
     dropped = 0
-    while len("\n".join(t for _, t in kept)) > max_chars and len(kept) > 1:
+    while not fits(kept, []) and kept:
         kept.pop(max(range(len(kept)), key=lambda i: (kept[i][0], i)))
         dropped += 1
+    dropped += drop_orphans(kept)
     if dropped:
-        note = f"({dropped} lower-priority line{'s' if dropped != 1 else ''} left out to fit) {day_ref}"
-        while len("\n".join([t for _, t in kept] + [note])) > max_chars and len(kept) > 1:
+        def note() -> str:
+            return f"({dropped} lower-priority line{'s' if dropped != 1 else ''} left out to fit) {day_ref}"
+        while not fits(kept, [note()]) and kept:
             kept.pop(max(range(len(kept)), key=lambda i: (kept[i][0], i)))
             dropped += 1
-            note = f"({dropped} lower-priority lines left out to fit) {day_ref}"
-        kept.append((0, note))
+            dropped += drop_orphans(kept)
+        kept.append((0, note()))
     text = "\n".join(t for _, t in kept)[:max_chars]
 
     shown_arcs = {a_id for a_id in cited_arcs if f"[arc:{a_id}]" in text}

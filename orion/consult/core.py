@@ -412,37 +412,3 @@ def stuck_prior_source(decision: Any) -> Optional[tuple[str, str]]:
         f"I have tested this belief many times without settling it: \"{claim}\" "
         "What am I missing, and is it answerable with what I can reach?",
     )
-
-
-# --- What Orion is told afterwards ----------------------------------------------------------
-
-
-def consult_outcomes_section(rows: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Kickoff lines telling Orion how their consults ended and what Juniper said. Pure.
-
-    Orion alone writes ``:Prior`` nodes, so Hub does not record the evidence itself: it shows Orion
-    the outcome once, and Orion records it on a belief. Juniper's answer and a later outcome stay
-    separate pieces of evidence."""
-    if not rows:
-        return []
-    lines = [
-        "## Your consults with Claude",
-        "These consults ended since your last run. Record each on a belief (a :Prior): find the one "
-        "it is about or make one. Juniper's answer is one piece of evidence about what she wants. "
-        "It is not proof the claim is true: only a later outcome is.",
-    ]
-    for row in rows:
-        ending = str(row.get("ending") or "")
-        cid = row.get("consult_id")
-        question = str(row.get("question") or "").strip().replace("\n", " ")[:240]
-        if ending == "answered":
-            lines.append(f"- Consult {cid} was answered: {str(row.get('answer') or '').strip()} (question: {question})")
-            continue
-        decision = row.get("decision")
-        if decision:
-            reason = str(row.get("decision_reason") or "").strip()
-            said = {"yes": "yes", "no": "no", "no_because": f"no, because: {reason}"}.get(str(decision), str(decision))
-            lines.append(f"- Consult {cid} ({ending}) went to Juniper. She said {said}. (question: {question})")
-        else:
-            lines.append(f"- Consult {cid} ended {ending}; {row.get('status')}. (question: {question})")
-    return lines

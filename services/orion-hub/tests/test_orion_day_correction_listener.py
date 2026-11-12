@@ -412,7 +412,7 @@ def _release_loop(monkeypatch, history, status=200):
     released: list[str] = []
     loop = curiosity_loop(_FakeBus(), text="found it", orion_day_corrections_enabled=True)
     loop.durable_runs_url = "http://durable"
-    g = type(loop)._release_corrections_if_unseen.__globals__
+    g = type(loop)._release_offers_after_failed_run.__globals__
 
     async def fake_release(pool, *, run_id):
         released.append(run_id)
@@ -446,13 +446,13 @@ def _release_loop(monkeypatch, history, status=200):
 
 def test_an_unstarted_durable_curiosity_run_gives_its_corrections_back(monkeypatch):
     loop, released = _release_loop(monkeypatch, [{"event": "run.accepted"}, {"event": "run.abandoned"}])
-    asyncio.run(loop._release_corrections_if_unseen("run-x"))
+    asyncio.run(loop._release_offers_after_failed_run("run-x"))
     assert released == ["run-x"]
 
 
 def test_a_started_or_unknown_run_keeps_the_corrections_claim(monkeypatch):
     loop, released = _release_loop(monkeypatch, [{"event": "run.started"}])
-    asyncio.run(loop._release_corrections_if_unseen("run-x"))
+    asyncio.run(loop._release_offers_after_failed_run("run-x"))
     loop2, released2 = _release_loop(monkeypatch, [], status=404)
-    asyncio.run(loop2._release_corrections_if_unseen("run-y"))
+    asyncio.run(loop2._release_offers_after_failed_run("run-y"))
     assert released == [] and released2 == []

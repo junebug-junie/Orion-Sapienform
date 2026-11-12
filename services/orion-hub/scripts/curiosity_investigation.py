@@ -143,6 +143,13 @@ from orion.curiosity.focus import (
     stamp_focus_outcome,
     take_focus,
 )
+from orion.consult.beliefs import (
+    PRIOR_RUNS_CYPHER,
+    consult_evidence_cypher,
+    finding_id_for,
+    recorded_evidence,
+    source_prior_ids,
+)
 from orion.orion_day.corrections import (
     MAX_CORRECTIONS_PER_RUN,
     correction_outcome,
@@ -1674,8 +1681,10 @@ class CuriosityInvestigation:
             return None
 
     async def _take_consult_outcomes(self, view: WorldviewSnapshot, run_id: str) -> tuple:
-        """Claim consult outcomes Orion has not seen: answered consults and Juniper's answers to
-        briefs. Only when Orion can write the belief it belongs on (same rule as corrections)."""
+        """Claim consult outcomes Orion has not recorded on a belief: answered consults and
+        Juniper's answers to briefs, each with the beliefs its source names as the graph holds
+        them now (``belief_priors``; None when unreadable). Only when Orion can write the belief
+        (same rule as corrections)."""
         if self._consult_loop() is None or not run_id:
             return ()
         if not self.graph_enabled or view.is_unavailable:
@@ -1683,10 +1692,75 @@ class CuriosityInvestigation:
         try:
             from scripts.consult_loop import take_outcomes
 
-            return tuple(await take_outcomes(self._pool_provider(), run_id=run_id))
+            taken = await take_outcomes(self._pool_provider(), run_id=run_id)
         except Exception as exc:  # noqa: BLE001 -- the run goes on without them
             logger.warning("curiosity_consult_outcomes_failed run=%s err=%s", run_id, exc)
             return ()
+        if not taken:
+            return ()
+        try:
+            prior_runs = await asyncio.to_thread(self._reader.query, PRIOR_RUNS_CYPHER)
+            named = {cid: source_prior_ids(row, prior_runs) for cid, row in ((r["consult_id"], r) for r in taken)}
+            current = await asyncio.to_thread(read_named_priors, self._reader, sorted({p for v in named.values() for p in v}))
+        except Exception as exc:  # noqa: BLE001 -- the section says the beliefs could not be read
+            logger.warning("curiosity_consult_priors_read_failed run=%s err=%s", run_id, exc)
+            named, current = {}, None
+        out = []
+        for row in taken:
+            ids = named.get(row["consult_id"], [])
+            row["belief_priors"] = None if current is None else [current[p] for p in ids if current.get(p) is not None]
+            out.append(row)
+        return tuple(out)
+
+    async def _stamp_consult_beliefs(self, run_id: str, *, release_missing: bool = True) -> None:
+        """Which offered consult outcomes this run recorded: a finding with the expected id joined
+        to a prior by an allowed edge (``orion.consult.beliefs.EDGES_FOR``). Read-only on the graph;
+        the only writes are the consult rows. Never raises into the turn.
+
+        Recorded: stamped. Not recorded: given back for a later run (the offer counted) when
+        ``release_missing`` -- the run has ended. A durable attempt's turn end passes False: a retry
+        of the same run still holds the prompt and may yet write it; the terminal run state settles
+        it. A failed graph read keeps every claim: a blip must not spend an offer, and
+        ``STALE_CLAIM_SEC`` reclaims a claim nothing else settles."""
+        if not run_id:
+            return
+        try:
+            from scripts.consult_loop import outcomes_offered_to, release_outcomes, stamp_belief
+
+            pool = self._pool_provider()
+            offered = await outcomes_offered_to(pool, run_id)
+            if not offered:
+                return
+            cypher = consult_evidence_cypher(finding_id_for(r["consult_id"], r.get("ending")) for r in offered)
+            if self._reader is None or cypher is None:
+                logger.warning("curiosity_consult_beliefs_unreadable run=%s offered=%d", run_id, len(offered))
+                return
+            try:
+                rows = await asyncio.to_thread(self._reader.query, cypher)
+            except Exception as exc:  # noqa: BLE001 -- the claims stay; see docstring
+                logger.warning("curiosity_consult_evidence_read_failed run=%s err=%s", run_id, exc)
+                return
+            found, wrong = recorded_evidence(offered, rows)
+            for cid, (finding_id, prior_ids, writer) in found.items():
+                await stamp_belief(pool, cid, run_id=writer or run_id, finding_id=finding_id, prior_ids=prior_ids)
+            missing = [r["consult_id"] for r in offered if r["consult_id"] not in found]
+            if missing and release_missing:
+                await release_outcomes(pool, run_id, consult_ids=missing, refund=False)
+            logger.info(
+                "curiosity_consult_beliefs run=%s recorded=%s not_recorded=%s wrong_edge=%s released=%s", run_id,
+                ",".join(f"{c}->{'+'.join(found[c][1])}" for c in found) or "-", ",".join(missing) or "-",
+                ",".join(f"{c}:{'+'.join(v)}" for c, v in wrong.items()) or "-", bool(missing and release_missing),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_consult_beliefs_failed run=%s err=%s", run_id, exc)
+
+    async def _release_consult_outcomes(self, run_id: str, *, refund: bool) -> None:
+        try:
+            from scripts.consult_loop import release_outcomes
+
+            await release_outcomes(self._pool_provider(), run_id, refund=refund)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_consult_outcomes_release_failed run=%s err=%s", run_id, exc)
 
     async def _take_corrections(self, view: WorldviewSnapshot, run_id: str) -> tuple:
         """Claim this run's Orion's Day corrections, with each named prior as the graph holds
@@ -1845,36 +1919,49 @@ class CuriosityInvestigation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_focus_settle_failed run=%s err=%s", run_id, exc)
 
-    async def _release_corrections_if_unseen(self, run_id: str) -> None:
-        """A durable run that ended before its turn started never showed Orion the
-        Orion's Day corrections it claimed at kickoff: give them back.
-        "Started" is the run's own `run.started` event in durable-runs' history
-        (GET /runs/{id}); on any doubt (unreachable, unknown run) the claim is kept -- a lost
-        offer is recoverable by the next day's letter, a double offer is not."""
-        if not self.orion_day_corrections_enabled or not run_id:
-            return
+    async def _run_started(self, run_id: str) -> Optional[bool]:
+        """Whether a durable run reached its turn: its own `run.started` event in durable-runs'
+        history (GET /runs/{id}). None on any doubt (unreachable, unknown run)."""
         root = str(self.durable_runs_url or "").strip().rstrip("/")
-        if not root:
-            return
+        if not root or not run_id:
+            return None
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{root}/runs/{run_id}")
             if resp.status_code != 200:
-                return
+                return None
             history = resp.json().get("history") or []
         except Exception as exc:  # noqa: BLE001
-            logger.warning("curiosity_corrections_release_check_failed run=%s err=%s", run_id, exc)
+            logger.warning("curiosity_run_started_check_failed run=%s err=%s", run_id, exc)
+            return None
+        return any(isinstance(e, dict) and e.get("event") == "run.started" for e in history)
+
+    async def _release_offers_after_failed_run(self, run_id: str) -> None:
+        """A durable run that ended failed, abandoned or cancelled.
+
+        Orion's Day corrections: given back only when the run never started (on any doubt the
+        claim is kept -- a lost offer is recoverable by the next day's letter, a double offer is
+        not). Consult outcomes: a started run may have recorded some, so they are read back
+        first; the rest go back (the offer refunded when the run never started). A finding is
+        MERGEd on its fixed id, so a re-offer cannot write a second one."""
+        if not run_id:
             return
-        if any(isinstance(e, dict) and e.get("event") == "run.started" for e in history):
-            return
-        await release_corrections(self._pool_provider(), run_id=run_id)
-        logger.info("curiosity_corrections_released_unstarted run=%s", run_id)
+        started = await self._run_started(run_id)
+        if self.orion_day_corrections_enabled and started is False:
+            await release_corrections(self._pool_provider(), run_id=run_id)
+            logger.info("curiosity_corrections_released_unstarted run=%s", run_id)
+        if started is False:
+            await self._release_consult_outcomes(run_id, refund=True)
+        else:
+            await self._stamp_consult_beliefs(run_id)
 
     async def _release_offers(
         self, run_id: str, *, dream: bool, corrections: bool = False,
-        focus: bool = False,
+        focus: bool = False, consults: bool = False,
     ) -> None:
         """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
+        if consults:
+            await self._release_consult_outcomes(run_id, refund=True)
         if focus:
             await release_focus(self._pool_provider(), run_id=run_id)
         if dream:
@@ -2743,6 +2830,7 @@ class CuriosityInvestigation:
                     await self._release_offers(
                         run_id, dream=bool(dream_hypotheses),
                         corrections=bool(corrections), focus=focus is not None,
+                        consults=bool(consult_outcomes),
                     )
                 raise
             if dispatched:
@@ -2791,6 +2879,7 @@ class CuriosityInvestigation:
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 await self._stamp_corrections(run_id)
+                await self._stamp_consult_beliefs(run_id)
                 await self._stamp_focus(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
@@ -2804,7 +2893,16 @@ class CuriosityInvestigation:
                 corrections=bool(corrections) and not turn_began,
                 # Same rule for the focus: once the turn began, Orion may have seen it.
                 focus=focus is not None and not turn_began,
+                # Consult outcomes go back either way (a finding is MERGEd, so a re-offer cannot
+                # write twice); the offer is refunded only when Orion never saw them.
+                consults=bool(consult_outcomes) and not turn_began,
             )
+            if consult_outcomes and turn_began:
+                # Orion may have written them before the cancel: read back, give back the rest.
+                # Bounded: shutdown must not wait on the graph. A claim left behind is reclaimed
+                # after STALE_CLAIM_SEC.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(self._stamp_consult_beliefs(run_id), timeout=5.0)
             if focus is not None and turn_began:
                 # Hub going away mid-turn: this turn's end will never be stamped, and it is no
                 # durable run, so nothing else will settle it. Best effort; never blocks the cancel.
@@ -5700,6 +5798,8 @@ class CuriosityInvestigation:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                 if investigation:
                     await self._stamp_corrections(request.run_id)
+                    # A retry of this run may still record it: the run's end state settles the rest.
+                    await self._stamp_consult_beliefs(request.run_id, release_missing=False)
                     await self._stamp_focus(request.run_id, turn_ok=bool(text))
                 if text and request.source_tag in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
                     # After the spend/focus stamps: the hop is not part of the
@@ -5814,7 +5914,7 @@ class CuriosityInvestigation:
             await self._handle_urgent_run_state(state)
             return
         if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
-            await self._release_corrections_if_unseen(state.run_id)
+            await self._release_offers_after_failed_run(state.run_id)
             await self._settle_focus_after_run_end(state.run_id)
             # A naming run that never finished still leaves its one row (no_answer), so the
             # re-ask clock and the refusal rate stay countable. Keyed on the stored packet.
@@ -5828,6 +5928,9 @@ class CuriosityInvestigation:
             return
         # Normally the turn end already stamped it; this only catches a stamp that failed.
         await self._settle_focus_after_run_end(state.run_id, completed=True)
+        # The durable turn end stamps without giving anything back (a retry may still write it);
+        # the run is over now, so what it did not record goes to a later run.
+        await self._stamp_consult_beliefs(state.run_id)
         detail = state.detail or {}
         # Same completion hook as SelfDefinition / outreach: durable admission
         # never reaches the in-process journal enqueue.

@@ -256,6 +256,39 @@ take a median of 1052 s (p90 4508 s, n=181, 14 days). Juniper's decisions on 202
 - **Hub chat on page load** shows every waiting brief in full and every other consult touched in
   48 h as one collapsed line with its status. Consult rows stay out of Orion's context.
 
+## Patch 1d: outcomes recorded on Orion's beliefs (2026-11-12)
+
+Patch 1 told the next curiosity run about each outcome and asked Orion to record it on a belief.
+Nothing checked. Live on 2026-11-12: run `f310d71391e9` was told about consult 9f138a849520, and no
+node in `orion_worldview` mentions that consult. Acceptance checks 6 and 7 were not met.
+
+Hub still never writes the graph (the PR #2199 boundary). The shape is the Orion's Day corrections
+one: offer, Orion writes, Hub reads back.
+
+- **Offer.** Each outcome is shown with the beliefs its source names: a stuck-prior consult's prior;
+  the priors a curiosity-run consult's source run formed or last tested (at most 5); none for a
+  self-monitor consult. Each comes with one fixed finding id: `consult:<id>:answer` or
+  `consult:<id>:decision`.
+- **Write (Orion).** `MERGE (f:Finding {finding_id: ...})` joined to a `:Prior` (listed, held, or
+  new). An answer is tested like any evidence (`times_tested + 1`, `SUPPORTS` / `CONTRADICTS`).
+  Juniper's answer is joined with `ABOUT` and does not move confidence: it says what she wants,
+  not what is true. MERGE makes a re-offer harmless.
+- **Read-back (Hub).** One read of the expected finding ids (Hub-made hex, validated before the
+  query is built) joined to a prior. A decision finding counts only when joined with `ABOUT`; one
+  joined with `SUPPORTS`/`CONTRADICTS` is not recorded and is logged. Found:
+  `belief_finding_id`, `belief_prior_ids`, `belief_recorded_run_id` (the run that wrote the
+  finding), `belief_recorded_at`. Not found when the run has ended: given back for a later run.
+  A durable attempt's turn end stamps but gives nothing back (a retry of the run may still write
+  it); the run's terminal state settles the rest. A failed graph read keeps the claim (a blip
+  spends no offer). `belief_offers` counts the runs shown it; at 3 Hub stops asking and Hub chat
+  says "Orion did not record it". A run that never reached its turn gives its outcomes back
+  without counting the offer. A claim no run settled is taken again after 12 hours
+  (`STALE_CLAIM_SEC`), so a run that died on any path cannot hold an outcome forever. A repeat
+  offer tells Orion not to test the prior again for the same evidence.
+- **Patch 2 builds on it.** The 7-day outcome check writes its own finding on `belief_prior_ids`.
+
+Migration `manual_migration_orion_consult_belief_v1.sql` (additive; auto-applied on pull).
+
 ## Rollback
 
 - `CURIOSITY_PEER_CONSULT_ENABLED=false` stops new consults. Running consults end at their next turn.

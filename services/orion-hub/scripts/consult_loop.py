@@ -49,6 +49,7 @@ from orion.consult.core import (
     source_line,
 )
 from orion.consult.core import self_monitor_sources, stuck_prior_source
+from orion.consult.beliefs import MAX_BELIEF_OFFERS, STALE_CLAIM_SEC
 from orion.schemas.claude_limit import ClaudeLimitObservationV1
 from orion.schemas.room_claude import RoomClaudeUtteranceV1
 
@@ -78,7 +79,8 @@ _COLUMNS = (
     "consult_id, source_kind, source_ref, source_detail, question, status, status_reason, ending, "
     "turns, claude_cost_usd, answer, brief_json, brief_text, brief_sent_at, email_status, decision, "
     "decision_reason, decided_at, orion_told_run_id, pending_prompt, pending_correlation_id, gate_retry_part, "
-    "claude_resends, created_at, updated_at"
+    "claude_resends, orion_told_at, belief_offers, belief_finding_id, belief_prior_ids, belief_recorded_run_id, "
+    "belief_recorded_at, created_at, updated_at"
 )
 
 
@@ -98,7 +100,25 @@ def _row(rec: Any) -> Dict[str, Any]:
             out["brief_json"] = json.loads(out["brief_json"])
         except ValueError:
             pass
+    out["belief_state"] = belief_state(out)
     return out
+
+
+def belief_state(row: Dict[str, Any]) -> Optional[str]:
+    """Where an outcome stands on Orion's beliefs, for Hub chat. None: no outcome to record yet.
+    ``recorded``: a run wrote the finding. ``not_recorded``: offered the cap, never written.
+    ``waiting``: still to be offered, or offered to a run now."""
+    has_outcome = row.get("status") == "answered" or (row.get("status") == "brief_sent" and row.get("decision"))
+    if not has_outcome:
+        return None
+    if row.get("belief_recorded_at"):
+        return "recorded"
+    if int(row.get("belief_offers") or 0) >= MAX_BELIEF_OFFERS:
+        told_at = row.get("orion_told_at")
+        stale = isinstance(told_at, datetime) and told_at < _now() - timedelta(seconds=STALE_CLAIM_SEC)
+        if not row.get("orion_told_run_id") or stale:
+            return "not_recorded"
+    return "waiting"
 
 
 # --- store (asyncpg) ---------------------------------------------------------------------------
@@ -196,16 +216,53 @@ async def decide(pool, consult_id: str, *, decision: str, reason: Optional[str])
 
 
 async def take_outcomes(pool, *, run_id: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """Claim consult outcomes Orion has not been shown: answered ones and decided briefs. Once."""
+    """Claim consult outcomes Orion has not recorded on a belief: answered ones and decided briefs.
+    Each claim counts one offer; an outcome offered ``MAX_BELIEF_OFFERS`` times is not taken again."""
     rows = await pool.fetch(
-        "UPDATE orion_consult SET orion_told_run_id = $1, orion_told_at = now() WHERE consult_id IN ("
-        " SELECT consult_id FROM orion_consult WHERE orion_told_run_id IS NULL AND"
-        " (status = 'answered' OR (status = 'brief_sent' AND decision IS NOT NULL))"
+        "UPDATE orion_consult SET orion_told_run_id = $1, orion_told_at = now(), belief_offers = belief_offers + 1"
+        " WHERE consult_id IN ("
+        # belief_offers = 0 with a claim: shown to a run before offers were counted (and never read
+        # back), so it is offered again. A claim older than STALE_CLAIM_SEC: its run died on a path
+        # that neither stamped nor gave it back.
+        " SELECT consult_id FROM orion_consult WHERE (orion_told_run_id IS NULL OR belief_offers = 0"
+        " OR orion_told_at < now() - make_interval(secs => $4))"
+        " AND belief_recorded_at IS NULL"
+        " AND belief_offers < $3 AND (status = 'answered' OR (status = 'brief_sent' AND decision IS NOT NULL))"
         " ORDER BY updated_at LIMIT $2 FOR UPDATE SKIP LOCKED"
         f") RETURNING {_COLUMNS}",
-        run_id, limit,
+        run_id, limit, MAX_BELIEF_OFFERS, float(STALE_CLAIM_SEC),
     )
     return [_row(r) for r in rows]
+
+
+async def outcomes_offered_to(pool, run_id: str) -> List[Dict[str, Any]]:
+    """The outcomes ``run_id`` claimed and has not recorded yet."""
+    rows = await pool.fetch(
+        f"SELECT {_COLUMNS} FROM orion_consult WHERE orion_told_run_id = $1 AND belief_recorded_at IS NULL",
+        run_id,
+    )
+    return [_row(r) for r in rows]
+
+
+async def stamp_belief(pool, consult_id: str, *, run_id: str, finding_id: str, prior_ids: List[str]) -> None:
+    """The run recorded the outcome: the finding Hub found and the priors joined to it."""
+    await pool.execute(
+        "UPDATE orion_consult SET belief_finding_id = $2, belief_prior_ids = $3::text[], "
+        "belief_recorded_run_id = $4, belief_recorded_at = now() WHERE consult_id = $1 AND belief_recorded_at IS NULL",
+        consult_id, finding_id, list(prior_ids), run_id,
+    )
+
+
+async def release_outcomes(pool, run_id: str, *, consult_ids: Optional[List[str]] = None, refund: bool) -> None:
+    """Give unrecorded outcomes back so a later run is offered them. ``refund``: the run never showed
+    them to Orion (cancelled before its turn), so the offer does not count."""
+    sql = ("UPDATE orion_consult SET orion_told_run_id = NULL, orion_told_at = NULL"
+           + (", belief_offers = GREATEST(belief_offers - 1, 0)" if refund else "")
+           + " WHERE orion_told_run_id = $1 AND belief_recorded_at IS NULL")
+    if consult_ids is None:
+        await pool.execute(sql, run_id)
+    else:
+        await pool.execute(sql + " AND consult_id = ANY($2::text[])", run_id, list(consult_ids))
 
 
 UNDECIDED = "(status = 'brief_sent' AND decision IS NULL)"

@@ -508,3 +508,23 @@ async def test_recent_window_keeps_every_waiting_brief_however_old():
     assert (real._now() - wargs[1]).total_seconds() == pytest.approx(48 * 3600, abs=60)
     assert "ORDER BY (status = 'brief_sent' AND decision IS NULL) DESC, created_at DESC" in windowed
     assert "updated_at >=" not in plain and pargs == (20,)
+
+
+def test_belief_state_for_hub_chat():
+    from orion.consult.beliefs import MAX_BELIEF_OFFERS
+
+    assert cl.belief_state({"status": "brief_sent", "decision": None}) is None
+    assert cl.belief_state({"status": "answered", "belief_recorded_at": NOW}) == "recorded"
+    assert cl.belief_state({"status": "answered", "belief_offers": 1, "orion_told_run_id": "r"}) == "waiting"
+    capped = {"status": "brief_sent", "decision": "yes", "belief_offers": MAX_BELIEF_OFFERS}
+    assert cl.belief_state({**capped, "orion_told_run_id": "r"}) == "waiting", "the last offer is still running"
+    assert cl.belief_state(capped) == "not_recorded"
+
+
+def test_a_last_offer_whose_run_never_settled_reads_not_recorded(monkeypatch):
+    from orion.consult.beliefs import MAX_BELIEF_OFFERS, STALE_CLAIM_SEC
+
+    monkeypatch.setattr(cl, "_now", lambda: NOW)
+    row = {"status": "answered", "belief_offers": MAX_BELIEF_OFFERS, "orion_told_run_id": "r"}
+    assert cl.belief_state({**row, "orion_told_at": NOW - timedelta(seconds=60)}) == "waiting"
+    assert cl.belief_state({**row, "orion_told_at": NOW - timedelta(seconds=STALE_CLAIM_SEC + 1)}) == "not_recorded"

@@ -379,9 +379,15 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   gets one chance to resend it complete.
 - **Volume.** One consult at a time. At most `HUB_CONSULT_WEEKLY_BRIEF_CAP` (3) briefs in any 7 days.
   A source that is not started within `HUB_CONSULT_SOURCE_MAX_AGE_HOURS` (72) expires.
-- **Learning.** Juniper's answer and an `answered` ending are shown once to Orion's next curiosity
-  run (`take_outcomes`). Orion records them on a belief. Hub never writes `:Prior` nodes.
-- **Storage.** `orion_consult`, `orion_consult_turn` (`services/orion-sql-db/manual_migration_orion_consult_v1.sql`).
+- **Learning.** Juniper's answer and an `answered` ending are offered to Orion's next curiosity run
+  (`take_outcomes`), with the beliefs the consult's source names (`orion/consult/beliefs.py`). Orion
+  writes one `:Finding` with a fixed id (`consult:<id>:answer` or `consult:<id>:decision`) joined to
+  a `:Prior`. At turn end Hub reads the graph (read only) and stamps the consult row
+  (`belief_finding_id`, `belief_prior_ids`). Not recorded when the run ends: offered to a later run,
+  3 times at most; a claim no run settled is taken again after 12 h. Juniper's answer counts only
+  when joined with `ABOUT` and does not move confidence; it is not proof the claim is true. Hub never writes `:Prior` nodes. Hub chat shows whether each outcome was recorded.
+- **Storage.** `orion_consult`, `orion_consult_turn` (`services/orion-sql-db/manual_migration_orion_consult_v1.sql`,
+  belief columns in `manual_migration_orion_consult_belief_v1.sql`).
   Turns are NOT written to `chat_history_log`. Only the brief is, as unsolicited (out of turn recall).
 - **API.** `GET /api/consults` (briefs awaiting an answer), `GET /api/consults/{id}` (with turns),
   `POST /api/consults/{id}/decision`, `GET /api/debug/consult` (last tick + meter).
@@ -390,7 +396,9 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   `HUB_CONSULT_SOURCE_MAX_AGE_HOURS`, `HUB_CONSULT_NOTIFY_TIMEOUT_SEC`, `HUB_CONSULT_ORION_TIMEOUT_SEC`
   (Orion's turn, per attempt; Orion runs digs), `CHANNEL_CLAUDE_LIMIT`.
 - **Checks.** `tests/test_consult_loop.py` (lifecycle), `tests/test_consult_js.py` (buttons),
-  `orion/consult/tests/test_core.py` (gates), eval `evals/run_consult_source_replay.py` (read-only, live DB).
+  `orion/consult/tests/test_core.py` (gates), `orion/consult/tests/test_beliefs.py`,
+  `tests/test_curiosity_consult_beliefs.py` (offer -> read-back), `tests/test_consult_belief_store_sql.py`
+  (the SQL on a rolled-back temp table, local Postgres only), eval `evals/run_consult_source_replay.py` (read-only, live DB).
 
 ### 4.1 Endogenous outreach — Orion speaks first
 

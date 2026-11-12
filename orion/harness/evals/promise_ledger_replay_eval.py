@@ -195,6 +195,7 @@ def run(args: argparse.Namespace) -> int:
     t_start = time.monotonic()
     with engine.connect() as conn:
         turns = _turns(conn, since, until)
+        conn.rollback()
         if args.only:
             turns = [t for t in turns if t["correlation_id"].startswith(tuple(args.only.split(",")))]
         for i, t in enumerate(turns, 1):
@@ -205,6 +206,9 @@ def run(args: argparse.Namespace) -> int:
             row: dict[str, Any] = {"correlation_id": corr, "session_id": t["session_id"], "at": at.isoformat(),
                                    "live_reflection_source": source}
             inputs = _judge_inputs(conn, corr)
+            # End the read transaction before the slow model call: an idle-in-transaction
+            # session holds table locks that would stall a migration for the whole run.
+            conn.rollback()
             pending = last_offers.get(t["session_id"], [])
             open_now = ledger.open_at(at)
             if inputs is None:

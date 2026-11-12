@@ -132,6 +132,23 @@ but not the steps behind them. Spec: `docs/superpowers/specs/2026-11-05-turn-wor
 
 On a mismatch: `HarnessMotorResult.tool_provenance_audit` / `HarnessDraftMoleculeV1.tool_provenance_audit` are set (both `None` otherwise), a `GrammarAtomV1(atom_type="uncertainty_marker", semantic_role="exec_tool_provenance_mismatch")` is published on `CHANNEL_HARNESS_RESULT_PREFIX`'s underlying grammar channel alongside the rest of the turn's grammar receipts, and a `harness_tool_provenance_mismatch` warning is logged with the correlation ID. Deliberately kept separate from `grounding_status` (an overloaded error/overflow code that downstream consumers surface as a user-visible error) — this is a soft grounding signal on the claim, not a motor failure.
 
+## Promises Orion makes (intention ledger D0)
+
+The 5b finalize judge also lists the promises a reply makes: things Orion says Orion will do
+or say after this reply. Each promise is an exact quote of the reply. Plain code
+(`orion/harness/promise_gate.py`) drops any quote that is not literally in the text, first
+against the draft the judge read, then against the final text Juniper saw. An offer that waits
+for Juniper's yes ("if you want, I'll ...") is marked `offer` and counts only after a later
+judge call accepts it from Juniper's next message.
+
+- **Where:** `reflection.promises_made` / `offers_accepted` / `promises_kept` on the turn record
+  (`harness_turn_trace.run_artifact.reflection`). Gate drops log as `promise_gate corr=...`.
+- **D0 only records.** No acts open and no cue reaches stance or the motor yet (D1-D3,
+  `docs/superpowers/specs/2026-11-11-intention-ledger-design.md`). The quick deterministic gate
+  writes no promises.
+- **Off:** `ORION_PROMISE_LEDGER_ENABLED=false` (the judge is not asked; the gate clears the fields).
+- **Eval:** `python -m orion.harness.evals.promise_ledger_replay_eval run|sheet|score`.
+
 ## Local checks
 
 ```bash

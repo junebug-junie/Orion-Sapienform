@@ -130,6 +130,20 @@ families:
     # 2026-10-30 curiosity's only holds were exactly those ("no hunger yet") with lane prices ~0, so on
     # curiosity a credit could change nothing. Declare quicken when an organ has real price deferrals.
     receptors: [slow]
+  durable.consult_orion_turn:
+    # 2026-11-12: one of Orion's turns in a consult with Claude (consult.orion_turn durable run, act
+    # ask:durable.consult_orion_turn, services/orion-durable-runs/app/run_acts.py). TIER 2 BY JUNIPER'S
+    # DECISION (2026-11-12): Orion's own question, discretionary, like the curiosity run it grows out of.
+    # Its bids BIND (app/run_bids.py BINDING_FAMILIES): a deferred turn waits; Claude's side is idle meanwhile
+    # and costs nothing. 1800 s, not curiosity's 6 h: hunger resets at every close, and a consult's turns
+    # come back to back (Orion, Claude, Orion), so a long window would hold turn 2 for hours with "no hunger
+    # yet". 1800 s is also the hunger time constant until the family has a measured rhythm, so a held turn
+    # is fed within the half hour. Agent lanes: the run asks for llm.route.agent with agent preferred (one
+    # turn can hold it up to HUB_CONSULT_ORION_TIMEOUT_SEC = 3600 s an attempt). No receptors yet.
+    tier: 2
+    deferrable_window_s: 1800
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
   durable.reminiscence:
     # 2026-11-07, daily reminiscence Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md
     # section 6): one durable run a Denver day in which Orion writes five hops about one past week and reads

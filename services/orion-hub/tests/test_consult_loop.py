@@ -400,7 +400,7 @@ async def test_every_bus_correlation_id_is_a_uuid_and_orion_gets_its_budget(worl
     _uuid.UUID(world.outreach.calls[0]["correlation_id"])
     _uuid.UUID(world.relay.invites[0]["correlation_id"])
     _uuid.UUID(world.notify.sent[0].correlation_id)
-    assert world.outreach.calls[0]["timeout_sec"] == world.loop.orion_timeout_sec == 900.0
+    assert world.outreach.calls[0]["timeout_sec"] == world.loop.orion_timeout_sec == 3600.0
 
 
 @pytest.mark.asyncio
@@ -485,3 +485,26 @@ async def test_a_brief_that_cannot_be_built_fails_the_consult_not_the_loop(world
     await world.loop.tick()
     assert world.store.rows[cid]["status"] == "failed"
     assert world.store.rows[cid]["status_reason"].startswith("orion_brief_invalid:")
+
+
+@pytest.mark.asyncio
+async def test_recent_window_keeps_every_waiting_brief_however_old():
+    """Hub chat's page-load view: consults touched in the window, plus every undecided brief."""
+    from scripts import consult_loop as real
+
+    class Pool:
+        def __init__(self):
+            self.calls = []
+
+        async def fetch(self, sql, *args):
+            self.calls.append((sql, args))
+            return []
+
+    pool = Pool()
+    await real.recent(pool, undecided_only=True, recent_hours=48)
+    await real.recent(pool, undecided_only=True)
+    (windowed, wargs), (plain, pargs) = pool.calls
+    assert "(status = 'brief_sent' AND decision IS NULL) OR updated_at >= $2" in windowed and len(wargs) == 2
+    assert (real._now() - wargs[1]).total_seconds() == pytest.approx(48 * 3600, abs=60)
+    assert "ORDER BY (status = 'brief_sent' AND decision IS NULL) DESC, created_at DESC" in windowed
+    assert "updated_at >=" not in plain and pargs == (20,)

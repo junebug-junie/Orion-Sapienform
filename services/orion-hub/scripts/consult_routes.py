@@ -1,6 +1,8 @@
 """Consult API: Juniper's answer to a brief, and the conversation behind it.
 
-``GET  /api/consults``                  briefs waiting for her answer (``?all=1`` for every consult)
+``GET  /api/consults``                  briefs waiting for her answer (``?all=1`` for every consult;
+                                        ``?recent_hours=48`` for every consult touched in 48 h plus
+                                        every brief still waiting: Hub chat's page-load view)
 ``GET  /api/consults/{id}``             one consult with every turn (the "Show the conversation" view)
 ``POST /api/consults/{id}/decision``    {"decision": "yes"|"no"|"no_because", "reason": "..."}
 ``GET  /api/debug/consult``             the loop's last tick and the meter it reads
@@ -43,8 +45,9 @@ def _public(row: dict) -> dict:
 
 
 @router.get("/api/consults")
-async def list_consults(request: Request, all: int = 0, limit: int = 20) -> dict:
-    rows = await store.recent(_pool(request), undecided_only=not all, limit=max(1, min(limit, 100)))
+async def list_consults(request: Request, all: int = 0, limit: int = 20, recent_hours: float = 0) -> dict:
+    rows = await store.recent(_pool(request), undecided_only=not all, limit=max(1, min(limit, 100)),
+                              recent_hours=max(0.0, min(recent_hours, 24 * 30)) or None)
     return {"consults": [_public(r) for r in rows]}
 
 

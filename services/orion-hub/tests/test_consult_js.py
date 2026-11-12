@@ -33,7 +33,11 @@ function byText(t) { return buttons().find(b => b.textContent.startsWith(t)); }
 const posts = [];
 const fetchFn = async (url, init) => {
   if (init && init.method === "POST") { posts.push({url, body: JSON.parse(init.body)}); return {ok: true, status: 200, json: async () => ({})}; }
-  if (url === "/api/consults") return {ok: true, status: 200, json: async () => ({consults: [{consult_id: "c9", brief_text: "B9"}]})};
+  if (url === "/api/consults?recent_hours=48&limit=100") return {ok: true, status: 200, json: async () => ({consults: [
+    {consult_id: "c9", status: "brief_sent", decision: null, brief_text: "B9", question: "fix the lease?", created_at: "2026-11-12T03:00:00Z"},
+    {consult_id: "c8", status: "failed", status_reason: "orion_run_failed:timeout", question: "why does x stall?", created_at: "2026-11-11T02:00:00Z"},
+    {consult_id: "c7", status: "answered", answer: "by design", question: "q7", created_at: "2026-11-11T01:00:00Z"},
+  ]})};
   return {ok: true, status: 200, json: async () => ({turns: [{speaker: "Orion", text: "hi"}, {speaker: "Claude", text: "why?"}]})};
 };
 """
@@ -99,9 +103,63 @@ def test_show_the_conversation_lists_the_turns():
 
 def test_waiting_briefs_load_on_page_open_and_turn_frames_render():
     got = _node("""
-      const n = await api.loadWaitingBriefs(fetchFn, doc);
+      const n = await api.loadRecentConsults(fetchFn, doc);
       globalThis.document = doc;
       api.onFrame({kind: "consult_turn", consult_id: "c9", speaker: "Claude", llm_response: "checked x.py:3"});
       return [n, all(conv).some(x => x.textContent === "B9"), all(conv).some(x => x.textContent === "checked x.py:3")];
     """)
-    assert got == [1, True, True]
+    assert got == [3, True, True]
+
+
+def test_other_recent_consults_are_one_collapsed_line_each_and_open_on_click():
+    got = _node("""
+      await api.loadRecentConsults(fetchFn, doc);
+      const rows = conv.children.map(c => [c.dataset.role, c.dataset.consultId]);
+      const failed = conv.children.find(c => c.dataset.consultId === "c8");
+      const [line, detail] = failed.children;
+      const closed = detail.style.display;
+      await line.handlers.click();
+      await new Promise(r => setTimeout(r, 0));
+      const texts = all(detail).map(n => n.textContent);
+      await line.handlers.click();
+      return [rows, line.textContent, closed, texts, detail.style.display];
+    """)
+    rows, line, closed, texts, reclosed = got
+    # Oldest first (the API is newest first); the undecided brief keeps its full card and buttons.
+    assert rows == [["consult-summary", "c7"], ["consult-summary", "c8"], ["consult-brief", "c9"]]
+    assert line == "Consult · failed · why does x stall?" and closed == "none"
+    assert "Failed: orion_run_failed:timeout." in texts and "hi" in texts and "why?" in texts
+    assert reclosed == "none"
+
+
+def test_status_text_says_where_each_consult_stands():
+    got = _node("""
+      return [
+        api.statusText({status: "open", status_reason: "awaiting_orion_run"}),
+        api.statusText({status: "open", status_reason: "budget:weekly_limited"}),
+        api.statusText({status: "answered", answer: "by design"}),
+        api.statusText({status: "brief_sent", decision: "no_because", decision_reason: "too costly"}),
+        api.statusText({status: "brief_refused", status_reason: "missing:cost"}),
+      ];
+    """)
+    assert got == ["Orion is working on their turn.", "Waiting for Claude budget (weekly_limited).",
+                   "Answered. Nothing for you. Answer: by design", "Brief sent. You said: no, because too costly.",
+                   "Stopped: the brief failed its check (missing:cost). Nothing was sent."]
+
+
+def test_consult_rows_stay_out_of_orions_context():
+    """The memory bridge and Ask Claude read chat rows by turnId / data-message-body; consult rows have neither."""
+    got = _node("""
+      await api.loadRecentConsults(fetchFn, doc);
+      return all(conv).some(n => "turnId" in n.dataset || "messageBody" in n.dataset);
+    """)
+    assert got is False
+
+
+def test_a_live_brief_replaces_the_consults_summary_line():
+    got = _node("""
+      api.renderSummary({consult_id: "c5", status: "open", status_reason: "awaiting_claude", question: "q"}, doc, fetchFn);
+      api.renderBrief("c5", "B5", doc, fetchFn);
+      return conv.children.map(c => c.dataset.role);
+    """)
+    assert got == ["consult-brief"]

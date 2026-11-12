@@ -238,6 +238,24 @@ None block the build. Defaults chosen:
    - Add the outcome check 7 days after a change ships.
    - Move approved items to the promise ledger once #3188 is built.
 
+## Patch 1c: longer turns, cut-short retry, economy, chat view (2026-11-12)
+
+The first real consult (9f138a849520) worked, but Orion's turn 3 was cut short after 83 steps. The
+turn had 900 s, Hub kept 330 s of it for finalize, and the FCC run got 540 s. Orion's curiosity digs
+take a median of 1052 s (p90 4508 s, n=181, 14 days). Juniper's decisions on 2026-11-12:
+
+- **60 minutes a turn attempt** (`HUB_CONSULT_ORION_TIMEOUT_SEC=3600`, the brief's maximum).
+- **Cut-short turns retry.** A turn the FCC motor stopped mid-work (`CUT_SHORT_CODES`) is a failed
+  attempt while a retry will still run. The retry is a fresh session: the motor records its own stop
+  as a finished session, so nothing resumes. The cut attempt's findings (its cut-short draft) go into
+  the retry's prompt, and Orion is told to continue from them. The last attempt keeps the honest
+  cut-short text, so Claude still gets what Orion found.
+- **Tier 2 in Orion's body economy.** Each turn is a want (`durable.consult_orion_turn`, act `ask`)
+  whose bid binds. The deferrable window is 1800 s, not 6 h: hunger resets at each close and a
+  consult's turns come back to back, so a long window would hold turn 2 for hours.
+- **Hub chat on page load** shows every waiting brief in full and every other consult touched in
+  48 h as one collapsed line with its status. Consult rows stay out of Orion's context.
+
 ## Rollback
 
 - `CURIOSITY_PEER_CONSULT_ENABLED=false` stops new consults. Running consults end at their next turn.

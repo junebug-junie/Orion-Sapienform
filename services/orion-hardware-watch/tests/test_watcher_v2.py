@@ -423,3 +423,27 @@ def test_a_forecast_view_that_raises_cannot_stop_the_reflex(monkeypatch):
     go(w.tick())
     assert [(s.active, s.reason) for s in reflex(rec)] == [(True, "cabinet_hot")]
     assert w.reflex_snapshot()["forecast"] is None
+
+
+def test_hecate_watched_by_default_silent_when_off_alarms_when_hot():
+    """11-12: hecate sits on top of circe in the closet's hottest air. It is watched by default; while it
+    is off (no readings) nothing opens, and a hot hecate GPU opens its own incident."""
+    from app.settings import Settings
+    defaults = Settings(ORION_BUS_URL="redis://x", POSTGRES_URI="x")
+    assert "hecate" in defaults.gpu_node_list and "hecate" in defaults.heat_node_list
+
+    nodes = dict(HARDWARE_WATCH_HEAT_NODES=defaults.heat_nodes, HARDWARE_WATCH_GPU_NODES=defaults.gpu_nodes)
+    w, store, rec, clock = make(**nodes)
+    feed_cooling(store, -9000, 9000, varying)
+    feed_temp(store, "hecate", "gpu0_temp_c", -7200, -6600, 87.0)   # hot, then powered off 1 h 55 min ago
+    feed_temp(store, "hecate", "temp_c_max", -7200, -6600, 95.0)
+    at(clock, 300)
+    go(w.tick())
+    assert store.open_incidents() == []                   # hecate off: silence opens nothing
+    assert [ch for ch, _ in rec.log if ch != HARDWARE_WATCH_REFLEX_SHED_CHANNEL] == []   # no incident, no alert
+
+    feed_temp(store, "hecate", "gpu0_temp_c", 0, 900, 87.0)
+    at(clock, 900)
+    go(w.tick())
+    [row] = store.open_incidents()
+    assert (row["rule"], row["subject"], row["open_reason"]) == ("gpu_heat", "hecate/gpu0", "above_ceiling")

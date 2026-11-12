@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     alert_dedupe_window_sec: float = Field(21600.0, ge=0, alias="HARDWARE_WATCH_ALERT_DEDUPE_WINDOW_SEC")
 
     # --- heat ---
-    heat_nodes: str = Field("athena,circe", alias="HARDWARE_WATCH_HEAT_NODES")
-    gpu_nodes: str = Field("athena,circe", alias="HARDWARE_WATCH_GPU_NODES")
+    heat_nodes: str = Field("athena,circe,hecate", alias="HARDWARE_WATCH_HEAT_NODES")
+    gpu_nodes: str = Field("athena,circe,hecate", alias="HARDWARE_WATCH_GPU_NODES")
     heat_sustain_sec: float = Field(600.0, alias="HARDWARE_WATCH_HEAT_SUSTAIN_SEC")
     heat_baseline_days: float = Field(7.0, gt=0, alias="HARDWARE_WATCH_HEAT_BASELINE_DAYS")
     heat_baseline_refresh_sec: float = Field(3600.0, gt=0, alias="HARDWARE_WATCH_HEAT_BASELINE_REFRESH_SEC")

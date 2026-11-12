@@ -2,11 +2,9 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 781,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 3,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "high   removed metric://bus_channel/orion-social-memory/orion:social:commitment",
-      "high   removed metric://bus_channel/orion-social-memory/orion:social:commitment:resolution",
       "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error (meaning: \u2026ange across pressure hints, 0.30 of change = 1.0 (a fixed s\u2026 -> \u2026ange across the machines' own pressure hints, 0.30 of chang\u2026)"
     ]
   },

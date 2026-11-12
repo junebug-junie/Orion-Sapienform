@@ -15,6 +15,7 @@ from orion.schemas.organ_emission import OrganEmissionV1
 
 from .candidate_events import PRESSURE_SOURCE_COMPONENT, build_pressure_candidate_events
 from .ids import parse_biometrics_trace_id, parse_pressure_trace_id
+from .room_hints import machine_body_hints
 
 ALLOWED_PRESSURE_ROLES = frozenset(
     {
@@ -318,7 +319,9 @@ def invoke_biometrics_pressure(
         stale_after_sec=stale_after_sec,
         now=clock,
     )
-    hints = dict(bio_state.pressure_hints) if bio_state else {}
+    # Machine body only: athena's room-sensor hints (cabinet_*) are not the node's
+    # pressure (room_hints.py; Juniper 2026-11-12).
+    hints = machine_body_hints(bio_state.pressure_hints) if bio_state else {}
     capabilities = bio_state.capabilities if bio_state else []
 
     # Rule A: expected offline + stale/missing -> suppressed

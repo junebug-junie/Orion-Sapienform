@@ -1419,8 +1419,10 @@ class BiometricsSubstrateWorker:
                     prediction_error=error,
                     now=now,
                     caused_by_event_ids=evidence_event_ids,
-                    # Kill switch off = the v1 formula ran, so stamp v1: the
-                    # attention baseline must not mix the two under one version.
+                    # Kill switch off = silent nodes were NOT excluded, so this is
+                    # not the live formula: stamp a non-live version (1) so the
+                    # attention baseline never folds it under the live one. (Room
+                    # keys are always out since v3; there is no switch for that.)
                     definition_version=(
                         None if self._settings.biometrics_silent_node_exclusion else 1
                     ),

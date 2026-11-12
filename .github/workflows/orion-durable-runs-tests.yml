@@ -324,6 +324,12 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_physiology_bind.py \
             services/orion-dream/tests/test_physiology_shadow_bid.py services/orion-dream/evals/test_dream_binding_replay_eval.py
+      - name: Dream arc replay (a third of the replay at most, one Temporal Self arc per kind per sleep, control pool matches)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_replay_arc_candidates.py \
+            services/orion-dream/evals/test_dream_arc_kind_mix_replay_eval.py
       - name: Consent gate (attention patch 3d -- the market refuses what it must, dream compaction asks it, nothing else changes)
         env:
           PYTHONPATH: ${{ github.workspace }}

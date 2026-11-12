@@ -147,6 +147,25 @@ def test_a_deferred_bid_writes_nothing_and_past_the_window_the_next_letter_says_
     assert rt.day_letter.open.missed_sent == [DAY]
 
 
+def test_a_capacity_deferral_worth_its_price_queues_at_the_pool_and_orders_the_letter():
+    # The live 11-12 answer: lane:agent full, but net positive. That is queueing, not refusal.
+    full = [{"outcome": "deferred", "reason": "capacity_reserved", "binding_constraint": "lane:agent",
+             "net": 0.67, "retry_after_sec": 1800.0}]
+    rt = letter_rt(decisions=full)
+    asyncio.run(rt.tick())
+    assert len(rt.letter_bids) == 1 and len(rt.orders) == 1 and len(make_acts(rt.bus)) == 1
+    assert rt.day_letter.open.act_id is not None and rt.day_letter.open.last_refusal is None
+
+
+def test_a_capacity_deferral_not_worth_its_price_still_holds():
+    full = [{"outcome": "deferred", "reason": "capacity_reserved", "binding_constraint": "lane:agent",
+             "net": -0.1, "retry_after_sec": 60.0}] * 5
+    rt = letter_rt(decisions=full)
+    asyncio.run(rt.tick())
+    assert len(rt.letter_bids) == 1 and rt.orders == [] and make_acts(rt.bus) == []
+    assert "capacity_reserved" in rt.day_letter.open.last_refusal
+
+
 def _funding(_old):
     async def bid(want):
         return SimpleNamespace(outcome="funded", reason="net_positive", binding_constraint=None, retry_after_sec=None,

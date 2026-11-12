@@ -14,10 +14,10 @@ the runtime does the I/O):
    the tick decides it, not a thought, and a full concern list must never crowd out the day's letter.
 2. **The bid.** One ``WantV1`` of Prime's family (``prime``), verb ``make``, on the letter turn's lane, priced at
    the turn's enforced maximum (the same cost-ceiling rule as Prime's thought). Deferred: no act, re-bid after the
-   market's ``retry_after_sec`` (at least ``REBID_MIN_SEC``) until the bid window ends. Never funded inside the
+   market's ``retry_after_sec`` (at least ``REBID_MIN_SEC``) until the bid window ends. A capacity deferral with a positive net is not a deferral here: it goes ahead (step 3). Never funded inside the
    window -> no letter that day (``not_written`` with the last reason). Prime's self-monitor gate on
    ``act.prime.make`` is asked first, the same way it is for Prime's other acts.
-3. **The act and the turn.** Funded: Prime opens the ``make`` act (actor ``prime``) and orders the run from Hub
+3. **The act and the turn.** Funded, or a capacity deferral worth its price (queues at the GPU pool): Prime opens the ``make`` act (actor ``prime``) and orders the run from Hub
    (``OrionDayLetterOrderV1``); Hub builds the day's input and submits ONE durable unified turn
    (``orion_day.letter``). The run's correlation id is ``letter_correlation_id(letter_date)``.
 4. **Settle.** The run's terminal state (``GET {durable}/runs/<run_id>``) closes the act: 1 = this run wrote the

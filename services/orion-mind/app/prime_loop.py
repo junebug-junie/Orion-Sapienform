@@ -95,7 +95,8 @@ The day letter is Prime's end-of-day turn (living Prime design Part 3, PRIME_DAY
 orion/prime/day_letter.py): on the tick, when the temporal chronicle has closed yesterday and Hub has no letter for
 it, Prime bids a ``make`` act (family ``prime``, the letter turn's lane, priced at the turn's ceiling). Deferred:
 no act, re-bid later inside the bid window; never funded -> no letter that day, and the next order names the day.
-Funded: the act opens and Prime orders the run from Hub (one durable unified turn). The run's terminal state
+Funded, or a capacity deferral worth its price (it queues at the GPU pool, as in
+orion/physiology/binding.py bind_verdict): the act opens and Prime orders the run from Hub (one durable unified turn). The run's terminal state
 (GET /runs/<run_id> on durable-runs) closes the act, and the letter's threads become Prime concerns (at most 2,
 never past MAX_CONCERNS), so curiosity hears them only through Prime's own graded ``ask``. Its record lives in its
 own Redis key (orion:prime:day_letter). No thought is spent on it: the tick decides.
@@ -576,8 +577,11 @@ class PrimeRuntime(MindLoopRuntime):
         decision = await self.bid(want)
         op = op.model_copy(update={"bids": bid_no})
         outcome = getattr(decision, "outcome", None)
-        if outcome != "funded":
-            # Never fail open: no answer is "not funded" (orion/physiology/client.py).
+        if not pc.goes_ahead(decision):
+            # Never fail open: no answer is "not funded" (orion/physiology/client.py). A capacity deferral
+            # worth its price DOES go ahead: the GPU pool's own queue holds it (orion/physiology/binding.py,
+            # bind_verdict). Live 11-12: treating it as a refusal deferred 20 of 20 letter bids (net +0.67,
+            # lane:agent full) for 9 h, and no letter was written.
             why = str(getattr(decision, "why", "") or "")[:160]
             reason = f"{outcome or 'no answer'} ({getattr(decision, 'reason', None) or '-'}" \
                      f"{', ' + str(getattr(decision, 'binding_constraint', None)) if getattr(decision, 'binding_constraint', None) else ''})" \
@@ -603,7 +607,8 @@ class PrimeRuntime(MindLoopRuntime):
             "want_id": want.want_id, "act_id": act.act_id, "act_opened_at": now, "last_refusal": None,
             "run_id": dl.letter_run_id(day), "correlation_id": dl.letter_correlation_id(day),
             "deadline_at": now + timedelta(hours=deadline_h)})})
-        logger.info("prime_day_letter_funded day=%s bid=%d act=%s want=%s", day, bid_no, act.act_id, want.want_id)
+        logger.info("prime_day_letter_funded day=%s bid=%d act=%s want=%s outcome=%s reason=%s", day, bid_no,
+                    act.act_id, want.want_id, outcome, getattr(decision, "reason", None))
         self._day_letter_checked_at = now
         await self._order_letter(now)
 

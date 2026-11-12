@@ -458,8 +458,9 @@ the 5b judge (`harness_finalize_reflect`) of a durable run held on `agent-gpu2` 
 (22 of 90 judge calls 11-11..12). `orion/harness/finalize.py` (`resolve_finalize_judge_placement`) now sends
 the judge of a hold on any role outside `classes.judge.roles` (`agent`, `chat`) off the hold for that one
 call, on route `judge` (class `judge`, priority `system`): gpu1, then chat's card only while lent. `judge`
-co-owns `agent` (like `memory_distill`), so queued agent holds do not block it (rule 5). Every other call of
-the run stays on the hold. Rebuild the pool and the gateway (both bake this YAML) before cortex-exec and
+co-owns `agent` (like `memory_distill`), so queued agent holds do not block it (rule 5). The gateway's lane
+routing keeps it (`orion.llm.routes.AGENT_LANE_ROUTES`; it rewrites every other agent-lane call without a hold to
+`agent`). Every other call of the run stays on the hold. Rebuild the pool and the gateway (both bake this YAML) before cortex-exec and
 the harness governor. Rollback: revert the commit (class, route, owner entry and the finalize rule).
 
 ## Deploy (athena)

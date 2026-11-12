@@ -274,6 +274,12 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
     }
 )
 
+#: Routes an `agent`-lane caller may name and keep. The gateway's lane routing
+#: (services/orion-llm-gateway/app/lane_routes.py) rewrites every agent-lane call without a
+#: hold to `agent`; a route here survives that. `judge` (2026-11-12): without this the 5b
+#: judge off a gpu2-seat hold was rewritten to `agent`, a class that still lists agent-gpu2.
+AGENT_LANE_ROUTES: FrozenSet[str] = frozenset({"agent", "judge"})
+
 #: System-only routes cortex-exec still accepts as a caller-supplied `ctx["llm_route"]`.
 #: This is the explicit decision SYSTEM_LLM_ROUTES asks for: Hub (its picker and its raw
 #: POST /api/chat body) and orion-actions keep refusing these, so no human Compute choice
@@ -287,6 +293,12 @@ if not CORTEX_OVERRIDE_SYSTEM_ROUTES <= SYSTEM_LLM_ROUTES:
     raise RuntimeError(
         "CORTEX_OVERRIDE_SYSTEM_ROUTES must be system-only routes: "
         f"{sorted(CORTEX_OVERRIDE_SYSTEM_ROUTES - SYSTEM_LLM_ROUTES)}"
+    )
+
+if not AGENT_LANE_ROUTES <= ACCEPTED_LLM_ROUTES:
+    raise RuntimeError(
+        "AGENT_LANE_ROUTES names routes that are not accepted: "
+        f"{sorted(AGENT_LANE_ROUTES - ACCEPTED_LLM_ROUTES)}"
     )
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:

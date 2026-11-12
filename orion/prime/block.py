@@ -17,7 +17,8 @@ What it shows, each line with its own ref:
 Rules (all deterministic):
 
 * **Capped** at ``BLOCK_CAP`` characters. Free text (concern words, reading, questions) is cut to fit;
-  refs are never cut. If even the refs do not fit, lower lines are dropped (body, asks, extra concerns).
+  refs are never cut. If even the refs do not fit, lower lines are dropped, in this order: body, "asks:
+  none open", concerns after the first, open asks, the last thought. The first concern is dropped last.
 * **Stale means absent.** Prime's last tick time (``orion:prime:concerns`` ``as_of``: Prime writes it on
   every tick, after its state) older than ``stale_after`` renders only "Prime has not ticked since <time>".
 * **Missing or unreadable** state renders one labelled absent line. Never raises into a turn.
@@ -52,7 +53,9 @@ HEADER = "PRIME (my slow loop between turns)"
 BlockStatus = Literal["ok", "stale", "absent"]
 # Ref kinds the block writes. The citation gate only judges these kinds.
 PRIME_REF_KINDS = ("prime_concern", "thought", "curiosity_focus", "prime_regulate", "prime_tick")
-_PRIME_REF_RE = re.compile(r"\[?\b(" + "|".join(PRIME_REF_KINDS) + r"):([^\s\]\[,;)]+)\]?")
+# The id ends on a letter, digit, '#' or 'Z' (prime_tick:04:22Z), so sentence punctuation after an
+# unbracketed ref ("thought:#5.") is not read as part of it.
+_PRIME_REF_RE = re.compile(r"\[?\b(" + "|".join(PRIME_REF_KINDS) + r"):([A-Za-z0-9#_.:\-]*[A-Za-z0-9#_])\]?")
 _ELLIPSIS = "…"
 
 
@@ -148,6 +151,8 @@ def _thought_ref(state: PrimeStateV1) -> tuple[Optional[str], str]:
     at = state.last_thought_at
     if at is None:
         return None, ""
+    # Exact match by construction: Prime's _conclude uses one `now` for apply_answer's last_thought_at and
+    # for the move's opened_at (services/orion-mind/app/prime_loop.py _conclude/_nominate/_regulate).
     for n in state.open_nominations:
         if n.opened_at >= at:
             return n.thought_id, "asked curiosity a question"
@@ -226,15 +231,14 @@ def _fit(header: str, lines: list[_Line], cap: int) -> tuple[list[str], list[_Li
         lines.pop(worst)
         dropped += 1
     room = max(0, cap - (len(header) + sum(len(ln.render(0)) + 1 for ln in lines)))
-    # Share the room: each body gets an equal share; unused share goes to the next ones.
-    with_body = [i for i, ln in enumerate(lines) if ln.body]
+    # Water-fill the room: short bodies take only what they need (shortest first), and every char they
+    # leave goes to the longer ones. +1 per body for the space render() puts before its refs.
+    wants = {i: len(" ".join(ln.body.split())) + 1 for i, ln in enumerate(lines) if ln.body}
+    order = sorted(wants, key=lambda i: (wants[i], i))
     budgets: dict[int, int] = {}
     left = room
-    for k, i in enumerate(with_body):
-        share = left // (len(with_body) - k)
-        # +1 for the space render() puts between body and refs when the body is non-empty.
-        want = len(" ".join(lines[i].body.split())) + 1
-        budgets[i] = min(share, want)
+    for k, i in enumerate(order):
+        budgets[i] = min(left // (len(order) - k), wants[i])
         left -= budgets[i]
     rendered = [ln.render(max(0, budgets.get(i, 1) - 1) if ln.body else None) for i, ln in enumerate(lines)]
     return rendered, lines, dropped
@@ -266,7 +270,9 @@ def render_prime_block(
     rendered, kept, dropped = _fit(header, _lines(state, now, ticked_at), cap)
     text = "\n".join([header, *rendered])
     if len(text) > cap:  # only if one line alone outgrows the cap: never send more than promised
-        text = text[: cap - 1] + _ELLIPSIS
+        # Cut back to a line boundary so no half ref is left for the model to copy.
+        cut = text.rfind("\n", 0, cap)
+        text = text[:cut] if cut > 0 else text[: cap - 1] + _ELLIPSIS
     # Refs from the lines themselves (never parsed back out of free text), and only those still in the text.
     refs = tuple(dict.fromkeys(r for ln in kept for r in ln.refs if f"[{r}]" in text))
     return PrimeBlockV1(text=text, status="ok", refs=refs, ticked_at=_utc(ticked_at), dropped_lines=dropped)

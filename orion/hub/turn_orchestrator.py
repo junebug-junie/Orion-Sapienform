@@ -1011,14 +1011,17 @@ async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) ->
 def _log_prime_citations(prime_block: Any, final_text: Any, *, correlation_id: str) -> None:
     """Count the reply's Prime refs against the block it was shown (orion/prime/block.py
     check_prime_citations): one log line per turn, like temporal_self_day_citations. Never raises."""
-    if prime_block is None or getattr(prime_block, "status", None) != "ok":
+    if prime_block is None:
         return
     try:
         from orion.prime.block import check_prime_citations
 
-        check = check_prime_citations(str(final_text or ""), prime_block.refs)
-        logger.info("prime_block_citations corr=%s %s rejected_examples=%s", correlation_id,
-                    check.log_fields(), list(check.examples))
+        # A stale or absent block showed no refs: any Prime ref in the reply then is invented, and counted.
+        status = getattr(prime_block, "status", None)
+        shown = prime_block.refs if status == "ok" else ()
+        check = check_prime_citations(str(final_text or ""), shown)
+        logger.info("prime_block_citations corr=%s block=%s %s rejected_examples=%s", correlation_id,
+                    status, check.log_fields(), list(check.examples))
     except Exception:  # noqa: BLE001
         logger.warning("prime_block_citations_failed corr=%s", correlation_id, exc_info=True)
 
@@ -1498,6 +1501,8 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
+    # The Prime read (two Redis GETs, <= 1 s) runs alongside the situation build, not after it.
+    prime_task = asyncio.create_task(_build_prime_block(bus, settings=cfg, correlation_id=correlation_id))
     situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,
         user_message=user_message,
@@ -1514,7 +1519,7 @@ async def execute_unified_turn(
         session_id,
         correlation_id=correlation_id,
     )
-    prime_block = await _build_prime_block(bus, settings=cfg, correlation_id=correlation_id)
+    prime_block = await prime_task
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
     situation_hop_status = str(situation_bundle.get("status") or "ok")
     if situation_hop_status == "empty":

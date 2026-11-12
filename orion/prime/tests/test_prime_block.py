@@ -178,3 +178,37 @@ def test_citation_gate_counts_shown_and_rejects_unknown_prime_refs():
     none = check_prime_citations("Just chatting. A thought: hello. [arc:390d630d1fc992b8]", b.refs)
     assert none.label == "no_prime_claims"  # arcs are the arc gate's; "thought: " is prose
     assert good.shown == len([r for r in b.refs if not r.startswith("arc:")])
+
+
+def test_short_bodies_leave_their_room_to_the_long_first_concern():
+    """Water-fill: a long first concern gets every char the short bodies do not need."""
+    s = _state(concerns=[_concern("c1aaaaaaaaaaaaaa", "w" * 200, hours=1),
+                         _concern("c2aaaaaaaaaaaaaa", "short", hours=1),
+                         _concern("c3aaaaaaaaaaaaaa", "tiny", hours=1)], last_reading="ok")
+    b = _render(s)
+    assert "w" * 200 in b.text  # fits whole: 600 has room for it once the short ones take only theirs
+    s2 = s.model_copy(update={"concerns": [s.concerns[0].model_copy(update={"text": "w" * 300}), *s.concerns[1:]]})
+    b2 = _render(s2)
+    assert len(b2.text) >= BLOCK_CAP - 2  # no wasted room: the long body was cut only to the cap
+    assert "short" in b2.text and "tiny" in b2.text and "ok [thought" in b2.text
+
+
+def test_citation_gate_reads_unbracketed_refs_before_punctuation():
+    b = _render(_state(concerns=[_concern("c1aaaaaaaaaaaaaa", "watch heat", hours=1)]))
+    for text in ("I hold thought:#235.", "Mine: prime_concern:c1aaaaaaaaaaaaaa: still open!",
+                 "(see prime_concern:c1aaaaaaaaaaaaaa)?", "ticked at prime_tick:04:14Z."):
+        check = check_prime_citations(text, b.refs)
+        assert check.rejected_unknown == (), (text, check)
+    assert check_prime_citations("thought:#235.", b.refs).cited_valid == ("thought:#235",)
+
+
+def test_stale_block_shows_no_refs_so_any_cited_prime_ref_is_rejected():
+    stale = _render(_state(), ticked_at=NOW - timedelta(hours=1))
+    assert check_prime_citations("I hold [prime_concern:abc].", stale.refs).label == "UNVERIFIED"
+
+
+def test_hard_cut_never_leaves_a_half_ref():
+    s = _state(concerns=[_concern("c1aaaaaaaaaaaaaa", "x" * 300, hours=1, arc=ARC)])
+    b = _render(s, cap=120)
+    assert len(b.text) <= 120
+    assert b.text.count("[") == b.text.count("]")

@@ -2085,6 +2085,11 @@ turns (`services/orion-mind/app/prime_loop.py`).
   Prime ref the block did not show is counted as rejected). The block is in the turn's
   `cockpit_turn_sighting` `motor_boot` prompt.
 - **Kill switch:** `HUB_PRIME_BLOCK_ENABLED=false` (no block; the prompt is unchanged).
+- **Deploy order:** governor first, then Hub. An older governor ignores the new
+  `HarnessRunRequestV1.prime_block` field; if Hub goes first, the Hub-assembled `motor_boot` in
+  `cockpit_turn_sighting` shows a block the motor did not get until the governor is rebuilt.
+- **Finalize judge:** the governor passes the block to the judge ahead of the Situation notes, so a
+  correct "I'm holding X [prime_concern:..]" is grounded for the judge too.
 - **Eval:** `python orion/prime/evals/run_prime_block_eval.py [--live]`.
 
 ## Draft-first chat replies (spec L8)

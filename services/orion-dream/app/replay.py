@@ -369,7 +369,8 @@ def candidate_from_arc(row: dict[str, Any]) -> Optional[ReplayItemV1]:
 
 
 def arc_candidates(
-    rows: Iterable[dict[str, Any]], since: datetime, until: datetime, *, cap: int = ARC_CANDIDATES_MAX
+    rows: Iterable[dict[str, Any]], since: datetime, until: datetime, *,
+    cap: int = ARC_CANDIDATES_MAX, one_per_kind: bool = True,
 ) -> list[ReplayItemV1]:
     """Closed, non-sleep arcs that ENDED in [since, until), top `cap` by weight (ties:
     newest end, then arc_id). The store filters the same way; this re-checks so a loose
@@ -378,7 +379,14 @@ def arc_candidates(
     One candidate per THING, the same rule as every other source: arcs sharing
     (kind, subject_ref) are one candidate, the heaviest arc (its arc_id is the one cited).
     Live 10-12: node:substrate.bus_synaptic closed three interoception arcs in one window
-    and took 3 of the top 5 slots before this."""
+    and took 3 of the top 5 slots before this.
+
+    Then one candidate per KIND (the heaviest thing of that kind), before the cap, so a
+    flood of one kind cannot push the others out of the top `cap` either. Live 11-12: over
+    5 days 15 of 18 replayed arcs were interoception (substrate execution / perception /
+    chat / bus_synaptic as separate things): body arcs run for hours and their returns count
+    sensor flicker, so they outweigh every other kind. `one_per_kind=False` is the old rule,
+    kept only so the replay eval can rebuild what past sleeps really did."""
     best: dict[tuple[str, str], tuple[ReplayItemV1, Any]] = {}
     for row in rows or ():
         ended = row.get("ended_at")
@@ -395,8 +403,13 @@ def arc_candidates(
         kept = best.get(key)
         if kept is None or (item.weight, ended.timestamp(), item.ref_id) > (kept[0].weight, kept[1].timestamp(), kept[0].ref_id):
             best[key] = (item, ended)
-    ranked = sorted(best.values(), key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))
-    return [item for item, _ in ranked[: max(0, int(cap))]]
+    ranked = [item for item, _ in sorted(best.values(), key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))]
+    if one_per_kind:
+        heaviest: dict[str, ReplayItemV1] = {}
+        for item in ranked:  # ranked heaviest first: the first of a kind is its heaviest
+            heaviest.setdefault(item.tags[0], item)
+        ranked = list(heaviest.values())  # dicts keep insertion order: still ranked
+    return ranked[: max(0, int(cap))]
 
 
 # --- graded walkway predictions (2026-10-15) ----------------------------------

@@ -123,7 +123,10 @@ Temporal Self rev 4, patch 7. Once a sleep goes ahead, it also reads the closed
 Temporal Self arcs (`temporal_self_arc`) that ended since the last sleep began: a
 concern held, a curiosity followed, a body state. `sleep` arcs are left out, and at
 most 20 go in per sleep. Arcs about the same thing (same kind and subject) count
-once, as the heaviest of them. Each becomes a replay item with `source_kind="arc"` and
+once, as the heaviest of them. Then at most one arc per kind goes in: the heaviest
+thing of that kind (2026-11-12: over 5 days, 15 of 18 replayed arcs were
+`interoception` body arcs, which run for hours and count sensor flicker as returns, so
+they outweighed every other kind). Each becomes a replay item with `source_kind="arc"` and
 `ref_id="arc:<arc_id>"`, so anything the dream produces from it can cite the arc.
 Weight = `0.75 * (dwell + returns) / 2`, where `dwell = min(1, ln(1+min)/ln(61))`
 (reaches 1 at an hour) and `returns = min(1, attention_returns/3)`. The 0.75 cap keeps

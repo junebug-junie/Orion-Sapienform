@@ -83,11 +83,11 @@ def test_window_filter_is_ended_in_since_until():
     from app.replay import arc_candidates
 
     rows = [
-        _arc("before", ended=SINCE - timedelta(seconds=1)),
-        _arc("at_since", ended=SINCE),
-        _arc("inside", ended=NOW - timedelta(minutes=5)),
-        _arc("at_until", ended=NOW),
-        _arc("after", ended=NOW + timedelta(minutes=1)),
+        _arc("before", kind="k1", ended=SINCE - timedelta(seconds=1)),
+        _arc("at_since", kind="k2", ended=SINCE),
+        _arc("inside", kind="k3", ended=NOW - timedelta(minutes=5)),
+        _arc("at_until", kind="k4", ended=NOW),
+        _arc("after", kind="k5", ended=NOW + timedelta(minutes=1)),
     ]
     got = {c.ref_id for c in arc_candidates(rows, SINCE, NOW)}
     assert got == {"arc:at_since", "arc:inside"}
@@ -96,7 +96,8 @@ def test_window_filter_is_ended_in_since_until():
 def test_cap_keeps_the_heaviest_and_dedupes_arc_ids():
     from app.replay import ARC_CANDIDATES_MAX, arc_candidates
 
-    rows = [_arc(f"a{i:03d}", dwell=60.0 * (i + 1), returns=0, ended=NOW - timedelta(minutes=i + 1)) for i in range(50)]
+    rows = [_arc(f"a{i:03d}", kind=f"k{i:03d}", dwell=60.0 * (i + 1), returns=0, ended=NOW - timedelta(minutes=i + 1))
+            for i in range(50)]  # 50 kinds: one per kind would otherwise leave one
     rows.append(dict(rows[-1]))  # duplicate row of the heaviest arc
     got = arc_candidates(rows, SINCE, NOW)
     assert len(got) == ARC_CANDIDATES_MAX == 20
@@ -211,7 +212,7 @@ def test_pressure_and_rest_drive_unchanged_with_arcs_on():
     assert not any(r.source_kind == "arc" for r in c_off.replay)
     (since, until), = on.arc_reads
     assert since == c_on.pressure.since and until == c_on.started_at
-    assert "arc candidates=10" in c_on.note
+    assert "arc candidates=7" in c_on.note  # 10 arcs, 7 kinds: one per kind
 
 
 def test_arcs_take_at_most_a_third_and_critical_metacog_leads():
@@ -219,7 +220,7 @@ def test_arcs_take_at_most_a_third_and_critical_metacog_leads():
     from app.settings import settings
 
     on = _Fakes(_rows(), arcs=lambda now: [
-        _arc(f"x{i}", dwell=90000.0, returns=50, ended=now - timedelta(minutes=i + 1)) for i in range(40)])
+        _arc(f"x{i}", kind=f"k{i}", dwell=90000.0, returns=50, ended=now - timedelta(minutes=i + 1)) for i in range(40)])
     c = asyncio.run(run_cycle_once(on.deps(with_arcs=True)))
     k = settings.DREAM_REPLAY_MAX
     arcs = [r for r in c.replay if r.source_kind == "arc"]
@@ -359,9 +360,73 @@ def test_control_pool_sees_only_the_replayable_arcs(monkeypatch):
         return real(pool, n, **kw)
 
     monkeypatch.setattr(cycle, "control_pairs", spy)
-    on = _Fakes(_rows(), arcs=lambda now: [_arc(f"y{i}", dwell=60.0 * (i + 1), returns=0,
+    on = _Fakes(_rows(), arcs=lambda now: [_arc(f"y{i}", kind=f"k{i}", dwell=60.0 * (i + 1), returns=0,
                                                ended=now - timedelta(minutes=i + 1)) for i in range(20)])
     asyncio.run(run_cycle_once(on.deps(with_arcs=True)))
     arcs = [c for c in seen["pool"] if c.source_kind == "arc"]
     assert len(arcs) == arc_replay_slots(settings.DREAM_REPLAY_MAX) == 4
     assert {c.ref_id for c in arcs} == {f"arc:y{i}" for i in (19, 18, 17, 16)}  # the heaviest
+
+
+# --- one arc per kind per sleep (2026-11-12) ------------------------------------------
+
+
+def _live_1112_rows(now):
+    """The 11-11 04:57 sleep's window, shape-for-shape: four interoception body arcs about
+    different substrate nodes (hours of dwell, sensor flicker counted as returns), each
+    heavier than the one attention arc and the one conversation arc that closed with them."""
+    def row(aid, kind, ref, dwell, returns, minutes_ago):
+        return {**_arc(aid, kind=kind, dwell=dwell, returns=returns, ended=now - timedelta(minutes=minutes_ago)),
+                "subject_ref": ref}
+
+    return [
+        row("perc", "interoception", "node:substrate.perception", 14400.0, 9, 30),
+        row("chat", "interoception", "node:substrate.chat", 10800.0, 7, 40),
+        row("exec", "interoception", "node:substrate.execution", 9000.0, 6, 50),
+        row("bus", "interoception", "node:substrate.bus_synaptic", 7200.0, 5, 60),
+        row("att", "attention", "world:reading", 1500.0, 2, 70),
+        row("conv", "conversation", "9c91d646-cbd0-4977-8cdd-d2c82045c7f9", 1200.0, 1, 80),
+    ]
+
+
+def test_live_1112_mix_takes_one_arc_per_kind():
+    """Live 11-12: 15 of 18 arcs replayed over 5 days were interoception. Before this rule the
+    window above replayed 4 arcs, 4 of them body arcs (the other kinds lost on weight)."""
+    from app.replay import arc_candidates
+
+    old = arc_candidates(_live_1112_rows(NOW), SINCE, NOW, one_per_kind=False)
+    assert [c.tags[0] for c in old[:4]] == ["interoception"] * 4  # the failure mode, reproduced
+    got = arc_candidates(_live_1112_rows(NOW), SINCE, NOW)
+    assert [c.tags[0] for c in got] == ["interoception", "attention", "conversation"]
+    assert got[0].ref_id == "arc:perc"  # the heaviest body arc is the one kept
+
+
+def test_live_1112_mix_in_a_real_cycle_replay_and_control_pool(monkeypatch):
+    from app import cycle
+    from app.cycle import run_cycle_once
+
+    seen = {}
+    real = cycle.control_pairs
+
+    def spy(pool, n, **kw):
+        seen["pool"] = list(pool)
+        return real(pool, n, **kw)
+
+    monkeypatch.setattr(cycle, "control_pairs", spy)
+    c = asyncio.run(run_cycle_once(_Fakes(_rows(), arcs=_live_1112_rows).deps(with_arcs=True)))
+    kinds = [r.tags[0] for r in c.replay if r.source_kind == "arc"]
+    assert sorted(kinds) == ["attention", "conversation", "interoception"]
+    pool_kinds = [r.tags[0] for r in seen["pool"] if r.source_kind == "arc"]
+    assert sorted(pool_kinds) == sorted(kinds)  # control arm sees the same one-per-kind arcs
+    assert "arc candidates=3" in c.note
+
+
+def test_one_per_kind_happens_before_the_cap():
+    """A flood of one kind must not push the other kinds out of the top `cap` either."""
+    from app.replay import arc_candidates
+
+    flood = [{**_arc(f"b{i}", kind="interoception", dwell=36000.0, returns=9,
+                     ended=NOW - timedelta(minutes=i + 1)), "subject_ref": f"node:{i}"} for i in range(30)]
+    rows = flood + [_arc("light", kind="reverie", dwell=60.0, returns=0)]
+    got = arc_candidates(rows, SINCE, NOW, cap=20)
+    assert [c.tags[0] for c in got] == ["interoception", "reverie"]

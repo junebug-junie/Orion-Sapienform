@@ -278,3 +278,36 @@ PRIME_EVENT_WANTS_LIMIT`, highest net first). A new concern must name one of tho
 (`PrimeConcernV1.event_ref`); a concern without one is not added, and Prime sees why. Log:
 `prime_concern_added concern=... event_ref=...`. An unread menu is a frame gap, never calm. false = the
 arc path, unchanged. Replay: `services/orion-durable-runs/evals/event_wants_replay.py`. Spec: docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md.
+
+### Every turn ends back in Prime: the turn hand-back (2026-11-12, living Prime Part 2)
+
+`PRIME_TURN_HANDBACK_ENABLED` (default true). Prime listens to `orion:cockpit:hop`, the hops Hub already
+publishes for every unified turn (no new bus event). It joins each turn's `ingress` hop (session, prompt) to its
+`finalize` hop (reply, verdict, the judge's `promises_made` / `promises_kept`) by correlation id and folds the
+turn into its state on the tick (`orion/prime/handback.py`, pure). Only four kinds of turn are handed back:
+`chat_juniper` (Hub turns Juniper typed: ingress carries `mode`, session not `orion_*`), `curiosity`
+(`orion_curiosity`), `consult` (`consult-*`) and `letter` (`orion_day_letter`, used by Part 3). World-pulse
+reads, self-sense evals, PR field notes, reminiscence and outreach are not.
+
+- **Thread opened:** a turn with at least one promise (`promises_made`, offers excluded) opens a concern with
+  `event_ref = turn:<correlation_id>` and an id derived from the turn. It links the promises
+  (`harness_turn_trace:<corr>#promises_made[i]`, i = the promise's own index), never copies them. It places
+  NO bet (`act.prime.predict`): nothing can settle it until the intention ledger's D2 gives kept promises act
+  ids, so a bet would only close 0 and feed a false failure into the self-monitor gate. Bounds: total
+  `MAX_CONCERNS` (3), at most 1 turn-opened concern held, at most 4 opened in 24 h. A refused thread is
+  recorded on the turn. Accepted offers (`offers_accepted`) are out of scope until D2.
+- **Concern answered:** a turn whose PROMPT cites `prime_concern:<id>` of an open concern and that completed
+  with a reply (verdict `completed`) settles it (produced = 1; `CONCERN_BASIS` names this path). A reply that
+  only mentions the id settles nothing.
+- Only those two wake a thought; the funded-thought rule still decides. Every handed-back turn shows in the
+  frame's TURNS THAT HANDED BACK TO YOU section (last 5).
+- Turns Prime started: the existing nomination grading closes the act; the run's
+  `harness.turn_correlation_id` is linked onto the turn record (`started_by_act`, also when the turn hands
+  back after its run settled) and the act's close note.
+- `stop()` folds and saves hops heard since the last tick, so a deploy loses none of them.
+- `PrimeStateV1.last_thought_id`: the thought that wrote `last_reading`, for the Prime block to cite.
+- Record: Redis `orion:prime:turns` (`PrimeTurnsStateV1`: pending turns, last 20 turns, 300 seen ids for
+  dedupe), separate from `orion:prime:state` so a rollback still loads Prime's state.
+- Log: `prime_turn_handback corr=... who=... opened=... settled=...`; `prime_handback_subscribed`.
+- Pub/sub is not durable: a turn that finishes while orion-mind is down is not handed back.
+- Replay eval (read-only, live Postgres): `python -m orion.prime.evals.run_turn_handback_replay --days 3`.

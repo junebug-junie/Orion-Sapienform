@@ -201,6 +201,9 @@ class PrimeStateV1(BaseModel):
     regulation_rest_until: dict[str, AwareDatetime] = Field(default_factory=dict)
     last_thought_at: Optional[AwareDatetime] = None
     last_reading: str = ""
+    # The thought that wrote ``last_reading`` (its ``prime_thought:<id>`` ref, act ``thought_act(id)``), set with
+    # it. For the Prime block (living Prime Part 1) to cite a real id. None until the first answered thought.
+    last_thought_id: Optional[str] = None
     thoughts_total: int = 0
     # Retired 2026-11-03 (attention moves no longer wake Prime); kept so older persisted state loads.
     seen_active_arc_id: Optional[str] = None
@@ -211,6 +214,20 @@ class PrimeStateV1(BaseModel):
     no_model_tries_total: int = 0
     last_try_kind: Optional[TryKind] = None
     retry_not_before: Optional[AwareDatetime] = None
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
+        if handler.mode == "serialization":
+            return handler({k: v for k, v in core_schema.items() if k != "serialization"})
+        return handler(core_schema)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_thought_id(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # Until a thought sets it, the state saves byte-for-byte as before (tests/test_prime_replay.py).
+        out = handler(self)
+        if out.get("last_thought_id", 0) is None:
+            del out["last_thought_id"]
+        return out
 
 
 class PrimeSnapshotV1(BaseModel):

@@ -9,7 +9,10 @@ the steps (tool + command/path, whitespace-normalized) in turn N+1 that turn N a
 * repeated_ok:     N ran it and it worked (re-discovery of an answer N already had).
 
 Also reports the share of tool-using turns whose working notes the taint rule would hold
-back (acceptance 7: if nearly all are tainted, notes carry almost nothing).
+back (acceptance 7: if nearly all are tainted, notes carry almost nothing). That replay
+over-counts reading calls: CONTENT_SQL cuts results to 400 chars, so an orion-reading
+receipt cannot be checked and counts as held back. The live_* fields are the truth since
+the 2026-11-11 deploy: what the harness actually decided, from `working_notes` cockpit rows.
 
 Read-only (ReadOnlyPsql). Usage, from repo root:
 
@@ -43,6 +46,40 @@ SELECT t.session_id, s.correlation_id, s.seq, t.created_at AS turn_at, s.ts,
    AND s.raw->'step'->'raw'->>'type' IN ('assistant', 'user')
  ORDER BY t.created_at, s.seq
 """
+
+
+LIVE_SQL = """
+SELECT (raw->>'written_bytes')::int AS written_bytes, raw->>'tainted_by' AS tainted_by,
+       raw->>'carried_forward' AS carried_forward
+  FROM cockpit_turn_sighting
+ WHERE stage = 'working_notes' AND ts > now() - interval '{days} days'
+"""
+
+
+def measure_live(rows: Iterable[dict[str, str]]) -> dict[str, Any]:
+    """Turns that wrote notes, and how many the harness held back (by tool)."""
+    wrote = held = carried = 0
+    reasons: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if int(row.get("written_bytes") or 0) <= 0:
+            continue
+        wrote += 1
+        try:
+            tainted = json.loads(row.get("tainted_by") or "[]")
+        except ValueError:
+            tainted = ["(unreadable)"]
+        if tainted:
+            held += 1
+            for name in tainted:
+                reasons[str(name)] += 1
+        carried += row.get("carried_forward") == "true"
+    return {
+        "live_turns_with_notes": wrote,
+        "live_held_back": held,
+        "live_held_back_share": round(held / wrote, 3) if wrote else None,
+        "live_carried": carried,
+        "live_held_back_reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
+    }
 
 
 def _key(step: Step) -> str:
@@ -128,7 +165,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--json", action="store_true")
     ns = ap.parse_args(argv)
-    result = measure(psql_rows(ReadOnlyPsql(timeout_sec=300.0), SQL.format(days=max(1, ns.days), content=CONTENT_SQL)))
+    psql = ReadOnlyPsql(timeout_sec=300.0)
+    days = max(1, ns.days)
+    result = measure(psql_rows(psql, SQL.format(days=days, content=CONTENT_SQL)))
+    result.update(measure_live(psql_rows(psql, LIVE_SQL.format(days=days))))
     result["days"] = ns.days
     if ns.json:
         print(json.dumps(result, indent=1))

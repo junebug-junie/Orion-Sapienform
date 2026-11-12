@@ -119,8 +119,9 @@ but not the steps behind them. Spec: `docs/superpowers/specs/2026-11-05-turn-wor
   shape and carries them, quoted, to the next turn of the same session (Redis
   `orion:harness:working_notes:<session>`, 24 h, 3,000 chars).
 - **Held back:** a turn that ran WebFetch/WebSearch, any MCP tool except orion-introspect and gitnexus,
-  an orion-reading call whose receipt carried a read's `summary` or `error` text (a bare queue
-  receipt does not count; a receipt that is not JSON does),
+  an orion-reading call unless its receipt is a bare queue receipt for a chat-made request (no
+  `summary`/`error`, no `title`, not world-pulse or re-entry, only known fields; anything else,
+  including non-JSON, holds back),
   a subagent (`Task`/`Agent`), a resumed session, or `curl`/`wget`/`gh <cmd>`/`git fetch|pull|clone` in Bash has its
   notes held back; the next turn sees only that they were. The Bash check is a floor, not a wall.
 - **Trace:** cockpit stage `working_notes` per chat turn (`carried_in`, `written`, kept/dropped,

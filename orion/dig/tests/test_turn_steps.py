@@ -110,3 +110,16 @@ def test_reading_receipts_are_shown_only_when_they_hold_no_read_text() -> None:
     (cut,) = turn_steps.parse_rows([_row("c1", 1, [_use("r", name, url="https://x")]),
                                    _row("c1", 2, [_res("r", clean[:30])])])
     assert cut.outside
+
+
+def test_baseline_live_counts_what_the_harness_decided() -> None:
+    rows = [
+        {"written_bytes": "0", "tainted_by": "[]", "carried_forward": "false"},  # tool-free turn
+        {"written_bytes": "404", "tainted_by": "[]", "carried_forward": "true"},
+        {"written_bytes": "2295", "tainted_by": '["mcp__orion-reading__recommend_reading"]',
+         "carried_forward": "false"},
+    ]
+    out = baseline.measure_live(rows)
+    assert out["live_turns_with_notes"] == 2 and out["live_held_back"] == 1 and out["live_carried"] == 1
+    assert out["live_held_back_share"] == 0.5
+    assert out["live_held_back_reasons"] == {"mcp__orion-reading__recommend_reading": 1}

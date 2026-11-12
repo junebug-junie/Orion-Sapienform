@@ -70,9 +70,22 @@ _INSIDE_MCP_PREFIXES = ("mcp__orion-introspect__", "mcp__gitnexus__")
 # Judged by result, not by call: these return queue receipts (Orion's own request,
 # ids, status), and only sometimes text from an earlier read of a page.
 _RESULT_CHECKED_PREFIXES = ("mcp__orion-reading__",)
-# Receipt fields that can hold text from the read (orion/world_pulse_read/queue.py
-# _reading_status_row: summary = the read's what_i_learned; error = the fetch error).
+# A receipt is clean only in this shape (orion/world_pulse_read/queue.py reading_status /
+# _reading_status_row): an allowlist, so a new receipt field is held back until checked.
+_RECEIPT_KEYS = frozenset({
+    "request_id", "status", "request", "seed_id", "duplicate_of", "stage1_status", "stage2_status",
+    "stage1_trace_id", "stage2_trace_id", "stage1_attempts", "stage2_attempts", "summary", "error",
+    "evidence_url", "landing_at", "queue_position", "queue_depth", "duplicate",
+    "lookup_url", "matched_request_count", "selection",
+})
+# Text from the read itself: summary = the read's what_i_learned; error = the fetch error.
 _READING_TEXT_FIELDS = ("summary", "error")
+# The receipt's own request is Orion's words only when a chat turn made it: a world-pulse
+# row carries a feed headline in title (seeds.py), and a re-entry row a link a page chose.
+_REQUEST_KEYS = frozenset({
+    "request_id", "url", "requested_by", "invocation_context", "why_now", "title",
+    "parent_run_id", "parent_trace_id", "requested_at", "root_request_id", "parent_request_id",
+})
 # A subagent's own tool calls never reach this turn's step stream, so the harness
 # cannot tell what it read: treat it as outside content.
 _OPAQUE_TOOLS = frozenset({"Task", "Agent"})
@@ -124,8 +137,9 @@ def begin_turn(path: Path) -> bool:
 
 
 def _blocks(step: dict[str, Any]) -> Iterable[dict[str, Any]]:
+    # Same shapes as reading_receipts._content_blocks: message.content, or content on raw.
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
-    message = raw.get("message") if isinstance(raw, dict) else None
+    message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, list):
         yield from (b for b in content if isinstance(b, dict))
@@ -166,10 +180,24 @@ def outside_result(name: str, content: Any) -> bool:
         payload = json.loads(result_text(content))
     except ValueError:
         return True
-    if not isinstance(payload, dict):
+    return not _clean_receipt(payload)
+
+
+def _clean_receipt(payload: Any) -> bool:
+    if not isinstance(payload, dict) or set(payload) - {"ok", "result", "error"} or payload.get("error"):
+        return False
+    result = payload.get("result")
+    if not isinstance(result, dict) or set(result) - _RECEIPT_KEYS:
+        return False
+    if any(result.get(k) not in (None, "") for k in _READING_TEXT_FIELDS):
+        return False
+    request = result.get("request")
+    if request in (None, {}):
         return True
-    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    return any(src.get(k) not in (None, "") for src in (payload, result) for k in _READING_TEXT_FIELDS)
+    return (isinstance(request, dict) and not set(request) - _REQUEST_KEYS
+            and request.get("requested_by") in ("juniper", "orion")
+            and not request.get("title") and not request.get("parent_request_id")
+            and not request.get("root_request_id"))
 
 
 class OutsideContent:
@@ -190,7 +218,10 @@ class OutsideContent:
                 if (reason := outside_reason(name, inp)) is not None:
                     self._reasons.add(reason)
                 elif name.startswith(_RESULT_CHECKED_PREFIXES):
-                    self._pending[str(block.get("id") or "")] = name
+                    if block.get("id"):
+                        self._pending[str(block["id"])] = name
+                    else:  # its result cannot be paired, so it cannot be checked
+                        self._reasons.add(name)
             elif block.get("type") == "tool_result":
                 name = self._pending.pop(str(block.get("tool_use_id") or ""), None)
                 if name is not None and outside_result(name, block.get("content")):

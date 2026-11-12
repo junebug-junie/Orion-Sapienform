@@ -13,7 +13,9 @@ says so for that host. ``wh_gpu_by_host`` is always the GPU-above-idle part alon
 
 Known limits, said here rather than hidden:
 * GPU work that takes no pool lease still draws on the card; it lands on whoever holds a lease then
-  on that card, and in the host's unmetered energy otherwise.
+  on that card, and in the host's unmetered energy otherwise. Evals hold operator leases since
+  2026-11-12 (orion/evals/leased_llm.py), so they take their own 1/n share; the hourly attribution
+  reports an operator lease's share as sponsored, not Orion's (``attribute_host_hour``).
 * A durable hold and the child call it wraps are two leases on one card: each pays half.
 * A read act (hub.world_pulse_read) is charged over all of its turns' leases (``correlation_ids``,
   orion/grammar/act_cost_ids.py), filled late by act_ledger.py ``refill_late_costs``; the hourly
@@ -89,10 +91,10 @@ _ACT_LEASES_SQL = text(
 # ones still held at close (granted, no terminal yet: they run to "now").
 _CARD_LEASES_SQL = text(
     f"""
-    SELECT lease_id, start_at, end_at, turn_correlation_id FROM (
+    SELECT lease_id, start_at, end_at, turn_correlation_id, work_class FROM (
         SELECT DISTINCT ON (lease_id) lease_id,
                generated_at - held_ms * interval '1 millisecond' AS start_at, generated_at AS end_at,
-               turn_correlation_id
+               turn_correlation_id, work_class
           FROM gpu_pool_events
          WHERE event IN {_TERMINAL} AND held_ms IS NOT NULL
            AND cards::jsonb ? :card
@@ -100,9 +102,9 @@ _CARD_LEASES_SQL = text(
          ORDER BY lease_id, held_ms DESC
     ) done
     UNION ALL
-    SELECT lease_id, start_at, end_at, turn_correlation_id FROM (
+    SELECT lease_id, start_at, end_at, turn_correlation_id, work_class FROM (
         SELECT DISTINCT ON (g.lease_id) g.lease_id, g.generated_at AS start_at, NULL::timestamptz AS end_at,
-               g.turn_correlation_id
+               g.turn_correlation_id, g.work_class
           FROM gpu_pool_events g
          WHERE g.event = 'granted' AND g.cards::jsonb ? :card
            AND g.generated_at >= :ws_minus AND g.generated_at <= :we
@@ -313,17 +315,25 @@ def _parse_cards(raw: Any) -> list[str]:
 def _card_leases(conn: Any, card: str, ws: datetime, we: datetime, now: datetime,
                  ) -> dict[str, tuple[datetime, datetime, Optional[str]]]:
     """Every lease on ``card`` overlapping [ws, we]: lease_id -> (start, end, turn_correlation_id)."""
-    out: dict[str, tuple[datetime, datetime, Optional[str]]] = {}
-    for oid, o_start, o_end, corr in conn.execute(_CARD_LEASES_SQL, {
+    return {k: (s, e, c) for k, (s, e, c, _) in _card_leases_wc(conn, card, ws, we, now).items()}
+
+
+def _card_leases_wc(conn: Any, card: str, ws: datetime, we: datetime, now: datetime,
+                    ) -> dict[str, tuple[datetime, datetime, Optional[str], Optional[str]]]:
+    """``_card_leases`` plus each lease's pool work class."""
+    out: dict[str, tuple[datetime, datetime, Optional[str], Optional[str]]] = {}
+    for row in conn.execute(_CARD_LEASES_SQL, {
             "card": card, "ws": ws, "we": we, "we_plus": we + OTHER_LEASE_LOOKBACK,
             "ws_minus": ws - OTHER_LEASE_LOOKBACK}).fetchall():
+        oid, o_start, o_end, corr = row[:4]
+        wc = row[4] if len(row) > 4 else None
         if o_start is None:
             continue
         o_s = _aware(o_start)
         # A grant with no terminal event yet: held until now, but never past the pool's longest
         # hold (live: ~8 grants a day never get a terminal event).
         o_e = _aware(o_end) if o_end is not None else min(now, o_s + MAX_HOLD)
-        out.setdefault(str(oid), (o_s, o_e, str(corr) if corr else None))
+        out.setdefault(str(oid), (o_s, o_e, str(corr) if corr else None, str(wc) if wc else None))
     return out
 
 
@@ -333,15 +343,18 @@ def _other_leases(conn: Any, card: str, ws: datetime, we: datetime, now: datetim
 
 
 def attribute_host_hour(conn: Any, host: str, start: datetime, end: datetime, *,
-                        now: Optional[datetime] = None,
-                        charge_reads: bool = True) -> tuple[Optional[Any], Optional[float], str]:
+                        now: Optional[datetime] = None, charge_reads: bool = True,
+                        operator_sponsored: bool = True) -> tuple[Optional[Any], Optional[float], str]:
     """(HostAttribution, rest_w, rest_source) for ``host`` over [start, end]; (None, None, reason)
     when the host has no pinned rest. The same split, readers and floors as the act fill.
 
     A lease is metered when some act is charged for its turn (act_cost_ids.turns_charged_to_acts):
     its own correlation_id, or one of a read's turns (the read act's late fill charges those, patch
     3e). ``charge_reads=False`` is the pre-3e rule (a read's turns counted as leased-without-act),
-    kept only so the backfill and the closure eval can show the before and after side by side."""
+    kept only so the backfill and the closure eval can show the before and after side by side.
+
+    ``operator_sponsored`` (leased evals, 2026-11-12): an operator-class lease (an eval) is reported
+    as sponsored, not metered or leased-unmetered. False: it counts like any other lease, as before."""
     from orion.energy.act_energy import LeaseSpan, attribute_host_window
 
     now = _aware(now or datetime.now(timezone.utc))
@@ -362,20 +375,24 @@ def attribute_host_hour(conn: Any, host: str, start: datetime, end: datetime, *,
     # (split unknown), never silently dropped from the denominator.
     pool_cards = {index for (h, index) in locations.values() if h == host}
     _, floors, _ = host_floors(conn, host, days, set(series.cards) | pool_cards)
-    raw: dict[int, list[tuple[datetime, datetime, Optional[str]]]] = {}
+    from orion.gpu_pool.value_order import is_operator_class
+
+    raw: dict[int, list[tuple[datetime, datetime, Optional[str], bool]]] = {}
     for card, (h, index) in locations.items():
         if h != host:
             continue
-        raw[index] = [(s, e, c) for s, e, c in _card_leases(conn, card, start, end, now).values()
+        raw[index] = [(s, e, c, operator_sponsored and is_operator_class(wc))
+                      for s, e, c, wc in _card_leases_wc(conn, card, start, end, now).values()
                       if s < end and e > start]
-    corrs = sorted({c for spans in raw.values() for _, _, c in spans if c})
+    corrs = sorted({c for spans in raw.values() for _, _, c, op in spans if c and not op})
     if charge_reads:
         # A read's calls run inside its run's pool hold, granted at most one longest hold before
         # any lease that overlaps the hour starts.
         with_act = turns_charged_to_acts(conn, corrs, since=start - OTHER_LEASE_LOOKBACK - MAX_HOLD, until=end)
     else:
         with_act = turns_with_own_act(conn, corrs)
-    leases = {i: [LeaseSpan(s, e, c in with_act) for s, e, c in spans] for i, spans in raw.items()}
+    leases = {i: [LeaseSpan(s, e, (c in with_act) and not op, sponsored=op) for s, e, c, op in spans]
+              for i, spans in raw.items()}
     return attribute_host_window(series, floors, leases, start=start, end=end, rest_w=rest), rest, source
 
 

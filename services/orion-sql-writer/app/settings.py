@@ -897,6 +897,10 @@ class Settings(BaseSettings):
     # rest_body.yaml) into rest / sponsored / metered (acts) / unattributed:
     # orion_energy_attribution_hourly (app/orion_energy_attribution.py). 0 disables.
     orion_energy_attribution_interval_sec: float = Field(600.0, alias="ORION_ENERGY_ATTRIBUTION_INTERVAL_SEC")
+    # Leased evals (2026-11-12): an operator-class lease's (an eval's) card share is sponsored_wh, not
+    # metered / leased-unmetered. false = it counts like any other lease.
+    orion_energy_attribution_operator_sponsored: bool = Field(
+        True, alias="ORION_ENERGY_ATTRIBUTION_OPERATOR_SPONSORED")
     # Act downstream use (app/act_downstream_use.py, body economy weight source (a)): per act,
     # was its output cited by a later decision within 72 h. 0 disables (no rows, no weights).
     act_downstream_use_interval_sec: float = Field(900.0, alias="ACT_DOWNSTREAM_USE_INTERVAL_SEC")

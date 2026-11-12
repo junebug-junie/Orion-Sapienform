@@ -78,13 +78,15 @@ FROM (
 GROUP BY 1 ORDER BY 1
 """
 LANE_CLOSES_SQL = """
-SELECT e.lease_id, e.role, e.event, e.generated_at, e.held_ms, l.hold_lease_id
+SELECT e.lease_id, e.role, e.event, e.generated_at, e.held_ms, l.hold_lease_id,
+       coalesce(l.work_class, e.work_class) AS work_class
 FROM gpu_pool_events e LEFT JOIN gpu_pool_leases l ON l.lease_id = e.lease_id
 WHERE e.generated_at >= %(since)s AND e.event = ANY(%(events)s)
 """
 # gpu_pool_leases_live_idx (status <> 'released') serves it.
 LANE_OPEN_SQL = """
-SELECT lease_id, role, 'granted' AS event, granted_at AS generated_at, NULL::float8 AS held_ms, hold_lease_id
+SELECT lease_id, role, 'granted' AS event, granted_at AS generated_at, NULL::float8 AS held_ms, hold_lease_id,
+       work_class
 FROM gpu_pool_leases
 WHERE status IN ('granted', 'recalling') AND status <> 'released' AND granted_at IS NOT NULL
 """
@@ -187,7 +189,7 @@ async def read_lane_events(pool: Any, now: datetime, window_sec: float
     events = [LeaseEvent(lease_id=r.get("lease_id"), role=r.get("role"), event=r["event"],
                          at=_utc(r["generated_at"]),
                          held_ms=None if r.get("held_ms") is None else float(r["held_ms"]),
-                         hold_lease_id=r.get("hold_lease_id"))
+                         hold_lease_id=r.get("hold_lease_id"), work_class=r.get("work_class"))
               for r in list(closes) + list(opens) if r.get("generated_at") is not None]
     return True, events, (_utc(newest_at) if newest_at is not None else None)
 

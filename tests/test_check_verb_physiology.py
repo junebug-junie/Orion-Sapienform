@@ -145,7 +145,9 @@ def test_real_repo_passes() -> None:
     errors, parsed = gate.check(gate.DEFAULT_VERBS_DIR, gate.DEFAULT_POOL)
     assert errors == []
     verb_files = [p for p in gate.DEFAULT_VERBS_DIR.glob("*.yaml") if p.name != "active.yaml"]
-    assert len(parsed) == len(verb_files) > 100
+    # A floor so the gate provably saw the real verb directory (100 verbs after the two letter verbs
+    # were retired, living Prime Part 3, 2026-11-12).
+    assert len(parsed) == len(verb_files) > 90
 
 
 def _const(path: str, name: str) -> str:

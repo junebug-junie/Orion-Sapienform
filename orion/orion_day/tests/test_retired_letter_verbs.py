@@ -25,6 +25,9 @@ RETIRED = (
     "HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS",
     "HUB_ORION_DAY_HOUR_LOCAL",
     "scripts.orion_day_letter",
+    # Deleted test files a CI workflow must not still try to run.
+    "test_orion_day_verbs.py",
+    "tests/test_orion_day_letter.py",
 )
 # Files that name what was retired, in prose, on purpose.
 ALLOWED = {

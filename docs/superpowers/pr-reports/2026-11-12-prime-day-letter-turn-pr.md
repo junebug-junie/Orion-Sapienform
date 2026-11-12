@@ -199,6 +199,11 @@ Code review ran in a subagent on `git diff 47520a070..HEAD` (Part 3 only). No bl
 - Nit fixed: a day not yet closed by the chronicle logs `prime_day_letter_day_not_closed`.
 - Nit fixed: order HTTP timeout 90 s -> 45 s (the tick awaits it).
 - Nit fixed: the Postgres test now runs Prime's `run_outcome` on the real status API dict (producer/consumer pin, runs in CI).
+- CI fix: `tests/test_check_verb_physiology.py` floor `> 100` -> `> 90` (100 verbs remain after the two retired).
+- CI fix: the listener-wait mutation eval's `orion_day skips wait` mutant targeted the removed verb-node code; replaced
+  by `orion_day state drops counter` (the letter now waits through the shared `failed_attempt`, already mutated).
+- CI fix: `orion-gpu-pool-tests.yml` still ran the deleted `test_orion_day_verbs.py`; removed, and the grep gate now
+  also refuses deleted letter test files named in CI.
 - Not changed (nits, documented under risks): a Hub `refused`/`already_written` race still closes the make act at 0; a run resumed after its letter checkpoint takes a GPU hold `persist` does not need (harmless, released at finish).
 
 ## Restart required

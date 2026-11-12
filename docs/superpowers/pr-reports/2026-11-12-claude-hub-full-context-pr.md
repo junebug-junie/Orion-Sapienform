@@ -113,6 +113,9 @@ The code review ran in a subagent against `origin/main...feat/claude-hub-full-co
   - No duplicate block on a second hello.
   - CI paths cover `requirements.txt` and the continuity builder.
   - Comments now give the real prompt size: about 165,000 characters including labels.
+- CI finding (static gates, schema-skew discovery): Hub now reads `PrimeStateV1`, and its writer was not visible to the check.
+  - Fix: declare orion-mind (`app/prime_loop.py`, Redis `orion:prime:state`) in `orion/schema_skew_discovery.py` `DECLARED_WRITERS`.
+  - Evidence: `tests/scripts/test_schema_skew_discovery.py` 18 passed. CI green (27 checks).
 - Not changed:
   - Hub still sends the whole window on resumed invites, about 180 KB per bus message. The companion discards what was already sent. This is acceptable at current invite rates.
 

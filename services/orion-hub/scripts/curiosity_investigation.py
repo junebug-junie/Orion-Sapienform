@@ -5665,6 +5665,8 @@ class CuriosityInvestigation:
                     **({"urgent": True} if request.urgent is not None else {}),
                     **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
                     **({"curiosity_focus": request.focus} if request.focus is not None else {}),
+                    # A writing-only durable step (consult.orion_turn) says so; None keeps the gate.
+                    **({"require_lookup": request.require_lookup} if request.require_lookup is not None else {}),
                     # Stable across attempts, leases and restarts; the purpose keeps two
                     # different turns of one run from sharing a session.
                     resume_key=f"{request.run_id}:{request.source_tag}",

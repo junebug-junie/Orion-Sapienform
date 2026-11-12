@@ -9,8 +9,10 @@ One consult at a time, all in Hub:
    (``curiosity_investigation``), a faculty the self-monitor holds broken, or a belief Orion has
    tested many times without settling (``ask_claude_trigger.decide``). One source, one consult,
    ever (``source_ref`` is unique).
-2. **Orion's turn** runs through Orion's real unified turn (``EndogenousOutreach.compose``) on its
-   own session id, so none of Juniper's chats are in it, and Orion can run digs.
+2. **Orion's turn** is an admitted durable run (``consult.orion_turn``, run id
+   ``consult-<id>-t<n>``): the GPU pool queues it, durable-runs retries it, and Hub runs it as a real
+   harness turn on the consult's own session (none of Juniper's chats), where Orion can run digs.
+   Hub reads the result back with ``GET /runs/{run_id}`` on its tick.
 3. **Claude's turn** goes to the room companion on the existing room channels (room id
    ``consult:<id>``), where Claude reads the deployed code read-only. Before each Claude turn the
    budget gate reads the Claude usage meter (``orion:substrate:claude_limit``) and fails closed.
@@ -60,6 +62,8 @@ EMAIL_EVENT_KIND = "orion.consult.brief"
 
 # status_reason while a consult is open: who it is waiting for.
 AWAIT_ORION = "awaiting_orion"
+# Orion's turn is a durable run (consult.orion_turn); pending_correlation_id holds its run_id.
+AWAIT_ORION_RUN = "awaiting_orion_run"
 AWAIT_CLAUDE = "awaiting_claude"
 BUDGET = "budget:"
 MAX_CLAUDE_RESENDS = 1
@@ -221,7 +225,7 @@ class ConsultLoop:
         *,
         enabled: bool,
         pool_provider: Callable[[], Any],
-        outreach_provider: Callable[[], Any],
+        durable_client: Any,
         relay_provider: Callable[[], Any],
         notify_client: Any = None,
         connections_provider: Callable[[], Dict[str, Any]] = lambda: {},
@@ -232,14 +236,14 @@ class ConsultLoop:
         max_turns: int = DEFAULT_MAX_TURNS,
         weekly_brief_cap: int = 3,
         claude_timeout_sec: float = 1200.0,
-        orion_timeout_sec: float = 600.0,
+        orion_timeout_sec: float = 900.0,
         source_max_age_hours: float = 72.0,
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] = _now,
     ) -> None:
         self.enabled = enabled
         self._pool_provider = pool_provider
-        self._outreach_provider = outreach_provider
+        self._durable = durable_client
         self._relay_provider = relay_provider
         self._notify = notify_client
         self._connections_provider = connections_provider
@@ -392,6 +396,8 @@ class ConsultLoop:
         cid, reason = row["consult_id"], row.get("status_reason") or ""
         if reason == AWAIT_ORION:
             return await self._orion_turn(pool, row)
+        if reason == AWAIT_ORION_RUN:
+            return await self._poll_orion_run(pool, row)
         if reason.startswith(BUDGET):
             return await self._send_claude(pool, row)
         if reason == AWAIT_CLAUDE:
@@ -418,30 +424,76 @@ class ConsultLoop:
         return source_line(row["source_kind"], row["source_ref"], row.get("source_detail") or "")
 
     async def _orion_turn(self, pool, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit Orion's turn as a durable run (``consult.orion_turn``). The GPU pool admits it, so it
+        queues rather than times out, and durable-runs owns the retries. Hub only reads the result
+        (``_poll_orion_run``). Never a retry queue here: a refused submit is simply tried next tick."""
+        from orion.schemas.consult_turn_run import (
+            CONSULT_ORION_TURN_WORKFLOW, ConsultOrionTurnBriefV1, consult_turn_run_id,
+        )
+        from orion.schemas.durable_run import DurableRunRequestV1
+        from orion.schemas.resource_admission import ResourceRequirementV1
+
         cid = row["consult_id"]
         history = await turns(pool, cid)
         turn_no = len(history) + 1
-        outreach = self._outreach_provider()
-        if outreach is None:
-            return {"waiting": cid, "for": "outreach_loop"}
         prompt = orion_turn_prompt(
             source=self._source(row), question=row["question"],
             transcript=[(t["speaker"], t["text"]) for t in history], turn_no=turn_no, max_turns=self.max_turns,
         )
-        # retrieval_query: recall searches the consult question, not the whole prompt. The turn has
-        # no switch that turns recall off; Orion's own words are what Claude is sent.
-        # Correlation ids ride BaseEnvelope, which requires a UUID (a `consult-...` string failed
-        # the first live consult on 2026-11-11). Orion's turn may run digs: its own time budget.
-        text, debug = await outreach.compose(
-            prompt, str(uuid.uuid4()), retrieval_query=row["question"][:500],
-            lane="agent_first", session_id=orion_session_id(cid), timeout_sec=self.orion_timeout_sec,
+        run_id = consult_turn_run_id(cid, turn_no)
+        request = DurableRunRequestV1(
+            run_id=run_id, workflow=CONSULT_ORION_TURN_WORKFLOW, correlation_id=str(uuid.uuid4()),
+            brief=ConsultOrionTurnBriefV1(
+                consult="consult.orion_turn", consult_id=cid, turn_no=turn_no, prompt=prompt,
+                # Orion's consult session (none of Juniper's chats); recall searches the question.
+                session_id=orion_session_id(cid), retrieval_query=row["question"][:1000],
+                timeout_sec=self.orion_timeout_sec,
+            ),
+            admission=ResourceRequirementV1(preferred_lane="agent", resource="llm.route.agent", priority="background"),
         )
-        text = (text or "").strip()
+        try:
+            code, body = await self._durable.submit(request.model_dump(mode="json"))
+        except Exception as exc:  # noqa: BLE001 -- durable-runs down: the next tick submits again
+            logger.warning("consult_orion_run_submit_failed id=%s err=%s", cid, exc)
+            return {"waiting": cid, "for": "durable_runs"}
+        if code >= 400:
+            logger.warning("consult_orion_run_refused id=%s run=%s http=%s body=%s", cid, run_id, code, body)
+            await set_status(pool, cid, "failed", f"orion_run_refused:http_{code}")
+            return {"failed": cid, "why": f"orion_run_refused:http_{code}"}
+        await set_status(pool, cid, "open", AWAIT_ORION_RUN, pending_correlation_id=run_id)
+        logger.info("consult_orion_run_submitted id=%s run=%s turn=%s", cid, run_id, turn_no)
+        # One read right away: a resubmit of a turn that already finished (a Hub restart after the
+        # run completed) is picked up now, not a tick later. A fresh run just reads as queued.
+        return await self._poll_orion_run(pool, await get(pool, cid) or {**row, "pending_correlation_id": run_id})
+
+    async def _poll_orion_run(self, pool, row: Dict[str, Any]) -> Dict[str, Any]:
+        """Read Orion's durable run. Completed: the turn's full text becomes Orion's turn and Claude
+        is invited. Failed or cancelled (durable-runs spent its retries): the consult fails."""
+        cid, run_id = row["consult_id"], row.get("pending_correlation_id") or ""
+        try:
+            run = await self._durable.get_run(run_id)
+        except Exception as exc:  # noqa: BLE001 -- unreachable: ask again next tick
+            return {"waiting": cid, "for": f"durable_runs:{type(exc).__name__}"}
+        if run is None:
+            await set_status(pool, cid, "open", AWAIT_ORION, pending_correlation_id=None)
+            return {"waiting": cid, "for": "orion_run_missing_resubmit"}
+        status = str(run.get("status") or "")
+        if status in ("failed", "cancelled"):
+            error = str(run.get("error") or status)[:200]
+            await set_status(pool, cid, "failed", f"orion_run_{status}:{error}", pending_correlation_id=None)
+            logger.warning("consult_orion_run_ended id=%s run=%s status=%s err=%s", cid, run_id, status, error)
+            return {"failed": cid, "why": f"orion_run_{status}"}
+        if status != "completed":
+            return {"waiting": cid, "for": f"orion_run:{status or 'unknown'}"}
+        step = (run.get("harness_steps") or {}).get("turn") or {}
+        text = str(step.get("text") or "").strip()
         if not text:
-            await set_status(pool, cid, "failed", "orion_compose_failed")
-            logger.warning("consult_orion_turn_empty id=%s debug=%s", cid, {k: debug.get(k) for k in ("error", "lane")})
-            return {"failed": cid, "why": "orion_compose_failed"}
-        await add_turn(pool, cid, turn_no=turn_no, speaker="Orion", text=text, model=debug.get("model"))
+            await set_status(pool, cid, "failed", "orion_run_completed_empty", pending_correlation_id=None)
+            return {"failed": cid, "why": "orion_run_completed_empty"}
+        history = await turns(pool, cid)
+        turn_no = len(history) + 1
+        await add_turn(pool, cid, turn_no=turn_no, speaker="Orion", text=text,
+                       model=(step.get("debug") or {}).get("fcc_model_label"))
         self._push_turn(cid, turn_no, "Orion", text)
         row = await get(pool, cid) or row
         return await self._send_claude(pool, row, prompt=self._claude_prompt(row, await turns(pool, cid)))

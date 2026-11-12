@@ -1086,7 +1086,7 @@ async def startup_event():
                 consult_loop = ConsultLoop(
                     enabled=settings.HUB_CONSULT_ENABLED and settings.HUB_ROOM_CLAUDE_ENABLED,
                     pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
-                    outreach_provider=lambda: endogenous_outreach,
+                    durable_client=DurableRunsClient(settings.HUB_CONSULT_DURABLE_URL),
                     relay_provider=lambda: room_claude_relay,
                     notify_client=NotifyClient(
                         settings.NOTIFY_BASE_URL,

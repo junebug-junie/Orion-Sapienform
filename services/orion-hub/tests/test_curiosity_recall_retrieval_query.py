@@ -166,3 +166,21 @@ def test_brief_query_wins_over_the_appraisal() -> None:
     )
     assert captured["retrieval_query"] == QUESTION
     assert captured["mind_appraisal_text"] == "appraisal text"
+
+
+def test_require_lookup_from_the_durable_request_reaches_generate() -> None:
+    """consult.orion_turn sends require_lookup=False (a writing-only reply to Claude); without it
+    Hub's lookup gate (MIN_HARNESS_STEPS) fails the turn. None keeps the default (no key passed)."""
+    seen: list[dict] = []
+
+    async def _gen(prompt, correlation_id, **kw):
+        seen.append(kw)
+        return "reply", {}
+
+    for flag in (False, None):
+        loop = _loop(_CortexBus(), kickoff_via_cortex=True)
+        loop._generate = _gen
+        asyncio.run(loop._turn_result_for(CuriosityTurnRequestV1(
+            run_id="consult-abc-t1", correlation_id=f"corr-{flag}", prompt="Reply to Claude.", timeout_sec=60.0,
+            source_tag="consult_orion_turn:t1", session_id="consult-abc", require_lookup=flag), hold_lock=False))
+    assert seen[0]["require_lookup"] is False and "require_lookup" not in seen[1]

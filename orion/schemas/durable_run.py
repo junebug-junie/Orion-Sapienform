@@ -50,6 +50,7 @@ from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_WORKFLOW, HarnessE
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW, PrFieldNoteBriefV1
 from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW, ReminiscenceRunBriefV1
+from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_WORKFLOW, ConsultOrionTurnBriefV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
@@ -106,6 +107,10 @@ DurableWorkflowV1 = Literal[
     # orion-durable-runs' own overnight tick. ADDITIVE on Literal/forbid, consumer-first: deploy
     # orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
     "reminiscence.episode",
+    # Consults (2026-11-11, orion/schemas/consult_turn_run.py): one of Orion's consult turns, submitted
+    # by Hub's consult loop. ADDITIVE on Literal/forbid, consumer-first: deploy orion-sql-writer,
+    # orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+    "consult.orion_turn",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
@@ -130,7 +135,7 @@ DurableRunStatusV1 = Literal[
 
 
 # Additive optional keys an older `forbid` reader would reject even as null.
-_OPTIONAL_ADDITIVE_KEYS = ("retrieval_query", "focus")
+_OPTIONAL_ADDITIVE_KEYS = ("retrieval_query", "focus", "require_lookup")
 
 
 def _omit_none_keys(data: Any, keys: tuple[str, ...]) -> Any:
@@ -233,7 +238,7 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: ReadingResonanceRunBriefV1 | CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1
+    brief: ReadingResonanceRunBriefV1 | CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1 | ConsultOrionTurnBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
@@ -262,7 +267,9 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("pr.field_note requires PrFieldNoteBriefV1")
         if (self.workflow == REMINISCENCE_WORKFLOW) != isinstance(self.brief, ReminiscenceRunBriefV1):
             raise ValueError("reminiscence.episode requires ReminiscenceRunBriefV1")
-        if self.workflow in (READING_RESONANCE_WORKFLOW, REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
+        if (self.workflow == CONSULT_ORION_TURN_WORKFLOW) != isinstance(self.brief, ConsultOrionTurnBriefV1):
+            raise ValueError("consult.orion_turn requires ConsultOrionTurnBriefV1")
+        if self.workflow in (CONSULT_ORION_TURN_WORKFLOW, READING_RESONANCE_WORKFLOW, REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 
@@ -347,6 +354,11 @@ class CuriosityTurnRequestV1(BaseModel):
     # MODEL: Hub must accept it before a runner sends it; the runner sends it only when a new Hub
     # put it on the brief, so deploying Hub last is safe.
     focus: CuriosityFocusAnchorV1 | None = None
+    # Additive (2026-11-11): False lets a writing-only turn succeed with fewer than Hub's
+    # MIN_HARNESS_STEPS tool steps (consult.orion_turn: Orion may just reply to Claude). None keeps
+    # Hub's default (lookup required). Omitted on the wire when None; only consult.orion_turn sends it,
+    # and only Hub (deployed first) submits that workflow.
+    require_lookup: bool | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unset_retrieval_query(self, handler):

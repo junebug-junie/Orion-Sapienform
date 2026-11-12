@@ -341,8 +341,13 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
 - **Sources.** A curiosity run the door policy kept from Juniper (`not_for_juniper`), a faculty the
   self-monitor holds `broken`, and the stuck-belief trigger (`orion/autonomy/ask_claude_trigger.py`).
   One source starts at most one consult, ever (`orion_consult.source_ref` is unique).
-- **Orion's turns** run through Orion's real unified turn (`EndogenousOutreach.compose`) on the
-  session `consult-<id>`, so none of Juniper's chats are in them. Orion can run digs.
+- **Orion's turns** are admitted durable runs (`consult.orion_turn`, run id `consult-<id>-t<n>`,
+  `orion/schemas/consult_turn_run.py`). The GPU pool queues each one, durable-runs retries a failed
+  attempt (`HUB_CONSULT_ORION_TIMEOUT_SEC` per attempt), and Hub runs it as a real harness turn on
+  the session `consult-<id>`: none of Juniper's chats are in it, Orion can run digs, and lookup is
+  not required. The loop reads the result back with `GET /runs/{run_id}` (`HUB_CONSULT_DURABLE_URL`).
+  Moved off the in-process outreach compose on 2026-11-12: the first live consult died on Orion's
+  second turn when the shared lane was busy.
 - **Claude's turns** go to `orion-room-companion` on the room channels (room id `consult:<id>`).
   Claude reads a read-only `git archive` export of the deployed code (Read/Grep/Glob, no `.git`;
   `scripts/export_consult_source.py`, refreshed by the post-pull rebuild) and is the skeptic.

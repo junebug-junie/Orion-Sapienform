@@ -2776,25 +2776,18 @@ class EndogenousOutreach:
 
     async def compose(
         self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None,
-        lane: str = "agent_first", session_id: Optional[str] = None,
-        timeout_sec: Optional[float] = None,
+        lane: str = "agent_first",
     ) -> Tuple[str, Dict[str, Any]]:
         """Orion writes a message through this module's real unified turn (``_generate``),
         for a caller that brings its own prompt (reading findings). ("", debug) on failure.
 
         ``lane="chat"``: one attempt on the chat lane with the full ``timeout_sec``, no
         agent-lane first try (2026-11-07, office visits: the agent lane timed out at 210 s
-        and the message reached Juniper 5 minutes into her visit). Default unchanged.
-
-        ``session_id``: run the turn on this session instead of Juniper's active one. Consults
-        (scripts/consult_loop.py) pass their own, so none of her chat history is in the turn.
-        ``timeout_sec``: this caller's budget for EACH attempt (agent lane, then chat fallback),
-        instead of the outreach defaults. Consults pass a longer one: Orion runs digs."""
+        and the message reached Juniper 5 minutes into her visit). Default unchanged."""
         return await self._generate(
-            prompt, session_id or self._active_session_id(), correlation_id,
+            prompt, self._active_session_id(), correlation_id,
             **({"retrieval_query": retrieval_query} if retrieval_query else {}),
             lane=lane,
-            **({"timeout_sec": timeout_sec} if timeout_sec else {}),
         )
 
     def record_blocked(
@@ -3156,7 +3149,6 @@ class EndogenousOutreach:
     async def _generate(
         self, prompt: str, session_id: str, correlation_id: str,
         retrieval_query: Optional[str] = None, lane: str = "agent_first",
-        timeout_sec: Optional[float] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Real unified-turn generation -- see module docstring's "THROUGH THE
         REAL UNIFIED TURN, NOT A LOOKALIKE" section. Returns ("", debug) on
@@ -3217,7 +3209,7 @@ class EndogenousOutreach:
                 session_id=session_id,
                 correlation_id=correlation_id,
                 fcc_model_label=None,
-                timeout_sec=timeout_sec or self.timeout_sec,
+                timeout_sec=self.timeout_sec,
                 retrieval_query=retrieval_query,
             )
             debug["lane"] = "chat"
@@ -3229,7 +3221,7 @@ class EndogenousOutreach:
             session_id=session_id,
             correlation_id=correlation_id,
             fcc_model_label=AGENT_ROUTE_FCC_MODEL_LABEL,
-            timeout_sec=timeout_sec or self.agent_lane_timeout_sec,
+            timeout_sec=self.agent_lane_timeout_sec,
             retrieval_query=retrieval_query,
         )
         debug["lane"] = "agent"
@@ -3243,7 +3235,7 @@ class EndogenousOutreach:
             "agent_lane_error=%s agent_lane_timeout_sec=%s",
             correlation_id,
             agent_lane_error,
-            timeout_sec or self.agent_lane_timeout_sec,
+            self.agent_lane_timeout_sec,
         )
         if agent_lane_error == "timeout":
             # Only a literal timeout means the attempt could plausibly still
@@ -3259,7 +3251,7 @@ class EndogenousOutreach:
             session_id=session_id,
             correlation_id=fallback_correlation_id,
             fcc_model_label=None,
-            timeout_sec=timeout_sec or self.timeout_sec,
+            timeout_sec=self.timeout_sec,
             retrieval_query=retrieval_query,
         )
         fb_debug["lane"] = "chat_fallback"

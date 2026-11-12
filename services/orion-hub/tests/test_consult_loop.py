@@ -98,16 +98,33 @@ class FakeStore:
         return out
 
 
-class FakeOutreach:
+class FakeDurable:
+    """orion-durable-runs' HTTP API: each submitted consult.orion_turn run completes with the next
+    reply (a run whose reply is an Exception fails, like a run that spent its retries)."""
+
     def __init__(self, replies):
         self.replies = list(replies)
         self.calls = []
+        self.runs = {}
 
-    async def compose(self, prompt, correlation_id, retrieval_query=None, lane="agent_first", session_id=None,
-                      timeout_sec=None):
-        self.calls.append(dict(prompt=prompt, session_id=session_id, lane=lane, retrieval_query=retrieval_query,
-                               correlation_id=correlation_id, timeout_sec=timeout_sec))
-        return (self.replies.pop(0) if self.replies else ""), {"model": "MODEL_X"}
+    async def submit(self, request_json):
+        from orion.schemas.durable_run import DurableRunRequestV1
+
+        req = DurableRunRequestV1.model_validate(request_json)
+        assert req.workflow == "consult.orion_turn" and req.admission is not None
+        b = req.brief
+        self.calls.append(dict(prompt=b.prompt, session_id=b.session_id, retrieval_query=b.retrieval_query,
+                               correlation_id=req.correlation_id, timeout_sec=b.timeout_sec, run_id=req.run_id,
+                               resource=req.admission.resource))
+        reply = self.replies.pop(0) if self.replies else ""
+        if isinstance(reply, Exception):
+            self.runs[req.run_id] = {"status": "failed", "error": str(reply)}
+        else:
+            self.runs[req.run_id] = {"status": "completed", "harness_steps": {"turn": {"text": reply}}}
+        return 202, "{}"
+
+    async def get_run(self, run_id):
+        return self.runs.get(run_id)
 
 
 class FakeRelay:
@@ -170,10 +187,10 @@ def world(monkeypatch):
     STORE["store"] = store
     pushed: List[dict] = []
     queue = SimpleNamespace(put_nowait=pushed.append)
-    outreach = FakeOutreach(["Why does journal stop?", "I agree: release the lease."])
+    outreach = FakeDurable(["Why does journal stop?", "I agree: release the lease."])
     relay, notify = FakeRelay(), FakeNotify()
     loop = cl.ConsultLoop(
-        enabled=True, pool_provider=lambda: object(), outreach_provider=lambda: outreach,
+        enabled=True, pool_provider=lambda: object(), durable_client=outreach,
         relay_provider=lambda: relay, notify_client=notify,
         connections_provider=lambda: {"conn1": {"queue": queue}}, clock=lambda: NOW,
     )
@@ -383,4 +400,46 @@ async def test_every_bus_correlation_id_is_a_uuid_and_orion_gets_its_budget(worl
     _uuid.UUID(world.outreach.calls[0]["correlation_id"])
     _uuid.UUID(world.relay.invites[0]["correlation_id"])
     _uuid.UUID(world.notify.sent[0].correlation_id)
-    assert world.outreach.calls[0]["timeout_sec"] == world.loop.orion_timeout_sec == 600.0
+    assert world.outreach.calls[0]["timeout_sec"] == world.loop.orion_timeout_sec == 900.0
+
+
+@pytest.mark.asyncio
+async def test_orion_turn_is_a_durable_run_one_per_turn_on_the_gpu_pool(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r20", question="q")
+    await world.loop.tick()
+    call = world.outreach.calls[0]
+    assert call["run_id"] == f"consult-{cid}-t1" and call["resource"] == "llm.route.agent"
+    await world.loop.on_claude_utterance(utt(cid, "And the lease log?"))
+    await _settle()
+    assert world.outreach.calls[1]["run_id"] == f"consult-{cid}-t3"
+
+
+@pytest.mark.asyncio
+async def test_a_queued_orion_run_is_polled_until_it_lands(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r21", question="q")
+    real_submit = world.outreach.submit
+
+    async def queued_submit(request_json):
+        code, body = await real_submit(request_json)
+        run_id = request_json["run_id"]
+        world.outreach.held = world.outreach.runs[run_id]
+        world.outreach.runs[run_id] = {"status": "waiting_resource"}
+        return code, body
+
+    world.outreach.submit = queued_submit
+    await world.loop.tick()
+    assert world.store.rows[cid]["status_reason"] == cl.AWAIT_ORION_RUN and world.relay.invites == []
+    await world.loop.tick()
+    assert world.relay.invites == [], "still queued: no Claude turn yet, no failure"
+    world.outreach.runs[f"consult-{cid}-t1"] = world.outreach.held
+    await world.loop.tick()
+    assert len(world.relay.invites) == 1 and world.store.turn_rows[cid][0]["speaker"] == "Orion"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_orion_run_fails_the_consult_after_durable_retries(world):
+    world.outreach.replies = [RuntimeError("retries spent: timeout")]
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r22", question="q")
+    await world.loop.tick()
+    row = world.store.rows[cid]
+    assert row["status"] == "failed" and row["status_reason"].startswith("orion_run_failed:")

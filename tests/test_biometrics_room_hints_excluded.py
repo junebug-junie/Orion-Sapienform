@@ -18,6 +18,7 @@ import pytest
 from orion.biometrics.node_catalog import NodeCatalog
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
+    ActiveNodePressureStateV1,
     NodeBiometricsProjectionV1,
     NodeBiometricsStateV1,
 )
@@ -141,7 +142,7 @@ def catalog(tmp_path: Path) -> NodeCatalog:
     return NodeCatalog.load(path)
 
 
-def _organ_roles(catalog: NodeCatalog, hints: dict) -> set[str]:
+def _organ_roles(catalog: NodeCatalog, hints: dict, active: list[str] | None = None) -> set[str]:
     node_bio = NodeBiometricsProjectionV1(
         projection_id="node_biometrics_projection",
         generated_at=T0,
@@ -157,7 +158,18 @@ def _organ_roles(catalog: NodeCatalog, hints: dict) -> set[str]:
         trigger_event=build_absence_trigger_event("roomhost", now=T0),
         node_bio=node_bio,
         active_pressure=ActiveNodePressureProjectionV1(
-            projection_id="active_node_pressure_projection", generated_at=T0, nodes={}
+            projection_id="active_node_pressure_projection",
+            generated_at=T0,
+            nodes={
+                "roomhost": ActiveNodePressureStateV1(
+                    node_id="roomhost",
+                    availability_status="online",
+                    active_pressures=list(active),
+                    last_updated_at=T0 - timedelta(minutes=5),
+                )
+            }
+            if active
+            else {},
         ),
         catalog=catalog,
         now=T0,
@@ -175,3 +187,12 @@ def test_a_loud_room_alone_is_not_node_pressure(catalog: NodeCatalog) -> None:
 def test_a_strained_body_is_still_node_pressure(catalog: NodeCatalog) -> None:
     roles = _organ_roles(catalog, {"strain": 0.8, **ATHENA_ROOM})
     assert "node_pressure_detected" in roles
+
+
+def test_room_held_strain_decays_after_the_change(catalog: NodeCatalog) -> None:
+    """Deploy transition: athena holds strain that only a loud room kept alive. With a
+    calm body the organ now lets it decay instead of reinforcing it."""
+    hints = {"strain": 0.1, "cabinet_proximity_activity": 0.97}
+    roles = _organ_roles(catalog, hints, active=["strain"])
+    assert "node_pressure_decayed" in roles
+    assert "node_pressure_reinforced" not in roles

@@ -105,8 +105,9 @@ def load_summaries(path: Path) -> dict[str, tuple[list[datetime], list[dict]]]:
         # The node reducer merges hints, so a key once seen stays on the node.
         # Staleness keys are 0.0 whenever the sensor board / mic report (always, live).
         state = {**merged.get(node, {}), **hints}
-        if any(k.startswith("cabinet_") for k in hints):
+        if any(k.startswith("cabinet_") and "ambient_audio" not in k for k in hints):
             state.setdefault("cabinet_sensor_staleness", 0.0)
+        if "cabinet_ambient_audio_activity" in hints:
             state.setdefault("cabinet_ambient_audio_staleness", 0.0)
         merged[node] = state
         times, states = per_node.setdefault(node, ([], []))
@@ -115,11 +116,32 @@ def load_summaries(path: Path) -> dict[str, tuple[list[datetime], list[dict]]]:
     return per_node
 
 
+SILENT_CADENCE_MULTIPLE = 6.0  # same rule as report_cadence.silent_nodes (live default)
+
+
+def _median_interval(times: list[datetime]) -> float:
+    gaps = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
+    return statistics.median(gaps) if gaps else 0.0
+
+
 def projection_at(per_node, at: datetime) -> NodeBiometricsProjectionV1:
+    """Projection at ``at``, without nodes that have gone silent (last report more than
+    6x their own median interval behind the newest report), as the live tick does."""
+    latest = {}
+    for node, (times, _) in per_node.items():
+        i = bisect.bisect_right(times, at) - 1
+        if i >= 0:
+            latest[node] = times[i]
+    if not latest:
+        return NodeBiometricsProjectionV1(projection_id="replay", generated_at=at, nodes={})
+    newest = max(latest.values())
     nodes = {}
     for node, (times, states) in per_node.items():
         i = bisect.bisect_right(times, at) - 1
         if i >= 0:
+            interval = _median_interval(times[max(0, i - 16): i + 1])
+            if interval > 0 and (newest - times[i]).total_seconds() > SILENT_CADENCE_MULTIPLE * interval:
+                continue
             nodes[node] = NodeBiometricsStateV1(node_id=node, last_seen_at=times[i], pressure_hints=states[i])
     return NodeBiometricsProjectionV1(projection_id="replay", generated_at=at, nodes=nodes)
 
@@ -212,6 +234,9 @@ def main() -> int:
         ))
 
     n = len(stored)
+    if n < 3:
+        print(f"only {n} ticks matched a report; nothing to compare")
+        return 1
     print(f"ticks: {n}  ({ticks[0][0].isoformat()} .. {ticks[-1][0].isoformat()})")
     keys_now = {k: len(s[-1]) for k, (_, s) in per_node.items()}
     print(f"keys per node at end: {keys_now}")

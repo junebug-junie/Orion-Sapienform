@@ -47,3 +47,14 @@ curl -fsS -X POST 'http://localhost:8765/ingest-turn' \
 ```
 
 Restart `orion-social-memory` after migration if it was crash-looping on schema errors.
+
+## Retired: word-list promise detector (2026-11-12)
+
+This service used to scan Orion's room replies for promise phrases ("I'll come back to",
+"I'll summarize", ...) and keep them as `active_commitments` on room continuity. In 18,702
+room turns across 67 rooms it found 1 promise. It is gone: no producer, no word list, no
+`orion:social:commitment*` channels, no `SOCIAL_MEMORY_COMMITMENT_*` keys. Promise tracking
+moves to a judge on the unified turn (intention-ledger design, step D).
+
+The `social_room_continuity.active_commitments` column still exists and still holds the old
+rows. Nothing reads or writes it. Drop it only after a backup.

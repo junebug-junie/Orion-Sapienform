@@ -17,7 +17,6 @@ SocialContextCandidateKind = Literal[
     "consensus",
     "divergence",
     "calibration",
-    "commitment",
     "repair",
     "ritual",
     "style",

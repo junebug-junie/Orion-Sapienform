@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 783,
+  "metric_count": 781,
   "_last_change": {
     "change_count": 2,
-    "high_severity_count": 1,
+    "high_severity_count": 2,
     "changes": [
-      "high   removed metric://bus_channel/orion-hub/orion:reading:lifecycle",
-      "medium added metric://bus_channel/orion-durable-runs/orion:reading:lifecycle"
+      "high   removed metric://bus_channel/orion-social-memory/orion:social:commitment",
+      "high   removed metric://bus_channel/orion-social-memory/orion:social:commitment:resolution"
     ]
   },
   "definitions": {
@@ -2938,32 +2938,6 @@
     },
     "metric://bus_channel/orion-social-memory/orion:social:closure-signal": {
       "schema_id": "SocialClosureSignalV1",
-      "all_producers": [
-        "orion-social-memory"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-hub",
-        "orion-social-room-bridge"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-social-memory/orion:social:commitment": {
-      "schema_id": "SocialCommitmentV1",
-      "all_producers": [
-        "orion-social-memory"
-      ],
-      "declared_consumers": [
-        "*",
-        "orion-hub",
-        "orion-social-room-bridge"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-social-memory/orion:social:commitment:resolution": {
-      "schema_id": "SocialCommitmentResolutionV1",
       "all_producers": [
         "orion-social-memory"
       ],

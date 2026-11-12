@@ -525,140 +525,28 @@ def test_pending_artifact_dialogue_does_not_replace_active_thread_context() -> N
     assert len(after["room"]["active_threads"]) == len(before["room"]["active_threads"])
 
 
-def test_explicit_conversational_promise_creates_open_commitment() -> None:
+def test_retired_promise_detector_leaves_no_trace() -> None:
+    """The word-list promise detector was retired 2026-11-12 (1 commitment in 67 rooms).
+
+    A reply full of the old trigger phrases must not create commitments, must not
+    publish on the old commitment channels, and the room summary has no such field.
+    """
     svc, _ = _service_and_session()
 
     asyncio.run(
         svc.process_social_turn(
             _payload(
                 prompt="Can you summarize before we switch topics?",
-                response="Yeah — I’ll summarize in a sec once I answer the pacing question first.",
+                response="Yeah — I’ll summarize in a sec once I answer the pacing question first. I'll come back to that.",
             )
         )
     )
     summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
 
-    commitments = summary["room"]["active_commitments"]
-    assert len(commitments) == 2
-    assert {item["commitment_type"] for item in commitments} == {"summarize_room", "answer_pending_question"}
-    assert all(item["state"] == "open" for item in commitments)
-
-
-def test_follow_through_fulfills_prior_commitment() -> None:
-    svc, _ = _service_and_session()
-
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                prompt="Can you summarize before we switch topics?",
-                response="I’ll summarize in a sec.",
-            )
-        )
-    )
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                turn_id="social-turn-fulfill-2",
-                correlation_id="corr-social-fulfill-2",
-                prompt="Okay, go ahead.",
-                response="Quick summary: we’re aligned on grounded collaboration and pacing.",
-            )
-        )
-    )
-    summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
-
-    assert summary["room"]["active_commitments"] == []
-    resolution_payloads = [
-        envelope.payload
-        for channel, envelope in svc.bus.published
-        if channel == "orion:social:commitment:resolution"
-    ]
-    assert any(item["state"] == "fulfilled" for item in resolution_payloads)
-
-
-def test_newer_commitment_supersedes_prior_one() -> None:
-    svc, _ = _service_and_session()
-
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                prompt="Can you come back to pacing?",
-                response="I’ll come back to the pacing thread in a sec.",
-            )
-        )
-    )
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                turn_id="social-turn-super-2",
-                correlation_id="corr-social-super-2",
-                prompt="Actually summarize first.",
-                response="Okay — I’ll summarize first before I come back to pacing.",
-            )
-        )
-    )
-    summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
-
-    assert any(item["commitment_type"] == "summarize_room" for item in summary["room"]["active_commitments"])
-    resolution_payloads = [
-        envelope.payload
-        for channel, envelope in svc.bus.published
-        if channel == "orion:social:commitment:resolution"
-    ]
-    assert any(item["state"] == "superseded" for item in resolution_payloads)
-
-
-def test_stale_commitment_expires_gracefully() -> None:
-    svc, _ = _service_and_session()
-    svc.settings.social_memory_commitment_ttl_minutes = 15
-
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                created_at="2026-03-22T10:00:00+00:00",
-                stored_at="2026-03-22T10:00:01+00:00",
-                prompt="Can you summarize before we switch topics?",
-                response="I’ll summarize in a sec.",
-            )
-        )
-    )
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                turn_id="social-turn-expire-2",
-                correlation_id="corr-social-expire-2",
-                created_at="2026-03-22T11:30:00+00:00",
-                stored_at="2026-03-22T11:30:01+00:00",
-                prompt="Different thread now.",
-                response="We can stay with the new topic.",
-            )
-        )
-    )
-    summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
-
-    assert summary["room"]["active_commitments"] == []
-    resolution_payloads = [
-        envelope.payload
-        for channel, envelope in svc.bus.published
-        if channel == "orion:social:commitment:resolution"
-    ]
-    assert any(item["state"] == "expired" for item in resolution_payloads)
-
-
-def test_weak_or_private_language_does_not_create_commitment() -> None:
-    svc, _ = _service_and_session()
-
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                prompt="Should we revisit that?",
-                response="Maybe I could summarize later, but keep this private for now.",
-            )
-        )
-    )
-    summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
-
-    assert summary["room"]["active_commitments"] == []
+    assert "active_commitments" not in summary["room"]
+    assert not [channel for channel, _ in svc.bus.published if "commitment" in channel]
+    assert all(item["candidate_kind"] != "commitment" for item in summary["context_candidates"])
+    assert all(item["artifact_kind"] != "commitment" for item in summary["room"]["memory_freshness"])
 
 
 def test_social_memory_can_update_stance_without_external_room_context() -> None:
@@ -1228,8 +1116,7 @@ def test_social_memory_settings_include_open_thread_channel() -> None:
     assert settings.social_memory_open_thread_ttl_hours == 6
     assert settings.social_memory_peer_style_channel == "orion:social:peer-style"
     assert settings.social_memory_room_ritual_channel == "orion:social:room-ritual"
-    assert settings.social_memory_commitment_channel == "orion:social:commitment"
-    assert settings.social_memory_commitment_resolution_channel == "orion:social:commitment:resolution"
+    assert not any("commitment" in name for name in Settings.model_fields)
     assert settings.social_memory_claim_channel == "orion:social:claim"
     assert settings.social_memory_claim_revision_channel == "orion:social:claim:revision"
     assert settings.social_memory_claim_stance_channel == "orion:social:claim:stance"
@@ -1461,7 +1348,6 @@ def test_stale_consensus_softens_and_flags_refresh_needed() -> None:
                 }
             ],
             claim_divergence_signals=[],
-            active_commitments=[],
             peer_calibrations=[],
             trust_boundaries=[],
         )
@@ -1587,7 +1473,6 @@ def test_stale_calibration_decays_toward_unknown_or_cautious() -> None:
             claim_attributions=[],
             claim_consensus_states=[],
             claim_divergence_signals=[],
-            active_commitments=[],
             peer_calibrations=[],
             trust_boundaries=[],
         )
@@ -1667,77 +1552,6 @@ def test_stale_room_ritual_hint_fades_when_not_repeated() -> None:
     assert ritual["confidence"] < 0.72
     assert "fading" in ritual["culture_summary"]
     assert any(item["artifact_kind"] == "room_ritual" for item in summary["room"]["memory_freshness"])
-
-
-
-def test_stale_commitment_expires_cleanly_and_is_recorded_for_regrounding() -> None:
-    svc, Session = _service_and_session()
-    sess = Session()
-    sess.add(
-        service_mod.SocialRoomContinuitySQL(
-            room_key="callsyne:room-alpha",
-            platform="callsyne",
-            room_id="room-alpha",
-            recurring_topics=["summary"],
-            active_participants=["CallSyne Peer"],
-            recent_thread_summary="Summary thread.",
-            room_tone_summary="Warm and curious.",
-            open_threads=["thread:thread-1"],
-            evidence_refs=["social-turn-old"],
-            evidence_count=2,
-            last_updated_at="2026-03-21T12:00:00+00:00",
-            shared_artifact_scope="room_local",
-            shared_artifact_status="unknown",
-            shared_artifact_summary="",
-            shared_artifact_reason="",
-            active_claims=[],
-            recent_claim_revisions=[],
-            claim_attributions=[],
-            claim_consensus_states=[],
-            claim_divergence_signals=[],
-            active_commitments=[
-                {
-                    "commitment_id": "commitment-old-1",
-                    "platform": "callsyne",
-                    "room_id": "room-alpha",
-                    "thread_key": "callsyne:room-alpha:thread:thread-1",
-                    "commitment_type": "summarize_room",
-                    "audience_scope": "summary",
-                    "summary": "Provide the room summary.",
-                    "state": "open",
-                    "source_turn_id": "social-turn-old",
-                    "source_correlation_id": "corr-old",
-                    "created_at": "2026-03-10T12:00:00+00:00",
-                    "expires_at": "2026-03-10T12:05:00+00:00",
-                    "due_state": "stale",
-                    "resolution_reason": "",
-                    "metadata": {"source": "social-memory"},
-                }
-            ],
-            peer_calibrations=[],
-            trust_boundaries=[],
-        )
-    )
-    sess.commit()
-    sess.close()
-
-    asyncio.run(
-        svc.process_social_turn(
-            _payload(
-                turn_id="social-turn-expire-commitment",
-                correlation_id="corr-expire-commitment",
-                prompt="New logistics only.",
-                response="Acknowledged.",
-                created_at="2026-03-22T12:00:00+00:00",
-                stored_at="2026-03-22T12:00:01+00:00",
-            )
-        )
-    )
-
-    summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
-
-    assert summary["room"]["active_commitments"] == []
-    assert any(item["artifact_kind"] == "commitment" and item["regrounding_decision"] == "expire" for item in summary["room"]["memory_freshness"])
 
 
 
@@ -1823,7 +1637,6 @@ def test_refreshed_evidence_restrengthens_softened_consensus() -> None:
                 }
             ],
             claim_divergence_signals=[],
-            active_commitments=[],
             peer_calibrations=[],
             trust_boundaries=[],
         )
@@ -1949,7 +1762,6 @@ def test_stale_consensus_candidate_is_excluded_in_favor_of_fresher_divergence() 
             active_claims=[],
             recent_claim_revisions=[],
             claim_attributions=[],
-            active_commitments=[],
             peer_calibrations=[],
             trust_boundaries=[],
         )
@@ -1969,82 +1781,6 @@ def test_stale_consensus_candidate_is_excluded_in_favor_of_fresher_divergence() 
     assert consensus["inclusion_decision"] == "exclude"
     assert episode["inclusion_decision"] in {"soften", "exclude"}
     assert reentry["inclusion_decision"] in {"soften", "exclude"}
-
-
-
-def test_active_commitment_is_selected_over_old_ritual_hint() -> None:
-    svc, Session = _service_and_session()
-    sess = Session()
-    sess.add(
-        service_mod.SocialRoomContinuitySQL(
-            room_key="callsyne:room-alpha",
-            platform="callsyne",
-            room_id="room-alpha",
-            recurring_topics=["summary"],
-            active_participants=["CallSyne Peer"],
-            recent_thread_summary="Summary thread.",
-            room_tone_summary="Warm and curious.",
-            open_threads=["thread:thread-1"],
-            evidence_refs=["social-turn-old"],
-            evidence_count=2,
-            last_updated_at="2026-03-22T12:00:00+00:00",
-            shared_artifact_scope="room_local",
-            shared_artifact_status="unknown",
-            shared_artifact_summary="",
-            shared_artifact_reason="",
-            active_claims=[],
-            recent_claim_revisions=[],
-            claim_attributions=[],
-            claim_consensus_states=[],
-            claim_divergence_signals=[],
-            active_commitments=[
-                {
-                    "commitment_id": "commitment-1",
-                    "platform": "callsyne",
-                    "room_id": "room-alpha",
-                    "thread_key": "callsyne:room-alpha:thread:thread-1",
-                    "commitment_type": "summarize_room",
-                    "audience_scope": "summary",
-                    "summary": "Provide the room summary next.",
-                    "state": "open",
-                    "created_at": "2026-03-22T11:55:00+00:00",
-                    "expires_at": "2026-03-22T12:30:00+00:00",
-                    "due_state": "due_soon",
-                    "resolution_reason": "",
-                    "metadata": {"source": "social-memory"},
-                }
-            ],
-            memory_freshness=[],
-            peer_calibrations=[],
-            trust_boundaries=[],
-        )
-    )
-    sess.add(
-        service_mod.SocialRoomRitualSummarySQL(
-            ritual_key="callsyne:room-alpha",
-            platform="callsyne",
-            room_id="room-alpha",
-            greeting_style="warm",
-            reentry_style="grounded",
-            thread_revival_style="direct",
-            pause_handoff_style="brief",
-            summary_cadence_preference=0.5,
-            room_tone_summary="Warm and curious.",
-            culture_summary="Older room ritual read is fading.",
-            evidence_count=2,
-            confidence=0.32,
-            last_updated_at="2026-03-10T12:00:00+00:00",
-        )
-    )
-    sess.commit()
-    sess.close()
-
-    summary = asyncio.run(svc.get_summary(platform="callsyne", room_id="room-alpha", participant_id="peer-1"))
-    selected_kinds = [item["candidate_kind"] for item in summary["context_window"]["selected_candidates"]]
-    ritual_candidate = next(item for item in summary["context_candidates"] if item["candidate_kind"] == "ritual")
-
-    assert "commitment" in selected_kinds
-    assert ritual_candidate["inclusion_decision"] == "exclude"
 
 
 

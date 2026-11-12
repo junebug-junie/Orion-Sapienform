@@ -202,7 +202,7 @@ def test_social_inspection_snapshot_includes_selected_context_window_and_stale_e
     assert snapshot.metadata["action_execution_available"] == "false"
 
 
-def test_social_inspection_snapshot_compacts_claims_commitments_routing_repair_and_epistemic() -> None:
+def test_social_inspection_snapshot_compacts_claims_routing_repair_and_epistemic() -> None:
     snapshot = build_social_inspection_snapshot(
         platform="callsyne",
         room_id="room-alpha",
@@ -215,7 +215,9 @@ def test_social_inspection_snapshot_compacts_claims_commitments_routing_repair_a
 
     by_kind = {section.section_kind: section for section in snapshot.sections}
     assert any("claim:" in item for item in by_kind["claims"].included_artifact_summaries)
-    assert any("Return with a shorter pacing summary." in item for item in by_kind["commitments"].included_artifact_summaries)
+    # Retired word-list promise detector (2026-11-12): a legacy `active_commitments`
+    # key on the room is ignored and no commitments section is built.
+    assert "commitments" not in by_kind
     assert any("Answer the pacing question in-thread." in item for item in by_kind["routing"].included_artifact_summaries)
     assert any("repair" in item.lower() for item in by_kind["repair"].included_artifact_summaries)
     assert any("interpretive" in item.lower() for item in by_kind["epistemic"].included_artifact_summaries)

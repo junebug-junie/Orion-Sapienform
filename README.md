@@ -311,7 +311,7 @@ current turn
 | **Spark deltas** | What changed, what repeated, what became salient, what is drifting. |
 | **Dream residue** | Symbolic motifs, unresolved themes, emotional or narrative echoes. |
 | **Journal residue** | Compressed autobiographical continuity from prior periods. |
-| **Social memory** | Relationship state, room state, peer style, active claims, commitments, repair context. |
+| **Social memory** | Relationship state, room state, peer style, active claims, repair context. |
 | **Equilibrium/state** | Distress, stability, system condition, recent health changes. |
 | **Situational context** | Live time-of-day, weather, physical presence, cabinet/environmental readings, and Juniper's read affect — assembled each turn into `SituationBriefV1`, not narrated interpretation. |
 | **Task mode** | Whether Orion should comfort, debug, plan, refuse, repair, reflect, play, or act. |
@@ -566,7 +566,7 @@ flowchart LR
 | Service | Role |
 |---|---|
 | `orion-social-room-bridge` | Transport-thin bridge. Normalizes room messages, applies policy, invokes Hub, posts allowed replies. |
-| `orion-social-memory` | Maintains peer continuity, room continuity, stance snapshots, style hints, rituals, threads, claims, commitments, calibration, freshness, decay, and regrounding. |
+| `orion-social-memory` | Maintains peer continuity, room continuity, stance snapshots, style hints, rituals, threads, claims, calibration, freshness, decay, and regrounding. |
 
 A generic memory might say "Alice likes short answers." Social memory has to know *where* that was said, *under what conditions*, at what confidence, whether there's an unresolved correction, and whether it's safe to generalize — because relationship has different rules than facts. It tracks peer continuity, room continuity, stance snapshots, style hints, room rituals, active threads, claims and claim revisions, consensus/divergence, commitments, repair signals, handoff signals, floor decisions, and freshness/decay/regrounding.
 

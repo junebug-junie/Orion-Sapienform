@@ -1,0 +1,44 @@
+name: cortex-exec-concurrency-tests
+
+# cortex-exec's bus workers must not run one turn's work behind another's.
+# 2026-11-12: the pre-turn check worker ran checks one at a time, so a 2.4 s check
+# waited 180 s behind world-pulse checks and the Hub timed the turn's check out.
+# No DB, bus or LLM.
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-cortex-exec/app/main.py"
+      - "services/orion-cortex-exec/tests/test_exec_concurrent_handlers.py"
+      - "services/orion-cortex-exec/tests/test_pre_turn_appraisal_concurrency.py"
+      - "orion/core/bus/bus_service_chassis.py"
+      - ".github/workflows/cortex-exec-concurrency-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-cortex-exec/app/main.py"
+      - "services/orion-cortex-exec/tests/test_exec_concurrent_handlers.py"
+      - "services/orion-cortex-exec/tests/test_pre_turn_appraisal_concurrency.py"
+      - "orion/core/bus/bus_service_chassis.py"
+      - ".github/workflows/cortex-exec-concurrency-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-cortex-exec/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: cortex-exec bus workers handle messages concurrently
+        working-directory: services/orion-cortex-exec
+        run: PYTHONPATH=${{ github.workspace }}/services/orion-cortex-exec:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_exec_concurrent_handlers.py tests/test_pre_turn_appraisal_concurrency.py

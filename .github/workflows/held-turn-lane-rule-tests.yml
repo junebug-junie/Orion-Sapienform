@@ -5,8 +5,9 @@ name: held-turn-lane-rule-tests
 # "a held turn runs all its LLM work on its hold" (orion.llm.resource_lease.held_call_route).
 # These tests pin every link: the helper, the pre-turn check request contract, cortex-exec's probe
 # route, the probe's logprob parsing on both reply shapes, orion-thought carrying the hold onto the
-# Mind request, and orion-mind routing every phase onto it. The Hub link runs in
-# orion-hub-full-suite. No DB, bus or LLM.
+# Mind request, orion-mind routing every phase onto it, and the Hub putting the hold on the check
+# request (also in orion-hub-full-suite; run here too so a red full suite cannot hide it).
+# No DB, bus or LLM.
 
 on:
   pull_request:
@@ -22,6 +23,8 @@ on:
       - "services/orion-mind/tests/test_mind_turn_route.py"
       - "services/orion-thought/app/mind_enrichment.py"
       - "services/orion-thought/tests/test_mind_utterance_origin.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "services/orion-hub/tests/test_turn_orchestrator_ws_frames.py"
       - ".github/workflows/held-turn-lane-rule-tests.yml"
   push:
     branches: [main]
@@ -37,6 +40,8 @@ on:
       - "services/orion-mind/tests/test_mind_turn_route.py"
       - "services/orion-thought/app/mind_enrichment.py"
       - "services/orion-thought/tests/test_mind_utterance_origin.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "services/orion-hub/tests/test_turn_orchestrator_ws_frames.py"
       - ".github/workflows/held-turn-lane-rule-tests.yml"
 
 permissions:
@@ -99,3 +104,23 @@ jobs:
       - name: orion-thought carries the turn's hold onto the Mind request
         working-directory: services/orion-thought
         run: PYTHONPATH=${{ github.workspace }}/services/orion-thought:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_mind_utterance_origin.py
+
+  hub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        # Same install as orion-hub-full-suite (faster-whisper's pinned `av` has no runner build).
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^faster-whisper' services/orion-hub/requirements.txt > /tmp/hub-requirements.txt
+          python -m pip install -r /tmp/hub-requirements.txt -r requirements-dev.txt
+      - name: The Hub puts the turn's hold on the pre-turn check request
+        working-directory: services/orion-hub
+        run: >-
+          PYTHONPATH=${{ github.workspace }}:${{ github.workspace }}/services/orion-hub python -m pytest -q -p no:cacheprovider
+          tests/test_turn_orchestrator_ws_frames.py -k "hold_ref or sends_the_hold"

@@ -187,3 +187,17 @@ def test_bus_client_sends_the_hold_as_gateway_option(monkeypatch) -> None:
         system_prompt="s", user_prompt="u", route="metacog", max_tokens=8,
         context=MindLLMRequestContext(correlation_id="c", mind_run_id="r", phase_name="x"))
     assert "gpu_lease" not in seen
+
+
+def test_held_run_exception_record_names_the_seat_route() -> None:
+    """Telemetry for a held run that blew up names the route it used (`agent`), not the small lane."""
+    from app.engine import _llm_fail_open_from_exception
+    from app.settings import settings
+    from orion.mind.v1 import MindRunRequestV1
+
+    held = _llm_fail_open_from_exception(RuntimeError("boom"), req=MindRunRequestV1(correlation_id="c", gpu_lease=_HOLD),
+                                         mind_settings=settings, snapshot_max_bytes=1024)
+    assert (held.semantic_route, held.appraisal_route, held.stance_route) == ("agent", "agent", "agent")
+    unheld = _llm_fail_open_from_exception(RuntimeError("boom"), req=MindRunRequestV1(correlation_id="c"),
+                                           mind_settings=settings, snapshot_max_bytes=1024)
+    assert unheld.appraisal_route == settings.MIND_APPRAISAL_MODEL_ROUTE

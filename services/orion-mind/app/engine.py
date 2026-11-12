@@ -14,6 +14,7 @@ from uuid import uuid4
 import yaml
 
 from orion.mind.validation import hash_snapshot_inputs, validate_merged_stance_brief_optional
+from orion.llm.resource_lease import held_call_route
 from orion.mind.v1 import (
     MindControlDecisionV1,
     MindHandoffBriefV1,
@@ -814,13 +815,10 @@ def run_mind_llm_synthesis(
         )
     # A held turn (world-pulse read, curiosity, ...) runs every phase on its own GPU seat, never on
     # the configured small lane (Juniper 2026-11-12; orion.llm.resource_lease.held_call_route).
-    held_lease: dict[str, Any] | None = None
-    if req.gpu_lease is not None:
-        from orion.llm.resource_lease import held_call_route
-
-        semantic_route, held_lease = held_call_route(req.gpu_lease, semantic_route)
-        appraisal_route, _ = held_call_route(req.gpu_lease, appraisal_route)
-        stance_route, _ = held_call_route(req.gpu_lease, stance_route)
+    _, held_lease = held_call_route(req.gpu_lease, "")
+    semantic_route, appraisal_route, stance_route = (
+        held_call_route(req.gpu_lease, r)[0] for r in (semantic_route, appraisal_route, stance_route)
+    )
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
@@ -1126,10 +1124,11 @@ def _llm_fail_open_from_exception(
         error_code="llm_synthesis_exception",
         diagnostics=[str(exc)],
         failed_phase="unknown",
-        semantic_route=str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")),
-        appraisal_route=str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")),
+        # A held run's phases ran (or would have run) on its seat: record that route, not the small lane.
+        semantic_route=held_call_route(req.gpu_lease, str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")))[0],
+        appraisal_route=held_call_route(req.gpu_lease, str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")))[0],
         # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
-        stance_route=str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "metacog")),
+        stance_route=held_call_route(req.gpu_lease, str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "metacog")))[0],
         fallback_reason=["llm_synthesis_exception", str(exc)],
     )
 

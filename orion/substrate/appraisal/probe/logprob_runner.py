@@ -33,17 +33,6 @@ def score_binary_logprob(*, logprob_yes: float, logprob_no: float) -> float:
     return 1.0 / (1.0 + math.exp(-delta))
 
 
-def _top1_margin(entry: dict[str, Any]) -> float | None:
-    tops = entry.get("top_logprobs")
-    if not isinstance(tops, list) or len(tops) < 2:
-        return None
-    lps = [float(t["logprob"]) for t in tops if isinstance(t, dict) and isinstance(t.get("logprob"), (int, float))]
-    if len(lps) < 2:
-        return None
-    lps.sort(reverse=True)
-    return lps[0] - lps[1]
-
-
 def _logsumexp(values: list[float]) -> float:
     top = max(values)
     return top + math.log(sum(math.exp(v - top) for v in values))
@@ -84,17 +73,35 @@ class KindProbeScore:
 
 def score_kind_from_answer_token(kind: EvidenceKind, entry: dict[str, Any]) -> KindProbeScore | None:
     yes_lp, no_lp = _yes_no_logprobs(entry)
+    bounded = 0.0
+    if (yes_lp is None) != (no_lp is None):
+        # The other answer fell out of the top-k list: the model was so sure that it is below every
+        # listed alternative. Its logprob is at most the lowest one listed, so that is a safe bound
+        # (it under-states, never over-states, the margin). Live 2026-11-12, fast lane: 6 of 25 of
+        # Juniper's probes had a kind whose ' YES' was outside the top 8, and the whole reply fell
+        # back to fixed text scores.
+        listed = [float(t["logprob"]) for t in (entry.get("top_logprobs") or [])
+                  if isinstance(t, dict) and isinstance(t.get("logprob"), (int, float))]
+        if not listed:
+            return None
+        if yes_lp is None:
+            yes_lp = min(listed)
+        else:
+            no_lp = min(listed)
+        bounded = 1.0
     if yes_lp is None or no_lp is None:
         return None
-    margin = _top1_margin(entry)
-    if margin is None:
-        return None
+    # Margin between the two ANSWERS (each summed over its spellings), not between the raw top-1
+    # and top-2 tokens: ' YES' -0.69 / 'YES' -0.72 / ' NO' -5 is a confident YES, while the raw
+    # token margin (0.03) read it as a coin flip and min() then dragged the whole slice to ~0.
+    # Identical to the old value whenever each answer has one spelling.
+    margin = abs(yes_lp - no_lp)
     score = score_binary_logprob(logprob_yes=yes_lp, logprob_no=no_lp)
     return KindProbeScore(
         evidence_kind=kind,
         score=max(0.0, min(1.0, score)),
         confidence=margin,
-        features={"logprob_yes": yes_lp, "logprob_no": no_lp, "margin": margin},
+        features={"logprob_yes": yes_lp, "logprob_no": no_lp, "margin": margin, "bounded": bounded},
     )
 
 

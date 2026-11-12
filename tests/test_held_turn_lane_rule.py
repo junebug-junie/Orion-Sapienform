@@ -139,3 +139,82 @@ def test_lowercase_spelling_no_longer_overwrites_the_real_answer() -> None:
     log_no = math.log(math.exp(-0.54) + math.exp(-8.08))
     assert scored.score == pytest.approx(1.0 / (1.0 + math.exp(-(-0.88 - log_no))))
     assert scored.score < 0.5
+
+
+# --- review findings: answers map to their own kind, margins count answers not spellings --------
+
+def _tok(text: str, alt: str = "x") -> dict:
+    return {"token": text, "logprob": 0.0, "top_logprobs": [{"token": text, "logprob": 0.0},
+                                                            {"token": alt, "logprob": -9.0}]}
+
+
+def _reply(lines: list[tuple[str, float, float]], preamble: list[dict] | None = None) -> dict:
+    tokens = list(preamble or [])
+    text_lines = []
+    for kind, yes_lp, no_lp in lines:
+        answer = "YES" if yes_lp > no_lp else "NO"
+        text_lines.append(f"{kind}: {answer}")
+        tokens += [_tok(kind), _tok(":"), _answer_token(answer, yes_lp, no_lp), _tok("\n")]
+    text = "".join(str(t["token"]) for t in tokens)
+    return {"text": text, "llm_uncertainty": dict(_SUMMARY_ONLY_UNCERTAINTY),
+            "raw": {"choices": [{"index": 0, "logprobs": {"content": tokens}}]}}
+
+
+def test_a_preamble_no_token_does_not_shift_scores_onto_other_kinds() -> None:
+    """Review repro: a reply opening "No signals." used to hand its 'No' token to the first kind
+    and shift every score one kind down (trust_rupture's YES landed on coherence_gap)."""
+    lines = [(k, -3.0, -0.05) for k in _EVIDENCE_KINDS]
+    lines[1] = ("trust_rupture", -0.01, -5.0)
+    payload = _reply(lines, preamble=[_tok("No", alt=" Yes"), _tok(" signals."), _tok("\n")])
+    scores = {e.evidence_kind: e.score for e in _evidence_from_probe_response(payload)}
+    assert scores["trust_rupture"] > 0.99
+    assert scores["coherence_gap"] < 0.1 and scores["specificity_demand"] < 0.1
+
+
+def test_reordered_lines_score_their_own_kind() -> None:
+    lines = [(k, -3.0, -0.05) for k in reversed(_EVIDENCE_KINDS)]
+    lines[0] = ("assistant_accountability_demand", -0.02, -4.0)   # first line, last kind
+    evidence = _evidence_from_probe_response(_reply(lines))
+    scores = {e.evidence_kind: e.score for e in evidence}
+    assert all(e.detector == DETECTOR_NAME for e in evidence)
+    assert scores["assistant_accountability_demand"] > 0.95
+    assert scores["specificity_demand"] < 0.1
+
+
+def test_an_answer_glued_to_other_text_falls_back_for_the_whole_reply() -> None:
+    """':NO' as one token has no clean YES/NO alternatives: never a mix of real and fixed scores."""
+    lines = [(k, -3.0, -0.05) for k in _EVIDENCE_KINDS]
+    payload = _reply(lines)
+    tokens = payload["raw"]["choices"][0]["logprobs"]["content"]
+    tokens[1] = {"token": ": NO", "logprob": 0.0, "top_logprobs": [{"token": ": NO", "logprob": 0.0},
+                                                                   {"token": ": YES", "logprob": -3.0}]}
+    del tokens[2]
+    payload["text"] = "".join(t["token"] for t in tokens)
+    evidence = _evidence_from_probe_response(payload)
+    assert evidence and all(e.detector == _TEXT_FALLBACK_DETECTOR for e in evidence)
+
+
+def test_two_spellings_of_one_answer_are_a_confident_answer() -> None:
+    """Review repro: ' YES' -0.69, 'YES' -0.72, ' NO' -5 scored 0.993 but confidence 0.03, which
+    min() then spread to the whole slice. The margin is now between the two summed answers."""
+    entry = {"token": " YES", "logprob": -0.69,
+             "top_logprobs": [{"token": " YES", "logprob": -0.69}, {"token": "YES", "logprob": -0.72},
+                              {"token": " NO", "logprob": -5.0}]}
+    scored = score_kind_from_answer_token("trust_rupture", entry)
+    log_yes = math.log(math.exp(-0.69) + math.exp(-0.72))
+    assert scored.confidence == pytest.approx(log_yes - (-5.0))
+    assert scored.confidence > 4.0 and scored.score > 0.99
+
+
+def test_an_answer_missing_from_top_k_is_bounded_not_dropped() -> None:
+    """Live 11-12, fast lane: a very sure ' NO' with ' YES' outside the top 8. The missing answer is
+    at most the lowest listed logprob, so the score is a safe bound instead of a whole-reply fallback."""
+    entry = {"token": " NO", "logprob": 0.0,
+             "top_logprobs": [{"token": " NO", "logprob": 0.0}, {"token": "_NO", "logprob": -24.67},
+                              {"token": " No", "logprob": -25.04}, {"token": ".NO", "logprob": -26.03}]}
+    scored = score_kind_from_answer_token("trust_rupture", entry)
+    assert scored is not None and scored.features["bounded"] == 1.0
+    assert scored.features["logprob_yes"] == -26.03
+    assert scored.score < 1e-6
+    assert score_kind_from_answer_token("trust_rupture", {"token": " NO", "top_logprobs": [
+        {"token": "x", "logprob": -1.0}, {"token": "y", "logprob": -2.0}]}) is None

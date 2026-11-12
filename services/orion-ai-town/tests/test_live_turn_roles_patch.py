@@ -150,3 +150,9 @@ def test_patch_chain_applies_to_pinned_upstream(tmp_path):
     assert "Copied overlay/" in run.stdout
     assert (work / "upstream" / "convex" / "sim" / "core.ts").is_file()
     assert "export const SIM_CAST" in (work / "upstream" / "convex" / "sim" / "seed.ts").read_text()
+    conversation = (work / "upstream" / "convex" / "agent" / "conversation.ts").read_text()
+    opener = conversation.split("export async function startConversationMessage(", 1)[1].split(
+        "function trimContentPrefx", 1
+    )[0]
+    assert opener.index("role: 'system'") < opener.index("role: 'user'")
+    assert "content: `Greet ${otherPlayer.name} now.`," in opener

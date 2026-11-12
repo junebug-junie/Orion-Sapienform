@@ -38,6 +38,13 @@ Use:
 
 Key rule: each worker must keep a unique **service identity**, **published port**, **`LLM_PROFILE_NAME`**, and **GPU visibility binding**.
 
+The staged Circe fast-worker profile is
+`qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k`. It preserves four 4k slots and
+leaves metacog on Qwen3 8B Q5. Fast requests default to thinking off; callers
+can send `options.chat_template_kwargs.enable_thinking=true` or `false` through
+the gateway. See [the trial runbook](../../docs/operations/qwen35-fast-lane-trial.md)
+for the caller inventory, eval, and rollback.
+
 ---
 
 ## Atlas quickstart
@@ -73,7 +80,7 @@ ATLAS_METACOG_CUDA_VISIBLE_DEVICES=
 ATLAS_METACOG_HOST_PORT=8012
 
 ATLAS_FAST_SERVICE_NAME=atlas-worker-fast-1
-ATLAS_FAST_PROFILE_NAME=
+ATLAS_FAST_PROFILE_NAME=qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k
 ATLAS_FAST_CUDA_VISIBLE_DEVICES=
 ATLAS_FAST_HOST_PORT=8013
 
@@ -88,7 +95,7 @@ ATLAS_AGENT_HOST_PORT=8015
 Notes:
 
 - `ATLAS_CHAT_PROFILE_NAME` is intentionally operator-supplied; keep it pointed at the current Atlas chat profile.
-- `ATLAS_METACOG_PROFILE_NAME`, `ATLAS_FAST_PROFILE_NAME`, and `ATLAS_AGENT_PROFILE_NAME` are intentionally operator-supplied.
+- `ATLAS_METACOG_PROFILE_NAME` and `ATLAS_AGENT_PROFILE_NAME` are intentionally operator-supplied. `ATLAS_FAST_PROFILE_NAME` defaults to the Qwen3.5 trial profile; confirm the deployed `.env` selects it.
 - FAST (`ATLAS_FAST_*`) is shared by full-chat first pass and user-facing quick mode.
 - Do **not** let the default workers collide on host ports (`8011/8012/8013`).
 - Optional `atlas-agent` split mode is behind compose profile `agent-split`.

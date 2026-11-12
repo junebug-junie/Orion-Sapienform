@@ -200,6 +200,57 @@ profiles:
       - For dedicated metacog lane: use qwen3-8b-q5km-v100-16gb-atlas-metacog-16k instead.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.
 
+  # Circe gpu3 fast-lane trial. Keep the Qwen3 8B profile above for rollback;
+  # metacog (:8012) continues to use its separate Qwen3 8B Q5 profile below.
+  qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k:
+    display_name: "Qwen3.5 9B – UD-Q5_K_XL (Circe fast, 4 x 4k)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3.5-9b-ud-q5_k_xl"
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 16384
+      max_batch_tokens: 512
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.88
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.5-9B-GGUF"
+      hf_filename: "Qwen3.5-9B-UD-Q5_K_XL.gguf"
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 16384
+      n_gpu_layers: 99
+      threads: 8
+      n_parallel: 4
+      batch_size: 512
+      # The server defaults to non-thinking. Explicit per-call
+      # chat_template_kwargs.enable_thinking=true/false must still work, so do
+      # not force --reasoning off or --reasoning-budget 0 at launch.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: false
+      temperature: 0.7
+      top_k: 20
+      top_p: 0.8
+      min_p: 0.0
+      presence_penalty: 0.0
+      n_predict: 8192
+      no_context_shift: true
+      flash_attn: "on"
+    notes: |
+      Trial replacement for fast only (:8013); 16384 total ctx / 4 slots = 4096 per request.
+      No mmproj is loaded, so this is text-only despite Qwen3.5's vision capability.
+      The per-call option is chat_template_kwargs: {enable_thinking: true|false}.
+      Keep the server at reasoning=auto; reasoning=off or a zero launch budget
+      would prevent a request from enabling thinking.
+
   # CORRECTION 2026-09-21: see the "fast" profile's own note above -- this
   # lane's dedicated V100-16GB was physically pulled from circe, now shares
   # a V100-32GB (host index 3) with atlas-fast. Key name kept as a

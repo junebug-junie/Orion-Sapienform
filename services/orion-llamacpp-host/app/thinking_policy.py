@@ -43,6 +43,16 @@ def resolve_thinking_launch_policy(
             require_jinja=need_jinja,
         )
 
+    # An explicit auto policy leaves reasoning to the rendered template. A
+    # launch default of enable_thinking=false can then be overridden by a
+    # request's chat_template_kwargs without a global budget-0 lockout.
+    if et is False and cfg.reasoning == "auto":
+        return ThinkingLaunchPolicy(
+            intent_label="off_kwargs_request_overridable",
+            effective_reasoning_budget=None,
+            require_jinja=True,
+        )
+
     if et is False and has_budget_flag:
         return ThinkingLaunchPolicy(
             intent_label="off_kwargs_implicit_budget",

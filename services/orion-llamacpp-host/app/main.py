@@ -667,6 +667,7 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         cfg.chat_template_kwargs is not None
         and cfg.chat_template_kwargs.get("enable_thinking") is False
         and policy.effective_reasoning_budget is None
+        and cfg.reasoning != "auto"
         and supported_flags is not None
         and "--reasoning-budget" not in supported_flags
     ):

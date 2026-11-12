@@ -14,7 +14,7 @@ from orion.prime.thought import FrameInputs, build_frame
 from orion.schemas.cockpit_sighting import CockpitHopV1
 
 T0 = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
-FIXTURE = Path(__file__).parent / "fixtures" / "turn_hops_recorded.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "turn_hops_shaped_like_live.json"
 
 
 def _ingress(corr, session, prompt="hello", *, mode=None, at=T0):
@@ -86,9 +86,7 @@ def test_recorded_turn_hops_fold_deterministically():
     now = T0 + timedelta(hours=1)
     a = hb.fold_turn_signals(PrimeStateV1(), hb.PrimeTurnsStateV1(), _signals(*hops), now)
     b = hb.fold_turn_signals(PrimeStateV1(), hb.PrimeTurnsStateV1(), _signals(*hops), now)
-    # Concern ids are random; everything else must match exactly.
-    strip = lambda turns: [t.model_dump(exclude={"opened_concern_id"}) for t in turns]  # noqa: E731
-    assert strip(a[2]) == strip(b[2])
+    assert a == b
     assert [t.who for t in a[2]] == ["chat_juniper", "curiosity", "consult"]
     chat, cur, consult = a[2]
     assert chat.gist.startswith('Juniper: "can you look at why the walkway camera')
@@ -156,7 +154,7 @@ def test_a_reply_that_only_mentions_a_concern_settles_nothing():
     assert state.concerns[0].graded is None and state.concern_record == []
 
 
-@pytest.mark.parametrize("verdict,final", [("failed", "partial text"), ("completed", "   ")])
+@pytest.mark.parametrize("verdict,final", [("failed", "partial text"), ("partial", "cut short"), ("completed", "   ")])
 def test_a_turn_that_did_not_reply_settles_nothing(verdict, final):
     cid = "a1b2c3d4e5f60718"
     state = PrimeStateV1(concerns=[_concern(cid)])
@@ -263,3 +261,24 @@ def test_replay_eval_checks_pass_on_the_recorded_hops():
     result, report = ev.checks(hops)
     assert all(result.values()), result
     assert report["turns_by_who"] == {"chat_juniper": 1, "curiosity": 1, "consult": 1} and report["missing"] == []
+
+
+def test_a_promise_after_an_offer_links_its_own_index():
+    offer = {"quote": "If you want, I'll pull the logs.", "offer": True}
+    promise = {"quote": "I'll check the gate thresholds tonight.", "offer": False}
+    _, _, folded = _fold(PrimeStateV1(), hb.PrimeTurnsStateV1(), _ingress("c", "s", mode="orion"),
+                         _finalize("c", "x", promises=[offer, promise]))
+    assert folded[0].promise_refs == ["harness_turn_trace:c#promises_made[1]"]
+
+
+def test_a_turn_concern_id_is_derived_from_the_turn_and_marked_no_bet():
+    state, turns, _ = _fold(PrimeStateV1(), hb.PrimeTurnsStateV1(), *_promise_turn("t1"))
+    assert state.concerns[0].concern_id == hb.turn_concern_id("t1")
+    assert turns.no_bet_concern_ids == [hb.turn_concern_id("t1")]
+
+
+def test_a_run_that_settles_before_its_turn_hands_back_is_linked_when_it_does():
+    turns = hb.link_started_turn(hb.PrimeTurnsStateV1(), "late", "act_9")
+    assert turns.pending_links == {"late": "act_9"}
+    _, turns, folded = _fold(PrimeStateV1(), turns, _ingress("late", "orion_curiosity"), _finalize("late"))
+    assert folded[0].started_by_act == "act_9" and turns.pending_links == {}

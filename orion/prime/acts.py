@@ -108,7 +108,9 @@ CONCERN_HORIZON_SEC = 2 * NOMINATION_HORIZON_SEC
 CONCERN_COMPONENT = "prime.concern"
 CONCERN_BASIS = (
     "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) "
-    "settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, "
+    "settled produced (its investigate run wrote something), or a unified turn whose prompt cited "
+    "prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; "
+    "0 when dropped unresolved, "
     "faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: "
     "another concern's question may be open first), 2 x 259200s"
 )

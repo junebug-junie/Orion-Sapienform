@@ -14,7 +14,8 @@ session. Two hops of a turn carry all Prime needs, joined by ``correlation_id``:
 
 No new bus event: the hand-back is a second consumer of an existing one.
 
-The fold is deterministic: the same hops in the same order give the same state. Per finished turn Prime keeps:
+The fold is deterministic: the same hops in the same order give the same state (a turn's concern id is derived
+from its correlation id, ``turn_concern_id``). Per finished turn Prime keeps:
 
 * who: ``chat_juniper`` (a turn Juniper typed), ``curiosity``, ``consult`` or ``letter``. Every other session
   (world-pulse reads, self-sense evals, PR field notes, reminiscence, outreach) is not handed back: those are
@@ -28,15 +29,18 @@ The fold is deterministic: the same hops in the same order give the same state. 
 Two things can change Prime's state, and only these two wake a thought (the existing funded-thought rule then
 decides whether Prime actually thinks):
 
-* **A turn opened a thread** -- it made at least one counted promise (an offer is not counted until accepted,
-  the intention ledger's rule). Prime opens a concern whose ``event_ref`` is ``turn:<correlation_id>``. The
-  concern is an ordinary concern: its act is a graded bet, it fades after ``CONCERN_TTL`` unless a thought keeps
-  it, and it counts toward ``MAX_CONCERNS``.
+* **A turn opened a thread** -- it made at least one promise (``promises_made`` with ``offer`` false). Prime
+  opens a concern whose ``event_ref`` is ``turn:<correlation_id>``. It fades after ``CONCERN_TTL`` unless a
+  thought keeps it and counts toward ``MAX_CONCERNS``, like any concern, but it places NO bet
+  (``act.prime.predict``): nothing can settle it yet (a kept promise has no act id until the intention ledger's
+  D2), so every such bet would close 0 and feed a false failure into the self-monitor gate on Prime's real bets.
+  ``PrimeTurnsStateV1.no_bet_concern_ids`` tells the runtime which concerns these are. Offers Juniper accepted
+  later (``offers_accepted``) are out of scope here: the quote points into an EARLIER turn, which D2 will link.
 * **A turn answered a concern** -- the turn's prompt cites ``prime_concern:<id>`` of a concern Prime holds open
-  and the turn finished with a reply (verdict completed or partial). That is the existing meaning of "settled"
-  (a question about it got a run that wrote something). Only the PROMPT counts, never the reply: once the Prime
-  block (Part 1) puts concern ids into every turn's prefix, a reply that lists what Prime holds would otherwise
-  settle every concern it names.
+  and the turn completed with a reply (verdict ``completed``; a ``partial`` turn was cut short). The concern
+  settles, produced = 1 (``CONCERN_BASIS`` names this path). Only the PROMPT counts, never the reply: the Prime
+  block (Part 1) puts concern ids into every turn's prefix, so a reply that lists what Prime holds would
+  otherwise settle every concern it names.
 
 Loop guard (turns open concerns, concerns steer turns). On top of ``MAX_CONCERNS`` and ``CONCERN_TTL``:
 at most ``TURN_CONCERNS_MAX_OPEN`` turn-opened concerns held at once (so at least two slots stay for Prime's own
@@ -45,11 +49,13 @@ on the turn, never silently dropped.
 
 Turns Prime started (its curiosity question) still close the act that started them through the existing
 nomination grading (orion/prime/acts.py ``settle_nomination``); the runtime links the run's turn correlation id
-to the nomination's act on the turn record (``link_started_turn``).
+to the nomination's act on the turn record (``link_started_turn``), also when the turn hands back after its run
+settled (``pending_links``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta
@@ -58,7 +64,7 @@ from typing import Any, Literal, Optional, Sequence
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from orion.prime.acts import settle_concern
-from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, new_id, note_change
+from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, note_change
 
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
@@ -81,7 +87,7 @@ SYSTEM_SESSION_PREFIX = "orion_"
 
 TURN_EVENT_PREFIX = "turn:"
 CONCERN_REF = re.compile(r"prime_concern:([0-9a-f]{16})\b")
-COUNTED_VERDICTS = frozenset({"completed", "partial"})
+COUNTED_VERDICTS = frozenset({"completed"})
 
 MAX_PENDING = 30
 PENDING_TTL = timedelta(hours=6)
@@ -91,6 +97,8 @@ TURN_CONCERNS_MAX_OPEN = 1
 TURN_CONCERNS_PER_DAY = 4
 TURN_CONCERN_WINDOW = timedelta(hours=24)
 MAX_PROMPT_CONCERN_IDS = 5
+MAX_NO_BET_IDS = 50
+MAX_PENDING_LINKS = 20
 PROMPT_EXCERPT_CAP = 300
 FINAL_EXCERPT_CAP = 600
 GIST_CAP = 200
@@ -111,7 +119,8 @@ class TurnSignalV1(BaseModel):
     # finalize
     final_excerpt: str = Field(default="", max_length=FINAL_EXCERPT_CAP)
     verdict: Optional[str] = Field(default=None, max_length=40)
-    promise_count: int = Field(default=0, ge=0)
+    # Indices into reflection.promises_made of the promises (offers left out), so a ref points at the promise.
+    promise_indices: list[int] = Field(default_factory=list, max_length=10)
     promises_kept: list[str] = Field(default_factory=list, max_length=3)
 
 
@@ -162,6 +171,10 @@ class PrimeTurnsStateV1(BaseModel):
     seen: list[str] = Field(default_factory=list)
     # When each turn-opened concern opened, for the per-day bound.
     turn_concerns_opened_at: list[AwareDatetime] = Field(default_factory=list)
+    # Concerns opened by turns: the runtime places no bet for them (module docstring).
+    no_bet_concern_ids: list[str] = Field(default_factory=list)
+    # correlation id -> the act that started that turn, for a turn whose run settled before it handed back.
+    pending_links: dict[str, str] = Field(default_factory=dict)
     turns_total: int = 0
 
 
@@ -189,13 +202,14 @@ def _concern_ids(text: str) -> list[str]:
     return out[:MAX_PROMPT_CONCERN_IDS]
 
 
-def _counted_promises(reflection: Any) -> tuple[int, list[str]]:
+def _counted_promises(reflection: Any) -> tuple[list[int], list[str]]:
+    """(indices of the promises in promises_made -- offers left out --, kept promise ids)."""
     if not isinstance(reflection, dict):
-        return 0, []
+        return [], []
     made = reflection.get("promises_made") or []
-    count = sum(1 for p in made if isinstance(p, dict) and p.get("quote") and p.get("offer") is not True)
+    idx = [i for i, p in enumerate(made) if isinstance(p, dict) and p.get("quote") and p.get("offer") is not True]
     kept = [str(k)[:200] for k in (reflection.get("promises_kept") or []) if isinstance(k, str) and k][:3]
-    return count, kept
+    return idx[:10], kept
 
 
 def signal_from_hop(hop: dict[str, Any]) -> Optional[TurnSignalV1]:
@@ -214,11 +228,12 @@ def signal_from_hop(hop: dict[str, Any]) -> Optional[TurnSignalV1]:
         prompt = str(raw.get("user_message") or "")
         return TurnSignalV1(correlation_id=corr[:200], stage="ingress", at=at, who=who,
                             prompt_excerpt=prompt[:PROMPT_EXCERPT_CAP], prompt_concern_ids=_concern_ids(prompt))
-    count, kept = _counted_promises(raw.get("reflection"))
+    indices, kept = _counted_promises(raw.get("reflection"))
     verdict = raw.get("compliance_verdict")
     return TurnSignalV1(correlation_id=corr[:200], stage="finalize", at=at,
                         final_excerpt=str(raw.get("final_text") or "")[:FINAL_EXCERPT_CAP],
-                        verdict=str(verdict)[:40] if verdict else None, promise_count=count, promises_kept=kept)
+                        verdict=str(verdict)[:40] if verdict else None, promise_indices=indices,
+                        promises_kept=kept)
 
 
 # --- the gist ----------------------------------------------------------------------------------------------
@@ -264,8 +279,13 @@ def turn_gist(who: TurnWho, prompt: str, final: str) -> str:
 # --- the fold ------------------------------------------------------------------------------------------------
 
 
-def promise_refs(correlation_id: str, count: int) -> list[str]:
-    return [f"harness_turn_trace:{correlation_id}#promises_made[{i}]" for i in range(count)]
+def promise_refs(correlation_id: str, indices: Sequence[int]) -> list[str]:
+    return [f"harness_turn_trace:{correlation_id}#promises_made[{i}]" for i in indices]
+
+
+def turn_concern_id(correlation_id: str) -> str:
+    """The concern a turn opens: derived from the turn, so a replay can never open a second one."""
+    return hashlib.sha256(f"{TURN_EVENT_PREFIX}{correlation_id}".encode()).hexdigest()[:16]
 
 
 def _open_turn_concerns(state: PrimeStateV1) -> int:
@@ -297,6 +317,8 @@ def fold_turn_signals(
     recent = list(turns.recent)
     seen = list(turns.seen)
     opened_at = [t for t in turns.turn_concerns_opened_at if now - t < TURN_CONCERN_WINDOW]
+    no_bet = list(turns.no_bet_concern_ids)
+    links = dict(turns.pending_links)
     folded: list[PrimeTurnV1] = []
     for sig in signals:
         corr = sig.correlation_id
@@ -325,7 +347,7 @@ def fold_turn_signals(
                 if line:
                     settled.append(cid)
                     state = note_change(state, f"a {words} turn ({corr}) answered my concern: {line}")
-        refs = promise_refs(corr, sig.promise_count)
+        refs = promise_refs(corr, sig.promise_indices)
         opened: Optional[str] = None
         refused: Optional[str] = None
         if refs:
@@ -334,30 +356,38 @@ def fold_turn_signals(
                 n = len(refs)
                 text = _cut(f"a thread I opened in a {words} ({n} promise{'s' if n != 1 else ''}, "
                             f"{refs[0]}{' ...' if n > 1 else ''}): {gist}", 300)
-                concern = PrimeConcernV1(concern_id=new_id(), text=text, event_ref=f"{TURN_EVENT_PREFIX}{corr}",
-                                         opened_at=now, last_evidence_at=now)
+                concern = PrimeConcernV1(concern_id=turn_concern_id(corr), text=text,
+                                         event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now)
                 state = state.model_copy(update={"concerns": [*state.concerns, concern]})
                 state = note_change(state, f"a {words} turn ({corr}) opened a thread: {gist[:120]}")
                 opened = concern.concern_id
                 opened_at.append(now)
+                no_bet = [*no_bet, opened][-MAX_NO_BET_IDS:]
         turn = PrimeTurnV1(correlation_id=corr, who=start.who, gist=gist, started_at=start.started_at,
                            finished_at=sig.at, verdict=sig.verdict, promise_refs=refs,
                            promises_kept=list(sig.promises_kept), opened_concern_id=opened, thread_refused=refused,
-                           settled_concern_ids=settled)
+                           settled_concern_ids=settled, started_by_act=links.pop(corr, None))
         recent = [*recent, turn][-MAX_RECENT_TURNS:]
         folded.append(turn)
     pending = [p for p in pending if now - p.started_at <= PENDING_TTL][-MAX_PENDING:]
     turns = turns.model_copy(update={"pending": pending, "recent": recent, "seen": seen,
-                                     "turn_concerns_opened_at": opened_at,
+                                     "turn_concerns_opened_at": opened_at, "no_bet_concern_ids": no_bet,
+                                     "pending_links": links,
                                      "turns_total": turns.turns_total + len(folded)})
     return state, turns, folded
 
 
 def link_started_turn(turns: PrimeTurnsStateV1, correlation_id: Optional[str], act_id: str) -> PrimeTurnsStateV1:
     """A nomination Prime opened settled on a run whose turn is ``correlation_id``: link the turn to that act.
-    The act itself is closed by the existing nomination grading, not here."""
+    The act itself is closed by the existing nomination grading, not here. A turn that has not handed back yet
+    is linked when it does (``pending_links``)."""
     if not correlation_id:
         return turns
+    if not any(t.correlation_id == correlation_id for t in turns.recent):
+        if correlation_id in turns.seen:
+            return turns  # folded and already aged out of ``recent``: nothing left to mark
+        links = {**turns.pending_links, correlation_id: act_id}
+        return turns.model_copy(update={"pending_links": dict(list(links.items())[-MAX_PENDING_LINKS:])})
     recent = [t.model_copy(update={"started_by_act": act_id}) if t.correlation_id == correlation_id else t
               for t in turns.recent]
     return turns.model_copy(update={"recent": recent})
@@ -399,6 +429,7 @@ __all__ = [
     "promise_refs",
     "signal_from_hop",
     "thread_refusal",
+    "turn_concern_id",
     "turn_gist",
     "turn_lines",
 ]

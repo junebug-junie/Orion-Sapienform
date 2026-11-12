@@ -8,7 +8,7 @@ turn opened is never dropped early: the loop-guard bounds are tested at their ha
 
 Checks (exit 1 on any failure):
 
-* deterministic  -- two replays of the same rows give the same turns (concern ids aside);
+* deterministic  -- two replays of the same rows give the same turns, concern ids included;
 * coverage       -- every finalize row of a handed-back session folds into a turn (none lost in the join);
 * not_hollow     -- every folded turn has a non-empty gist (no "(no reply text)" for a completed turn);
 * bounded        -- never more than TURN_CONCERNS_MAX_OPEN turn concerns held, never more than
@@ -93,7 +93,7 @@ def handed_back_finalize_ids(hops: Sequence[dict[str, Any]]) -> set[str]:
 
 def checks(hops: Sequence[dict[str, Any]]) -> tuple[dict[str, bool], dict[str, Any]]:
     a, b = replay(hops), replay(hops)
-    strip = lambda r: [t.model_dump(exclude={"opened_concern_id"}) for t in r["folded"]]  # noqa: E731
+    strip = lambda r: [t.model_dump() for t in r["folded"]]  # noqa: E731 -- concern ids are derived, so exact
     expected = handed_back_finalize_ids(hops)
     got = {t.correlation_id for t in a["folded"]}
     last = max((hb.signal_from_hop(h).at for h in hops if hb.signal_from_hop(h) is not None), default=None)

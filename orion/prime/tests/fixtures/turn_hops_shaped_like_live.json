@@ -5,7 +5,7 @@
   "seq": 0,
   "ts": "2026-11-12T12:00:00+00:00",
   "stage": "ingress",
-  "visor_line": "ingress \u00b7 recorded",
+  "visor_line": "ingress \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
@@ -29,7 +29,7 @@
   "seq": 0,
   "ts": "2026-11-12T12:00:05+00:00",
   "stage": "ingress",
-  "visor_line": "ingress \u00b7 recorded",
+  "visor_line": "ingress \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "session_id": "orion_world_pulse_read",
@@ -50,7 +50,7 @@
   "seq": 0,
   "ts": "2026-11-12T12:00:10+00:00",
   "stage": "ingress",
-  "visor_line": "ingress \u00b7 recorded",
+  "visor_line": "ingress \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "session_id": "orion_curiosity",
@@ -71,7 +71,7 @@
   "seq": 12,
   "ts": "2026-11-12T12:02:00+00:00",
   "stage": "finalize",
-  "visor_line": "finalize \u00b7 recorded",
+  "visor_line": "finalize \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "compliance_verdict": "completed"
@@ -100,7 +100,7 @@
   "seq": 12,
   "ts": "2026-11-12T12:03:00+00:00",
   "stage": "finalize",
-  "visor_line": "finalize \u00b7 recorded",
+  "visor_line": "finalize \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "compliance_verdict": "completed"
@@ -129,7 +129,7 @@
   "seq": 0,
   "ts": "2026-11-12T12:04:00+00:00",
   "stage": "ingress",
-  "visor_line": "ingress \u00b7 recorded",
+  "visor_line": "ingress \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "session_id": "consult-9f138a849520-t1",
@@ -150,7 +150,7 @@
   "seq": 12,
   "ts": "2026-11-12T12:20:00+00:00",
   "stage": "finalize",
-  "visor_line": "finalize \u00b7 recorded",
+  "visor_line": "finalize \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "compliance_verdict": "completed"
@@ -179,7 +179,7 @@
   "seq": 12,
   "ts": "2026-11-12T12:21:00+00:00",
   "stage": "finalize",
-  "visor_line": "finalize \u00b7 recorded",
+  "visor_line": "finalize \u00b7 shaped like live",
   "status": "ok",
   "summary": {
    "compliance_verdict": "completed"

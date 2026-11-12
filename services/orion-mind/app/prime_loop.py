@@ -206,6 +206,7 @@ REGULATE_SETTLE_LAG_SEC = 120.0
 # Hand-back signals queued between ticks (a tick drains them). Hops of sessions that are not handed back never
 # reach it (signal_from_hop); world-pulse finalize hops do, ~300 a day, so a 15 s tick never comes near this.
 TURN_INBOX_MAX = 500
+LISTEN_BACKOFF_CAP_SEC = 10.0
 
 # Prime on the bus, in the body economy, the ledger, Redis and the logs (orion/mindloop/instance.py).
 PRIME_IDENTITY = LoopIdentity(
@@ -266,6 +267,7 @@ class PrimeRuntime(MindLoopRuntime):
             self._listener = asyncio.create_task(self._listen_turns(), name="orion-prime-turn-handback")
 
     async def stop(self) -> None:
+        listening = self._listener is not None
         if self._listener is not None:
             self._listener.cancel()
             try:
@@ -274,6 +276,14 @@ class PrimeRuntime(MindLoopRuntime):
                 pass
             self._listener = None
         await super().stop()
+        if listening and self._turn_inbox:
+            # Hops heard since the last tick would otherwise be lost on every deploy: fold and save them now
+            # (the loop task is cancelled above, so nothing else touches the state).
+            try:
+                self._fold_turns(self.clock())
+                await self.save()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_handback_final_fold_failed err=%s", type(exc).__name__)
 
     async def _listen_turns(self) -> None:
         """Subscribe to the cockpit hops; resubscribe with backoff on any failure (a silent socket included:
@@ -294,7 +304,8 @@ class PrimeRuntime(MindLoopRuntime):
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
-            delay = min(delay * 2, 60.0)
+            # Capped low: a hop is only heard while subscribed, so a long backoff is lost turns.
+            delay = min(delay * 2, LISTEN_BACKOFF_CAP_SEC)
 
     def accept_hop(self, data: Any) -> None:
         """One bus message: decode, validate as CockpitHopV1 (the channel's registered schema), cut to a signal."""
@@ -311,6 +322,10 @@ class PrimeRuntime(MindLoopRuntime):
                                str(exc)[:160])
             return
         if signal is not None:
+            if len(self._turn_inbox) == self._turn_inbox.maxlen:
+                # The oldest queued hop is pushed out (counted, never silent).
+                self._turn_hops_dropped += 1
+                logger.warning("prime_handback_inbox_full dropped_total=%d", self._turn_hops_dropped)
             self._turn_inbox.append(signal)
 
     def _fold_turns(self, now: datetime) -> None:
@@ -552,9 +567,10 @@ class PrimeRuntime(MindLoopRuntime):
         and the first close of an act, so a retry never counts twice. The self-monitor gate decides
         each open (see the module docstring)."""
         now = self.clock()
+        no_bet = set(self.turn_record.no_bet_concern_ids)
         concerns = []
         for c in self.state.concerns:
-            if c.act_opened_at is None:
+            if c.act_opened_at is None and c.concern_id not in no_bet:
                 allowed, decision = await self._concern_bet(c.concern_id, c.text, now)
                 if allowed and await self._open(concern_act(c.concern_id), CONCERN_COMPONENT, at=now):
                     self._bet_opened(decision, c.concern_id)
@@ -562,6 +578,12 @@ class PrimeRuntime(MindLoopRuntime):
             concerns.append(c)
         records = []
         for r in self.state.concern_record:
+            if not r.published and r.act_opened_at is None and r.concern_id in no_bet:
+                # A concern a turn opened: it never placed a bet (orion/prime/handback.py), so nothing to close.
+                logger.info("prime_concern_ended_without_bet concern=%s end=%s reason=opened_by_turn",
+                            r.concern_id, r.end)
+                records.append(r.model_copy(update={"published": True}))
+                continue
             if not r.published:
                 act = concern_act(r.concern_id)
                 if r.act_opened_at is None and not await self._late_concern_bet_allowed(r.concern_id):
@@ -594,7 +616,7 @@ class PrimeRuntime(MindLoopRuntime):
             for c in applied.state.concerns:
                 if c.concern_id in new:
                     logger.info("prime_concern_added concern=%s event_ref=%s", c.concern_id, c.event_ref)
-        self.state = applied.state
+        self.state = applied.state.model_copy(update={"last_thought_id": thought_id})
         if applied.move is not None and applied.refs:
             unopened = await self._unresolved(applied.refs)
             if unopened:

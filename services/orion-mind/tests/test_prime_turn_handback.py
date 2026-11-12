@@ -67,8 +67,8 @@ def test_a_chat_turn_that_opens_a_thread_is_a_concern_citing_its_correlation_id_
     asyncio.run(rt.tick())
     turn_concerns = [c for c in rt.state.concerns if c.event_ref == "turn:corr-7"]
     assert len(turn_concerns) == 1
-    # It is an ordinary concern: its bet (predict act) opens like any other.
-    assert any(k == "act_opened" and a["verb"] == "predict" for k, a in rt.bus.acts())
+    # It places no bet: nothing can settle it yet, so a predict act would only ever close 0.
+    assert not any(a["verb"] == "predict" for _, a in rt.bus.acts())
     # The thread woke a thought, and the frame showed the turn.
     assert "opened a thread" in rt.llm.calls[0]["user_prompt"]
     assert "TURNS THAT HANDED BACK TO YOU" in rt.llm.calls[0]["user_prompt"]
@@ -102,12 +102,23 @@ def test_an_undecodable_or_off_contract_hop_is_dropped_not_raised():
     assert len(rt._turn_inbox) == 0 and rt._turn_hops_dropped == 2
 
 
-def test_flag_off_means_no_fold_no_record_no_frame_section():
+def test_flag_off_means_no_listener_no_fold_no_record_no_frame_section():
     rt = runtime(answer=MOVE)
     assert not getattr(rt.s, "PRIME_TURN_HANDBACK_ENABLED", False)
-    rt._turn_inbox.extend([])  # the listener never starts with the flag off
+    rt.bus.codec = JsonCodec()
+    for data in wire(*chat_turn()):
+        rt.accept_hop(data)  # even a hop that somehow arrived is never folded with the flag off
+
+    async def go():
+        await rt.start()
+        started = rt._listener
+        await rt.stop()
+        return started
+
+    assert asyncio.run(go()) is None
     asyncio.run(rt.tick())
     assert TURNS_KEY not in rt.bus.redis.kv
+    assert not any(c.event_ref == "turn:corr-7" for c in rt.state.concerns)
     assert "TURNS THAT HANDED BACK" not in rt.llm.calls[0]["user_prompt"]
 
 
@@ -140,3 +151,95 @@ def test_settings_default_ships_on():
 
     assert s.Settings.model_fields["PRIME_TURN_HANDBACK_ENABLED"].default is True
     assert SETTINGS is not None
+
+
+def test_a_turn_concern_that_fades_closes_no_bet():
+    rt = on(runtime(answer={"reading": "ok"}))
+    rt.bus.codec = JsonCodec()
+    for data in wire(*chat_turn()):
+        rt.accept_hop(data)
+    asyncio.run(rt.tick())
+    rt.clock_box["now"] = T0 + timedelta(hours=25)
+    asyncio.run(rt.tick())
+    rec = [r for r in rt.state.concern_record if r.concern_id == rt.turn_record.no_bet_concern_ids[0]]
+    assert rec and rec[0].end == "faded" and rec[0].published
+    assert not any(a["verb"] == "predict" for _, a in rt.bus.acts())
+
+
+def test_an_answered_thought_records_its_id_for_the_prime_block():
+    rt = runtime(answer=MOVE)
+    asyncio.run(rt.tick())
+    assert rt.state.last_thought_id and rt.state.last_reading == MOVE["reading"]
+    assert rt.state.open_nominations[0].thought_id == rt.state.last_thought_id
+    saved = PrimeStateV1.model_validate_json(rt.bus.redis.kv["orion:prime:state"])
+    assert saved.last_thought_id == rt.state.last_thought_id
+
+
+class FlakySubscribeBus:
+    """subscribe raises once, then delivers the given messages and blocks until cancelled."""
+
+    def __init__(self, base, messages):
+        self.base, self.messages, self.calls, self.exited = base, list(messages), 0, 0
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+    def subscribe(self, channel):
+        bus = self
+        bus.calls += 1
+        if bus.calls == 1:
+            raise ConnectionError("bus not up yet")
+
+        class Ctx:
+            async def __aenter__(self):
+                return SimpleNamespace(subscribed=True)
+
+            async def __aexit__(self, *exc):
+                bus.exited += 1
+
+        return Ctx()
+
+    async def iter_messages(self, pubsub):
+        for data in self.messages:
+            yield {"type": "message", "data": data}
+        await asyncio.Event().wait()
+
+
+def test_listener_resubscribes_after_a_failure_and_stop_folds_what_it_heard(monkeypatch):
+    import app.prime_loop as pl
+
+    monkeypatch.setattr(pl, "LISTEN_BACKOFF_CAP_SEC", 0.01)
+    base = runtime(answer={"reading": "ok"}).bus
+    base.codec = JsonCodec()
+    bus = FlakySubscribeBus(base, wire(*chat_turn()))
+    rt = on(runtime(answer={"reading": "ok"}, bus=bus))
+    rt.load = _noop  # keep the main loop idle: this test is about the listener
+    rt.tick = _noop
+
+    async def go():
+        await rt.start()
+        for _ in range(300):
+            if len(rt._turn_inbox) == 2:
+                break
+            await asyncio.sleep(0.01)
+        await rt.stop()
+
+    asyncio.run(go())
+    assert bus.calls == 2 and bus.exited == 1 and rt._listener is None
+    # stop() folded the heard hops and saved them: nothing lost on a deploy.
+    assert len(rt._turn_inbox) == 0
+    saved = PrimeTurnsStateV1.model_validate_json(base.redis.kv[TURNS_KEY])
+    assert saved.recent[0].correlation_id == "corr-7"
+
+
+async def _noop(*a, **k):
+    return None
+
+
+def test_inbox_overflow_is_counted():
+    rt = on(runtime(answer={"reading": "ok"}))
+    rt.bus.codec = JsonCodec()
+    ing, _ = wire(*chat_turn())
+    for _ in range(rt._turn_inbox.maxlen + 3):
+        rt.accept_hop(ing)
+    assert rt._turn_hops_dropped == 3

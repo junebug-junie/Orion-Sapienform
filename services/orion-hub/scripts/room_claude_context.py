@@ -17,7 +17,12 @@ What this builds, for one Hub ``session_id``:
   shown.]``.
 - **A short index of what is open in Hub now** (names and counts only).
 
-Only text counts toward the cap; a single row over 12,000 characters keeps
+Only text counts toward the cap. Line labels (speaker, turn ref, time) add
+about 50 characters a line, so a full first-turn prompt is roughly 165,000
+characters (live 2026-11-12: 111 lines, 159,106 characters of text). It goes
+to Claude over stdin, so no argument-size limit applies.
+
+A single row over 12,000 characters keeps
 its first 8,000 and last 3,000 with a cut marker (none exist live today; the
 largest row on 2026-11-12 was 9,694).
 
@@ -30,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from scripts.chat_history_rehydrate import _is_error_shaped, _row_ts
@@ -165,16 +171,22 @@ _SESSION_ROWS_SQL = """
 SELECT id, correlation_id, prompt, response, created_at, client_meta
 FROM chat_history_log
 WHERE session_id = :sid
-ORDER BY created_at DESC
+ORDER BY created_at DESC NULLS LAST
 LIMIT :lim
 """
 
+# {op}: "<=" when the cap stopped the walk (the stopping row was not shown),
+# "<" when the fetch limit did (the boundary row WAS shown).
 _OLDER_SUMMARY_SQL = """
 SELECT count(*) AS n, min(created_at) AS first_at, max(created_at) AS last_at
 FROM chat_history_log
-WHERE session_id = :sid AND created_at <= :before
+WHERE session_id = :sid AND created_at {op} :before
   AND (coalesce(prompt, '') <> '' OR coalesce(response, '') <> '')
 """
+
+
+def older_summary_sql(*, cap_stopped: bool) -> str:
+    return _OLDER_SUMMARY_SQL.format(op="<=" if cap_stopped else "<")
 
 
 def _engine():
@@ -207,7 +219,8 @@ def fetch_conversation(
             before = stopped.get("created_at") if stopped is not None else rows[-1].get("created_at")
             if before is not None:
                 summary = conn.execute(
-                    text(_OLDER_SUMMARY_SQL), {"sid": str(session_id), "before": before}
+                    text(older_summary_sql(cap_stopped=stopped is not None)),
+                    {"sid": str(session_id), "before": before},
                 ).mappings().first()
                 if summary:
                     note = transcript_note(int(summary["n"] or 0), summary["first_at"], summary["last_at"])
@@ -265,12 +278,19 @@ def fetch_hub_index_lines() -> List[str]:
 async def prime_concern_count_line(bus: Any) -> Optional[str]:
     """How many concerns Prime holds: a count only (the text is Orion's)."""
     try:
-        from orion.prime.block import PRIME_STATE_KEY, PrimeStateV1
+        from orion.prime.block import DEFAULT_STALE_AFTER, PRIME_STATE_KEY, parse_prime_redis
+        from orion.prime.state import PRIME_CONCERNS_KEY
 
-        raw = await bus.redis.get(PRIME_STATE_KEY)
-        if not raw:
+        raw_state = await bus.redis.get(PRIME_STATE_KEY)
+        raw_view = await bus.redis.get(PRIME_CONCERNS_KEY)
+        state, ticked_at, reason = parse_prime_redis(raw_state, raw_view)
+        # Stale means absent, as in the Prime block: an old count is not "now".
+        if reason or state is None or ticked_at is None:
             return None
-        state = PrimeStateV1.model_validate_json(raw)
+        if ticked_at.tzinfo is None:
+            ticked_at = ticked_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - ticked_at > DEFAULT_STALE_AFTER:
+            return None
         return f"- Prime holds {len(state.concerns)} concern(s)"
     except Exception:  # noqa: BLE001
         logger.debug("room_claude_hub_index_prime_failed", exc_info=True)

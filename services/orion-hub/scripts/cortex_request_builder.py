@@ -283,6 +283,14 @@ def build_continuity_messages(
             role = str(item.get("role") or "").strip().lower()
             if role not in {"user", "assistant", "system"}:
                 continue
+            if not keep_timestamps and item.get("kind") == "side_exchange":
+                # Orion's light view of Juniper's side conversations with Claude
+                # (chat_history_rehydrate.render_side_exchange_block) is a system
+                # message placed mid-history. Only the unified harness turn
+                # renders it (as a labelled RECENT CONVERSATION line); a plain
+                # chat `messages` list must not carry a system message in the
+                # middle -- some chat templates reject that outright.
+                continue
             content = str(item.get("content") or "").strip()
             if not content:
                 continue

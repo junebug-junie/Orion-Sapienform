@@ -277,7 +277,12 @@ def render_side_exchange_block(
         newest_ts = _row_ts(row.get("created_at")) or newest_ts
     if not lines:
         return None
-    block: Dict[str, str] = {"role": "system", "content": "\n".join([SIDE_EXCHANGE_HEADER, *lines])}
+    block: Dict[str, str] = {
+        "role": "system",
+        "content": "\n".join([SIDE_EXCHANGE_HEADER, *lines]),
+        # build_continuity_messages drops it for every lane but the unified turn.
+        "kind": "side_exchange",
+    }
     if newest_ts:
         block["ts"] = newest_ts
     return block
@@ -404,7 +409,9 @@ async def rehydrate_history(
 
     messages = rows_to_history_messages(rows, max_turns=max_turns)
 
-    if side_exchange_max > 0:
+    # Only alongside a restored conversation: a history holding just the
+    # block still reads as empty, so a second session_hello would add it again.
+    if side_exchange_max > 0 and messages:
         try:
             side_rows = await asyncio.to_thread(
                 fetch_side_exchange_rows,

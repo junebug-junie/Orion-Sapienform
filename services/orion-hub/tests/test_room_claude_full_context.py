@@ -330,3 +330,124 @@ def test_zero_turns_the_block_off(monkeypatch, value):
         history, session_id="s", max_turns=10, max_age_hours=48.0, side_exchange_max=value,
     ))
     assert seen == {} and len(history) == 3
+
+
+# -- review findings (2026-11-12) ----------------------------------------------------
+
+
+def test_side_block_reaches_only_the_unified_turn():
+    from scripts.cortex_request_builder import build_continuity_messages
+
+    block = rehydrate_mod.render_side_exchange_block([_side(1, "q", "r")], trim_chars=300)
+    history = [
+        {"role": "system", "content": "persona"},
+        {"role": "user", "content": "hi", "ts": "2026-11-12T09:00:00+00:00"},
+        block,
+        {"role": "assistant", "content": "hello", "ts": "2026-11-12T11:00:00+00:00"},
+    ]
+    plain = build_continuity_messages(history=history, latest_user_prompt="x", turns=10)
+    assert not any("Side conversation" in m["content"] for m in plain), "a mid-list system message breaks some chat templates"
+    unified = build_continuity_messages(history=history, latest_user_prompt="x", turns=10, keep_timestamps=True)
+    assert any(m["content"].startswith("Side conversation") and m["role"] == "system" for m in unified)
+
+
+def test_no_side_block_without_a_restored_conversation(monkeypatch):
+    """A history holding only the block still reads as empty, so a second
+    session_hello would append it again."""
+    _patch(monkeypatch, [], [_side(1, "q", "r")])
+    history = [{"role": "system", "content": "persona"}]
+    n = asyncio.run(rehydrate_mod.rehydrate_history(
+        history, session_id="s", max_turns=10, max_age_hours=48.0, side_exchange_max=3,
+    ))
+    assert n == 0 and len(history) == 1
+
+
+def test_trim_zero_means_no_trim():
+    block = rehydrate_mod.render_side_exchange_block([_side(1, None, "a" * 900)], trim_chars=0)
+    assert block["content"].endswith("a" * 900)
+
+
+def test_earlier_count_excludes_the_shown_boundary_row_when_the_fetch_limit_stops():
+    from scripts.room_claude_context import older_summary_sql
+
+    assert "created_at <= :before" in older_summary_sql(cap_stopped=True)
+    assert "created_at < :before" in older_summary_sql(cap_stopped=False)
+
+
+def test_fetch_conversation_against_a_fake_connection(monkeypatch):
+    """The real query path: cap stop -> the 'Earlier' note uses <= and the stopping row."""
+    import scripts.room_claude_context as ctx
+
+    rows = [_row(9, chars=60), _row(8, chars=60)]
+    calls = []
+
+    class _Result:
+        def __init__(self, data):
+            self._data = data
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self._data
+
+        def first(self):
+            return self._data[0] if self._data else None
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            calls.append((str(stmt), params))
+            if "count(*)" in str(stmt):
+                return _Result([{"n": 4, "first_at": "2026-11-01T00:00:00", "last_at": "2026-11-12T10:08:00"}])
+            return _Result(rows)
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(ctx, "_engine", lambda: _Engine())
+    entries, note = ctx.fetch_conversation("sess", max_chars=100)
+    assert [e["turn_ref"] for e in entries] == ["00000009"]
+    assert note == "[Earlier: 4 turns from 2026-11-01 to 2026-11-12 not shown.]"
+    sql, params = calls[1]
+    assert "created_at <= :before" in sql and params["before"] == rows[1]["created_at"]
+    assert "NULLS LAST" in calls[0][0]
+
+
+class _Redis:
+    def __init__(self, values):
+        self.values = values
+
+    async def get(self, key):
+        return self.values.get(key)
+
+
+class _Bus:
+    def __init__(self, values):
+        self.redis = _Redis(values)
+
+
+def _prime(as_of):
+    from orion.prime.block import PRIME_STATE_KEY
+    from orion.prime.state import PRIME_CONCERNS_KEY, PrimeConcernsViewV1, PrimeStateV1
+
+    view = PrimeConcernsViewV1.model_validate({"as_of": as_of.isoformat()})
+    return {PRIME_STATE_KEY: PrimeStateV1().model_dump_json(), PRIME_CONCERNS_KEY: view.model_dump_json()}
+
+
+def test_prime_count_is_shown_fresh_and_hidden_stale():
+    from datetime import timedelta
+
+    from scripts.room_claude_context import prime_concern_count_line
+
+    now = datetime.now(timezone.utc)
+    fresh = asyncio.run(prime_concern_count_line(_Bus(_prime(now))))
+    assert fresh == "- Prime holds 0 concern(s)"
+    assert asyncio.run(prime_concern_count_line(_Bus(_prime(now - timedelta(hours=2))))) is None
+    assert asyncio.run(prime_concern_count_line(_Bus({}))) is None

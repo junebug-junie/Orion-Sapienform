@@ -3706,6 +3706,7 @@ let chatTurnTimer = null;
     if (!value) return;
     syncChatInputFromExpandTextarea();
     closeChatInputExpandModal({ applyToInput: false, focusInput: false });
+    if (routeComposerToClaude(value)) return;
     await submitExplicitChatText(value);
   }
 
@@ -10139,13 +10140,58 @@ let chatTurnTimer = null;
   const askClaudeButton = document.getElementById('askClaudeButton');
   const askClaudeStatusChip = document.getElementById('askClaudeStatusChip');
 
+  // One Claude turn in flight at a time, tracked here rather than read back
+  // from the button's DOM state. The reply frame normally clears it; the
+  // timeout is a safety valve for a reply that never arrives (socket
+  // reconnected mid-reply, relay died after accepting), which used to leave
+  // Ask Claude -- and now every typed @claude -- stuck until a page reload.
+  const ASK_CLAUDE_BUSY_TIMEOUT_MS = 5 * 60 * 1000;
+  let askClaudeInFlight = false;
+  let askClaudeBusyTimer = null;
   function setAskClaudeBusy(busy) {
-    if (askClaudeButton) askClaudeButton.disabled = Boolean(busy);
-    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !busy);
+    askClaudeInFlight = Boolean(busy);
+    if (askClaudeBusyTimer) {
+      clearTimeout(askClaudeBusyTimer);
+      askClaudeBusyTimer = null;
+    }
+    if (askClaudeInFlight) {
+      askClaudeBusyTimer = setTimeout(() => {
+        askClaudeBusyTimer = null;
+        setAskClaudeBusy(false);
+        updateStatus('No reply from Claude after 5 minutes. You can ask again.');
+      }, ASK_CLAUDE_BUSY_TIMEOUT_MS);
+    }
+    if (askClaudeButton) askClaudeButton.disabled = askClaudeInFlight;
+    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !askClaudeInFlight);
   }
 
-  async function askClaude() {
-    const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
+  // Fail closed: if claude-address.js did not load (404, a stale cached
+  // index.html without its script tag), an "@claude ..." message must still
+  // never reach Orion. Same pattern as claude-address.js.
+  const CLAUDE_ADDRESS_FALLBACK = /^@claude(?=$|[\s,:;])/i;
+  function parseClaudeAddressSafe(text) {
+    if (window.OrionClaudeAddress && typeof window.OrionClaudeAddress.parseClaudeAddress === 'function') {
+      return window.OrionClaudeAddress.parseClaudeAddress(text);
+    }
+    const value = String(text == null ? '' : text).trim();
+    if (!CLAUDE_ADDRESS_FALLBACK.test(value)) return { toClaude: false, prompt: value };
+    return {
+      toClaude: true,
+      prompt: value.replace(CLAUDE_ADDRESS_FALLBACK, '').replace(/^\s*[,:;]?\s*/, '').trim(),
+    };
+  }
+
+  // `typed`, when given, is a chat-box message that started with "@claude"
+  // (see routeComposerToClaude): its prompt with the address stripped, plus
+  // the original text to echo as Juniper's bubble. Called with no argument by
+  // the Ask Claude button, which reads the composer itself.
+  async function askClaude(typed) {
+    const fromAddress = Boolean(typed && typeof typed === 'object');
+    // The button sends the box's text without its "@claude" address too, so
+    // the two entry points give Claude the same prompt for the same text.
+    const value = fromAddress
+      ? String(typed.prompt || '').trim()
+      : parseClaudeAddressSafe(chatInput && chatInput.value ? chatInput.value : '').prompt;
     // Falls back to the last thing said when the composer is empty, so "Ask
     // Claude" works as "weigh in on this" without retyping the question.
     // That fallback text is not necessarily Juniper's -- it could be Orion's
@@ -10159,7 +10205,10 @@ let chatTurnTimer = null;
     if (!prompt) {
       const last = lastRoomMessage();
       if (last) {
-        prompt = last.text;
+        // Juniper's own "@claude ..." bubble is a fallback candidate too;
+        // hand Claude the message, not the address.
+        const addressed = parseClaudeAddressSafe(last.text);
+        prompt = (addressed.toClaude && addressed.prompt) ? addressed.prompt : last.text;
         invitedBy = last.sender === 'You' ? 'Juniper' : last.sender;
       } else {
         prompt = 'What do you make of the conversation so far?';
@@ -10183,7 +10232,19 @@ let chatTurnTimer = null;
         setAskClaudeBusy(false);
         return;
       }
-      if (value && chatInput) chatInput.value = '';
+      if (fromAddress) {
+        // Her words stay visible in the room. Shown only once the invite is
+        // accepted, so a refused invite leaves the text in the box instead.
+        // DOM only: nothing here reaches Orion's history (see PR report
+        // docs/superpowers/pr-reports/2026-11-12-hub-at-claude-pr.md).
+        if (value) appendMessage('You', typed.original || value, 'text-white', { mode: 'room_claude' });
+        if (chatInput) chatInput.value = '';
+        if (chatInputExpandTextarea) chatInputExpandTextarea.value = '';
+        updateClaudeAddressCue();
+      } else if (chatInput && chatInput.value.trim()) {
+        chatInput.value = '';
+        updateClaudeAddressCue();
+      }
       // Busy stays on until the room_claude_utterance frame arrives; the reply
       // is asynchronous over the socket, not in this response.
     } catch (err) {
@@ -10210,12 +10271,70 @@ let chatTurnTimer = null;
     return null;
   }
 
-  if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
+  // A chat-box message starting with "@claude" goes to Claude through the same
+  // invite as the Ask Claude button and NEVER starts an Orion turn. Returns
+  // true when it took the message (sent, or held because Claude is still
+  // replying), false when the text is ordinary chat for Orion.
+  function routeComposerToClaude(text) {
+    const parsed = parseClaudeAddressSafe(text);
+    if (!parsed.toClaude) return false;
+    const pendingImages = chatAttachmentsController && typeof chatAttachmentsController.peekPending === 'function'
+      ? chatAttachmentsController.peekPending().length
+      : 0;
+    if (pendingImages) {
+      // The invite carries text only. Sending anyway would leave the images
+      // pending, and they would ride out silently on her next Orion message.
+      const msg = 'Images cannot go to Claude. Remove them, or send without @claude to give them to Orion.';
+      if (typeof chatAttachmentsController.setStatus === 'function') chatAttachmentsController.setStatus(msg, 'error');
+      updateStatus(msg);
+      return true;
+    }
+    if (askClaudeInFlight) {
+      // Same limit as the button: one Claude turn in flight at a time. The
+      // text stays in the box; it is not handed to Orion instead.
+      updateStatus('Claude is still replying. Your @claude message is still in the box.');
+      return true;
+    }
+    askClaude({ prompt: parsed.prompt, original: String(text || '').trim() });
+    return true;
+  }
+
+  // Amber Send button (and expanded-composer Send) while the box starts with
+  // "@claude", so Juniper sees where the message goes before she sends it.
+  // Function declaration (hoisted) with its class lists inside, so an early
+  // caller such as submitExplicitChatText cannot hit a const's dead zone.
+  function updateClaudeAddressCue() {
+    const CLAUDE_CUE_ON = ['bg-amber-600', 'hover:bg-amber-500'];
+    const CLAUDE_CUE_OFF = ['bg-indigo-600', 'hover:bg-indigo-500'];
+    const text = chatInputExpandModalRoot && !chatInputExpandModalRoot.classList.contains('hidden') && chatInputExpandTextarea
+      ? chatInputExpandTextarea.value
+      : (chatInput ? chatInput.value : '');
+    const toClaude = parseClaudeAddressSafe(text).toClaude;
+    for (const btn of [sendButton, chatInputExpandModalSend]) {
+      if (!btn) continue;
+      if (btn.dataset.claudeAddress === (toClaude ? '1' : '0')) continue;
+      btn.dataset.claudeAddress = toClaude ? '1' : '0';
+      btn.classList.remove(...(toClaude ? CLAUDE_CUE_OFF : CLAUDE_CUE_ON));
+      btn.classList.add(...(toClaude ? CLAUDE_CUE_ON : CLAUDE_CUE_OFF));
+      if (btn === sendButton) btn.textContent = toClaude ? 'To Claude' : 'Send';
+      btn.title = toClaude ? 'Starts with @claude: goes to Claude, not Orion' : '';
+    }
+    if (chatInput && chatInput.dataset.claudeAddress !== (toClaude ? '1' : '0')) {
+      // Border, not ring: the box's own focus:ring-indigo-500 would win over
+      // an amber ring exactly while she is typing.
+      chatInput.dataset.claudeAddress = toClaude ? '1' : '0';
+      chatInput.classList.toggle('border-amber-500', toClaude);
+      chatInput.classList.toggle('border-gray-700', !toClaude);
+    }
+  }
+
+  if (askClaudeButton) askClaudeButton.addEventListener('click', () => askClaude());
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (cockpitLiveButton) cockpitLiveButton.addEventListener('click', openLiveCockpit);
   if (chatInput) {
     chatInput.addEventListener('input', () => {
+      updateClaudeAddressCue();
       if (!chatInputExpandModalRoot || chatInputExpandModalRoot.classList.contains('hidden')) return;
       syncChatExpandTextareaFromInput();
     });
@@ -10271,7 +10390,10 @@ let chatTurnTimer = null;
     notificationsDismissAllBtn.addEventListener('click', () => dismissAllNotifications());
   }
   if (chatInputExpandTextarea) {
-    chatInputExpandTextarea.addEventListener('input', syncChatInputFromExpandTextarea);
+    chatInputExpandTextarea.addEventListener('input', () => {
+      syncChatInputFromExpandTextarea();
+      updateClaudeAddressCue();
+    });
     chatInputExpandTextarea.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -10362,6 +10484,7 @@ let chatTurnTimer = null;
       const { prompt: promptText } = getSkillRunnerSelection();
       if (!promptText) return;
       chatInput.value = promptText;
+      updateClaudeAddressCue();
       chatInput.focus();
     });
   }
@@ -12180,6 +12303,7 @@ let chatTurnTimer = null;
 
     appendMessage('You', value, 'text-white', { attachments: outboundAttachments });
     if (chatInput) chatInput.value = '';
+    updateClaudeAddressCue();
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
@@ -12381,6 +12505,7 @@ let chatTurnTimer = null;
   async function sendTextMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
+    if (routeComposerToClaude(text)) return;
     await submitExplicitChatText(text);
   }
 

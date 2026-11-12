@@ -165,6 +165,19 @@ class Settings(BaseSettings):
     # day); a turn whose prompt cites an open prime_concern:<id> and replied settles it. false: no listener, no
     # fold, no frame section; concerns already opened from turns stay ordinary concerns. Shipped ON.
     PRIME_TURN_HANDBACK_ENABLED: bool = Field(default=True, alias="PRIME_TURN_HANDBACK_ENABLED")
+    # Living Prime Part 3 (app/prime_loop.py, orion/prime/day_letter.py): the day letter is Prime's end-of-day
+    # turn. When yesterday is closed and has no letter, Prime bids a `make` act and, funded, orders the letter run
+    # from Hub (PRIME_HUB_URL). false = Prime never writes a letter (Hub's timer is retired: no letters at all).
+    PRIME_DAY_LETTER_ENABLED: bool = Field(default=True, alias="PRIME_DAY_LETTER_ENABLED")
+    # How long after Prime saw the day closed it keeps re-bidding; never funded by then -> no letter that day.
+    PRIME_DAY_LETTER_BID_WINDOW_HOURS: float = Field(default=18.0, gt=0.0, le=48.0,
+                                                     alias="PRIME_DAY_LETTER_BID_WINDOW_HOURS")
+    # The letter turn's budget per attempt (the bid's cost ceiling and the run's timeout_sec).
+    PRIME_DAY_LETTER_TURN_TIMEOUT_SEC: float = Field(default=1800.0, ge=60.0, le=3600.0,
+                                                     alias="PRIME_DAY_LETTER_TURN_TIMEOUT_SEC")
+    # The letter run's admission deadline, counted from the funded bid (it may queue for the GPU pool that long).
+    PRIME_DAY_LETTER_RUN_DEADLINE_HOURS: float = Field(default=12.0, gt=0.0, le=48.0,
+                                                       alias="PRIME_DAY_LETTER_RUN_DEADLINE_HOURS")
     # Self-monitor E1 act gate on Prime's own acts (orion/self_monitor/gate.py; app/prime_loop.py): an act
     # whose faculty (act.prime.<verb>, e.g. act.prime.predict) is held broken/unreliable in a fresh
     # orion:self_monitor:latest is not opened (track_record_failing), except one re-test probe per faculty

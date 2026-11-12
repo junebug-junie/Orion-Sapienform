@@ -38,6 +38,8 @@ on:
       - "orion/schemas/cockpit_sighting.py"
       - "orion/cockpit/**"
       - "orion/consult/core.py"
+      # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
+      - "orion/schemas/orion_day.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -71,6 +73,8 @@ on:
       - "orion/schemas/cockpit_sighting.py"
       - "orion/cockpit/**"
       - "orion/consult/core.py"
+      # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
+      - "orion/schemas/orion_day.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:

@@ -74,6 +74,11 @@ services:
       PRIME_EVENT_WANTS_LIMIT: ${PRIME_EVENT_WANTS_LIMIT:-8}
       # Living Prime Part 2, turn hand-back (app/prime_loop.py); see .env_example.
       PRIME_TURN_HANDBACK_ENABLED: ${PRIME_TURN_HANDBACK_ENABLED:-true}
+      # Living Prime Part 3, the day letter as Prime's end-of-day turn (app/prime_loop.py); see .env_example.
+      PRIME_DAY_LETTER_ENABLED: ${PRIME_DAY_LETTER_ENABLED:-true}
+      PRIME_DAY_LETTER_BID_WINDOW_HOURS: ${PRIME_DAY_LETTER_BID_WINDOW_HOURS:-18}
+      PRIME_DAY_LETTER_TURN_TIMEOUT_SEC: ${PRIME_DAY_LETTER_TURN_TIMEOUT_SEC:-1800}
+      PRIME_DAY_LETTER_RUN_DEADLINE_HOURS: ${PRIME_DAY_LETTER_RUN_DEADLINE_HOURS:-12}
       # Self-monitor E1 act gate on Prime's acts (app/prime_loop.py); see .env_example.
       SELF_MONITOR_ACT_GATE_ENABLED: ${SELF_MONITOR_ACT_GATE_ENABLED:-true}
       SELF_MONITOR_PROBE_INTERVAL_SEC: ${SELF_MONITOR_PROBE_INTERVAL_SEC:-21600}

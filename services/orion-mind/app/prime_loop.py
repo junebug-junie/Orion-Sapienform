@@ -91,6 +91,15 @@ Only those two wake a thought; every finished turn shows in the next frame. The 
 Redis key (orion:prime:turns). Pub/sub is not durable: a turn that finishes while orion-mind is down is not handed
 back. Flag off: no listener, no fold, no frame section.
 
+The day letter is Prime's end-of-day turn (living Prime design Part 3, PRIME_DAY_LETTER_ENABLED;
+orion/prime/day_letter.py): on the tick, when the temporal chronicle has closed yesterday and Hub has no letter for
+it, Prime bids a ``make`` act (family ``prime``, the letter turn's lane, priced at the turn's ceiling). Deferred:
+no act, re-bid later inside the bid window; never funded -> no letter that day, and the next order names the day.
+Funded: the act opens and Prime orders the run from Hub (one durable unified turn). The run's terminal state
+(GET /runs/<run_id> on durable-runs) closes the act, and the letter's threads become Prime concerns (at most 2,
+never past MAX_CONCERNS), so curiosity hears them only through Prime's own graded ``ask``. Its record lives in its
+own Redis key (orion:prime:day_letter). No thought is spent on it: the tick decides.
+
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
 """
@@ -144,6 +153,7 @@ from orion.prime.acts import (
     thought_act,
     treated_focus_gone,
 )
+from orion.prime import day_letter as dl
 from orion.prime.handback import (
     HANDBACK_CHANNEL,
     TURNS_KEY,
@@ -191,6 +201,13 @@ from orion.schemas.introspect import (
     IntrospectToolBindingV1,
     QueueCuriosityFocusArguments,
 )
+from orion.schemas.orion_day import (
+    ORION_DAY_ORDER_PATH,
+    ORION_DAY_STATUS_PATH,
+    OrionDayLetterOrderResultV1,
+    OrionDayLetterOrderV1,
+    OrionDayLetterStatusV1,
+)
 from orion.self_monitor.gate import GateDecision
 
 logger = logging.getLogger("orion-mind.prime")
@@ -199,6 +216,9 @@ STATE_KEY = "orion:prime:state"
 FAMILY = "prime"
 PRODUCER = "orion-mind.prime"
 HTTP_TIMEOUT_SEC = 4.0
+# Hub gathers the day before it answers an order (read-only SQL, seconds); a timed-out order is re-sent and Hub
+# answers ``exists`` for a run it already submitted.
+ORDER_HTTP_TIMEOUT_SEC = 90.0
 FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
@@ -223,6 +243,13 @@ def _get_json(url: str) -> Any:
         return json.loads(resp.read())
 
 
+def _post_json(url: str, body: dict[str, Any]) -> Any:
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=ORDER_HTTP_TIMEOUT_SEC) as resp:  # noqa: S310 -- internal service URL
+        return json.loads(resp.read())
+
+
 def _with_outcome_line(state: PrimeStateV1, text: str) -> PrimeStateV1:
     """Show a line in the next frame WITHOUT making it a change (a refusal Prime caused itself must
     not wake it again, or a refused move would loop)."""
@@ -240,6 +267,7 @@ class PrimeRuntime(MindLoopRuntime):
         bus: Any,
         llm: Any,
         get_json: Callable[[str], Any] = _get_json,
+        post_json: Callable[[str, dict[str, Any]], Any] = _post_json,
         bid: Optional[Callable[[Any], Awaitable[Any]]] = None,
         release: Optional[Callable[[str], Awaitable[Any]]] = None,
         clock: Callable[[], datetime] = utcnow,
@@ -248,6 +276,10 @@ class PrimeRuntime(MindLoopRuntime):
         super().__init__(settings=settings, bus=bus, llm=llm, bid=bid, release=release, clock=clock, turns=turns)
         self.state: PrimeStateV1
         self.get_json = get_json
+        self.post_json = post_json
+        # The day letter (Part 3): its own record, saved under dl.DAY_LETTER_KEY.
+        self.day_letter = dl.PrimeDayLetterStateV1()
+        self._day_letter_checked_at: Optional[datetime] = None
         # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
         self._bet_refused_at: dict[str, datetime] = {}
         self._last_settle: Optional[datetime] = None
@@ -341,6 +373,13 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def load(self) -> None:
         await super().load()
+        if self._day_letter_on():
+            try:
+                raw = await self.bus.redis.get(dl.DAY_LETTER_KEY)
+                if raw:
+                    self.day_letter = dl.PrimeDayLetterStateV1.model_validate_json(raw)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_day_letter_load_failed err=%s (starting empty)", str(exc)[:200])
         if not self._handback_on():
             return
         try:
@@ -362,6 +401,11 @@ class PrimeRuntime(MindLoopRuntime):
                 await self.bus.redis.set(TURNS_KEY, self.turn_record.model_dump_json())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("prime_turns_save_failed err=%s", type(exc).__name__)
+        if self._day_letter_on():
+            try:
+                await self.bus.redis.set(dl.DAY_LETTER_KEY, self.day_letter.model_dump_json())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_day_letter_save_failed err=%s", type(exc).__name__)
         try:
             await self.bus.redis.set(PRIME_CONCERNS_KEY, concerns_view(self.state, now=self.clock()).model_dump_json())
         except Exception as exc:  # noqa: BLE001
@@ -381,6 +425,8 @@ class PrimeRuntime(MindLoopRuntime):
         if self._handback_on():
             self._fold_turns(now)
             inputs.turns = turn_lines(self.turn_record, now)
+        if self._day_letter_on():
+            await self._day_letter_upkeep(now)
         await self._maybe_settle(now)
         await self._settle_regulations(now)
         await self._flush_concern_acts()
@@ -409,6 +455,230 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _after_think(self) -> None:
         await self._flush_concern_acts()
+
+    # --- the day letter: Prime's end-of-day turn (living Prime design, Part 3) -----------------
+    def _day_letter_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_DAY_LETTER_ENABLED", False))
+
+    def _letter_cfg(self, name: str, default: float) -> float:
+        return float(getattr(self.s, f"PRIME_DAY_LETTER_{name}", default))
+
+    async def _post(self, url: str, body: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        try:
+            data = await asyncio.to_thread(self.post_json, url, body)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {str(exc)[:160]}"
+        if not isinstance(data, dict):
+            return None, "not a JSON object"
+        return data, None
+
+    def _letter_check_due(self, now: datetime) -> bool:
+        last = self._day_letter_checked_at
+        if last is not None and (now - last).total_seconds() < dl.CHECK_INTERVAL_SEC:
+            return False
+        self._day_letter_checked_at = now
+        return True
+
+    async def _day_letter_upkeep(self, now: datetime) -> None:
+        """One step of the end-of-day move per tick at most. Never raises into the tick."""
+        try:
+            await self._day_letter_step(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("prime_day_letter_step_failed", exc_info=True)
+
+    async def _day_letter_step(self, now: datetime) -> None:
+        op = self.day_letter.open
+        if op is not None and op.act_id is not None:
+            # Writing: the order was not answered yet (send it again), or the run is out (read it).
+            if not self._letter_check_due(now):
+                return
+            if op.order_status in (None, "unavailable"):
+                if op.deadline_at is not None and now >= op.deadline_at:
+                    await self._close_letter(now, produced=False, outcome="not_written",
+                                             note=f"Hub never took the order before the run's deadline "
+                                                  f"({op.order_detail or 'no answer'})")
+                    return
+                await self._order_letter(now)
+                return
+            await self._settle_letter(now)
+            return
+        if op is not None:
+            if dl.window_over(op, now):
+                reason = f"my make bid was never funded inside the bid window ({op.bids} bid(s); last: " \
+                         f"{op.last_refusal or 'no answer'})"
+                self.day_letter = dl.finish(self.day_letter, dl.PrimeDayLetterDoneV1(
+                    letter_date=op.letter_date, outcome="not_written", reason=reason[:dl.REASON_CAP], closed_at=now))
+                logger.info("prime_day_letter_not_written day=%s reason=%r", op.letter_date, reason)
+                self.state = note_outcome(self.state, f"I did not write my letter for {op.letter_date}: {reason}")
+                return
+            if op.next_bid_at is not None and now < op.next_bid_at:
+                return
+            await self._bid_letter(now)
+            return
+        if not self._letter_check_due(now):
+            return
+        day = dl.yesterday(now)
+        if dl.handled(self.day_letter, day):
+            return
+        closed, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/temporal-self/day/{day.isoformat()}")
+        if closed is None:
+            return  # not drained by the chronicle yet (404), or unreadable: look again later
+        status_raw, err = await self._read(
+            f"{self.s.PRIME_HUB_URL.rstrip('/')}{ORION_DAY_STATUS_PATH.format(letter_date=day.isoformat())}")
+        if status_raw is None:
+            logger.info("prime_day_letter_status_unread day=%s err=%s", day, err)
+            return
+        try:
+            status = OrionDayLetterStatusV1.model_validate(status_raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prime_day_letter_status_invalid day=%s err=%s", day, str(exc)[:160])
+            return
+        if status.letter_exists:
+            self.day_letter = dl.finish(self.day_letter, dl.PrimeDayLetterDoneV1(
+                letter_date=day, outcome="already_written", reason=f"run {status.run_id} wrote it", closed_at=now,
+                run_id=status.run_id))
+            logger.info("prime_day_letter_already_written day=%s run=%s", day, status.run_id)
+            return
+        self.day_letter = dl.start(self.day_letter, day, now, window_hours=self._letter_cfg("BID_WINDOW_HOURS", 18.0))
+        self._tell(f"yesterday ({day}) is closed and has no letter yet: I mean to write it")
+        logger.info("prime_day_letter_due day=%s bid_until=%s", day, self.day_letter.open.bid_until.isoformat())
+        await self._bid_letter(now)
+
+    async def _bid_letter(self, now: datetime) -> None:
+        """Bid the make act. Deferred (or refused by the self-monitor gate): no act, try later. Funded: open the
+        act and order the run."""
+        from orion.schemas.physiology_want import WantV1
+
+        op = self.day_letter.open
+        day = op.letter_date
+        ref = f"{dl.LETTER_EVENT_PREFIX}{day.isoformat()}"
+        d = await self._gate_decide("make", ref, job_key=ref)
+        if d is not None and not d.admit:
+            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
+                op, now, f"self-monitor gate: {gate_why(d, self.gate.probe_interval_sec)}", None)})
+            logger.info("prime_act_refused verb=make day=%s gate=%s", day, d.label())
+            return
+        bid_no = op.bids + 1
+        timeout = self._letter_cfg("TURN_TIMEOUT_SEC", 1800.0)
+        want = WantV1(want_id=dl.want_id(day, bid_no), family=FAMILY, producer=PRODUCER, verb="make",
+                      tier=self.identity.tier, lanes=[dl.DEFAULT_LANE], object_ref=ref,
+                      cost=dl.letter_cost(lane=dl.DEFAULT_LANE, turn_timeout_sec=timeout))
+        decision = await self.bid(want)
+        op = op.model_copy(update={"bids": bid_no})
+        outcome = getattr(decision, "outcome", None)
+        if outcome != "funded":
+            # Never fail open: no answer is "not funded" (orion/physiology/client.py).
+            why = str(getattr(decision, "why", "") or "")[:160]
+            reason = f"{outcome or 'no answer'} ({getattr(decision, 'reason', None) or '-'}" \
+                     f"{', ' + str(getattr(decision, 'binding_constraint', None)) if getattr(decision, 'binding_constraint', None) else ''})" \
+                     f"{': ' + why if why else ''}"
+            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
+                op, now, reason, getattr(decision, "retry_after_sec", None))})
+            logger.info("prime_day_letter_bid_not_funded day=%s bid=%d reason=%r next=%s", day, bid_no, reason,
+                        self.day_letter.open.next_bid_at.isoformat())
+            return
+        if not self._admit(d, job_key=ref):
+            await self.release(want.want_id)
+            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
+                op, now, "self-monitor: this window's re-test probe was already taken", None)})
+            return
+        deadline_h = self._letter_cfg("RUN_DEADLINE_HOURS", 12.0)
+        act = dl.make_act(day, horizon_sec=deadline_h * 3600.0 + dl.ACT_HORIZON_GRACE_SEC)
+        if not await self._open(act, dl.DAY_LETTER_COMPONENT, at=now):
+            await self.release(want.want_id)
+            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
+                op, now, "the make act's open could not be published", None)})
+            return
+        self.day_letter = self.day_letter.model_copy(update={"open": op.model_copy(update={
+            "want_id": want.want_id, "act_id": act.act_id, "act_opened_at": now, "last_refusal": None,
+            "run_id": dl.letter_run_id(day), "correlation_id": dl.letter_correlation_id(day),
+            "deadline_at": now + timedelta(hours=deadline_h)})})
+        logger.info("prime_day_letter_funded day=%s bid=%d act=%s want=%s", day, bid_no, act.act_id, want.want_id)
+        self._day_letter_checked_at = now
+        await self._order_letter(now)
+
+    async def _order_letter(self, now: datetime) -> None:
+        op = self.day_letter.open
+        missed = dl.missed_for(self.day_letter, op.letter_date)
+        order = OrionDayLetterOrderV1(
+            letter_date=op.letter_date, run_id=op.run_id, correlation_id=op.correlation_id, prime_act_id=op.act_id,
+            missed_letters=missed, deadline_at=op.deadline_at, timeout_sec=self._letter_cfg("TURN_TIMEOUT_SEC", 1800.0))
+        data, err = await self._post(f"{self.s.PRIME_HUB_URL.rstrip('/')}{ORION_DAY_ORDER_PATH}",
+                                     order.model_dump(mode="json"))
+        result: Optional[OrionDayLetterOrderResultV1] = None
+        if data is not None:
+            try:
+                result = OrionDayLetterOrderResultV1.model_validate(data)
+            except Exception as exc:  # noqa: BLE001
+                err = f"unreadable answer: {str(exc)[:120]}"
+        if result is None or result.status == "unavailable":
+            detail = err if result is None else (result.detail or "unavailable")
+            self.day_letter = self.day_letter.model_copy(update={"open": op.model_copy(update={
+                "order_status": "unavailable", "order_detail": (detail or "")[:500]})})
+            logger.info("prime_day_letter_order_unanswered day=%s run=%s err=%s", op.letter_date, op.run_id, detail)
+            return
+        logger.info("prime_day_letter_ordered day=%s run=%s status=%s missed=%d detail=%s", op.letter_date, op.run_id,
+                    result.status, len(missed), result.detail or "-")
+        if result.status in ("submitted", "exists"):
+            self.day_letter = dl.mark_told(self.day_letter, [m.letter_date for m in missed]).model_copy(update={
+                "open": op.model_copy(update={"order_status": result.status, "order_detail": result.detail,
+                                              "missed_sent": [m.letter_date for m in missed]})})
+            return
+        outcome = {"already_written": "already_written", "empty_day": "empty"}.get(result.status, "not_written")
+        note = {"already_written": f"a letter for this day already existed (run {result.run_id})",
+                "empty_day": "the day held nothing to write about"}.get(
+            result.status, f"Hub refused the order: {result.detail or result.status}")
+        await self._close_letter(now, produced=False, outcome=outcome, note=note, run_id=result.run_id)
+
+    async def _settle_letter(self, now: datetime) -> None:
+        op = self.day_letter.open
+        run, err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{op.run_id}")
+        if run is None:
+            past = op.deadline_at is not None and now >= op.deadline_at + timedelta(seconds=dl.ACT_HORIZON_GRACE_SEC)
+            if past:
+                await self._close_letter(now, produced=False, outcome="not_written",
+                                         note=f"the letter run {op.run_id} could not be read past its deadline ({err})")
+            return
+        produced, note, detail = dl.run_outcome(run)
+        if produced is None:
+            return
+        threads = [str(t) for t in (detail.get("threads") or []) if isinstance(t, str)]
+        turn = detail.get("turn_correlation_id")
+        await self._close_letter(now, produced=produced, outcome="written" if produced else "not_written", note=note,
+                                 run_id=op.run_id, turn_correlation_id=str(turn) if turn else None, threads=threads)
+
+    async def _close_letter(self, now: datetime, *, produced: bool, outcome: dl.DoneOutcome, note: str,
+                            run_id: Optional[str] = None, turn_correlation_id: Optional[str] = None,
+                            threads: Optional[list[str]] = None) -> None:
+        """Close the make act (kept open and retried next check if the publish fails), release the bid, turn the
+        threads into concerns, record the day."""
+        op = self.day_letter.open
+        day = op.letter_date
+        act = dl.make_act(day, horizon_sec=self._letter_cfg("RUN_DEADLINE_HOURS", 12.0) * 3600.0
+                          + dl.ACT_HORIZON_GRACE_SEC)
+        act_note = f"{note}; turn {turn_correlation_id}" if turn_correlation_id else note
+        if not await self._close(act, dl.DAY_LETTER_COMPONENT, produced=produced, note=act_note[:500]):
+            return
+        if op.want_id:
+            await self.release(op.want_id)
+        threads = threads or []
+        concern_ids: list[str] = []
+        no_room = 0
+        if produced and threads:
+            self.state, concern_ids, no_room = dl.thread_concerns(self.state, day, threads, now)
+        if turn_correlation_id and self._handback_on():
+            self.turn_record = link_started_turn(self.turn_record, turn_correlation_id, op.act_id)
+        self.day_letter = dl.finish(self.day_letter, dl.PrimeDayLetterDoneV1(
+            letter_date=day, outcome=outcome, reason="" if produced else note[:dl.REASON_CAP], closed_at=now,
+            act_id=op.act_id, run_id=run_id or op.run_id, turn_correlation_id=turn_correlation_id,
+            threads=len(threads), concern_ids=concern_ids, threads_without_room=no_room))
+        logger.info("prime_day_letter_closed day=%s act=%s produced=%s outcome=%s run=%s turn=%s threads=%d "
+                    "concerns=%s no_room=%d note=%r", day, op.act_id, produced, outcome, run_id or op.run_id,
+                    turn_correlation_id or "-", len(threads), ",".join(concern_ids) or "-", no_room, note)
+        tail = (f"; {len(threads)} thread(s), {len(concern_ids)} now held as concerns"
+                + (f", {no_room} without room" if no_room else "")) if produced else ""
+        self.state = note_outcome(self.state, f"my letter for {day} (act {op.act_id}): {note}{tail}")
+
 
     # --- organ replies (curiosity replica patch 4) --------------------------------------------
     def _organ_replies_on(self) -> bool:

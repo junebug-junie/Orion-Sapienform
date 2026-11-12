@@ -76,7 +76,9 @@ roles:
   # system distill holds waited 10+ h behind background reading holds (10-20). As an owner, queue
   # order (priority, then age) decides. Rollback: owner: agent.
   # agent runs Strata like chat (2026-10-31), at 131072 like agent-gpu2. Rollback: drop `backend: strata`.
-  agent:      {kind: llm, backend: strata, cards: [gpu1], owner: [agent, memory_distill], port: 8015}
+  # judge co-owns gpu1 (2026-11-12) for the same reason as memory_distill: as a borrower, rule 5
+  # would hold every judge call behind any queued agent lease (curiosity holds queue there all day).
+  agent:      {kind: llm, backend: strata, cards: [gpu1], owner: [agent, memory_distill, judge], port: 8015}
   agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
                # How long gpu2 may stay borrowed from diffusion once the pool loaded it (was
                # DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC): then holds are recalled and the seat unloads.
@@ -163,6 +165,15 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   # seat (a different model may load there) and never the lent chat card. Backlog, not wait: a
   # distill run waits for the hold under durable-runs admission anyway.
   memory_distill: {roles: [agent], on_unavailable: backlog}
+  # The finalize 5b judge (harness_finalize_reflect) of a durable run whose hold is on a role this
+  # list does not name (2026-11-12; orion/harness/finalize.py FINALIZE_JUDGE_HOLD_ROLES must equal
+  # this list -- orion/harness/tests/test_finalize_judge_placement.py). Under a hold every call runs
+  # on the hold's role, so 22 of 90 judge calls (11-11..12) ran on whatever model the gpu2 seat had
+  # loaded; replay showed that seat's judge, thinking off, caught 2 of 5 false claims (5 of 5 with
+  # thinking on, which cannot be used: 8000 tokens and no verdict). gpu1, then chat's card only while
+  # Juniper lends it (rule 9), never the gpu2 seat or hecate. Wait, not backlog: nobody resumes a
+  # judge call later. Rollback: delete this class, its route and the owner entry on `agent`.
+  judge:          {roles: [agent, chat], on_unavailable: wait}
 
 routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:
            # the gateway refuses a route that is not here rather than guess a GPU.
@@ -208,6 +219,10 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # Memory episode distiller (2026-10-02): durable-runs holds gpu1 (Strata since 2026-10-31) at system priority
   # (ahead of curiosity's background holds) and calls the gateway on this route.
   memory_distill: {class: memory_distill, priority: system}
+  # The finalize 5b judge off a hold (classes.judge above). system, the priority the judge's hold child
+  # named before (route `agent`): ahead of background holds (it may use their gaps, H3), behind
+  # Juniper's turn and the senses. Shed by the heat reflex like any one-shot system call.
+  judge: {class: judge, priority: system}
   # hecate's 27B (2026-10-08): its own card, always this route's; others borrow it only while lent.
   agent-deep: {class: agent-deep, priority: system}
   # Orion Prime's between-conversations thinking (2026-10-30, docs/superpowers/specs/2026-10-29-orion-

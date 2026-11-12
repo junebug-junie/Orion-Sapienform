@@ -345,7 +345,17 @@ def test_both_turn_end_paths_stamp_and_only_investigate_takes():
     assert takers == {"_investigate"}
     src = (HUB / "scripts" / "curiosity_investigation.py").read_text()
     ended = src.count("await self._spend_turn_ended(")
-    assert ended == 2 and src.count("await self._stamp_corrections(") == ended
+    # Three turn-end scorers: the investigation's direct turn, the durable turn (both stamp), and the
+    # self-inquiry direct turn (since 2026-11-12 self-inquiry is measured too; it takes no corrections,
+    # so it has nothing to stamp). The durable turn stamps only when the turn is an investigation.
+    assert ended == 3 and src.count("await self._stamp_corrections(") == 2
+    unstamped = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name != "_turn_result_for":
+            calls = [getattr(n.func, "attr", None) for n in ast.walk(fn) if isinstance(n, ast.Call)]
+            if "_spend_turn_ended" in calls and "_stamp_corrections" not in calls:
+                unstamped.add(fn.name)
+    assert unstamped == {"_run_self_turn"}
 
 
 # --- the email ----------------------------------------------------------------------------------

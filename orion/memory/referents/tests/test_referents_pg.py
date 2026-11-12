@@ -233,6 +233,31 @@ def test_checkpoint_backfill_recovers_aliases_and_is_idempotent():
     asyncio.run(_with_dbs(body))
 
 
+def test_checkpoint_backfill_reads_the_newest_state_after_a_checkpoint_prune():
+    """durable-runs' checkpoint prune deletes the answer's checkpoint_writes row (it sits on an
+    older checkpoint); the value is still the newest checkpoint's inline ``answer_text``."""
+    import json
+
+    from orion.memory.referents.backfill import backfill_all
+
+    async def body(pg, apg):
+        await _persist(pg, policy=None)
+        answer = "```json\n" + json.dumps(DISTILLATION) + "\n```"
+        async with pg.connection() as conn:
+            await conn.execute("CREATE TABLE checkpoint_writes (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT,"
+                               " task_id TEXT, idx INT, channel TEXT, type TEXT, blob BYTEA, task_path TEXT)")
+            await conn.execute("CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT,"
+                               " checkpoint JSONB)")
+            await conn.execute("INSERT INTO checkpoints VALUES ('memdistill-ep-1', '', 'c9', %s::jsonb)",
+                               (json.dumps({"v": 4, "channel_values": {"answer_text": answer}}),))
+        async with pg.connection() as conn:
+            first = await backfill_all(conn, now=NOW, policy=ReferentPolicy())
+        assert first[0]["answers_recovered"] == 1 and first[0]["resolved"] == 6
+        aliases = await _aliases(pg)
+        assert aliases[(HECATE, "inspur nf5288m5")][1:3] == ("provisional", "alias_grounding_v1")
+    asyncio.run(_with_dbs(body))
+
+
 def test_the_daily_report_shows_held_claims_names_by_rule_and_open_questions():
     import copy
     from datetime import timedelta

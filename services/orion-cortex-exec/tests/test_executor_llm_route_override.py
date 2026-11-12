@@ -92,3 +92,9 @@ def test_embodied_speech_route_is_accepted_as_an_override():
 
 def test_other_system_routes_stay_refused_as_overrides():
     assert _resolve_llm_route_override({"llm_route": "quick_turn"}) == (None, "quick_turn")
+
+
+def test_finalize_judge_route_is_accepted_without_a_hold():
+    # 2026-11-12: the 5b judge off a gpu2-seat hold sends ctx llm_route="judge" and no gpu_lease.
+    # Rejected, it would fall back to the verb default `agent`, a class that lists the gpu2 seat.
+    assert _resolve_llm_route_override({"llm_route": "judge", "llm_lane": "agent"}) == ("judge", "judge")

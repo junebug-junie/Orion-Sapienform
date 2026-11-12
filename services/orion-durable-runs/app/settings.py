@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # curiosity run resuming into a different day's material is not
     # continuity, it is a ghost (design doc MQ2/MQ3).
     max_age_hours: float = Field(24.0, gt=0.0, alias="DURABLE_RUNS_MAX_AGE_HOURS")
+    # LangGraph checkpoint pruning (app/checkpoint_prune.py): keeps each thread's newest checkpoint,
+    # its pending writes and the blobs it names; older history is what the saver's reads and the
+    # resume sweep's alist(None) pay for. off | dry_run (log what it would delete) | apply.
+    checkpoint_prune_mode: Literal["off", "dry_run", "apply"] = Field(
+        "dry_run", alias="DURABLE_RUNS_CHECKPOINT_PRUNE_MODE")
+    checkpoint_prune_interval_sec: float = Field(3600.0, gt=0.0, alias="DURABLE_RUNS_CHECKPOINT_PRUNE_INTERVAL_SEC")
     # The harness turn RPC to Hub. Hub's own investigation budget is 8840s
     # (HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC); this sits above it so the
     # runner never gives up on a turn Hub is still running.

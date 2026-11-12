@@ -39,6 +39,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from orion.curiosity.value import ARM_SELF_INQUIRY  # a self-inquiry run's decision row (nothing offered)
 from orion.schemas.personality import MAX_CHOICE_LIST, ChoiceOptionV1, PersonalityChoiceV1
 
 LANE_CURIOSITY = "curiosity_prior_selection"
@@ -149,6 +150,9 @@ def explain_curiosity_choice(
         run_id = _str(offer.get("run_id"))
         if run_id is None:
             return None, "no_run_id"
+        if _str(offer.get("arm")) == ARM_SELF_INQUIRY:
+            # A self-inquiry run was offered nothing: a prior it tested was not a pick among options.
+            return None, "self_inquiry_no_offer"
         out_run = _str(outcome.get("run_id"))
         if out_run is not None and out_run != run_id:
             return None, "run_id_mismatch"

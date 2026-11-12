@@ -159,6 +159,12 @@ class Settings(BaseSettings):
     # Event wants decided in this many hours are considered; at most this many are shown (highest net first).
     PRIME_EVENT_WANTS_HOURS: float = Field(default=24.0, gt=0.0, le=72.0, alias="PRIME_EVENT_WANTS_HOURS")
     PRIME_EVENT_WANTS_LIMIT: int = Field(default=8, ge=1, le=50, alias="PRIME_EVENT_WANTS_LIMIT")
+    # Living Prime Part 2, every turn ends back in Prime (orion/prime/handback.py, app/prime_loop.py): Prime listens
+    # to the cockpit hops Hub already publishes (orion:cockpit:hop) and folds each finished chat, curiosity, consult
+    # and letter turn into its state on the tick. A turn that made a promise opens a concern (at most 1 held, 4 a
+    # day); a turn whose prompt cites an open prime_concern:<id> and replied settles it. false: no listener, no
+    # fold, no frame section; concerns already opened from turns stay ordinary concerns. Shipped ON.
+    PRIME_TURN_HANDBACK_ENABLED: bool = Field(default=True, alias="PRIME_TURN_HANDBACK_ENABLED")
     # Self-monitor E1 act gate on Prime's own acts (orion/self_monitor/gate.py; app/prime_loop.py): an act
     # whose faculty (act.prime.<verb>, e.g. act.prime.predict) is held broken/unreliable in a fresh
     # orion:self_monitor:latest is not opened (track_record_failing), except one re-test probe per faculty

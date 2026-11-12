@@ -222,6 +222,7 @@ from orion.curiosity.self_question_pool import (
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.value import (
     ARM_REPLICA_ORDER,
+    ARM_SELF_INQUIRY,
     ARM_VALUE_ORDER,
     YieldModel,
     build_yield_model,
@@ -979,6 +980,9 @@ class CuriosityInvestigation:
         self_sense_eval_min_cooldown_sec: float = 43200.0,
         # --- the spend log and the value-ordered offer (P1, 2026-09-25) -----
         spend_log_enabled: bool = True,
+        # Self-inquiry runs write a decision + outcome row too (2026-10-16 attention-world-candidates
+        # design, "The self-inquiry gap, and the fix"); needs spend_log_enabled.
+        self_inquiry_outcomes_enabled: bool = True,
         value_order_enabled: bool = False,
         value_order_propensity: float = 0.5,
         # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
@@ -1207,6 +1211,7 @@ class CuriosityInvestigation:
         # Measurement runs whenever the log is on; the value-ordered offer is
         # a separate, default-off switch with a per-run random arm.
         self.spend_log_enabled = bool(spend_log_enabled)
+        self.self_inquiry_outcomes_enabled = bool(self_inquiry_outcomes_enabled)
         self.value_order_enabled = bool(value_order_enabled)
         self.value_order_propensity = float(value_order_propensity)
         self.replica_arm_enabled = bool(replica_arm_enabled)
@@ -1489,6 +1494,33 @@ class CuriosityInvestigation:
                 "graph_unavailable": view.unavailable_reason,
             },
         )
+
+    async def _record_self_inquiry_decision(self, run_id: str) -> None:
+        """The self-inquiry run's decision row: ``arm = 'self_inquiry'``, nothing offered, propensity 1.0,
+        no three-way draw (``arm_propensities`` NULL keeps it out of the three-arm readout). It is what
+        ``load_turn_snapshot`` looks for, so the turn's start snapshot and end diff run and the run gets a
+        ``curiosity_run_outcomes`` row like an investigation. The value model's history and the
+        personality choice lanes skip this arm (no prior was chosen from an offer)."""
+        if not (self.spend_log_enabled and self.self_inquiry_outcomes_enabled):
+            return
+        await record_offer_decision(
+            self._pool_provider(),
+            run_id=run_id,
+            arm=ARM_SELF_INQUIRY,
+            # The column is P(value arm) for offer draws; for this arm it carries no weight (the spec's
+            # 1.0: the arm was certain). Every weighting reader filters by arm or arm_propensities first.
+            value_arm_propensity=1.0,
+            offered=[],
+            stale_offered=[],
+            material_ids=[],
+            constants={"line": LINE_SELF_INQUIRY},
+        )
+
+    def _measured_turn(self, source_tag: str) -> bool:
+        """Whether a turn is snapshotted at start and diffed at end (the spend log's measurement)."""
+        if source_tag == INVESTIGATION_TAG:
+            return True
+        return source_tag == SELF_INQUIRY_TAG and self.self_inquiry_outcomes_enabled
 
     async def _spend_turn_started(self, run_id: str) -> None:
         """Snapshot every prior as the turn begins. Never raises into the turn."""
@@ -3657,6 +3689,7 @@ class CuriosityInvestigation:
         self._self_done_today = done_today + 1
         previous_stamp = await self._read_cooldown_stamp(LINE_SELF_INQUIRY)
         await self._record_investigation(now, run_id, LINE_SELF_INQUIRY)
+        await self._record_self_inquiry_decision(run_id)
 
         logger.info(
             "curiosity_self_inquiry_starting run=%s definitions=%s self_priors=%s/%s "
@@ -3835,6 +3868,9 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
+                measured = self._measured_turn(SELF_INQUIRY_TAG)
+                if measured:
+                    await self._spend_turn_started(run_id)
                 text, debug = await self._generate(
                     prompt,
                     correlation_id,
@@ -3842,6 +3878,8 @@ class CuriosityInvestigation:
                     parent_run_id=run_id,
                     **({"retrieval_query": retrieval_query} if retrieval_query else {}),
                 )
+                if measured:
+                    await self._spend_turn_ended(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -4000,6 +4038,7 @@ class CuriosityInvestigation:
         self._self_done_today = done_today + 1
         previous_stamp = await self._read_cooldown_stamp(LINE_SELF_INQUIRY)
         await self._record_investigation(now, run_id, LINE_SELF_INQUIRY)
+        await self._record_self_inquiry_decision(run_id)
         await self._record_naming_run(now, run_id, packet)
         logger.info(
             "curiosity_disposition_naming_shown run=%s disposition=%s packet=%s evidence=%s "
@@ -5643,7 +5682,8 @@ class CuriosityInvestigation:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._turn_inflight[key] = future
 
-        measured = request.source_tag == INVESTIGATION_TAG
+        measured = self._measured_turn(request.source_tag)
+        investigation = request.source_tag == INVESTIGATION_TAG
 
         async def _run_turn() -> CuriosityTurnResultV1:
             try:
@@ -5675,6 +5715,7 @@ class CuriosityInvestigation:
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
+                if investigation:
                     await self._stamp_corrections(request.run_id)
                     await self._stamp_focus(request.run_id, turn_ok=bool(text))
                 if text and request.source_tag in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
@@ -5698,7 +5739,7 @@ class CuriosityInvestigation:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                if measured:
+                if investigation:
                     # A retry may still stamp `ran`; until then the focus reads failed, not taken.
                     await self._stamp_focus(request.run_id, turn_ok=False)
                 return CuriosityTurnResultV1(

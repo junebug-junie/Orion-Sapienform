@@ -6,7 +6,7 @@ correlation id in fixtures/judge_crash_cases.json) on the lane each one failed o
   old  the request as cortex-exec sent it before this fix: the prompt at --old-ref as one system
        message, no response_format, the lane's own thinking default, max_tokens 8000.
   new  the request as it is now: the working-tree prompt as the system message, the grade turn
-       (FINALIZE_REFLECT_USER_TURN) as the user message, the gateway's own response_format for the
+       (finalize_reflect_user_turn()) as the user message, the gateway's own response_format for the
        FinalizeReflectionV1 judgement schema (json_object_schema, rewritten for Strata exactly as the
        gateway does), thinking off.
 
@@ -47,7 +47,7 @@ from orion.harness.evals.judge_obedience_replay_eval import TEMPLATE_REL, receip
 from orion.harness.finalize import (
     FINALIZE_REFLECT_HARNESS_FIELDS,
     FINALIZE_REFLECT_SCHEMA_NAME,
-    FINALIZE_REFLECT_USER_TURN,
+    finalize_reflect_user_turn,
     build_finalize_reflect_context,
     finalize_reflect_json_schema,
 )
@@ -207,7 +207,7 @@ def build_request(side: str, template: str, turn: dict, backend: str) -> dict:
                   "temperature": TEMPERATURE, "stream": False}
     if side == "new":
         body["messages"] += ctx["messages"]
-        assert ctx["messages"][-1]["content"] == FINALIZE_REFLECT_USER_TURN
+        assert ctx["messages"][-1]["content"] == finalize_reflect_user_turn()
         body["response_format"] = new_response_format(backend)
         body["chat_template_kwargs"] = dict(ctx["chat_template_kwargs"])
     return body

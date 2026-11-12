@@ -127,6 +127,28 @@ async def test_finalize_gets_the_situation_block_the_motor_saw() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_gets_the_prime_block_the_motor_saw_ahead_of_the_situation() -> None:
+    from app import bus_listener
+
+    req = _request(None).model_copy(update={"situation_prompt_fragment": "Situation:\n- x.",
+                                            "prime_block": "PRIME (my slow loop between turns): [prime_concern:c1]"})
+    seen = {}
+
+    async def chain(**kw):
+        seen.update(kw)
+        raise AssertionError("stop after capture")
+
+    with patch.object(bus_listener, "HarnessRunner",
+                      return_value=AsyncMock(run=AsyncMock(return_value=_motor(req.thought_event)))), \
+            patch.object(bus_listener, "run_harness_finalize_chain", chain):
+        try:
+            await bus_listener.handle_harness_run_request(AsyncMock(), req, reply_to="r")
+        except AssertionError:
+            pass
+    assert seen["situation_notes"] == "PRIME (my slow loop between turns): [prime_concern:c1]\n\nSituation:\n- x."
+
+
+@pytest.mark.asyncio
 async def test_finalize_gets_the_reply_deadline_for_the_perception_recheck() -> None:
     from app import bus_listener
 

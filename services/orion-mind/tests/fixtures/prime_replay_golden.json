@@ -472,7 +472,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -877,7 +877,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -1018,7 +1018,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000000600004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null},{\"concern_id\":\"0000001b00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T18:40:00Z\",\"last_evidence_at\":\"2026-10-30T18:40:00Z\",\"act_opened_at\":\"2026-10-30T18:40:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_26a246560006989d35d532da\",\"thought_id\":\"0000001700004000\",\"focus_id\":\"a2dc5818-5ce0-5d03-bd09-c1c61bd00468\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T18:40:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T18:40:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000000600004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null},{\"concern_id\":\"0000001b00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T18:40:00Z\",\"last_evidence_at\":\"2026-10-30T18:40:00Z\",\"act_opened_at\":\"2026-10-30T18:40:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_26a246560006989d35d532da\",\"thought_id\":\"0000001700004000\",\"focus_id\":\"a2dc5818-5ce0-5d03-bd09-c1c61bd00468\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T18:40:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T18:40:00Z\",\"last_reading\":\"the cabinet is warming\",\"last_thought_id\":\"0000001700004000\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -1365,7 +1365,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -1470,7 +1470,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000c300004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_daf72b94197a92dcfa5ed2de\",\"thought_id\":\"000000bf00004000\",\"focus_id\":\"1643c186-2b00-5f7d-8e52-48a8aee0c42c\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000c300004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_daf72b94197a92dcfa5ed2de\",\"thought_id\":\"000000bf00004000\",\"focus_id\":\"1643c186-2b00-5f7d-8e52-48a8aee0c42c\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"last_thought_id\":\"000000bf00004000\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -1860,7 +1860,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000d500004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":null,\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_120a9af1144eedb2b2a0f185\",\"thought_id\":\"000000d100004000\",\"focus_id\":\"6f992154-64d4-56ab-a67d-9b7d2e80afb3\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[\"my bet that the concern 'afternoon heat' leads somewhere was not placed: my own record says these have been unreliable lately (self-monitor: track_record_failing); one is re-tested every 6 h\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000d500004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":null,\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_120a9af1144eedb2b2a0f185\",\"thought_id\":\"000000d100004000\",\"focus_id\":\"6f992154-64d4-56ab-a67d-9b7d2e80afb3\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[\"my bet that the concern 'afternoon heat' leads somewhere was not placed: my own record says these have been unreliable lately (self-monitor: track_record_failing); one is re-tested every 6 h\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"last_thought_id\":\"000000d100004000\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -2196,7 +2196,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -2265,7 +2265,7 @@
    "prime-think-000000280000"
   ],
   "rpcs": [],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000002d00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_b8907b8af669ed0043ec8bdd\",\"thought_id\":\"0000002900004000\",\"focus_id\":\"6a70bb18-21c4-5a53-a725-0d147db71db6\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"control\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":null,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000002d00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_b8907b8af669ed0043ec8bdd\",\"thought_id\":\"0000002900004000\",\"focus_id\":\"6a70bb18-21c4-5a53-a725-0d147db71db6\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"control\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":null,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"last_thought_id\":\"0000002900004000\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -3181,7 +3181,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -3290,7 +3290,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000005700004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:05:00Z\",\"last_evidence_at\":\"2026-10-30T12:05:00Z\",\"act_opened_at\":\"2026-10-30T12:05:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_ded584a947d6ecec68350fc9\",\"thought_id\":\"0000005300004000\",\"focus_id\":\"1aa4295a-5e5b-5fa9-9d9f-fdc4a65f3d56\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:05:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[\"a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:05:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":4,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000005700004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:05:00Z\",\"last_evidence_at\":\"2026-10-30T12:05:00Z\",\"act_opened_at\":\"2026-10-30T12:05:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_ded584a947d6ecec68350fc9\",\"thought_id\":\"0000005300004000\",\"focus_id\":\"1aa4295a-5e5b-5fa9-9d9f-fdc4a65f3d56\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:05:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[\"a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:05:00Z\",\"last_reading\":\"the cabinet is warming\",\"last_thought_id\":\"0000005300004000\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":4,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -3702,7 +3702,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -3971,7 +3971,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000e400004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_c167b9e501be31a2e43126ce\",\"thought_id\":\"000000e000004000\",\"focus_id\":\"9a808277-7ae5-5c7d-8eb7-166a182c269d\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:06:00Z\",\"last_reading\":\"the organ answered\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000e400004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_c167b9e501be31a2e43126ce\",\"thought_id\":\"000000e000004000\",\"focus_id\":\"9a808277-7ae5-5c7d-8eb7-166a182c269d\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":1}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:06:00Z\",\"last_reading\":\"the organ answered\",\"last_thought_id\":\"000000f200004000\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -4367,7 +4367,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -4720,7 +4720,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000fe00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_ff287f242f6746af847cf4fc): refused by curiosity.replica: three runs died on this kind of question\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:06:00Z\",\"last_reading\":\"the organ answered\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000fe00004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_ff287f242f6746af847cf4fc): refused by curiosity.replica: three runs died on this kind of question\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:06:00Z\",\"last_reading\":\"the organ answered\",\"last_thought_id\":\"0000010f00004000\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -5600,7 +5600,7 @@
    "prime-think-000000990000"
   ],
   "rpcs": [],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my slow signal to durable.curiosity_investigate (act act_16a642f51940947fe280cc7c): treated slow durable.curiosity_investigate: no bid from it came while the signal was in force\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{\"durable.curiosity_investigate\":\"2026-10-30T16:00:00Z\"},\"last_thought_at\":\"2026-10-30T14:05:00Z\",\"last_reading\":\"watching\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my slow signal to durable.curiosity_investigate (act act_16a642f51940947fe280cc7c): treated slow durable.curiosity_investigate: no bid from it came while the signal was in force\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{\"durable.curiosity_investigate\":\"2026-10-30T16:00:00Z\"},\"last_thought_at\":\"2026-10-30T14:05:00Z\",\"last_reading\":\"watching\",\"last_thought_id\":\"0000009a00004000\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -5988,7 +5988,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -6341,7 +6341,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000a600004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_c7773ce2801e819e4a9436a2): treated run r1 finished disposition=explored\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T15:00:00Z\",\"last_reading\":\"ok\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"000000a600004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[],\"pending_changes\":[],\"recent_outcomes\":[\"my question 'What heats the cabinet after 14:00?' (act act_c7773ce2801e819e4a9436a2): treated run r1 finished disposition=explored\"],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T15:00:00Z\",\"last_reading\":\"ok\",\"last_thought_id\":\"000000b700004000\",\"thoughts_total\":2,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",
@@ -7249,7 +7249,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something) within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -7354,7 +7354,7 @@
     }
    ]
   ],
-  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000006900004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_a3bb42a371c2d6c2a55bda8f\",\"thought_id\":\"0000006500004000\",\"focus_id\":\"a2fa9fff-fcb4-55d9-b3d9-c78113ea93c9\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
+  "saved_state": "{\"schema_version\":\"prime.state.v1\",\"concerns\":[{\"concern_id\":\"0000006900004000\",\"text\":\"afternoon heat\",\"arc_id\":\"arc1\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"last_evidence_at\":\"2026-10-30T12:00:00Z\",\"act_opened_at\":\"2026-10-30T12:00:00Z\",\"graded\":null}],\"open_nominations\":[{\"act_id\":\"act_a3bb42a371c2d6c2a55bda8f\",\"thought_id\":\"0000006500004000\",\"focus_id\":\"a2fa9fff-fcb4-55d9-b3d9-c78113ea93c9\",\"question\":\"What heats the cabinet after 14:00?\",\"why\":\"afternoon heat\",\"arm\":\"treated\",\"opened_at\":\"2026-10-30T12:00:00Z\",\"concern_id\":null,\"queued\":true,\"queue_error\":null,\"gone_reads\":0}],\"pending_changes\":[],\"recent_outcomes\":[],\"concern_record\":[],\"open_regulations\":[],\"regulation_rest_until\":{},\"last_thought_at\":\"2026-10-30T12:00:00Z\",\"last_reading\":\"the cabinet is warming\",\"last_thought_id\":\"0000006500004000\",\"thoughts_total\":1,\"seen_active_arc_id\":null,\"seen_binding\":[],\"no_model_streak\":0,\"no_model_tries_total\":0,\"last_try_kind\":\"model\",\"retry_not_before\":null}",
   "timeline": [
    "save orion:prime:state",
    "save orion:prime:concerns",

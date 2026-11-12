@@ -1028,6 +1028,13 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SPEND_LOG_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_SPEND_LOG_ENABLED"
     )
+    # Self-inquiry runs are measured like investigations: a decision row (arm self_inquiry, nothing
+    # offered) at dispatch and a curiosity_run_outcomes row at turn end. Kept out of the value model's
+    # history and the personality choice lanes. Needs the spend log on.
+    # docs/superpowers/specs/2026-10-16-attention-world-candidates-design.md, "The self-inquiry gap".
+    HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED"
+    )
     # ON since 2026-11-04: the replay reported the measurement usable (see .env_example).
     HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
@@ -1846,6 +1853,11 @@ class Settings(BaseSettings):
     ORION_PRESENCE_DEFAULT_REQUESTOR: str = Field(default="Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")
     ORION_PRESENCE_PERSIST_ALLOWED: bool = Field(default=False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
     ORION_SITUATION_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_ENABLED")
+    # Living Prime Part 1 (orion/prime/block.py): Prime's cited present in every unified turn's prefix.
+    # Kill switch: false renders no block (the prompt is then unchanged). STALE_MIN: Prime state whose last
+    # tick is older than this renders only "Prime has not ticked since <time>".
+    HUB_PRIME_BLOCK_ENABLED: bool = Field(default=True, alias="HUB_PRIME_BLOCK_ENABLED")
+    HUB_PRIME_BLOCK_STALE_MIN: float = Field(default=10.0, gt=0.0, alias="HUB_PRIME_BLOCK_STALE_MIN")
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
     # 2026-08-30, Juniper's explicit request: previously hardcoded to a bare
     # 1200 inside orion.situational.context.hub_settings_to_runtime_namespace

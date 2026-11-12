@@ -53,8 +53,10 @@ def promise_ledger_enabled() -> bool:
 
 def normalize_for_quote_match(text: str) -> str:
     """Whitespace runs to one space; curly quote marks, dashes and the ellipsis character to
-    their plain forms (models rewrite these when they copy). Case and words are kept."""
+    their plain forms; backticks removed (models rewrite these when they copy). Case and
+    words are kept."""
     t = (text or "").translate(_QUOTE_MARKS).replace("\u2026", "...")
+    t = t.replace("`", "")  # code marks: 11-03 a real offer was dropped for losing them
     t = _DASH.sub("-", t)
     return _WS.sub(" ", t).strip()
 

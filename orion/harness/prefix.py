@@ -36,6 +36,11 @@ HARNESS_STANCE_GUIDANCE_HEADER = (
     "and directly serves the answer; a follow-up question the guidance asks you to "
     "pose is not extra work, so ask it after answering):"
 )
+PRIME_BLOCK_BRIEF = (
+    "PRIME block: your own slow loop's state, read from Redis this turn. When you say what you "
+    "are holding, last thought or asked for, keep the line's [prime_concern:...] / [thought:...] ref. "
+    "If it says absent or not ticked, say you cannot see it; do not guess."
+)
 HARNESS_TURN_RULES_HEADER = (
     "TURN RULES AND TOOLS (binding for the task above; each tool note says when it applies):"
 )
@@ -261,6 +266,7 @@ def compile_harness_prefix(
     reading_only: bool = False,
     working_notes_block: str | None = None,
     now: datetime | None = None,
+    prime_block: str | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
@@ -310,6 +316,13 @@ def compile_harness_prefix(
         # placeholder, so a turn with no situation data renders byte-identical to
         # before this parameter existed.
         parts.append(situation_prompt_fragment)
+
+    if prime_block:
+        # Rendered by orion-hub before the request is built (orion/prime/block.py::fetch_prime_block,
+        # living Prime design Part 1): Prime's concerns, last thought, open asks and body read, each
+        # line cited. Same treatment as the situation fragment: verbatim, omitted when falsy (the
+        # HUB_PRIME_BLOCK_ENABLED kill switch, or an older Hub), so the prompt is then unchanged.
+        parts.append(prime_block)
 
     stance_lines: list[str] = [
         f"Imperative: {thought.imperative}",
@@ -375,6 +388,8 @@ def compile_harness_prefix(
         trailing,
         situation_prompt_fragment=situation_prompt_fragment,
     )
+    if prime_block:
+        trailing.append(PRIME_BLOCK_BRIEF)
     append_dig_harness_brief(trailing, reading_only=reading_only)
 
     if trailing and user_message.strip():

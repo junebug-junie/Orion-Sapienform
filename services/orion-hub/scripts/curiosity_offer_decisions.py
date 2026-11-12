@@ -134,10 +134,14 @@ INSERT INTO curiosity_offer_plans (
 ON CONFLICT (run_id) DO NOTHING
 """
 
+# The value model is on-policy over OFFERED priors: a self-inquiry run was offered none, so its outcome
+# row never reaches this history. An outcome with no decision row (older rows) is kept, as before.
 LOAD_HISTORY_SQL = """
-SELECT per_prior FROM curiosity_run_outcomes
-WHERE completed_at >= now() - ($1 * interval '1 day')
-ORDER BY completed_at ASC
+SELECT o.per_prior FROM curiosity_run_outcomes o
+WHERE o.completed_at >= now() - ($1 * interval '1 day')
+  AND NOT EXISTS (SELECT 1 FROM curiosity_offer_decisions d
+                  WHERE d.run_id = o.run_id AND d.arm = 'self_inquiry')
+ORDER BY o.completed_at ASC
 """
 
 _warned_missing_table = False

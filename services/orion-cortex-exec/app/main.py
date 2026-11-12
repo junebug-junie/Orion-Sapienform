@@ -977,6 +977,10 @@ pre_turn_appraisal_svc = Rabbit(
     _cfg(),
     request_channel=settings.channel_pre_turn_appraisal_request,
     handler=handle_pre_turn_appraisal_request,
+    # Every Hub turn awaits this check. Serial handling made a turn wait behind other
+    # turns' checks: 2026-11-12 a 2.4 s check sat 180 s behind world-pulse checks that
+    # could not fit the fast lane, and the Hub timed it out. GPU work still queues in the pool.
+    concurrent_handlers=True,
 )
 # Unified-turn latency L4: stance_context_prepare, one channel per exec lane so
 # orion-thought's prepare lands on the same container as its stance_react.

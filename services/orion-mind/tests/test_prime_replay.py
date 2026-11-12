@@ -35,7 +35,10 @@ def test_recorded_tick_sequences_replay_identically():
     (``organ_challenge_in_frame``, ``organ_refusal_settles_question``). Every older scenario is byte-identical:
     with the replica's answering switch absent (as in all of them) Prime reads no view section and shows none.
     Re-recorded after merging main's energy money section: against main's golden every part of every older
-    scenario is identical; the only difference is the two organ scenarios (which show both sections)."""
+    scenario is identical; the only difference is the two organ scenarios (which show both sections).
+    Re-recorded 2026-11-12 (living Prime Part 2, turn hand-back): with the new CONCERN_BASIS text mapped back
+    to the old one and ``last_thought_id`` removed from saved states, every part of every scenario equals the
+    previous golden (checked by script; 9 basis and 10 last_thought_id occurrences were the whole diff)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

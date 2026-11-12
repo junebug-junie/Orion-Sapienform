@@ -1284,6 +1284,16 @@ uncertainty order still decides.
 The switch stays off until
 `scripts/analysis/replay_curiosity_realized_nats.py --pg` shows the measurement
 is not degenerate and says how many runs per arm the comparison needs.
+**Self-inquiry runs are measured too** (since 2026-11-12,
+`HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED`, default true). At dispatch a self-inquiry run writes a
+decision row with `arm = 'self_inquiry'`, nothing offered, propensity 1.0 and no `arm_propensities`
+(so the three-arm readout never sees it); its turn is snapshotted and diffed, and
+`curiosity_run_outcomes` gets its row. The value model's history (`LOAD_HISTORY_SQL`) and the
+personality choice lanes (`orion/personality/choices.py`, durable-runs `curiosity_choice`) skip this
+arm: no prior was chosen from an offer. Orion's Day, Temporal Self and reading credit read the rows as
+they read investigations. Before this, 97 of 100 philosophical findings (all from self-inquiry) had
+no outcome row.
+
 `HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
 must be applied first:
 `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`. Without it,
@@ -2063,6 +2073,34 @@ The tab anchors keep their ids and `data-hash-target`, so `app.js` and the `*_ta
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
 ---
+
+## Prime block in every unified turn (living Prime, Part 1)
+
+Every unified turn (chat, curiosity, consult, self-sense: they all run through
+`orion/hub/turn_orchestrator.py::execute_unified_turn`) gets a short block with Prime's present,
+placed right after the Situation block in the motor prompt. Prime is Orion's slow loop between
+turns (`services/orion-mind/app/prime_loop.py`).
+
+- **What it shows:** concerns Prime holds now (age, `[prime_concern:<id>]`, `[arc:<id>]`), the last
+  thought's reading and its move or "no move" (`[thought:<id>]`), open questions to curiosity and
+  regulate signals with their settle state, and the last body read. Every line ends with a ref.
+- **How:** code renders it (`orion/prime/block.py::fetch_prime_block`) from Redis
+  `orion:prime:state` plus the tick time `orion:prime:concerns.as_of`. No model writes it. Capped at
+  600 characters; free text is cut, refs never are.
+- **Stale means absent:** a last tick older than `HUB_PRIME_BLOCK_STALE_MIN` (default 10 min; Prime
+  ticks every 15 s) renders only "Prime has not ticked since <time>". Unreadable Redis renders a
+  labelled absent line. The turn never fails on it.
+- **Evidence:** Hub logs `prime_block corr=... status=ok refs=N` per turn and
+  `prime_block_citations corr=... label=verified|UNVERIFIED|no_prime_claims` after the reply (a
+  Prime ref the block did not show is counted as rejected). The block is in the turn's
+  `cockpit_turn_sighting` `motor_boot` prompt.
+- **Kill switch:** `HUB_PRIME_BLOCK_ENABLED=false` (no block; the prompt is unchanged).
+- **Deploy order:** governor first, then Hub. An older governor ignores the new
+  `HarnessRunRequestV1.prime_block` field; if Hub goes first, the Hub-assembled `motor_boot` in
+  `cockpit_turn_sighting` shows a block the motor did not get until the governor is rebuilt.
+- **Finalize judge:** the governor passes the block to the judge ahead of the Situation notes, so a
+  correct "I'm holding X [prime_concern:..]" is grounded for the judge too.
+- **Eval:** `python orion/prime/evals/run_prime_block_eval.py [--live]`.
 
 ## Draft-first chat replies (spec L8)
 

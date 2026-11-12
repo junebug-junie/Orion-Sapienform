@@ -23,7 +23,6 @@ SocialRepairType = Literal[
 SocialRepairTrigger = Literal[
     "peer_message",
     "thread_routing",
-    "active_commitment",
     "scope_boundary",
     "handoff_redirect",
     "low_confidence",

@@ -12,13 +12,16 @@ specified for the live patch"). A local lane may judge live findings only when, 
 The input is assembled exactly as the live register loop assembles it
 (``orion.curiosity.register.run_question_and_answer`` on the finish row, the outcome row's
 ``per_prior``, the self-question texts and the graph's prior claims), and the prompt is the pinned
-``JUDGE_PROMPT_V2``. Each lane is called directly on its llama.cpp ``/v1/chat/completions`` with
-temperature 0 and thinking off, as the gateway route would.
+``JUDGE_PROMPT_V2``. Each lane is called on its llama.cpp ``/v1/chat/completions`` with temperature 0
+and thinking off. This is an offline eval (263 short calls); a LIVE judge must call orion-llm-gateway by
+route, and note that the gpu-pool classes ``metacog`` and ``fast`` spill to the agent roles under load
+(config/gpu_pool.yaml ``classes``), i.e. to the seats that write curiosity findings, so a live judge must
+check the served model on every reply.
 
 Run:
 
     /mnt/scripts/Orion-Sapienform/.venv/bin/python scripts/analysis/eval_curiosity_register_judge.py \\
-        --lane metacog=http://100.112.254.99:8012 --lane quick=http://100.112.254.99:8013 \\
+        --lane metacog=<metacog lane base url> --lane quick=<quick lane base url> \\
         --out /tmp/curiosity_register_judge
 
 Needs ``docker exec`` on the SQL container (SELECT only) and FalkorDB on localhost:6380 (RO query).

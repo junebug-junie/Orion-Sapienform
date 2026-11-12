@@ -348,8 +348,9 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   not required. The loop reads the result back with `GET /runs/{run_id}` (`HUB_CONSULT_DURABLE_URL`).
   Moved off the in-process outreach compose on 2026-11-12: the first live consult died on Orion's
   second turn when the shared lane was busy. Each attempt gets 3600 s (Orion digs ~54 min after
-  Hub's finalize reserve). A turn the FCC motor cuts short is retried in the same resumed session
-  and told to continue; the last attempt keeps the honest cut-short text. Each turn is a tier-2
+  Hub's finalize reserve). A turn the FCC motor cuts short is retried; the retry is a fresh session
+  (the motor ends its own stops as finished), so the cut attempt's findings ride in its prompt and
+  it is told to continue from them. The last attempt keeps the honest cut-short text. Each turn is a tier-2
   want in Orion's body economy (`durable.consult_orion_turn`, act `ask`, 30-minute window): its
   bid binds, so a busy, expensive agent lane can hold a turn for up to half an hour.
 - **In Hub chat**, turns show live. On page load, every brief still waiting for Juniper comes back

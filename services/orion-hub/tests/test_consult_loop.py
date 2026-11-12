@@ -506,4 +506,5 @@ async def test_recent_window_keeps_every_waiting_brief_however_old():
     (windowed, wargs), (plain, pargs) = pool.calls
     assert "(status = 'brief_sent' AND decision IS NULL) OR updated_at >= $2" in windowed and len(wargs) == 2
     assert (real._now() - wargs[1]).total_seconds() == pytest.approx(48 * 3600, abs=60)
+    assert "ORDER BY (status = 'brief_sent' AND decision IS NULL) DESC, created_at DESC" in windowed
     assert "updated_at >=" not in plain and pargs == (20,)

@@ -132,9 +132,12 @@ def test_a_cut_short_turn_is_retried_in_the_same_session_and_told_to_continue():
         result = await _resume_after_backoff(world, saver)
         assert result["status"] == "completed"
         first, second = world.turns
-        # Same source tag -> Hub's resume_key (run_id:source_tag) resumes the cut attempt's session.
         assert second.source_tag == first.source_tag and second.attempt == 2
+        # The motor records its own stop as a finished session, so the retry is a NEW session: the cut
+        # attempt's findings must be in the prompt itself, and the note must not claim otherwise.
         assert second.prompt.startswith(CUT_SHORT_CONTINUE_NOTE) and second.prompt.endswith("Reply to Claude.")
+        assert CUT_TEXT in second.prompt and "new session" in CUT_SHORT_CONTINUE_NOTE
+        assert "above" not in CUT_SHORT_CONTINUE_NOTE
         assert not first.prompt.startswith(CUT_SHORT_CONTINUE_NOTE)
         step = result["steps"][CONSULT_ORION_TURN_STEP_KEY]
         assert step["text"] == LONG and "cut_short" not in step
@@ -172,3 +175,33 @@ def test_harness_echo_smoke_does_not_retry_cut_short_turns():
         result = await asyncio.wait_for(world.graph(saver).ainvoke(smoke_initial(), SMOKE_CFG), 2)
         assert result["status"] == "completed" and len(world.turns) == 1
     asyncio.run(scenario())
+
+
+def test_every_cut_attempts_findings_reach_the_next_attempt():
+    async def scenario():
+        world, saver = CutWorld(replies=[("cut", "found A"), ("cut", "found B"), LONG]), InMemorySaver()
+        world.grant()
+        await asyncio.wait_for(_graph(world, saver).ainvoke(_initial(), CFG), 2)
+        await _resume_after_backoff(world, saver)
+        result = await _resume_after_backoff(world, saver)
+        assert result["status"] == "completed"
+        third = world.turns[2].prompt
+        assert third.index("Attempt 1 (cut short) ---\nfound A") < third.index("Attempt 2 (cut short) ---\nfound B")
+    asyncio.run(scenario())
+
+
+def test_carried_findings_are_capped_keeping_the_newest():
+    from app.harness_smoke_graph import CUT_SHORT_CARRY_MAX_CHARS, carry_cut_short
+
+    carried = carry_cut_short("x" * CUT_SHORT_CARRY_MAX_CHARS, "newest finding", 2)
+    assert len(carried) == CUT_SHORT_CARRY_MAX_CHARS and carried.endswith("newest finding")
+
+
+def test_the_motor_ends_a_timed_out_turn_as_finished_so_a_retry_is_a_fresh_session():
+    """Why the findings ride in the prompt: pins the motor rule the retry design depends on."""
+    import inspect
+
+    from orion.harness import fcc_motor
+
+    src = inspect.getsource(fcc_motor._record_session_end)
+    assert "STATE_COMPLETED" in src and "timeout, stall" in src

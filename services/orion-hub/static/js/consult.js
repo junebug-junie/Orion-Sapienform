@@ -89,6 +89,10 @@
     const container = conversation(doc);
     if (!container || !consultId || shownBriefs.has(consultId)) return null;
     shownBriefs.add(consultId);
+    // A consult shown as a summary line at page load whose brief arrives live: the brief replaces it.
+    container.children && Array.prototype.slice.call(container.children).forEach(function (n) {
+      if (n.dataset && n.dataset.role === "consult-summary" && n.dataset.consultId === consultId) n.remove();
+    });
     const div = doc.createElement("div");
     div.className = "mb-4 p-3 rounded border border-amber-500/60 bg-slate-800/60";
     div.dataset.role = "consult-brief";
@@ -240,11 +244,12 @@
   async function loadRecentConsults(fetchFn, doc) {
     fetchFn = fetchFn || global.fetch.bind(global);
     try {
-      const resp = await fetchFn("/api/consults?recent_hours=" + RECENT_HOURS);
+      const resp = await fetchFn("/api/consults?recent_hours=" + RECENT_HOURS + "&limit=100");
       if (!resp.ok) return 0;
       const data = await resp.json();
       const rows = (data && data.consults) || [];
-      rows.slice().reverse().forEach(function (c) {
+      // The API puts waiting briefs first (so the limit never drops one); show oldest first.
+      rows.slice().sort(function (a, b) { return String(a.created_at || "").localeCompare(String(b.created_at || "")); }).forEach(function (c) {
         if (c.status === "brief_sent" && !c.decision && c.brief_text) renderBrief(String(c.consult_id), c.brief_text, doc, fetchFn);
         else renderSummary(c, doc, fetchFn);
       });

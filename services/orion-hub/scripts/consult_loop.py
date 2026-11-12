@@ -214,14 +214,16 @@ UNDECIDED = "(status = 'brief_sent' AND decision IS NULL)"
 async def recent(pool, *, undecided_only: bool, limit: int = 20,
                  recent_hours: Optional[float] = None) -> List[Dict[str, Any]]:
     """Newest first. ``recent_hours``: every consult touched in that window, plus every brief still
-    waiting for Juniper's answer however old (Hub chat's page-load view)."""
+    waiting for Juniper's answer however old (Hub chat's page-load view); waiting briefs sort first,
+    so the limit never pushes one out."""
     args: List[Any] = [limit]
     if recent_hours:
         args.append(_now() - timedelta(hours=float(recent_hours)))
         where = f"WHERE {UNDECIDED} OR updated_at >= $2"
     else:
         where = f"WHERE {UNDECIDED}" if undecided_only else ""
-    rows = await pool.fetch(f"SELECT {_COLUMNS} FROM orion_consult {where} ORDER BY created_at DESC LIMIT $1", *args)
+    rows = await pool.fetch(
+        f"SELECT {_COLUMNS} FROM orion_consult {where} ORDER BY {UNDECIDED} DESC, created_at DESC LIMIT $1", *args)
     return [_row(r) for r in rows]
 
 

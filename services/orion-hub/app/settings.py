@@ -214,7 +214,8 @@ class Settings(BaseSettings):
     HUB_CONSULT_CLAUDE_TIMEOUT_SEC: float = Field(default=1200.0)
     # Orion's consult turn is a durable run (consult.orion_turn): this is its budget per attempt.
     # The GPU pool queue wait is not counted, and durable-runs retries a failed attempt -- and a
-    # cut-short one, resuming the same session (the last attempt keeps the cut-short text). 3600 s
+    # cut-short one, handing the cut attempt's findings to the retry (the last attempt keeps the
+    # cut-short text). 3600 s
     # (Juniper 2026-11-12, the most the brief allows): Hub keeps 330 s for finalize, so Orion digs
     # ~54 min an attempt. 900 s left 540 s, and Orion's curiosity digs take a median 1052 s.
     HUB_CONSULT_ORION_TIMEOUT_SEC: float = Field(default=3600.0)

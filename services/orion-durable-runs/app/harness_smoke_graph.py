@@ -15,9 +15,12 @@ checkpoint the turn's final text as the step's result -- with retry/resume intac
 * a pool take-back replays the step without spending an attempt;
 * a checkpointed step is never re-run (a restart after it resumes at ``finish``);
 * ``retry_cut_short`` (consult.orion_turn): a turn the FCC motor stopped mid-work
-  (``orion.harness.cut_short.CUT_SHORT_CODES``) is a failed attempt while a retry will still run. Hub
-  resumes the attempt's claude session (``resume_key = run_id:source_tag``), so the retry continues the
-  work, and its prompt says so. The last attempt keeps the honest cut-short text rather than failing.
+  (``orion.harness.cut_short.CUT_SHORT_CODES``) is a failed attempt while a retry will still run. The
+  retry does NOT get the cut session back: the motor records its own stop as a finished session
+  (``fcc_motor._record_session_end`` -> ``completed``; a context ceiling -> ``ceiling``), so the retry
+  starts fresh. What the cut attempt found (its cut-short draft lists it) is kept in ``cut_short_text``
+  and handed to the retry in its prompt. The last attempt keeps the honest cut-short text rather than
+  failing.
 
 Nothing is persisted beyond the durable-run checkpoint, the admission row and its state rows: no
 journal, no memory card, no recall write (the turn runs with Hub's ``no_write``).
@@ -47,13 +50,25 @@ from orion.schemas.harness_step_run import (
 
 # ``last_error`` of a cut-short attempt starts with this (after the exception type).
 CUT_SHORT_ERROR = "harness_step_cut_short"
-# Put before the prompt of the attempt after a cut-short one. The session is resumed, so Orion has
-# the earlier attempt's tool calls and results in context.
+# The retry starts a fresh session, so the earlier attempts' findings go in its prompt, newest kept
+# when they are long.
+CUT_SHORT_CARRY_MAX_CHARS = 16000
 CUT_SHORT_CONTINUE_NOTE = (
-    "Your previous attempt at this turn was cut short before you finished (time ran out). Your earlier "
-    "tool calls and results are above. Do not start over: continue from where you stopped, and write "
-    "your finished reply."
+    "Your earlier attempt at this turn was cut short before you finished (time ran out). This is a new "
+    "session: you do not have that attempt's tool results. What it found is below. Do not redo checks it "
+    "already made; continue from there, and write your finished reply."
 )
+
+
+def carry_cut_short(previous: str | None, text: str, attempt: int) -> str:
+    """The findings carried to the next attempt: every cut attempt's text, newest last, capped from
+    the oldest end."""
+    joined = "\n\n".join(x for x in (previous or "", f"--- Attempt {attempt} (cut short) ---\n{text.strip()}") if x)
+    return joined[-CUT_SHORT_CARRY_MAX_CHARS:]
+
+
+def continue_prompt(carried: str, prompt: str) -> str:
+    return f"{CUT_SHORT_CONTINUE_NOTE}\n\n{carried}\n\n--- The turn ---\n{prompt}"
 
 
 def cut_short_status(record: dict[str, Any]) -> str | None:
@@ -82,6 +97,7 @@ class HarnessSmokeState(TypedDict, total=False):
     last_error: str | None
     steps: dict[str, dict[str, Any]]    # step_key -> the step's result record (harness_step.py)
     harness_turn_meta: dict[str, Any]   # the last issued turn's identity (failed-run detail, cancel)
+    cut_short_text: str | None          # retry_cut_short: what the cut attempts found, for the next prompt
 
 
 def _finish_detail(state: dict[str, Any], *, line: str, step_key: str) -> dict[str, Any]:
@@ -146,8 +162,8 @@ def build_single_step_harness_graph(run_turn: RunTurn, admission: AdmissionDeps,
         correlation_id = harness_step_correlation_id(state, step_key)
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": step_key}
         args = dict(step_args(brief))
-        if retry_cut_short and CUT_SHORT_ERROR in str(state.get("last_error") or ""):
-            args["prompt"] = f"{CUT_SHORT_CONTINUE_NOTE}\n\n{args['prompt']}"
+        if retry_cut_short and state.get("cut_short_text"):
+            args["prompt"] = continue_prompt(state["cut_short_text"], args["prompt"])
 
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
             return await run_harness_step(
@@ -176,9 +192,15 @@ def build_single_step_harness_graph(run_turn: RunTurn, admission: AdmissionDeps,
                                         extra={"harness_turn_meta": turn_meta}, attempt_sec=brief.timeout_sec)
         cut = cut_short_status(record) if retry_cut_short else None
         if cut and retry_would_run(admission, state, attempt_sec=brief.timeout_sec):
+            # The pool took the hold back mid-turn: replay, no attempt spent (as on the exception path).
+            replay = await replay_if_requeued(admission, state, {"status": "waiting_resource"})
+            if replay is not None:
+                return {**replay, "harness_turn_meta": turn_meta}
+            carried = carry_cut_short(state.get("cut_short_text"), record["text"], int(state.get("attempt") or 0) + 1)
             return await failed_attempt(admission, state, HarnessStepFailed(f"{CUT_SHORT_ERROR}:{step_key}:{cut}"),
                                         waiting={"status": "retrying", "retry_node": None},
-                                        extra={"harness_turn_meta": turn_meta}, attempt_sec=brief.timeout_sec)
+                                        extra={"harness_turn_meta": turn_meta, "cut_short_text": carried},
+                                        attempt_sec=brief.timeout_sec)
         record["attempts"] = int(state.get("attempt") or 0) + 1
         if cut:
             record["cut_short"] = cut    # the last attempt: kept, labelled, never an empty failure

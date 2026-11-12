@@ -246,8 +246,10 @@ take a median of 1052 s (p90 4508 s, n=181, 14 days). Juniper's decisions on 202
 
 - **60 minutes a turn attempt** (`HUB_CONSULT_ORION_TIMEOUT_SEC=3600`, the brief's maximum).
 - **Cut-short turns retry.** A turn the FCC motor stopped mid-work (`CUT_SHORT_CODES`) is a failed
-  attempt while a retry will still run. The retry resumes the same claude session and is told to
-  continue. The last attempt keeps the honest cut-short text, so Claude still gets what Orion found.
+  attempt while a retry will still run. The retry is a fresh session: the motor records its own stop
+  as a finished session, so nothing resumes. The cut attempt's findings (its cut-short draft) go into
+  the retry's prompt, and Orion is told to continue from them. The last attempt keeps the honest
+  cut-short text, so Claude still gets what Orion found.
 - **Tier 2 in Orion's body economy.** Each turn is a want (`durable.consult_orion_turn`, act `ask`)
   whose bid binds. The deferrable window is 1800 s, not 6 h: hunger resets at each close and a
   consult's turns come back to back, so a long window would hold turn 2 for hours.

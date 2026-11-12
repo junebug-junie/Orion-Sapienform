@@ -123,11 +123,13 @@ FAMILIES: dict[str, RunActFamily] = {
     # Consult turns (2026-11-12): one of Orion's turns in a consult with Claude
     # (docs/superpowers/specs/2026-11-11-consult-claude-before-juniper-design.md). Tier 2 by Juniper's decision
     # (config/physiology/families.yaml). One completed run so far, so the horizon is a bound from the run's own
-    # limits: 3 attempts x 3600 s + backoff + GPU queue waits between attempts; 21600 s leaves ~2.5 h of queue.
+    # limits: 3 attempts x 3600 s + backoff + GPU queue waits between attempts (agent-lane queues ran 1921 s
+    # on 11-11 and curiosity's own first-grant->terminal p99 is 15.5 h); 43200 s, so a slow but live turn is
+    # not expired (graded refuted) while it still runs.
     "consult_orion_turn": RunActFamily(
-        "consult_orion_turn", "durable.consult_orion_turn", "ask", 21600.0,
+        "consult_orion_turn", "durable.consult_orion_turn", "ask", 43200.0,
         "artifact_produced (the durable run ends completed: Orion's consult turn text checkpointed for Hub) by "
-        "21600s after its first GPU pool grant. ESTIMATE, not measured (one completed run, 2026-11-11): 3 "
+        "43200s after its first GPU pool grant. ESTIMATE, not measured (one completed run, 2026-11-11): 3 "
         "attempts x 3600s turn + backoff fits in 11000s; the rest is GPU queue between attempts"),
 }
 

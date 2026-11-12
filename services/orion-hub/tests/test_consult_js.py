@@ -33,10 +33,10 @@ function byText(t) { return buttons().find(b => b.textContent.startsWith(t)); }
 const posts = [];
 const fetchFn = async (url, init) => {
   if (init && init.method === "POST") { posts.push({url, body: JSON.parse(init.body)}); return {ok: true, status: 200, json: async () => ({})}; }
-  if (url === "/api/consults?recent_hours=48") return {ok: true, status: 200, json: async () => ({consults: [
-    {consult_id: "c9", status: "brief_sent", decision: null, brief_text: "B9", question: "fix the lease?"},
-    {consult_id: "c8", status: "failed", status_reason: "orion_run_failed:timeout", question: "why does x stall?"},
-    {consult_id: "c7", status: "answered", answer: "by design", question: "q7"},
+  if (url === "/api/consults?recent_hours=48&limit=100") return {ok: true, status: 200, json: async () => ({consults: [
+    {consult_id: "c9", status: "brief_sent", decision: null, brief_text: "B9", question: "fix the lease?", created_at: "2026-11-12T03:00:00Z"},
+    {consult_id: "c8", status: "failed", status_reason: "orion_run_failed:timeout", question: "why does x stall?", created_at: "2026-11-11T02:00:00Z"},
+    {consult_id: "c7", status: "answered", answer: "by design", question: "q7", created_at: "2026-11-11T01:00:00Z"},
   ]})};
   return {ok: true, status: 200, json: async () => ({turns: [{speaker: "Orion", text: "hi"}, {speaker: "Claude", text: "why?"}]})};
 };
@@ -154,3 +154,12 @@ def test_consult_rows_stay_out_of_orions_context():
       return all(conv).some(n => "turnId" in n.dataset || "messageBody" in n.dataset);
     """)
     assert got is False
+
+
+def test_a_live_brief_replaces_the_consults_summary_line():
+    got = _node("""
+      api.renderSummary({consult_id: "c5", status: "open", status_reason: "awaiting_claude", question: "q"}, doc, fetchFn);
+      api.renderBrief("c5", "B5", doc, fetchFn);
+      return conv.children.map(c => c.dataset.role);
+    """)
+    assert got == ["consult-brief"]

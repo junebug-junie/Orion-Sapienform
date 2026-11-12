@@ -199,10 +199,27 @@ def _normalize_logprob_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     raw = payload.get("raw")
     if isinstance(raw, dict):
+        # OpenAI-compatible reply (Strata on the agent/chat seats, and llama.cpp when the native
+        # completion path is off): per-token logprobs live under choices[0].logprobs.content. The
+        # gateway's llm_uncertainty is only a summary (no per-token list), so until 2026-11-12 every
+        # such reply fell through to the fixed text-only fallback scores.
+        choices = raw.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            logprobs = choices[0].get("logprobs")
+            if isinstance(logprobs, dict) and isinstance(logprobs.get("content"), list):
+                return [entry for entry in logprobs["content"] if isinstance(entry, dict)]
         probs = raw.get("probs")
-        if not isinstance(probs, list) and isinstance(raw.get("completion_probabilities"), list):
-            first = raw["completion_probabilities"][0]
-            if isinstance(first, dict):
+        if not isinstance(probs, list) and isinstance(raw.get("completion_probabilities"), list) \
+                and raw["completion_probabilities"]:
+            items = raw["completion_probabilities"]
+            first = items[0]
+            if isinstance(first, dict) and "token" in first:
+                # llama.cpp /completion today (verified live 2026-11-12 on the fast lane, same shape
+                # as the gateway's native_completion_probs_to_logprob_content): a flat list of
+                # per-token entries, each carrying token/logprob/top_logprobs. The older branch below
+                # read first["probs"] only, so this shape too fell to the text fallback.
+                probs = items
+            elif isinstance(first, dict):
                 probs = first.get("probs")
         if isinstance(probs, list):
             content: list[dict[str, Any]] = []

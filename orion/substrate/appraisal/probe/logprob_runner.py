@@ -44,8 +44,20 @@ def _top1_margin(entry: dict[str, Any]) -> float | None:
     return lps[0] - lps[1]
 
 
+def _logsumexp(values: list[float]) -> float:
+    top = max(values)
+    return top + math.log(sum(math.exp(v - top) for v in values))
+
+
 def _yes_no_logprobs(entry: dict[str, Any]) -> tuple[float | None, float | None]:
-    yes_lp = no_lp = None
+    """log P(YES) and log P(NO) at the answer position, summed over spellings.
+
+    A real alternatives list holds several spellings of one answer (live, Strata 2026-11-12:
+    ``' NO' -0.54, ' YES' -0.88, ' no' -8.08``). Before this, the last spelling seen won, so the
+    rare ``' no'`` replaced the real ``' NO'`` and a near-even answer read as a confident YES. The
+    spellings are disjoint tokens for the same answer, so their probabilities add (log-sum-exp)."""
+    yes: list[float] = []
+    no: list[float] = []
     tops = entry.get("top_logprobs")
     if isinstance(tops, list):
         for t in tops:
@@ -56,10 +68,10 @@ def _yes_no_logprobs(entry: dict[str, Any]) -> tuple[float | None, float | None]
             if not isinstance(lp, (int, float)):
                 continue
             if tok == "YES":
-                yes_lp = float(lp)
+                yes.append(float(lp))
             elif tok == "NO":
-                no_lp = float(lp)
-    return yes_lp, no_lp
+                no.append(float(lp))
+    return (_logsumexp(yes) if yes else None), (_logsumexp(no) if no else None)
 
 
 @dataclass(frozen=True)

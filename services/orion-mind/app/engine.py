@@ -812,6 +812,15 @@ def run_mind_llm_synthesis(
         semantic_route, appraisal_route, stance_route = (
             turn_route if r == TURN_LIFTED_ROUTE else r for r in (semantic_route, appraisal_route, stance_route)
         )
+    # A held turn (world-pulse read, curiosity, ...) runs every phase on its own GPU seat, never on
+    # the configured small lane (Juniper 2026-11-12; orion.llm.resource_lease.held_call_route).
+    held_lease: dict[str, Any] | None = None
+    if req.gpu_lease is not None:
+        from orion.llm.resource_lease import held_call_route
+
+        semantic_route, held_lease = held_call_route(req.gpu_lease, semantic_route)
+        appraisal_route, _ = held_call_route(req.gpu_lease, appraisal_route)
+        stance_route, _ = held_call_route(req.gpu_lease, stance_route)
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
@@ -874,6 +883,7 @@ def run_mind_llm_synthesis(
             trace_id=req.trace_id,
             router_profile_id=req.policy.router_profile_id,
             trigger=str(req.trigger),
+            gpu_lease=held_lease,
         )
 
     if not budget.can_run_phase():

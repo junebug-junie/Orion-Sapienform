@@ -36,6 +36,7 @@ Admission path reused: the gateway's normal one-shot request lease for a call wi
 - `services/orion-llm-gateway/tests/test_judge_route_plan.py` (new): the judge's wire shape planned by the real gateway planner on the real YAML with lane routing on. Fails on the old `lane_routes.py` with `('agent', 'agent') != ('judge', 'judge')`.
 - `services/orion-llm-gateway/tests/test_lane_routes.py`: agent lane keeps `judge`, still rewrites other routes.
 - `services/orion-cortex-exec/tests/test_executor_llm_route_override.py`: cortex-exec accepts `judge` without a hold.
+- `services/orion-durable-runs/tests/acceptance_turn.py`, `test_durable_acceptance.py`: the full curiosity acceptance (real pool scheduler, real gateway) now asserts the gpu2-seat run's judge is one plain acquire on class `judge`, granted on `agent` (gpu1) in the idle background blocker hold's gap; the home-card run's judge stays attached.
 - `orion/harness/tests/test_gpu_lease_transport.py`: hop-carries-ref test now covers a gpu2-seat hold (judge off the hold) and an agent hold (judge on it).
 - `orion/gpu_pool/tests/test_route_view.py`, `orion/llm/tests/test_routes.py`, `services/orion-llm-gateway/tests/test_anthropic_passthrough.py`: route lists include `judge`.
 - `services/orion-gpu-pool/README.md`: judge class paragraph, deploy order, rollback.
@@ -63,7 +64,7 @@ services/orion-llm-gateway/tests                                           487 p
 services/orion-cortex-exec override/lease/finalize-route tests             26 passed (after review fixes)
 services/orion-gpu-pool/tests                                              201 passed, 15 skipped
 services/orion-gpu-lane-controller/tests                                   110 passed
-services/orion-durable-runs/tests                                          867 passed, 132 skipped
+services/orion-durable-runs/tests (local Postgres 16, as CI)              998 passed, 1 skipped
 services/orion-cortex-exec route/lane/lease/finalize tests                 202 passed, 1 failed (pre-existing on main: test_introspect_spark_uses_quick_route)
 services/orion-harness-governor/tests                                      100 passed, 1 failed (pre-existing on main: test_start_passes_settings_into_pool_config)
 services/orion-actions + orion-hub route tests                             78 passed

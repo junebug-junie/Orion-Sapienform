@@ -12,6 +12,7 @@ from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
 from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
+from orion.substrate.biometrics_loop.room_hints import machine_body_hints
 from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
 
 _THRESHOLD = 0.30
@@ -589,6 +590,14 @@ def biometrics_prediction_error(
     never observed. Live 2026-10-20: hecate in BMC-only standby since 2026-10-15
     contributed 9 of 35 keys, so the mean read 26% lower than the reporting nodes'
     real change. A node that reports again counts again on that tick.
+
+    **Definition v3 (2026-11-12): room sensors are left out.** athena's ``cabinet_*``
+    hints (cabinet sensor board + ambient microphone: proximity, vibration, audio,
+    climate, EM, UV, staleness) read the room, not the machines. Juniper approved
+    removing them. Live 2026-11-12 they were 8 of athena's 17 keys and 8 of the 26
+    keys in the mean. The one owner of the list is
+    ``orion/substrate/biometrics_loop/room_hints.py``. The cabinet has its own
+    attention source (``node:substrate.cabinet``).
     """
     excluded = set(exclude_nodes)
     deltas: list[float] = []
@@ -598,15 +607,17 @@ def biometrics_prediction_error(
         prev_node = prev.nodes.get(node_id)
         if prev_node is None:
             continue
-        keys = set(prev_node.pressure_hints) | set(curr_node.pressure_hints)
+        prev_hints = machine_body_hints(prev_node.pressure_hints)
+        curr_hints = machine_body_hints(curr_node.pressure_hints)
+        keys = set(prev_hints) | set(curr_hints)
         for key in keys:
             # pressure_hints is typed dict[str, Any] (unlike execution's pydantic-
             # enforced dict[str, float]), since node role gates which keys ever get
             # set -- coerce defensively rather than let a malformed/non-numeric
             # value raise out of a poll tick.
             try:
-                pv = float(prev_node.pressure_hints.get(key, 0.0) or 0.0)
-                cv = float(curr_node.pressure_hints.get(key, 0.0) or 0.0)
+                pv = float(prev_hints.get(key, 0.0) or 0.0)
+                cv = float(curr_hints.get(key, 0.0) or 0.0)
             except (TypeError, ValueError):
                 continue
             deltas.append(abs(cv - pv))

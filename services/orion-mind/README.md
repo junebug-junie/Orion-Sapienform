@@ -312,6 +312,9 @@ reads, self-sense evals, PR field notes, reminiscence and outreach are not.
 - Pub/sub is not durable: a turn that finishes while orion-mind is down is not handed back.
 - Replay eval (read-only, live Postgres): `python -m orion.prime.evals.run_turn_handback_replay --days 3`.
 
+## Held turns run on their own GPU seat
+
+A `MindRunRequestV1` with `gpu_lease` set (orion-thought copies it from the stance request of a durable/background turn, e.g. a world-pulse read) runs all three LLM phases on route `agent` with the hold on `options.gpu_lease`, whatever `MIND_*_MODEL_ROUTE` / `MIND_TURN_MODEL_ROUTE` say (`app/engine.py`, `orion.llm.resource_lease.held_call_route`). Juniper's rule, 2026-11-12: world-pulse work never goes to the fast or the metacog lane. Unheld runs are unchanged. `MindRunRequestV1` ignores unknown fields, so orion-mind and orion-thought may deploy in either order.
 ### The day letter is Prime's end-of-day turn (2026-11-12, living Prime Part 3)
 
 `PRIME_DAY_LETTER_ENABLED` (default true; the kill switch for the whole end-of-day move -- Hub's letter timer

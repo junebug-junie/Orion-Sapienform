@@ -602,8 +602,13 @@ async def _run_pre_turn_appraisal(
     user_message: str,
     continuity_messages: list[dict[str, Any]] | None,
     settings: Any,
+    gpu_lease: GpuLeaseRefV1 | None = None,
 ) -> tuple[TurnAppraisalBundleV1 | None, dict[str, Any]]:
     """Run pre-turn appraisal and return (bundle, cockpit_texture).
+
+    ``gpu_lease`` is the turn's GPU pool hold (durable/background turns). It rides the request so
+    cortex-exec runs the probe on that seat, not on the small ``quick_turn`` lane (Juniper,
+    2026-11-12: world-pulse work never goes to the fast or metacog lane). None for Juniper's turns.
 
     Texture is honest Hub-boundary detail for Soft HUD progress hops — never
     fabricated cognition. Keys: status, error, failed_paradigms, failure_reasons,
@@ -646,6 +651,7 @@ async def _run_pre_turn_appraisal(
                 paradigms_requested=[p.strip() for p in paradigms.split(",") if p.strip()],
                 contract_before={"mode": "default"},
                 options=PreTurnAppraisalOptionsV1(timeout_ms=timeout_ms),
+                gpu_lease=gpu_lease,
             ),
             correlation_id=correlation_id,
         )
@@ -1151,6 +1157,12 @@ async def execute_unified_turn(
         bus=bus,
         cockpit_sink=cockpit_sink,
     )
+    # The durable run's GPU pool hold ref rides the whole turn (pre-turn check + stance + harness).
+    turn_gpu_lease = (
+        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
+        if payload.get("gpu_lease") is not None
+        else None
+    )
     repair_bundle, appraisal_texture = await _run_pre_turn_appraisal(
         bus=bus,
         correlation_id=correlation_id,
@@ -1158,6 +1170,7 @@ async def execute_unified_turn(
         user_message=user_message,
         continuity_messages=continuity_messages,
         settings=cfg,
+        gpu_lease=turn_gpu_lease,
     )
     appraisal_status = str(appraisal_texture.get("status") or "skipped")
     appraisal_error = appraisal_texture.get("error")
@@ -1233,12 +1246,6 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
-    # The durable run's GPU pool hold ref rides the whole turn (stance + harness).
-    turn_gpu_lease = (
-        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
-        if payload.get("gpu_lease") is not None
-        else None
-    )
     # Reuses build_turn_window (already the appraisal call above's normalizer)
     # rather than passing continuity_messages through raw -- caps to the last
     # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already

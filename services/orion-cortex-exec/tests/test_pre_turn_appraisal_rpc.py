@@ -104,7 +104,7 @@ async def test_handler_parses_gateway_shaped_llm_probe(monkeypatch) -> None:
     """End-to-end: gateway ChatResultPayload shape → non-zero repair level when thread warrants it."""
     captured: list[str] = []
 
-    async def _fake_llm_probe(_bus, *, prompt, route, timeout_sec, turn_correlation_id=None):
+    async def _fake_llm_probe(_bus, *, prompt, route, timeout_sec, turn_correlation_id=None, gpu_lease=None):
         captured.append(prompt)
         return normalize_llm_gateway_probe_payload(
             {
@@ -206,7 +206,7 @@ async def test_shed_probe_is_a_failed_paradigm_with_its_reason_not_a_zero_level(
     """Regression (2026-10-20..21): a heat-shed probe came back as level=0.0 and Hub read `ok`."""
     calls: list[dict] = []
 
-    async def _shed_probe(_bus, *, prompt, route, timeout_sec, turn_correlation_id=None):
+    async def _shed_probe(_bus, *, prompt, route, timeout_sec, turn_correlation_id=None, gpu_lease=None):
         calls.append({"route": route, "turn_correlation_id": turn_correlation_id})
         return normalize_llm_gateway_probe_payload(
             {"text": "", "content": "", "raw": {"error": "gpu_pool_unavailable",
@@ -261,3 +261,80 @@ async def test_probe_envelope_carries_the_turn_correlation_id() -> None:
     assert out["raw"]["error"] == "llm_reply_undecodable"
     # a non-UUID turn id falls back to a fresh one rather than breaking the envelope
     assert handler_module._envelope_correlation_id("not-a-uuid") != "not-a-uuid"
+
+
+async def _probe_call_options(monkeypatch, gpu_lease):
+    """Run the real handler + real paradigm; capture what goes to the LLM gateway."""
+    import app.pre_turn_appraisal as handler_module
+
+    sent: list[dict] = []
+
+    async def _fake_probe_call(_bus, *, prompt, route, timeout_sec, turn_correlation_id=None, gpu_lease=None):
+        sent.append({"route": route, "gpu_lease": gpu_lease})
+        return {"text": "", "llm_uncertainty": {"available": False}, "raw": {"error": "test_stop"}}
+
+    monkeypatch.setattr(handler_module, "_llm_probe_call", _fake_probe_call)
+    monkeypatch.setattr("app.pre_turn_appraisal._BUS", object())
+    req = PreTurnAppraisalRequestV1(
+        correlation_id="00000000-0000-4000-8000-000000000009",
+        session_id="orion_world_pulse_read_stage2",
+        turn_window=[TurnWindowMessageV1(role="user", content="a long reading prompt")],
+        gpu_lease=gpu_lease,
+    )
+    env = BaseEnvelope(kind="pre_turn_appraisal.request.v1", source=ServiceRef(name="orion-hub", version="t"),
+                       correlation_id=req.correlation_id, payload=req.model_dump(mode="json"))
+    reply = await handle_pre_turn_appraisal_request(env)
+    return sent, reply.payload
+
+
+@pytest.mark.asyncio
+async def test_held_turn_probes_on_its_own_seat(monkeypatch) -> None:
+    """Juniper 2026-11-12: world-pulse work never goes to fast/metacog. Stage-2 checks failed
+    194/373 in 7 days waiting on quick_turn's 4k slot. A held turn's probe names `agent` and
+    carries the hold, so the gateway attaches it to the turn's own seat."""
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+    hold = GpuLeaseRefV1(lease_id="hold-7", generation=1, role="agent", holder="durable-runs:reading-7")
+    sent, bundle = await _probe_call_options(monkeypatch, hold)
+    assert sent == [{"route": "agent", "gpu_lease": hold.model_dump(mode="json")}]
+    # A refused attach is a failed check, never a quiet retry on quick_turn.
+    assert bundle["failed_paradigms"] == ["repair_pressure"]
+
+
+@pytest.mark.asyncio
+async def test_juniper_turn_keeps_quick_turn(monkeypatch) -> None:
+    from app.settings import settings
+
+    sent, _ = await _probe_call_options(monkeypatch, None)
+    assert sent == [{"route": settings.repair_pressure_probe_route, "gpu_lease": None}]
+    assert settings.repair_pressure_probe_route == "quick_turn"
+
+
+@pytest.mark.asyncio
+async def test_probe_call_puts_the_hold_on_gateway_options() -> None:
+    """The wire: the hold rides ChatRequestPayload.options.gpu_lease (llm-gateway attaches on it)."""
+    import json
+    from app.pre_turn_appraisal import _llm_probe_call
+
+    captured = {}
+
+    class _Codec:
+        def decode(self, _data):
+            class _D:
+                ok = False
+            return _D()
+
+    class _Bus:
+        codec = _Codec()
+
+        async def rpc_request(self, _channel, env, *, reply_channel, timeout_sec):
+            captured["payload"] = env.payload
+            return {"data": b""}
+
+    hold = {"lease_id": "h", "generation": 1, "role": "agent", "holder": "durable-runs:r"}
+    await _llm_probe_call(_Bus(), prompt="p", route="agent", timeout_sec=1.0, gpu_lease=hold)
+    payload = captured["payload"] if isinstance(captured["payload"], dict) else json.loads(captured["payload"])
+    assert payload["route"] == "agent" and payload["options"]["gpu_lease"] == hold
+    await _llm_probe_call(_Bus(), prompt="p", route="quick_turn", timeout_sec=1.0)
+    payload = captured["payload"] if isinstance(captured["payload"], dict) else json.loads(captured["payload"])
+    assert "gpu_lease" not in payload["options"]

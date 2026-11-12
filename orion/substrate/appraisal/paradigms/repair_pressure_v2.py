@@ -17,6 +17,7 @@ from orion.schemas.pre_turn_appraisal import (
 from orion.substrate.appraisal.contract import assemble_repair_contract_delta
 from orion.substrate.appraisal.models import EvidenceKind, RepairEvidenceV1
 from orion.substrate.appraisal.probe.logprob_runner import (
+    _LINE_RE,
     kind_probe_to_evidence,
     parse_yes_no_lines,
     score_binary_logprob,
@@ -199,10 +200,27 @@ def _normalize_logprob_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     raw = payload.get("raw")
     if isinstance(raw, dict):
+        # OpenAI-compatible reply (Strata on the agent/chat seats, and llama.cpp when the native
+        # completion path is off): per-token logprobs live under choices[0].logprobs.content. The
+        # gateway's llm_uncertainty is only a summary (no per-token list), so until 2026-11-12 every
+        # such reply fell through to the fixed text-only fallback scores.
+        choices = raw.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            logprobs = choices[0].get("logprobs")
+            if isinstance(logprobs, dict) and isinstance(logprobs.get("content"), list):
+                return [entry for entry in logprobs["content"] if isinstance(entry, dict)]
         probs = raw.get("probs")
-        if not isinstance(probs, list) and isinstance(raw.get("completion_probabilities"), list):
-            first = raw["completion_probabilities"][0]
-            if isinstance(first, dict):
+        if not isinstance(probs, list) and isinstance(raw.get("completion_probabilities"), list) \
+                and raw["completion_probabilities"]:
+            items = raw["completion_probabilities"]
+            first = items[0]
+            if isinstance(first, dict) and "token" in first:
+                # llama.cpp /completion today (verified live 2026-11-12 on the fast lane, same shape
+                # as the gateway's native_completion_probs_to_logprob_content): a flat list of
+                # per-token entries, each carrying token/logprob/top_logprobs. The older branch below
+                # read first["probs"] only, so this shape too fell to the text fallback.
+                probs = items
+            elif isinstance(first, dict):
                 probs = first.get("probs")
         if isinstance(probs, list):
             content: list[dict[str, Any]] = []
@@ -260,17 +278,50 @@ def _evidence_from_parsed_text_only(parsed: dict[str, str]) -> list[RepairEviden
     return evidence
 
 
-def _answer_token_entries(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for entry in content:
-        token = str(entry.get("token") or "").strip().upper()
-        if token not in {"YES", "NO"}:
+def _aligned_answer_entries(
+    content: list[dict[str, Any]], parsed: dict[str, str]
+) -> dict[str, dict[str, Any]] | None:
+    """Map each answered kind to the token that IS its YES/NO answer, by character position.
+
+    The answer lines are parsed again from the generated tokens' own text, and each line's YES/NO
+    is matched to the token whose span covers it. Returns None (caller uses the text-only fallback
+    for the whole reply) unless every kind the reply answered gets exactly its own answer token,
+    spelled as that answer, with alternatives to score. Matching by order instead (the code before
+    2026-11-12) let a preamble "No ..." token or reordered lines shift every score onto the wrong
+    kind; that path was dead until the parser could read real reply shapes, so the bug was latent."""
+    pieces = [str(entry.get("token") or "") for entry in content]
+    starts: list[int] = []
+    pos = 0
+    for piece in pieces:
+        starts.append(pos)
+        pos += len(piece)
+    token_text = "".join(pieces)
+
+    aligned: dict[str, dict[str, Any]] = {}
+    for match in _LINE_RE.finditer(token_text):
+        kind = match.group(1).lower()
+        if kind not in _EVIDENCE_KINDS:
             continue
+        answer_at = match.start(2)
+        idx = next((i for i in range(len(pieces)) if starts[i] <= answer_at < starts[i] + len(pieces[i])), None)
+        if idx is None:
+            return None
+        entry = content[idx]
+        if str(entry.get("token") or "").strip().upper() != match.group(2).upper():
+            return None   # the answer shares a token with other text (e.g. ":NO"): no clean score
         tops = entry.get("top_logprobs")
         if not isinstance(tops, list) or len(tops) < 2:
-            continue
-        out.append(entry)
-    return out
+            return None
+        if kind in aligned:
+            return None   # a kind answered twice: ambiguous
+        aligned[kind] = entry
+    wanted = {kind for kind in parsed if kind in _EVIDENCE_KINDS}
+    if set(aligned) != wanted:
+        return None
+    if any(match.upper() != parsed[kind] for kind, match in
+           ((k, str(e.get("token") or "").strip()) for k, e in aligned.items())):
+        return None
+    return aligned
 
 
 def _evidence_from_probe_response(payload: dict[str, Any]) -> list[RepairEvidenceV1]:
@@ -286,21 +337,19 @@ def _evidence_from_probe_response(payload: dict[str, Any]) -> list[RepairEvidenc
 
     logprob_usable = isinstance(unc, dict) and unc.get("available") is not False
     content = _normalize_logprob_content(payload) if logprob_usable else []
-    answer_entries = _answer_token_entries(content) if content else []
+    aligned = _aligned_answer_entries(content, parsed) if content else None
 
     evidence: list[RepairEvidenceV1] = []
-    if answer_entries:
-        entry_idx = 0
+    if aligned:
         for kind in _EVIDENCE_KINDS:
-            if kind not in parsed:
+            if kind not in aligned:
                 continue
-            if entry_idx >= len(answer_entries):
-                break
-            entry = answer_entries[entry_idx]
-            entry_idx += 1
-            scored = score_kind_from_answer_token(kind, entry)
+            scored = score_kind_from_answer_token(kind, aligned[kind])
             if scored is None:
-                continue
+                # The answer token's alternatives lack the other answer: no clean score for this
+                # reply. All kinds fall back together, never a mix of real and fixed scores.
+                evidence = []
+                break
             evidence.append(kind_probe_to_evidence(scored))
 
     if not evidence:

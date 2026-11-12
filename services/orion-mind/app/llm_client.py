@@ -14,6 +14,7 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
 from orion.core.bus.rpc_health import SharedRpcHealthSink
+from orion.llm.resource_lease import GPU_LEASE_OPTION
 
 from .llm_context import MindLLMRequestContext
 from .settings import settings
@@ -183,6 +184,9 @@ class MindLLMClient:
             options["mind_run_id"] = context.mind_run_id
             options["mind_phase"] = context.phase_name
             options["mind_router_profile_id"] = context.router_profile_id
+            if context.gpu_lease is not None:
+                # The gateway attaches this call to the turn's hold (llm-gateway gpu_lease_from_options).
+                options[GPU_LEASE_OPTION] = context.gpu_lease
         try:
             content, usage, model_used, result_meta = self._bus_chat(
                 system_prompt=system_prompt,

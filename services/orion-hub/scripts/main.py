@@ -1084,7 +1084,11 @@ async def startup_event():
             # (scripts/consult_loop.py). Claude's turns ride the room relay above.
             try:
                 consult_loop = ConsultLoop(
-                    enabled=settings.HUB_CONSULT_ENABLED and settings.HUB_ROOM_CLAUDE_ENABLED,
+                    # Orion's turns are durable runs served by curiosity's turn-request loop, which runs
+                    # only with investigation + cortex kickoff on: without it no consult turn is served.
+                    enabled=(settings.HUB_CONSULT_ENABLED and settings.HUB_ROOM_CLAUDE_ENABLED
+                             and settings.HUB_CURIOSITY_INVESTIGATION_ENABLED
+                             and settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX),
                     pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
                     durable_client=DurableRunsClient(settings.HUB_CONSULT_DURABLE_URL),
                     relay_provider=lambda: room_claude_relay,

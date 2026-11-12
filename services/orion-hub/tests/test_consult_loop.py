@@ -443,3 +443,45 @@ async def test_a_failed_orion_run_fails_the_consult_after_durable_retries(world)
     await world.loop.tick()
     row = world.store.rows[cid]
     assert row["status"] == "failed" and row["status_reason"].startswith("orion_run_failed:")
+
+
+@pytest.mark.asyncio
+async def test_a_resubmit_of_the_same_turn_adopts_the_existing_run(world):
+    """durable-runs answers 409 to a different request under an existing run_id; the request is now
+    deterministic, and a 409 with the run present adopts it instead of failing the consult."""
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r30", question="q")
+    first = []
+    real_submit = world.outreach.submit
+
+    async def submit(request_json):
+        first.append(request_json)
+        if len(first) == 1:
+            raise TimeoutError("client timed out after the POST landed")
+        return 409, "conflict"
+
+    world.outreach.submit = submit
+    await world.loop.tick()                                   # POST landed, client saw a timeout
+    assert world.store.rows[cid]["status_reason"] == cl.AWAIT_ORION
+    world.outreach.runs[f"consult-{cid}-t1"] = {"status": "completed", "harness_steps": {"turn": {"text": "hi"}}}
+    await world.loop.tick()                                   # resubmit -> 409 -> adopt -> poll
+    same = lambda r: {k: v for k, v in r.items() if k != "requested_at"}   # durable-runs ignores it
+    assert same(first[0]) == same(first[1]), "a resubmit of one turn is the same request"
+    assert world.store.rows[cid]["status_reason"] == cl.AWAIT_CLAUDE and world.relay.invites
+
+
+@pytest.mark.asyncio
+async def test_a_completed_run_is_stored_once_even_if_polled_twice(world):
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r31", question="q")
+    await world.loop.tick()
+    row = dict(world.store.rows[cid], status_reason=cl.AWAIT_ORION_RUN, pending_correlation_id=f"consult-{cid}-t1")
+    await world.loop._poll_orion_run(None, row)               # a crash replay of the same poll
+    assert [t["turn_no"] for t in world.store.turn_rows[cid]] == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_brief_that_cannot_be_built_fails_the_consult_not_the_loop(world, monkeypatch):
+    monkeypatch.setattr(cl, "orion_turn_prompt", lambda **kw: "")   # empty prompt: invalid brief
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:r32", question="q")
+    await world.loop.tick()
+    assert world.store.rows[cid]["status"] == "failed"
+    assert world.store.rows[cid]["status_reason"].startswith("orion_brief_invalid:")

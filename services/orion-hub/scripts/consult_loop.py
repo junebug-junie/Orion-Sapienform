@@ -441,21 +441,39 @@ class ConsultLoop:
             transcript=[(t["speaker"], t["text"]) for t in history], turn_no=turn_no, max_turns=self.max_turns,
         )
         run_id = consult_turn_run_id(cid, turn_no)
-        request = DurableRunRequestV1(
-            run_id=run_id, workflow=CONSULT_ORION_TURN_WORKFLOW, correlation_id=str(uuid.uuid4()),
-            brief=ConsultOrionTurnBriefV1(
-                consult="consult.orion_turn", consult_id=cid, turn_no=turn_no, prompt=prompt,
-                # Orion's consult session (none of Juniper's chats); recall searches the question.
-                session_id=orion_session_id(cid), retrieval_query=row["question"][:1000],
-                timeout_sec=self.orion_timeout_sec,
-            ),
-            admission=ResourceRequirementV1(preferred_lane="agent", resource="llm.route.agent", priority="background"),
-        )
+        try:
+            request = DurableRunRequestV1(
+                # Deterministic: a resubmit of this turn is byte-identical, so durable-runs takes it as
+                # the same run (it refuses a different request under the same run_id with 409).
+                run_id=run_id, workflow=CONSULT_ORION_TURN_WORKFLOW,
+                correlation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"orion:consult:{run_id}")),
+                brief=ConsultOrionTurnBriefV1(
+                    consult="consult.orion_turn", consult_id=cid, turn_no=turn_no, prompt=prompt,
+                    # Orion's consult session (none of Juniper's chats); recall searches the question.
+                    session_id=orion_session_id(cid), retrieval_query=row["question"][:1000],
+                    timeout_sec=self.orion_timeout_sec,
+                ),
+                admission=ResourceRequirementV1(preferred_lane="agent", resource="llm.route.agent", priority="background"),
+            )
+        except Exception as exc:  # noqa: BLE001 -- a brief that cannot be built would jam every tick
+            await set_status(pool, cid, "failed", f"orion_brief_invalid:{type(exc).__name__}")
+            logger.warning("consult_orion_brief_invalid id=%s err=%s", cid, str(exc)[:300])
+            return {"failed": cid, "why": "orion_brief_invalid"}
         try:
             code, body = await self._durable.submit(request.model_dump(mode="json"))
         except Exception as exc:  # noqa: BLE001 -- durable-runs down: the next tick submits again
             logger.warning("consult_orion_run_submit_failed id=%s err=%s", cid, exc)
             return {"waiting": cid, "for": "durable_runs"}
+        if code == 409:
+            # The run already exists (a crash between submit and our status write, or a changed
+            # setting): adopt it rather than fail the consult.
+            try:
+                existing = await self._durable.get_run(run_id)
+            except Exception:  # noqa: BLE001
+                existing = None
+            if existing is not None:
+                logger.info("consult_orion_run_adopted id=%s run=%s", cid, run_id)
+                code = 202
         if code >= 400:
             logger.warning("consult_orion_run_refused id=%s run=%s http=%s body=%s", cid, run_id, code, body)
             await set_status(pool, cid, "failed", f"orion_run_refused:http_{code}")
@@ -491,10 +509,16 @@ class ConsultLoop:
             await set_status(pool, cid, "failed", "orion_run_completed_empty", pending_correlation_id=None)
             return {"failed": cid, "why": "orion_run_completed_empty"}
         history = await turns(pool, cid)
-        turn_no = len(history) + 1
-        await add_turn(pool, cid, turn_no=turn_no, speaker="Orion", text=text,
-                       model=(step.get("debug") or {}).get("fcc_model_label"))
-        self._push_turn(cid, turn_no, "Orion", text)
+        # The turn number is the run's (consult-<id>-t<n>), not len(history)+1: a crash after storing
+        # the turn but before Claude was invited must not store it twice under the next number.
+        try:
+            turn_no = int(run_id.rsplit("-t", 1)[1])
+        except (IndexError, ValueError):
+            turn_no = len(history) + 1
+        if not any(t["turn_no"] == turn_no for t in history):
+            await add_turn(pool, cid, turn_no=turn_no, speaker="Orion", text=text,
+                           model=(step.get("debug") or {}).get("fcc_model_label"))
+            self._push_turn(cid, turn_no, "Orion", text)
         row = await get(pool, cid) or row
         return await self._send_claude(pool, row, prompt=self._claude_prompt(row, await turns(pool, cid)))
 

@@ -4,7 +4,7 @@ Date: 2026-11-12. Arc: attention as the want-ledger competition (handoff A, `doc
 
 ## In one paragraph
 
-A camera ask is a card that asks Juniper a question about something the camera saw: "Is this Teddy?", "Are these the same person?", "Whose vehicle is this?". Today Orion opens these cards under five fixed daily caps. Five minutes later a shadow want is posted for each card that is still open, and the market funds 89 of 90. **Binding as-is would change nothing, and the value it would bind on points the wrong way.** The value is "how many times the camera saw this individual". The asks with the highest value are the vehicle asks, and Juniper dismisses 88% of those with "don't know". The asks she answers (97%) have half the value. So this design has two patches: first make the ask's value count whether Juniper can answer it, then make the ask bid **before** the card is shown, and obey the answer.
+A camera ask is a card that asks Juniper a question about something the camera saw: "Is this <name>?", "Are these the same person?", "Whose vehicle is this?". Today Orion opens these cards under five fixed daily caps. Five minutes later a shadow want is posted for each card that is still open, and the market funds 89 of 90. **Binding as-is would change nothing, and the value it would bind on points the wrong way.** The value is "how many times the camera saw this individual". The asks with the highest value are the vehicle asks, and Juniper dismisses 88% of those with "don't know". The asks she answers (97%) have half the value. So this design has two patches: first make the ask's value count whether Juniper can answer it, then make the ask bid **before** the card is shown, and obey the answer.
 
 ## Arsonist summary
 

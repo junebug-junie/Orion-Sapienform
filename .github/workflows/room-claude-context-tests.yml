@@ -42,7 +42,11 @@ jobs:
           python -m pip install --upgrade pip
           grep -vE '^(faster-whisper|soundfile)' services/orion-hub/requirements.txt > /tmp/hub-reqs.txt
           python -m pip install -r /tmp/hub-reqs.txt
-          python -m pip install -r services/orion-room-companion/requirements.txt
+          # Not the companion's `mcp`: it pulls a newer starlette than Hub's pinned fastapi accepts
+          # (Router(on_startup=...) TypeError), and no test here imports it (orion/claude_tools/mcp_server.py
+          # imports mcp lazily). claude-tools-tests.yml installs it with the companion and governor.
+          grep -vE '^mcp' services/orion-room-companion/requirements.txt > /tmp/companion-reqs.txt
+          python -m pip install -r /tmp/companion-reqs.txt
           # rdflib/pyshacl: api_routes imports orion.memory_graph (not in hub requirements.txt).
           python -m pip install "pytest>=8.2,<10" "pytest-asyncio>=0.23,<1" rdflib pyshacl
       - name: Companion (stdin prompt, rotation, sent-line keys, schema compat)

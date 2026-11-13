@@ -288,3 +288,17 @@ def test_market_care_arm_reads_source_c_and_holdback_does_not():
     assert "personality:endorsement=0.0000:n=30" in care.warnings
     assert care.family_weight < hold.family_weight
     assert hold.family_weight == off.family_weight
+
+
+@pytest.mark.parametrize("hour", [0, 11, 13, 23])
+def test_the_runaway_guard_window_covers_seven_complete_days_at_any_time_of_day(hour):
+    """Regression: the guard read ``now - 7 days``, which cut the oldest complete day short after noon UTC,
+    so no cap could ever form in the afternoon (CI went red at 16:36Z on 2026-11-13)."""
+    now = datetime.combine(NOW.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=hour, minutes=30)
+    rows = []
+    for d in range(1, 8):
+        at = datetime.combine((now - timedelta(days=d)).date(), datetime.min.time(), tzinfo=timezone.utc) \
+            + timedelta(hours=12)
+        rows.append(_choice_row(d, at=at, chosen_text="street a", alt_texts=("street b", "street c", "pipeline")))
+    v = _values(_Pool(tendencies=[_tendency_row()], choices=rows))
+    assert "t-street" in asyncio.run(v.refresh(now)).caps

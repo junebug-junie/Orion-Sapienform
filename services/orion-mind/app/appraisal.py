@@ -6,13 +6,15 @@ import json
 import time
 from typing import Any, get_args
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from orion.mind.synthesis_v1 import (
     ActiveCognitiveFrontierV1,
+    DeferredFrontierMatterV1,
     MatterKindV1,
     RecommendedEffectV1,
     SemanticSynthesisV1,
+    SuppressedMindCandidateV1,
 )
 
 from .evidence import MindEvidencePackV1
@@ -20,7 +22,7 @@ from .guardrails import filter_active_frontier
 from .llm_client import GATEWAY_ERROR_KEY, MindLLMClientProtocol
 from .llm_context import MindLLMRequestContext
 from .phase_telemetry import MindPhaseTelemetry, utc_now_iso
-from .synthesis import _RECOMMENDED_EFFECT_ALIASES, OFF_VOCAB_METADATA_KEY
+from .synthesis import OFF_VOCAB_METADATA_KEY, RECOMMENDED_EFFECT_ALIASES
 
 _FRONTIER_SCHEMA_VERSION = "mind.active_cognitive_frontier.v1"
 _SCHEMA_VERSION_ALIASES: dict[str, str] = {
@@ -110,7 +112,8 @@ def _string_of_item(value: Any) -> str:
             text = value.get(key)
             if isinstance(text, str) and text.strip():
                 return text.strip()
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        # No text: nothing real to hand to stance (dropped by _coerce_string_list).
+        return ""
     return str(value).strip()
 
 
@@ -146,18 +149,46 @@ def _coerce_recommended_effect(item: dict[str, Any]) -> str:
     effect = str(item.get("recommended_effect") or "").strip()
     if effect in _VALID_RECOMMENDED_EFFECTS:
         return effect
-    return _RECOMMENDED_EFFECT_ALIASES.get(effect, "no_effect")
+    return RECOMMENDED_EFFECT_ALIASES.get(effect, "no_effect")
 
 
-def _off_vocab_matter_fields(item: dict[str, Any], *, matter_kind: str, effect: str) -> dict[str, Any]:
-    """The model's own matter_kind / recommended_effect values that were replaced (same record as
-    synthesis.try_coerce_off_vocab_claim_fields), so a mapped label never hides what the model said."""
+def _on_vocab(value: Any, vocab: frozenset[str]) -> bool:
+    return isinstance(value, str) and value.strip() in vocab
+
+
+def _off_vocab_matter_fields(item: dict[str, Any]) -> dict[str, Any]:
+    """The model's own matter_kind / recommended_effect values that were not on the contract and got
+    replaced (same record as synthesis.try_coerce_off_vocab_claim_fields), so a mapped label never
+    hides what the model said. An absent or null field is a default, not an invented value."""
     off_vocab: dict[str, Any] = {}
-    if "matter_kind" in item and item.get("matter_kind") != matter_kind:
-        off_vocab["matter_kind"] = item.get("matter_kind")
-    if "recommended_effect" in item and item.get("recommended_effect") != effect:
-        off_vocab["recommended_effect"] = item.get("recommended_effect")
+    for field, vocab in (("matter_kind", _VALID_MATTER_KINDS), ("recommended_effect", _VALID_RECOMMENDED_EFFECTS)):
+        value = item.get(field)
+        if value is not None and not _on_vocab(value, vocab):
+            off_vocab[field] = value
     return off_vocab
+
+
+def _valid_side_entries(items: Any, model: type[BaseModel]) -> tuple[list[dict[str, Any]], int]:
+    """deferred / suppressed entries that fit their contract, and how many did not.
+
+    These lists only record what the judge left out; the frontier's substance is ``selected``. A
+    deferred item without ``reason_deferred`` or a suppressed item with a free-text ``reason`` used to
+    fail the whole reply (issue #3294); now that entry is dropped and counted in the notes. Only Mind
+    writes the provenance key, so a model-written one is removed."""
+    if not isinstance(items, list):
+        return [], 0
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for entry in items:
+        if isinstance(entry, dict) and isinstance(entry.get("metadata"), dict):
+            entry = {**entry, "metadata": {k: v for k, v in entry["metadata"].items() if k != OFF_VOCAB_METADATA_KEY}}
+        try:
+            model.model_validate(entry)
+        except ValidationError:
+            dropped += 1
+            continue
+        kept.append(entry)
+    return kept, dropped
 
 
 def _coerce_features(item: dict[str, Any]) -> dict[str, Any]:
@@ -190,7 +221,7 @@ def _coerce_matter_item(
     matter_kind = _coerce_matter_kind(item)
     effect = _coerce_recommended_effect(item)
     metadata = dict(item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {}
-    off_vocab = _off_vocab_matter_fields(item, matter_kind=matter_kind, effect=effect)
+    off_vocab = _off_vocab_matter_fields(item)
     if off_vocab:
         metadata[OFF_VOCAB_METADATA_KEY] = off_vocab
     else:
@@ -268,13 +299,17 @@ def try_normalize_frontier_raw(
     if any(OFF_VOCAB_METADATA_KEY in m["metadata"] for m in selected):
         notes.append(OFF_VOCAB_MATTER_NOTE)
 
-    deferred_in = raw.get("deferred")
-    suppressed_in = raw.get("suppressed")
+    deferred, deferred_dropped = _valid_side_entries(raw.get("deferred"), DeferredFrontierMatterV1)
+    suppressed, suppressed_dropped = _valid_side_entries(raw.get("suppressed"), SuppressedMindCandidateV1)
+    if deferred_dropped:
+        notes.append(f"dropped_invalid_deferred:{deferred_dropped}")
+    if suppressed_dropped:
+        notes.append(f"dropped_invalid_suppressed:{suppressed_dropped}")
     out: dict[str, Any] = {
         "schema_version": _FRONTIER_SCHEMA_VERSION,
         "selected": selected,
-        "deferred": list(deferred_in) if isinstance(deferred_in, list) else [],
-        "suppressed": list(suppressed_in) if isinstance(suppressed_in, list) else [],
+        "deferred": deferred,
+        "suppressed": suppressed,
         "hazards": _coerce_string_list(raw.get("hazards")),
         "response_directives": _coerce_string_list(raw.get("response_directives")),
         "diagnostics": dict(raw.get("diagnostics") or {}) if isinstance(raw.get("diagnostics"), dict) else {},
@@ -287,25 +322,32 @@ def try_normalize_frontier_raw(
     return out, True
 
 
+def _first_error_location(exc: ValidationError) -> str:
+    errors = exc.errors()
+    if not errors:
+        return "unknown"
+    return ".".join(str(part) for part in errors[0].get("loc") or ()) or "root"
+
+
 def _validate_frontier_raw(
     raw: dict[str, Any],
     *,
     claim_ids: set[str],
-) -> tuple[ActiveCognitiveFrontierV1 | None, bool]:
+) -> tuple[ActiveCognitiveFrontierV1 | None, bool, str | None]:
+    """(frontier, normalized, where validation failed). The location makes a schema_invalid row
+    say which field broke (3 live Strata failures on 11-13 left no trace of it)."""
     normalized, did_normalize = try_normalize_frontier_raw(raw, claim_ids=claim_ids)
-    candidate = normalized if did_normalize and normalized is not None else raw
-    try:
-        return ActiveCognitiveFrontierV1.model_validate(candidate), did_normalize
-    except ValidationError:
-        if did_normalize:
-            return None, True
-        retry, did_retry = try_normalize_frontier_raw(raw, claim_ids=claim_ids)
-        if not did_retry or retry is None:
-            return None, False
+    if not did_normalize or normalized is None:
+        # No selected matter with a label, a summary and a claim id: only a reply that is already
+        # valid as written gets through (then it has no selected matters and is filtered later).
         try:
-            return ActiveCognitiveFrontierV1.model_validate(retry), True
-        except ValidationError:
-            return None, True
+            return ActiveCognitiveFrontierV1.model_validate(raw), False, None
+        except ValidationError as exc:
+            return None, False, _first_error_location(exc)
+    try:
+        return ActiveCognitiveFrontierV1.model_validate(normalized), True, None
+    except ValidationError as exc:
+        return None, True, _first_error_location(exc)
 
 
 def run_active_frontier_judge(
@@ -361,7 +403,7 @@ def run_active_frontier_judge(
             # stays the client's; the telemetry row names the cause.
             telemetry.error = ":".join(
                 str(part) for part in (err, gateway_error.get("error"), gateway_error.get("reason")) if part
-            )
+            )[:200]
         return None, err or "appraisal_failed", telemetry
     if not isinstance(raw, dict):
         telemetry.validation_ok = False
@@ -370,11 +412,11 @@ def run_active_frontier_judge(
         return None, "frontier_schema_invalid", telemetry
 
     claim_ids = {c.claim_id for c in synthesis.claims}
-    frontier, normalized_from_shape = _validate_frontier_raw(raw, claim_ids=claim_ids)
+    frontier, normalized_from_shape, invalid_at = _validate_frontier_raw(raw, claim_ids=claim_ids)
     if frontier is None:
         telemetry.validation_ok = False
         telemetry.status = "schema_invalid"
-        telemetry.error = "frontier_schema_invalid"
+        telemetry.error = f"frontier_schema_invalid:{invalid_at}"[:200] if invalid_at else "frontier_schema_invalid"
         return None, "frontier_schema_invalid", telemetry
 
     diag_notes = list(frontier.diagnostics.notes)

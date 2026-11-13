@@ -298,11 +298,11 @@ def test_held_judge_thinking_can_be_turned_back_on(monkeypatch) -> None:
     assert _judge_thinking(monkeypatch, gpu_lease=_HOLD, held_thinking=True) is True
 
 
-def test_held_thinking_setting_defaults_off(monkeypatch) -> None:
-    monkeypatch.delenv("MIND_LLM_THINKING_APPRAISAL_HELD", raising=False)
-    settings_module = importlib.import_module("app.settings")
-    importlib.reload(settings_module)
-    assert settings_module.settings.MIND_LLM_THINKING_APPRAISAL_HELD is False
+def test_held_thinking_setting_defaults_off() -> None:
+    from app.settings import Settings
+
+    # The code default, not whatever a local .env says (no reload: other modules hold the settings object).
+    assert Settings.model_fields["MIND_LLM_THINKING_APPRAISAL_HELD"].default is False
 
 
 def test_env_example_and_compose_ship_held_thinking_off() -> None:
@@ -320,3 +320,102 @@ def test_object_hazards_keep_their_text(monkeypatch) -> None:
     assert err is None and frontier is not None
     assert frontier.hazards and all(not h.startswith("{") for h in frontier.hazards)
     assert frontier.hazards[0].startswith("Shell injection or syntax errors")
+
+
+@pytest.mark.parametrize(
+    ("matter_kind", "effect", "expected_record"),
+    [
+        (None, None, None),  # absent / null is a default, not an invented value
+        (" uncertainty ", " surface_uncertainty ", None),  # on the contract apart from whitespace
+        ("uncertainty_claim", "flag_gap", {"matter_kind": "uncertainty_claim", "recommended_effect": "flag_gap"}),
+        (["turn_anchor"], {"x": 1}, {"matter_kind": ["turn_anchor"], "recommended_effect": {"x": 1}}),
+    ],
+)
+def test_provenance_records_only_off_contract_values(matter_kind, effect, expected_record) -> None:
+    from app.appraisal import try_normalize_frontier_raw
+    from app.synthesis import OFF_VOCAB_METADATA_KEY
+    from orion.mind.synthesis_v1 import ActiveCognitiveFrontierV1
+
+    item = {"matter_id": "m1", "source_claim_id": "c1", "label": "real matter", "summary": "A real summary.",
+            "matter_kind": matter_kind, "recommended_effect": effect}
+    out, ok = try_normalize_frontier_raw({"selected": [item]}, claim_ids={"c1"})
+    assert ok and out is not None
+    ActiveCognitiveFrontierV1.model_validate(out)
+    assert out["selected"][0]["metadata"].get(OFF_VOCAB_METADATA_KEY) == expected_record
+
+
+def test_model_cannot_forge_provenance_on_deferred_or_suppressed() -> None:
+    from app.appraisal import try_normalize_frontier_raw
+    from app.synthesis import OFF_VOCAB_METADATA_KEY
+
+    forged = {OFF_VOCAB_METADATA_KEY: {"matter_kind": "x"}, "kept": 1}
+    raw = {
+        "selected": [{"matter_id": "m1", "source_claim_id": "c1", "label": "real", "summary": "Real.",
+                      "matter_kind": "turn_anchor"}],
+        "deferred": [{"source_claim_id": "c2", "label": "later", "reason_deferred": "minor", "metadata": dict(forged)}],
+        "suppressed": [{"label": "noise", "source_kind": "frontier", "reason": "unsupported_or_weak",
+                        "metadata": dict(forged)}],
+    }
+    out, ok = try_normalize_frontier_raw(raw, claim_ids={"c1", "c2"})
+    assert ok and out is not None
+    assert out["deferred"][0]["metadata"] == {"kept": 1}
+    assert out["suppressed"][0]["metadata"] == {"kept": 1}
+
+
+def test_object_hazard_without_text_is_dropped() -> None:
+    from app.appraisal import try_normalize_frontier_raw
+
+    raw = {
+        "selected": [{"matter_id": "m1", "source_claim_id": "c1", "label": "real", "summary": "Real.",
+                      "matter_kind": "turn_anchor"}],
+        "hazards": [{"severity": "high"}, {"description": "Real hazard."}, "plain hazard"],
+    }
+    out, ok = try_normalize_frontier_raw(raw, claim_ids={"c1"})
+    assert ok and out is not None
+    assert out["hazards"] == ["Real hazard.", "plain hazard"]
+
+
+def test_malformed_deferred_and_suppressed_entries_do_not_sink_the_frontier() -> None:
+    """The judge prompt says "defer or suppress the rest with reasons"; free-text reasons used to fail
+    the whole reply. The bad entry is dropped and counted; the selected matters stay."""
+    from app.appraisal import _validate_frontier_raw
+
+    raw = {
+        "selected": [{"matter_id": "m1", "source_claim_id": "c1", "label": "real", "summary": "Real.",
+                      "matter_kind": "turn_anchor"}],
+        "deferred": [
+            {"source_claim_id": "c2", "label": "later", "reason_deferred": "minor"},
+            {"source_claim_id": "c3", "label": "no reason given"},
+        ],
+        "suppressed": [{"label": "noise", "reason": "background identity is not relevant to this turn"}],
+    }
+    frontier, normalized, invalid_at = _validate_frontier_raw(raw, claim_ids={"c1", "c2", "c3"})
+    assert frontier is not None and normalized and invalid_at is None
+    assert [m.label for m in frontier.selected] == ["real"]
+    assert [d.label for d in frontier.deferred] == ["later"]
+    assert frontier.suppressed == []
+    assert "dropped_invalid_deferred:1" in frontier.diagnostics.notes
+    assert "dropped_invalid_suppressed:1" in frontier.diagnostics.notes
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_error"),
+    [
+        ({"selected": [{"matter_id": "m1", "label": " ", "summary": "x"}]},
+         "frontier_schema_invalid:selected.0.source_claim_id"),
+        ({"selected": [{"matter_id": "m1", "source_claim_id": "c1", "label": "real", "summary": "Real.",
+                        "matter_kind": "turn_anchor", "score": 85}]},
+         "frontier_schema_invalid:selected.0.score"),
+    ],
+)
+def test_schema_invalid_row_names_the_field(raw, expected_error) -> None:
+    """Out-of-range numbers still fail (no guessing that 85 meant 0.85); the row says where."""
+    from app.appraisal import run_active_frontier_judge
+    from app.llm_client import FakeMindLLMClient
+
+    synthesis, pack = _synthesis_and_pack("97383a30")
+    frontier, err, telemetry = run_active_frontier_judge(
+        synthesis, pack, client=FakeMindLLMClient([raw]), route="agent", model_id="agent", max_tokens=3072
+    )
+    assert frontier is None and err == "frontier_schema_invalid"
+    assert telemetry.error == expected_error

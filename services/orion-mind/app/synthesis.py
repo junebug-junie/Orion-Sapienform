@@ -29,6 +29,8 @@ _RECOMMENDED_EFFECT_ALIASES: dict[str, RecommendedEffectV1] = {
     "ack": "answer_directly",
     "warm_ack": "receive_warmly",
 }
+# Public name for appraisal.py (the frontier judge maps the same invented effects).
+RECOMMENDED_EFFECT_ALIASES = _RECOMMENDED_EFFECT_ALIASES
 from .guardrails import (
     SemanticClaimFilterStats,
     evaluate_semantic_handoff_authorization,

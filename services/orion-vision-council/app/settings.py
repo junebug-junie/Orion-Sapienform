@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # perception ranks below Juniper's turn (metacog_turn) and is never shed by heat.
     # Was metacog_background (2026-09-07, yield to Mind's metacog traffic).
     COUNCIL_LLM_ROUTE: str = "metacog_perception"
-    COUNCIL_LLM_MAX_TOKENS: int = 1024
+    COUNCIL_LLM_MAX_TOKENS: int = 2048
     COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
     COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"
     # Streams whose window captions may reach the council (comma list). Every

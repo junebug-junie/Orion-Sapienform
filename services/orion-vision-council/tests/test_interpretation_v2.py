@@ -14,6 +14,7 @@ sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
 from app.interpretation import (  # noqa: E402
     InterpretationParseOutcome,
+    _validation_issue_summary,
     build_interpretation_llm_options,
     build_interpretation_prompt,
     parse_llm_content,
@@ -27,6 +28,8 @@ from orion.schemas.vision import (  # noqa: E402
     VisionSceneInterpretationV1,
     VisionWindowPayload,
 )
+from orion.schemas.vision_interpretation_contract import compact_vision_scene_interpretation_json_schema  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 
 def _window(**kwargs) -> VisionWindowPayload:
@@ -87,6 +90,107 @@ def test_strict_v2_still_parses_as_strict_v2():
     assert isinstance(outcome.interpretation, VisionSceneInterpretationV1)
     assert outcome.interpretation.scene_summary == "A person walks through the frame."
     assert outcome.salvage_warnings == []
+
+
+def test_scene_entity_schema_requires_a_label():
+    entity = compact_vision_scene_interpretation_json_schema()["properties"]["entities"]["items"]
+    assert entity["required"] == ["label"]
+    assert entity["properties"]["label"] == {"type": "string"}
+
+
+def test_prompt_names_both_entity_shapes_for_fallback_model():
+    prompt = build_interpretation_prompt(_window())
+    assert "scene entities item MUST be an object with a non-empty string label" in prompt
+    assert "event_candidates.entities item MUST be a string label" in prompt
+
+
+def test_salvage_grounded_entity_objects_without_stringifying_them():
+    window = _window(summary={"evidence": {"hard_labels": ["vehicle"]}})
+    data = json.loads(_valid_interpretation_json(window))
+    data["entities"] = [{"id": "vehicle_1", "type": "vehicle", "confidence": 0.9}]
+    data["event_candidates"][0]["entities"] = [{"id": "vehicle_1", "type": "vehicle"}]
+    data["event_candidates"][0]["tags"] = [{"bad": "object"}, "motion"]
+
+    outcome = _parse(json.dumps(data), window)
+
+    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.interpretation is not None
+    assert outcome.interpretation.entities[0].label == "vehicle"
+    assert outcome.interpretation.entities[0].entity_id == "vehicle_1"
+    assert outcome.interpretation.event_candidates[0].entities == ["vehicle"]
+    assert outcome.interpretation.event_candidates[0].tags == ["motion"]
+    assert any("entities[0]" in warning for warning in outcome.salvage_warnings)
+
+
+def test_salvage_drops_unsupported_entity_objects():
+    window = _window(summary={"evidence": {"hard_labels": ["vehicle"]}})
+    data = json.loads(_valid_interpretation_json(window))
+    data["entities"] = [{"id": "dragon_1", "type": "dragon"}]
+    data["event_candidates"] = []
+
+    outcome = _parse(json.dumps(data), window)
+
+    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.interpretation is not None
+    assert outcome.interpretation.entities == []
+    assert outcome.interpretation.event_candidates == []
+    assert project_interpretation_to_events(outcome.interpretation, window).events == []
+
+
+def test_salvage_does_not_publish_unsupported_entity_narrative():
+    window = _window(summary={"evidence": {"hard_labels": ["vehicle"]}})
+    data = json.loads(_valid_interpretation_json(window))
+    data["event_candidates"] = [{
+        "event_type": "dragon_present",
+        "narrative": "A dragon is visible.",
+        "entities": [{"type": "dragon"}],
+    }]
+    data["salient_observations"] = [{"observation": "A vehicle is visible."}]
+
+    outcome = _parse(json.dumps(data), window)
+
+    assert outcome.parse_mode == "parse_failed"
+    assert outcome.interpretation is None
+
+
+def test_event_entity_objects_alone_reach_grounded_salvage():
+    window = _window(summary={"evidence": {"hard_labels": ["vehicle"]}})
+    data = json.loads(_valid_interpretation_json(window))
+    data["event_candidates"][0]["entities"] = [{"type": "vehicle"}]
+
+    outcome = _parse(json.dumps(data), window)
+
+    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.interpretation is not None
+    assert outcome.interpretation.event_candidates[0].entities == ["vehicle"]
+
+
+def test_stale_believed_label_does_not_ground_salvaged_entity():
+    window = _window(summary={"evidence": {
+        "hard_labels": [], "believed_hard_labels": ["vehicle"],
+    }})
+    data = json.loads(_valid_interpretation_json(window))
+    data["entities"] = [{"type": "vehicle"}]
+    data["event_candidates"] = []
+
+    outcome = _parse(json.dumps(data), window)
+
+    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.interpretation is not None
+    assert outcome.interpretation.entities == []
+    assert outcome.interpretation.event_candidates == []
+
+
+def test_validation_issue_summary_contains_paths_without_values():
+    try:
+        VisionSceneInterpretationV1.model_validate({
+            "window_id": "w1", "scene_summary": "vehicle",
+            "entities": [{"id": "vehicle_1", "type": "vehicle"}],
+        })
+    except ValidationError as exc:
+        assert _validation_issue_summary(exc) == "entities.0.label:missing"
+    else:
+        pytest.fail("expected a missing scene entity label")
 
 
 def test_salient_observations_event_type_narrative_partitions_to_event_candidates():

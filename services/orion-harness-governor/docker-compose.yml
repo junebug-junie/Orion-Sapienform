@@ -66,6 +66,10 @@ services:
       # /mnt/scripts/Orion-Sapienform. The only path back to the real repo is git
       # push to a non-main branch, gated by GitHub branch protection.
       - ${HARNESS_ORION_FCC_SANDBOX_HOST:-/mnt/orion-fcc}:/mnt/orion-fcc
+      # Camera frames the retinas save every 0.5 s (kept 5 min), read-only, for `dig look`
+      # (orion/dig/look.py; design docs/superpowers/specs/2026-11-13-camera-look-design.md).
+      # Remove this line to take camera sight away from turns.
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro
       # No ${HOME}/.ssh and no ${HOME}/.config/gh: Orion pushes over HTTPS as its
       # own GitHub user (ORION_GITHUB_TOKEN -> GITHUB_PAT, see entrypoint.sh and
       # orion/fcc/sandbox_sync.py), never as the operator.

@@ -70,11 +70,21 @@ def test_stale_camera_is_never_called_live(dirs) -> None:
     assert "NOT LIVE" in lines[1] and "4 min old" in lines[1]
 
 
-def test_doorbell_stale_frame_says_event_driven(dirs) -> None:
+def test_doorbell_stale_frame_says_event_driven_and_is_not_graded(dirs, published) -> None:
     frames, home = dirs
     _frame(frames, "doorbell", "doorbell", NOW_MS - 120_000)
-    lines, _ = lk.look("door", home=home, directory=frames, now=NOW)
+    lines, rec = lk.look("door", home=home, directory=frames, now=NOW)
     assert "only records after motion or a ring" in lines[1]
+    assert published == [] and "act_id" not in rec and lines[-1].startswith("act: none (")
+
+
+def test_doorbell_with_no_event_is_waiting_not_a_0(dirs, published) -> None:
+    frames, home = dirs
+    with pytest.raises(lk.LookError, match="only records after motion") as err:
+        lk.look("doorbell", home=home, directory=frames, now=NOW)
+    assert published == [] and "act: none" in str(err.value)
+    (row,) = [json.loads(x) for x in (home / "look" / lk.LOG_NAME).read_text().splitlines()]
+    assert row["cap_exempt"] is True and lk.looks_in_last_hour(home / "look" / lk.LOG_NAME, NOW) == 0
 
 
 def test_no_frame_is_an_error_not_an_empty_look(dirs) -> None:
@@ -160,6 +170,7 @@ def test_all_newest_frames_cut_off_is_an_error(dirs) -> None:
         lk.look("office", home=home, directory=frames, now=NOW)
     (row,) = [json.loads(x) for x in (home / "look" / lk.LOG_NAME).read_text().splitlines()]
     assert row["live"] is False and "incomplete" in row["reason"]
+    assert row["cap_exempt"] is True and "act_id" not in row  # a read race: no 0, no cap slot
 
 
 def test_malformed_log_rows_do_not_crash_the_cap(tmp_path: Path) -> None:
@@ -175,12 +186,15 @@ def test_a_live_look_is_one_act_opened_then_closed_1(dirs, published, monkeypatc
     frames, home = dirs
     _frame(frames, "walkway", "walkway", NOW_MS - 400)
     monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Orion-Lease: x\nX-Orion-Correlation-Id: turn-123")
-    lines, rec = lk.look("walkway", home=home, directory=frames, now=NOW)
+    lines, rec = lk.look("walkway", home=home, directory=frames, now=NOW,
+                         clock=lambda: NOW + timedelta(milliseconds=40))
     opened, closed = published
     assert [opened.event_kind, closed.event_kind] == ["act_opened", "act_closed"]
     assert opened.trace_id == closed.trace_id == f"act:{rec['act_id']}"
     act = closed.act
     assert (act.actor, act.verb, act.object_ref) == ("orion.look", "look", "camera:walkway")
+    # real wall time (40 ms here): the ledger fills `seconds` from these, never a fake 0
+    assert (closed.observed_at - opened.observed_at).total_seconds() == 0.04
     assert act.expect.signal_id == "artifact_produced" and act.outcome.value == 1.0
     assert closed.session_id == "turn-123" and closed.correlation_id is None  # joinable, never billed the turn
     assert act.cost is None  # not measured, never zero
@@ -213,9 +227,9 @@ def test_a_bus_failure_never_fails_the_look(dirs, monkeypatch) -> None:
     monkeypatch.setattr(lk, "_publish_bus", down)
     lines, rec = lk.look("office", home=home, directory=frames, now=NOW)
     assert Path(rec["path"]).exists() and "act_id" not in rec
-    assert lines[-1] == "act: not recorded (ConnectionError: bus down)"
+    assert lines[-1] == "act: not recorded (ConnectionError('bus down'))"
     (row,) = [json.loads(x) for x in (home / "look" / lk.LOG_NAME).read_text().splitlines()]
-    assert row["act_error"] == "ConnectionError: bus down"
+    assert row["act_error"] == "ConnectionError('bus down')"
 
 
 def test_turn_id_header_matches_the_motor() -> None:
@@ -231,3 +245,35 @@ def test_orion_look_has_a_family() -> None:
 
     cfg, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
     assert err is None and cfg.families[lk.ACTOR].tier == 0  # perception: never bids
+
+
+def test_office_act_names_the_camera_by_word(dirs, published) -> None:
+    from orion.self_monitor.adapters import act_faculty
+
+    frames, home = dirs
+    _frame(frames, "cam0", "cam0", NOW_MS - 300)
+    lk.look("office", home=home, directory=frames, now=NOW)
+    act = published[1].act
+    assert act.object_ref == "camera:office"
+    faculty = act_faculty(act.actor, act.verb, act.object_ref)
+    assert faculty.endswith(".office"), faculty  # same naming as walkway, not the bare verb
+
+
+def test_open_sent_close_lost_says_so(dirs, monkeypatch) -> None:
+    frames, home = dirs
+    _frame(frames, "cam0", "cam0", NOW_MS - 300)
+
+    def half(events):
+        raise lk.PartialPublish(1, TimeoutError())
+
+    monkeypatch.setattr(lk, "_publish_bus", half)
+    lines, rec = lk.look("office", home=home, directory=frames, now=NOW)
+    assert rec["act_id"].startswith("act_") and "OPENED BUT NOT CLOSED" in lines[-1] and "TimeoutError()" in lines[-1]
+
+
+def test_turn_id_env_wins_and_matches_the_motor() -> None:
+    from orion.harness.fcc_motor import TURN_CORRELATION_ENV
+
+    assert lk.TURN_ID_ENV == TURN_CORRELATION_ENV
+    env = {"ORION_TURN_CORRELATION_ID": "warm-turn", "ANTHROPIC_CUSTOM_HEADERS": "X-Orion-Correlation-Id: old"}
+    assert lk.turn_id(env) == "warm-turn"

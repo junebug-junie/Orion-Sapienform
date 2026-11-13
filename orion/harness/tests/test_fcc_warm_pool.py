@@ -281,6 +281,8 @@ async def test_turn_clock_reaches_bash_through_env_file_not_process_env(env_setu
     assert seen2["ORION_TURN_BUDGET_SEC"] == "222"
     assert abs(int(seen2["ORION_TURN_DEADLINE_EPOCH"]) - (before + 222)) < 5
     assert seen2["ORION_TURN_STEP_STALL_SEC"] == "222"  # stall cap clamps to the turn budget
+    # The turn's own id reaches Bash the same way (dig look stamps its act with it), per turn.
+    assert (seen1["ORION_TURN_CORRELATION_ID"], seen2["ORION_TURN_CORRELATION_ID"]) == ("corr-1", "corr-2")
     # Frozen process env never carries a turn's clock.
     environ = Path(f"/proc/{_pid(pool)}/environ")
     if environ.exists():

@@ -782,6 +782,11 @@ def _maybe_render_mcp_config(
     )
 
 
+#: The turn's correlation id, as the turn's Bash sees it (per-turn spawns: process env; warm slots:
+#: the per-turn CLAUDE_ENV_FILE). Read by orion/dig/look.py turn_id().
+TURN_CORRELATION_ENV = "ORION_TURN_CORRELATION_ID"
+
+
 def _skills_disabled() -> bool:
     return os.environ.get("HARNESS_FCC_DISABLE_SKILLS", "true").strip().lower() not in {"0", "false", "no", "off"}
 
@@ -840,6 +845,11 @@ def _build_subprocess_env(
     if corr and "\n" not in corr and "\r" not in corr:
         # The turn's id on every model call: the gateway's per-call token ledger joins on it.
         headers.append(f"{CORRELATION_HEADER}: {corr}")
+        # ...and for the turn's own Bash (`dig look` stamps its act with it). Warm slots get it per
+        # turn from fcc_warm_pool.acquire instead: their process outlives one turn.
+        env[TURN_CORRELATION_ENV] = corr
+    else:
+        env.pop(TURN_CORRELATION_ENV, None)
     if gpu_lease is not None:
         # The run's GPU pool hold. The gateway attaches every call to it, so the run's own
         # calls never queue behind the hold that reserves their slot.

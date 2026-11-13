@@ -44,12 +44,22 @@ broadcast row current at each look act's `opened_at` (the query `_BROADCAST_AT_S
 
 - `orion/dig/look.py`: each look publishes `act_opened` and `act_closed` on `orion:grammar:event`
   from the governor (a registered producer). Actor `orion.look`, verb `look`, object
-  `camera:<stream>`, signal `artifact_produced` = a live frame (<= 5 s old). Closed 1 when live;
-  0 when the newest frame is stale, the camera saved nothing, or every recent frame was mid-write.
-- `session_id` = the turn's id (from `X-Orion-Correlation-Id` in `ANTHROPIC_CUSTOM_HEADERS`).
+  `camera:office|walkway|doorbell` (the plain word, so self-monitor names every camera's faculty
+  the same way: `act.orion.look.look.<word>`), signal `artifact_produced` = a live frame (<= 5 s old).
+  Closed 1 when live; 0 when a live camera's newest frame is stale or it saved nothing.
+- Not graded (logged in `looks.jsonl`, no act): the doorbell between events (no recent frame is its
+  normal state, `camera_eyes.py`: "waiting, not broken"), and a look that caught every recent frame
+  mid-write (a read race with the retina's in-place write; it costs no cap slot either). Grading
+  either as 0 would pull down the one `act:look|orion.look` posterior that office and walkway share.
+- `session_id` = the turn's id, from `ORION_TURN_CORRELATION_ID`: set in a per-turn spawn's env
+  (`orion/harness/fcc_motor.py`) and in a warm slot's per-turn env file (`fcc_warm_pool.py`; a warm
+  process outlives its turn, so its own env cannot carry it). Header fallback for older spawns.
   No `correlation_id`: the ledger charges an act every GPU lease carrying its correlation id, and a
-  look is one image inside the turn, not the whole turn. Cost is left unmeasured (`None` = not
-  measured, never zero). The image itself costs about 1,000 prompt tokens (measured 11-13).
+  look is one image inside the turn, not the whole turn. The producer states no cost; the ledger
+  fills `seconds` from the real open/close times (the look's wall time, milliseconds). The image's
+  model cost (~1,000 prompt tokens, measured 11-13) stays with the turn.
+- If the bus takes the open but loses the close, the printout says `OPENED BUT NOT CLOSED` and the
+  row keeps the act id: the horizon resolver will expire it at 0.
 - A look refused by the hourly cap, or an unknown camera word, is no act: Orion did not look.
 - A bus failure never fails the look: the printout says `act: not recorded (<error>)` and
   `looks.jsonl` keeps the error.
@@ -86,7 +96,7 @@ narrative cut). Then Orion can file one verdict:
 
 1. **Provenance:** Orion's verdict in a turn, from the frame they opened and a row id they cite.
 2. **Independence:** the walkway narrative (`visual_observation`) is written by the vision council
-   on route `metacog_perception` (the fast lane, which cannot see: `/props` vision=false, 11-13)
+   on route `metacog_perception` (the fast lane, port 8013, which cannot see: `/props` vision=false, read live 11-13)
    from detections and captions. Orion's look runs on the chat or agent lane, a different model
    that sees the pixels. So a check of council narrative is independent evidence. **Not
    independent:** foveal records (`FOVEAL_LLM_ROUTE=chat`, the same model as Orion's look); the

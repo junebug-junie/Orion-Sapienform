@@ -14,11 +14,16 @@ can open it. Every look appends one line to ``look/looks.jsonl``: that is the tr
 
 Every look is also an act on the act ledger (actor ``orion.look``, verb ``look``, object
 ``camera:<stream>``; issue #3320, design docs/superpowers/specs/2026-11-13-look-acts-and-checks-design.md).
-Its expectation: a live frame (at most ``LIVE_MAX_AGE_SEC`` old) comes back. A look that finds the
-camera down, stale or mid-write closes 0. The act carries the turn's id as ``session_id`` (joinable)
-but no ``correlation_id``: the ledger charges an act every GPU lease of its correlation id, and a
-look is one image inside a turn, not the turn. Cost is left unmeasured, which the ledger reads as
-"not measured", never zero. A look refused by the hourly cap or an unknown camera word is no act.
+Its expectation: a live frame (at most ``LIVE_MAX_AGE_SEC`` old) comes back. A look that finds a
+live camera down or stale closes 0. Not graded (logged, no act): an event camera (the doorbell)
+between events, and a look that caught every recent frame mid-write (a read race, not a fault; it
+also costs no slot of the hourly cap). A look refused by the cap, or an unknown camera word, is no act.
+
+The act carries the turn's id as ``session_id`` (``ORION_TURN_CORRELATION_ID``, set for per-turn
+spawns and warm slots alike) but no ``correlation_id``: the ledger charges an act every GPU lease of
+its correlation id, and a look is one image inside a turn, not the turn. The producer states no
+cost; the ledger fills ``seconds`` from the real open and close times (the look's own wall time,
+milliseconds). The image's model cost (~1,000 prompt tokens, measured 2026-11-13) stays with the turn.
 """
 from __future__ import annotations
 
@@ -59,6 +64,9 @@ PUBLISH_TIMEOUT_SEC = 3.0
 # == orion.harness.fcc_warm_relay.CORRELATION_HEADER (tests pin it): the motor puts the turn's id on
 # every model call through ANTHROPIC_CUSTOM_HEADERS, and the turn's Bash inherits that environment.
 TURN_ID_HEADER = "X-Orion-Correlation-Id"
+# == orion.harness.fcc_motor.TURN_CORRELATION_ENV (tests pin it): set on per-turn spawns and in a warm
+# slot's per-turn env file. The header above is the fallback (a spawn from before this key existed).
+TURN_ID_ENV = "ORION_TURN_CORRELATION_ID"
 
 Publisher = Callable[[Sequence[Any]], None]
 
@@ -154,7 +162,7 @@ def looks_in_last_hour(log: Path, now: datetime) -> int:
     for row in _read_log(log):
         try:
             at = datetime.fromisoformat(str(row.get("looked_at")))
-            if at >= since:
+            if at >= since and not row.get("cap_exempt"):
                 n += 1
         except (ValueError, TypeError):  # unparseable, or a naive time beside an aware one
             continue
@@ -182,6 +190,8 @@ def sweep(look_root: Path, today: date) -> int:
 def turn_id(environ: dict[str, str] | None = None) -> str | None:
     """The turn's correlation id, from the header the motor sets on every model call."""
     env = os.environ if environ is None else environ
+    if (env.get(TURN_ID_ENV) or "").strip():
+        return env[TURN_ID_ENV].strip()
     for line in (env.get("ANTHROPIC_CUSTOM_HEADERS") or "").splitlines():
         name, _, value = line.partition(":")
         if name.strip().lower() == TURN_ID_HEADER.lower() and value.strip():
@@ -197,45 +207,81 @@ def _publish_bus(events: Sequence[Any]) -> None:
     if not url:
         raise RuntimeError("ORION_BUS_URL is unset")
 
+    sent = 0
+
     async def go() -> None:
+        nonlocal sent
         bus = OrionBusAsync(url=url)
         await bus.connect()
         try:
             for event in events:  # open, then close: one trace_id, so the writer keeps the order
                 await publish_grammar_event(bus, event, source_name=ACT_SOURCE_SERVICE)
+                sent += 1
         finally:
             await bus.close()
 
-    asyncio.run(asyncio.wait_for(go(), timeout=PUBLISH_TIMEOUT_SEC))
+    try:
+        asyncio.run(asyncio.wait_for(go(), timeout=PUBLISH_TIMEOUT_SEC))
+    except Exception as exc:  # TimeoutError included; never a KeyboardInterrupt
+        raise PartialPublish(sent, exc) from exc
 
 
-def look_act_events(record: dict[str, Any], *, now: datetime, session_id: str | None) -> tuple[str, list[Any]]:
-    """act_opened at the look, act_closed with live (1) or not (0)."""
+class PartialPublish(Exception):
+    """``sent`` of the act's events reached the bus before ``cause`` stopped the rest."""
+
+    def __init__(self, sent: int, cause: BaseException) -> None:
+        super().__init__(f"{sent} sent; {cause!r}")
+        self.sent, self.cause = sent, cause
+
+
+def camera_word(stream_id: str) -> str:
+    """The plain word for a stream (cam0 -> office). Letters only, so self-monitor's faculty name keeps it."""
+    return next((w for w, sid in CAMERA_WORDS.items() if sid == stream_id), stream_id)
+
+
+def look_act_events(record: dict[str, Any], *, opened_at: datetime, closed_at: datetime,
+                    session_id: str | None) -> tuple[str, list[Any]]:
+    """act_opened when the look began, act_closed when its frame was saved: live (1) or not (0).
+    The two real times are what the ledger fills ``seconds`` from (the look's own wall time)."""
     from orion.grammar.acts import act_closed_event, act_opened_event, build_act
 
     camera = record["camera"]
     act = build_act(
         actor=ACTOR, verb="look", key=f"{camera}:{record['looked_at']}", signal_id="artifact_produced",
-        horizon_sec=ACT_HORIZON_SEC, basis=ACT_BASIS, object_ref=f"camera:{camera}",
+        horizon_sec=ACT_HORIZON_SEC, basis=ACT_BASIS, object_ref=f"camera:{camera_word(camera)}",
         test_before=f"newest_frame:{camera}",
     )
     common = dict(source_service=ACT_SOURCE_SERVICE, source_component=ACT_SOURCE_COMPONENT, session_id=session_id)
     note = record.get("reason") or f"newest frame {record.get('age_sec')} s old, sha256 {str(record.get('sha256'))[:12]}"
-    opened = act_opened_event(act, at=now, **common)
-    closed = act_closed_event(act, produced=bool(record["live"]), note=note, at=now, **common)
+    opened = act_opened_event(act, at=opened_at, **common)
+    closed = act_closed_event(act, produced=bool(record["live"]), note=note, at=max(opened_at, closed_at), **common)
     return act.act_id, [opened, closed]
 
 
-def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: Publisher) -> str:
-    """Append the look to looks.jsonl and put it on the act ledger. The act line for the printout."""
-    try:
-        act_id, events = look_act_events(record, now=now, session_id=turn_id())
-        publish(events)
-        record["act_id"] = act_id
-        line = f"act: {act_id} on your act ledger (open it: python -P -m orion.dig act {act_id})"
-    except Exception as exc:  # noqa: BLE001 -- the look stands; only its ledger entry is missing
-        record["act_error"] = f"{type(exc).__name__}: {exc}"[:300]
-        line = f"act: not recorded ({record['act_error']})"
+def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: Publisher | None,
+                 clock: Callable[[], datetime]) -> str:
+    """Append the look to looks.jsonl and, when ``publish`` is given, put it on the act ledger.
+    The act line for the printout."""
+    if publish is None:
+        line = f"act: none ({record.get('ungraded', 'not graded')})"
+    else:
+        act_id = None
+        try:
+            act_id, events = look_act_events(record, opened_at=now, closed_at=clock(), session_id=turn_id())
+            publish(events)
+            record["act_id"] = act_id
+            line = f"act: {act_id} on your act ledger (open it: python -P -m orion.dig act {act_id})"
+        except PartialPublish as exc:  # noqa: BLE001 -- the look stands; only its ledger entry is short
+            record["act_error"] = f"{exc.sent} of 2 events sent; {exc.cause!r}"[:300]
+            if exc.sent:
+                # The open is on the ledger without its close: the resolver will expire it at 0.
+                record["act_id"] = act_id
+                line = f"act: {act_id} OPENED BUT NOT CLOSED ({record['act_error']}); it will read as a 0"
+            else:
+                line = f"act: not recorded ({record['act_error']})"
+        except Exception as exc:  # noqa: BLE001
+            record["act_error"] = repr(exc)[:300]
+            line = f"act: not recorded ({record['act_error']})"
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -243,9 +289,10 @@ def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: P
 
 
 def look(word: str, *, home: Path, directory: Path | None = None, now: datetime | None = None,
-         publish: Publisher | None = None) -> tuple[list[str], dict]:
+         publish: Publisher | None = None, clock: Callable[[], datetime] | None = None) -> tuple[list[str], dict]:
     """Copy one camera's newest frame into ``home/look`` and say how to see it."""
     publish = publish or _publish_bus
+    clock = clock or (lambda: datetime.now(timezone.utc))
     stream_id = resolve_stream(word)
     now = now or datetime.now(timezone.utc)
     directory = directory or frames_dir()
@@ -256,9 +303,13 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
         raise LookError(f"{used} looks in the last hour; the cap is {LOOKS_PER_HOUR}. Look again later.")
     desc = describe_camera(stream_id)
 
-    def failed(reason: str) -> LookError:
+    def failed(reason: str, *, ungraded: str | None = None) -> LookError:
+        """A look that got no frame. Graded 0 (the camera is down), unless ``ungraded`` says why a
+        missing frame is the expected state: then logged, no act, and not counted against the cap."""
         record = {"looked_at": now.isoformat(), "camera": stream_id, "live": False, "reason": reason[:300]}
-        act_line = _record_look(log, record, now=now, publish=publish)
+        if ungraded:
+            record.update(ungraded=ungraded, cap_exempt=True)
+        act_line = _record_look(log, record, now=now, publish=None if ungraded else publish, clock=clock)
         return LookError(f"{reason}\n{act_line}")
 
     candidates = newest_frames(directory, stream_id)
@@ -266,7 +317,8 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
         raise failed(
             f"no saved frame for {desc.name} ({stream_id}) in {directory}. Frames are kept 5 minutes, "
             + ("and this camera only records after motion or a ring." if desc.event_driven
-               else "so this camera has saved nothing for at least that long: it may be down.")
+               else "so this camera has saved nothing for at least that long: it may be down."),
+            ungraded="an event camera with no recent event is waiting, not broken" if desc.event_driven else None,
         )
     frame, data = None, b""
     for candidate in candidates:
@@ -279,7 +331,8 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
             break
     if frame is None:
         raise failed(f"the newest {len(candidates)} frames of {desc.name} ({stream_id}) are incomplete or "
-                     "gone; look again in a second.")
+                     "gone; look again in a second.",
+                     ungraded="caught the camera mid-write: a read race, not a camera fault")
     age = max(0.0, (now - frame.taken_at).total_seconds())
     day = frame.taken_at.astimezone(ZONE).date()
     dest_dir = look_root / day.isoformat()
@@ -299,7 +352,11 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
         "path": str(dest),
         "source": str(frame.path),
     }
-    act_line = _record_look(log, record, now=now, publish=publish)
+    # An event camera's stale frame is its last event, not a failure: shown, not graded.
+    if not live and desc.event_driven:
+        record["ungraded"] = "an event camera between events shows its last event frame"
+    act_line = _record_look(log, record, now=now, clock=clock,
+                            publish=None if (not live and desc.event_driven) else publish)
     sweep(look_root, now.astimezone(ZONE).date())
 
     when = frame.taken_at.astimezone(ZONE).strftime("%Y-%m-%d %H:%M:%S %Z")

@@ -563,3 +563,33 @@ def test_a_read_the_tick_is_showing_is_not_composed_by_this_door(monkeypatch):
     outreach.release_subjects([f"reading:{SEED}"])
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
     assert outreach._claimed_subjects == set()  # this door releases its own claim
+
+
+def test_a_read_orion_declined_at_the_tick_is_not_sent_by_this_door(monkeypatch):
+    """Review 2026-11-13 (MUST): the tick's orion_declined row names the read's finding ids, and
+    this door counts it as told (restart path), as it does its own orion_passed."""
+    ids = ["link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"]
+    loop, _, _, _, composed, _ = _setup(monkeypatch, decisions=[_Rec({"reason": "orion_declined", "finding_ids": ids})])
+    assert asyncio.run(loop.tick())["pending"] == 0 and composed == []
+    # In-process mirror (before the row lands): on_declined marks it told.
+    loop2, _, _, _, composed2, _ = _setup(monkeypatch)
+    (topic,) = asyncio.run(loop2.outreach_topics())
+    topic.on_declined()
+    assert asyncio.run(loop2.tick())["pending"] == 0 and composed2 == []
+
+
+def test_a_read_the_tick_told_while_this_door_awaited_its_gates_is_not_composed(monkeypatch):
+    """Review 2026-11-13: the claim succeeds after the tick released it, so the door re-checks told."""
+    from scripts import reading_finding_outreach as rfo
+
+    loop, outreach, _, _, composed, _ = _setup(monkeypatch)
+    real_refresh = outreach.refresh_human_gates
+
+    async def tick_tells_meanwhile():
+        loop._told.update(["link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"])
+        await real_refresh()
+
+    outreach.refresh_human_gates = tick_tells_meanwhile
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == [rfo.CLAIMED_BY_TICK_REASON]
+    assert composed == [] and outreach._claimed_subjects == set()

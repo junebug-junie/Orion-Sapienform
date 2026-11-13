@@ -53,7 +53,9 @@ logger = logging.getLogger("orion-hub.reading_finding_outreach")
 READING_FINDING_TAG = "reading_finding_outreach"
 # ``no_why_juniper`` (door policy, 2026-11-10): Orion wrote a message but did not say why it is for
 # Juniper. A decision like PASS, not a failure to retry: re-composing would fish for a yes.
-TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper"})
+# ``orion_declined``: Orion said nothing when the background tick showed this read among its topics
+# (scripts/outreach_choice.py). Orion's decision, like PASS.
+TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper", "orion_declined"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 
@@ -278,7 +280,8 @@ class ReadingFindingOutreach:
                 break  # every later bundle waits for the same gap
             summary["results"].append(await self._tell(outreach, bundle))
             if summary["results"][-1]["reason"] in {"resonance_share_disabled", "resonance_daily_max",
-                    "resonance_thread_already_shared", "resonance_citations_already_shared"}:
+                    "resonance_thread_already_shared", "resonance_citations_already_shared",
+                    CLAIMED_BY_TICK_REASON}:
                 continue  # held/note-only resonance cannot starve later ordinary findings
             if summary["results"][-1]["reason"] not in TOLD_REASONS | FAILED_REASONS:
                 break  # a gate is closed: every later bundle would hit it too
@@ -327,6 +330,7 @@ class ReadingFindingOutreach:
                 finding_ids=ids,
                 seed_id=bundle.seed_id,
                 on_sent=lambda ids=ids: self.mark_told_by_tick(ids),
+                on_declined=lambda ids=ids: self._told.update(ids),
             ))
         return topics
 
@@ -397,6 +401,13 @@ class ReadingFindingOutreach:
         subject = reading_subject(bundle.seed_id)
         claim = getattr(outreach, "claim_subjects", None)
         if callable(claim) and subject not in claim([subject]):
+            return {"seed_id": bundle.seed_id, "reason": CLAIMED_BY_TICK_REASON}
+        if callable(claim) and (set(bundle.finding_ids) <= self._told or self.spacing_wait_sec(self._clock()) > 0):
+            # The tick told (or declined) this read, or sent a read and started the spacing wait,
+            # while this door awaited its gates above: re-checked after the claim, before composing.
+            release = getattr(outreach, "release_subjects", None)
+            if callable(release):
+                release([subject])
             return {"seed_id": bundle.seed_id, "reason": CLAIMED_BY_TICK_REASON}
         try:
             return await self._admit_and_tell(outreach, bundle, meta, correlation_id, decision_id)

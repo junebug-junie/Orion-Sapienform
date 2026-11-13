@@ -1370,7 +1370,7 @@ def build_outreach_prompt(
         )
         lines.append("")
 
-    if ctx.open_prior_previews:
+    if ctx.open_prior_previews and not topics:
         lines.append(
             "Open claims you are still holding -- your own worldview priors, "
             "not fresh telemetry. These are things you have been working on:"
@@ -1378,7 +1378,7 @@ def build_outreach_prompt(
         lines.extend(f"- {p}" for p in ctx.open_prior_previews)
         lines.append("")
 
-    if ctx.curiosity_summaries:
+    if ctx.curiosity_summaries and not topics:
         lines.append("Live signals from your own substrate right now:")
         lines.extend(f"- {s}" for s in ctx.curiosity_summaries)
         lines.append("")
@@ -2264,24 +2264,37 @@ class EndogenousOutreach:
             stripped, _why = split_why_juniper(pick.body)
             if stripped and is_pass_response(stripped):
                 pick = Pick("declined", None, pick.body, "pass")
-        choice = build_choice(
-            decision_key=decision_key, topics=topics, pick=pick, occurred_at=datetime.now(timezone.utc),
-            situation=self._choice_situation(force=force, tension_reason=tension_reason, topics=topics),
-            act_id=decision_key, correlation_id=correlation_id,
-        )
+        try:
+            choice = build_choice(
+                decision_key=decision_key, topics=topics, pick=pick, occurred_at=datetime.now(timezone.utc),
+                situation=self._choice_situation(force=force, tension_reason=tension_reason, topics=topics),
+                act_id=decision_key, correlation_id=correlation_id,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the tick never raises; the row still records the pick
+            logger.warning("endogenous_outreach_choice_build_failed corr=%s err=%s", correlation_id, exc)
+            choice = None
         published = await self._publish_choice(choice) if choice is not None else False
         fields: Dict[str, Any] = {
             "choice": {**choice_record(topics, pick, choice.choice_id if choice else None), "published": published},
         }
         chosen = topics[pick.index] if pick.kind == "chosen" and pick.index is not None else None
-        if chosen is not None and chosen.finding_ids:
-            fields["finding_ids"] = list(chosen.finding_ids)
-            fields["seed_id"] = chosen.seed_id
         logger.info("endogenous_outreach_pick corr=%s pick=%s shape=%s chosen=%s options=%d", correlation_id,
                     pick.kind, pick.shape, chosen.subject if chosen else None, len(topics))
         if pick.kind == "declined":
-            return pick.body, None, fields, {"outreach": False, "reason": ORION_DECLINED_REASON,
-                                             "pass_shape": pick.shape}
+            # Orion's decline is a decision about every shown read too: the readings door counts these
+            # finding ids as told (it treats its own orion_passed the same way) and does not send them.
+            declined_ids = [f for t in topics for f in (getattr(t, "finding_ids", ()) or ())]
+            for t in topics:
+                if getattr(t, "on_declined", None) is not None:
+                    try:
+                        t.on_declined()
+                    except Exception as exc:  # noqa: BLE001 -- the decision row is the authority
+                        logger.warning("endogenous_outreach_topic_on_declined_failed subject=%s err=%s",
+                                       t.subject, exc)
+            early = {"outreach": False, "reason": ORION_DECLINED_REASON, "pass_shape": pick.shape}
+            if declined_ids:
+                early["finding_ids"] = declined_ids
+            return pick.body, None, fields, early
         if pick.kind == "missing":
             return pick.body, None, fields, {"outreach": False, "reason": NO_PICK_REASON}
         if pick.kind == "invalid":
@@ -2647,9 +2660,15 @@ class EndogenousOutreach:
                 tension_reason=tension_reason,
                 grounding=grounding,
             )
+        # The chosen read's finding ids go on the rows the readings door counts as told (sent,
+        # no_why_juniper) and on no other row: a tick compose failure is not that door's failure.
+        told_fields: Dict[str, Any] = {}
+        if chosen_topic is not None and getattr(chosen_topic, "finding_ids", None):
+            told_fields = {"finding_ids": list(chosen_topic.finding_ids), "seed_id": chosen_topic.seed_id}
         if not why_juniper or not text:
             return self._record(
-                {**choice_fields, "outreach": False, "reason": NO_WHY_JUNIPER_REASON, "generation": gen_debug},
+                {**choice_fields, **told_fields, "outreach": False, "reason": NO_WHY_JUNIPER_REASON,
+                 "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
                 grounding=grounding,
@@ -2765,6 +2784,7 @@ class EndogenousOutreach:
         return self._record(
             {
                 **choice_fields,
+                **told_fields,
                 "outreach": True,
                 "reason": "sent",
                 "correlation_id": correlation_id,

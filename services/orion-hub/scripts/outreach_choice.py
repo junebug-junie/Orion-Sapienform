@@ -50,9 +50,12 @@ DEFAULT_MAX_OPTIONS = 4
 MIN_OPTIONS, MAX_OPTIONS = 1, 5
 
 # Reasons whose row says "Orion already decided about this subject" (read by ``fold_said_subjects``).
-# sent / no_why_juniper: the chosen subject. orion_declined: every subject shown.
+# sent / no_why_juniper: the chosen subject. orion_declined / no_pick / invalid_pick: every subject shown.
 CHOSEN_SUBJECT_REASONS = frozenset({"sent", "no_why_juniper"})
-DECLINED_SUBJECT_REASONS = frozenset({ORION_DECLINED_REASON})
+# no_pick / invalid_pick: Orion wrote something we could not read as a pick. Counted as decided for
+# the shown subjects, so a model that keeps dropping the Pick line does not recompose the same
+# topics on every tick.
+DECLINED_SUBJECT_REASONS = frozenset({ORION_DECLINED_REASON, NO_PICK_REASON, INVALID_PICK_REASON})
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,9 @@ class OutreachTopic:
     finding_ids: Tuple[str, ...] = ()
     seed_id: str = ""
     on_sent: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
+    # Called once when Orion declined every topic at the tick (the readings door marks the read told,
+    # as it does for its own orion_passed).
+    on_declined: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
 
 
 def version_of(ids: Iterable[str]) -> str:
@@ -148,10 +154,16 @@ def choice_block(topics: Sequence[OutreachTopic]) -> List[str]:
     return lines
 
 
+# "Pick: 2", "**Pick:** 2", "My pick — 2", "Pick: say nothing". Without a separator the value must
+# end the line ("Pick 2"), so a sentence like "Pick 3 things matter here" is not a pick.
 _PICK_LINE = re.compile(
-    r"^[\s*_`>#-]*pick[\s*_`]*[:=\-]?[\s*_`\[(#]*(?:option\s*|number\s*|#)?(?P<val>\d+|none|nothing)\b.*$",
+    r"^[\s*_`>#-]*(?:my\s+)?pick[\s*_`]*(?P<sep>[:=\-\u2013\u2014])?[\s*_`\[(#]*(?:option\s*|number\s*|#)?"
+    r"(?P<val>\d+|none|nothing|say\s+nothing|zero)\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
+# Any line that starts like a pick line. With one topic shown, a reply holding such a line that
+# did not parse is not an implicit pick: its Pick line would reach Juniper.
+_PICK_ATTEMPT = re.compile(r"^\W*(?:my\s+)?pick\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -174,11 +186,11 @@ def parse_pick(text: str, n_options: int, *, is_pass: Callable[[str], bool]) -> 
     lines = raw.splitlines()
     for i, line in enumerate(lines):
         m = _PICK_LINE.match(line.strip())
-        if not m:
+        if not m or (not m.group("sep") and m.group("rest").strip(" .)]*_`")):
             continue
         body = "\n".join(lines[:i] + lines[i + 1:]).strip()
         val = m.group("val").lower()
-        if val in ("none", "nothing", "0") or (val.isdigit() and int(val) == 0):
+        if not val.isdigit() or int(val) == 0:
             return Pick("declined", None, body, "zero")
         n = int(val)
         if not 1 <= n <= n_options:
@@ -188,7 +200,7 @@ def parse_pick(text: str, n_options: int, *, is_pass: Callable[[str], bool]) -> 
         return Pick("chosen", n - 1, body, "line")
     if raw and is_pass(raw):
         return Pick("declined", None, raw, "pass")
-    if n_options == 1 and raw:
+    if n_options == 1 and raw and not any(_PICK_ATTEMPT.match(line) for line in lines):
         return Pick("chosen", 0, raw, "implicit")
     return Pick("missing", None, raw, "none")
 
@@ -279,7 +291,8 @@ def fold_said_subjects(rows: Iterable[Mapping[str, Any]]) -> Dict[str, Set[str]]
 
     Each row is ``{"reason": ..., "choice": <result_json.choice>, "daydream_id": ...}``.
     * sent / no_why_juniper with a choice: the chosen subject (Juniper got it, or Orion wrote it).
-    * orion_declined: every subject shown (Orion looked at them and said nothing).
+    * orion_declined / no_pick / invalid_pick: every subject shown (Orion looked at them and said
+      nothing, or answered in a way we could not read; either way not shown again for 7 days).
     * a tick row from before the choice point (no choice) with a daydream id: that daydream
       (version ""), so the old ledger and the new one agree.
     Malformed rows are skipped: a bad historical row cannot poison the ledger."""

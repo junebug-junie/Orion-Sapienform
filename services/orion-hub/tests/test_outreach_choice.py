@@ -61,6 +61,15 @@ def _topic(subject: str, *, kind: str = "reading", minutes_ago: float = 10.0, ve
     ("Pick: 2\nThinking.\nPASS", "declined", None, "Thinking.\nPASS"),
     ("Pick: 7\nSeventh.", "invalid", None, "Seventh."),
     ("A message with no pick line.", "missing", None, "A message with no pick line."),
+    # Review 2026-11-13: realistic variants.
+    ("Pick: say nothing", "declined", None, ""),
+    ("Pick: zero", "declined", None, ""),
+    ("Pick \u2014 2\nSecond.", "chosen", 1, "Second."),
+    ("My pick: 2\nSecond.", "chosen", 1, "Second."),
+    ("Pick 2\nSecond.", "chosen", 1, "Second."),
+    ("Thinking about it.\nPick: 3\nThird.", "chosen", 2, "Thinking about it.\nThird."),
+    ("Pick 3 things matter here, and the read is one.", "missing", None,
+     "Pick 3 things matter here, and the read is one."),
 ])
 def test_parse_pick_three_options(raw, kind, index, body) -> None:
     pick = parse_pick(raw, 3, is_pass=is_pass_response)
@@ -71,6 +80,15 @@ def test_parse_pick_one_option_without_pick_line_is_an_implicit_pick() -> None:
     """One topic shown: speaking at all is the pick (speak vs say nothing is still a choice)."""
     pick = parse_pick("The daydream.\nWhy Juniper: x", 1, is_pass=is_pass_response)
     assert (pick.kind, pick.index, pick.shape) == ("chosen", 0, "implicit")
+
+
+@pytest.mark.parametrize("raw", ["Pick: two\nThe daydream.", "My pick: maybe\nThe daydream.",
+                                 "Pick: say nothing", "Pick \u2014 0"])
+def test_one_topic_a_broken_or_declining_pick_line_is_never_an_implicit_pick(raw) -> None:
+    """Review 2026-11-13: with one topic, an unparsed Pick line used to fall through to an implicit
+    pick, so "Pick: say nothing" published a chosen option and "My pick: ..." reached Juniper."""
+    pick = parse_pick(raw, 1, is_pass=is_pass_response)
+    assert pick.kind in ("declined", "missing")
 
 
 def test_parse_pick_words_in_a_sentence_are_not_a_pick_line() -> None:
@@ -115,12 +133,14 @@ def test_fold_said_subjects_reads_choice_rows_and_legacy_daydream_rows() -> None
         {"reason": "no_why_juniper", "choice": {"chosen_subject": "daydream:d4", "chosen_version": ""}},
         {"reason": "sent", "choice": None, "daydream_id": "daydream:legacy"},
         {"reason": "juniper_spoke_after_generation", "choice": {"chosen_subject": "reading:x"}},
+        # A reply we could not read as a pick: its shown subjects are decided too (no recompose loop).
+        {"reason": NO_PICK_REASON, "choice": {"shown": [{"subject": "reading:np", "version": "v"}]}},
         "garbage",
         {"reason": "sent", "choice": {"shown": ["not a dict"]}},
     ]
     said = fold_said_subjects(rows)
     assert said == {"reading:s1": {"v1"}, "daydream:d2": {""}, "reading:s3": {"v3"},
-                    "daydream:d4": {""}, "daydream:legacy": {""}}
+                    "daydream:d4": {""}, "daydream:legacy": {""}, "reading:np": {"v"}}
     # The daydream shown beside a sent pick was not chosen: it stays free.
     assert "daydream:d1" not in said
 
@@ -449,7 +469,10 @@ def test_choice_mode_does_not_read_the_personality_cue(monkeypatch) -> None:
 
 
 def test_regression_the_same_subject_is_not_sent_three_times_in_two_days(monkeypatch) -> None:
-    """Live 2026-11-11 15:15, 11-12 04:37 and 15:05 UTC: three ticks, three different daydreams
+    """The subject ledger half of the 3x-repeat fix (the cue half is
+    ``test_choice_mode_does_not_read_the_personality_cue``: the live repeat came in through the cue).
+
+    Live 2026-11-11 15:15, 11-12 04:37 and 15:05 UTC: three ticks, three different daydreams
     (daydream:5b6b..., daydream:6c10..., daydream:c915...), and all three messages were about the
     same thing ("wrote the answer into the graph first, then looked"). The daydream-hash ledger
     saw three new daydreams and let all three through, because the real subject rode in as free
@@ -510,3 +533,58 @@ def test_choice_off_keeps_the_one_topic_tick(monkeypatch) -> None:
     result = asyncio.run(o.maybe_outreach())
 
     assert result["reason"] == "orion_passed" and "Pick:" not in prompts[0] and _choices(o) == []
+
+
+def test_declining_a_read_at_the_tick_tells_the_readings_door(monkeypatch) -> None:
+    """Review 2026-11-13 (MUST): a tick decline left the read pending, and the readings door then sent
+    it on its own. The declined row carries the shown reads' finding ids, and on_declined mirrors it."""
+    ledger = _Ledger(monkeypatch)
+    declined: List[str] = []
+    o = _choice_outreach()
+
+    async def source():
+        return [OutreachTopic(subject="reading:seed-1", kind="reading", version="v",
+                              observed_at=datetime.now(timezone.utc), option_text="read", prompt_text="A read.",
+                              finding_ids=("belief:p1@r1",), seed_id="seed-1",
+                              on_declined=lambda: declined.append("seed-1"))]
+
+    o.topic_sources.append(source)
+    _stub_tick(monkeypatch, replies=["Pick: 0"], prompts=[], delivered=[])
+    result = asyncio.run(o.maybe_outreach())
+    assert result["reason"] == ORION_DECLINED_REASON and result["finding_ids"] == ["belief:p1@r1"]
+    assert declined == ["seed-1"] and ledger.rows[-1]["finding_ids"] == ["belief:p1@r1"]
+
+
+def test_a_tick_compose_failure_on_a_read_does_not_carry_its_finding_ids(monkeypatch) -> None:
+    """Review 2026-11-13: tick failures (empty message, ungrounded name) must not count toward the
+    readings door's max_attempts for that read."""
+    _Ledger(monkeypatch)
+    o = _choice_outreach()
+    o.topic_sources.append(_reading_source())
+    _stub_tick(monkeypatch, replies=["Pick: 1"], prompts=[], delivered=[])
+    result = asyncio.run(o.maybe_outreach())
+    assert result["reason"] == "empty_generation" and "finding_ids" not in result
+
+
+def test_a_choice_that_fails_to_build_never_raises_out_of_the_tick(monkeypatch) -> None:
+    import scripts.outreach_choice as oc
+
+    _Ledger(monkeypatch)
+    o = _choice_outreach()
+
+    def boom(**_kw):
+        raise ValueError("bad choice")
+
+    monkeypatch.setattr(oc, "build_choice", boom)
+    _stub_tick(monkeypatch, replies=["Pick: 1\nThe planet.\nWhy Juniper: x"], prompts=[], delivered=[])
+    result = asyncio.run(o.maybe_outreach())
+    assert result["reason"] == "sent" and result["choice"]["published"] is False and _choices(o) == []
+
+
+def test_choice_prompt_leaves_out_material_with_no_subject_id() -> None:
+    """Review 2026-11-13: priors / curiosity summaries have no subject in the choice ledger, so they
+    stay out of a choice prompt (the same no-id path the cue repeat came through)."""
+    ctx = OutreachContext(curiosity_summaries=["repair pressure rising"], recent_turns=[], presence=None,
+                          open_prior_previews=["an open claim"])
+    prompt = build_outreach_prompt(ctx, topics=[_topic("reading:s1")])
+    assert "repair pressure rising" not in prompt and "an open claim" not in prompt

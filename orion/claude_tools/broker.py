@@ -15,6 +15,9 @@ Order for one call (each refusal says nothing was shared):
    ``max_asks_per_turn`` asks this turn -> ``limit``; else ask Orion (``asked``). No answer within
    ``consent_deadline_sec`` is a no.
 
+Every call counts toward the per-turn cap, refused ones included (an unknown tool, bad arguments, a
+standing deny): the cap bounds how many round trips Claude spends, not how much it saw.
+
 Fail direction: every error path returns "not shared". A Redis failure while looking up a session yes
 falls through to asking Orion (never to allowing); a Redis failure while counting refuses.
 """
@@ -172,6 +175,10 @@ class ClaudeToolBroker:
                 text=render.unavailable_text(f"the broker failed ({type(exc).__name__})"),
                 error=f"{type(exc).__name__}: {str(exc)[:300]}",
             )
+        # Every path, refusals and errors included: a reader's stderr or an exception can carry a DSN or token.
+        result.text = render.cap_output(render.redact_tool_output(result.text), self.config.output_cap)
+        if result.error:
+            result.error = render.redact_tool_output(result.error)[:500]
         result.result_chars = len(result.text)
         await self._emit(self._audit(
             req, "result", category=result.category, setting=result.setting,

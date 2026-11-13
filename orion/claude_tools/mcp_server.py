@@ -32,9 +32,10 @@ from orion.schemas.claude_tools import ClaudeToolBindingV1, ClaudeToolRequestV1,
 
 SERVER_NAME = "orion_room"
 BINDING_ENV = "ORION_CLAUDE_TOOLS_BINDING"
-# Consent (40 s) + the slowest reader (15 s) + bus slack, under the CLI's MCP tool timeout
-# (the companion sets MCP_TOOL_TIMEOUT above this).
-RPC_TIMEOUT_SEC = 58.0
+# Consent (41 s worst case) + the slowest reader (15 s) + audit/grants/Redis slack (~6 s), under the
+# CLI's MCP tool timeout (the companion sets MCP_TOOL_TIMEOUT=70000 ms). If this side gave up first, Claude
+# would read "not shared" while the audit said shared.
+RPC_TIMEOUT_SEC = 62.0
 NO_BROKER_TEXT = unavailable_text("the broker did not answer, so nothing was shared")
 
 

@@ -208,3 +208,46 @@ def test_lifespan_starts_the_consent_listener_on_its_own_bus_and_stops_it(monkey
 
     asyncio.run(off())
     assert made == []
+
+
+def _view(status: str, now) -> str:
+    return json.dumps({"kind": "self_monitor.state.v1", "computed_at": now.isoformat(), "window_days": 7.0,
+                       "faculties": [{"faculty": "act.prime.infer.consent", "gradeability": "graded",
+                                      "window_start": (now - timedelta(days=7)).isoformat(),
+                                      "window_end": now.isoformat(), "n_bets": 30, "n_graded": 30,
+                                      "n_failed_to_execute": 0, "n_expired": 0, "weight_graded": 30.0,
+                                      "reliability": 0.02 if status == "broken" else 0.9,
+                                      "candidate_status": status, "status": status,
+                                      "status_since": (now - timedelta(days=1)).isoformat()}]})
+
+
+def test_the_gate_reads_a_fresh_view_on_every_ask(monkeypatch):
+    """Lifecycle: healthy -> broken -> healthy across three asks on ONE responder. A view cached from the
+    first ask would miss both changes (review finding, 2026-11-13)."""
+    state = {"raw": _view("reliable", T0)}
+    monkeypatch.setattr(mindloop_gate, "read_view_sync", lambda url, now: self_monitor_view(state["raw"], now=now))
+    monkeypatch.setattr(mindloop_gate, "_ledger_rows", lambda dsn, actor, verb, secs: [
+        {"object_ref": "claude_tools:consent:call-0000000x", "test_before": None, "opened_at": T0 - timedelta(hours=1)}])
+    settings = SimpleNamespace(**{**vars(SETTINGS), "SELF_MONITOR_ACT_GATE_ENABLED": True,
+                                  "SELF_MONITOR_LEDGER_PG_DSN": "postgresql://x/y"})
+    r, _ = _responder(LLM(parsed={"answer": "yes", "reason": "ok"}), settings=settings,
+                      gate=mindloop_gate.build_act_gate(settings))
+    assert asyncio.run(r.decide(_req())).path == "model"
+    state["raw"] = _view("broken", T0)
+    assert asyncio.run(r.decide(_req())).path == "gate_refused"
+    state["raw"] = _view("reliable", T0)
+    assert asyncio.run(r.decide(_req())).path == "model"
+
+
+def test_a_probe_is_claimed_before_the_model_call_and_only_once(monkeypatch):
+    """Broken faculty, no recent attempt: the first ask is the re-test probe; the next ask in the same
+    window is refused, even though each ask reads a fresh view."""
+    monkeypatch.setattr(mindloop_gate, "read_view_sync", lambda url, now: self_monitor_view(_view("broken", T0), now=now))
+    monkeypatch.setattr(mindloop_gate, "_ledger_rows", lambda *a: [])
+    settings = SimpleNamespace(**{**vars(SETTINGS), "SELF_MONITOR_ACT_GATE_ENABLED": True,
+                                  "SELF_MONITOR_LEDGER_PG_DSN": "postgresql://x/y"})
+    llm = LLM(parsed={"answer": "no", "reason": "testing myself"})
+    r, _ = _responder(llm, settings=settings, gate=mindloop_gate.build_act_gate(settings))
+    assert asyncio.run(r.decide(_req())).path == "model"
+    assert asyncio.run(r.decide(_req())).path == "gate_refused"
+    assert len(llm.calls) == 1

@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # Claude Code's own MCP tool timeout (ms). Above the server's 58 s bus wait,
     # which covers Orion's 40 s consent deadline plus the slowest reader.
     ROOM_COMPANION_TOOLS_MCP_TIMEOUT_MS: int = Field(default=70000)
+    # Whole-turn timeout when tools are on (instead of ROOM_COMPANION_TIMEOUT_SEC): 3 asks x 41 s +
+    # 6 reads x 15 s + Claude's own generation can pass 180 s, and a timed-out turn loses the reply.
+    ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC: float = Field(default=360.0)
 
     # ── Room participant identity ─────────────────────────────────────
     ROOM_COMPANION_PARTICIPANT_ID: str = Field(default="claude")

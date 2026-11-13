@@ -90,7 +90,7 @@ def test_body_economy_reader_drops_the_report_path_and_deletes_its_file(tmp_path
 
 
 def test_body_economy_reader_never_deletes_outside_its_own_dig(tmp_path):
-    other = tmp_path / "self" / "portrait.jsonl"
+    other = tmp_path / "self" / "other_ledger.jsonl"
     other.parent.mkdir(parents=True)
     other.write_text("keep")
 

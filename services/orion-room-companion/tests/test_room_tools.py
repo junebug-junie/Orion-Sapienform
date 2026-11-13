@@ -191,3 +191,21 @@ def test_mcp_config_shape():
     cfg = mcp_config(b, python="/usr/local/bin/python", pythonpath="/app", bus_url="redis://h:6379/0")
     assert list(cfg["mcpServers"]) == ["orion_room"]
     assert cfg["mcpServers"]["orion_room"]["command"] == "/usr/local/bin/python"
+
+
+def test_a_tools_turn_gets_the_longer_timeout(settings):
+    seen = {}
+    with patch("app.main.run_room_turn", side_effect=lambda prompt, **kw: seen.update(kw) or _ok()):
+        run_turn(settings, _request())
+    assert seen["timeout_sec"] == settings.ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC == 360.0
+    off = settings.model_copy(update={"ROOM_COMPANION_TOOLS_ENABLED": False})
+    with patch("app.main.run_room_turn", side_effect=lambda prompt, **kw: seen.update(kw) or _ok()):
+        run_turn(off, _request())
+    assert seen["timeout_sec"] == settings.ROOM_COMPANION_TIMEOUT_SEC
+
+
+def test_turn_files_are_removed_even_when_the_turn_raises(settings):
+    with patch("app.main.run_room_turn", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            run_turn(settings, _request())
+    assert list(Path(settings.ROOM_COMPANION_TOOLS_STATE_DIR).iterdir()) == []

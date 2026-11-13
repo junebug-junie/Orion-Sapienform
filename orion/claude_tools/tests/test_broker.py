@@ -335,3 +335,11 @@ def test_grants_refuse_all_and_unknown_categories(bad):
 
     with pytest.raises(GrantError):
         make_grant(bad, "allow", "a perfectly fine reason")
+
+
+def test_reader_errors_are_redacted_before_claude_sees_them(tmp_path):
+    h = Harness(tmp_path, reader_exc=ReaderUnavailable("psql: postgresql://orion:hunter2pass@db:5432/x failed"))
+    h.grant("body", "allow")
+    r = h.run(_req())
+    assert not r.shared and "hunter2pass" not in r.text and "hunter2pass" not in (r.error or "")
+    assert "hunter2pass" not in (h.audit[-1].error or "")

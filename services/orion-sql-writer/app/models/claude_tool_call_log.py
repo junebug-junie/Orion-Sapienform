@@ -7,12 +7,13 @@ orion-harness-governor). One row per phase of a call: ``ask`` (before Orion is a
 (``<call_id>:<phase>``), so a redelivered event is one row. Read by Hub's
 ``GET /api/claude-tools/audit``.
 
-Table and indexes: ``services/orion-sql-db/manual_migration_claude_tool_call_log_v1.sql`` (jsonb
-there; generic JSON here so the sqlite write-path test runs). Index names match, so create_all at boot
-and the migration build the same thing.
+Table and indexes: ``services/orion-sql-db/manual_migration_claude_tool_call_log_v1.sql``. ``arguments``
+is jsonb on Postgres (generic JSON on sqlite, for the write-path test). Column types and index names
+match, so create_all at boot and the migration build the same table in either order.
 """
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.db import Base
@@ -31,7 +32,8 @@ class ClaudeToolCallLogSQL(Base):
     trigger = Column(String, nullable=True)
     tool = Column(String, nullable=False)
     category = Column(String, nullable=True)
-    arguments = Column(JSON, nullable=True)
+    # jsonb on Postgres even when create_all at boot makes the table before the migration runs.
+    arguments = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
     reason = Column(Text, nullable=True)
     setting = Column(String, nullable=True)
     decision_path = Column(String, nullable=True)

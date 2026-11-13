@@ -196,47 +196,53 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         len(transcript), len(request.transcript), len(prompt), turn_tools is not None,
     )
 
-    result = run_room_turn(
-        prompt,
-        claude_bin=settings.ROOM_COMPANION_CLAUDE_BIN,
-        model=settings.ROOM_COMPANION_CONSULT_MODEL if consult else settings.ROOM_COMPANION_MODEL,
-        effort=settings.ROOM_COMPANION_CONSULT_EFFORT if consult else settings.ROOM_COMPANION_EFFORT,
-        setting_sources_env_key=settings.ROOM_COMPANION_SETTING_SOURCES_ENV_KEY,
-        session_id=session_id,
-        resume=resume,
-        timeout_sec=settings.ROOM_COMPANION_CONSULT_TIMEOUT_SEC if consult else settings.ROOM_COMPANION_TIMEOUT_SEC,
-        # EVERY turn, not just the first. An earlier version passed this only
-        # when minting a session, on the assumption that `--resume` carried the
-        # framing forward. It does not: verified live in this container with a
-        # marker instruction, a resumed turn WITHOUT the flag reverted to
-        # Claude Code's default CLI persona ("Goodbye! Let me know if you need
-        # anything else.") -- the assistant-taking-orders voice this room is
-        # explicitly not for. Re-passing it on resume restores the framing,
-        # 3/3 runs.
-        #
-        # Do NOT "fix" this by moving the framing into the user-role text
-        # instead: that was tried and Claude correctly refused it as a
-        # prompt-injection pattern ("it's embedded in a user-turn message
-        # formatted to look like a system directive"). System framing has to
-        # arrive as system framing.
-        # Auto-invites additionally get permission to stay quiet. A manual
-        # invite is someone actually asking, so passing there would be rude.
-        append_system_prompt=append_system_prompt_for(
-            trigger=request.trigger,
-            prompt=request.prompt,
-            consult=consult,
-            tools=turn_tools is not None,
-        ),
-        env=build_subprocess_env(settings, tools=turn_tools is not None),
-        cwd=settings.ROOM_COMPANION_CONSULT_REPO if consult else settings.ROOM_COMPANION_WORKSPACE,
-        tools=settings.ROOM_COMPANION_CONSULT_TOOLS if consult else "",
-        consult=consult,
-        mcp_config_path=turn_tools.mcp_config_path if turn_tools is not None else None,
-    )
     footer: Optional[str] = None
-    if turn_tools is not None:
-        footer = footer_for(turn_tools.call_log_path)
-        turn_tools.cleanup()
+    try:
+        result = run_room_turn(
+            prompt,
+            claude_bin=settings.ROOM_COMPANION_CLAUDE_BIN,
+            model=settings.ROOM_COMPANION_CONSULT_MODEL if consult else settings.ROOM_COMPANION_MODEL,
+            effort=settings.ROOM_COMPANION_CONSULT_EFFORT if consult else settings.ROOM_COMPANION_EFFORT,
+            setting_sources_env_key=settings.ROOM_COMPANION_SETTING_SOURCES_ENV_KEY,
+            session_id=session_id,
+            resume=resume,
+            # A turn with Orion's tools may wait on up to 3 consent asks (40 s each) and 6 reads (15 s each).
+            timeout_sec=(settings.ROOM_COMPANION_CONSULT_TIMEOUT_SEC if consult
+                         else settings.ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC if turn_tools is not None
+                         else settings.ROOM_COMPANION_TIMEOUT_SEC),
+            # EVERY turn, not just the first. An earlier version passed this only
+            # when minting a session, on the assumption that `--resume` carried the
+            # framing forward. It does not: verified live in this container with a
+            # marker instruction, a resumed turn WITHOUT the flag reverted to
+            # Claude Code's default CLI persona ("Goodbye! Let me know if you need
+            # anything else.") -- the assistant-taking-orders voice this room is
+            # explicitly not for. Re-passing it on resume restores the framing,
+            # 3/3 runs.
+            #
+            # Do NOT "fix" this by moving the framing into the user-role text
+            # instead: that was tried and Claude correctly refused it as a
+            # prompt-injection pattern ("it's embedded in a user-turn message
+            # formatted to look like a system directive"). System framing has to
+            # arrive as system framing.
+            # Auto-invites additionally get permission to stay quiet. A manual
+            # invite is someone actually asking, so passing there would be rude.
+            append_system_prompt=append_system_prompt_for(
+                trigger=request.trigger,
+                prompt=request.prompt,
+                consult=consult,
+                tools=turn_tools is not None,
+            ),
+            env=build_subprocess_env(settings, tools=turn_tools is not None),
+            cwd=settings.ROOM_COMPANION_CONSULT_REPO if consult else settings.ROOM_COMPANION_WORKSPACE,
+            tools=settings.ROOM_COMPANION_CONSULT_TOOLS if consult else "",
+            consult=consult,
+            mcp_config_path=turn_tools.mcp_config_path if turn_tools is not None else None,
+        )
+    finally:
+        # The per-turn files hold the invite text: removed even when the turn raises.
+        if turn_tools is not None:
+            footer = footer_for(turn_tools.call_log_path)
+            turn_tools.cleanup()
 
     # A resume against a session the CLI no longer holds fails identically on
     # every retry, so the room would be wedged forever. Drop the mapping and

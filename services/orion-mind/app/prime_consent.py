@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -67,6 +69,7 @@ class PrimeConsentResponder:
         self.source = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
         self._task: Optional[asyncio.Task] = None
         self._inflight: set[asyncio.Task] = set()
+        self._gate_lock = threading.Lock()
 
     # --- one ask --------------------------------------------------------------------------------
     async def decide(self, req: PrimeConsentRequestV1) -> PrimeConsentAnswerV1:
@@ -112,8 +115,6 @@ class PrimeConsentResponder:
             return answer("no_model", "the model could not be reached, so Orion was not asked", error=err)
 
         act = consent_act(req.call_id, horizon_sec=seat + gen)
-        if decision is not None and decision.probe:
-            self.gate.claim_probe(decision.faculty, now=self.clock())
         await self._publish_act(act_opened_event(act, source_service=SOURCE_SERVICE, source_component=CONSENT_COMPONENT,
                                                  correlation_id=req.turn_request_id, at=started_at))
         got, why = parse_consent_answer(parsed) if not err else (None, err)
@@ -134,11 +135,23 @@ class PrimeConsentResponder:
         return answer("model", got["reason"], ans=got["answer"], scope=got["scope"], act_id=act.act_id)
 
     async def _gate(self, object_ref: str):
+        """The gate's decision for this ask, read fresh every time (``begin`` re-reads the published view
+        and clears last ask's offered probes), under a lock so parallel asks do not share one view. A probe
+        is claimed here, before the model call: a probe another ask already holds is a refusal."""
         if not getattr(self.gate, "enabled", False):
             return None
         now = self.clock()
+
+        def run():
+            with self._gate_lock:
+                self.gate.begin(now)
+                decision = self.gate.decide("prime", "infer", object_ref, now=now)
+                if decision.admit and decision.probe and not self.gate.claim_probe(decision.faculty, now=now):
+                    return replace(decision, admit=False, probe=False)
+                return decision
+
         try:
-            return await asyncio.to_thread(self.gate.decide, "prime", "infer", object_ref, now=now)
+            return await asyncio.to_thread(run)
         except Exception:  # noqa: BLE001 -- a gate fault changes nothing (refuse-only gate)
             logger.warning("prime_consent_gate_failed", exc_info=True)
             return None

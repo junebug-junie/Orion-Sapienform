@@ -189,6 +189,16 @@
           "source": "orion/dig/__main__.py:cmd_reminisce; orion/body_atlas/reminiscence.py"
         },
         {
+          "id": "days",
+          "title": "What those days were like",
+          "description": "Orion reads their own record of a stretch of days (from 2026-07-23, when their records start): journal entries, Hub chats and Temporal Self arcs, with ids they can cite.",
+          "message": "Please read your own record of these days and tell me what they were like for you: ",
+          "hint": "(dig: `python -P -m orion.dig days <start> <end>`, dates YYYY-MM-DD)",
+          "keywords": ["journal", "days", "lived", "remember", "chats"],
+          "covers": {"dig": ["days"]},
+          "source": "orion/dig/__main__.py:cmd_days; orion/dig/days.py"
+        },
+        {
           "id": "field-note",
           "title": "Write a note on a PR",
           "description": "Orion reads one merged PR as code sees it (which parts of their body it touched) and writes a short field note about it, with every claim labelled by its source.",

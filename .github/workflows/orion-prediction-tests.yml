@@ -12,6 +12,7 @@ on:
       - "orion/prediction/**"
       - "config/prediction/**"
       - "orion/autonomy/thermal_gate.py"
+      - "orion/mood_arc/fit_encoder.py"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
       - ".github/workflows/orion-prediction-tests.yml"
   push:
@@ -26,6 +27,7 @@ on:
       - "orion/prediction/**"
       - "config/prediction/**"
       - "orion/autonomy/thermal_gate.py"
+      - "orion/mood_arc/fit_encoder.py"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
       - ".github/workflows/orion-prediction-tests.yml"
 

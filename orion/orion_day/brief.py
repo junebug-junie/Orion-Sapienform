@@ -121,7 +121,9 @@ def build_orion_day_request(
         admission=ResourceRequirementV1(
             resource=f"llm.route.{ORION_DAY_LLM_ROUTE}",
             preferred_lane=ORION_DAY_LLM_ROUTE,
-            priority="background",
+            # Tier 0 (Juniper 2026-11-12: the letter "needs to happen each day"): ahead of background work, behind
+            # Juniper's own chat (interactive) and perception. Live 11-11 it queued at "background", position 4.
+            priority="system",
             requirements={"minimum_context_tokens": minimum_context_tokens(brief)},
             deadline_at=deadline_at or default_deadline(brief.letter_date, tz_name=brief.timezone),
         ),

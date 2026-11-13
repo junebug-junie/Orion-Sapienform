@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direct smoke for the Qwen3.5 fast worker, including both thinking modes.
+"""Direct smoke for the shared Qwen3.5 GPU3 worker, including both thinking modes.
 
 Run against an isolated or newly deployed worker:
     python3 services/orion-llamacpp-host/evals/run_qwen35_fast_eval.py --base-url http://127.0.0.1:18013
@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
+import time
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from urllib.request import Request, urlopen
 
 
@@ -18,8 +21,8 @@ def get_json(url: str) -> dict | list:
 
 
 def chat(base: str, *, messages: list[dict], thinking: bool | None = False,
-         max_tokens: int = 512, **extra: object) -> dict:
-    body = {"model": "Qwen3.5-9B-UD-Q5_K_XL.gguf", "messages": messages,
+         max_tokens: int = 512, model: str = "Qwen3.5-9B-UD-Q5_K_XL.gguf", **extra: object) -> dict:
+    body = {"model": model, "messages": messages,
             "max_tokens": max_tokens, **extra}
     if thinking is not None:
         body["chat_template_kwargs"] = {"enable_thinking": thinking}
@@ -29,18 +32,46 @@ def chat(base: str, *, messages: list[dict], thinking: bool | None = False,
         return json.load(response)
 
 
-def answer(base: str, code: str) -> tuple[str, str, bool]:
-    result = chat(base, messages=[{"role": "user", "content":
-                                   f"Your assigned code is {code}. Repeat only your assigned code."}],
-                  max_tokens=64)
-    message = result["choices"][0]["message"]
-    return code, str(message.get("content") or "").strip(), bool(message.get("reasoning_content"))
+def parallel_load(worker: str, *, gateway: str | None = None) -> None:
+    """Prove ten requests overlap in the worker; optionally exercise both gateway classes."""
+    barrier = Barrier(11)
+    codes = ("AX17", "BY29", "CZ41", "DW53", "GH71", "JK83", "LM95", "NP16", "QR28", "ST40")
+
+    def call(index: int) -> tuple[float, str, bool]:
+        code = codes[index]
+        # Distinct, long prompts prevent prefix-cache reuse and hold each slot
+        # long enough for /slots sampling to observe real overlap.
+        prompt = f"Context for {code}: " + (f"orchard {code} " * 4000)
+        prompt += f"\nYour assigned code is {code}. Reply only your assigned code."
+        route = ("quick" if index % 2 == 0 else "metacog_perception") if gateway else "Qwen3.5-9B-UD-Q5_K_XL.gguf"
+        barrier.wait()
+        started = time.monotonic()
+        result = chat(gateway or worker, model=route, thinking=None,
+                      messages=[{"role": "user", "content": prompt}], max_tokens=96, temperature=0.0)
+        message = result["choices"][0]["message"]
+        return time.monotonic() - started, str(message.get("content") or ""), bool(message.get("reasoning_content"))
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(call, index) for index in range(10)]
+        barrier.wait()
+        peak = 0
+        while not all(f.done() for f in futures):
+            slots = get_json(f"{worker}/slots")
+            peak = max(peak, sum(slot.get("is_processing") is True for slot in slots))
+            time.sleep(0.05)
+        results = [f.result() for f in futures]
+    assert peak == 10, f"worker never showed ten occupied slots (peak={peak})"
+    assert all(code in text and not reasoned for code, (_, text, reasoned) in zip(codes, results)), results
+    durations = sorted(row[0] for row in results)
+    label = "mixed gateway routes" if gateway else "direct worker"
+    print(f"PASS: {label}, peak_slots={peak}, median_s={statistics.median(durations):.1f}, "
+          f"p95_s={durations[9]:.1f}")
 
 
 def run(base: str) -> None:
     slots = get_json(f"{base}/slots")
-    assert isinstance(slots, list) and len(slots) == 4
-    assert [slot.get("n_ctx") for slot in slots] == [4096] * 4
+    assert isinstance(slots, list) and len(slots) == 10
+    assert [slot.get("n_ctx") for slot in slots] == [32768] * 10
 
     default = chat(base, messages=[{"role": "user", "content": "Reply only DEFAULT."}],
                    thinking=None, max_tokens=64)
@@ -48,10 +79,7 @@ def run(base: str) -> None:
     assert str(default_message.get("content") or "").strip() == "DEFAULT", default_message
     assert not default_message.get("reasoning_content"), default_message
 
-    codes = ("AX17", "BY29", "CZ41", "DW53")
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(lambda code: answer(base, code), codes))
-    assert results == [(code, code, False) for code in codes], results
+    parallel_load(base)
 
     thinking = chat(base, messages=[{"role": "user", "content":
                                      "Your assigned code is EF67. Repeat only EF67."}],
@@ -90,14 +118,21 @@ def run(base: str) -> None:
     calls = tool["choices"][0]["message"].get("tool_calls") or []
     assert len(calls) == 1 and calls[0]["function"]["name"] == "add", calls
     assert json.loads(calls[0]["function"]["arguments"]) == {"a": 2, "b": 3}
-    print("PASS: 4 x 4096 slots, parallel isolation, thinking on/off, strict JSON, topic labels, logprobs, tools")
+    # A single prompt over the old 4k limit must stay on this worker.
+    long_prompt = "word " * 24000 + "\nYour code is UV52. Reply only UV52."
+    long_result = chat(base, messages=[{"role": "user", "content": long_prompt}], max_tokens=64)
+    assert "UV52" in str(long_result["choices"][0]["message"].get("content") or "")
+    print("PASS: 10 x 32768 slots, long context, parallel isolation, thinking on/off, strict JSON, topic labels, logprobs, tools")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
+    parser.add_argument("--gateway-url", help="also load quick and metacog_perception through LLM Gateway")
     args = parser.parse_args()
     run(args.base_url.rstrip("/"))
+    if args.gateway_url:
+        parallel_load(args.base_url.rstrip("/"), gateway=args.gateway_url.rstrip("/"))
 
 
 if __name__ == "__main__":

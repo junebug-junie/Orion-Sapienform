@@ -67,7 +67,8 @@ LABEL_RULE = (
     "Write 1-6 sentences, 40-1,000 characters in all. Start EVERY sentence with its own label tag: "
     "[code_then <ref>] seen in the code of that week, [pr_text <ref>] the builders' words in a PR or commit, "
     "[lived_record <ref>] your own journals and days, [now <ref>] true of you today, [reflection] your own "
-    "thought. Refs: a repo path, a commit sha, #<pr>, fn:<pr>:<id>, part:/organ:/cap: ids. Code checks every "
+    "thought. Refs: a repo path, a commit sha, #<pr>, fn:<pr>:<id>, part:/organ:/cap: ids, and for [lived_record] "
+    "the journal:/chat:/arc: ids `dig days` prints, dated inside the period. Code checks every "
     "ref under its label before it saves anything. Do not use backticks, double quotes, backslashes or $ in "
     "the note: it goes inside double quotes on a shell line."
 )
@@ -85,8 +86,12 @@ def _what_to_read(hop: str, brief: ReminiscenceRunBriefV1) -> str:
                     f"{LIVED_RECORDS_FROM}. Say so plainly, and use [pr_text] for what the builders wrote "
                     f"(`{DIG} history {start} {end}`); [lived_record] is refused for this week. Needs at least one "
                     "[pr_text] sentence.")
-        return (f"what that week was like: the read's lived_record line names what can cover it (`{DIG} arc <id>`). "
-                "Needs at least one [lived_record] or [pr_text] sentence.")
+        first = max(brief.period_start, LIVED_RECORDS_FROM).isoformat()
+        part = (f" Your records start {LIVED_RECORDS_FROM}, partway through: the days before it have none."
+                if brief.period_start < LIVED_RECORDS_FROM else "")
+        return (f"what that time was like for you: `{DIG} days {first} {end}` shows your own journals and Hub chats "
+                f"from then.{part} Cite the journal:<id> / chat:<id> it prints; a record from outside {first}..{end} "
+                "is refused. Needs at least one [lived_record] or [pr_text] sentence.")
     if hop == "where_i_am_now":
         return (f"where you are now: the read's 'since' block (what changed in you since your last reminiscence) "
                 f"and `{DIG} portrait`. Needs at least one [now] sentence with a live ref.")

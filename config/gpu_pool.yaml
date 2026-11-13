@@ -125,12 +125,11 @@ roles:
   # hecate: services/orion-vllm-host/docker-compose.hecate.yml; the single-card
   # Qwen validation profile is selected by that service's VLLM_PROFILE_NAME.
   agent-deep: {kind: llm, backend: vllm, cards: [hecate-gpu0], owner: agent-deep, port: 8021}
-  metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
-  fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
+  fast:       {kind: llm, cards: [gpu3], owner: [fast, metacog], port: 8013}
   # Kev (services/orion-kev), System One appraisal for orion-substrate-runtime, moved off athena's
   # T10 2026-10-15. Substrate calls it directly, not through the gateway, so no class or route names
   # it and the pool never schedules on it: this entry lists the tenant on gpu3 (measured 3.9GB live)
-  # and probes it. check_vram only sums service footprints, so it does NOT add fast+metacog's ~15GB.
+  # and probes it. check_vram only sums service footprints, so it does NOT add fast's dynamic KV cache.
   # Kev has no /health; /docs is what its compose healthcheck uses too.
   kev:        {kind: service, cards: [gpu3], owner: [], port: 8009, slots: 1, vram_gb: 4, health: /docs}
   world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1,
@@ -155,8 +154,8 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   # agent-deep (hecate) sits ahead of chat: both are lent cards, and hecate's has no human waiting on it.
   agent:      {roles: [agent, agent-gpu2, agent-deep, chat], on_unavailable: backlog}
   agent-deep: {roles: [agent-deep], on_unavailable: backlog}
-  metacog:    {roles: [metacog, fast, agent, agent-gpu2, agent-deep, chat], on_unavailable: backlog}
-  fast:       {roles: [fast, metacog, agent, agent-gpu2, agent-deep, chat], on_unavailable: wait}
+  metacog:    {roles: [fast, agent, agent-gpu2, agent-deep, chat], on_unavailable: backlog}
+  fast:       {roles: [fast, agent, agent-gpu2, agent-deep, chat], on_unavailable: wait}
   world:      {roles: [world], on_unavailable: wait}   # a world prediction replayed hours later is useless
   diffusion:  {roles: [diffusion], on_unavailable: backlog}
   experiment: {roles: [experiment], on_unavailable: fail}
@@ -189,7 +188,7 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   operator_agent:      {roles: [agent], on_unavailable: wait}
   operator_agent_gpu2: {roles: [agent-gpu2], on_unavailable: wait}
   operator_agent_deep: {roles: [agent-deep], on_unavailable: wait}
-  operator_metacog:    {roles: [metacog], on_unavailable: wait}
+  operator_metacog:    {roles: [fast], on_unavailable: wait}  # same physical worker; separate eval policy
   operator_fast:       {roles: [fast], on_unavailable: wait}
 
 routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:

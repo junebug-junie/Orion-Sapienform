@@ -155,52 +155,6 @@ services:
           devices:
             - capabilities: [gpu]
 
-  atlas-metacog:
-    logging:
-      driver: journald
-      options:
-        tag: "{{.Name}}"
-    build:
-      context: ../..
-      dockerfile: services/orion-llamacpp-host/Dockerfile
-      args:
-        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
-    image: orion-llamacpp-host:0.1.0
-    container_name: ${PROJECT:-orion}-atlas-llamacpp-metacog
-    restart: unless-stopped
-    environment:
-      - SERVICE_NAME=${ATLAS_METACOG_SERVICE_NAME:-atlas-worker-2}
-      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
-      - ORION_BUS_URL=${ORION_BUS_URL}
-      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      - LLM_PROFILE_NAME=${ATLAS_METACOG_PROFILE_NAME}
-      # GPU pool discovery: role + the host port it is reached on (same var as ports: below)
-      - LLM_ROLE=metacog
-      - LLM_ANNOUNCE_PORT=${ATLAS_METACOG_HOST_PORT:-8012}
-      - HF_TOKEN=${HF_TOKEN}
-      - hf_token=${hf_token}
-      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
-      - LLAMACPP_PORT_OVERRIDE=8080
-      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_METACOG_CUDA_VISIBLE_DEVICES}
-    volumes:
-      - "${LLM_CACHE_DIR}:/models"
-    ports:
-      - "${ATLAS_METACOG_HOST_PORT:-8012}:8080"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    networks:
-      - app-net
-    runtime: nvidia
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-
   atlas-fast:
     logging:
       driver: journald

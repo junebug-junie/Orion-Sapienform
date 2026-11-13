@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # use the phase routes above, `system`, and are shed with background work).
     MIND_TURN_MODEL_ROUTE: str = Field(default="metacog_turn", alias="MIND_TURN_MODEL_ROUTE")
     MIND_LLM_TIMEOUT_SEC: float = Field(default=60.0, alias="MIND_LLM_TIMEOUT_SEC")
+    # Per-phase LLM cap for a held run (req.gpu_lease set: world pulse, curiosity, journal, field
+    # notes), which runs on its own leased seat (agent / agent-gpu2). Bonsai-2-27B on agent-gpu2
+    # thinks first: a 2048-token semantic reply at its slow end (~14 tok/s) needs ~146 s. The run's
+    # wall still bounds the whole run.
+    MIND_LLM_HELD_TIMEOUT_SEC: float = Field(default=150.0, gt=0.0, alias="MIND_LLM_HELD_TIMEOUT_SEC")
     MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")
     MIND_LLM_MAX_TOKENS_STANCE: int = Field(default=1536, alias="MIND_LLM_MAX_TOKENS_STANCE")
@@ -166,16 +171,15 @@ class Settings(BaseSettings):
     # fold, no frame section; concerns already opened from turns stay ordinary concerns. Shipped ON.
     PRIME_TURN_HANDBACK_ENABLED: bool = Field(default=True, alias="PRIME_TURN_HANDBACK_ENABLED")
     # Living Prime Part 3 (app/prime_loop.py, orion/prime/day_letter.py): the day letter is Prime's end-of-day
-    # turn. When yesterday is closed and has no letter, Prime bids a `make` act and, funded, orders the letter run
-    # from Hub (PRIME_HUB_URL). false = Prime never writes a letter (Hub's timer is retired: no letters at all).
+    # turn. When yesterday is closed and has no letter, Prime opens a `make` act and orders the letter run from Hub
+    # (PRIME_HUB_URL). Tier 0: no bid. false = Prime never writes a letter (Hub's timer is retired: no letters).
     PRIME_DAY_LETTER_ENABLED: bool = Field(default=True, alias="PRIME_DAY_LETTER_ENABLED")
-    # How long after Prime saw the day closed it keeps re-bidding; never funded by then -> no letter that day.
-    PRIME_DAY_LETTER_BID_WINDOW_HOURS: float = Field(default=18.0, gt=0.0, le=48.0,
-                                                     alias="PRIME_DAY_LETTER_BID_WINDOW_HOURS")
-    # The letter turn's budget per attempt (the bid's cost ceiling and the run's timeout_sec).
+    # Runs ordered for one day at most: a run that wrote nothing is ordered again while the deadline holds.
+    PRIME_DAY_LETTER_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10, alias="PRIME_DAY_LETTER_MAX_ATTEMPTS")
+    # The letter turn's budget per attempt (the run's timeout_sec).
     PRIME_DAY_LETTER_TURN_TIMEOUT_SEC: float = Field(default=1800.0, ge=60.0, le=3600.0,
                                                      alias="PRIME_DAY_LETTER_TURN_TIMEOUT_SEC")
-    # The letter run's admission deadline, counted from the funded bid (it may queue for the GPU pool that long).
+    # The letter runs' shared admission deadline, counted from the act's open (every attempt must finish by it).
     PRIME_DAY_LETTER_RUN_DEADLINE_HOURS: float = Field(default=12.0, gt=0.0, le=48.0,
                                                        alias="PRIME_DAY_LETTER_RUN_DEADLINE_HOURS")
     # Orion's consent to a Claude tool call (docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-

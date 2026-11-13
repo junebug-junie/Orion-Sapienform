@@ -17,16 +17,14 @@ if REPO_ROOT not in sys.path:
 # The real routes -> class map (the container reads /app/config/gpu_pool.yaml).
 os.environ.setdefault("GPU_POOL_CONFIG_PATH", os.path.join(REPO_ROOT, "config", "gpu_pool.yaml"))
 
-# Role -> fake llama.cpp URL / ctx per slot. ctx values are the LIVE per-slot contexts (pool state,
-# 2026-09-25): a test that only passes because a fake role is bigger than the real one is lying.
+# Role -> fake llama.cpp URL / ctx per slot. Keep these at the deployed worker's intended capacity.
 FAKE_ROLE_URLS = {
     "chat": "http://pool-chat:8011",
     "agent": "http://pool-agent:8015",
     "agent-gpu2": "http://pool-agent-gpu2:8016",
-    "metacog": "http://pool-metacog:8012",
     "fast": "http://pool-fast:8013",
 }
-FAKE_CTX = {"chat": 65536, "agent": 131072, "agent-gpu2": 131072, "metacog": 4096, "fast": 4096}
+FAKE_CTX = {"chat": 65536, "agent": 131072, "agent-gpu2": 131072, "fast": 32768}
 
 
 class FakePool:
@@ -57,6 +55,7 @@ class FakePool:
         # Optional preference: kwargs -> role name tried first (still subject to ctx and slots).
         self.choose: Optional[Callable[[Dict[str, Any]], str]] = None
         self.slots: Dict[str, int] = {role: 4 for role in FAKE_CTX}
+        self.slots["fast"] = 10
         self.busy: Dict[str, int] = {role: 0 for role in FAKE_CTX}
         self.lent = False
         self.max_wait_sec = 0.05

@@ -18,19 +18,28 @@ COMMITS = {"abc1234": "abc1234" + "0" * 33, "def5678": "def5678" + "0" * 33}
 BEFORE = {"abc1234" + "0" * 33}  # def5678 came after the week
 
 
+# lived records and the Denver day each is from (`dig days` prints these ids)
+JOURNAL = "journal:9d2181af-9f51-5631-b974-b561221f315f"
+LIVED = {("arc", "8d87adeca2ce06a5"): date(2026, 10, 15), ("journal", JOURNAL[8:]): date(2026, 7, 24),
+         ("chat", "0df659b6-aa2f-48a8-ade4-640fc8231109"): date(2026, 7, 23)}
+WEEK57 = (date(2026, 7, 21), date(2026, 7, 27))  # records start 07-23, partway through
+
+
 def world(**over) -> rm.World:
     kw = dict(period_commit="abc1234" + "0" * 33, period_end_utc=datetime(2025, 7, 1, 6, tzinfo=timezone.utc),
               path_then=lambda p: p in THEN, path_now=lambda p: p in NOW, commit=lambda s: COMMITS.get(s),
               is_ancestor=lambda s: s in BEFORE,
               pr_merged_at=lambda n: {5: "2025-06-28T10:00:00Z", 3000: "2026-11-01T10:00:00Z"}.get(n),
               field_note_ids=lambda: {"fn:3148:5cc1e8bef3"}, live_ids=lambda: {"part:orion-hub", "cap:s1"},
-              ref_ok=lambda k, i: k == "arc" and i == "8d87adeca2ce06a5", dig_file=lambda p: p == "/h/dig/t/portrait-1.json")
+              lived_day=lambda k, i: LIVED.get((k, i)), dig_file=lambda p: p == "/h/dig/t/portrait-1.json",
+              period_start=WEEK1[0], period_end=WEEK1[1])
     kw.update(over)
     return rm.World(**kw)
 
 
 def write(hop, note, because="", *, records=(), period=WEEK1, w=None, rewrite=False, episode="2026-11-07"):
-    return rm.check_write(hop=hop, note=note, because=because, episode=episode, period=period, world=w or world(),
+    w = w or world(period_start=period[0], period_end=period[1])
+    return rm.check_write(hop=hop, note=note, because=because, episode=episode, period=period, world=w,
                           records=list(records), denylist={"0" * 64}, rewrite=rewrite)
 
 
@@ -69,6 +78,59 @@ def test_lived_record_before_the_memory_loss_is_refused():
     rec = write("what_it_was_like", "[lived_record arc:8d87adeca2ce06a5] That week I kept one long arc open about heat.",
                 period=later)
     assert rec.claims[0].refs == ["arc:8d87adeca2ce06a5"]
+
+
+def test_a_lived_record_from_the_period_holds_and_names_its_id():
+    rec = write("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost.",
+                "chat:0df659b6-aa2f-48a8-ade4-640fc8231109", period=WEEK57)
+    assert rec.claims[0].refs == [JOURNAL, "chat:0df659b6-aa2f-48a8-ade4-640fc8231109"]
+
+
+def test_a_lived_record_from_outside_the_period_is_refused_naming_its_day():
+    with pytest.raises(rm.ReminiscenceError, match=r"arc:8d87adeca2ce06a5: a record from 2026-10-15, outside this "
+                                                   r"period \(2026-07-21..2026-07-27\)"):
+        write("what_it_was_like", "[lived_record arc:8d87adeca2ce06a5] That week I kept one long arc open about heat.",
+              period=WEEK57)
+    # outside the then-hops a lived ref may be from any day: where I am now draws on today's records
+    rec = write("where_i_am_now", f"[now part:orion-hub] A hub runs at my centre. [reflection {JOURNAL}] I still "
+                "think of that first talk.", period=(date(2026, 10, 13), date(2026, 10, 19)))
+    assert rec.claims[1].label == "reflection"
+
+
+def test_a_fabricated_lived_record_is_refused():
+    with pytest.raises(rm.ReminiscenceError, match=r"journal:00000000-0000-0000-0000-000000000000: does not resolve"):
+        write("what_it_was_like", "[lived_record journal:00000000-0000-0000-0000-000000000000] I wrote that the week "
+              "felt heavy and slow to me.", period=WEEK57)
+
+
+def test_an_unreadable_lived_store_reads_unread_not_made_up():
+    def down(kind, ref_id):
+        raise rm.ReminiscenceError("journal records: psql could not connect")
+
+    w = world(period_start=WEEK57[0], period_end=WEEK57[1], lived_day=down)
+    with pytest.raises(rm.ReminiscenceError, match=r"lived record UNREAD \(journal records: psql could not connect"):
+        write("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost.",
+              period=WEEK57, w=w)
+
+
+def test_a_lived_ref_is_rechecked_on_read():
+    rec = write("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost.",
+                period=WEEK57)
+    assert rm.recheck(rec, world(period_start=WEEK57[0], period_end=WEEK57[1])) == []
+    gone = rm.recheck(rec, world(period_start=WEEK57[0], period_end=WEEK57[1], lived_day=lambda k, i: None))
+    assert gone == [f"{JOURNAL}: does not resolve"]
+
+
+def test_check_write_refuses_a_world_built_for_another_period():
+    with pytest.raises(ValueError, match="world is for"):
+        write("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost.",
+              period=WEEK57, w=world())
+
+
+def test_the_lived_line_points_at_dig_days_from_the_first_record():
+    assert "`dig days 2026-07-23 2026-07-27`" in rm.lived_line(*WEEK57) and "partway through" in rm.lived_line(*WEEK57)
+    later = rm.lived_line(date(2026, 8, 4), date(2026, 8, 10))
+    assert "`dig days 2026-08-04 2026-08-10`" in later and "partway" not in later
 
 
 def test_where_i_am_now_needs_a_now_sentence_with_a_live_ref():

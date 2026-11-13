@@ -566,10 +566,11 @@ admitted failure end the run.
 ### Admitted Orion's Day letter (`orion_day.letter`): Prime's end-of-day turn (2026-11-12)
 
 Orion's letter about yesterday (America/Denver). Since living Prime Part 3 (design #3224) the letter
-is Prime's own act: orion-mind sees the day closed with no letter, bids a `make` act, and when funded
-orders the run from Hub (`POST /api/orion-day/letter-run`). Hub gathers the day with `orion/orion_day/`
+is Prime's own act: orion-mind sees the day closed with no letter, opens a `make` act (tier 0: no bid,
+since 2026-11-13) and orders the run from Hub (`POST /api/orion-day/letter-run`), again as the next attempt
+(`orion-day-<date>-<n>`) when a run writes nothing. Hub gathers the day with `orion/orion_day/`
 (read-only SQL, the honest input of `day_input.py`) and submits the admitted request under Prime's
-run id and correlation id (`llm.route.agent`, background, `deadline_at` from Prime's order).
+run id and correlation id (`llm.route.agent`, priority `system`, `deadline_at` from Prime's order).
 Contract: `orion/schemas/orion_day.py`. Graph (`app/orion_day_graph.py`):
 
     resource_request -> resource_wait -> write_letter -> persist -> finish

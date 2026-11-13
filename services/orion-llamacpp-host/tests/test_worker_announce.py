@@ -18,8 +18,8 @@ class Bus:
 
 
 def _settings(**kw):
-    base = dict(llm_role="metacog", llm_announce_port=8012, llm_announce_host="circe",
-                llm_profile_name="qwen3-8b-q5km-v100-16gb-atlas-metacog-16k",
+    base = dict(llm_role="fast", llm_announce_port=8013, llm_announce_host="circe",
+                llm_profile_name="qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k",
                 service_name="llamacpp-host", service_version="0.1.0")
     base.update(kw)
     return SimpleNamespace(**base)
@@ -31,7 +31,7 @@ def test_announces_role_profile_and_host_port():
     [(channel, env)] = bus.sent
     assert channel == LLM_WORKER_ANNOUNCE_CHANNEL and env.kind == "llm.worker.announce.v1"
     ann = LlmWorkerAnnounceV1.model_validate(env.payload)
-    assert (ann.role, ann.port, ann.profile_name) == ("metacog", 8012, "qwen3-8b-q5km-v100-16gb-atlas-metacog-16k")
+    assert (ann.role, ann.port, ann.profile_name) == ("fast", 8013, "qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k")
 
 
 def test_silent_without_role_or_port():

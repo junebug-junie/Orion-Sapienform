@@ -1,4 +1,4 @@
-"""The fast trial preserves slot capacity and leaves thinking selectable per call."""
+"""The shared GPU3 profile has ten 32k slots and selectable thinking."""
 from __future__ import annotations
 
 import importlib
@@ -8,21 +8,21 @@ from pathlib import Path
 import yaml
 
 
-PROFILE = "qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k"
+PROFILE = "qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k"
 
 
 def _value(cmd: list[str], flag: str) -> str:
     return cmd[cmd.index(flag) + 1]
 
 
-def test_qwen35_fast_launch_keeps_four_slots_and_no_thinking_lockout(monkeypatch):
+def test_qwen35_shared_launch_has_ten_32k_slots_and_no_thinking_lockout(monkeypatch):
     root = Path(__file__).resolve().parents[3]
     config = yaml.safe_load((root / "config/llm_profiles.yaml").read_text())
     profile_cfg = config["profiles"][PROFILE]
     assert profile_cfg["llamacpp"]["hf_repo_id"] == "unsloth/Qwen3.5-9B-GGUF"
     assert profile_cfg["llamacpp"]["hf_filename"] == "Qwen3.5-9B-UD-Q5_K_XL.gguf"
-    assert profile_cfg["llamacpp"]["ctx_size"] == 16384
-    assert profile_cfg["llamacpp"]["n_parallel"] == 4
+    assert profile_cfg["llamacpp"]["ctx_size"] == 327680
+    assert profile_cfg["llamacpp"]["n_parallel"] == 10
 
     monkeypatch.setenv("LLM_PROFILE_NAME", PROFILE)
     monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(root / "config/llm_profiles.yaml"))
@@ -40,8 +40,8 @@ def test_qwen35_fast_launch_keeps_four_slots_and_no_thinking_lockout(monkeypatch
     monkeypatch.setattr(settings, "llamacpp_model_path_override", None)
     cmd, _env = main.build_llama_server_cmd_and_env(profile)
     assert _value(cmd, "-m") == "/models/gguf/Qwen3.5-9B-UD-Q5_K_XL.gguf"
-    assert _value(cmd, "--ctx-size") == "16384"
-    assert _value(cmd, "--parallel") == "4"
+    assert _value(cmd, "--ctx-size") == "327680"
+    assert _value(cmd, "--parallel") == "10"
     assert _value(cmd, "--n-predict") == "8192"
     assert _value(cmd, "--reasoning") == "auto"
     assert _value(cmd, "--reasoning-format") == "deepseek"

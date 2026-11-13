@@ -6,12 +6,13 @@ It now supports **latent vector emission** for vLLM/llama-cola responses (when t
 
 For **llama.cpp** and **llama-cola** backends, `ChatRequestPayload.options` may include **`chat_template_kwargs`** (e.g. `{"enable_thinking": false}`). The gateway forwards that object to `/v1/chat/completions` so Qwen3-style thinking can be toggled **per request** without restarting the model host.
 
-For a llama.cpp grant in GPU pool class `fast`, both bus chat and OpenAI HTTP
-calls send `enable_thinking=false` when the caller omits it. The gateway
-preserves an explicit `enable_thinking=true` or `false`; structured-output
-policy may still disable thinking for artifact requests. This keeps short quick calls and JSON
-extractors independent of the worker's launch default; other pool classes keep
-their own policy.
+For a llama.cpp grant in GPU pool class `fast` or `metacog`, both bus chat and
+OpenAI HTTP calls send `enable_thinking=false` when the caller omits it. An
+explicit `true` or `false` survives, except where structured-output policy
+disables thinking for an artifact. Metacog's old Qwen3 worker defaults now live
+in this request policy: temperature 0.35, top-p 0.90, presence penalty 0.20,
+and 1,024 output tokens. An explicit thinking-on metacog call without a token
+budget gets 4,096 tokens so reasoning can finish before the final answer.
 
 ### Spark metadata (v1)
 
@@ -292,7 +293,8 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Atlas's IP based on that naming alone -- wrong; nothing was listening there, and the
 > gateway correctly reported `agent` as down until this was corrected the same day.
 >
-> **2026-08-21: Atlas is retired for good** (chassis reused for other hardware; the
+> **Historical 2026-08-21 snapshot; superseded by the [GPU3 consolidation](../../docs/operations/qwen35-gpu3-consolidation.md).**
+> Atlas is retired for good (chassis reused for other hardware; the
 > Atlas Tailscale node itself is offline for good). `metacog`/`quick`/`quick_background`
 > below have been repointed from Atlas's old IP (`100.121.214.30`) to Circe -- confirmed
 > live before the fix that every call through those three routes was hanging up to 700s

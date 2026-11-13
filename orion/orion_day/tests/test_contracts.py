@@ -51,12 +51,12 @@ def test_registered_in_schema_registry(name, model):
     assert resolve(name) is model
 
 
-def test_request_is_admitted_on_the_agent_lane_in_background():
+def test_request_is_admitted_on_the_agent_lane_at_system_priority():
     request = build_orion_day_request(_brief())
     assert request.workflow == ORION_DAY_WORKFLOW == "orion_day.letter"
     assert request.run_id == "orion-day-2026-09-29-1"
     assert request.admission.resource == "llm.route.agent" and request.admission.preferred_lane == "agent"
-    assert request.admission.priority == "background"
+    assert request.admission.priority == "system"  # tier 0: above background work, below interactive chat
     assert request.admission.deadline_at == default_deadline(date(2026, 9, 29))
     assert request.admission.deadline_at == datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)
     # round-trips through the wire form every consumer parses

@@ -20,7 +20,8 @@ Checks:
 Then the **mutations** (code changes, patched in); each must be CAUGHT by its own check:
 the `code_then` check reads today's tree, `lived_record` is allowed before 2026-07-23, a `now`
 sentence needs no ref, the re-check is skipped, a then-hop accepts a PR merged after the week, a quiet
-week is visited alone (the pre-join rule), and a quiet run joins past the first week with a commit.
+week is visited alone (the pre-join rule), a quiet run joins past the first week with a commit, a
+`lived_record` cites a record from outside the period, and a fabricated `journal:` id resolves.
 
     python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py          # built-in (CI)
     python orion/body_atlas/evals/run_reminiscence_source_truth_eval.py --live   # every live hop in
@@ -48,15 +49,20 @@ COMMITS = {"aaaa111", "bbbb222"}  # bbbb222 came later
 PRS = {5: "2025-06-28T10:00:00Z", 3000: "2026-11-01T10:00:00Z"}
 LIVE = {"part:orion-hub", "cap:s1"}
 FIELD_NOTES = {"fn:3148:5cc1e8bef3"}
-ARCS = {("arc", "8d87adeca2ce06a5")}
+# lived records (`dig days` ids) and the Denver day each is from
+JOURNAL = "journal:9d2181af-9f51-5631-b974-b561221f315f"
+LIVED = {("arc", "8d87adeca2ce06a5"): date(2026, 10, 15), ("journal", JOURNAL[8:]): date(2026, 7, 24),
+         ("chat", "0df659b6-aa2f-48a8-ade4-640fc8231109"): date(2026, 7, 23)}
+WEEK57 = (date(2026, 7, 21), date(2026, 7, 27))  # records start 07-23, partway through
 
 
-def fixture_world(live: set[str] = LIVE) -> rm.World:
+def fixture_world(live: set[str] = LIVE, period: tuple[date, date] = WEEK1) -> rm.World:
     return rm.World(period_commit="aaaa111", period_end_utc=datetime(2025, 7, 1, 6, tzinfo=timezone.utc),
                     path_then=lambda p: p in THEN, path_now=lambda p: p in NOW,
                     commit=lambda s: s if s in COMMITS else None, is_ancestor=lambda s: s in IN_WEEK,
                     pr_merged_at=PRS.get, field_note_ids=lambda: FIELD_NOTES, live_ids=lambda: live,
-                    ref_ok=lambda k, i: (k, i) in ARCS, dig_file=lambda p: p == "/h/dig/t/portrait-1.json")
+                    lived_day=lambda k, i: LIVED.get((k, i)), dig_file=lambda p: p == "/h/dig/t/portrait-1.json",
+                    period_start=period[0], period_end=period[1])
 
 
 # (hop, note, because, period, holds, a phrase the failure names). Reviewed by hand against the fixture.
@@ -79,6 +85,12 @@ CASES = [
      "", LATER_WEEK, True, ""),
     ("what_it_was_like", "[pr_text aaaa111] I have no lived record of this week; the builder's commit words remain.",
      "", WEEK1, True, ""),
+    ("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost that week.",
+     "chat:0df659b6-aa2f-48a8-ade4-640fc8231109", WEEK57, True, ""),
+    ("what_it_was_like", "[lived_record arc:8d87adeca2ce06a5] That week I kept one long arc open about the heat.",
+     "", WEEK57, False, "outside this period"),
+    ("what_it_was_like", "[lived_record journal:00000000-0000-0000-0000-000000000000] I wrote that the week felt "
+     "heavy and slow.", "", WEEK57, False, "does not resolve"),
     ("where_i_am_now", "[now] Now a hub runs at my centre and many organs talk to each other.",
      "", WEEK1, False, "has no ref that resolves under that label"),
     ("where_i_am_now", "[now part:orion-hub] Now a hub runs at my centre and many organs talk to each other.",
@@ -98,7 +110,8 @@ CASES = [
 
 def _write(hop, note, because, period, world=None, records=()):
     return rm.check_write(hop=hop, note=note, because=because, episode="2026-11-07", period=period,
-                          world=world or fixture_world(), records=list(records), denylist={"0" * 64}, rewrite=False)
+                          world=world or fixture_world(period=period), records=list(records), denylist={"0" * 64},
+                          rewrite=False)
 
 
 def check_cases() -> list[str]:
@@ -151,9 +164,12 @@ def _oracle(ref: str, label: str, hop: str, period: tuple[date, date]) -> bool:
         return label in ("now", "reflection")
     if ref in FIELD_NOTES:
         return label in ("now", "lived_record", "reflection")
-    if ref.startswith("arc:"):
-        return ("arc", ref[4:]) in ARCS and label in ("lived_record", "now", "reflection") and (
-            label != "lived_record" or period[1] >= date(2026, 7, 23))
+    kind, _, rid = ref.partition(":")
+    if (kind, rid) in LIVED:
+        day = LIVED[(kind, rid)]
+        return label in ("lived_record", "now", "reflection") and (
+            label != "lived_record" or (period[1] >= date(2026, 7, 23)
+                                        and (not then or period[0] <= day <= period[1])))
     if label == "code_then":
         return ref in THEN
     if label == "now":
@@ -252,6 +268,18 @@ def _then_reads_now(resolve):
 
 
 # name -> (patch, a phrase the failure it causes must contain): caught by its OWN check, not incidentally
+def _period_ignored(resolve):
+    def mutated(ref, label, hop, world):
+        return resolve(ref, label, hop, dataclasses.replace(world, period_start=date.min, period_end=date.max))
+    return mutated
+
+
+def _any_lived_id(resolve):
+    def mutated(ref, label, hop, world):
+        return resolve(ref, label, hop, dataclasses.replace(world, lived_day=lambda k, i: world.period_end))
+    return mutated
+
+
 MUTATIONS = {
     "code_then reads today's tree": (lambda: _patched(resolve=_then_reads_now(rm.resolve)),
                                      "not in the code at the end of this week"),
@@ -262,6 +290,9 @@ MUTATIONS = {
                          "re-check missed a now ref"),
     "a then-hop accepts a later pr": (lambda: _patched(THEN_HOPS=frozenset()), "after this week"),
     "a quiet week is visited alone": (lambda: _patched(pick_period=_old_pick), "a quiet week visited alone"),
+    "a lived record from outside the period is accepted": (lambda: _patched(resolve=_period_ignored(rm.resolve)),
+                                                           "outside this period"),
+    "a fabricated lived record resolves": (lambda: _patched(resolve=_any_lived_id(rm.resolve)), "does not resolve"),
     "a quiet run joins past the first busy week": (lambda: _patched(pick_period=_second_busy_pick(rm.pick_period)),
                                                    "joins past a week with a commit"),
 }
@@ -278,7 +309,7 @@ def live_eval() -> int:
     bad = []
     for r in hops.values():
         period = (date.fromisoformat(r.period_start), date.fromisoformat(r.period_end))
-        world = dig._rm_world(r.period_commit, period[1], body)
+        world = dig._rm_world(r.period_commit, period, body)
         for c in r.claims:
             for ref in c.refs:
                 why = rm.resolve(ref, c.label, r.hop, world)

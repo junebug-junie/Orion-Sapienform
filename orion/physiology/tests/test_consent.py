@@ -37,6 +37,11 @@ def rules_with(standing=None, extra_rules=None):
     return parse_consent(doc)
 
 
+# Juniper merged `standing.dream-compaction-downscale` (2026-11-13); the needs_consent path is still the
+# state of any host whose consent.yaml lacks it, so it is tested against the shipped rules minus standing.
+NO_STANDING = rules_with({})
+
+
 def cwant(verb="compact", *, rev="snapshot_restorable", attests=("snapshot_dir_writable", "downscale_only"),
           family="dream.compaction", i=0, **req_kw):
     wid = f"cw{i}"
@@ -58,8 +63,19 @@ def test_the_shipped_consent_config_loads_and_names_the_dream_rules():
     assert RULES.get("dream.compaction", "compact").rule_id == "dream.compaction.downscale_only"
     assert RULES.get("dream.compaction", "compact").requires == ("snapshot_dir_writable", "downscale_only")
     assert RULES.get("dream.compaction", "prune").reversibility == "irreversible"
-    # Turning apply on is Juniper's separate decision: no standing consent ships with the gate.
-    assert dict(RULES.standing) == {}
+    # Juniper's standing consent for downscale only (2026-11-13), and the rule that names it.
+    granted = RULES.standing["dream-compaction-downscale"]
+    assert granted.granted_by == "juniper" and granted.expires is None
+    assert RULES.get("dream.compaction", "compact").consent == "standing:dream-compaction-downscale"
+    assert set(RULES.standing) == {"dream-compaction-downscale"}
+
+
+def test_the_shipped_config_allows_downscale_only_and_still_refuses_prune():
+    """Regression: the standing consent opens downscale and nothing else. Prune stays refused."""
+    assert verdict_of(cwant()).verdict == "allow"
+    v = verdict_of(cwant("prune", rev="irreversible"))
+    assert v.verdict == "refuse" and v.rule_id == "dream.compaction.prune" and v.reason.startswith("refused_by_rule")
+    assert RULES.get("dream.compaction", "prune").consent == "refused"
 
 
 def test_every_consent_rule_names_a_family_the_market_knows():
@@ -106,7 +122,7 @@ def test_downscale_only_with_both_attests_and_a_standing_consent_is_allowed():
 
 
 def test_without_the_standing_consent_it_needs_consent():
-    v = verdict_of(cwant())
+    v = verdict_of(cwant(), rules=NO_STANDING)
     assert v.verdict == "needs_consent" and v.reason.startswith("standing_consent_missing")
     assert v.consent_ref == "standing:dream-compaction-downscale"
 
@@ -181,7 +197,7 @@ def test_with_no_consent_request_every_decision_is_byte_identical():
 def test_a_consent_deferral_is_decided_before_prices_and_reserves_nothing():
     st = body(lane("agent"))
     book = ReservationBook()
-    d = decide(cwant(), st, ctx_for(SELF, st), book, NOW, consent_rules=RULES)
+    d = decide(cwant(), st, ctx_for(SELF, st), book, NOW, consent_rules=NO_STANDING)
     assert d.outcome == "deferred" and d.reason == "consent" and d.binding_constraint == "consent"
     assert d.consent.verdict == "needs_consent" and d.consent.rule_id == "dream.compaction.downscale_only"
     assert d.net is None and d.reserved == {} and book.snapshot(NOW) == []
@@ -190,10 +206,10 @@ def test_a_consent_deferral_is_decided_before_prices_and_reserves_nothing():
 
 def test_the_gate_runs_even_with_no_body_state_and_an_unknown_family():
     """A stale body or unknown family is "no answer", which binding producers admit. The gate must win."""
-    d = decide(cwant(), None, ctx_for(SELF, body()), ReservationBook(), NOW, consent_rules=RULES)
+    d = decide(cwant(), None, ctx_for(SELF, body()), ReservationBook(), NOW, consent_rules=NO_STANDING)
     assert d.reason == "consent"
     d = decide(cwant("compact", family="not.a.family"), body(), ctx_for(SELF, body()), ReservationBook(), NOW,
-               consent_rules=RULES)
+               consent_rules=NO_STANDING)
     assert d.reason == "consent" and d.consent.reason.startswith("no_rule_not_reversible")
 
 
@@ -223,7 +239,7 @@ def test_an_old_consumer_with_forbid_still_parses_a_decision_without_consent():
 
 def test_a_consent_deferral_is_never_admitted_not_at_the_window_end_not_with_no_end():
     d = decide(cwant(), body(lane("agent")), ctx_for(SELF, body(lane("agent"))), ReservationBook(), NOW,
-               consent_rules=RULES)
+               consent_rules=NO_STANDING)
     for end in (NOW + timedelta(hours=1), NOW, NOW - timedelta(hours=1), None):
         v = bind_verdict(d, NOW, end)
         assert v.admit is False and v.why == "deferred:consent:needs_consent", end

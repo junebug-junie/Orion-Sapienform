@@ -71,6 +71,7 @@ Why `k = 2`:
 - `services/orion-durable-runs/evals/event_wants_replay.py`: the replay's grades filter matches.
 - `services/orion-sql-writer/scripts/backfill_camera_ask_acts.py`: summary key `expected_outcome_by_rule_targets_only`.
 - `services/orion-sql-writer/evals/ask_bind_mutations.py`: two window-parity mutants.
+- `docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md`, `docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md`: personal names redacted (privacy gate).
 - `services/orion-sql-writer/tests/test_camera_ask_acts.py`: live-count test. New tests: "a rare rule answered once reads above the family share"; "no closes reads `m`, and an empty family reads 0.5".
 - `services/orion-sql-writer/tests/test_ask_event_wants.py`, `test_ask_bind.py`, `test_ask_bind_integration.py`, `test_camera_ask_acts_integration.py`: pinned values recomputed from the formula.
 - `services/orion-sql-writer/evals/camera_ask_acts_mutations.py`: the old Laplace mutant is replaced by "prior back to 0.5 (Laplace)" and "no prior".
@@ -151,6 +152,10 @@ The code review ran in a subagent with an explicit target (`git diff origin/main
   - `ask_event_wants.py` now says "5 of 47".
   - The docstring cites this report for the `k` sweep.
   - Non-finite grades are skipped, as the market skips them. A test covers this.
+
+- CI finding (not from this change): the "Static repo gates" privacy check (`tests/test_no_personal_terms.py`) was red on `main` itself. Two merged specs held personal names: `2026-11-12-attention-camera-asks-bind-design.md` (1 line) and `2026-11-13-core-memory-pages-and-concept-growth-design.md` (10 lines).
+  - Fix: each name is replaced by a neutral placeholder (`<name>`, `<person A>`, `<person B>`, `<person C>`, `<town>`). One placeholder per name keeps the text readable. No open PR touched either file.
+  - Evidence: `pytest tests/test_no_personal_terms.py` -> 7 passed.
 
 ## Restart required
 

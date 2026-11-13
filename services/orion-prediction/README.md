@@ -420,7 +420,7 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
 
 **Live loop** (`PREDICTION_FAMILY_A_ENABLED`, on):
 
-- **Select** at start and every `PREDICTION_SELECT_INTERVAL_SEC` (~15-18 s at host load ~150): 14 days,
+- **Select** at start and every `PREDICTION_SELECT_INTERVAL_SEC` (~15-30 s at host load ~150): 14 days,
   screen every input, backtest `ridge_var` vs the better baseline on 2 seeds (inputs screened on each
   seed's training rows only), serve `ridge_var` at a horizon only if it wins on both, else `ar`. Refit
   the served rung on the whole window. A calibration pool under 200 rows refuses the selection (the
@@ -490,14 +490,15 @@ p <= 0.005, bootstrap p <= 0.001). The joint excess on the last 24 h (model trai
 (5 min) and -0.18 (15 min), both 95 % intervals contain 0. Only 9 days hold every target (closet, PM and lux sensors
 started 11-05), so no neural rung yet: the spec asks for 21 days (2026-11-26 at the earliest).
 
-Slice 2, 2026-10-30..11-13 again (masks at every lag, train-rows screen, gap-respecting bootstrap):
-`ridge_var` still wins at every seed (5 min x0.946-0.961, 15 min x0.963-0.981). Joint score, static vs
-adaptive on held-out blocks (6 runs): mean excess CI contains 0 in 5/6 vs 6/6, p <= 0.05 0.056-0.104 vs
-0.047-0.081, hours at rest 0.41-0.67 vs 0.52-0.60 (calibrated 0.54-0.55). On the last 24 h (busy: host
-load ~150): static +0.93 / +0.77 with 25 % of p <= 0.05, adaptive +0.07 / +0.05 (CIs contain 0), 7 %.
-Replay of the live loop itself over the same 24 h (`run_family_a_calm_live_eval.py --replay-hours 24`):
-287 issues, 0 refused, 570 joint rows scored; served excess +0.07 [-0.07, +0.25] (5 min), +0.07
-[-0.10, +0.30] (15 min); median per-reading 80 % coverage 0.80 (athena load / CPU watts 0.43 / 0.48).
+Slice 2, 2026-10-30 07:10..11-13 07:10 (masks at every lag, train-rows screen, gap-respecting bootstrap,
+log tails): `ridge_var` still wins at every seed (5 min x0.939-0.959, 15 min x0.968-0.981). Joint score,
+static vs adaptive on held-out blocks (6 runs): mean excess CI contains 0 in 5/6 vs 6/6, p <= 0.05
+0.057-0.097 vs 0.050-0.060, hours at rest 0.45-0.67 vs 0.56-0.65 (calibrated 0.54). On the last 24 h
+(busy: host load ~150): static +1.00 / +0.84 with 28-29 % of p <= 0.05, adaptive +0.04 / +0.04 (CIs
+contain 0), 7 %. Replay of the live loop itself over 11-12 07:11..11-13 07:11
+(`run_family_a_calm_live_eval.py --replay-hours 24`): 287 issues, 0 refused, 570 joint rows scored;
+served excess +0.07 [-0.07, +0.27] (5 min), +0.07 [-0.08, +0.29] (15 min); median per-reading 80 %
+coverage 0.80 (athena load / CPU watts 0.41 / 0.43: #3310). The 7-day live calm check is #3309.
 
 ## Contracts
 

@@ -6,7 +6,8 @@
    the last ``hours``;
 2. kept when that decision is ``funded`` and the event has not expired: the want's own window end, else
    ``opened_at`` + the family's ``deferrable_window_s``; a camera ask that is no longer ``open`` has
-   expired too (Juniper answered it);
+   expired too (Juniper answered it), and so has one whose card row does not exist (attention patch 4b: the ask
+   bid before its card was inserted, and the insert never happened);
 3. ordered by the market's net (highest first), then ``limit``.
 
 ``care_promoted`` (personality rev 4 runaway guard): a want inside the top ``limit`` by net that would be
@@ -180,11 +181,16 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
                 node, _, at = ref[len(CABINET_PREFIX):].partition(":")
                 labels[ref] = f"the {node} cabinet was warming at {at} (Orion's cooling act)"[:300]
         if ask_ids:
+            found: set[str] = set()
             for r in await (await conn.execute(ASK_LABELS_SQL, {"ids": ask_ids})).fetchall():
                 ref = f"{ASK_PREFIX}{r['ask_id']}"
+                found.add(ref)
                 labels[ref] = f"an open camera question to Juniper: {r['question']}"[:300]
                 if r["status"] != "open":
                     gone.add(ref)
+            # Attention patch 4b: a camera ask bids BEFORE its card is inserted, so a funded want can name a card that
+            # never opened (it lost the insert to an open card for the same subject). No card, no concern.
+            gone |= {f"{ASK_PREFIX}{i}" for i in ask_ids} - found
         present = (await (await conn.execute(OFFICE_TABLE_SQL)).fetchall()) if office_ids else []
         if present and present[0]["present"]:
             # The visit row's own label: "Juniper (probably) in the office: sitting at a desk, ...". A

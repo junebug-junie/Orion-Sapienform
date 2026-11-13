@@ -44,13 +44,15 @@ camera asks (Juniper's own walkway-story naming cards excluded), each ask is bid
 4a's value: salience (moving sightings, as the producer) and ``outcome_value`` = its rule's answered share
 over the 30 days before the bid (``orion.grammar.camera_ask_acts.rule_outcome_values``), against acts
 rebuilt from the asks themselves (open at the ask, closed by ``ask_grade``) as the act history stood at the
-bid. 4b's rule: funded opens the card; held re-bids every ``ASK_RETRY`` until the family window
-(families.yaml ``vision.ask`` deferrable_window_s) ends, and an ask still held then is not opened. Gate:
-at least 70% of vehicle asks held to the window end; at most 10% of confirm and same-person asks held at
-all; answered asks per day fall by at most 10% (an answered ask held to the window end is a lost answer).
-Approximations, stated: an ask that would have been held and opened later is assumed answered as it really
-was; Juniper's real answers decided the history every bid sees (4b would have changed some); no Prime
-charge (camera asks carry none today).
+bid. 4b's rule, as decided on issue #3285 (no deadline): funded opens the card; held re-bids with the live
+backoff (``rebid_after_sec``: 600 s doubling to 3 h) until funded. Held means "re-bid later, may open later",
+not "dropped at a window end". An ask is followed ``LOSS_HORIZON`` (7 d) after its first bid, or to the replay's
+end. Gate: at least 70% of vehicle asks held (at their first bid); at most 10% of confirm and same-person asks
+held at all; answered asks per day fall by at most 10% (an answered ask not opened within the horizon is a lost
+answer). Approximations, stated: an ask held and opened later is assumed answered as it really was; Juniper's
+real answers decided the history every bid sees (4b would have changed some); a held candidate is assumed to
+stay a candidate for the whole horizon; the daily caps are not replayed (a later open could meet a full cap);
+no Prime charge (camera asks carry none today).
 
     PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/event_wants_replay.py [--live --days 14]
     PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/event_wants_replay.py --camera-asks [--live --days 30]
@@ -277,7 +279,9 @@ def _fixture() -> int:
 
 # --- camera-asks gate (patch 4a -> 4b) -------------------------------------------------------------
 
-ASK_RETRY = timedelta(hours=1)
+# A held candidate is followed this long after its first bid: the card's own answerable life (VISION_ASK_EXPIRY_DAYS).
+# An answered ask not opened by then counts as a lost answer (conservative: a real candidate may stay one longer).
+LOSS_HORIZON = timedelta(days=7)
 GATE_VEHICLE_HELD_MIN = 0.70
 GATE_ANSWERABLE_HELD_MAX = 0.10
 GATE_ANSWERED_LOSS_MAX = 0.10
@@ -312,12 +316,16 @@ def _as_of(acts: Sequence[tuple[ActRecord, str]], t: datetime) -> list[tuple[Act
 def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]], *, start: datetime,
                      end: datetime) -> dict:
     """Replay 4b's rule with 4a's value over ``asks`` (Orion-made only; each has ask_id, rule, created_at,
-    expires_at, status, answered_at, answer_detail, sightings). Pure."""
-    from orion.grammar.camera_ask_acts import OUTCOME_WINDOW, rule_outcome_values
+    expires_at, status, answered_at, answer_detail, sightings). Pure.
+
+    4b's rule as decided on issue #3285: funded opens the card; held re-bids after
+    ``orion.grammar.camera_ask_acts.rebid_after_sec`` (600 s doubling to 3 h, the live backoff) with NO deadline,
+    until funded or the candidate stops being one. When a real candidate stops is not in the data, so an ask is
+    followed until ``LOSS_HORIZON`` after its first bid (the card's own answerable life) or the replay's end."""
+    from orion.grammar.camera_ask_acts import OUTCOME_WINDOW, rebid_after_sec, rule_outcome_values
 
     cfg = families.get(ASK_FAMILY)
     assert cfg is not None and not cfg.lanes and not cfg.fixed_cost, "this replay assumes vision.ask has no charge"
-    window = timedelta(seconds=cfg.deferrable_window_s)
     asks = sorted(asks, key=lambda a: a["created_at"])
     sal = saliences_over_own_history([(a["created_at"], float(a["sightings"] or 0)) for a in asks])
     acts = ask_acts_from_asks(asks, now=end)
@@ -328,9 +336,11 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
         if s is None or a["created_at"] < start or a["created_at"] > end:
             continue
         first_bid = a["created_at"]
+        horizon = min(first_bid + LOSS_HORIZON, end)
         bids = []
         t = first_bid
-        while t < first_bid + window:
+        n_held = 0
+        while t <= horizon:
             hour = t.replace(minute=0, second=0, microsecond=0)
             if hour not in app_cache:
                 known = _as_of(acts, hour)
@@ -351,10 +361,13 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
                 history.append((t, inten))
             if rank > 0:
                 break
-            t += ASK_RETRY
+            n_held += 1
+            t += timedelta(seconds=rebid_after_sec(n_held))
         funded_at = next((b["at"] for b in bids if b["rank"] > 0), None)
         rows.append({"ask_id": a["ask_id"], "rule": a["rule"], "answered": a["status"] == "answered",
-                     "held_at_all": bids[0]["rank"] <= 0, "held_to_end": funded_at is None,
+                     "held_at_all": bids[0]["rank"] <= 0, "never_opened": funded_at is None,
+                     "censored": funded_at is None and horizon < first_bid + LOSS_HORIZON,
+                     "bids": len(bids), "followed_h": (horizon - first_bid).total_seconds() / 3600,
                      "first_rank": bids[0]["rank"], "first_basis": bids[0]["basis"], "outcome": bids[0]["outcome"],
                      "first_by_hunger": bids[0]["intensity_basis"] == "hunger",
                      "delay_h": None if funded_at is None else round((funded_at - first_bid).total_seconds() / 3600, 2)})
@@ -362,27 +375,38 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     by_rule = {}
     for r in sorted({x["rule"] for x in rows}):
         mine = [x for x in rows if x["rule"] == r]
+        late = sorted(x["delay_h"] for x in mine if x["held_at_all"] and x["delay_h"] is not None)
         by_rule[r] = {"asks": len(mine), "held_at_all": share(mine, lambda x: x["held_at_all"]),
-                      "held_to_window_end": share(mine, lambda x: x["held_to_end"]),
+                      "opened_later": sum(1 for x in mine if x["held_at_all"] and not x["never_opened"]),
+                      "never_opened_in_horizon": share(mine, lambda x: x["never_opened"]),
+                      "of_which_censored_by_replay_end": sum(1 for x in mine if x["censored"]),
+                      "later_open_delay_h_median": _q(late, 0.5), "later_open_delay_h_max": late[-1] if late else None,
                       "answered": sum(1 for x in mine if x["answered"]),
                       "mean_expected_answer": round(sum(x["outcome"] for x in mine) / len(mine), 4)}
     vehicle = [x for x in rows if x["rule"] == "vehicle"]
     answerable = [x for x in rows if x["rule"] in ("confirm", "same")]
     answered = [x for x in rows if x["answered"]]
     days = max(1e-9, (end - start).total_seconds() / 86400)
-    lost = [x for x in answered if x["held_to_end"]]
+    lost = [x for x in answered if x["never_opened"]]
+    held = [x for x in rows if x["held_at_all"]]
+    held_days = sum(x["followed_h"] if x["never_opened"] else (x["delay_h"] or 0) for x in held) / 24
     out = {
+        "rule": "no_deadline (issue #3285): held re-bids 600 s doubling to 3 h until funded",
+        "loss_horizon_days": LOSS_HORIZON.days,
         "asks": len(rows), "by_rule": by_rule,
         "answered_per_day": round(len(answered) / days, 3),
         "answered_per_day_under_4b": round((len(answered) - len(lost)) / days, 3),
-        "answered_loss_share": share(answered, lambda x: x["held_to_end"]),
-        # Hunger now counts from the family's last ask close (4a gives it acts), not from the want's opened_at:
+        "answered_loss_share": share(answered, lambda x: x["never_opened"]),
+        "lost_answers_by_rule": {r: sum(1 for x in lost if x["rule"] == r) for r in sorted({x["rule"] for x in lost})},
+        # want_ledger volume: a held candidate's re-bids (the 3 h backoff cap keeps this near 8 a day).
+        "rebids_per_held_candidate_day": round(sum(x["bids"] - 1 for x in held) / held_days, 2) if held_days else None,
+        # Hunger counts from the family's last ask close (4a gives it acts), not from the want's opened_at:
         # the share of first bids whose intensity came from hunger rather than salience (review finding).
         "first_bid_intensity_from_hunger_share": share(rows, lambda x: x["first_by_hunger"]),
         "graded_basis_share": share(rows, lambda x: x["first_basis"].endswith("graded") and "ungraded" not in x["first_basis"]),
     }
     out["checks"] = {
-        "vehicle_held_to_window_end_at_least_70pct": (share(vehicle, lambda x: x["held_to_end"]) or 0) >= GATE_VEHICLE_HELD_MIN
+        "vehicle_held_at_least_70pct": (share(vehicle, lambda x: x["held_at_all"]) or 0) >= GATE_VEHICLE_HELD_MIN
         if vehicle else False,
         "confirm_and_same_held_at_most_10pct": (share(answerable, lambda x: x["held_at_all"]) or 0) <= GATE_ANSWERABLE_HELD_MAX
         if answerable else False,

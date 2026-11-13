@@ -10,6 +10,7 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
       - "orion/grammar/camera_ask_acts.py"   # attention 4a: the camera-asks gate replay (evals/event_wants_replay.py)
+      - "services/orion-sql-writer/evals/ask_bind_mutations.py"   # attention 4b: Prime's menu mutant lane
       - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
       - "scripts/analysis/body_economy_binding_replay.py"
       - "scripts/analysis/body_economy_shadow_vs_real.py"
@@ -128,6 +129,7 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
       - "orion/grammar/camera_ask_acts.py"   # attention 4a: the camera-asks gate replay (evals/event_wants_replay.py)
+      - "services/orion-sql-writer/evals/ask_bind_mutations.py"   # attention 4b: Prime's menu mutant lane
       - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
       - "orion/physiology/**"
       - "config/physiology/**"
@@ -308,10 +310,12 @@ jobs:
         run: |
           python services/orion-hub/evals/run_outreach_binding_replay.py
           python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_outreach_binding_replay.py
-      - name: Camera asks 4b gate replay (attention patch 4a -- graded asks; fixture lane, live lane is run by hand)
+      - name: Camera asks 4b gate replay (attention patch 4b -- no-deadline holds; fixture lane, live lane is run by hand)
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/event_wants_replay.py --camera-asks
+      - name: Camera-ask bid mutation check, Prime's menu lane (attention patch 4b -- must kill every mutant)
+        run: python services/orion-sql-writer/evals/ask_bind_mutations.py --lane durable-runs
       - name: Cooling world act eval (ladder retirement PR 5 -- the market decides, only funded sheds, the scorer scores every episode)
         env:
           PYTHONPATH: ${{ github.workspace }}

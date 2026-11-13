@@ -229,6 +229,45 @@ def ask_opened_event(ask_id: str, *, rule: str, created_at: datetime, expires_at
     )
 
 
+# --- attention patch 4b: the ask bids BEFORE its card opens -------------------------------------------------
+# The candidate want is keyed by what the ask is about, not by the ask id (a fresh uuid every opener tick), so a
+# held candidate re-bids as the SAME want and the market's event history counts it once.
+CANDIDATE_SOURCE = "camera_ask_candidate"
+# Evidence ref an ask carries when its card opened on a market answer at open (``want:<want_id>``). The 5-minute
+# shadow loop (services/orion-sql-writer/app/ask_event_wants.py) posts nothing for such an ask: one want per ask.
+BID_WANT_REF_PREFIX = "want:"
+# Re-bid backoff for a held candidate (decided on issue #3285: a held ask keeps bidding with NO deadline). The
+# n-th consecutive hold waits REBID_FIRST_SEC x 2^(n-1), at least the market's own wait, capped at REBID_CAP_SEC.
+# 600 s is the binding rule's default wait for a sated want (orion/physiology/binding.py REBID_DEFAULT_SEC). The cap
+# is 3 h, not the rule's 1 h: in the live 30-day replay (event_wants_replay.py --camera-asks) 1 h and 3 h open the
+# same asks with the same delays, but 3 h makes 8.6 re-bids per held candidate-day instead of 24, and ~100 vehicle
+# candidates sit held at once (2026-11-13), so 1 h would triple want_ledger's ~800 rows a day.
+REBID_FIRST_SEC = 600.0
+REBID_CAP_SEC = 10800.0
+
+
+def candidate_key(rule: str, source_kind: str, source_ref: str) -> str:
+    """What a candidate ask is about: the same rule, kind and subject is the same candidate on every tick."""
+    return f"{rule}:{source_kind}:{source_ref}"
+
+
+def rebid_after_sec(n_held: int, market_wait_sec: Optional[float] = None) -> float:
+    """Seconds until the next bid of a candidate held ``n_held`` times in a row (>= 1). Pure."""
+    n = max(1, int(n_held))
+    wait = REBID_FIRST_SEC * (2 ** min(n - 1, 16))
+    if isinstance(market_wait_sec, (int, float)) and market_wait_sec == market_wait_sec:
+        wait = max(wait, float(market_wait_sec))
+    return min(REBID_CAP_SEC, wait)
+
+
+def bid_want_ref(evidence_refs: Any) -> Optional[str]:
+    """The want id an ask bid at open with (``want:<id>``), or None (opened without a market answer)."""
+    for r in _as_list(evidence_refs):
+        if isinstance(r, str) and r.startswith(BID_WANT_REF_PREFIX):
+            return r[len(BID_WANT_REF_PREFIX):]
+    return None
+
+
 def ask_act_ids(ask_ids: Sequence[str]) -> dict[str, str]:
     """ask_id -> act_id (deterministic)."""
     from orion.grammar.acts import stable_act_id
@@ -237,7 +276,8 @@ def ask_act_ids(ask_ids: Sequence[str]) -> dict[str, str]:
 
 
 __all__ = [
-    "ACTOR", "AskGrade", "BASIS", "CAMERA_ASK_KINDS", "JUNIPER_STORY_CARD_REF", "ORION_MADE_CAMERA_ASK_SQL", "RULES",
+    "ACTOR", "BID_WANT_REF_PREFIX", "CANDIDATE_SOURCE", "REBID_CAP_SEC", "REBID_FIRST_SEC", "bid_want_ref",
+    "candidate_key", "rebid_after_sec", "AskGrade", "BASIS", "CAMERA_ASK_KINDS", "JUNIPER_STORY_CARD_REF", "ORION_MADE_CAMERA_ASK_SQL", "RULES",
     "SIGNAL", "VERB", "ask_act", "ask_act_ids", "ask_grade", "ask_opened_event", "ask_rule", "is_juniper_card",
     "is_orion_camera_ask", "rule_from_test_before", "rule_outcome_values",
 ]

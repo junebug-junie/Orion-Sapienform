@@ -29,6 +29,11 @@ Juniper's own walkway-story naming cards are not Orion's asks and are in neither
 SHADOW: nothing obeys the decision. Prime reads the funded ones as its concerns (orion-mind
 ``PRIME_CONCERNS_FROM_EVENT_WANTS``).
 
+Attention patch 4b (app/ask_bind.py, ``ORION_PHYSIOLOGY_BID_CAMERA_ASKS=on``): the ask bids BEFORE its card opens,
+and a card opened on a market answer carries ``want:<want_id>`` in ``evidence_refs``. This loop posts nothing for
+such a card (one want per ask). It still posts for a card with no stamp: everything under ``shadow``, and under
+``on`` a card the market could not answer at open (down or timed out) or one opened before 4b.
+
 Env: ``ASK_EVENT_WANTS_INTERVAL_SEC`` (default 300; 0 disables), ``ASK_EVENT_WANTS_LOOKBACK_HOURS``
 (default 24: an open ask older than this is not posted).
 """
@@ -41,6 +46,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from orion.grammar.camera_ask_acts import (
     ACTOR as ASK_ACTOR,
+    bid_want_ref,
     ORION_MADE_CAMERA_ASK_SQL,
     OUTCOME_WINDOW,
     ask_rule,
@@ -97,7 +103,7 @@ def plan_asks(rows: Sequence[Any], *, now: datetime, lookback: timedelta,
     the 30 days before it. Pure."""
     asks = sorted(({"ask_id": str(r["ask_id"]), "kind": str(r["source_kind"]), "status": str(r["status"]),
                     "at": _utc(r["created_at"]), "expires_at": _utc(r["expires_at"]), "iid": str(r["iid"] or ""),
-                    "sightings": int(r["sightings"] or 0),
+                    "sightings": int(r["sightings"] or 0), "bid_want": bid_want_ref(r.get("evidence_refs")),
                     "rule": ask_rule(str(r["source_kind"]), r.get("evidence_refs"), r.get("individual_kind"))}
                    for r in rows if r["created_at"] is not None),
                   key=lambda a: a["at"])
@@ -121,7 +127,7 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
 
     ts = now or datetime.now(timezone.utc)
     eng = engine or create_engine(postgres_uri, pool_pre_ping=True)
-    summary: dict[str, Any] = {"posted": 0, "no_history": 0, "already": 0, "unanswered": 0}
+    summary: dict[str, Any] = {"posted": 0, "no_history": 0, "already": 0, "unanswered": 0, "bid_at_open": 0}
     try:
         with eng.connect() as conn:
             rows = conn.execute(text(ASKS_SQL), {"since": ts - lookback - SOURCE_HISTORY, "until": ts}).mappings().all()
@@ -139,6 +145,11 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
         if engine is None:
             eng.dispose()
     for p, want_id in zip(plan, ids):
+        if p.get("bid_want") is not None:
+            # Attention patch 4b: this card opened on a market answer at open (app/ask_bind.py); its want is that
+            # bid. One want per ask, so the shadow loop posts none.
+            summary["bid_at_open"] += 1
+            continue
         if want_id in posted:
             summary["already"] += 1
             continue

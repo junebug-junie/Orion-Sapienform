@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import inspect
 from collections.abc import Awaitable, Callable
@@ -19,7 +20,6 @@ from orion.substrate.appraisal.models import EvidenceKind, RepairEvidenceV1
 from orion.substrate.appraisal.probe.logprob_runner import (
     _LINE_RE,
     kind_probe_to_evidence,
-    parse_yes_no_lines,
     score_binary_logprob,
     score_kind_from_answer_token,
 )
@@ -107,6 +107,58 @@ def build_repair_probe_prompt(window: list[TurnWindowMessageV1]) -> str:
         "Answer each line using this exact format (kind: YES or NO):\n"
         f"{kind_lines}\n"
     )
+
+
+_BARE_ANSWER_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])?\s*(YES|NO)\s*$", re.IGNORECASE)
+_THINK_CLOSE = "</think>"
+
+
+def probe_answer_spans(text: str) -> list[tuple[str, str, int]]:
+    """``(kind, YES|NO, char offset of the answer)`` for every kind the probe reply answered.
+
+    Two reply shapes carry a real answer:
+
+    * labeled lines, ``kind: YES`` (the format the prompt shows), matched by kind name; and
+    * bare lines: exactly seven non-blank lines, each only ``YES`` or ``NO``. The prompt says "exactly
+      seven lines, one per kind, YES or NO only" and lists the kinds in ``_EVIDENCE_KINDS`` order, and
+      models obey it literally. Live 2026-11-12/13: Bonsai-2-27B (agent-gpu2) and Strata flash-next
+      (agent) answered ``NO\nNO\nNO\nNO\nNO\nNO\nNO`` (14 tokens) and all four checks failed as
+      ``probe_unparseable``. Line i is kind i of the prompt's list.
+
+    Anything else (prose, six lines, a mix of bare and labeled) answers nothing, and the caller
+    fails the check as ``probe_unparseable``: never a guessed or default reading. Only the text after
+    the last ``</think>`` is read, so reasoning that names a kind cannot count as its answer."""
+    text = text or ""
+    cut = text.rfind(_THINK_CLOSE)
+    base = cut + len(_THINK_CLOSE) if cut >= 0 else 0
+    body = text[base:]
+    labeled = [
+        (m.group(1).lower(), m.group(2).upper(), base + m.start(2))
+        for m in _LINE_RE.finditer(body)
+        if m.group(1).lower() in _EVIDENCE_KINDS
+    ]
+    if labeled:
+        return labeled
+    lines: list[tuple[str, int]] = []
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        if line.strip():
+            lines.append((line, offset))
+        offset += len(line)
+    if len(lines) != len(_EVIDENCE_KINDS):
+        return []
+    spans: list[tuple[str, str, int]] = []
+    for kind, (line, at) in zip(_EVIDENCE_KINDS, lines):
+        m = _BARE_ANSWER_RE.match(line.rstrip("\r\n"))
+        if m is None:
+            return []
+        spans.append((kind, m.group(1).upper(), base + at + m.start(1)))
+    return spans
+
+
+def parse_probe_answers(text: str) -> dict[str, str]:
+    """``{kind: YES|NO}`` from a probe reply (see ``probe_answer_spans``); empty when it answers nothing."""
+    return {kind: answer for kind, answer, _ in probe_answer_spans(text)}
 
 
 def reduce_repair_level(
@@ -298,16 +350,12 @@ def _aligned_answer_entries(
     token_text = "".join(pieces)
 
     aligned: dict[str, dict[str, Any]] = {}
-    for match in _LINE_RE.finditer(token_text):
-        kind = match.group(1).lower()
-        if kind not in _EVIDENCE_KINDS:
-            continue
-        answer_at = match.start(2)
+    for kind, answer, answer_at in probe_answer_spans(token_text):
         idx = next((i for i in range(len(pieces)) if starts[i] <= answer_at < starts[i] + len(pieces[i])), None)
         if idx is None:
             return None
         entry = content[idx]
-        if str(entry.get("token") or "").strip().upper() != match.group(2).upper():
+        if str(entry.get("token") or "").strip().upper() != answer:
             return None   # the answer shares a token with other text (e.g. ":NO"): no clean score
         tops = entry.get("top_logprobs")
         if not isinstance(tops, list) or len(tops) < 2:
@@ -326,7 +374,7 @@ def _aligned_answer_entries(
 
 def _evidence_from_probe_response(payload: dict[str, Any]) -> list[RepairEvidenceV1]:
     text = str(payload.get("text") or payload.get("content") or "")
-    parsed = parse_yes_no_lines(text)
+    parsed = parse_probe_answers(text)
     if not parsed:
         return []
 
